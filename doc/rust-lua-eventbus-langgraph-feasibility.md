@@ -9,12 +9,13 @@
 推荐目标不是完整复刻 LangGraph，而是实现一套更适合本项目技术栈的执行框架：
 
 - Rust 负责可靠的图执行内核、状态管理、检查点、恢复、并发和错误处理。
-- Lua 负责灵活的业务节点、条件路由、Agent 编排和工具调用胶水逻辑。
-- EventBus 负责事件流、观测、调试、人审中断、外部 worker 通信和 UI 推送。
+- Lua 负责灵活的业务节点、路由意图、Agent 编排和工具调用胶水逻辑。
+- EventBus 负责路由平面、节点派发、事件流、观测、调试、人审中断、外部 worker 通信和 UI 推送。
 
 该方案的关键不在“画图”或“节点连接”本身，而在：
 
 - 状态如何合并。
+- 路由如何通过事件命令可靠流转。
 - 节点如何幂等执行。
 - 中断后如何恢复。
 - 执行过程如何持久化。
@@ -27,7 +28,8 @@
 - 图式工作流：节点、边、条件边、开始节点、结束节点。
 - 共享状态：所有节点基于同一个状态对象读取和返回增量更新。
 - Reducer：对状态字段进行可控合并，例如覆盖、追加消息、集合合并。
-- 条件路由：节点执行后可以根据状态或返回结果选择下一节点。
+- EventBus 路由：节点执行后产生路由意图，由 Router 通过 EventBus 派发下一节点。
+- 条件路由：Router 根据状态、节点结果或 Lua 条件函数选择下一节点。
 - Checkpoint：每一步执行后保存状态快照和执行位置。
 - Interrupt / Resume：节点可主动中断，等待人工输入或外部系统结果后继续。
 - Event Stream：运行时持续发出节点开始、节点完成、状态更新、错误、中断等事件。
@@ -54,10 +56,13 @@ Rust Graph Compiler
 Rust Runtime Kernel <----> State Store / Checkpoint Store
         |
         v
-EventBus
+EventBus Routing Plane
         |
-        v
-CLI / UI / Tracer / Human-in-the-loop / External Workers
+        +--> Router / Route Resolver
+        |
+        +--> Lua Worker / Rust Worker / External Worker
+        |
+        +--> CLI / UI / Tracer / Human-in-the-loop
 ```
 
 ### 3.1 Rust 图执行内核
@@ -67,14 +72,15 @@ Rust 运行时负责所有强约束能力：
 - 加载 Lua 图定义。
 - 编译为内部 Graph IR。
 - 校验节点、边、条件路由和 reducer。
-- 调度节点执行。
+- 将节点执行派发为 EventBus command。
+- 消费节点完成事件并推进状态提交。
 - 合并状态 delta。
 - 写入 checkpoint。
 - 发布运行时事件。
 - 处理重试、超时、取消、错误恢复。
 - 支持 interrupt/resume。
 
-Rust 侧应该保持“状态权威”和“执行权威”，Lua 只负责返回节点结果，不能直接修改全局执行状态。
+Rust 侧应该保持“状态权威”和“执行权威”，Lua 只负责返回节点结果和路由意图，不能直接修改全局执行状态，也不能绕过 Router 直接派发下一节点。
 
 ### 3.2 Lua 编排层
 
@@ -82,7 +88,7 @@ Lua 适合作为上层编排 DSL：
 
 - 写节点逻辑。
 - 调用工具函数。
-- 编写条件路由。
+- 编写路由意图和条件路由函数。
 - 组合 Agent prompt。
 - 根据状态决定下一步。
 
@@ -94,7 +100,7 @@ graph.node("plan", function(state, ctx)
     update = {
       plan = "执行计划内容"
     },
-    goto = "execute"
+    route = "execute"
   }
 end)
 
@@ -112,7 +118,7 @@ graph.node("review", function(state, ctx)
     update = {
       reviewed = true
     },
-    goto = "__end__"
+    route = "__end__"
   }
 end)
 
@@ -120,36 +126,76 @@ graph.edge("__start__", "plan")
 graph.edge("plan", "review")
 ```
 
-### 3.3 EventBus 事件层
+### 3.3 EventBus 路由层
 
-EventBus 负责运行时可观测性和外部集成，但不应作为唯一状态源。
+EventBus 不只是观测层，而是路由平面。节点执行、路由解析、外部 worker 分发、人工恢复都通过 EventBus 的 command/event 流转。
 
-建议事件类型：
+核心原则：
+
+- Runtime 不直接调用下一个节点，而是发布 `cmd.node.dispatch`。
+- Worker 执行节点后发布 `evt.node.finished` 或 `evt.node.failed`。
+- Runtime 合并状态并写入 checkpoint 后发布 `cmd.route.resolve`。
+- Router 消费 `cmd.route.resolve`，解析下一节点，发布 `evt.route.selected` 和下一条 `cmd.node.dispatch`。
+- EventBus 可以驱动路由，但不能成为唯一状态源；恢复、重放和一致性判断仍以 checkpoint 为准。
+
+建议区分 command 和 event：
 
 ```text
-graph.started
-graph.finished
-graph.failed
-graph.resumed
+cmd.graph.start
+cmd.graph.cancel
+cmd.node.dispatch
+cmd.route.resolve
+cmd.interrupt.resume
 
-node.started
-node.output
-node.finished
-node.failed
+evt.graph.started
+evt.graph.finished
+evt.graph.failed
+evt.graph.resumed
 
-state.delta
-state.committed
+evt.node.started
+evt.node.output
+evt.node.finished
+evt.node.failed
 
-route.selected
-checkpoint.saved
+evt.state.delta
+evt.state.committed
 
-interrupt.raised
-interrupt.resolved
+evt.route.requested
+evt.route.selected
+evt.checkpoint.saved
 
-token.streamed
-tool.started
-tool.finished
-tool.failed
+evt.interrupt.raised
+evt.interrupt.resolved
+
+evt.token.streamed
+evt.tool.started
+evt.tool.finished
+evt.tool.failed
+```
+
+建议主题命名：
+
+```text
+cmd.node.dispatch.<graph_name>.<node_id>
+cmd.route.resolve.<graph_name>
+cmd.interrupt.resume.<run_id>
+
+evt.node.finished.<run_id>
+evt.route.selected.<run_id>
+evt.state.committed.<run_id>
+evt.graph.finished.<run_id>
+```
+
+第一阶段可以不做复杂 topic wildcard，只在进程内用结构化字段过滤：
+
+```rust
+pub struct BusMessage {
+    pub id: String,
+    pub run_id: String,
+    pub step: u64,
+    pub kind: MessageKind,
+    pub payload: serde_json::Value,
+}
 ```
 
 第一阶段可以用进程内 EventBus：
@@ -198,10 +244,19 @@ pub enum NodeKind {
 ```rust
 pub struct NodeResult {
     pub update: serde_json::Value,
-    pub goto: Option<NodeId>,
+    pub route: Option<RouteIntent>,
     pub interrupt: Option<InterruptPayload>,
 }
+
+pub enum RouteIntent {
+    Next(NodeId),
+    End,
+    Conditional { name: String },
+    FanOut(Vec<NodeId>),
+}
 ```
+
+`route` 是节点给 Router 的意图，不代表节点可以直接调度下一节点。Router 必须基于 Graph IR、当前 checkpoint 状态和 route intent 做最终路由解析。
 
 ### 4.4 Reducer
 
@@ -220,24 +275,87 @@ Reducer 决定多个节点对同一个 state key 写入时如何合并。
 
 ## 5. 执行流程
 
-### 5.1 正常执行
+### 5.1 正常执行：EventBus 驱动路由
 
 1. CLI 或 API 提交 run 请求。
 2. Rust runtime 创建 `run_id` 和初始状态。
-3. 发布 `graph.started`。
-4. 从 `__start__` 进入第一个节点。
-5. 发布 `node.started`。
-6. 调用 Lua 或 Rust 节点。
-7. 节点返回 `NodeResult`。
-8. 发布 `state.delta`。
-9. Rust 使用 reducer 合并状态。
-10. 写 checkpoint。
-11. 发布 `checkpoint.saved` 和 `state.committed`。
-12. 根据 `goto` 或 edge 选择下一节点。
-13. 重复执行，直到 `__end__`。
-14. 发布 `graph.finished`。
+3. Runtime 写入初始 checkpoint。
+4. Runtime 发布 `evt.graph.started`。
+5. Runtime 发布 `cmd.route.resolve`，payload 中包含 `from = "__start__"`。
+6. Router 消费 `cmd.route.resolve`，根据 Graph IR 解析第一个节点。
+7. Router 发布 `evt.route.selected`。
+8. Router 发布 `cmd.node.dispatch.<graph_name>.<node_id>`。
+9. Worker 消费 `cmd.node.dispatch`，发布 `evt.node.started`。
+10. Worker 调用 Lua、Rust 或外部节点。
+11. Worker 发布 `evt.node.finished`，payload 中包含 `NodeResult`。
+12. Runtime 消费 `evt.node.finished`。
+13. Runtime 校验 `NodeResult`，发布 `evt.state.delta`。
+14. Runtime 使用 reducer 合并状态。
+15. Runtime 写 checkpoint。
+16. Runtime 发布 `evt.checkpoint.saved` 和 `evt.state.committed`。
+17. Runtime 发布 `cmd.route.resolve`，payload 中包含 `from`、`route`、`state_version`。
+18. Router 消费 `cmd.route.resolve`，选择下一节点并重复派发。
+19. Router 解析到 `__end__` 后发布 `evt.graph.finished`。
 
-### 5.2 中断与恢复
+该流程把路由变成 EventBus command/event 流，而不是 Runtime 的同步函数调用。这样后续可以平滑扩展到外部 worker、跨进程节点和分布式路由。
+
+### 5.2 Router 职责
+
+Router 是 EventBus 路由平面的核心消费者，负责：
+
+- 消费 `cmd.route.resolve`。
+- 根据 Graph IR 校验 route intent 是否允许。
+- 执行 Lua conditional route 函数。
+- 读取必要的 checkpoint state。
+- 生成一个或多个下一节点。
+- 发布 `evt.route.selected`。
+- 发布 `cmd.node.dispatch`。
+- 识别 `__end__` 并发布 `evt.graph.finished`。
+
+Router 不负责：
+
+- 直接修改 state。
+- 直接写 checkpoint。
+- 执行节点业务逻辑。
+- 依赖未提交的 `state.delta` 做最终路由。
+
+### 5.3 事件路由消息示例
+
+```json
+{
+  "id": "msg_01",
+  "run_id": "run_123",
+  "step": 4,
+  "kind": "cmd.route.resolve",
+  "payload": {
+    "graph": "research_agent",
+    "from": "summarize",
+    "route": {
+      "type": "conditional",
+      "name": "need_review"
+    },
+    "state_version": 4
+  }
+}
+```
+
+Router 解析后发布：
+
+```json
+{
+  "id": "msg_02",
+  "run_id": "run_123",
+  "step": 4,
+  "kind": "evt.route.selected",
+  "payload": {
+    "from": "summarize",
+    "to": ["review"],
+    "reason": "state.need_human_review = true"
+  }
+}
+```
+
+### 5.4 中断与恢复
 
 节点可以返回：
 
@@ -256,13 +374,14 @@ Runtime 行为：
 
 1. 保存当前 checkpoint。
 2. 将 run 标记为 `interrupted`。
-3. 发布 `interrupt.raised`。
+3. 发布 `evt.interrupt.raised`。
 4. CLI/UI/外部系统展示等待信息。
-5. 用户或外部系统提交 resume payload。
+5. 用户或外部系统提交 resume payload，转换为 `cmd.interrupt.resume.<run_id>`。
 6. Runtime 读取 checkpoint。
 7. 将 resume payload 合并到状态或传给当前节点。
-8. 发布 `graph.resumed`。
-9. 继续后续节点。
+8. Runtime 写入 resume checkpoint。
+9. Runtime 发布 `evt.graph.resumed`。
+10. Runtime 发布 `cmd.route.resolve`，由 Router 继续派发后续节点。
 
 ## 6. 持久化设计
 
@@ -285,17 +404,21 @@ CREATE TABLE graph_checkpoints (
   step INTEGER NOT NULL,
   node_id TEXT NOT NULL,
   state_json TEXT NOT NULL,
+  route_intent_json TEXT,
   next_node_id TEXT,
+  state_version INTEGER NOT NULL,
   created_at TEXT NOT NULL,
   UNIQUE(run_id, step)
 );
 
 CREATE TABLE graph_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   step INTEGER,
   event_type TEXT NOT NULL,
   payload_json TEXT NOT NULL,
+  consumed_at TEXT,
   created_at TEXT NOT NULL
 );
 ```
@@ -307,6 +430,9 @@ CREATE TABLE graph_events (
 - 每个节点执行完成后保存 checkpoint。
 - interrupt 前必须保存 checkpoint。
 - 节点重试必须记录 attempt 信息。
+- `cmd.route.resolve` 必须引用已提交的 `state_version`。
+- Router 只能基于已提交 checkpoint 做最终路由。
+- `message_id` 用于去重，避免重复消费导致重复派发。
 
 ## 7. Rust 模块划分建议
 
@@ -336,6 +462,8 @@ src/
     mod.rs
     event.rs
     in_memory.rs
+    router.rs
+    command.rs
     sink.rs
 
   checkpoint/
@@ -381,11 +509,13 @@ Lua 脚本必须运行在受控环境中：
 2. 支持 `graph.node`、`graph.edge`、`graph.conditional`。
 3. 支持 JSON state。
 4. 支持内置 reducer。
-5. 支持顺序执行和条件跳转。
-6. 支持 SQLite checkpoint。
-7. 支持 interrupt/resume。
-8. 支持进程内 EventBus。
-9. 支持 CLI：
+5. 支持通过 EventBus command 派发节点。
+6. 支持 Router 消费 `cmd.route.resolve` 并发布下一条 `cmd.node.dispatch`。
+7. 支持顺序执行和条件跳转。
+8. 支持 SQLite checkpoint。
+9. 支持 interrupt/resume。
+10. 支持进程内 EventBus。
+11. 支持 CLI：
 
 ```text
 eva-graph run examples/research_agent.lua --input input.json
@@ -403,7 +533,8 @@ eva-graph list-events <run_id>
 - SQLite checkpoint。
 - CLI 调试。
 - interrupt/resume。
-- 基础事件流。
+- EventBus 路由平面。
+- 进程内 Router。
 
 ### 阶段 2：工具调用和 Agent 编排
 
@@ -419,6 +550,7 @@ eva-graph list-events <run_id>
 - 支持并行节点。
 - reducer 冲突检测。
 - graph event replay。
+- route event replay。
 - Web UI 或 TUI timeline。
 - OpenTelemetry 集成。
 
@@ -426,6 +558,7 @@ eva-graph list-events <run_id>
 
 - EventBus 替换为 NATS 或 Redis Streams。
 - 外部 worker 执行节点。
+- Router 独立进程化。
 - 多进程恢复。
 - 队列消费确认。
 - 分布式锁和租约。
@@ -452,15 +585,18 @@ eva-graph list-events <run_id>
 - 对外部调用使用 idempotency key。
 - checkpoint 中记录 tool call id 和 attempt。
 
-### 11.3 EventBus 与状态不一致
+### 11.3 EventBus 路由与状态不一致
 
-风险：事件已发布，但 checkpoint 写入失败，导致观测层和真实状态不一致。
+风险：事件已发布，但 checkpoint 写入失败，导致 Router 基于未提交状态派发下一节点。
 
 规避：
 
 - 恢复只信 checkpoint。
-- 关键事件可在 checkpoint 事务后发布。
+- `evt.state.committed` 和 `cmd.route.resolve` 必须在 checkpoint 事务成功后发布。
+- `cmd.route.resolve` 必须携带 `state_version`。
+- Router 发现 `state_version` 不存在或不是最新可路由版本时拒绝派发。
 - 落库事件作为调试材料，不作为执行真相。
+- 对 `cmd.node.dispatch` 使用 `message_id` 或 `(run_id, step, node_id)` 去重。
 
 ### 11.4 Lua 沙箱逃逸
 
@@ -483,20 +619,33 @@ eva-graph list-events <run_id>
 - 后续并行必须要求每个可并行字段声明 reducer。
 - 无 reducer 的冲突直接失败。
 
+### 11.6 重复路由与重复派发
+
+风险：EventBus 至少一次投递时，Router 或 Worker 可能重复消费同一条 command。
+
+规避：
+
+- 所有 command/event 必须有全局唯一 `message_id`。
+- Runtime 记录已提交的 `(run_id, step, node_id)`。
+- Router 记录已处理的 `cmd.route.resolve`。
+- Worker 在执行有副作用节点前检查 idempotency key。
+- 外部工具调用使用 `run_id + step + node_id + attempt` 作为幂等键。
+
 ## 12. 验收标准
 
 MVP 完成时应满足：
 
 - 可以运行一个包含 3 个以上节点的 Lua graph。
 - 支持普通边和条件边。
-- 节点可以读取 state，并返回 update/goto/interrupt。
+- 节点可以读取 state，并返回 update/route/interrupt。
+- Router 可以通过 EventBus 消费 route command 并派发下一节点。
 - Runtime 能正确合并 state delta。
 - 每个节点完成后写入 checkpoint。
 - 可以从 interrupt 状态 resume。
 - 可以查看某个 run 的当前 state。
 - 可以查看某个 run 的事件列表。
 - 节点失败时能记录错误事件并标记 run 失败。
-- 单元测试覆盖 reducer、路由、checkpoint、resume。
+- 单元测试覆盖 reducer、Router、EventBus command 去重、checkpoint、resume。
 
 ## 13. 推荐示例场景
 
@@ -540,4 +689,3 @@ Lua 节点：
 - LangGraph Persistence：https://docs.langchain.com/oss/python/langgraph/persistence
 - LangGraph Interrupts：https://docs.langchain.com/oss/python/langgraph/interrupts
 - LangGraph Streaming：https://langchain-ai.github.io/langgraph/cloud/concepts/streaming/
-
