@@ -1,21 +1,25 @@
 ﻿# EvaLauncher-CLI 总体架构方案
 
-更新日期：2026-06-09
+更新日期：2026-06-10
 
 ## 1. 文档定位
 
-本文是 EvaLauncher-CLI 的总体架构入口，整合以下两份子方案：
+本文是 EvaLauncher-CLI 的总体架构入口，整合以下子方案：
 
 - `Rust与Lua事件总线智能体调度架构方案.md`：定义 Rust + Lua + EventBus + Topic 的 Agent 调度核心。
 - `Lua调用外部Agent动态Adapter架构方案.md`：定义 Lua 调用 Claude、Codex、MCP server、本地模型和企业内部 Agent 的动态 Adapter 扩展层。
+- `Agent扫描与发现架构方案.md`：定义如何扫描、识别、校验并注册用户电脑上可用的内部 Agent、外部 Agent、CLI、MCP server 和 workflow skill。
+- `EvaLauncher-CLI进程级停机升级架构方案.md`：定义系统重启恢复、Supervisor 托管 Runtime 自动升级、Runtime 兜底拉起 Supervisor、Runtime generation 双活切流、可恢复进程内 EventBus、状态快照、reattach 和回滚语义。
 
 总体结论：
 
 - 系统核心是 **Rust 托管的 Topic EventBus Agent 运行时**。
 - Agent 业务逻辑由 **Lua 脚本**承载，支持热更新和局部状态。
 - Agent 之间通过 **Topic 事件**协作，不共享隐式全局状态。
+- 用户电脑上的可用 Agent 能力通过 **AgentDiscoveryService** 扫描、归一化、校验和注册。
 - Claude、Codex、Gemini、本地模型、MCP server 等外部能力通过 **动态 Adapter** 接入。
 - MCP 支持双向集成：内部 Agent 调用外部 MCP server；系统自身作为 MCP server 暴露受控工具。
+- 进程级高可用升级通过 **OS service manager 根恢复 + Supervisor 主控 Runtime + Runtime 兜底恢复 Supervisor + Runtime generation 双活切流 + Recoverable In-Process EventBus + Durable Event Log + Snapshot / State Store** 实现。
 
 本文用于统一架构边界、模块关系、运行时流程、数据契约、可靠性、安全策略、配置策略和设计校验口径。具体 Topic 匹配、Adapter 协议和配置格式以对应子方案为准。
 
@@ -27,6 +31,7 @@
 - 使用 Rust 承担运行时、调度、权限、可靠性和外部能力托管。
 - 使用 Lua 承担 Agent 业务逻辑、局部状态转换和轻量编排。
 - 使用 Topic EventBus 实现 Agent 间解耦协作。
+- 使用 AgentDiscoveryService 发现项目内 Agent、用户本地 workflow skill、白名单 CLI 和显式 MCP 配置。
 - 使用 AdapterRegistry 接入外部 Agent、CLI、HTTP API、MCP server 和内部 Agent。
 - 支持单进程、多进程、分布式和持久化消息队列等部署形态。
 
@@ -34,14 +39,36 @@
 
 - 不复刻中心化 LangGraph 状态图。
 - 不让 Lua 直接执行 shell 命令、读取密钥或连接外部 provider。
+- 不让 Lua 直接扫描用户电脑或读取用户目录。
 - 不将 Rust 动态库插件作为默认扩展机制。
 - 不默认提供强一致分布式事务。
 - 不把 EventBus 当作所有业务状态的存储系统。
 - 不允许 MCP 成为不受控的通用代理。
+- 不默认进行全盘扫描，也不把任意可执行文件注册为 Agent。
 
 ## 3. 总体架构
 
 ```text
+             Startup / CLI scan / Config hot reload
+                                |
+                                v
+                   [AgentDiscoveryService - Rust]
+                                |
+              +-----------------+-----------------+
+              |                                   |
+              v                                   v
+ config/agents/**/agent.yaml              config/adapters/*.yaml
+ config/agents/**/main.lua                ~/.codex/skills/*
+                                          ~/.codex/prompts/*
+                                          PATH allowlist commands
+                                          MCP manifests
+              |                                   |
+              +-----------------+-----------------+
+                                |
+                                v
+              Scheduler Registry / AdapterRegistry
+                                |
+                                v
                   External Input / CLI / API / UI
                                 |
                                 v
@@ -80,11 +107,12 @@
                  Claude CLI    Gemini API    Local Agent      tools/resources
 ```
 
-系统分为三层：
+系统分为四层：
 
-1. **调度层**：EventBus、Scheduler、Topic 路由、Agent 队列。
-2. **执行层**：AgentRuntime、Lua State、Lua sandbox、Rust tool bindings。
-3. **扩展层**：AdapterRegistry、AdapterRouter、MCP client/server、外部 provider。
+1. **发现层**：AgentDiscoveryService、scanner、normalizer、health check、discovery cache。
+2. **调度层**：EventBus、Scheduler、Topic 路由、Agent 队列。
+3. **执行层**：AgentRuntime、Lua State、Lua sandbox、Rust tool bindings。
+4. **扩展层**：AdapterRegistry、AdapterRouter、MCP client/server、外部 provider。
 
 ## 4. 核心设计原则
 
@@ -93,6 +121,7 @@
 Rust 负责不可妥协的系统能力：
 
 - EventBus 和 Scheduler。
+- AgentDiscoveryService、扫描白名单、发现缓存和注册入口。
 - Agent 生命周期。
 - 私有队列、超时、取消、重试和死信。
 - Lua State 生命周期和沙箱。
@@ -124,22 +153,32 @@ Lua 不直接访问：
 事件使用路径式 Topic：
 
 ```text
-/user/input
+/input/user
 /task/created
 /adapter/invoke
 /mcp/tool/called
-/funcA/funcAB/funcABCC
+/sys/route-a/route-aa
 ```
 
 Scheduler 必须按 `/` 分段匹配，支持：
 
 ```text
-/funcA/funAC       精确匹配
-/funcA/*           单段通配
-/funcA/**          多段尾部通配
+/sys/route-a       精确匹配
+/sys/*             单段通配
+/sys/**            多段尾部通配
 ```
 
 不能用简单字符串前缀替代 Topic matcher。
+
+`/sys` 是内部 Agent 层级路由根，例如：
+
+```text
+/sys
+  -> /sys/route-a
+      -> /sys/route-a/route-aa
+```
+
+默认不做父 Topic 到子 Topic 的自动递归投递。父级 Agent 处理完成后必须显式 `ctx.emit` 到子 Topic，例如 `agent-a` 处理 `/sys/route-a` 后发布 `/sys/route-a/route-aa`。
 
 ### 4.4 Adapter 是受控能力单元
 
@@ -161,13 +200,31 @@ Adapter 接入能力包括：
 
 所有 Adapter 都必须经过 Registry、Router 和 policy，不允许 Lua 绕过。
 
+### 4.5 Discovery 是受控注册入口
+
+AgentDiscoveryService 负责把用户电脑上可用的 Agent 能力转化为系统可理解、可校验、可注册的对象。
+
+Discovery 的边界：
+
+- 只扫描项目配置目录、用户显式配置目录、受信任 Codex/OMX 目录和白名单 PATH 命令。
+- 发现内部 Lua Agent 后注册到 Scheduler。
+- 发现外部 CLI、HTTP、MCP、本地模型和 workflow skill 后注册到 AdapterRegistry。
+- 发现结果必须经过 schema、policy 和 health check。
+- 发现不等于授权；授权不等于执行；执行仍必须经过 Rust Tool Layer 和 Adapter policy。
+
+Lua 不允许直接调用 Discovery，也不允许通过 Discovery 扩大文件、网络或 shell 权限。
+
 ## 5. 核心模块
 
 ### 5.1 EventBus
 
 EventBus 是全局事件发布通道。
 
-EventBus 后端可以选择进程内 `broadcast`、Redis Streams、NATS、Kafka、RabbitMQ 或 PostgreSQL LISTEN/NOTIFY。进程内后端适合单进程运行，持久化队列适合跨进程和分布式运行。
+EventBus 后端可以选择纯进程内 `broadcast`、可恢复进程内 EventBus、Redis Streams、NATS、Kafka、RabbitMQ 或 PostgreSQL LISTEN/NOTIFY。
+
+- 纯进程内 `broadcast` 适合本地开发和可接受 best-effort 的轻量任务。
+- 可恢复进程内 EventBus 使用内存快速分发 + 本地 Durable Event Log / WAL / Spool，适合单机高可用和系统重启恢复。
+- 外部持久化队列适合跨进程、多机器和分布式运行。
 
 职责：
 
@@ -251,11 +308,35 @@ ctx.tools.state_set(...)
 - 有 tracing。
 - 有结构化错误。
 
-### 5.6 AdapterRegistry 与 AdapterRouter
+### 5.6 AgentDiscoveryService
+
+AgentDiscoveryService 是运行时启动和手动扫描时的能力发现入口。
+
+职责：
+
+- 扫描 `config/agents/**/agent.yaml` 和同目录 Lua 脚本，发现内部 Lua Agent。
+- 扫描 `config/adapters/*.yaml`、`config/mcp/*.yaml` 和用户显式配置，发现外部 Adapter。
+- 扫描 `~/.codex/prompts/*.md`、`~/.codex/skills/*/SKILL.md`、`~/.agents/skills/*/SKILL.md` 等受信任目录。
+- 查找 PATH 中的白名单命令，例如 `codex`、`claude`、`gemini`、`ollama`。
+- 将不同来源归一化为 `DiscoveredAgent`。
+- 执行 schema 校验、policy 预检查、轻量 health check。
+- 写入 `.evalauncher/data/discovery-cache.json`。
+- 向 EventBus 发布 `/discovery/**` 事件。
+- 将 Lua Agent 注册到 Scheduler，将外部能力注册到 AdapterRegistry。
+
+Discovery 不做：
+
+- 不全盘扫描。
+- 不执行被扫描目录中的任意脚本。
+- 不读取密钥内容。
+- 不把任意可执行文件包装为 Agent。
+- 不绕过 AdapterRegistry 和 policy。
+
+### 5.7 AdapterRegistry 与 AdapterRouter
 
 AdapterRegistry 负责：
 
-- 扫描 `adapters/*.yaml` 或等价 JSON manifest。
+- 接收 AgentDiscoveryService 发现并校验过的 Adapter manifest 或内置 Adapter template。
 - 校验 manifest schema。
 - 创建 transport runtime。
 - 建立 capability 索引。
@@ -270,7 +351,7 @@ AdapterRouter 负责：
 - 根据优先级、负载和错误率评分。
 - 返回结构化错误。
 
-### 5.7 MCP 子系统
+### 5.8 MCP 子系统
 
 MCP 子系统包含两个方向：
 
@@ -312,7 +393,7 @@ pub struct Event {
 
 ```lua
 function on_event(event, ctx)
-  if event.topic == "/user/input" then
+  if event.topic == "/input/user" then
     ctx.emit("/agent/reply", {
       text = "..."
     })
@@ -339,20 +420,75 @@ pub struct AgentInvokeRequest {
 }
 ```
 
+### 6.4 DiscoveredAgent
+
+```rust
+pub struct DiscoveredAgent {
+    pub id: String,
+    pub name: Option<String>,
+    pub kind: DiscoveredAgentKind,
+    pub source: DiscoverySource,
+    pub provider: Option<String>,
+    pub capabilities: Vec<String>,
+    pub manifest_path: Option<PathBuf>,
+    pub command: Option<PathBuf>,
+    pub args: Vec<String>,
+    pub script_path: Option<PathBuf>,
+    pub subscriptions: Vec<String>,
+    pub enabled: bool,
+    pub trust_level: TrustLevel,
+    pub health: DiscoveryHealth,
+    pub policy_ref: Option<String>,
+    pub metadata: serde_json::Value,
+}
+```
+
+`DiscoveredAgent` 是扫描阶段的中间对象，不是运行态 `AgentHandle`，也不是已经授权的 `AgentAdapter`。
+
 ## 7. 典型流程
 
-### 7.1 用户输入到 Lua Agent
+### 7.1 启动扫描到注册
 
 ```text
-CLI/API 发布 /user/input
+EvaLauncher 启动
+  -> 读取 config/eva.yaml
+  -> AgentDiscoveryService 扫描项目 Agent、Adapter、MCP、用户 Codex/OMX 目录和白名单命令
+  -> DiscoveryNormalizer 归一化为 DiscoveredAgent
+  -> schema + policy 预检查
+  -> health check
+  -> 写入 discovery cache
+  -> Lua Agent 注册到 Scheduler
+  -> 外部能力注册到 AdapterRegistry
+  -> EventBus 发布 /discovery/completed
+```
+
+### 7.2 用户输入到 Lua Agent
+
+```text
+CLI/API 发布 /input/user
   -> EventBus
-  -> Scheduler 匹配 /user/input
+  -> Scheduler 匹配 /input/user
   -> 投递到 PlannerAgent inbox
   -> PlannerAgent Lua on_event
   -> ctx.emit("/agent/reply")
 ```
 
-### 7.2 Lua 调用 Codex / Claude
+### 7.3 `/sys` 层级 Agent 路由
+
+```text
+CLI/API 发布 /sys
+  -> EventBus
+  -> Scheduler 精确匹配 /sys
+  -> root-agent 处理
+  -> root-agent ctx.emit("/sys/route-a")
+  -> Scheduler 精确匹配 /sys/route-a
+  -> agent-a 处理
+  -> agent-a ctx.emit("/sys/route-a/route-aa")
+  -> Scheduler 精确匹配 /sys/route-a/route-aa
+  -> agent-a11 和 agent-a12 并行处理
+```
+
+### 7.4 Lua 调用 Codex / Claude
 
 ```text
 Lua ctx.tools.invoke_agent({
@@ -367,7 +503,7 @@ Lua ctx.tools.invoke_agent({
   -> AgentInvokeResponse
 ```
 
-### 7.3 Lua 调用 MCP Tool
+### 7.4 Lua 调用 MCP Tool
 
 ```text
 Lua ctx.tools.invoke_agent({
@@ -381,7 +517,7 @@ Lua ctx.tools.invoke_agent({
   -> 结构化结果返回 Lua
 ```
 
-### 7.4 外部 MCP Client 调用内部 Agent
+### 7.5 外部 MCP Client 调用内部 Agent
 
 ```text
 MCP Client 调用 agent.invoke
@@ -393,7 +529,7 @@ MCP Client 调用 agent.invoke
   -> MCP tool result
 ```
 
-### 7.5 Lua 热更新
+### 7.6 Lua 热更新
 
 ```text
 监听脚本变化
@@ -421,9 +557,11 @@ Agent 局部状态
   -> Agent status、Adapter health、subscription table、dead letter
 ```
 
-进程内运行形态可使用 best-effort 事件投递；需要恢复、重放和跨进程协作的运行形态应支持：
+纯进程内运行形态可使用 best-effort 事件投递。需要系统重启恢复、崩溃重放、双活切流或跨进程协作的运行形态应支持：
 
+- accepted 事件先写 Durable Event Log。
 - 关键事件落库。
+- consumer ack / watermark。
 - 已处理事件去重。
 - Agent 状态版本。
 - Adapter request 幂等。
@@ -434,11 +572,19 @@ Agent 局部状态
 
 ### 9.1 投递语义
 
-进程内后端：
+纯进程内后端：
 
 - EventBus best-effort。
 - Agent 私有队列 bounded。
 - 队列满、Agent 不在线、目标不存在进入死信队列。
+
+可恢复进程内后端：
+
+- accepted 前写 Durable Event Log / WAL / Spool。
+- 内存 EventBus 负责低延迟分发。
+- Runtime 崩溃或系统重启后按 consumer watermark 重放未 ack 事件。
+- Agent 侧幂等消费。
+- 外部副作用使用 idempotency key。
 
 持久化后端：
 
@@ -475,7 +621,28 @@ Agent 局部状态
 
 ## 10. 安全模型
 
-### 10.1 Lua 权限
+### 10.1 Discovery 权限
+
+Discovery 只能使用 Rust Runtime 授权的扫描来源：
+
+- 项目配置目录。
+- 项目 Agent 脚本目录。
+- 用户显式配置目录。
+- 受信任 Codex/OMX prompt 和 skill 目录。
+- PATH 中的白名单命令。
+
+Discovery 禁止：
+
+- 全盘扫描。
+- 扫描敏感目录。
+- 读取密钥内容。
+- 执行未知脚本。
+- 执行非白名单命令。
+- 将发现结果直接授权给 Lua。
+
+Discovery 发现结果必须再经过 Adapter policy 或 Agent permission 校验。
+
+### 10.2 Lua 权限
 
 Lua 只能使用 Rust 暴露的白名单能力。禁止：
 
@@ -485,7 +652,7 @@ Lua 只能使用 Rust 暴露的白名单能力。禁止：
 - 任意环境变量访问。
 - 直接连接 MCP server。
 
-### 10.2 Adapter 权限
+### 10.3 Adapter 权限
 
 Adapter 权限来自：
 
@@ -498,7 +665,7 @@ Adapter 权限来自：
 
 最终权限只能收紧，不能放宽。
 
-### 10.3 MCP 权限
+### 10.4 MCP 权限
 
 MCP 必须限制：
 
@@ -560,6 +727,21 @@ src/
     state.rs
     lifecycle.rs
 
+  discovery/
+    service.rs
+    scanner.rs
+    normalizer.rs
+    health.rs
+    cache.rs
+    error.rs
+    sources/
+      project_agents.rs
+      project_adapters.rs
+      codex.rs
+      omx.rs
+      path_commands.rs
+      mcp.rs
+
   lua/
     loader.rs
     sandbox.rs
@@ -602,13 +784,16 @@ src/
     run.rs
     emit.rs
     inspect.rs
+    agent.rs
+    adapter.rs
 ```
 
 ## 13. 能力范围
 
 ### 13.1 Topic Agent 调度能力
 
-- 支持进程内或持久化 EventBus 后端。
+- 支持纯进程内、可恢复进程内或外部持久化 EventBus 后端。
+- 支持 Durable Event Log / ack / watermark / replay 的可恢复事件语义。
 - 支持 Scheduler 订阅 EventBus 并按 Topic 路由。
 - 支持 Topic exact、`*`、`**` 分段匹配。
 - 支持 `target` 直接路由优先于 Topic fan-out。
@@ -638,11 +823,23 @@ src/
 - 支持 `agent.invoke`、`adapter.invoke`、`adapter.list`、`adapter.health` 等 MCP tools。
 - 禁止外部 MCP client 调用未授权 Agent、Adapter 或 Topic。
 
+### 13.4 Agent 扫描与发现
+
+- 支持启动时扫描项目内部 Lua Agent。
+- 支持启动时扫描项目 Adapter manifest。
+- 支持手动 `eva agent scan`、`eva agent list`、`eva adapter scan` 和 `eva adapter list`。
+- 支持发现白名单 PATH 命令，例如 `codex`、`claude`、`gemini`、`ollama`。
+- 支持发现用户本地 Codex/OMX prompt 和 workflow skill。
+- 支持 discovery cache。
+- 支持 `/discovery/**` 观测事件。
+- 支持按 trust level、health status、policy 过滤可注册能力。
+- 禁止全盘扫描和未知命令自动注册。
+
 ## 14. 设计校验标准
 
 Topic Agent 调度校验：
 
-- CLI 可以发布 `/user/input`。
+- CLI 可以发布 `/input/user`。
 - Scheduler 可以按 Topic 精确和通配匹配投递。
 - 至少两个 Agent 可独立运行。
 - 每个 Agent 有独立 Lua State。
@@ -668,6 +865,16 @@ MCP 校验：
 - 系统作为 MCP server 暴露 `agent.invoke`。
 - 外部 MCP client 不能调用未授权 Agent、Adapter 或 Topic。
 
+Discovery 校验：
+
+- 可以扫描 `config/agents/**/agent.yaml` 并注册 Lua Agent。
+- 可以扫描 `config/adapters/*.yaml` 并注册 Adapter。
+- 可以发现 PATH 中的白名单命令。
+- 可以输出 `eva agent scan --json`。
+- 可以写入并读取 discovery cache。
+- 无效 manifest 不会导致运行时 panic。
+- Lua 不能触发未授权扫描或直接读取发现来源。
+
 ## 15. 风险与规避
 
 | 风险 | 规避 |
@@ -676,6 +883,8 @@ MCP 校验：
 | 事件重复消费 | event id 去重，外部副作用 idempotency key |
 | Lua 阻塞 | 独立 Lua State，事件处理 timeout，CPU 任务下沉 |
 | Adapter 越权 | manifest + policy + request 级约束 |
+| Discovery 越权 | 白名单目录、白名单命令、schema 校验、policy 预检查 |
+| 自动扫描误注册 | 发现和授权分离，Unknown trust level 默认只展示 |
 | MCP 变成通用代理 | tool/resource/prompt allowlist，MCP server tool policy |
 | 隐式流程难调试 | correlation_id、causation_id、trace、audit |
 | 状态分裂 | Agent 局部状态和全局业务状态显式建模 |
@@ -685,11 +894,13 @@ MCP 校验：
 
 - Topic 调度细节：`Rust与Lua事件总线智能体调度架构方案.md`
 - 外部 Agent 和 Adapter 细节：`Lua调用外部Agent动态Adapter架构方案.md`
+- Agent 扫描与发现细节：`Agent扫描与发现架构方案.md`
 - 项目配置方案：`EvaLauncher-CLI项目配置方案.md`
+- 进程级停机升级方案：`EvaLauncher-CLI进程级停机升级架构方案.md`
 - MCP 官方规范参考：`https://modelcontextprotocol.io/specification/`
 
 ## 17. 总结
 
-EvaLauncher-CLI 的总体架构应落在 **Rust 托管运行时 + Lua 热更新 Agent + Topic EventBus + 动态 Adapter + MCP 双向集成**。
+EvaLauncher-CLI 的总体架构应落在 **Rust 托管运行时 + AgentDiscoveryService + Lua 热更新 Agent + Topic EventBus + 动态 Adapter + MCP 双向集成 + OS service manager / Supervisor / Runtime 高可用升级恢复**。
 
-Rust 负责边界和可靠性，Lua 负责业务意图，Topic 负责 Agent 间协作，Adapter 负责外部能力接入，MCP 负责与工具生态互通。这样既能保持 Agent 业务逻辑灵活，又能避免 Lua 越权、外部 provider 失控和事件链路不可观测。
+Rust 负责边界、发现、注册和可靠性，Lua 负责业务意图，Topic 负责 Agent 间协作，Adapter 负责外部能力接入，MCP 负责与工具生态互通。这样既能保持 Agent 业务逻辑灵活，又能避免 Lua 越权、外部 provider 失控、自动扫描误注册和事件链路不可观测。

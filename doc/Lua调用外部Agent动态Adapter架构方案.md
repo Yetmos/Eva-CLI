@@ -693,7 +693,7 @@ local result = ctx.tools.invoke_agent({
     tool = "create_issue",
     arguments = {
       title = "Topic matcher 误匹配",
-      body = "/funcA/* 不应匹配 /funcA/funcAB/funcABCC"
+      body = "/sys/* 不应匹配 /sys/route-a/route-aa"
     }
   },
   timeout_ms = 60000
@@ -839,7 +839,7 @@ mcp.resource_allowlist 允许读取的 MCP resource URI pattern
 
 ```lua
 function on_event(event, ctx)
-  if event.topic == "/user/input" then
+  if event.topic == "/input/user" then
     local result = ctx.tools.invoke_agent({
       capability = "chat.reply",
       provider = "claude-api",

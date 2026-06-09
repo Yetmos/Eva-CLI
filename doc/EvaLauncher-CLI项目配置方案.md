@@ -82,9 +82,19 @@ config/
   eva.yaml
 
   agents/
-    planner.yaml
-    echo.yaml
-    reviewer.yaml
+    root/
+      agent.yaml
+      main.lua
+    route-a/
+      agent.yaml
+      main.lua
+      route-aa/
+        agent-a11/
+          agent.yaml
+          main.lua
+        agent-a12/
+          agent.yaml
+          main.lua
 
   adapters/
     codex-cli.yaml
@@ -113,10 +123,21 @@ config/
 config/
   eva.yaml
   agents/
-    echo.yaml
+    echo/
+      agent.yaml
+      main.lua
   adapters/
     codex-cli.yaml
 ```
+
+内部 Lua Agent 推荐采用 **一个 Agent 一个目录**：
+
+```text
+config/agents/<agent-dir>/agent.yaml
+config/agents/<agent-dir>/main.lua
+```
+
+子 Agent 可以放在父 Agent 目录下，便于人工维护和浏览。但运行时父子关系、订阅关系和权限关系必须以 `agent.yaml` 中的 `id`、`parent`、`subscriptions`、`permissions.emit` 为准，不能只依赖目录嵌套推断。
 
 ## 4. 主配置
 
@@ -127,17 +148,38 @@ runtime:
   env: dev
   workspace: C:/Users/admin/Desktop/project/EvaLauncher-CLI
   data_dir: .evalauncher/data
-  script_dir: agents
+  script_dir: config/agents
   adapter_dir: config/adapters
   hot_reload: true
 
+process:
+  topology: supervisor_runtime_blue_green
+
+service_manager:
+  enabled: true
+  start_on_boot: true
+  restart_supervisor: true
+
 eventbus:
-  backend: memory
+  backend: recoverable_in_process
   broadcast_capacity: 4096
+  durable_log:
+    path: .evalauncher/data/eventlog
+    durability: strict
+    retention_days: 7
+    replay_on_start: true
   dead_letter:
     enabled: true
-    backend: memory
+    backend: sqlite
     retention_days: 7
+
+upgrade:
+  mode: blue_green
+  warmup_timeout_ms: 30000
+  drain_timeout_ms: 30000
+  snapshot_required: true
+  rollback_enabled: true
+  ingress_policy: route_new_to_candidate
 
 scheduler:
   target_overrides_topic: true
@@ -167,7 +209,10 @@ config:
 - 运行环境。
 - workspace。
 - 数据目录。
+- 进程拓扑和系统重启恢复策略。
 - EventBus backend。
+- Durable Event Log。
+- Runtime 升级策略。
 - Scheduler 默认策略。
 - 状态存储 backend。
 - observability。
@@ -182,21 +227,18 @@ config:
 
 ## 5. Agent 配置
 
-每个 Agent 一个配置文件。
+每个 Agent 一个目录，目录内至少包含 `agent.yaml` 和 Lua 入口脚本。`script` 推荐使用相对当前 Agent 目录的路径，例如 `main.lua`。
 
-`config/agents/planner.yaml`：
+`config/agents/root/agent.yaml`：
 
 ```yaml
-id: planner
+id: root-agent
 enabled: true
-script: agents/planner.lua
+script: main.lua
 script_version: 2026-06-09.1
 
 subscriptions:
-  - /user/input
-  - /task/**
-  - /adapter/completed
-  - /adapter/failed
+  - /sys
 
 inbox:
   capacity: 256
@@ -208,13 +250,11 @@ timeout:
 
 state:
   backend: sqlite
-  namespace: agent.planner
+  namespace: agent.root
 
 permissions:
   emit:
-    - /agent/**
-    - /task/**
-    - /adapter/invoke
+    - /sys/**
   tools:
     - invoke_agent
     - state_get
@@ -226,10 +266,57 @@ permissions:
       - repo.analyze
 ```
 
+`config/agents/route-a/agent.yaml`：
+
+```yaml
+id: agent-a
+enabled: true
+parent: root-agent
+script: main.lua
+script_version: 2026-06-09.1
+
+subscriptions:
+  - /sys/route-a
+
+children:
+  - agent-a11
+  - agent-a12
+
+routes:
+  route-aa:
+    topic: /sys/route-a/route-aa
+    targets:
+      - agent-a11
+      - agent-a12
+
+inbox:
+  capacity: 256
+  overflow: dead_letter
+
+timeout:
+  event_ms: 30000
+  tool_ms: 60000
+
+state:
+  backend: sqlite
+  namespace: agent.agent-a
+
+permissions:
+  emit:
+    - /sys/route-a/**
+  tools:
+    - state_get
+    - state_set
+```
+
+`parent`、`children` 和 `routes` 用于表达管理关系和可读的路由意图；实际事件投递仍由 `subscriptions`、`permissions.emit` 和 Scheduler Topic matcher 决定。
+
 Agent 配置应包含：
 
 - `id`
 - `enabled`
+- 可选 `parent`。
+- 可选 `children` 和本 Agent 可下发的 `routes`。
 - Lua 脚本路径。
 - Topic 订阅。
 - inbox 容量和溢出策略。
@@ -252,25 +339,26 @@ Agent 配置不应包含：
 
 ```yaml
 routes:
-  - pattern: /user/input
+  - pattern: /input/user
     delivery: fanout
     agents:
-      - planner
+      - root-agent
 
-  - pattern: /funcA/**
+  - pattern: /sys
     delivery: fanout
     agents:
-      - func-router
+      - root-agent
 
-  - pattern: /adapter/completed
+  - pattern: /sys/route-a
     delivery: fanout
     agents:
-      - planner
+      - agent-a
 
-  - pattern: /adapter/failed
+  - pattern: /sys/route-a/route-aa
     delivery: fanout
     agents:
-      - planner
+      - agent-a11
+      - agent-a12
 ```
 
 字段说明：
@@ -516,7 +604,7 @@ mcp_server:
     topic.emit:
       enabled: false
       allowed_topics:
-        - /user/input
+        - /input/user
         - /task/**
 ```
 
@@ -580,7 +668,7 @@ adapter_policy:
   -> config/eva.yaml
   -> config/policies/*.yaml
   -> config/routes/topics.yaml
-  -> config/agents/*.yaml
+  -> config/agents/**/agent.yaml
   -> config/adapters/*.yaml
   -> 环境变量引用解析
   -> CLI 参数覆盖
@@ -612,6 +700,8 @@ CLI 参数只能覆盖低风险运行参数，例如：
 - schema。
 - Topic pattern。
 - Agent ID 唯一性。
+- Agent 目录唯一性。
+- `parent`、`children` 引用的 Agent 是否存在。
 - Adapter ID 唯一性。
 - capability 格式。
 - env 白名单引用。
@@ -649,6 +739,8 @@ evalauncher config dump-effective
 - 权限边界变更。
 - 状态 backend。
 - EventBus backend。
+- Durable Event Log backend。
+- Runtime upgrade mode。
 
 热加载流程：
 
@@ -659,7 +751,7 @@ evalauncher config dump-effective
   -> policy 校验
   -> diff effective config
   -> 对可热加载项应用
-  -> 对需重建项执行 draining / restart
+  -> 对需重建项执行 blue-green / draining / restart
   -> 失败则保留旧配置
 ```
 
@@ -697,7 +789,8 @@ Rust AdapterRuntime 根据 env allowlist 注入环境变量。Lua 不可读取�
 
 ```text
 config/eva.yaml
-config/agents/echo.yaml
+config/agents/echo/agent.yaml
+config/agents/echo/main.lua
 config/adapters/codex-cli.yaml
 ```
 
@@ -710,8 +803,17 @@ runtime:
   hot_reload: true
 
 eventbus:
-  backend: memory
+  backend: recoverable_in_process
   broadcast_capacity: 1024
+  durable_log:
+    path: .evalauncher/data/eventlog
+    durability: strict
+    replay_on_start: true
+
+upgrade:
+  mode: blue_green
+  drain_timeout_ms: 30000
+  rollback_enabled: true
 
 scheduler:
   target_overrides_topic: true
@@ -722,14 +824,14 @@ observability:
   tracing: true
 ```
 
-`config/agents/echo.yaml`：
+`config/agents/echo/agent.yaml`：
 
 ```yaml
 id: echo
 enabled: true
-script: agents/echo.lua
+script: main.lua
 subscriptions:
-  - /user/input
+  - /input/user
 inbox:
   capacity: 128
 timeout:
