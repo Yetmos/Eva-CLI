@@ -709,8 +709,27 @@ src/
 
   tools/
     mod.rs
+    external_agent.rs
     http.rs
     llm.rs
+
+  adapter/
+    mod.rs
+    registry.rs
+    router.rs
+    runtime.rs
+    transports/
+      builtin.rs
+      stdio.rs
+      http.rs
+      eventbus.rs
+      mcp.rs
+
+  mcp/
+    mod.rs
+    client.rs
+    server.rs
+    policy.rs
 
   observability/
     mod.rs
@@ -737,6 +756,8 @@ Rust crate 建议：
 - `notify`：Lua 脚本热更新监听。
 - `reqwest`：HTTP 工具示例。
 - `sqlx` / `rusqlite` / `rocksdb`：状态持久化可选。
+
+外部 Agent 调用、动态 Adapter 扩展与 MCP 双向集成详见 `Lua调用外部Agent动态Adapter架构方案.md`。该子方案约定 Lua 不直接调用 Claude、Codex、MCP server 或任意 shell 命令，而是通过 Rust 托管的 AdapterRegistry、AdapterRouter、McpAdapter 和统一 Topic / Tool 接口接入外部 Agent 能力；系统也可以作为 MCP server 对外暴露受控的 `agent.invoke`、`adapter.invoke` 等工具。
 
 ## 15. 生产增强路线
 
