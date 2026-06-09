@@ -256,7 +256,7 @@ pub enum AdapterHealthStatus {
 
 ## 6. Adapter Manifest
 
-每个动态 Adapter 由 `adapter.json` 描述：
+每个动态 Adapter 由 Adapter manifest 描述。人工维护配置默认使用 `adapters/*.yaml`，JSON 结构示例用于表达字段契约，也可作为机器生成配置格式。
 
 ```json
 {
@@ -305,14 +305,10 @@ pub enum AdapterHealthStatus {
 
 ```text
 adapters/
-  codex-cli/
-    adapter.json
-  claude-api/
-    adapter.json
-  github-mcp/
-    adapter.json
-  local-agent/
-    adapter.json
+  codex-cli.yaml
+  claude-api.yaml
+  github-mcp.yaml
+  local-agent.yaml
 ```
 
 ## 7. Adapter Registry
@@ -336,7 +332,7 @@ pub struct AdapterHandle {
 注册流程：
 
 ```text
-读取 adapter.json
+读取 Adapter manifest
   -> 校验 schema
   -> 校验权限 policy
   -> 创建 transport runtime
@@ -487,9 +483,9 @@ Rust 侧负责：
 
 MCP server 可以使用 stdio 或 HTTP/SSE 等连接方式，但这些是 `McpAdapter` 内部的 MCP server transport，不等同于本方案的 Adapter transport。
 
-### 9.6 不优先支持动态库插件
+### 9.6 动态库插件边界
 
-不建议第一版支持 Rust `dll` / `so` / `dylib` 动态库插件。
+不建议将 Rust `dll` / `so` / `dylib` 动态库插件作为默认扩展机制。
 
 原因：
 
@@ -499,7 +495,7 @@ MCP server 可以使用 stdio 或 HTTP/SSE 等连接方式，但这些是 `McpAd
 - 版本兼容成本高。
 - Windows 下卸载动态库容易踩资源释放问题。
 
-外部进程和 HTTP Adapter 更适合作为第一版动态扩展机制。
+外部进程、HTTP 和 MCP Adapter 更适合作为默认动态扩展机制。
 
 ## 10. Stdio JSON-RPC 协议
 
@@ -749,7 +745,7 @@ capability = "github.issue.create"
 payload = { title, body, labels }
 ```
 
-业务别名的好处是 Lua 不需要知道 MCP tool 的具体名称，后续更换 MCP server 或 tool 名称时只改 manifest / mapping。
+业务别名的好处是 Lua 不需要知道 MCP tool 的具体名称，更换 MCP server 或 tool 名称时只改 manifest / mapping。
 
 ### 12.3 EvaLauncher 作为 MCP Server
 
@@ -983,7 +979,7 @@ end
   payload.request_id = "req_001"
 ```
 
-如果 Adapter 不支持真实取消，Rust 至少要停止接收结果，并将后续输出丢弃或记录为 late output。
+如果 Adapter 不支持真实取消，Rust 至少要停止接收结果，并将迟到输出丢弃或记录为 late output。
 
 ### 15.3 重试
 
@@ -1090,10 +1086,8 @@ Adapter manifest 目录：
 
 ```text
 adapters/
-  codex-cli/
-    adapter.json
-  claude-api/
-    adapter.json
+  codex-cli.yaml
+  claude-api.yaml
 ```
 
 ## 18. 示例 Manifest
@@ -1211,7 +1205,7 @@ adapters/
 
 ## 19. 设计边界
 
-第一版明确不做：
+默认设计明确不做：
 
 - Lua 任意命令执行。
 - Rust 动态库插件热加载。
@@ -1222,7 +1216,7 @@ adapters/
 - 未经授权的 workspace 写入。
 - provider 私有响应直接透传给 Lua。
 
-第一版必须保证：
+默认设计必须保证：
 
 - 所有 Adapter 都有 manifest。
 - 所有调用都经过 Registry 和 Router。
@@ -1249,4 +1243,4 @@ Lua 意图
   -> Claude / Codex / Gemini / MCP Server / Local Agent
 ```
 
-这样后续新增外部 Agent 或 MCP 工具只需要增加 manifest 和对应 transport 适配，不需要改 Lua Agent 的业务脚本，也不会破坏 EventBus + Topic 的整体调度模型。
+这样新增外部 Agent 或 MCP 工具只需要增加 manifest 和对应 transport 适配，不需要改 Lua Agent 的业务脚本，也不会破坏 EventBus + Topic 的整体调度模型。

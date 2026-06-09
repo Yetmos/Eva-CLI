@@ -17,7 +17,7 @@
 - Claude、Codex、Gemini、本地模型、MCP server 等外部能力通过 **动态 Adapter** 接入。
 - MCP 支持双向集成：内部 Agent 调用外部 MCP server；系统自身作为 MCP server 暴露受控工具。
 
-本文用于统一架构边界、模块关系、运行时流程、可靠性、安全策略和落地路线。具体 Topic 匹配和 Adapter 协议以两份子方案为准。
+本文用于统一架构边界、模块关系、运行时流程、数据契约、可靠性、安全策略、配置策略和设计校验口径。具体 Topic 匹配、Adapter 协议和配置格式以对应子方案为准。
 
 ## 2. 目标与非目标
 
@@ -28,13 +28,13 @@
 - 使用 Lua 承担 Agent 业务逻辑、局部状态转换和轻量编排。
 - 使用 Topic EventBus 实现 Agent 间解耦协作。
 - 使用 AdapterRegistry 接入外部 Agent、CLI、HTTP API、MCP server 和内部 Agent。
-- 支持从单进程 MVP 平滑演进到多进程、分布式和持久化消息队列。
+- 支持单进程、多进程、分布式和持久化消息队列等部署形态。
 
 ### 2.2 非目标
 
 - 不复刻中心化 LangGraph 状态图。
 - 不让 Lua 直接执行 shell 命令、读取密钥或连接外部 provider。
-- 不在第一版支持 Rust 动态库插件。
+- 不将 Rust 动态库插件作为默认扩展机制。
 - 不默认提供强一致分布式事务。
 - 不把 EventBus 当作所有业务状态的存储系统。
 - 不允许 MCP 成为不受控的通用代理。
@@ -107,7 +107,7 @@ Lua 负责可热更新的业务逻辑：
 - 识别事件意图。
 - 更新 Agent 局部状态。
 - 调用 Rust 白名单工具。
-- 发布后续 Topic 事件。
+- 发布衍生 Topic 事件。
 - 编排局部工作流。
 
 Lua 不直接访问：
@@ -167,7 +167,7 @@ Adapter 接入能力包括：
 
 EventBus 是全局事件发布通道。
 
-MVP 使用进程内 `broadcast`，生产可替换为 Redis Streams、NATS、Kafka、RabbitMQ 或 PostgreSQL LISTEN/NOTIFY。
+EventBus 后端可以选择进程内 `broadcast`、Redis Streams、NATS、Kafka、RabbitMQ 或 PostgreSQL LISTEN/NOTIFY。进程内后端适合单进程运行，持久化队列适合跨进程和分布式运行。
 
 职责：
 
@@ -255,7 +255,7 @@ ctx.tools.state_set(...)
 
 AdapterRegistry 负责：
 
-- 扫描 `adapters/*/adapter.json`。
+- 扫描 `adapters/*.yaml` 或等价 JSON manifest。
 - 校验 manifest schema。
 - 创建 transport runtime。
 - 建立 capability 索引。
@@ -421,7 +421,7 @@ Agent 局部状态
   -> Agent status、Adapter health、subscription table、dead letter
 ```
 
-MVP 可接受进程内 best-effort。生产增强应支持：
+进程内运行形态可使用 best-effort 事件投递；需要恢复、重放和跨进程协作的运行形态应支持：
 
 - 关键事件落库。
 - 已处理事件去重。
@@ -434,13 +434,13 @@ MVP 可接受进程内 best-effort。生产增强应支持：
 
 ### 9.1 投递语义
 
-MVP：
+进程内后端：
 
 - EventBus best-effort。
 - Agent 私有队列 bounded。
 - 队列满、Agent 不在线、目标不存在进入死信队列。
 
-生产：
+持久化后端：
 
 - 使用持久化消息队列。
 - 至少一次投递。
@@ -604,59 +604,43 @@ src/
     inspect.rs
 ```
 
-## 13. 实施路线
+## 13. 能力范围
 
-### 阶段 1：Topic EventBus MVP
+### 13.1 Topic Agent 调度能力
 
-- 进程内 EventBus。
-- Scheduler。
-- Topic parser / matcher。
-- 多 Agent task。
-- Lua `on_event`。
-- Echo Agent。
-- 基础 tracing。
-- 超时和死信。
+- 支持进程内或持久化 EventBus 后端。
+- 支持 Scheduler 订阅 EventBus 并按 Topic 路由。
+- 支持 Topic exact、`*`、`**` 分段匹配。
+- 支持 `target` 直接路由优先于 Topic fan-out。
+- 支持多个 Agent 独立 Tokio task 和独立 Lua State。
+- 支持 Agent 私有 bounded inbox queue。
+- 支持 Lua `on_event(event, ctx)` 入口。
+- 支持 Lua 通过 `ctx.emit` 发布新 Topic 事件。
+- 支持事件处理超时、死信队列和 tracing。
 
-### 阶段 2：状态与可靠性
+### 13.2 外部能力接入
 
-- Agent 状态持久化。
-- 已处理事件去重。
-- 重试策略。
-- 死信检查 CLI。
-- Lua sandbox 强化。
-- Topic 权限校验。
+- 支持 Adapter manifest。
+- 支持 AdapterRegistry 和 AdapterRouter。
+- 支持 builtin、stdio、http、eventbus、mcp transport。
+- 支持 capability 路由和 provider 指定路由。
+- 支持 `ctx.tools.invoke_agent` 同步调用。
+- 支持 `/adapter/invoke`、`/adapter/completed`、`/adapter/failed`、`/adapter/stream` 异步事件。
+- 支持 Adapter 超时、取消、并发限制和结构化错误。
+- 禁止 Lua 传入任意 command 或直接读取 provider 密钥。
 
-### 阶段 3：动态 Adapter
+### 13.3 MCP 双向集成
 
-- Adapter manifest。
-- AdapterRegistry。
-- AdapterRouter。
-- StdioAdapter。
-- HttpAdapter。
-- `ctx.tools.invoke_agent`。
-- `/adapter/invoke`、`/adapter/completed`、`/adapter/failed`。
+- 支持内部 Agent 通过 `McpAdapter` 调用外部 MCP server。
+- 支持 MCP tool/resource/prompt allowlist。
+- 支持 MCP schema 校验。
+- 支持系统作为 MCP server 暴露受控工具。
+- 支持 `agent.invoke`、`adapter.invoke`、`adapter.list`、`adapter.health` 等 MCP tools。
+- 禁止外部 MCP client 调用未授权 Agent、Adapter 或 Topic。
 
-### 阶段 4：MCP 双向集成
+## 14. 设计校验标准
 
-- McpAdapter。
-- MCP tool/resource/prompt allowlist。
-- MCP schema 校验。
-- EvaLauncher MCP Server。
-- `agent.invoke`、`adapter.invoke`、`adapter.list`、`adapter.health`。
-
-### 阶段 5：生产化扩展
-
-- 持久化消息队列。
-- Scheduler 多实例。
-- Agent 多进程。
-- Adapter 多实例。
-- OpenTelemetry。
-- 分区顺序。
-- 权限审计。
-
-## 14. 验收标准
-
-MVP 验收：
+Topic Agent 调度校验：
 
 - CLI 可以发布 `/user/input`。
 - Scheduler 可以按 Topic 精确和通配匹配投递。
@@ -667,16 +651,16 @@ MVP 验收：
 - Agent 超时进入死信。
 - tracing 能看到 correlation 链路。
 
-Adapter 验收：
+Adapter 校验：
 
-- 可以加载 `adapters/*/adapter.json`。
+- 可以加载 `adapters/*.yaml` 或等价 JSON manifest。
 - 可以按 capability 路由 Adapter。
 - 可以调用 Codex CLI 或模拟 StdioAdapter。
 - 可以调用 HTTP Adapter。
 - Adapter 超时、取消、错误可结构化返回。
 - Lua 不能传任意 command。
 
-MCP 验收：
+MCP 校验：
 
 - McpAdapter 可以列出 allowlist 内 MCP tools。
 - Lua 可以通过 `mcp.tool.call` 调用 MCP tool。
