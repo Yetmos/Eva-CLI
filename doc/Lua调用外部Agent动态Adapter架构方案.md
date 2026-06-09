@@ -2,6 +2,11 @@
 
 更新日期：2026-06-09
 
+文档关系：
+
+- 总体入口：`EvaLauncher-CLI总体架构方案.md`
+- Topic EventBus 与 Lua Agent 调度核心：`Rust与Lua事件总线智能体调度架构方案.md`
+
 ## 1. 方案定位
 
 本文是 `Rust与Lua事件总线智能体调度架构方案.md` 的外部 Agent 扩展子方案，解决 Lua Agent 如何调用 Claude、Codex、Gemini、本地模型、企业内部 Agent 等外部能力，并支持 Adapter 动态扩展。

@@ -2,6 +2,11 @@
 
 更新日期：2026-06-08
 
+文档关系：
+
+- 总体入口：`EvaLauncher-CLI总体架构方案.md`
+- 外部 Agent、动态 Adapter 与 MCP 子方案：`Lua调用外部Agent动态Adapter架构方案.md`
+
 ## 1. 方案定位
 
 本方案基于 `方案.txt` 重新整理，目标不是实现一个中心化的 LangGraph 克隆，而是实现一套 **Topic 驱动的 EventBus 多 Agent 调度系统**。
