@@ -701,6 +701,7 @@ MCP 验收：
 
 - Topic 调度细节：`Rust与Lua事件总线智能体调度架构方案.md`
 - 外部 Agent 和 Adapter 细节：`Lua调用外部Agent动态Adapter架构方案.md`
+- 项目配置方案：`EvaLauncher-CLI项目配置方案.md`
 - MCP 官方规范参考：`https://modelcontextprotocol.io/specification/`
 
 ## 17. 总结
