@@ -4,7 +4,7 @@
 
 文档关系：
 
-- 总体入口：`EvaLauncher-CLI总体架构方案.md`
+- 总体入口：`总体架构方案.md`
 - 外部 Agent、动态 Adapter 与 MCP 子方案：`Lua调用外部Agent动态Adapter架构方案.md`
 
 ## 1. 方案定位

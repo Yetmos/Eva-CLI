@@ -4,7 +4,7 @@
 
 文档关系：
 
-- 总体入口：`EvaLauncher-CLI总体架构方案.md`
+- 总体入口：`总体架构方案.md`
 - Topic EventBus 与 Lua Agent 调度核心：`Rust与Lua事件总线智能体调度架构方案.md`
 
 ## 1. 方案定位
@@ -16,7 +16,7 @@
 - Lua 不直接调用 Claude、Codex 或任意 shell 命令。
 - Lua 只通过统一工具函数或 Topic 事件表达调用意图。
 - Rust 负责 Adapter 注册、路由、权限、鉴权、超时、取消、日志、审计和错误归一。
-- 外部 Agent 通过 Adapter 接入系统，Adapter 可以是内置 Rust 实现、外部 stdio 进程、HTTP 服务、EventBus 内部 Agent 或 MCP server。
+- 外部 Agent 通过 Adapter 接入系统，Adapter 可以是内置 Rust 实现、外部 stdio 进程、HTTP 服务、EventBus 内部 Agent、MCP server 或受控 workflow skill。
 - MCP 同时支持两种方向：内部 Agent 调用外部 MCP 工具；外部 MCP client 调用本系统内部 Agent。
 
 该设计的目标不是做一个无限制插件系统，而是做一套可控、可观测、可热加载的外部 Agent 能力层。
@@ -37,13 +37,13 @@ AdapterRegistry
   v
 AdapterRouter
   |
-  +------------------+----------------+---------------+----------------+--------------+
-  |                  |                |               |                |              |
+  +------------------+----------------+---------------+----------------+--------------+--------------+
+  |                  |                |               |                |              |              |
   v                  v                v               v                v              v
-BuiltinAdapter    StdioAdapter     HttpAdapter    EventBusAdapter   McpAdapter    FutureAdapter
-  |                  |                |               |                |
+BuiltinAdapter    StdioAdapter     HttpAdapter    EventBusAdapter   McpAdapter    SkillAdapter
+  |                  |                |               |                |              |
   v                  v                v               v                v
-Rust 内置能力       Codex CLI        Claude API      系统内 Agent       MCP Server
+Rust 内置能力       Codex CLI        Claude API      系统内 Agent       MCP Server     Workflow Skill
                     Claude CLI       Gemini API      本地模型 Agent     tools/resources/prompts
 ```
 
@@ -52,6 +52,7 @@ Rust 内置能力       Codex CLI        Claude API      系统内 Agent       M
 1. 同步工具调用：Lua 调用 `ctx.tools.invoke_agent`，等待 Rust 返回结构化结果。
 2. 异步 Topic 调用：Lua 发布 `/adapter/invoke`，Adapter 完成后发布 `/adapter/completed`、`/adapter/failed` 或 `/adapter/stream`。
 3. MCP 双向调用：Rust 通过 `McpAdapter` 调用外部 MCP server；也可以把系统自身暴露为 MCP server，供外部 MCP client 调用内部 Agent。
+4. Workflow Skill 调用：Rust 通过 `SkillAdapter` 把受信任 skill 封装为 capability，Lua 只调用 capability，不直接读取或解释 `SKILL.md`。
 
 短请求可以使用同步工具调用。长任务、流式输出、代码执行、仓库分析和多轮工作建议使用异步 Topic 调用。
 
@@ -78,6 +79,23 @@ Lua 不负责：
 - 处理外部进程生命周期。
 - 解析 provider 私有协议。
 - 直接访问网络或环境变量。
+- 传入 skill 文件路径或覆盖 skill 运行入口。
+
+能力命名建议使用稳定的领域语义，而不是 provider 私有名称：
+
+```text
+chat.reply
+task.plan
+repo.analyze
+code.review
+workflow.code_review
+mcp.tool.call
+mcp.resource.read
+mcp.prompt.render
+github.issue.create
+```
+
+其中 `mcp.*` 是通用 MCP 能力，`workflow.*` 是受控 skill 能力，业务别名例如 `github.issue.create` 应由 manifest 映射到具体 provider/tool。Lua 业务脚本优先调用业务别名，只有通用编排层才直接调用 `mcp.tool.call`。
 
 ### 3.2 Rust 托管外部能力
 
@@ -178,6 +196,17 @@ pub enum InvokeStatus {
     Timeout,
 }
 ```
+
+JSON/EventBus/Lua 可见的 `status` 必须统一序列化为小写 snake case：
+
+```text
+completed
+failed
+cancelled
+timeout
+```
+
+Rust enum 名称只用于内部类型。Lua 脚本不得依赖 `Completed` 这类大小写形式。
 
 ### 4.4 AdapterError
 
@@ -293,9 +322,10 @@ pub enum AdapterHealthStatus {
 字段说明：
 
 - `id`：全局唯一 Adapter ID。
-- `transport`：`builtin`、`stdio`、`http`、`eventbus`、`mcp`。
+- `transport`：`builtin`、`stdio`、`http`、`eventbus`、`mcp`、`skill`。
 - `command` / `args`：仅 `stdio` 使用，必须来自 manifest，不允许 Lua 覆盖。
 - `mcp`：仅 `mcp` transport 使用，描述 MCP server 启动方式、连接方式、工具白名单和资源访问策略。
+- `skill`：仅 `skill` transport 使用，描述 skill 来源、入口、运行态要求和输入输出 schema。
 - `capabilities`：该 Adapter 支持的能力。
 - `permissions`：权限声明，实际权限还要经过 Rust policy 收紧。
 - `limits`：超时、并发、输入大小限制。
@@ -308,6 +338,7 @@ adapters/
   codex-cli.yaml
   claude-api.yaml
   github-mcp.yaml
+  code-review-skill.yaml
   local-agent.yaml
 ```
 
@@ -483,7 +514,58 @@ Rust 侧负责：
 
 MCP server 可以使用 stdio 或 HTTP/SSE 等连接方式，但这些是 `McpAdapter` 内部的 MCP server transport，不等同于本方案的 Adapter transport。
 
-### 9.6 动态库插件边界
+### 9.6 SkillAdapter
+
+SkillAdapter 用于把本地受信任 workflow skill 接入 Adapter 系统。它不是让 Lua 直接执行 skill，也不是让 Lua 读取 `SKILL.md` 后自行解释步骤，而是由 Rust 在 discovery 和 policy 之后把 skill 封装为 capability。
+
+适合接入：
+
+- Codex/OMX 本地 workflow skill。
+- 项目内显式声明的自动化工作流。
+- 需要由受控 CLI 或内部执行器承载的审查、生成、迁移、诊断类流程。
+
+不适合接入：
+
+- team/swarm 专用 worker runtime。
+- 需要人工多轮确认但没有明确输入输出 schema 的交互流程。
+- 未知来源、未签名或 trust level 为 `Unknown` 的 skill。
+- 会直接要求 shell、网络、文件写入但没有 manifest 权限声明的 skill。
+
+Skill 能力映射：
+
+```text
+Workflow skill      -> capability = "workflow.<name>"
+Prompt role         -> capability = "prompt.<name>"（只读角色提示，可选）
+Runtime-only worker -> 不注册为普通 Adapter
+```
+
+Lua 调用时只传 capability 和结构化 payload：
+
+```lua
+local result = ctx.tools.invoke_agent({
+  capability = "workflow.code_review",
+  provider = "code-review-skill",
+  payload = {
+    scope = "current_diff",
+    severity = "major"
+  },
+  timeout_ms = 120000
+})
+```
+
+Rust 侧负责：
+
+- 从受信任目录或显式 manifest 发现 skill。
+- 识别 skill 类型：`workflow_skill`、`prompt_role`、`runtime_worker`。
+- 为可调用 skill 绑定固定入口，不允许 Lua 传入任意路径。
+- 校验输入 payload schema、输出 schema 和运行态要求。
+- 根据 policy 注入 workspace、环境变量和只读/写入权限。
+- 将 skill 执行结果转换为 `AgentInvokeResponse`。
+- 对 team/swarm 专用 skill 设置 runtime gate，普通 Agent 不能直接调用。
+
+SkillAdapter 默认应以只读、无网络、无 shell 权限运行。需要写 workspace、网络或 shell 的 skill 必须由项目 manifest 和 policy 双重显式授权。
+
+### 9.7 动态库插件边界
 
 不建议将 Rust `dll` / `so` / `dylib` 动态库插件作为默认扩展机制。
 
@@ -874,7 +956,34 @@ local result = ctx.tools.invoke_agent({
 
 Rust 根据 `repo.analyze` 自动选择可用 Adapter。
 
-### 13.3 异步调用
+### 13.3 调用 Workflow Skill
+
+```lua
+local result = ctx.tools.invoke_agent({
+  capability = "workflow.code_review",
+  provider = "code-review-skill",
+  payload = {
+    scope = "current_diff"
+  },
+  timeout_ms = 120000
+})
+
+if result.status == "completed" then
+  ctx.emit("/agent/reply", {
+    text = result.output.summary,
+    findings = result.output.findings
+  })
+else
+  ctx.emit("/agent/error", {
+    kind = result.error.kind,
+    message = result.error.message
+  })
+end
+```
+
+Lua 不允许传入 skill 文件路径、命令行模板或额外环境变量；这些只能来自 `SkillAdapter` manifest 和 policy。
+
+### 13.4 异步调用
 
 ```lua
 ctx.emit("/adapter/invoke", {
@@ -888,7 +997,7 @@ ctx.emit("/adapter/invoke", {
 })
 ```
 
-### 13.4 处理结果
+### 13.5 处理结果
 
 ```lua
 function on_event(event, ctx)
@@ -928,9 +1037,11 @@ end
 - Lua 不能覆盖 Adapter command。
 - Lua 不能传任意环境变量。
 - Lua 不能扩大 `allowed_paths`。
+- Lua 不能传任意 skill 路径或覆盖 skill 运行入口。
 - API key 只由 Rust 注入给对应 Adapter。
 - Adapter 输出必须通过 schema 校验后才能返回 Lua。
 - 写 workspace 的 Adapter 必须被显式授权。
+- Workflow skill 的运行态要求必须由 Rust 校验，runtime-only skill 不能在普通 Agent 中调用。
 
 权限决策顺序：
 
