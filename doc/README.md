@@ -21,7 +21,7 @@
 | --- | --- |
 | `总体架构方案.md` | 总入口，统一系统目标、非目标、模块边界、运行链路、安全原则和待补设计。 |
 | `Rust与Lua事件总线智能体调度架构方案.md` | 定义 Rust Runtime、Lua Agent、EventBus、Topic、Scheduler、状态、一致性和热更新。 |
-| `Lua调用外部Agent动态Adapter架构方案.md` | 定义 AdapterRegistry、AdapterRouter、McpAdapter、SkillAdapter、stdio/http/eventbus 等外部能力接入。 |
+| `Lua调用外部Agent动态Adapter架构方案.md` | 定义 AdapterRegistry、AdapterRouter、McpAdapter、SkillAdapter、HardwareAdapter、stdio/http/eventbus/hardware 等外部能力接入。 |
 | `Lua承载Skill-MCP-Tool热更新架构方案.md` | 定义 `lua_tool`、`lua_skill`、`lua_mcp_handler`、Lua Capability Runtime、host API、安全沙箱和 generation swap。 |
 | `Agent扫描与发现架构方案.md` | 定义 AgentDiscoveryService 如何扫描、识别、校验、缓存和注册 Agent、Adapter、MCP、Skill、Lua capability。 |
 | `外接硬件接入与热插拔架构方案.md` | 定义 HardwareDiscoveryService、DeviceRegistry、DriverBinding、HardwareAdapterRuntime、设备热插拔、硬件 Topic 和安全边界。 |
@@ -41,8 +41,9 @@
 
 当前 `doc/` 是架构方案集合，还不是最终实现规范。实现前仍需要把以下内容落成机器可校验契约：
 
-- `AgentManifest`、`AdapterManifest`、`CapabilityManifest`、MCP policy 和 sandbox policy 的 JSON Schema。
+- `AgentManifest`、`AdapterManifest`、`CapabilityManifest`、MCP policy、hardware policy 和 sandbox policy 的 JSON Schema。
 - `ctx.tools` 与 `ctx.host` 的 Lua binding API。
 - capability 命名注册表和冲突处理规则。
 - MCP server 认证、会话隔离和 per-client rate limit。
 - 写 workspace 的 Adapter、Skill、Lua capability 的审计字段与回滚建议。
+- 外接硬件 manifest 的设备匹配、logical binding、generation 和 raw IO policy 需要落成可校验 schema。

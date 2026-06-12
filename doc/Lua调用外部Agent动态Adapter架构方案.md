@@ -571,7 +571,58 @@ Rust 侧负责：
 
 SkillAdapter 默认应以只读、无网络、无 shell 权限运行。需要写 workspace、网络或 shell 的 skill 必须由项目 manifest 和 policy 双重显式授权。
 
-### 9.7 动态库插件边界
+### 9.7 HardwareAdapter
+
+HardwareAdapter 用于把外接硬件接入 Adapter 系统。它不是让 Lua 直接访问设备路径、设备句柄或 raw IO，而是由 Rust 托管设备发现、授权、claim、协议、热插拔、命令队列和审计。
+
+适合接入：
+
+- USB HID 设备。
+- USB CDC / 串口设备。
+- BLE 和蓝牙经典设备。
+- 局域网设备。
+- 需要厂商 SDK 的本地设备。
+
+不适合接入：
+
+- 没有 manifest 匹配规则和 policy 的未知设备。
+- 只能通过任意 raw bytes 驱动且没有 schema 的临时调试设备。
+- 需要用户现场授权但没有授权状态建模的系统级设备操作。
+
+Hardware 能力映射：
+
+```text
+硬件命令       -> capability = "scale.tare" / "printer.print" / "relay.switch.set"
+设备健康       -> capability = "device.health"
+设备数据流     -> Topic = "/hardware/device/data"
+设备生命周期   -> Topic = "/hardware/device/online" / "/hardware/device/offline"
+```
+
+Lua 调用时只传 capability 和结构化 payload：
+
+```lua
+local result = ctx.tools.invoke_agent({
+  capability = "scale.weight.read",
+  provider = "hardware.scale.main",
+  payload = {
+    logical_id = "scale.main"
+  },
+  timeout_ms = 3000
+})
+```
+
+Rust 侧负责：
+
+- 通过 HardwareDiscoveryService 发现和归一化设备。
+- 根据 manifest 和 policy 校验设备匹配规则。
+- 维护 `device_uid`、`logical_id`、`connection_id` 和 `generation`。
+- 管理设备句柄、协议握手、命令队列、超时、取消和重连。
+- 将硬件错误转换为 `AdapterError`。
+- 将设备生命周期和数据事件发布到 `/hardware/**` Topic。
+
+详细设计见 `外接硬件接入与热插拔架构方案.md`。
+
+### 9.8 动态库插件边界
 
 不建议将 Rust `dll` / `so` / `dylib` 动态库插件作为默认扩展机制。
 
@@ -585,7 +636,7 @@ SkillAdapter 默认应以只读、无网络、无 shell 权限运行。需要写
 
 外部进程、HTTP 和 MCP Adapter 更适合作为默认动态扩展机制。
 
-### 9.8 LuaCapabilityAdapter
+### 9.9 LuaCapabilityAdapter
 
 LuaCapabilityAdapter 用于接入项目内显式 manifest 声明的 Lua capability。它不是让 Lua 拥有更高系统权限，而是把 `lua_tool`、`lua_skill` 和部分 `lua_mcp_handler` 的业务实现纳入 AdapterRegistry。
 
@@ -1193,6 +1244,8 @@ src/
       http.rs
       eventbus.rs
       mcp.rs
+      skill.rs
+      hardware.rs
 
   mcp/
     mod.rs
@@ -1218,6 +1271,10 @@ Adapter manifest 目录：
 adapters/
   codex-cli.yaml
   claude-api.yaml
+  github-mcp.yaml
+  code-review-skill.yaml
+  hardware/
+    scale-main.yaml
 ```
 
 ## 18. 示例 Manifest
@@ -1373,4 +1430,4 @@ Lua 意图
   -> Claude / Codex / Gemini / MCP Server / Local Agent
 ```
 
-这样新增外部 Agent 或 MCP 工具只需要增加 manifest 和对应 transport 适配，不需要改 Lua Agent 的业务脚本，也不会破坏 EventBus + Topic 的整体调度模型。
+这样新增外部 Agent、MCP 工具、workflow skill 或外接硬件时，只需要增加 manifest 和对应 transport 适配，不需要改 Lua Agent 的业务脚本，也不会破坏 EventBus + Topic 的整体调度模型。

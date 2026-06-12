@@ -9,6 +9,7 @@
 - Agent 调度核心：`Rust与Lua事件总线智能体调度架构方案.md`
 - 外部 Agent 扩展：`Lua调用外部Agent动态Adapter架构方案.md`
 - Lua Capability 热更新：`Lua承载Skill-MCP-Tool热更新架构方案.md`
+- 外接硬件接入与热插拔：`外接硬件接入与热插拔架构方案.md`
 
 ## 1. 方案定位
 
@@ -19,7 +20,7 @@
 - Agent 扫描由 **Rust Runtime** 负责，不能由 Lua 直接访问文件系统、环境变量或 shell。
 - 扫描结果分为 **内部 Lua Agent** 和 **外部 Agent Adapter** 两类。
 - 内部 Lua Agent 注册到 Scheduler，参与 Topic EventBus 调度。
-- 外部 Agent、CLI、MCP server、本地模型和工作流能力注册到 AdapterRegistry。
+- 外部 Agent、CLI、MCP server、本地模型、工作流能力和已授权硬件能力注册到 AdapterRegistry。
 - 扫描只做发现和归一化，不代表自动授权调用；调用前仍必须经过 policy 校验。
 - 默认只扫描白名单目录、显式配置目录和白名单命令，不做全盘扫描。
 
@@ -30,7 +31,7 @@
 ### 2.1 目标
 
 - 自动发现项目内配置的 Lua Agent。
-- 自动发现用户环境中可用的外部 Agent 能力，例如 Codex、Claude、Gemini、Ollama、MCP server 和 OMX skills。
+- 自动发现用户环境中可用的外部 Agent 能力，例如 Codex、Claude、Gemini、Ollama、MCP server、OMX skills 和显式配置的硬件设备。
 - 将不同来源的能力归一成统一的 discovered agent 数据模型。
 - 为 Scheduler 和 AdapterRegistry 提供稳定注册入口。
 - 支持 CLI 查看、重新扫描、健康检查和缓存。
@@ -45,6 +46,7 @@
 - 不因为发现某个命令存在就默认允许所有 Agent 调用它。
 - 不把任意可执行文件都包装成 Agent。
 - 不绕过 Adapter manifest、policy 和 capability 路由。
+- 不主动 claim 未授权硬件设备，也不把设备发现等同于硬件调用授权。
 
 ## 3. 总体架构
 
@@ -67,6 +69,7 @@ EvaLauncher Startup / CLI scan command / Hot reload
                            PATH allowlist commands
                            MCP manifests
                            config/capabilities/*.yaml
+                           config/adapters/hardware/*.yaml
         |                       |
         +-----------+-----------+
                     |
@@ -324,6 +327,36 @@ input_schema_present
 output_schema_present
 source_trust
 ```
+
+### 4.6 外接硬件设备
+
+外接硬件设备具有持续 watch 和热插拔语义，不完全等同于启动时的一次性文件扫描。
+
+默认扫描来源：
+
+```text
+config/adapters/hardware/*.yaml
+config/policies/hardware.yaml
+OS hotplug notification
+startup hardware enumeration
+```
+
+硬件 discovery 只做：
+
+- 读取硬件 manifest。
+- 枚举可观察设备描述。
+- 将设备描述归一为受控 `DeviceDescriptor`。
+- 判断设备是否匹配 manifest。
+- 标记 `observed`、`matched`、`authorized` 等状态。
+
+硬件 discovery 不做：
+
+- 不自动 claim 未授权设备。
+- 不把操作系统设备路径暴露给 Lua。
+- 不发送 raw IO。
+- 不自动安装驱动、修改系统权限或触发蓝牙配对。
+
+授权后的硬件能力注册到 AdapterRegistry，由 HardwareAdapterRuntime 负责设备句柄、协议、热插拔和命令队列。详细状态机和事件契约见 `外接硬件接入与热插拔架构方案.md`。
 
 ## 5. 数据模型
 
@@ -1295,6 +1328,7 @@ src/
       omx.rs
       path_commands.rs
       mcp.rs
+      hardware_devices.rs
 ```
 
 关键 trait：
@@ -1396,6 +1430,7 @@ Rust 侧根据 AdapterRegistry 和 policy 决定是否允许调用。
 
 - 用户目录下 prompt/skill 自动扫描。
 - SkillAdapter 自动注册和 runtime gate 执行。
+- HardwareAdapter 的热插拔 watch、设备 claim 和 generation 恢复。
 - MCP server 自动 health check。
 - UI 展示。
 - 远程服务发现。
@@ -1411,6 +1446,7 @@ Rust 侧根据 AdapterRegistry 和 policy 决定是否允许调用。
 - Lua 管业务意图：Lua 不直接扫描，不直接执行外部命令。
 - Topic 保持系统路由契约：扫描结果通过 `/discovery/**` 事件进入 EventBus，内部 Agent 工作流通过 `/sys/**` 路由。
 - Adapter 保持受控能力单元：外部能力必须进入 AdapterRegistry。
+- HardwareAdapter 保持硬件能力边界：设备发现不等于授权，授权后仍必须通过 AdapterRegistry 和 policy 调用。
 - 配置保持人工可维护：扫描目录、白名单命令和缓存路径都由 YAML 配置。
 - 安全边界清晰：发现不等于授权，授权不等于执行，执行必须经过 policy。
 

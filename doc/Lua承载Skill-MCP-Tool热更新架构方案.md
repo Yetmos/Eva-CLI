@@ -11,6 +11,7 @@
 - Agent 扫描与发现：`Agent扫描与发现架构方案.md`
 - 项目配置体系：`项目配置方案.md`
 - 进程级升级与恢复：`进程级停机升级架构方案.md`
+- 外接硬件接入与热插拔：`外接硬件接入与热插拔架构方案.md`
 
 ## 1. 方案定位
 
@@ -29,7 +30,7 @@
 - Rust 负责不可绕过的能力边界，Lua 负责可替换的业务逻辑、参数映射、结果转换和轻量编排。
 - 热更新采用 generation swap：新 Lua State 先加载、校验、健康检查，再替换 capability generation；失败保留旧版本。
 
-本文不是要替代现有 Adapter 方案，而是在现有 `builtin`、`stdio`、`http`、`eventbus`、`mcp`、`skill` transport 之外，补充一类受控的 Lua capability 实现方式。
+本文不是要替代现有 Adapter 方案，而是在现有 `builtin`、`stdio`、`http`、`eventbus`、`mcp`、`skill`、`hardware` transport 之外，补充一类受控的 Lua capability 实现方式。Lua capability 不承担硬件 raw IO、设备 claim 或热插拔处理；这些边界由 HardwareAdapter 托管。
 
 ## 2. 目标与非目标
 
@@ -472,6 +473,7 @@ LuaCapabilityAdapter
 | `eventbus` | 内部 Agent | Agent runtime 热更新 |
 | `mcp` | 外部 MCP server | transport 托管，handler 不下沉 |
 | `skill` | Codex/OMX workflow skill | discovery / scan / runtime gate |
+| `hardware` | 外接硬件设备 | 设备句柄、热插拔和 raw IO 由 Rust 托管 |
 | `lua_capability` | 项目内可热更新业务能力 | Lua generation swap |
 
 ## 11. MCP 场景落地
