@@ -11,8 +11,9 @@
 3. `Lua调用外部Agent动态Adapter架构方案.md`：理解外部 Agent、CLI、HTTP、MCP、Skill 如何通过 Adapter 接入。
 4. `Lua承载Skill-MCP-Tool热更新架构方案.md`：理解 Tool、Lua Skill 和 MCP tool handler 如何下沉到 Lua 并热更新。
 5. `Agent扫描与发现架构方案.md`：理解项目配置、用户环境、MCP、Skill 和 Lua capability 如何被发现与注册。
-6. `项目配置方案.md`：理解 YAML 配置、schema、policy、manifest 和热加载边界。
-7. `进程级停机升级架构方案.md`：理解 Supervisor、Runtime generation、blue-green、draining、恢复和回滚。
+6. `外接硬件接入与热插拔架构方案.md`：理解 USB、串口、BLE、网络设备和厂商 SDK 设备如何通过 HardwareAdapter 接入并支持热插拔。
+7. `项目配置方案.md`：理解 YAML 配置、schema、policy、manifest 和热加载边界。
+8. `进程级停机升级架构方案.md`：理解 Supervisor、Runtime generation、blue-green、draining、恢复和回滚。
 
 ## 2. 文档职责
 
@@ -23,6 +24,7 @@
 | `Lua调用外部Agent动态Adapter架构方案.md` | 定义 AdapterRegistry、AdapterRouter、McpAdapter、SkillAdapter、stdio/http/eventbus 等外部能力接入。 |
 | `Lua承载Skill-MCP-Tool热更新架构方案.md` | 定义 `lua_tool`、`lua_skill`、`lua_mcp_handler`、Lua Capability Runtime、host API、安全沙箱和 generation swap。 |
 | `Agent扫描与发现架构方案.md` | 定义 AgentDiscoveryService 如何扫描、识别、校验、缓存和注册 Agent、Adapter、MCP、Skill、Lua capability。 |
+| `外接硬件接入与热插拔架构方案.md` | 定义 HardwareDiscoveryService、DeviceRegistry、DriverBinding、HardwareAdapterRuntime、设备热插拔、硬件 Topic 和安全边界。 |
 | `项目配置方案.md` | 定义 `config/` 目录、`eva.yaml`、Agent/Adapter/Capability manifest、policy、schema 和热加载策略。 |
 | `进程级停机升级架构方案.md` | 定义 OS service manager、Supervisor、Runtime、Ingress Gate、Durable Event Log、State Store 和双活切流。 |
 
@@ -32,6 +34,7 @@
 - Lua 是可热更新业务实现：负责 Agent 业务逻辑、Lua Tool、Lua Skill、MCP tool handler、参数映射、结果转换和轻量编排。
 - Discovery 只做发现与归一化，不代表授权执行；执行前仍必须经过 manifest、schema 和 policy。
 - Adapter 是外部能力统一入口；MCP、Skill、CLI、HTTP、本地模型和内部 Agent 都通过 capability 暴露。
+- 外接硬件通过 `hardware` transport 和 HardwareAdapter 接入；Lua 不直接访问设备句柄、系统设备路径或 raw IO。
 - Hot reload 默认只覆盖脚本、manifest 中可热加载字段、路由和注册表 generation；权限扩大、transport、MCP command、状态 backend 等需要重建 runtime 或 blue-green。
 
 ## 4. 当前文档状态

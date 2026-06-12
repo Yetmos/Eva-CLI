@@ -17,7 +17,7 @@
 - Lua 不直接调用 Claude、Codex 或任意 shell 命令。
 - Lua 只通过统一工具函数或 Topic 事件表达调用意图。
 - Rust 负责 Adapter 注册、路由、权限、鉴权、超时、取消、日志、审计和错误归一。
-- 外部 Agent 通过 Adapter 接入系统，Adapter 可以是内置 Rust 实现、外部 stdio 进程、HTTP 服务、EventBus 内部 Agent、MCP server 或受控 workflow skill。
+- 外部 Agent 通过 Adapter 接入系统，Adapter 可以是内置 Rust 实现、外部 stdio 进程、HTTP 服务、EventBus 内部 Agent、MCP server、受控 workflow skill 或 Rust 托管的外接硬件。
 - MCP 同时支持两种方向：内部 Agent 调用外部 MCP 工具；外部 MCP client 调用本系统内部 Agent。
 
 该设计的目标不是做一个无限制插件系统，而是做一套可控、可观测、可热加载的外部 Agent 能力层。
@@ -38,14 +38,14 @@ AdapterRegistry
   v
 AdapterRouter
   |
-  +------------------+----------------+---------------+----------------+--------------+--------------+
+  +------------------+----------------+---------------+----------------+--------------+--------------+-----------------+
+  |                  |                |               |                |              |              |                 |
+  v                  v                v               v                v              v              v
+BuiltinAdapter    StdioAdapter     HttpAdapter    EventBusAdapter   McpAdapter    SkillAdapter   HardwareAdapter
   |                  |                |               |                |              |              |
-  v                  v                v               v                v              v
-BuiltinAdapter    StdioAdapter     HttpAdapter    EventBusAdapter   McpAdapter    SkillAdapter
-  |                  |                |               |                |              |
-  v                  v                v               v                v
-Rust 内置能力       Codex CLI        Claude API      系统内 Agent       MCP Server     Workflow Skill
-                    Claude CLI       Gemini API      本地模型 Agent     tools/resources/prompts
+  v                  v                v               v                v              v              v
+Rust 内置能力       Codex CLI        Claude API      系统内 Agent       MCP Server     Workflow Skill  外接硬件
+                    Claude CLI       Gemini API      本地模型 Agent     tools/resources/prompts       USB/串口/BLE
 ```
 
 调用链分为两种：
@@ -54,7 +54,8 @@ Rust 内置能力       Codex CLI        Claude API      系统内 Agent       M
 2. 异步 Topic 调用：Lua 发布 `/adapter/invoke`，Adapter 完成后发布 `/adapter/completed`、`/adapter/failed` 或 `/adapter/stream`。
 3. MCP 双向调用：Rust 通过 `McpAdapter` 调用外部 MCP server；也可以把系统自身暴露为 MCP server，供外部 MCP client 调用内部 Agent。
 4. Workflow Skill 调用：Rust 通过 `SkillAdapter` 把受信任 skill 封装为 capability，Lua 只调用 capability，不直接读取或解释 `SKILL.md`。
-5. Lua Capability 调用：项目内 `lua_tool`、`lua_skill` 和 `lua_mcp_handler` 可通过 `LuaCapabilityAdapter` 或 Rust MCP Server 接入，业务 handler 可热更新，权限边界仍由 Rust 托管。
+5. Hardware 调用：Rust 通过 `HardwareAdapter` 把外接硬件封装为 capability，Lua 只调用业务能力或订阅硬件 Topic，不直接访问设备句柄。
+6. Lua Capability 调用：项目内 `lua_tool`、`lua_skill` 和 `lua_mcp_handler` 可通过 `LuaCapabilityAdapter` 或 Rust MCP Server 接入，业务 handler 可热更新，权限边界仍由 Rust 托管。
 
 短请求可以使用同步工具调用。长任务、流式输出、代码执行、仓库分析和多轮工作建议使用异步 Topic 调用。
 
@@ -324,10 +325,11 @@ pub enum AdapterHealthStatus {
 字段说明：
 
 - `id`：全局唯一 Adapter ID。
-- `transport`：`builtin`、`stdio`、`http`、`eventbus`、`mcp`、`skill`。
+- `transport`：`builtin`、`stdio`、`http`、`eventbus`、`mcp`、`skill`、`hardware`。
 - `command` / `args`：仅 `stdio` 使用，必须来自 manifest，不允许 Lua 覆盖。
 - `mcp`：仅 `mcp` transport 使用，描述 MCP server 启动方式、连接方式、工具白名单和资源访问策略。
 - `skill`：仅 `skill` transport 使用，描述 skill 来源、入口、运行态要求和输入输出 schema。
+- `hardware`：仅 `hardware` transport 使用，描述设备总线、匹配规则、逻辑身份、协议、热插拔策略和硬件权限。详细设计见 `外接硬件接入与热插拔架构方案.md`。
 - `capabilities`：该 Adapter 支持的能力。
 - `permissions`：权限声明，实际权限还要经过 Rust policy 收紧。
 - `limits`：超时、并发、输入大小限制。
@@ -341,6 +343,8 @@ adapters/
   claude-api.yaml
   github-mcp.yaml
   code-review-skill.yaml
+  hardware/
+    scale-main.yaml
   local-agent.yaml
 ```
 
