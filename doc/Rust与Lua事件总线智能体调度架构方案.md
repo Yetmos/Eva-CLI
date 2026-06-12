@@ -1,4 +1,4 @@
-﻿# Rust + Lua + EventBus Topic Agent 调度架构方案
+# Rust + Lua + EventBus Topic Agent 调度架构方案
 
 更新日期：2026-06-12
 

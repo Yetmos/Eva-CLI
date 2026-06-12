@@ -1,4 +1,4 @@
-﻿# Lua 调用外部 Agent 动态 Adapter 架构方案
+# Lua 调用外部 Agent 动态 Adapter 架构方案
 
 更新日期：2026-06-12
 
@@ -665,9 +665,9 @@ Stdio Adapter 推荐使用 JSON-RPC 2.0。
     "prompt": "分析当前项目",
     "payload": {},
     "context": {
-      "workspace": "C:/Users/admin/Desktop/project/EvaLauncher-CLI",
+      "workspace": "C:/Users/admin/Desktop/project/Eva-CLI",
       "allowed_paths": [
-        "C:/Users/admin/Desktop/project/EvaLauncher-CLI"
+        "C:/Users/admin/Desktop/project/Eva-CLI"
       ]
     },
     "stream": true
@@ -828,7 +828,7 @@ MCP 集成包含两个方向：
 Lua Agent -> ctx.tools.invoke_agent -> McpAdapter -> MCP tools/resources/prompts
 
 方向二：外部 MCP client 调用本系统
-MCP Client -> EvaLauncher MCP Server -> AdapterRegistry / EventBus / Scheduler / Agent
+MCP Client -> Eva-CLI MCP Server -> AdapterRegistry / EventBus / Scheduler / Agent
 ```
 
 ### 12.1 内部 Agent 调用 MCP server
@@ -899,7 +899,7 @@ payload = { title, body, labels }
 
 业务别名的好处是 Lua 不需要知道 MCP tool 的具体名称，更换 MCP server 或 tool 名称时只改 manifest / mapping。
 
-### 12.3 EvaLauncher 作为 MCP Server
+### 12.3 Eva-CLI 作为 MCP Server
 
 系统可以反向暴露一个 MCP server，让外部 MCP client 调用内部 Agent 和 Adapter。
 
@@ -956,7 +956,7 @@ MCP 权限必须遵循双层约束：
 
 ```text
 MCP server 自己声明的 tool/resource schema
-  + EvaLauncher manifest/policy
+  + Eva-CLI manifest/policy
   + 用户/会话权限
   + request 级约束
 ```

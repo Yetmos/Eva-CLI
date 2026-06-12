@@ -1,4 +1,4 @@
-﻿# EvaLauncher-CLI Lua 承载 Skill / MCP / Tool 热更新架构方案
+# Eva-CLI Lua 承载 Skill / MCP / Tool 热更新架构方案
 
 更新日期：2026-06-12
 
@@ -15,7 +15,7 @@
 
 ## 1. 方案定位
 
-本文补充 EvaLauncher-CLI 现有 Rust + Lua + EventBus + Adapter 架构，回答以下问题：
+本文补充 Eva-CLI 现有 Rust + Lua + EventBus + Adapter 架构，回答以下问题：
 
 - Skill、MCP、Tool 的实现逻辑是否可以下沉到 Lua。
 - 下沉到 Lua 后如何获得热更新能力。
@@ -147,7 +147,7 @@ Lua Skill 必须具备：
 
 ### 4.3 Lua MCP Handler
 
-Lua MCP Handler 是 EvaLauncher 作为 MCP server 时，对某些 MCP tools 的内部实现。
+Lua MCP Handler 是 Eva-CLI 作为 MCP server 时，对某些 MCP tools 的内部实现。
 
 适合：
 
@@ -275,7 +275,7 @@ end
   "provider": "repo-summary",
   "payload": {},
   "context": {
-    "workspace": "C:/Users/admin/Desktop/project/EvaLauncher-CLI",
+    "workspace": "C:/Users/admin/Desktop/project/Eva-CLI",
     "request_id": "req_001",
     "trace_id": "trace_001",
     "deadline_ms": 30000
@@ -478,7 +478,7 @@ LuaCapabilityAdapter
 
 ## 11. MCP 场景落地
 
-### 11.1 EvaLauncher 调用外部 MCP server
+### 11.1 Eva-CLI 调用外部 MCP server
 
 外部 MCP server 的 transport 仍由 Rust `McpAdapter` 托管。
 
@@ -510,7 +510,7 @@ Lua 不可以：
 - 直接持有 MCP session。
 - 绕过 MCP schema 校验。
 
-### 11.2 EvaLauncher 作为 MCP server
+### 11.2 Eva-CLI 作为 MCP server
 
 部分 MCP tools 可以由 Lua MCP Handler 实现。
 
@@ -523,7 +523,7 @@ version: 1.0.0
 
 mcp:
   tool_name: project.summary
-  description: Summarize the current EvaLauncher project
+  description: Summarize the current Eva-CLI project
 
 lua:
   script: config/mcp_handlers/project_summary.lua
@@ -682,11 +682,11 @@ require 任意路径
 调试命令建议：
 
 ```text
-evalauncher capability list
-evalauncher capability inspect <id>
-evalauncher capability health <id>
-evalauncher capability reload <id>
-evalauncher capability explain-rejected <id>
+eva capability list
+eva capability inspect <id>
+eva capability health <id>
+eva capability reload <id>
+eva capability explain-rejected <id>
 ```
 
 ## 17. 配置热加载边界

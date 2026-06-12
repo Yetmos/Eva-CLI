@@ -13,7 +13,7 @@
 
 ## 1. 方案定位
 
-本文定义 EvaLauncher-CLI 如何扫描、识别、校验并注册用户电脑上可用的 Agent 能力。
+本文定义 Eva-CLI 如何扫描、识别、校验并注册用户电脑上可用的 Agent 能力。
 
 核心结论：
 
@@ -51,7 +51,7 @@
 ## 3. 总体架构
 
 ```text
-EvaLauncher Startup / CLI scan command / Hot reload
+Eva-CLI Startup / CLI scan command / Hot reload
                     |
                     v
           [AgentDiscoveryService - Rust]
@@ -247,7 +247,7 @@ config/mcp/*.yaml
 可选兼容来源：
 
 ```text
-~/.config/evalauncher/mcp/*.yaml
+~/.config/eva/mcp/*.yaml
 ```
 
 MCP discovery 应读取：
@@ -719,7 +719,7 @@ command_check_timeout_ms
 discovery:
   enabled: true
   scan_on_startup: true
-  cache_path: .evalauncher/data/discovery-cache.json
+  cache_path: .eva/data/discovery-cache.json
   health_check: true
   watch_project_dirs: true
   scan_user_dirs: true
@@ -1096,7 +1096,7 @@ health check 是 discovery 的一部分，不能产生业务副作用：
 扫描结果缓存到：
 
 ```text
-.evalauncher/data/discovery-cache.json
+.eva/data/discovery-cache.json
 ```
 
 缓存内容：
@@ -1112,14 +1112,14 @@ health check 是 discovery 的一部分，不能产生业务副作用：
 - health status
 - checked_at
 - schema version
-- EvaLauncher version
+- Eva-CLI version
 - discovery config hash
 
 失效条件：
 
 - manifest 文件 mtime 或 hash 变化。
 - discovery 配置变化。
-- EvaLauncher 版本变化。
+- Eva-CLI 版本变化。
 - 用户执行 `eva agent scan --refresh`。
 - command path 变化。
 - health check 超过 TTL。
@@ -1440,7 +1440,7 @@ Rust 侧根据 AdapterRegistry 和 policy 决定是否允许调用。
 
 ## 18. 设计校验
 
-该方案满足当前 EvaLauncher-CLI 的架构约束：
+该方案满足当前 Eva-CLI 的架构约束：
 
 - Rust 管系统边界：扫描、校验、policy、health check 全部在 Rust。
 - Lua 管业务意图：Lua 不直接扫描，不直接执行外部命令。
