@@ -1,11 +1,12 @@
 ﻿# Lua 调用外部 Agent 动态 Adapter 架构方案
 
-更新日期：2026-06-09
+更新日期：2026-06-12
 
 文档关系：
 
 - 总体入口：`总体架构方案.md`
 - Topic EventBus 与 Lua Agent 调度核心：`Rust与Lua事件总线智能体调度架构方案.md`
+- Lua 承载 Tool / Skill / MCP handler 热更新：`Lua承载Skill-MCP-Tool热更新架构方案.md`
 
 ## 1. 方案定位
 
@@ -53,6 +54,7 @@ Rust 内置能力       Codex CLI        Claude API      系统内 Agent       M
 2. 异步 Topic 调用：Lua 发布 `/adapter/invoke`，Adapter 完成后发布 `/adapter/completed`、`/adapter/failed` 或 `/adapter/stream`。
 3. MCP 双向调用：Rust 通过 `McpAdapter` 调用外部 MCP server；也可以把系统自身暴露为 MCP server，供外部 MCP client 调用内部 Agent。
 4. Workflow Skill 调用：Rust 通过 `SkillAdapter` 把受信任 skill 封装为 capability，Lua 只调用 capability，不直接读取或解释 `SKILL.md`。
+5. Lua Capability 调用：项目内 `lua_tool`、`lua_skill` 和 `lua_mcp_handler` 可通过 `LuaCapabilityAdapter` 或 Rust MCP Server 接入，业务 handler 可热更新，权限边界仍由 Rust 托管。
 
 短请求可以使用同步工具调用。长任务、流式输出、代码执行、仓库分析和多轮工作建议使用异步 Topic 调用。
 
@@ -578,6 +580,19 @@ SkillAdapter 默认应以只读、无网络、无 shell 权限运行。需要写
 - Windows 下卸载动态库容易踩资源释放问题。
 
 外部进程、HTTP 和 MCP Adapter 更适合作为默认动态扩展机制。
+
+### 9.8 LuaCapabilityAdapter
+
+LuaCapabilityAdapter 用于接入项目内显式 manifest 声明的 Lua capability。它不是让 Lua 拥有更高系统权限，而是把 `lua_tool`、`lua_skill` 和部分 `lua_mcp_handler` 的业务实现纳入 AdapterRegistry。
+
+边界：
+
+- Rust 负责 manifest、schema、policy、host API、超时、并发、审计和 generation swap。
+- Lua 只实现 handler、参数映射、结果转换和轻量编排。
+- LuaCapabilityAdapter 不能绕过 `McpAdapter` 直接连接外部 MCP server。
+- LuaCapabilityAdapter 不能替代 `SkillAdapter` 执行任意 `SKILL.md`。
+
+详细设计见 `Lua承载Skill-MCP-Tool热更新架构方案.md`。
 
 ## 10. Stdio JSON-RPC 协议
 

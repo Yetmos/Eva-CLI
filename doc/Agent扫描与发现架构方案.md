@@ -1,6 +1,6 @@
 # Agent 扫描与发现架构方案
 
-更新日期：2026-06-11
+更新日期：2026-06-12
 
 文档关系：
 
@@ -8,6 +8,7 @@
 - 配置体系：`项目配置方案.md`
 - Agent 调度核心：`Rust与Lua事件总线智能体调度架构方案.md`
 - 外部 Agent 扩展：`Lua调用外部Agent动态Adapter架构方案.md`
+- Lua Capability 热更新：`Lua承载Skill-MCP-Tool热更新架构方案.md`
 
 ## 1. 方案定位
 
@@ -65,6 +66,7 @@ EvaLauncher Startup / CLI scan command / Hot reload
                            ~/.agents/skills/*/SKILL.md
                            PATH allowlist commands
                            MCP manifests
+                           config/capabilities/*.yaml
         |                       |
         +-----------+-----------+
                     |
@@ -694,6 +696,8 @@ discovery:
     agent_dir: config/agents
     agent_manifest_glob: "**/agent.yaml"
     adapter_dir: config/adapters
+    capability_dir: config/capabilities
+    capability_manifest_glob: "*.yaml"
     mcp_dir: config/mcp
 
   user:
@@ -1356,6 +1360,7 @@ Discovery 不替代现有模块，而是给现有模块提供输入。
 AgentDiscoveryService
   -> Scheduler.register_agent(lua_agent)
   -> AdapterRegistry.register(adapter)
+  -> CapabilityRegistry.register(lua_capability)
   -> EventBus.publish(discovery events)
 ```
 
@@ -1377,6 +1382,7 @@ Rust 侧根据 AdapterRegistry 和 policy 决定是否允许调用。
 
 - 扫描 `config/agents/**/agent.yaml`
 - 扫描 `config/adapters/*.yaml`
+- 扫描 `config/capabilities/*.yaml` 并只注册通过 schema / policy 的 Lua capability
 - 扫描 `PATH` 中的 `codex`、`claude`、`gemini`、`ollama`
 - 输出 `eva agent scan --json`
 - 写入 discovery cache

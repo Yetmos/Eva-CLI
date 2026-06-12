@@ -1,11 +1,12 @@
 ﻿# Rust + Lua + EventBus Topic Agent 调度架构方案
 
-更新日期：2026-06-10
+更新日期：2026-06-12
 
 文档关系：
 
 - 总体入口：`总体架构方案.md`
 - 外部 Agent、动态 Adapter 与 MCP 子方案：`Lua调用外部Agent动态Adapter架构方案.md`
+- Lua 承载 Tool / Skill / MCP handler 热更新子方案：`Lua承载Skill-MCP-Tool热更新架构方案.md`
 
 ## 1. 方案定位
 
@@ -835,6 +836,8 @@ Rust crate 建议：
 - `sqlx` / `rusqlite` / `rocksdb`：状态持久化可选。
 
 外部 Agent 调用、动态 Adapter 扩展与 MCP 双向集成详见 `Lua调用外部Agent动态Adapter架构方案.md`。该子方案约定 Lua 不直接调用 Claude、Codex、MCP server 或任意 shell 命令，而是通过 Rust 托管的 AdapterRegistry、AdapterRouter、McpAdapter 和统一 Topic / Tool 接口接入外部 Agent 能力；系统也可以作为 MCP server 对外暴露受控的 `agent.invoke`、`adapter.invoke` 等工具。
+
+项目内 Tool、Lua Skill 和 MCP tool handler 的业务实现可以进一步由 `Lua承载Skill-MCP-Tool热更新架构方案.md` 定义的 Lua Capability Runtime 承载。该扩展不改变本文的 Agent 调度模型：Lua capability 仍通过 Rust Tool Layer、AdapterRegistry 或 MCP Server 进入运行链路，权限和 schema 不由 Lua 自行决定。
 
 ## 15. 运行形态
 
