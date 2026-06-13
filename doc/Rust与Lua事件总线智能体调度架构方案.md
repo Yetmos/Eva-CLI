@@ -8,6 +8,7 @@
 - 外部 Agent、动态 Adapter 与 MCP 子方案：`Lua调用外部Agent动态Adapter架构方案.md`
 - Lua 承载 Tool / Skill / MCP handler 热更新子方案：`Lua承载Skill-MCP-Tool热更新架构方案.md`
 - 外接硬件接入与热插拔子方案：`外接硬件接入与热插拔架构方案.md`
+- Agent 记忆与知识库子方案：`Agent记忆与知识库架构方案.md`
 
 ## 1. 方案定位
 
@@ -560,6 +561,8 @@ local data = http_get("https://api.example.com")
 - Topic 订阅表。
 
 不要让 Agent 直接读写任意全局变量。跨 Agent 协作应通过事件和持久化存储完成。
+
+Agent 私有记忆、系统总记忆库和知识库不属于 EventBus 存储职责，应由 `Agent记忆与知识库架构方案.md` 定义的 MemoryService、KnowledgeService 和 ContextBuilder 托管。Lua Agent 只能通过受控 `ctx.memory`、`ctx.global_memory` 和 `ctx.knowledge` API 访问。
 
 ### 7.3 幂等与恢复
 
