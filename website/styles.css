@@ -1,13 +1,14 @@
 :root {
   color-scheme: light;
-  --bg: #f7f6f2;
+  --bg: #f8f5ff;
   --surface: #ffffff;
-  --text: #15171a;
-  --muted: #59616c;
-  --line: #d9ded8;
-  --accent: #0f766e;
-  --accent-dark: #0b4f4a;
-  --warm: #a16207;
+  --text: #20172e;
+  --muted: #62576f;
+  --line: #dfd5f2;
+  --accent: #9b5de5;
+  --accent-dark: #6f2dbd;
+  --accent-soft: #efe6ff;
+  --warm: #7c3aed;
 }
 
 * {
@@ -69,7 +70,7 @@ main {
   align-items: center;
   border-block: 1px solid var(--line);
   background:
-    linear-gradient(90deg, rgba(247, 246, 242, 0.94), rgba(247, 246, 242, 0.68)),
+    linear-gradient(90deg, rgba(248, 245, 255, 0.96), rgba(248, 245, 255, 0.72)),
     url("assets/eva-cli-architecture.svg") right center / min(640px, 64vw) auto no-repeat;
 }
 
@@ -129,12 +130,22 @@ h2 {
 .primary-action {
   background: var(--accent);
   color: #ffffff;
+  box-shadow: 0 10px 24px rgba(111, 45, 189, 0.18);
 }
 
 .secondary-action {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.76);
+  background: rgba(255, 255, 255, 0.82);
   color: var(--accent-dark);
+}
+
+.primary-action:hover {
+  background: var(--accent-dark);
+}
+
+.secondary-action:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .architecture,
@@ -157,6 +168,7 @@ h2 {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+  box-shadow: 0 14px 34px rgba(111, 45, 189, 0.08);
 }
 
 .diagram img {
@@ -178,10 +190,16 @@ h2 {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
 }
 
 .doc-link:hover {
   border-color: var(--accent);
+  box-shadow: 0 12px 28px rgba(111, 45, 189, 0.1);
+  transform: translateY(-2px);
 }
 
 .doc-link span {
@@ -210,7 +228,7 @@ h2 {
   .intro {
     min-height: 0;
     background:
-      linear-gradient(180deg, rgba(247, 246, 242, 0.96), rgba(247, 246, 242, 0.9)),
+      linear-gradient(180deg, rgba(248, 245, 255, 0.98), rgba(248, 245, 255, 0.9)),
       url("assets/eva-cli-architecture.svg") center bottom / 720px auto no-repeat;
   }
 

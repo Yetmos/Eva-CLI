@@ -6,7 +6,7 @@
     <title>Eva-CLI</title>
     <meta
       name="description"
-      content="Eva-CLI 是基于 Rust Runtime、Lua Agent、Topic EventBus 和动态 Adapter 的多 Agent 调度系统。"
+      content="Eva-CLI 是面向可热更新 Agent 运行时的开源 CLI，通过 Rust 核心、Lua 能力层、Topic EventBus 与动态 Adapter 统一调度 Agent、MCP、Skill 和硬件能力。"
     >
     <link rel="stylesheet" href="styles.css">
   </head>
@@ -26,11 +26,11 @@
           <p class="eyebrow">Open source agent runtime</p>
           <h1>Eva-CLI</h1>
           <p class="lead">
-            Rust 托管运行时、Lua 热更新 Agent、Topic EventBus、动态 Adapter、MCP 双向集成和硬件接入的多 Agent 调度系统。
+            为多 Agent 协作而设计的可扩展运行时：用 Rust 承载稳定核心，用 Lua 交付热更新能力，并通过统一事件总线连接外部 Agent、MCP、Skill 与硬件设备。
           </p>
           <div class="actions" aria-label="快捷入口">
             <a class="primary-action" href="docs/README.md">阅读文档</a>
-            <a class="secondary-action" href="docs/方案设计风险评审.md">查看风险评审</a>
+            <a class="secondary-action" href="docs/方案设计风险评审.md">查看设计风险</a>
           </div>
         </div>
       </section>
@@ -38,7 +38,7 @@
       <section class="architecture" aria-labelledby="architecture-title">
         <div class="section-heading">
           <p class="eyebrow">Architecture</p>
-          <h2 id="architecture-title">系统主链路</h2>
+          <h2 id="architecture-title">从运行时到能力接入</h2>
         </div>
         <figure class="diagram">
           <img src="assets/eva-cli-architecture.svg" alt="Eva-CLI 总体架构图">
@@ -48,32 +48,32 @@
       <section class="doc-grid" aria-labelledby="docs-title">
         <div class="section-heading">
           <p class="eyebrow">Docs</p>
-          <h2 id="docs-title">文档入口</h2>
+          <h2 id="docs-title">按主题阅读架构文档</h2>
         </div>
         <div class="links-grid">
           <a class="doc-link" href="docs/总体架构方案.md">
             <span>总体架构</span>
-            <small>系统边界、核心模块和总体结论</small>
+            <small>快速了解系统目标、模块边界和核心运行链路</small>
           </a>
           <a class="doc-link" href="docs/Rust与Lua事件总线智能体调度架构方案.md">
             <span>Runtime 与 EventBus</span>
-            <small>Rust、Lua、Topic 和调度模型</small>
+            <small>梳理 Rust 核心、Lua Agent、Topic 路由与调度模型</small>
           </a>
           <a class="doc-link" href="docs/Lua调用外部Agent动态Adapter架构方案.md">
             <span>动态 Adapter</span>
-            <small>外部 Agent、CLI、HTTP、MCP 和 Skill 接入</small>
+            <small>统一接入外部 Agent、CLI、HTTP、MCP 与 Skill 能力</small>
           </a>
           <a class="doc-link" href="docs/Lua承载Skill-MCP-Tool热更新架构方案.md">
             <span>Lua Capability</span>
-            <small>Tool、Skill、MCP handler 的热更新边界</small>
+            <small>定义 Tool、Skill、MCP handler 的热更新边界</small>
           </a>
           <a class="doc-link" href="docs/Agent扫描与发现架构方案.md">
             <span>扫描与发现</span>
-            <small>Agent、Adapter、MCP 和 capability 注册</small>
+            <small>规范 Agent、Adapter、MCP 与 capability 的发现和注册流程</small>
           </a>
           <a class="doc-link" href="docs/项目配置方案.md">
             <span>项目配置</span>
-            <small>YAML、schema、policy、manifest 和热加载</small>
+            <small>沉淀 YAML、schema、policy、manifest 与热加载策略</small>
           </a>
         </div>
       </section>
