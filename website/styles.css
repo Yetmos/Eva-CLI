@@ -522,6 +522,128 @@ h3 {
   color: var(--muted);
 }
 
+.compare-section {
+  color: var(--text);
+}
+
+.compare-intro {
+  max-width: 860px;
+  margin: 0 0 22px;
+  color: var(--muted);
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.compare-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.compare-card {
+  min-height: 210px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 28px rgba(32, 23, 46, 0.06);
+}
+
+.compare-card-eva {
+  background:
+    linear-gradient(180deg, rgba(223, 247, 244, 0.72), rgba(255, 255, 255, 0.94)),
+    var(--surface);
+}
+
+.compare-card h3 {
+  margin-top: 12px;
+  font-size: 22px;
+}
+
+.compare-card p {
+  margin: 12px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.compare-table {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgba(32, 23, 46, 0.06);
+}
+
+.compare-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1fr);
+  border-top: 1px solid var(--line);
+}
+
+.compare-row:first-child {
+  border-top: 0;
+}
+
+.compare-row > * {
+  min-width: 0;
+  margin: 0;
+  padding: 16px;
+  border-left: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.compare-row > *:first-child {
+  border-left: 0;
+}
+
+.compare-head {
+  background: rgba(239, 230, 255, 0.76);
+}
+
+.compare-row span {
+  color: var(--accent-dark);
+  font-weight: 900;
+}
+
+.compare-row p {
+  color: var(--muted);
+}
+
+.decision-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.decision-grid p {
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.decision-grid strong {
+  color: var(--text);
+}
+
+.source-note {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.source-note a {
+  color: var(--accent-dark);
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .principle-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -628,7 +750,9 @@ h3 {
   }
 
   .feature-grid,
+  .compare-cards,
   .principle-grid,
+  .decision-grid,
   .snapshot-strip,
   .scenario-grid {
     grid-template-columns: 1fr;
@@ -658,6 +782,24 @@ h3 {
 
   .split-section {
     padding: 24px;
+  }
+
+  .compare-row {
+    grid-template-columns: 1fr;
+  }
+
+  .compare-row > * {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .compare-row > *:first-child {
+    border-top: 0;
+    background: rgba(239, 230, 255, 0.58);
+  }
+
+  .compare-head {
+    display: none;
   }
 
   .cta-band {

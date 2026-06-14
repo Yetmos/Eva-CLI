@@ -187,6 +187,84 @@
         </ol>
       </section>
 
+      <section class="promo-section compare-section" aria-labelledby="compare-title">
+        <div class="section-heading">
+          <p class="eyebrow">Compare</p>
+          <h2 id="compare-title">与 LangGraph 的定位差异</h2>
+        </div>
+        <p class="compare-intro">
+          LangGraph 和 Eva-CLI 解决的问题有重叠，但抽象层级不同。LangGraph 更适合把 LLM 应用建模为显式状态图、节点和边；Eva-CLI 更关注本地或企业环境里的多 Agent 运行时、受控能力接入、热更新和进程级可靠性边界。
+        </p>
+
+        <div class="compare-cards">
+          <article class="compare-card">
+            <span class="feature-kicker">LangGraph</span>
+            <h3>更像可持久化的 Agent 工作流图</h3>
+            <p>
+              官方文档将 LangGraph 定位为 orchestration runtime，重点能力包括 durable execution、streaming、human-in-the-loop 和 persistence。它通过 State、Nodes、Edges 组合复杂工作流，让图在状态演进中运行。
+            </p>
+          </article>
+          <article class="compare-card compare-card-eva">
+            <span class="feature-kicker">Eva-CLI</span>
+            <h3>更像受控的多 Agent 能力运行时</h3>
+            <p>
+              Eva-CLI 以 Rust Runtime、Topic EventBus、Scheduler、Lua Agent 和 AdapterRegistry 为核心，把 MCP、Skill、CLI、HTTP、本地模型、企业服务和硬件设备统一纳入受控能力层。
+            </p>
+          </article>
+        </div>
+
+        <div class="compare-table" role="table" aria-label="Eva-CLI 与 LangGraph 对比">
+          <div class="compare-row compare-head" role="row">
+            <strong role="columnheader">维度</strong>
+            <strong role="columnheader">LangGraph</strong>
+            <strong role="columnheader">Eva-CLI</strong>
+          </div>
+          <div class="compare-row" role="row">
+            <span role="cell">核心抽象</span>
+            <p role="cell">StateGraph、节点、边、条件路由和 checkpoint，适合描述一个 LLM workflow 如何一步步演进。</p>
+            <p role="cell">Topic EventBus、Agent 私有队列、Scheduler、Adapter capability，适合描述多个 Agent 和外部能力如何协作。</p>
+          </div>
+          <div class="compare-row" role="row">
+            <span role="cell">状态模型</span>
+            <p role="cell">状态是图运行的核心数据结构；checkpointer 保存线程内图状态，store 可承载跨线程长期记忆。</p>
+            <p role="cell">Agent 局部状态、系统记忆库、知识库和事件日志分层管理；EventBus 只负责通知和链路，不作为业务状态存储。</p>
+          </div>
+          <div class="compare-row" role="row">
+            <span role="cell">扩展方式</span>
+            <p role="cell">通常在图节点中接入模型、工具、函数、LangChain 组件或自定义代码。</p>
+            <p role="cell">通过 Adapter manifest、schema、policy 和 transport 接入 Claude、Codex、MCP server、workflow skill、HTTP 服务和硬件设备。</p>
+          </div>
+          <div class="compare-row" role="row">
+            <span role="cell">运行边界</span>
+            <p role="cell">重点在工作流编排、持久化执行、人类介入、调试和部署能力。</p>
+            <p role="cell">重点在本地 CLI runtime、沙箱、权限、密钥隔离、审计、热插拔、进程恢复和 Runtime generation 切流。</p>
+          </div>
+          <div class="compare-row" role="row">
+            <span role="cell">热更新</span>
+            <p role="cell">更常见的调整方式是修改图定义、节点逻辑或部署版本。</p>
+            <p role="cell">目标是让 Lua Agent、Lua Skill、Tool handler 和 MCP handler 支持 generation swap，失败时保留旧版本。</p>
+          </div>
+          <div class="compare-row" role="row">
+            <span role="cell">更适合</span>
+            <p role="cell">确定性或半确定性的 LLM 工作流、带 checkpoint 的长任务、人类确认节点、多轮 agent loop。</p>
+            <p role="cell">本地多 Agent 中枢、企业工具网关、MCP 双向集成、项目知识库、长期记忆、硬件与边缘设备自动化。</p>
+          </div>
+        </div>
+
+        <div class="decision-grid" aria-label="选择建议">
+          <p><strong>选择 LangGraph：</strong>当你要把一个应用流程清晰建模成图，并且需要成熟的 checkpoint、interrupt、streaming 和 LLM workflow 生态。</p>
+          <p><strong>选择 Eva-CLI：</strong>当你需要一个本地或企业级多 Agent runtime，把不同 Agent、工具、MCP、Skill 和硬件能力放进统一权限与审计边界。</p>
+          <p><strong>组合使用：</strong>LangGraph 可以作为某个 Adapter 或外部 Agent 被 Eva-CLI 调用；Eva-CLI 负责运行时边界，LangGraph 负责具体工作流图。</p>
+        </div>
+
+        <p class="source-note">
+          LangGraph 描述参考其官方文档：
+          <a href="https://docs.langchain.com/oss/python/langgraph/overview">Overview</a>、
+          <a href="https://docs.langchain.com/oss/python/langgraph/graph-api">Graph API</a>、
+          <a href="https://docs.langchain.com/oss/python/langgraph/persistence">Persistence</a>。
+        </p>
+      </section>
+
       <section class="promo-section" aria-labelledby="principles-title">
         <div class="section-heading">
           <p class="eyebrow">Principles</p>
