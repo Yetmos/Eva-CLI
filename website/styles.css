@@ -113,9 +113,17 @@ h3 {
   line-height: 1.25;
 }
 
+.tagline {
+  margin: 12px 0 0;
+  color: var(--accent-dark);
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1.15;
+}
+
 .lead {
   max-width: 620px;
-  margin: 22px 0 0;
+  margin: 18px 0 0;
   color: var(--muted);
   font-size: 18px;
 }
@@ -252,7 +260,7 @@ h3 {
 
 .promo-subtitle {
   max-width: 690px;
-  margin: 22px 0 0;
+  margin: 18px 0 0;
   color: var(--muted);
   font-size: 19px;
   overflow-wrap: anywhere;
@@ -707,6 +715,10 @@ h3 {
     font-size: 42px;
   }
 
+  .tagline {
+    font-size: 26px;
+  }
+
   h2 {
     font-size: 26px;
   }
@@ -734,6 +746,10 @@ h3 {
 
   .promo-hero h1 {
     font-size: 52px;
+  }
+
+  .promo-hero .tagline {
+    font-size: 28px;
   }
 
   .promo-subtitle {
