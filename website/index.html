@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Eva-CLI</title>
+    <meta
+      name="description"
+      content="Eva-CLI 是基于 Rust Runtime、Lua Agent、Topic EventBus 和动态 Adapter 的多 Agent 调度系统。"
+    >
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./">Eva-CLI</a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="docs/README.md">文档</a>
+        <a href="docs/总体架构方案.md">架构</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div class="intro-copy">
+          <p class="eyebrow">Open source agent runtime</p>
+          <h1>Eva-CLI</h1>
+          <p class="lead">
+            Rust 托管运行时、Lua 热更新 Agent、Topic EventBus、动态 Adapter、MCP 双向集成和硬件接入的多 Agent 调度系统。
+          </p>
+          <div class="actions" aria-label="快捷入口">
+            <a class="primary-action" href="docs/README.md">阅读文档</a>
+            <a class="secondary-action" href="docs/方案设计风险评审.md">查看风险评审</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="architecture" aria-labelledby="architecture-title">
+        <div class="section-heading">
+          <p class="eyebrow">Architecture</p>
+          <h2 id="architecture-title">系统主链路</h2>
+        </div>
+        <figure class="diagram">
+          <img src="assets/eva-cli-architecture.svg" alt="Eva-CLI 总体架构图">
+        </figure>
+      </section>
+
+      <section class="doc-grid" aria-labelledby="docs-title">
+        <div class="section-heading">
+          <p class="eyebrow">Docs</p>
+          <h2 id="docs-title">文档入口</h2>
+        </div>
+        <div class="links-grid">
+          <a class="doc-link" href="docs/总体架构方案.md">
+            <span>总体架构</span>
+            <small>系统边界、核心模块和总体结论</small>
+          </a>
+          <a class="doc-link" href="docs/Rust与Lua事件总线智能体调度架构方案.md">
+            <span>Runtime 与 EventBus</span>
+            <small>Rust、Lua、Topic 和调度模型</small>
+          </a>
+          <a class="doc-link" href="docs/Lua调用外部Agent动态Adapter架构方案.md">
+            <span>动态 Adapter</span>
+            <small>外部 Agent、CLI、HTTP、MCP 和 Skill 接入</small>
+          </a>
+          <a class="doc-link" href="docs/Lua承载Skill-MCP-Tool热更新架构方案.md">
+            <span>Lua Capability</span>
+            <small>Tool、Skill、MCP handler 的热更新边界</small>
+          </a>
+          <a class="doc-link" href="docs/Agent扫描与发现架构方案.md">
+            <span>扫描与发现</span>
+            <small>Agent、Adapter、MCP 和 capability 注册</small>
+          </a>
+          <a class="doc-link" href="docs/项目配置方案.md">
+            <span>项目配置</span>
+            <small>YAML、schema、policy、manifest 和热加载</small>
+          </a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
