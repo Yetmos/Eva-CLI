@@ -837,7 +837,10 @@ Rust crate 建议：
 - `clap`：CLI。
 - `notify`：Lua 脚本热更新监听。
 - `reqwest`：HTTP 工具示例。
-- `sqlx` / `rusqlite` / `rocksdb`：状态持久化可选。
+- `rusqlite` + bundled SQLite：默认本地状态、记忆和知识库元数据存储。
+- SQLite FTS5：默认全文检索能力。
+- `tantivy`：可选本地全文搜索索引。
+- `sqlx` / `rocksdb`：状态持久化可选扩展。
 
 外部 Agent 调用、动态 Adapter 扩展与 MCP 双向集成详见 `Lua调用外部Agent动态Adapter架构方案.md`。该子方案约定 Lua 不直接调用 Claude、Codex、MCP server 或任意 shell 命令，而是通过 Rust 托管的 AdapterRegistry、AdapterRouter、McpAdapter 和统一 Topic / Tool 接口接入外部 Agent 能力；系统也可以作为 MCP server 对外暴露受控的 `agent.invoke`、`adapter.invoke` 等工具。
 

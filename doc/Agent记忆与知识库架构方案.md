@@ -48,8 +48,8 @@
 - 不让 Agent 直接读写任意全局状态。
 - 不把所有对话历史无限塞入 prompt。
 - 不默认让所有 Agent 读写所有记忆。
-- 不在本方案中绑定具体数据库产品或存储引擎。
-- 不在本方案中定义 embedding provider 或模型供应商。
+- 不要求用户电脑额外安装数据库、搜索服务或向量数据库服务。
+- 不在本方案中绑定 embedding provider 或模型供应商。
 
 ## 3. 概念边界
 
@@ -124,6 +124,7 @@ source -> document -> chunk -> index
 - 设计方案。
 - issue、PR、会议纪要。
 - 外部资料的受控摘录和引用。
+- Markdown 文件，例如 `doc/*.md`、Agent 说明、运行手册和人工维护的知识条目。
 
 知识库必须保留：
 
@@ -142,7 +143,92 @@ source -> document -> chunk -> index
 - 无来源的大段生成内容。
 - 密钥和敏感数据。
 
-### 3.4 会话上下文
+### 3.4 Markdown 与长期记忆
+
+Markdown 可以参与记忆与知识库，但职责不同：
+
+```text
+Markdown as KnowledgeSource
+  -> 推荐
+  -> 用于文档、规范、FAQ、设计方案和人工知识条目
+
+Markdown as Memory Mirror
+  -> 可选
+  -> 用于人类查看、导入、导出和 Git 版本化快照
+
+Markdown as Memory Truth
+  -> 不推荐
+  -> 不应替代 SQLite 中的结构化记忆、审计和幂等记录
+```
+
+长期记忆的事实存储仍应是 SQLite。Markdown 只适合作为：
+
+- 人类可读镜像。
+- 人工编辑候选记忆。
+- 导入源。
+- 导出快照。
+- 审阅材料。
+
+推荐目录形态：
+
+```text
+memory/
+  global.md
+  agents/
+    planner.md
+    reviewer.md
+
+knowledge/
+  project.md
+  faq.md
+  runbook.md
+```
+
+这些 Markdown 文件进入系统后仍要被解析、校验、写入 SQLite 元数据，并建立索引。运行时不能只依赖 Markdown 文件本身判断权限、置信度、状态和冲突关系。
+
+### 3.5 Agent 固定约束
+
+Agent 固定约束不是长期记忆，也不是知识库。
+
+固定约束属于执行边界，应由 Agent manifest、policy 和可选的约束 Markdown 文件表达：
+
+```text
+config/agents/<agent-id>/agent.yaml
+config/agents/<agent-id>/constraints.md
+config/policies/agents/<agent-id>.yaml
+```
+
+固定约束适合保存：
+
+- Agent 职责边界。
+- 禁止行为。
+- 输出格式硬约束。
+- 可调用工具边界。
+- 可读写记忆 scope。
+- 知识库 source allowlist。
+
+固定约束必须满足：
+
+- Agent 自己不能修改。
+- 记忆不能覆盖。
+- 知识库不能覆盖。
+- 用户请求不能隐式扩大。
+- 修改必须经过 manifest / policy 校验、热加载边界和审计。
+
+推荐优先级：
+
+```text
+System / Developer 指令
+  > Runtime policy
+  > Agent manifest
+  > Agent constraints.md
+  > 用户当前请求
+  > GlobalMemory
+  > AgentMemory
+  > KnowledgeBase
+```
+
+### 3.6 会话上下文
 
 会话上下文是短期上下文，不等于长期记忆：
 
@@ -198,6 +284,75 @@ Incoming Event
 | MemoryReviewer | 对全局记忆提议做去重、合并、冲突检查和确认 |
 | StateStore | 保存记忆、索引元数据、幂等记录和审计引用 |
 | IndexStore | 保存全文索引、向量索引或混合索引 |
+
+### 4.1 默认技术选型
+
+当前方案默认采用**本地内嵌、无额外服务依赖**的技术组合：
+
+| 层 | 默认选型 | 说明 |
+| --- | --- | --- |
+| Agent 私有记忆 | SQLite | 保存轻量 KV、JSON、摘要、标签、过期时间和幂等记录 |
+| 系统总记忆库 | SQLite | 保存全局记忆、proposal、supersede、conflict 和 audit |
+| 知识库元数据 | SQLite | 保存 document、chunk、content hash、visibility 和 source metadata |
+| 全文检索 | SQLite FTS5 | 默认知识库和记忆摘要检索能力 |
+| 更强全文检索 | Tantivy 可选 | 当 FTS5 的排序、分词或索引能力不足时作为可替换 IndexStore |
+| 向量检索 | 预留接口，默认关闭 | 后续可接 sqlite-vec、LanceDB 等本地嵌入式向量索引 |
+| Markdown 镜像 | 普通文件 | 仅作为导入、导出、审阅和人类可读快照 |
+
+Rust 依赖口径：
+
+```text
+StateStore / MemoryStore:
+  rusqlite + bundled SQLite
+
+Text IndexStore:
+  SQLite FTS5
+
+Optional Search IndexStore:
+  Tantivy
+
+Optional Vector IndexStore:
+  sqlite-vec or LanceDB embedded
+```
+
+选型原则：
+
+- 默认能力必须能随 Eva-CLI 二进制一起工作，不要求用户额外安装 PostgreSQL、Qdrant、Elasticsearch 或其他常驻服务。
+- SQLite 是记忆和知识库元数据的事实存储；全文索引、向量索引只是检索加速层。
+- FTS5 是默认全文检索路径；Tantivy 只能作为 `IndexStore` 的替代实现，不改变 MemoryService 和 KnowledgeService 的数据契约。
+- 向量索引不作为记忆主存储，不保存不可恢复的唯一数据。
+- 知识库索引可以删除后重建；document metadata、chunk metadata、content hash 和 audit 不能只存在索引中。
+
+### 4.2 存储分层
+
+推荐存储分层：
+
+```text
+SQLite database
+  -> agent_memory
+  -> global_memory
+  -> memory_proposal
+  -> memory_audit
+  -> knowledge_document
+  -> knowledge_chunk
+  -> idempotency_record
+
+SQLite FTS5 index
+  -> agent_memory_fts
+  -> global_memory_fts
+  -> knowledge_chunk_fts
+
+Optional external index files
+  -> tantivy index directory
+  -> local vector index files
+
+Markdown files
+  -> knowledge sources
+  -> memory mirrors
+  -> agent constraints
+```
+
+SQLite 应开启 WAL 语义，以支撑本地崩溃恢复、读写并发和 Runtime generation 切流期间的安全读写。是否启用 Tantivy 或向量索引由配置决定；未启用时，系统仍必须具备完整记忆和知识库能力。
 
 ## 5. 读路径
 
@@ -711,6 +866,11 @@ ContextBuilder 必须控制上下文体积：
 
 ```yaml
 memory:
+  storage:
+    backend: sqlite
+    sqlite_path: .eva/data/memory.db
+    sqlite_bundled: true
+    wal: true
   agent:
     enabled: true
     max_records_per_agent: 1000
@@ -730,9 +890,29 @@ memory:
 
 knowledge:
   enabled: true
+  storage:
+    backend: sqlite
+    sqlite_path: .eva/data/knowledge.db
+    sqlite_bundled: true
+    wal: true
+  index:
+    text:
+      backend: sqlite_fts5
+    vector:
+      enabled: false
+      backend: none
   allowed_sources:
     - workspace_doc
     - project_config
+    - markdown
+  markdown:
+    enabled: true
+    frontmatter: true
+    heading_chunking: true
+    preserve_code_blocks: true
+    allowed_roots:
+      - doc
+      - knowledge
   chunk:
     max_tokens: 800
     overlap_tokens: 120
@@ -745,6 +925,8 @@ knowledge:
 
 - 检索数量和 token budget 可以热加载。
 - 权限扩大、source allowlist 扩大、存储 backend 变化需要 Runtime generation 切流。
+- Agent `constraints.md` 内容变化属于固定约束变化，应按 Agent manifest 热加载规则校验和切换。
+- 从 SQLite FTS5 切换到 Tantivy 或启用向量索引属于索引 backend 变化，需要重建索引并通过 generation 边界切换。
 - schema version 变化需要 migration 方案。
 
 ## 14. 观测性
@@ -791,6 +973,8 @@ retrieval_latency_ms
 | Agent 污染全局记忆 | 全局记忆使用 proposal + review + confidence |
 | 记忆覆盖系统指令 | 记忆注入标记为 context，不允许覆盖 policy |
 | 知识库内容被当作指令 | 检索内容标记来源并做 prompt 注入隔离 |
+| Markdown 记忆镜像被当作事实源 | SQLite 结构化记录为事实源，Markdown 只导入/导出 |
+| Agent 固定约束被记忆覆盖 | 固定约束归 manifest/policy，优先级高于记忆和知识库 |
 | 记忆无限增长 | TTL、重要度、压缩、归档和软删除 |
 | 错误记忆长期存在 | correction、supersede、conflict 和审计链 |
 | 隐私泄漏 | scope policy、敏感信息扫描、source allowlist |
@@ -803,6 +987,8 @@ retrieval_latency_ms
 该架构在设计层面成立，需要满足：
 
 - Agent 私有记忆、系统总记忆库、知识库三者边界清晰。
+- Markdown 在知识库、记忆镜像和 Agent 约束中的职责清晰。
+- Agent 固定约束不进入长期记忆，且优先级高于记忆和知识库。
 - Lua Agent 只能通过 Rust 托管 API 访问记忆和知识库。
 - 全局记忆写入具备提议、审核、去重、冲突处理和审计链。
 - 知识库条目具备 source、document、chunk、hash 和 visibility。
