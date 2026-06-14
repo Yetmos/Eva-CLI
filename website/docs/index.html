@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Eva-CLI 项目介绍</title>
+    <meta
+      name="description"
+      content="Eva-CLI 是面向可热更新多 Agent 运行时的开源 CLI 架构方案，用 Rust 托管系统边界，用 Lua 承载业务逻辑，并通过 Topic EventBus 连接 Agent、MCP、Skill、外部工具和硬件能力。"
+    >
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-app.js";
+      import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-analytics.js";
+
+      const firebaseConfig = {
+        apiKey: "AIzaSyCeFl2liIETM6t5L9wVRA89b922UGGtzls",
+        authDomain: "eva-cli-7ad30.firebaseapp.com",
+        projectId: "eva-cli-7ad30",
+        storageBucket: "eva-cli-7ad30.firebasestorage.app",
+        messagingSenderId: "83967779785",
+        appId: "1:83967779785:web:6d27fdac0cff0e71b2be18",
+        measurementId: "G-08QR0NPT78"
+      };
+
+      const app = initializeApp(firebaseConfig);
+      getAnalytics(app);
+    </script>
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../">Eva-CLI</a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="./">介绍</a>
+        <a href="README.md">文档</a>
+        <a href="总体架构方案.md">架构</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+    </header>
+
+    <main class="promo-page">
+      <section class="promo-hero" aria-labelledby="promo-title">
+        <div class="promo-hero-copy">
+          <p class="eyebrow">Open source agent runtime</p>
+          <h1 id="promo-title">Eva-CLI</h1>
+          <p class="promo-subtitle">
+            面向可热更新多 Agent 协作的开源 CLI 运行时方案。用 Rust 守住权限、调度和可靠性边界，用 Lua 承载可快速迭代的业务 Agent，并通过 Topic EventBus 连接 MCP、Skill、外部工具、本地模型和硬件能力。
+          </p>
+          <div class="actions" aria-label="项目入口">
+            <a class="primary-action" href="总体架构方案.md">阅读总体架构</a>
+            <a class="secondary-action" href="https://github.com/Yetmos/Eva-CLI">查看 GitHub</a>
+          </div>
+        </div>
+        <aside class="status-panel" aria-label="项目状态">
+          <span class="status-label">当前阶段</span>
+          <strong>架构方案整理中</strong>
+          <p>
+            仓库目前以设计文档为主，正在固化运行时、Adapter、MCP、记忆、知识库、硬件接入和进程恢复等核心契约。
+          </p>
+        </aside>
+      </section>
+
+      <section class="promo-section" aria-labelledby="why-title">
+        <div class="section-heading">
+          <p class="eyebrow">Why Eva-CLI</p>
+          <h2 id="why-title">为可控的 Agent 协作而设计</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-item">
+            <span class="feature-kicker">Rust Core</span>
+            <h3>系统边界由 Rust 托管</h3>
+            <p>
+              调度、权限、沙箱、密钥、超时、审计、恢复和外部能力接入都由 Rust 负责，避免业务脚本绕过安全边界。
+            </p>
+          </article>
+          <article class="feature-item">
+            <span class="feature-kicker">Lua Agents</span>
+            <h3>业务逻辑支持热更新</h3>
+            <p>
+              Agent 意图识别、局部状态转换、工具编排和结果映射由 Lua 承载，适合快速调整工作流而不重新编译主程序。
+            </p>
+          </article>
+          <article class="feature-item">
+            <span class="feature-kicker">Topic EventBus</span>
+            <h3>用事件解耦多 Agent</h3>
+            <p>
+              Agent 通过路径式 Topic 协作，不共享隐式全局状态，让路由、扇出、异步任务和观测链路更清晰。
+            </p>
+          </article>
+          <article class="feature-item">
+            <span class="feature-kicker">Adapter Layer</span>
+            <h3>统一接入外部能力</h3>
+            <p>
+              Claude、Codex、Gemini、本地模型、企业服务、MCP server、workflow skill 和硬件设备都通过受控 Adapter 暴露能力。
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="promo-section" aria-labelledby="scenes-title">
+        <div class="section-heading">
+          <p class="eyebrow">Use Cases</p>
+          <h2 id="scenes-title">适合落地的使用场景</h2>
+        </div>
+        <div class="scenario-list">
+          <article class="scenario-item">
+            <span>01</span>
+            <div>
+              <h3>本地 AI Agent 自动化中枢</h3>
+              <p>把用户输入、项目事件、CLI 任务和后台工作流统一投递到 EventBus，由多个 Agent 分工完成分析、计划、审查、修复建议和文档生成。</p>
+            </div>
+          </article>
+          <article class="scenario-item">
+            <span>02</span>
+            <div>
+              <h3>企业内部工具与 Agent 网关</h3>
+              <p>将内部 HTTP 服务、自研 CLI、本地模型和团队工作流封装为 Adapter，通过 manifest、schema、policy 和审计控制可调用能力。</p>
+            </div>
+          </article>
+          <article class="scenario-item">
+            <span>03</span>
+            <div>
+              <h3>MCP 双向集成平台</h3>
+              <p>内部 Agent 可以调用外部 MCP server；Eva-CLI 也可以作为 MCP server，把受控 Agent、Adapter 和 Lua capability 暴露给外部客户端。</p>
+            </div>
+          </article>
+          <article class="scenario-item">
+            <span>04</span>
+            <div>
+              <h3>项目知识库与长期记忆</h3>
+              <p>将项目文档、设计方案、运行手册、Agent 私有记忆和系统级长期记忆纳入 ContextBuilder，为多 Agent 协作提供可溯源上下文。</p>
+            </div>
+          </article>
+          <article class="scenario-item">
+            <span>05</span>
+            <div>
+              <h3>硬件和边缘设备自动化</h3>
+              <p>通过 HardwareAdapter 接入 USB、串口、BLE、网络设备和厂商 SDK 设备，让 Agent 订阅硬件事件并调用受控业务能力。</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="promo-section split-section" aria-labelledby="architecture-title">
+        <div>
+          <p class="eyebrow">Architecture</p>
+          <h2 id="architecture-title">一条清晰的运行链路</h2>
+          <p class="section-copy">
+            Eva-CLI 将发现、调度、执行和扩展拆成独立层次：发现层负责扫描和校验，调度层负责 Topic 路由，执行层运行 Lua Agent，扩展层通过 Adapter 接入外部能力。Lua 只表达业务意图，Rust 负责权限、协议、生命周期和审计。
+          </p>
+        </div>
+        <ol class="flow-list">
+          <li><strong>发现能力</strong><span>扫描 Agent、Adapter、MCP、Skill 和硬件 manifest。</span></li>
+          <li><strong>发布事件</strong><span>CLI、API、UI 或外部系统写入 Topic Event。</span></li>
+          <li><strong>调度 Agent</strong><span>Scheduler 按 Topic、target、优先级和负载投递到私有队列。</span></li>
+          <li><strong>调用工具</strong><span>Lua Agent 通过 Rust Tool Layer 调用受控 Adapter。</span></li>
+          <li><strong>观测恢复</strong><span>审计、指标、状态快照、重放和 generation 切流保障可恢复性。</span></li>
+        </ol>
+      </section>
+
+      <section class="promo-section" aria-labelledby="principles-title">
+        <div class="section-heading">
+          <p class="eyebrow">Principles</p>
+          <h2 id="principles-title">不是无限制插件系统</h2>
+        </div>
+        <div class="principle-grid">
+          <p>Lua 不直接执行 shell、不读取密钥、不连接任意外部服务。</p>
+          <p>MCP、Skill、CLI、HTTP 和硬件调用都必须经过 AdapterRegistry、Router、schema 和 policy。</p>
+          <p>EventBus 负责协作链路，不承担隐式全局状态或长期记忆存储。</p>
+          <p>热更新覆盖业务脚本和可热加载 manifest 字段，权限扩大和 transport 变化需要更严格的 runtime 切换。</p>
+        </div>
+      </section>
+
+      <section class="promo-section cta-band" aria-labelledby="next-title">
+        <div>
+          <p class="eyebrow">Next Step</p>
+          <h2 id="next-title">从总体架构开始了解 Eva-CLI</h2>
+          <p>
+            当前文档已经覆盖运行时、事件调度、Adapter、MCP、Skill、记忆、知识库、硬件接入、配置和进程恢复等设计面。
+          </p>
+        </div>
+        <div class="actions">
+          <a class="primary-action" href="README.md">浏览文档目录</a>
+          <a class="secondary-action" href="方案设计风险评审.md">查看风险评审</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

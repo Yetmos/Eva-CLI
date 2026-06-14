@@ -30,9 +30,10 @@ jobs:
 
       - name: Build static site
         run: |
-          mkdir -p public
+          mkdir -p public/docs
           cp -R website/. public/
-          cp -R docs public/docs
+          cp -R docs/. public/docs/
+          cp -R website/docs/. public/docs/
           cp -R assets public/assets
 
       - name: Upload artifact

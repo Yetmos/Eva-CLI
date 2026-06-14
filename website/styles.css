@@ -103,6 +103,12 @@ h2 {
   font-size: 30px;
 }
 
+h3 {
+  margin: 0;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
 .lead {
   max-width: 620px;
   margin: 22px 0 0;
@@ -214,6 +220,220 @@ h2 {
   font-size: 14px;
 }
 
+.promo-page {
+  padding-top: 8px;
+}
+
+.promo-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 36px;
+  align-items: end;
+  min-height: 460px;
+  padding: 64px 0;
+  border-block: 1px solid var(--line);
+  background:
+    linear-gradient(90deg, rgba(248, 245, 255, 0.98), rgba(248, 245, 255, 0.76)),
+    url("assets/eva-cli-architecture.svg") right center / min(620px, 54vw) auto no-repeat;
+}
+
+.promo-hero-copy {
+  max-width: 760px;
+}
+
+.promo-subtitle {
+  max-width: 700px;
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: 19px;
+}
+
+.status-panel {
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 14px 34px rgba(111, 45, 189, 0.08);
+}
+
+.status-label,
+.feature-kicker {
+  display: block;
+  color: var(--accent-dark);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.status-panel strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.status-panel p {
+  margin: 14px 0 0;
+  color: var(--muted);
+}
+
+.promo-section {
+  padding-top: 64px;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.feature-item,
+.scenario-item,
+.principle-grid p {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgba(111, 45, 189, 0.06);
+}
+
+.feature-item {
+  min-height: 236px;
+  padding: 20px;
+}
+
+.feature-item h3 {
+  margin-top: 12px;
+  font-size: 20px;
+}
+
+.feature-item p,
+.scenario-item p,
+.section-copy,
+.cta-band p {
+  color: var(--muted);
+}
+
+.feature-item p {
+  margin: 12px 0 0;
+  font-size: 15px;
+}
+
+.scenario-list {
+  display: grid;
+  gap: 12px;
+}
+
+.scenario-item {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  padding: 20px;
+}
+
+.scenario-item span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-weight: 900;
+}
+
+.scenario-item h3 {
+  font-size: 20px;
+}
+
+.scenario-item p {
+  margin: 8px 0 0;
+}
+
+.split-section {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(360px, 1.1fr);
+  gap: 36px;
+  align-items: start;
+}
+
+.section-copy {
+  margin: 18px 0 0;
+  font-size: 17px;
+}
+
+.flow-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: flow;
+}
+
+.flow-list li {
+  position: relative;
+  padding: 16px 18px 16px 58px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.flow-list li::before {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  color: var(--accent-dark);
+  font-weight: 900;
+  content: counter(flow, decimal-leading-zero);
+  counter-increment: flow;
+}
+
+.flow-list strong,
+.flow-list span {
+  display: block;
+}
+
+.flow-list span {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.principle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.principle-grid p {
+  margin: 0;
+  padding: 18px;
+  color: var(--muted);
+}
+
+.cta-band {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  margin-top: 64px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 14px 34px rgba(111, 45, 189, 0.08);
+}
+
+.cta-band p {
+  max-width: 660px;
+  margin: 12px 0 0;
+}
+
+.cta-band .actions {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
 @media (max-width: 780px) {
   .site-header,
   .section-heading {
@@ -250,5 +470,41 @@ h2 {
 
   .links-grid {
     grid-template-columns: 1fr;
+  }
+
+  .promo-hero,
+  .split-section {
+    grid-template-columns: 1fr;
+  }
+
+  .promo-hero {
+    min-height: 0;
+    padding: 48px 0;
+    background:
+      linear-gradient(180deg, rgba(248, 245, 255, 0.98), rgba(248, 245, 255, 0.9)),
+      url("assets/eva-cli-architecture.svg") center bottom / 720px auto no-repeat;
+  }
+
+  .promo-subtitle {
+    font-size: 16px;
+  }
+
+  .feature-grid,
+  .principle-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-item {
+    min-height: 0;
+  }
+
+  .scenario-item {
+    grid-template-columns: 1fr;
+  }
+
+  .cta-band {
+    align-items: flex-start;
+    flex-direction: column;
+    margin-top: 48px;
   }
 }
