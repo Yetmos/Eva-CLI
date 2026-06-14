@@ -9,8 +9,10 @@
   --accent-dark: #991b1b;
   --accent-soft: #fee2e2;
   --warm: #be123c;
-  --teal: #0f766e;
-  --teal-soft: #dff7f4;
+  --secondary: #7c3aed;
+  --secondary-dark: #5b21b6;
+  --secondary-soft: #ede9fe;
+  --secondary-line: #ddd6fe;
   --amber: #b45309;
   --amber-soft: #fff3d6;
   --brand-shadow: rgba(127, 29, 29, 0.18);
@@ -269,7 +271,7 @@ h3 {
   padding: 72px 0;
   border-block: 1px solid var(--line);
   background:
-    linear-gradient(90deg, rgba(255, 245, 245, 0.99) 0%, rgba(255, 245, 245, 0.87) 58%, rgba(223, 247, 244, 0.54) 100%),
+    linear-gradient(90deg, rgba(255, 245, 245, 0.99) 0%, rgba(255, 245, 245, 0.87) 58%, rgba(237, 233, 254, 0.58) 100%),
     url("/assets/eva-cli-architecture.svg") right center / min(620px, 52vw) auto no-repeat;
 }
 
@@ -303,10 +305,10 @@ h3 {
   min-height: 34px;
   max-width: 100%;
   padding: 0 12px;
-  border: 1px solid rgba(15, 118, 110, 0.2);
+  border: 1px solid var(--secondary-line);
   border-radius: 8px;
-  background: rgba(223, 247, 244, 0.72);
-  color: var(--teal);
+  background: var(--secondary-soft);
+  color: var(--secondary-dark);
   font-size: 14px;
   font-weight: 800;
 }
@@ -438,7 +440,7 @@ h3 {
 
 .feature-item:nth-child(2) .feature-kicker,
 .feature-item:nth-child(4) .feature-kicker {
-  color: var(--teal);
+  color: var(--secondary-dark);
 }
 
 .feature-item h3 {
@@ -488,8 +490,8 @@ h3 {
   width: 44px;
   height: 44px;
   border-radius: 8px;
-  background: var(--teal-soft);
-  color: var(--teal);
+  background: var(--secondary-soft);
+  color: var(--secondary-dark);
   font-weight: 900;
 }
 
@@ -584,7 +586,7 @@ h3 {
 
 .compare-card-eva {
   background:
-    linear-gradient(180deg, rgba(223, 247, 244, 0.72), rgba(255, 255, 255, 0.94)),
+    linear-gradient(180deg, rgba(237, 233, 254, 0.76), rgba(255, 255, 255, 0.94)),
     var(--surface);
 }
 

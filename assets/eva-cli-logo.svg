@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
   <title id="title">Eva-CLI logo</title>
-  <desc id="desc">A red Eva family mark for the open source CLI core, combining a terminal prompt with connected runtime nodes.</desc>
+  <desc id="desc">A red and purple Eva family mark for the open source CLI core, combining a terminal prompt with connected runtime nodes.</desc>
   <defs>
     <linearGradient id="core" x1="38" y1="34" x2="218" y2="222" gradientUnits="userSpaceOnUse">
       <stop stop-color="#ff5a5f"/>
@@ -29,10 +29,10 @@
   <g fill="none" stroke="#fff8f8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M82 91l30 29-30 29" stroke-width="15"/>
     <path d="M121 154h50" stroke-width="15"/>
-    <path d="M155 97l27-17 27 17v32l-27 17-27-17V97Z" stroke-width="9"/>
+    <path d="M155 97l27-17 27 17v32l-27 17-27-17V97Z" stroke="#ede9fe" stroke-width="9"/>
     <path d="M130 120h25" stroke-width="8" opacity="0.82"/>
   </g>
-  <g fill="#fff8f8">
+  <g fill="#7c3aed">
     <circle cx="182" cy="80" r="9"/>
     <circle cx="209" cy="97" r="9"/>
     <circle cx="209" cy="129" r="9"/>
