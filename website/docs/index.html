@@ -25,11 +25,15 @@
       const app = initializeApp(firebaseConfig);
       getAnalytics(app);
     </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/eva-cli-logo.svg">
     <link rel="stylesheet" href="../styles.css">
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="../">Eva-CLI</a>
+      <a class="brand" href="../" aria-label="Eva-CLI home">
+        <img src="../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span>Eva-CLI</span>
+      </a>
       <nav class="site-nav" aria-label="主导航">
         <a href="./">介绍</a>
         <a href="README.md">文档</a>
@@ -47,6 +51,7 @@
           <p class="promo-subtitle">
             面向可热更新多 Agent 协作的开源 CLI 运行时方案。用 Rust 守住权限、调度和可靠性边界，用 Lua 承载可快速迭代的业务 Agent，并通过 Topic EventBus 连接 MCP、Skill、外部工具、本地模型和硬件能力。
           </p>
+          <p class="family-note">Eva 开源核心项目，与盈利产品 EvaLauncher 同源但保持清晰区分。</p>
           <div class="hero-points" aria-label="核心能力">
             <span>Rust 托管边界</span>
             <span>Lua 热更新业务</span>

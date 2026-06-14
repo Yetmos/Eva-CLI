@@ -31,11 +31,15 @@
       const app = initializeApp(firebaseConfig);
       const analytics = getAnalytics(app);
     </script>
+    <link rel="icon" type="image/svg+xml" href="assets/eva-cli-logo.svg">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="./">Eva-CLI</a>
+      <a class="brand" href="./" aria-label="Eva-CLI home">
+        <img src="assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span>Eva-CLI</span>
+      </a>
       <nav class="site-nav" aria-label="主导航">
         <a href="docs/">介绍</a>
         <a href="docs/README.md">文档</a>
@@ -53,6 +57,7 @@
           <p class="lead">
             为多 Agent 协作而设计的可扩展运行时：用 Rust 承载稳定核心，用 Lua 交付热更新能力，并通过统一事件总线连接外部 Agent、MCP、Skill 与硬件设备。
           </p>
+          <p class="family-note">Eva 开源核心项目，为 EvaLauncher 等产品提供可控的 Agent Runtime 基础。</p>
           <div class="actions" aria-label="快捷入口">
             <a class="primary-action" href="docs/">了解 Eva-CLI</a>
             <a class="secondary-action" href="docs/README.md">阅读文档</a>
