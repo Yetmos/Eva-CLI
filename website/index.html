@@ -8,6 +8,29 @@
       name="description"
       content="Eva-CLI 是面向可热更新 Agent 运行时的开源 CLI，通过 Rust 核心、Lua 能力层、Topic EventBus 与动态 Adapter 统一调度 Agent、MCP、Skill 和硬件能力。"
     >
+    <script type="module">
+      // Import the functions you need from the SDKs you need
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-app.js";
+      import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-analytics.js";
+      // TODO: Add SDKs for Firebase products that you want to use
+      // https://firebase.google.com/docs/web/setup#available-libraries
+
+      // Your web app's Firebase configuration
+      // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+      const firebaseConfig = {
+        apiKey: "AIzaSyCeFl2liIETM6t5L9wVRA89b922UGGtzls",
+        authDomain: "eva-cli-7ad30.firebaseapp.com",
+        projectId: "eva-cli-7ad30",
+        storageBucket: "eva-cli-7ad30.firebasestorage.app",
+        messagingSenderId: "83967779785",
+        appId: "1:83967779785:web:6d27fdac0cff0e71b2be18",
+        measurementId: "G-08QR0NPT78"
+      };
+
+      // Initialize Firebase
+      const app = initializeApp(firebaseConfig);
+      const analytics = getAnalytics(app);
+    </script>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
