@@ -10,7 +10,7 @@
 
 ## 1. 方案定位
 
-本文是 `Rust与Lua事件总线智能体调度架构方案.md` 的外部 Agent 扩展子方案，解决 Lua Agent 如何调用 Claude、Codex、Gemini、本地模型、企业内部 Agent 等外部能力，并支持 Adapter 动态扩展。
+本文是 `Rust与Lua事件总线智能体调度架构方案.md` 的外部 Agent 扩展子方案，解决 Lua Agent 如何调用 Claude、Codex、Gemini、本地模型、内部 Agent 等外部能力，并支持 Adapter 动态扩展。
 
 核心结论：
 
@@ -453,7 +453,7 @@ Rust 负责启动固定命令、写入 JSON 请求、读取 JSON 响应、处理
 
 - Claude API。
 - Gemini API。
-- 企业内部 Agent 服务。
+- 内部 Agent 服务。
 - 本地模型 HTTP 服务。
 
 Rust 负责认证、重试、限流、超时、响应 schema 校验和错误映射。
@@ -480,7 +480,7 @@ MCP Adapter 用于把外部 MCP server 接入 Adapter 系统。它不是让 Lua 
 - 文件系统 MCP server。
 - 浏览器自动化 MCP server。
 - 数据库 MCP server。
-- 企业内部工具 MCP server。
+- 内部工具 MCP server。
 
 MCP 能力映射：
 

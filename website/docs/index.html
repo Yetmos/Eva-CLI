@@ -129,7 +129,7 @@
             <span class="feature-kicker">Adapter Layer</span>
             <h3>统一接入外部能力</h3>
             <p>
-              Claude、Codex、Gemini、本地模型、企业服务、MCP server、workflow skill 和硬件设备都通过受控 Adapter 暴露能力。
+              Claude、Codex、Gemini、本地模型、内部服务、MCP server、workflow skill 和硬件设备都通过受控 Adapter 暴露能力。
             </p>
           </article>
         </div>
@@ -151,7 +151,7 @@
           <article class="scenario-item">
             <span>02</span>
             <div>
-              <h3>企业内部工具与 Agent 网关</h3>
+              <h3>内部工具与 Agent 网关</h3>
               <p>将内部 HTTP 服务、自研 CLI、本地模型和团队工作流封装为 Adapter，通过 manifest、schema、policy 和审计控制可调用能力。</p>
             </div>
           </article>
@@ -202,7 +202,7 @@
           <h2 id="compare-title">与 LangGraph 的定位差异</h2>
         </div>
         <p class="compare-intro">
-          LangGraph 和 Eva-CLI 解决的问题有重叠，但抽象层级不同。LangGraph 更适合把 LLM 应用建模为显式状态图、节点和边；Eva-CLI 更关注本地或企业环境里的多 Agent 运行时、受控能力接入、热更新和进程级可靠性边界。
+          LangGraph 和 Eva-CLI 解决的问题有重叠，但抽象层级不同。LangGraph 更适合把 LLM 应用建模为显式状态图、节点和边；Eva-CLI 更关注本地环境里的多 Agent 运行时、受控能力接入、热更新和进程级可靠性边界。
         </p>
 
         <div class="compare-cards">
@@ -217,7 +217,7 @@
             <span class="feature-kicker">Eva-CLI</span>
             <h3>更像受控的多 Agent 能力运行时</h3>
             <p>
-              Eva-CLI 以 Rust Runtime、Topic EventBus、Scheduler、Lua Agent 和 AdapterRegistry 为核心，把 MCP、Skill、CLI、HTTP、本地模型、企业服务和硬件设备统一纳入受控能力层。
+              Eva-CLI 以 Rust Runtime、Topic EventBus、Scheduler、Lua Agent 和 AdapterRegistry 为核心，把 MCP、Skill、CLI、HTTP、本地模型、内部服务和硬件设备统一纳入受控能力层。
             </p>
           </article>
         </div>
@@ -256,13 +256,13 @@
           <div class="compare-row" role="row">
             <span role="cell">更适合</span>
             <p role="cell">确定性或半确定性的 LLM 工作流、带 checkpoint 的长任务、人类确认节点、多轮 agent loop。</p>
-            <p role="cell">本地多 Agent 中枢、企业工具网关、MCP 双向集成、项目知识库、长期记忆、硬件与边缘设备自动化。</p>
+            <p role="cell">本地多 Agent 中枢、内部工具网关、MCP 双向集成、项目知识库、长期记忆、硬件与边缘设备自动化。</p>
           </div>
         </div>
 
         <div class="decision-grid" aria-label="选择建议">
           <p><strong>选择 LangGraph：</strong>当你要把一个应用流程清晰建模成图，并且需要成熟的 checkpoint、interrupt、streaming 和 LLM workflow 生态。</p>
-          <p><strong>选择 Eva-CLI：</strong>当你需要一个本地或企业级多 Agent runtime，把不同 Agent、工具、MCP、Skill 和硬件能力放进统一权限与审计边界。</p>
+          <p><strong>选择 Eva-CLI：</strong>当你需要一个本地多 Agent runtime，把不同 Agent、工具、MCP、Skill 和硬件能力放进统一权限与审计边界。</p>
           <p><strong>组合使用：</strong>LangGraph 可以作为某个 Adapter 或外部 Agent 被 Eva-CLI 调用；Eva-CLI 负责运行时边界，LangGraph 负责具体工作流图。</p>
         </div>
 

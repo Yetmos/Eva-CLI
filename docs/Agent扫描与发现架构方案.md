@@ -1482,7 +1482,7 @@ Rust 侧根据 AdapterRegistry 和 policy 决定是否允许调用。
 
 后续版本可以继续补：
 
-- 企业内部 Agent catalog，通过显式签名 manifest 接入。
+- 内部 Agent catalog，通过显式签名 manifest 接入。
 - 本地模型发现扩展，例如 LM Studio、llama.cpp server、vLLM 和 OpenAI-compatible endpoint。
 - capability registry 的机器可读文档和 CLI 查询。
 - discovery 结果 UI 页面。
