@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI command input logo</title>
+  <desc id="desc">A command line input box showing EVA and a cursor.</desc>
+  <defs>
+    <linearGradient id="shell" x1="96" y1="112" x2="416" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3a1418"/>
+      <stop offset="0.56" stop-color="#1f1115"/>
+      <stop offset="1" stop-color="#120b0d"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="80" y1="120" x2="432" y2="392" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fb7185"/>
+      <stop offset="0.52" stop-color="#dc2626"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <filter id="shadow" x="46" y="68" width="420" height="392" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="24" stdDeviation="22" flood-color="#7f1d1d" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="#fff5f5"/>
+  <rect x="68" y="92" width="376" height="328" rx="56" fill="#ffffff" filter="url(#shadow)"/>
+  <rect x="82" y="106" width="348" height="300" rx="44" fill="url(#edge)"/>
+  <rect x="98" y="122" width="316" height="268" rx="32" fill="url(#shell)"/>
+
+  <circle cx="136" cy="166" r="10" fill="#fb7185"/>
+  <circle cx="168" cy="166" r="10" fill="#f59e0b"/>
+  <circle cx="200" cy="166" r="10" fill="#7c3aed"/>
+  <rect x="128" y="198" width="256" height="132" rx="22" fill="#09090b" opacity="0.72"/>
+  <path d="M151 264l31-22-31-22" fill="none" stroke="#fb7185" stroke-linecap="round" stroke-linejoin="round" stroke-width="18"/>
+  <text x="203" y="287" fill="#ffffff" font-family="Consolas, Menlo, Monaco, 'Liberation Mono', monospace" font-size="76" font-weight="800" letter-spacing="0">EVA</text>
+  <rect x="348" y="224" width="16" height="80" rx="8" fill="#fb7185"/>
+</svg>
