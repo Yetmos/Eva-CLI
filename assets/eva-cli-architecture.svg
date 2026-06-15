@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 总体架构图</title>
+  <desc id="desc">Rust 托管运行时、Lua 热更新 Agent、Topic EventBus、动态 Adapter、MCP、记忆知识库、硬件接入和 Supervisor 高可用恢复的总览架构。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 700 34px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .subtitle { font: 400 16px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #526070; }
+      .section-title { font: 700 18px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #1b2a3a; }
+      .label { font: 700 15px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .small { font: 400 12px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #435466; }
+      .tiny { font: 400 11px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #526070; }
+      .mono { font: 500 12px Menlo, Consolas, monospace; fill: #38485a; }
+      .boundary { fill: #ffffff; stroke: #aab7c7; stroke-width: 2; stroke-dasharray: 8 7; }
+      .boundary-rust { fill: #fdfefe; stroke: #2f6fed; stroke-width: 2.5; stroke-dasharray: 10 7; }
+      .boundary-lua { fill: #fffdf8; stroke: #d89100; stroke-width: 2.2; stroke-dasharray: 8 6; }
+      .card { fill: #ffffff; stroke: #c7d1df; stroke-width: 1.6; rx: 8; }
+      .card-blue { fill: #eef5ff; stroke: #76a7f4; stroke-width: 1.8; rx: 8; }
+      .card-green { fill: #edf8f2; stroke: #6ec191; stroke-width: 1.8; rx: 8; }
+      .card-amber { fill: #fff8e7; stroke: #dfb052; stroke-width: 1.8; rx: 8; }
+      .card-red { fill: #fff0f0; stroke: #e28787; stroke-width: 1.8; rx: 8; }
+      .card-purple { fill: #f5f0ff; stroke: #a989e8; stroke-width: 1.8; rx: 8; }
+      .card-gray { fill: #f4f6f8; stroke: #b7c1cc; stroke-width: 1.6; rx: 8; }
+      .lane { fill: #eef1f5; stroke: #d0d8e3; stroke-width: 1; rx: 8; }
+      .arrow { stroke: #334155; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .arrow-blue { stroke: #2f6fed; stroke-width: 2.4; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-green { stroke: #218455; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+      .arrow-amber { stroke: #af7600; stroke-width: 2.2; fill: none; marker-end: url(#arrow-amber); }
+      .arrow-dash { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow-gray); }
+      .pill { fill: #ffffff; stroke: #ccd5df; stroke-width: 1.2; rx: 14; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f6fed"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#218455"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#af7600"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="1000"/>
+
+  <text class="title" x="60" y="56">Eva-CLI 总体架构</text>
+  <text class="subtitle" x="60" y="86">Rust 托管系统边界，Lua 承载热更新业务逻辑，Topic EventBus 解耦多 Agent 协作</text>
+
+  <rect class="lane" x="60" y="112" width="1480" height="82"/>
+  <text class="section-title" x="82" y="143">入口与控制面</text>
+  <rect class="card-blue" x="270" y="130" width="180" height="46"/>
+  <text class="label" x="296" y="158">CLI / API / UI</text>
+  <rect class="card-green" x="510" y="130" width="220" height="46"/>
+  <text class="label" x="535" y="158">Config / Hot Reload</text>
+  <rect class="card-amber" x="790" y="130" width="210" height="46"/>
+  <text class="label" x="820" y="158">OS Service Manager</text>
+  <rect class="card-amber" x="1070" y="130" width="180" height="46"/>
+  <text class="label" x="1110" y="158">Supervisor</text>
+  <rect class="card-purple" x="1310" y="130" width="170" height="46"/>
+  <text class="label" x="1352" y="158">MCP Client</text>
+
+  <rect class="boundary-rust" x="60" y="220" width="1480" height="642"/>
+  <text class="section-title" x="84" y="251">Rust 托管边界：Runtime / 权限 / Schema / Policy / Sandbox / 审计 / 超时 / 恢复</text>
+
+  <rect class="boundary" x="90" y="282" width="290" height="315"/>
+  <text class="section-title" x="114" y="314">发现与注册</text>
+  <rect class="card-green" x="120" y="335" width="230" height="58"/>
+  <text class="label" x="149" y="360">AgentDiscoveryService</text>
+  <text class="small" x="145" y="379">scanner / normalizer / health</text>
+  <rect class="card" x="120" y="421" width="230" height="72"/>
+  <text class="label" x="152" y="447">扫描来源</text>
+  <text class="small" x="137" y="468">config/agents, adapters</text>
+  <text class="small" x="137" y="486">skills, prompts, MCP, PATH</text>
+  <rect class="card-blue" x="120" y="522" width="230" height="50"/>
+  <text class="label" x="147" y="552">Schema + Policy Precheck</text>
+
+  <rect class="boundary" x="420" y="282" width="585" height="520"/>
+  <text class="section-title" x="444" y="314">运行时数据面</text>
+  <rect class="card-amber" x="455" y="338" width="210" height="58"/>
+  <text class="label" x="501" y="363">Ingress Gate</text>
+  <text class="small" x="478" y="382">generation / sticky routing</text>
+  <rect class="card-blue" x="455" y="438" width="245" height="66"/>
+  <text class="label" x="489" y="463">Recoverable EventBus</text>
+  <text class="mono" x="485" y="484">Event { topic, payload, meta }</text>
+  <rect class="card-blue" x="455" y="546" width="245" height="66"/>
+  <text class="label" x="525" y="571">Scheduler</text>
+  <text class="small" x="491" y="592">target / Topic pattern / load</text>
+  <rect class="boundary-lua" x="730" y="338" width="240" height="384"/>
+  <text class="section-title" x="756" y="369">Lua 沙箱边界</text>
+  <rect class="card-amber" x="755" y="395" width="190" height="72"/>
+  <text class="label" x="795" y="421">Agent Runtime</text>
+  <text class="small" x="785" y="442">独立 Lua State</text>
+  <text class="small" x="785" y="459">私有 Inbox Queue</text>
+  <rect class="card-amber" x="755" y="492" width="190" height="78"/>
+  <text class="label" x="806" y="518">on_event</text>
+  <text class="small" x="781" y="539">局部状态 / 编排</text>
+  <text class="small" x="781" y="556">ctx.emit 发布 Topic</text>
+  <rect class="card-amber" x="755" y="596" width="190" height="82"/>
+  <text class="label" x="783" y="622">Lua Capability</text>
+  <text class="small" x="780" y="643">lua_tool / lua_skill</text>
+  <text class="small" x="780" y="660">lua_mcp_handler</text>
+  <text class="tiny" x="757" y="704">禁止直接访问 shell / 网络 / 密钥 / raw IO</text>
+
+  <rect class="boundary" x="1045" y="282" width="465" height="520"/>
+  <text class="section-title" x="1068" y="314">受控能力与外部世界</text>
+  <rect class="card-blue" x="1075" y="338" width="185" height="58"/>
+  <text class="label" x="1117" y="363">Rust Tool Layer</text>
+  <text class="small" x="1101" y="382">ctx.tools / ctx.host</text>
+  <rect class="card-blue" x="1300" y="338" width="175" height="58"/>
+  <text class="label" x="1330" y="363">MCP Server</text>
+  <text class="small" x="1326" y="382">auth / tools / schema</text>
+  <rect class="card-purple" x="1075" y="438" width="400" height="74"/>
+  <text class="label" x="1210" y="464">AdapterRegistry / AdapterRouter</text>
+  <text class="small" x="1130" y="486">manifest + capability + policy + transport + protocol + runtime state</text>
+  <rect class="card" x="1075" y="548" width="122" height="56"/>
+  <text class="label" x="1105" y="573">Builtin</text>
+  <text class="tiny" x="1102" y="591">Rust tools</text>
+  <rect class="card" x="1212" y="548" width="122" height="56"/>
+  <text class="label" x="1245" y="573">Stdio</text>
+  <text class="tiny" x="1234" y="591">Codex / Claude</text>
+  <rect class="card" x="1349" y="548" width="122" height="56"/>
+  <text class="label" x="1385" y="573">HTTP</text>
+  <text class="tiny" x="1374" y="591">API / LLM</text>
+  <rect class="card" x="1075" y="628" width="122" height="56"/>
+  <text class="label" x="1097" y="653">EventBus</text>
+  <text class="tiny" x="1097" y="671">Internal Agent</text>
+  <rect class="card" x="1212" y="628" width="122" height="56"/>
+  <text class="label" x="1247" y="653">MCP</text>
+  <text class="tiny" x="1233" y="671">tools/resources</text>
+  <rect class="card" x="1349" y="628" width="122" height="56"/>
+  <text class="label" x="1385" y="653">Skill</text>
+  <text class="tiny" x="1374" y="671">workflow</text>
+  <rect class="card-red" x="1075" y="708" width="185" height="64"/>
+  <text class="label" x="1112" y="735">HardwareAdapter</text>
+  <text class="small" x="1097" y="755">USB / Serial / BLE</text>
+  <rect class="card-amber" x="1290" y="708" width="185" height="64"/>
+  <text class="label" x="1325" y="735">LuaCapability</text>
+  <text class="small" x="1316" y="755">generation swap</text>
+
+  <rect class="boundary" x="90" y="632" width="290" height="170"/>
+  <text class="section-title" x="114" y="664">硬件发现</text>
+  <rect class="card-red" x="120" y="684" width="230" height="48"/>
+  <text class="label" x="144" y="713">HardwareDiscoveryService</text>
+  <rect class="card-red" x="120" y="750" width="230" height="34"/>
+  <text class="small" x="139" y="772">DeviceRegistry / DriverBinding</text>
+
+  <rect class="lane" x="60" y="888" width="1480" height="80"/>
+  <text class="section-title" x="82" y="918">状态、上下文、恢复与观测</text>
+  <rect class="card-green" x="295" y="910" width="165" height="38"/>
+  <text class="label" x="320" y="934">MemoryService</text>
+  <rect class="card-green" x="490" y="910" width="175" height="38"/>
+  <text class="label" x="513" y="934">KnowledgeService</text>
+  <rect class="card-green" x="695" y="910" width="165" height="38"/>
+  <text class="label" x="720" y="934">ContextBuilder</text>
+  <rect class="card-blue" x="900" y="910" width="185" height="38"/>
+  <text class="label" x="927" y="934">Durable Event Log</text>
+  <rect class="card-blue" x="1115" y="910" width="170" height="38"/>
+  <text class="label" x="1144" y="934">State / Snapshot</text>
+  <rect class="card-gray" x="1320" y="910" width="160" height="38"/>
+  <text class="label" x="1345" y="934">Audit / Metrics</text>
+
+  <path class="arrow-blue" d="M 450 153 L 510 153"/>
+  <path class="arrow-blue" d="M 620 176 L 235 335"/>
+  <path class="arrow-blue" d="M 350 365 C 410 365 400 470 455 470"/>
+  <path class="arrow-blue" d="M 360 153 C 360 230 560 250 560 338"/>
+  <path class="arrow-amber" d="M 1000 153 L 1070 153"/>
+  <path class="arrow-amber" d="M 1160 176 C 1160 220 560 245 560 338"/>
+  <path class="arrow-blue" d="M 560 396 L 575 438"/>
+  <path class="arrow-blue" d="M 575 504 L 575 546"/>
+  <path class="arrow-blue" d="M 700 579 L 755 431"/>
+  <path class="arrow-green" d="M 850 570 C 815 620 630 670 575 612"/>
+  <path class="arrow-green" d="M 945 532 C 1005 532 1018 367 1075 367"/>
+  <path class="arrow-blue" d="M 1260 367 L 1300 367"/>
+  <path class="arrow-blue" d="M 1167 396 L 1248 438"/>
+  <path class="arrow-blue" d="M 1275 512 L 1275 548"/>
+  <path class="arrow-amber" d="M 1380 176 C 1390 235 1390 285 1388 338"/>
+  <path class="arrow-green" d="M 350 708 C 420 708 405 470 455 470"/>
+  <path class="arrow-green" d="M 1168 708 C 1128 650 1040 620 970 632"/>
+  <path class="arrow-dash" d="M 775 910 C 785 845 820 760 850 678"/>
+  <path class="arrow-dash" d="M 992 910 C 930 852 740 792 620 504"/>
+  <path class="arrow-dash" d="M 1200 910 C 1180 840 1115 804 1160 772"/>
+  <path class="arrow-dash" d="M 1400 910 C 1370 830 1250 820 1165 772"/>
+  <path class="arrow-dash" d="M 575 438 C 520 390 420 365 350 365"/>
+
+  <rect class="pill" x="470" y="414" width="212" height="26"/>
+  <text class="tiny" x="492" y="431">accepted 前写 WAL / spool</text>
+  <rect class="pill" x="640" y="520" width="206" height="26"/>
+  <text class="tiny" x="657" y="537">投递到 Agent 私有队列</text>
+  <rect class="pill" x="870" y="590" width="165" height="26"/>
+  <text class="tiny" x="887" y="607">ctx.tools 调用能力</text>
+  <rect class="pill" x="330" y="560" width="182" height="26"/>
+  <text class="tiny" x="348" y="577">注册 Scheduler / Adapter</text>
+  <rect class="pill" x="124" y="804" width="225" height="26"/>
+  <text class="tiny" x="142" y="821">设备事件发布 /hardware/**</text>
+
+  <rect class="card-gray" x="90" y="820" width="330" height="42"/>
+  <text class="tiny" x="110" y="838">Topic 示例：/input/user /task/created /adapter/invoke</text>
+  <text class="tiny" x="110" y="855">/hardware/** /sys/route-a /mcp/tool/called</text>
+
+  <rect class="card-gray" x="1045" y="820" width="465" height="42"/>
+  <text class="tiny" x="1065" y="838">热更新边界：Lua 脚本、manifest 可热加载字段、路由和 registry generation</text>
+  <text class="tiny" x="1065" y="855">权限扩大、transport、状态 backend、sandbox 变化需要 Runtime generation 切流</text>
+</svg>

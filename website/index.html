@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Eva-CLI</title>
+    <meta
+      name="description"
+      content="Eva-CLI 是面向可热更新 Agent 运行时的开源 CLI，通过 Rust 核心、Lua 能力层、Topic EventBus 与动态 Adapter 统一调度 Agent、MCP、Skill 和硬件能力。"
+    >
+    <script type="module">
+      // Import the functions you need from the SDKs you need
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-app.js";
+      import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-analytics.js";
+      // TODO: Add SDKs for Firebase products that you want to use
+      // https://firebase.google.com/docs/web/setup#available-libraries
+
+      // Your web app's Firebase configuration
+      // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+      const firebaseConfig = {
+        apiKey: "AIzaSyCeFl2liIETM6t5L9wVRA89b922UGGtzls",
+        authDomain: "eva-cli-7ad30.firebaseapp.com",
+        projectId: "eva-cli-7ad30",
+        storageBucket: "eva-cli-7ad30.firebasestorage.app",
+        messagingSenderId: "83967779785",
+        appId: "1:83967779785:web:6d27fdac0cff0e71b2be18",
+        measurementId: "G-08QR0NPT78"
+      };
+
+      // Initialize Firebase
+      const app = initializeApp(firebaseConfig);
+      const analytics = getAnalytics(app);
+    </script>
+    <link rel="icon" type="image/svg+xml" href="assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="Eva-CLI home">
+        <img src="assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span>Eva-CLI</span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="docs/">介绍</a>
+        <a href="docs/README.md">文档</a>
+        <a href="docs/总体架构方案.md">架构</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div class="intro-copy">
+          <p class="eyebrow">Open source agent runtime</p>
+          <h1>Eva-CLI</h1>
+          <p class="tagline">多Agent调度中枢</p>
+          <p class="lead">
+            为多 Agent 协作而设计的可扩展运行时：用 Rust 承载稳定核心，用 Lua 交付热更新能力，并通过统一事件总线连接外部 Agent、MCP、Skill 与硬件设备。
+          </p>
+          <p class="family-note">Eva 开源核心项目，为 EvaLauncher 等产品提供可控的 Agent Runtime 基础。</p>
+          <div class="actions" aria-label="快捷入口">
+            <a class="primary-action" href="docs/">了解 Eva-CLI</a>
+            <a class="secondary-action" href="docs/README.md">阅读文档</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="architecture" aria-labelledby="architecture-title">
+        <div class="section-heading">
+          <p class="eyebrow">Architecture</p>
+          <h2 id="architecture-title">从运行时到能力接入</h2>
+        </div>
+        <figure class="diagram">
+          <img src="assets/eva-cli-architecture.svg" alt="Eva-CLI 总体架构图">
+        </figure>
+      </section>
+
+      <section class="doc-grid" aria-labelledby="docs-title">
+        <div class="section-heading">
+          <p class="eyebrow">Docs</p>
+          <h2 id="docs-title">按主题阅读架构文档</h2>
+        </div>
+        <div class="links-grid">
+          <a class="doc-link" href="docs/总体架构方案.md">
+            <span>总体架构</span>
+            <small>快速了解系统目标、模块边界和核心运行链路</small>
+          </a>
+          <a class="doc-link" href="docs/Rust与Lua事件总线智能体调度架构方案.md">
+            <span>Runtime 与 EventBus</span>
+            <small>梳理 Rust 核心、Lua Agent、Topic 路由与调度模型</small>
+          </a>
+          <a class="doc-link" href="docs/Lua调用外部Agent动态Adapter架构方案.md">
+            <span>动态 Adapter</span>
+            <small>统一接入外部 Agent、CLI、HTTP、MCP 与 Skill 能力</small>
+          </a>
+          <a class="doc-link" href="docs/Lua承载Skill-MCP-Tool热更新架构方案.md">
+            <span>Lua Capability</span>
+            <small>定义 Tool、Skill、MCP handler 的热更新边界</small>
+          </a>
+          <a class="doc-link" href="docs/Agent扫描与发现架构方案.md">
+            <span>扫描与发现</span>
+            <small>规范 Agent、Adapter、MCP 与 capability 的发现和注册流程</small>
+          </a>
+          <a class="doc-link" href="docs/项目配置方案.md">
+            <span>项目配置</span>
+            <small>沉淀 YAML、schema、policy、manifest 与热加载策略</small>
+          </a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
