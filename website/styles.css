@@ -50,9 +50,7 @@ a {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  font-size: 18px;
-  font-weight: 800;
+  gap: 12px;
   letter-spacing: 0;
 }
 
@@ -60,7 +58,28 @@ a {
   width: 38px;
   height: 38px;
   flex: 0 0 auto;
-  filter: drop-shadow(0 8px 16px var(--brand-shadow));
+  border-radius: 12px;
+  object-fit: cover;
+  box-shadow: 0 8px 24px rgba(220, 38, 38, 0.18);
+}
+
+.brand-copy {
+  display: grid;
+  gap: 1px;
+  line-height: 1.12;
+}
+
+.brand-name {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.brand-tagline {
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .site-nav {
