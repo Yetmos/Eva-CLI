@@ -47,6 +47,7 @@
         <a href="docs/">介绍</a>
         <a href="docs/README.md">文档</a>
         <a href="docs/总体架构方案.md">架构</a>
+        <a href="#feedback">反馈</a>
         <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
       </nav>
     </header>
@@ -63,6 +64,7 @@
           <div class="actions" aria-label="快捷入口">
             <a class="primary-action" href="docs/">了解 Eva-CLI</a>
             <a class="secondary-action" href="docs/README.md">阅读文档</a>
+            <a class="secondary-action" href="#feedback">反馈建议</a>
           </div>
         </div>
       </section>
@@ -113,6 +115,83 @@
           </a>
         </div>
       </section>
+
+      <section class="feedback-section" id="feedback" aria-labelledby="feedback-title">
+        <div class="feedback-copy">
+          <p class="eyebrow">Feedback</p>
+          <h2 id="feedback-title">反馈和建议</h2>
+          <p class="section-copy">
+            如果你对 Eva-CLI 的文档、架构方案或使用场景有建议，可以通过表单生成反馈邮件，也可以直接发送到联系邮箱。
+          </p>
+          <p class="contact-line">
+            <span>联系邮箱</span>
+            <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>
+          </p>
+        </div>
+        <form class="feedback-form" data-feedback-form action="mailto:iyetmos@gmail.com" method="post" enctype="text/plain">
+          <div class="field-grid">
+            <label class="field">
+              <span>反馈类型</span>
+              <select name="category" required>
+                <option value="功能建议">功能建议</option>
+                <option value="问题反馈">问题反馈</option>
+                <option value="文档建议">文档建议</option>
+                <option value="合作交流">合作交流</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>联系方式</span>
+              <input name="contact" type="text" autocomplete="email" placeholder="邮箱或其他联系方式（可选）">
+            </label>
+          </div>
+          <label class="field">
+            <span>主题</span>
+            <input name="subject" type="text" required placeholder="例如：希望补充快速开始示例">
+          </label>
+          <label class="field">
+            <span>反馈内容</span>
+            <textarea name="message" required placeholder="请描述你的建议、遇到的问题或希望补充的内容"></textarea>
+          </label>
+          <button class="primary-action feedback-submit" type="submit">发送反馈邮件</button>
+          <p class="form-note">提交后会打开本地邮件客户端，邮件将发送至 iyetmos@gmail.com。</p>
+        </form>
+      </section>
     </main>
+    <footer class="site-footer">
+      <span>反馈和建议：<a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="#feedback">提交反馈</a>
+    </footer>
+    <script>
+      (() => {
+        const form = document.querySelector("[data-feedback-form]");
+        const feedbackEmail = "iyetmos@gmail.com";
+
+        if (!form) {
+          return;
+        }
+
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+
+          const formData = new FormData(form);
+          const category = String(formData.get("category") || "其他").trim();
+          const contact = String(formData.get("contact") || "未填写").trim();
+          const subject = String(formData.get("subject") || "反馈和建议").trim();
+          const message = String(formData.get("message") || "").trim();
+          const body = [
+            `反馈类型：${category}`,
+            `联系方式：${contact || "未填写"}`,
+            "",
+            "反馈内容：",
+            message
+          ].join("\n");
+          const emailSubject = encodeURIComponent(`[Eva-CLI反馈] ${subject}`);
+          const emailBody = encodeURIComponent(body);
+
+          window.location.href = `mailto:${feedbackEmail}?subject=${emailSubject}&body=${emailBody}`;
+        });
+      })();
+    </script>
   </body>
 </html>
