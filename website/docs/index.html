@@ -6,7 +6,7 @@
     <title>Eva-CLI | 多Agent调度中枢</title>
     <meta
       name="description"
-      content="Eva-CLI 是面向可热更新多 Agent 运行时的开源 CLI 架构方案，用 Rust 托管系统边界，用 Lua 承载业务逻辑，并通过 Topic EventBus 连接 Agent、MCP、Skill、外部工具和硬件能力。"
+      content="Eva-CLI 是面向可热更新多 Agent 运行时的开源 CLI 架构方案，用 Rust 托管系统边界、记忆事实源和知识库上下文，用 Lua 承载业务逻辑，并通过 Topic EventBus 连接 Agent、MCP、Skill、外部工具和硬件能力。"
     >
     <script type="module">
       import { initializeApp } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-app.js";
@@ -52,11 +52,12 @@
           <h1 id="promo-title">Eva-CLI</h1>
           <p class="tagline">多Agent调度中枢</p>
           <p class="promo-subtitle">
-            面向可热更新多 Agent 协作的开源 CLI 运行时方案。用 Rust 守住权限、调度和可靠性边界，用 Lua 承载可快速迭代的业务 Agent，并通过 Topic EventBus 连接 MCP、Skill、外部工具、本地模型和硬件能力。
+            面向可热更新多 Agent 协作的开源 CLI 运行时方案。用 Rust 守住权限、调度、可靠性和记忆事实源边界，用 Lua 承载可快速迭代的业务 Agent，并通过 Topic EventBus 连接 MCP、Skill、外部工具、本地模型和硬件能力。
           </p>
           <div class="hero-points" aria-label="核心能力">
             <span>Rust 托管边界</span>
             <span>Lua 热更新业务</span>
+            <span>受控记忆与知识库</span>
             <span>MCP / Skill / 硬件接入</span>
           </div>
           <div class="actions" aria-label="项目入口">
@@ -73,6 +74,7 @@
             <li><b>Input</b><span>CLI / API / UI / 外部事件</span></li>
             <li><b>EventBus</b><span>Topic 路由与链路追踪</span></li>
             <li><b>Scheduler</b><span>投递到 Agent 私有队列</span></li>
+            <li><b>Context</b><span>注入受控记忆与知识上下文</span></li>
             <li><b>Lua Agent</b><span>业务意图与局部编排</span></li>
             <li><b>Adapter</b><span>MCP / Skill / CLI / 硬件</span></li>
           </ol>
@@ -131,6 +133,13 @@
               Claude、Codex、Gemini、本地模型、内部服务、MCP server、workflow skill 和硬件设备都通过受控 Adapter 暴露能力。
             </p>
           </article>
+          <article class="feature-item">
+            <span class="feature-kicker">Memory Service</span>
+            <h3>长期记忆由 Runtime 托管</h3>
+            <p>
+              Agent 私有记忆、系统总记忆库和知识库由 Rust 的 MemoryService、KnowledgeService 和 ContextBuilder 管理，Lua Agent 只通过受控 API 使用。
+            </p>
+          </article>
         </div>
       </section>
 
@@ -165,7 +174,7 @@
             <span>04</span>
             <div>
               <h3>项目知识库与长期记忆</h3>
-              <p>将项目文档、设计方案、运行手册、Agent 私有记忆和系统级长期记忆纳入 ContextBuilder，为多 Agent 协作提供可溯源上下文。</p>
+              <p>将项目文档、设计方案、运行手册、Agent 私有记忆和系统级长期记忆纳入 Runtime 托管的 ContextBuilder，为多 Agent 协作提供可溯源上下文。</p>
             </div>
           </article>
           <article class="scenario-item">
@@ -183,13 +192,14 @@
           <p class="eyebrow">Architecture</p>
           <h2 id="architecture-title">一条清晰的运行链路</h2>
           <p class="section-copy">
-            Eva-CLI 将发现、调度、执行和扩展拆成独立层次：发现层负责扫描和校验，调度层负责 Topic 路由，执行层运行 Lua Agent，扩展层通过 Adapter 接入外部能力。Lua 只表达业务意图，Rust 负责权限、协议、生命周期和审计。
+            Eva-CLI 将发现、调度、执行、记忆和扩展拆成独立层次：发现层负责扫描和校验，调度层负责 Topic 路由，执行层运行 Lua Agent，记忆层由 Runtime 托管事实源和上下文构建，扩展层通过 Adapter 接入外部能力。Lua 只表达业务意图，Rust 负责权限、协议、生命周期、审计和长期记忆一致性。
           </p>
         </div>
         <ol class="flow-list">
           <li><strong>发现能力</strong><span>扫描 Agent、Adapter、MCP、Skill 和硬件 manifest。</span></li>
           <li><strong>发布事件</strong><span>CLI、API、UI 或外部系统写入 Topic Event。</span></li>
           <li><strong>调度 Agent</strong><span>Scheduler 按 Topic、target、优先级和负载投递到私有队列。</span></li>
+          <li><strong>构建上下文</strong><span>ContextBuilder 按 policy 注入私有记忆、全局记忆和知识库检索结果。</span></li>
           <li><strong>调用工具</strong><span>Lua Agent 通过 Rust Tool Layer 调用受控 Adapter。</span></li>
           <li><strong>观测恢复</strong><span>审计、指标、状态快照、重放和 generation 切流保障可恢复性。</span></li>
         </ol>
@@ -235,7 +245,7 @@
           <div class="compare-row" role="row">
             <span role="cell">状态模型</span>
             <p role="cell">状态是图运行的核心数据结构；checkpointer 保存线程内图状态，store 可承载跨线程长期记忆。</p>
-            <p role="cell">Agent 局部状态、系统记忆库、知识库和事件日志分层管理；EventBus 只负责通知和链路，不作为业务状态存储。</p>
+            <p role="cell">Agent 局部状态、系统记忆库、知识库和事件日志分层管理；记忆事实源由 Rust Runtime 托管，Lua Agent 只通过 `ctx.memory`、`ctx.global_memory` 和 `ctx.knowledge` 使用，EventBus 只负责通知和链路。</p>
           </div>
           <div class="compare-row" role="row">
             <span role="cell">扩展方式</span>
@@ -281,7 +291,8 @@
         <div class="principle-grid">
           <p>Lua 不直接执行 shell、不读取密钥、不连接任意外部服务。</p>
           <p>MCP、Skill、CLI、HTTP 和硬件调用都必须经过 AdapterRegistry、Router、schema 和 policy。</p>
-          <p>EventBus 负责协作链路，不承担隐式全局状态或长期记忆存储。</p>
+          <p>记忆和知识库由 Runtime 托管，Lua Agent 只能写私有记忆或提出全局记忆 proposal。</p>
+          <p>EventBus 负责协作链路和变更通知，不承担隐式全局状态或长期记忆存储。</p>
           <p>热更新覆盖业务脚本和可热加载 manifest 字段，权限扩大和 transport 变化需要更严格的 runtime 切换。</p>
         </div>
       </section>
