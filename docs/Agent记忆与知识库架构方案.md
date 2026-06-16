@@ -1,6 +1,6 @@
 # Agent 记忆与知识库架构方案
 
-更新日期：2026-06-14
+更新日期：2026-06-16
 
 文档关系：
 
@@ -28,6 +28,18 @@
 - **知识库** 是可溯源资料索引，面向检索和引用，不应与记忆混为一体。
 - **EventBus 不存记忆**，只发布记忆变更、知识索引和上下文构建相关事件。
 - **Lua Agent 不直接访问数据库或向量索引**，所有读写通过 Rust 托管的 MemoryService、KnowledgeService 和 ContextBuilder。
+
+### 1.1 Runtime 与 LuaAgent 职责分工
+
+记忆模块的事实源和策略边界应放在 **Runtime / Rust**，不放在 LuaAgent。记忆涉及跨 Agent 一致性、权限、持久化、审计、敏感信息过滤、事件重放幂等和 Runtime generation 切流，这些都是系统边界能力，而不是单个 Agent 的业务脚本职责。
+
+职责划分如下：
+
+- **Runtime / Rust 负责事实源和规则**：MemoryService、KnowledgeService、ContextBuilder、MemoryPolicy、持久化、索引、去重、冲突处理、TTL、审计、敏感内容拒绝、schema migration 和 generation 可见性。
+- **LuaAgent 负责业务意图和局部编排**：决定何时检索记忆、如何使用注入上下文、写入当前 Agent 的私有记忆、提出全局记忆 proposal，并根据业务事件发布后续 Topic。
+- **EventBus 负责通知和链路**：发布 `/memory/proposed`、`/memory/updated`、`/memory/rejected`、`/knowledge/indexed` 等事件，但不保存记忆事实源，也不承担索引或权限判断。
+
+因此，LuaAgent 可以拥有临时运行时变量和局部推理状态，但凡是跨事件、跨版本、跨 Agent、需要恢复或审计的数据，都必须通过 Runtime 托管的记忆服务落库。
 
 ## 2. 目标与非目标
 
