@@ -393,6 +393,7 @@ h3 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 18px;
   width: min(1120px, calc(100% - 32px));
   margin: 0 auto;
