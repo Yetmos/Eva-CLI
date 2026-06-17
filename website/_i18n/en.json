@@ -19,6 +19,25 @@
     "heroTitle": "Eva-CLI",
     "heroTagline": "A controlled runtime for multi-Agent automation",
     "heroLead": "Eva-CLI uses Rust for reliable runtime boundaries and Lua for hot-reloadable Agent behavior, then connects external Agents, MCP servers, skills, memory, knowledge bases, and hardware through a unified Topic EventBus.",
+    "heroHighlights": ["Rust runtime boundary", "Lua hot reload", "Topic EventBus"],
+    "runtimePanelLabel": "Runtime map",
+    "runtimePanelKicker": "Execution model",
+    "runtimePanelTitle": "Controlled automation path",
+    "runtimeSteps": [
+      {
+        "label": "Rust Core",
+        "description": "Owns policy, memory, recovery, and process boundaries."
+      },
+      {
+        "label": "Lua Agents",
+        "description": "Hot-reloads behavior while keeping capability access explicit."
+      },
+      {
+        "label": "Adapters",
+        "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
+      }
+    ],
+    "runtimePanelNote": "Architecture specs are organized for implementation planning and review.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",

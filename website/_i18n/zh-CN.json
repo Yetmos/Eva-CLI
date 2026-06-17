@@ -19,6 +19,25 @@
     "heroTitle": "Eva-CLI",
     "heroTagline": "面向多 Agent 自动化的受控运行时",
     "heroLead": "Eva-CLI 用 Rust 承载可靠运行时边界，用 Lua 承载可热更新 Agent 行为，并通过统一 Topic EventBus 连接外部 Agent、MCP、Skill、记忆、知识库与硬件能力。",
+    "heroHighlights": ["Rust 运行时边界", "Lua 热更新", "Topic EventBus"],
+    "runtimePanelLabel": "运行时路径",
+    "runtimePanelKicker": "执行模型",
+    "runtimePanelTitle": "受控自动化链路",
+    "runtimeSteps": [
+      {
+        "label": "Rust Core",
+        "description": "托管 policy、记忆、恢复和进程边界。"
+      },
+      {
+        "label": "Lua Agents",
+        "description": "热更新 Agent 行为，同时保持能力访问显式可控。"
+      },
+      {
+        "label": "Adapters",
+        "description": "通过权限边界接入 CLI、MCP、HTTP、Skill 与硬件。"
+      }
+    ],
+    "runtimePanelNote": "架构文档围绕实现规划和评审组织。",
     "actionsLabel": "项目入口",
     "primaryAction": "阅读文档",
     "secondaryAction": "总体架构",

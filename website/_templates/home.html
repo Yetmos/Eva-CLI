@@ -32,16 +32,29 @@
     </header>
 
     <main>
-      <section class="intro">
+      <section class="intro" aria-labelledby="home-title">
         <div class="intro-copy">
           <p class="eyebrow">{{heroEyebrow}}</p>
-          <h1>{{heroTitle}}</h1>
+          <h1 id="home-title">{{heroTitle}}</h1>
           <p class="tagline">{{heroTagline}}</p>
           <p class="lead">{{heroLead}}</p>
+          <div class="hero-points" aria-label="Runtime highlights">
+{{heroHighlights}}
+          </div>
           <div class="actions" aria-label="{{actionsLabel}}">
 {{heroActions}}
           </div>
         </div>
+        <aside class="runtime-panel hero-runtime-panel" aria-label="{{runtimePanelLabel}}">
+          <div class="panel-heading">
+            <span class="status-label">{{runtimePanelKicker}}</span>
+            <strong>{{runtimePanelTitle}}</strong>
+          </div>
+          <ol class="runtime-steps">
+{{runtimeSteps}}
+          </ol>
+          <p class="stage-note">{{runtimePanelNote}}</p>
+        </aside>
       </section>
 
       <section class="architecture" aria-labelledby="architecture-title">

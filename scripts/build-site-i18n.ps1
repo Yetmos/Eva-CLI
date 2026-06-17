@@ -333,6 +333,33 @@ function New-FeedbackOptions {
   return ($items -join "`n")
 }
 
+function New-HeroHighlights {
+  param([Parameter(Mandatory = $true)]$Highlights)
+
+  $items = New-Object System.Collections.Generic.List[string]
+  foreach ($highlight in $Highlights) {
+    $items.Add("            <span>$(Html $highlight)</span>")
+  }
+
+  return ($items -join "`n")
+}
+
+function New-RuntimeSteps {
+  param([Parameter(Mandatory = $true)]$Steps)
+
+  $items = New-Object System.Collections.Generic.List[string]
+  foreach ($step in $Steps) {
+    $items.Add(@"
+            <li>
+              <b>$(Html $step.label)</b>
+              <span>$(Html $step.description)</span>
+            </li>
+"@)
+  }
+
+  return ($items -join "`n")
+}
+
 function New-LanguageList {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -446,6 +473,12 @@ foreach ($locale in $locales) {
     heroTitle = Html $localeData.home.heroTitle
     heroTagline = Html $localeData.home.heroTagline
     heroLead = Html $localeData.home.heroLead
+    heroHighlights = New-HeroHighlights -Highlights $localeData.home.heroHighlights
+    runtimePanelLabel = Html $localeData.home.runtimePanelLabel
+    runtimePanelKicker = Html $localeData.home.runtimePanelKicker
+    runtimePanelTitle = Html $localeData.home.runtimePanelTitle
+    runtimeSteps = New-RuntimeSteps -Steps $localeData.home.runtimeSteps
+    runtimePanelNote = Html $localeData.home.runtimePanelNote
     actionsLabel = Html $localeData.home.actionsLabel
     heroActions = @"
             <a class="primary-action" href="$(Html $docsHref)">$(Html $localeData.home.primaryAction)</a>
