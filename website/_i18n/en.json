@@ -1,0 +1,161 @@
+{
+  "meta": {
+    "title": "Eva-CLI | Multi-Agent Runtime",
+    "description": "Eva-CLI is an open-source CLI architecture for hot-reloadable multi-Agent runtimes, combining a Rust core, Lua capability layer, Topic EventBus, controlled memory and knowledge services, and dynamic adapters."
+  },
+  "brand": {
+    "tagline": "Multi-Agent Runtime"
+  },
+  "nav": {
+    "label": "Primary navigation",
+    "home": "Home",
+    "docs": "Docs",
+    "architecture": "Architecture",
+    "feedback": "Feedback"
+  },
+  "home": {
+    "heroEyebrow": "Open source agent runtime",
+    "heroTitle": "Eva-CLI",
+    "heroTagline": "A controlled runtime for multi-Agent automation",
+    "heroLead": "Eva-CLI uses Rust for reliable runtime boundaries and Lua for hot-reloadable Agent behavior, then connects external Agents, MCP servers, skills, memory, knowledge bases, and hardware through a unified Topic EventBus.",
+    "actionsLabel": "Project entrances",
+    "primaryAction": "Read the docs",
+    "secondaryAction": "Architecture overview",
+    "architectureEyebrow": "Architecture",
+    "architectureTitle": "From runtime boundary to controlled capabilities",
+    "architectureAlt": "Eva-CLI architecture diagram",
+    "docsEyebrow": "Docs",
+    "docsTitle": "Read by architecture topic",
+    "docCards": [
+      {
+        "id": "architecture-overview",
+        "title": "Architecture Overview",
+        "description": "System goals, module boundaries, runtime chain, safety principles, and open design contracts."
+      },
+      {
+        "id": "rust-lua-eventbus-scheduler",
+        "title": "Runtime and EventBus",
+        "description": "Rust core, Lua Agents, Topic routing, Scheduler behavior, and recoverable event delivery."
+      },
+      {
+        "id": "lua-external-agent-adapter",
+        "title": "Dynamic Adapter Layer",
+        "description": "Controlled access to external Agents, CLI tools, HTTP services, MCP servers, skills, and hardware."
+      },
+      {
+        "id": "lua-skill-mcp-tool-hot-reload",
+        "title": "Lua Capability Runtime",
+        "description": "Hot-reloadable Tool, Skill, and MCP handler behavior with Rust-owned permissions and rollback."
+      },
+      {
+        "id": "agent-memory-knowledge-base",
+        "title": "Memory and Knowledge",
+        "description": "Runtime-owned memory facts, knowledge retrieval, ContextBuilder policy, and Lua API boundaries."
+      },
+      {
+        "id": "agent-discovery",
+        "title": "Discovery and Registration",
+        "description": "How Agents, adapters, MCP servers, skills, and Lua capabilities are discovered and validated."
+      }
+    ]
+  },
+  "docsIndex": {
+    "metaTitle": "Eva-CLI Documentation",
+    "metaDescription": "Eva-CLI documentation entry for the English canonical source and localized documentation sets.",
+    "heroEyebrow": "Documentation",
+    "heroTitle": "Eva-CLI Documentation",
+    "heroLead": "Start with the English canonical source, then switch to localized documentation where translations are available.",
+    "actionsLabel": "Documentation actions",
+    "primaryAction": "Start with Architecture Overview",
+    "secondaryAction": "Open GitHub",
+    "languagePanelLabel": "Available languages",
+    "languagePanelKicker": "Languages",
+    "languagePanelTitle": "Choose a documentation language",
+    "fallbackNote": "Missing localized pages fall back to the English canonical source and are marked in the manifest.",
+    "documentsEyebrow": "Canonical Docs",
+    "documentsTitle": "English source documents",
+    "documents": [
+      {
+        "id": "readme",
+        "title": "Documentation Home",
+        "description": "Reading order, maintenance rules, and translation policy."
+      },
+      {
+        "id": "architecture-overview",
+        "title": "Architecture Overview",
+        "description": "The canonical entry for system goals, runtime boundaries, and core decisions."
+      },
+      {
+        "id": "rust-lua-eventbus-scheduler",
+        "title": "Rust, Lua, and EventBus Scheduler",
+        "description": "The Topic-driven Agent scheduling model."
+      },
+      {
+        "id": "lua-external-agent-adapter",
+        "title": "Lua External Agent Adapter",
+        "description": "How Lua Agents invoke external capabilities through Rust-controlled adapters."
+      },
+      {
+        "id": "lua-skill-mcp-tool-hot-reload",
+        "title": "Lua Skill, MCP, and Tool Hot Reload",
+        "description": "How Lua-hosted capabilities update safely through generation switching."
+      },
+      {
+        "id": "agent-memory-knowledge-base",
+        "title": "Agent Memory and Knowledge Base",
+        "description": "Memory ownership, context building, and knowledge retrieval boundaries."
+      },
+      {
+        "id": "agent-discovery",
+        "title": "Agent Discovery",
+        "description": "Discovery, normalization, validation, and registration rules."
+      },
+      {
+        "id": "hardware-hotplug",
+        "title": "Hardware Hotplug",
+        "description": "Controlled hardware adapter access and hotplug event handling."
+      },
+      {
+        "id": "project-configuration",
+        "title": "Project Configuration",
+        "description": "Configuration layout, schema validation, policy, and hot reload limits."
+      },
+      {
+        "id": "process-level-upgrade",
+        "title": "Process-Level Upgrade",
+        "description": "Supervisor, Runtime generations, draining, rollback, and durable recovery."
+      },
+      {
+        "id": "design-risk-review",
+        "title": "Design Risk Review",
+        "description": "Known architecture risks and required follow-up contracts."
+      },
+      {
+        "id": "website-docs-i18n",
+        "title": "Website and Documentation i18n",
+        "description": "The multilingual website and documentation migration plan."
+      }
+    ]
+  },
+  "feedback": {
+    "eyebrow": "Feedback",
+    "title": "Feedback and suggestions",
+    "body": "Send documentation, architecture, or use-case feedback by email. The repository is still in the design-spec stage, so clear constraints and missing contracts are especially useful.",
+    "contactLabel": "Contact email",
+    "categoryLabel": "Feedback type",
+    "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],
+    "contactField": "Contact",
+    "contactPlaceholder": "Email or another contact method (optional)",
+    "subjectLabel": "Subject",
+    "subjectPlaceholder": "For example: add a quick start example",
+    "messageLabel": "Message",
+    "messagePlaceholder": "Describe the suggestion, problem, or missing content.",
+    "submit": "Send feedback email",
+    "note": "Submitting opens your local email client and sends the message to iyetmos@gmail.com."
+  },
+  "footer": {
+    "author": "Author:",
+    "feedback": "Feedback:",
+    "submit": "Submit feedback"
+  }
+}

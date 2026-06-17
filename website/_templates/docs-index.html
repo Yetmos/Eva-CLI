@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="{{lang}}" dir="{{dir}}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{title}}</title>
+    <meta name="description" content="{{description}}">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="{{title}}">
+    <meta property="og:description" content="{{description}}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="{{canonicalUrl}}">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="{{canonicalUrl}}">
+{{alternateLinks}}
+    <link rel="icon" type="image/svg+xml" href="{{assetPrefix}}assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="{{assetPrefix}}styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="{{homeUrl}}" aria-label="Eva-CLI home">
+        <img src="{{assetPrefix}}assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">{{brandTagline}}</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="{{navLabel}}">
+{{navLinks}}
+      </nav>
+{{languageSwitch}}
+    </header>
+
+    <main class="promo-page docs-index-page">
+      <section class="promo-hero docs-hero" aria-labelledby="docs-index-title">
+        <div class="promo-hero-copy">
+          <p class="eyebrow">{{heroEyebrow}}</p>
+          <h1 id="docs-index-title">{{heroTitle}}</h1>
+          <p class="promo-subtitle">{{heroLead}}</p>
+          <div class="actions" aria-label="{{actionsLabel}}">
+{{heroActions}}
+          </div>
+        </div>
+        <aside class="runtime-panel" aria-label="{{languagePanelLabel}}">
+          <div class="panel-heading">
+            <span class="status-label">{{languagePanelKicker}}</span>
+            <strong>{{languagePanelTitle}}</strong>
+          </div>
+          <div class="language-list">
+{{languageList}}
+          </div>
+          <p class="stage-note">{{fallbackNote}}</p>
+        </aside>
+      </section>
+
+      <section class="promo-section" aria-labelledby="documents-title">
+        <div class="section-heading">
+          <p class="eyebrow">{{documentsEyebrow}}</p>
+          <h2 id="documents-title">{{documentsTitle}}</h2>
+        </div>
+        <div class="docs-list">
+{{documentLinks}}
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <span>{{footerAuthor}} <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>{{footerFeedback}} <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="{{feedbackUrl}}">{{footerSubmit}}</a>
+    </footer>
+  </body>
+</html>

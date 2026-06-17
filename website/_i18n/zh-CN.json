@@ -1,0 +1,161 @@
+{
+  "meta": {
+    "title": "Eva-CLI | 多 Agent 运行时",
+    "description": "Eva-CLI 是面向可热更新多 Agent 运行时的开源 CLI 架构方案，通过 Rust 核心、Lua 能力层、Topic EventBus、受控记忆知识库与动态 Adapter 统一调度 Agent、MCP、Skill 和硬件能力。"
+  },
+  "brand": {
+    "tagline": "多 Agent 运行时"
+  },
+  "nav": {
+    "label": "主导航",
+    "home": "首页",
+    "docs": "文档",
+    "architecture": "架构",
+    "feedback": "反馈"
+  },
+  "home": {
+    "heroEyebrow": "开源 Agent 运行时",
+    "heroTitle": "Eva-CLI",
+    "heroTagline": "面向多 Agent 自动化的受控运行时",
+    "heroLead": "Eva-CLI 用 Rust 承载可靠运行时边界，用 Lua 承载可热更新 Agent 行为，并通过统一 Topic EventBus 连接外部 Agent、MCP、Skill、记忆、知识库与硬件能力。",
+    "actionsLabel": "项目入口",
+    "primaryAction": "阅读文档",
+    "secondaryAction": "总体架构",
+    "architectureEyebrow": "架构",
+    "architectureTitle": "从运行时边界到受控能力接入",
+    "architectureAlt": "Eva-CLI 总体架构图",
+    "docsEyebrow": "文档",
+    "docsTitle": "按架构主题阅读",
+    "docCards": [
+      {
+        "id": "architecture-overview",
+        "title": "总体架构",
+        "description": "系统目标、模块边界、运行链路、安全原则和待补设计契约。"
+      },
+      {
+        "id": "rust-lua-eventbus-scheduler",
+        "title": "Runtime 与 EventBus",
+        "description": "Rust 核心、Lua Agent、Topic 路由、Scheduler 行为与可恢复事件投递。"
+      },
+      {
+        "id": "lua-external-agent-adapter",
+        "title": "动态 Adapter 层",
+        "description": "受控接入外部 Agent、CLI、HTTP、MCP、Skill 与硬件能力。"
+      },
+      {
+        "id": "lua-skill-mcp-tool-hot-reload",
+        "title": "Lua Capability Runtime",
+        "description": "Tool、Skill、MCP handler 的热更新行为、权限边界和回滚语义。"
+      },
+      {
+        "id": "agent-memory-knowledge-base",
+        "title": "记忆与知识库",
+        "description": "Runtime 托管记忆事实源、知识检索、ContextBuilder policy 和 Lua API 边界。"
+      },
+      {
+        "id": "agent-discovery",
+        "title": "扫描与发现",
+        "description": "Agent、Adapter、MCP、Skill 与 Lua capability 的发现、校验和注册规则。"
+      }
+    ]
+  },
+  "docsIndex": {
+    "metaTitle": "Eva-CLI 文档",
+    "metaDescription": "Eva-CLI 文档入口，提供英文 canonical source 和本地化文档集合。",
+    "heroEyebrow": "文档",
+    "heroTitle": "Eva-CLI 文档",
+    "heroLead": "建议先阅读英文 canonical source，再按可用翻译切换到本地化文档。",
+    "actionsLabel": "文档操作",
+    "primaryAction": "阅读总体架构",
+    "secondaryAction": "打开 GitHub",
+    "languagePanelLabel": "可用语言",
+    "languagePanelKicker": "语言",
+    "languagePanelTitle": "选择文档语言",
+    "fallbackNote": "缺失的本地化页面会显式回退到英文 canonical source，并在 manifest 中标记状态。",
+    "documentsEyebrow": "Canonical 文档",
+    "documentsTitle": "英文源文档",
+    "documents": [
+      {
+        "id": "readme",
+        "title": "文档首页",
+        "description": "阅读顺序、维护规则和翻译策略。"
+      },
+      {
+        "id": "architecture-overview",
+        "title": "总体架构",
+        "description": "系统目标、运行时边界和核心决策的 canonical 入口。"
+      },
+      {
+        "id": "rust-lua-eventbus-scheduler",
+        "title": "Rust、Lua 与 EventBus Scheduler",
+        "description": "Topic 驱动的 Agent 调度模型。"
+      },
+      {
+        "id": "lua-external-agent-adapter",
+        "title": "Lua 外部 Agent Adapter",
+        "description": "Lua Agent 如何通过 Rust 受控 Adapter 调用外部能力。"
+      },
+      {
+        "id": "lua-skill-mcp-tool-hot-reload",
+        "title": "Lua Skill、MCP 与 Tool 热更新",
+        "description": "Lua 承载能力如何通过 generation 切换安全更新。"
+      },
+      {
+        "id": "agent-memory-knowledge-base",
+        "title": "Agent 记忆与知识库",
+        "description": "记忆归属、上下文构建和知识检索边界。"
+      },
+      {
+        "id": "agent-discovery",
+        "title": "Agent 扫描与发现",
+        "description": "发现、归一化、校验和注册规则。"
+      },
+      {
+        "id": "hardware-hotplug",
+        "title": "硬件热插拔",
+        "description": "受控硬件 Adapter 接入与热插拔事件处理。"
+      },
+      {
+        "id": "project-configuration",
+        "title": "项目配置",
+        "description": "配置目录、schema 校验、policy 和热加载边界。"
+      },
+      {
+        "id": "process-level-upgrade",
+        "title": "进程级升级",
+        "description": "Supervisor、Runtime generation、draining、回滚和持久化恢复。"
+      },
+      {
+        "id": "design-risk-review",
+        "title": "方案设计风险评审",
+        "description": "已知架构风险与需要补齐的后续契约。"
+      },
+      {
+        "id": "website-docs-i18n",
+        "title": "网站与文档多语言适配",
+        "description": "多语言官网与文档迁移方案。"
+      }
+    ]
+  },
+  "feedback": {
+    "eyebrow": "反馈",
+    "title": "反馈和建议",
+    "body": "可以通过邮件反馈文档、架构方案或使用场景建议。仓库目前仍处于设计规范阶段，明确的约束和缺失契约尤其有价值。",
+    "contactLabel": "联系邮箱",
+    "categoryLabel": "反馈类型",
+    "categoryOptions": ["功能建议", "问题反馈", "文档建议", "合作交流", "其他"],
+    "contactField": "联系方式",
+    "contactPlaceholder": "邮箱或其他联系方式（可选）",
+    "subjectLabel": "主题",
+    "subjectPlaceholder": "例如：希望补充快速开始示例",
+    "messageLabel": "反馈内容",
+    "messagePlaceholder": "请描述你的建议、遇到的问题或希望补充的内容。",
+    "submit": "发送反馈邮件",
+    "note": "提交后会打开本地邮件客户端，邮件将发送至 iyetmos@gmail.com。"
+  },
+  "footer": {
+    "author": "作者：",
+    "feedback": "反馈：",
+    "submit": "提交反馈"
+  }
+}

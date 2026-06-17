@@ -1,0 +1,50 @@
+{
+  "terms": [
+    {
+      "id": "runtime",
+      "source": "Runtime",
+      "translations": {
+        "zh-CN": "Runtime"
+      },
+      "note": "Keep as the product architecture boundary term."
+    },
+    {
+      "id": "eventbus",
+      "source": "EventBus",
+      "translations": {
+        "zh-CN": "EventBus"
+      },
+      "note": "Do not translate protocol and component names."
+    },
+    {
+      "id": "adapter",
+      "source": "Adapter",
+      "translations": {
+        "zh-CN": "Adapter"
+      }
+    },
+    {
+      "id": "mcp",
+      "source": "MCP",
+      "translations": {
+        "zh-CN": "MCP"
+      }
+    },
+    {
+      "id": "topic",
+      "source": "Topic",
+      "translations": {
+        "zh-CN": "Topic"
+      },
+      "note": "Topic names and route strings must not be translated."
+    },
+    {
+      "id": "lua-binding",
+      "source": "Lua binding",
+      "translations": {
+        "zh-CN": "Lua binding"
+      },
+      "note": "Binding names and host API identifiers remain in code form."
+    }
+  ]
+}

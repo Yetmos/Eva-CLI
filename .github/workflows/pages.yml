@@ -9,6 +9,7 @@ on:
       - website/**
       - docs/**
       - assets/**
+      - scripts/**
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -28,6 +29,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Build localized website
+        shell: pwsh
+        run: ./scripts/build-site-i18n.ps1
+
+      - name: Validate i18n structure
+        shell: pwsh
+        run: ./scripts/validate-i18n.ps1
+
       - name: Build static site
         run: |
           mkdir -p public/docs
@@ -35,6 +44,7 @@ jobs:
           cp -R docs/. public/docs/
           cp -R website/docs/. public/docs/
           cp -R assets public/assets
+          rm -rf public/_templates public/_i18n
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

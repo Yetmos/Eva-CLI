@@ -1,37 +1,20 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Eva-CLI | 多Agent调度中枢</title>
-    <meta
-      name="description"
-      content="Eva-CLI 是面向可热更新 Agent 运行时的开源 CLI，通过 Rust 核心、Lua 能力层、Topic EventBus、受控记忆知识库与动态 Adapter 统一调度 Agent、MCP、Skill 和硬件能力。"
-    >
+    <title>Eva-CLI | Multi-Agent Runtime</title>
+    <meta name="description" content="Eva-CLI is an open-source CLI architecture for hot-reloadable multi-Agent runtimes, combining a Rust core, Lua capability layer, Topic EventBus, controlled memory and knowledge services, and dynamic adapters.">
     <meta name="author" content="Yetmos">
-    <script type="module">
-      // Import the functions you need from the SDKs you need
-      import { initializeApp } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-app.js";
-      import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-analytics.js";
-      // TODO: Add SDKs for Firebase products that you want to use
-      // https://firebase.google.com/docs/web/setup#available-libraries
-
-      // Your web app's Firebase configuration
-      // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-      const firebaseConfig = {
-        apiKey: "AIzaSyCeFl2liIETM6t5L9wVRA89b922UGGtzls",
-        authDomain: "eva-cli-7ad30.firebaseapp.com",
-        projectId: "eva-cli-7ad30",
-        storageBucket: "eva-cli-7ad30.firebasestorage.app",
-        messagingSenderId: "83967779785",
-        appId: "1:83967779785:web:6d27fdac0cff0e71b2be18",
-        measurementId: "G-08QR0NPT78"
-      };
-
-      // Initialize Firebase
-      const app = initializeApp(firebaseConfig);
-      const analytics = getAnalytics(app);
-    </script>
+    <meta property="og:title" content="Eva-CLI | Multi-Agent Runtime">
+    <meta property="og:description" content="Eva-CLI is an open-source CLI architecture for hot-reloadable multi-Agent runtimes, combining a Rust core, Lua capability layer, Topic EventBus, controlled memory and knowledge services, and dynamic adapters.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://Eva-CLI.com/">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/">
     <link rel="icon" type="image/svg+xml" href="assets/eva-cli-logo.svg">
     <link rel="stylesheet" href="styles.css">
   </head>
@@ -41,16 +24,23 @@
         <img src="assets/eva-cli-logo.svg" alt="" class="brand-mark">
         <span class="brand-copy">
           <span class="brand-name">Eva-CLI</span>
-          <span class="brand-tagline">多Agent调度中枢</span>
+          <span class="brand-tagline">Multi-Agent Runtime</span>
         </span>
       </a>
-      <nav class="site-nav" aria-label="主导航">
-        <a href="docs/">介绍</a>
-        <a href="docs/README.md">文档</a>
-        <a href="docs/总体架构方案.md">架构</a>
-        <a href="#feedback">反馈</a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="./">Home</a>
+        <a href="docs/">Docs</a>
+        <a href="docs/en/architecture-overview.md">Architecture</a>
+        <a href="#feedback">Feedback</a>
         <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
       </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="/" hreflang="en" lang="en" aria-current="page">English</a>
+          <a href="/zh-CN/" hreflang="zh-CN" lang="zh-CN">简体中文</a>
+        </div>
+      </div>
     </header>
 
     <main>
@@ -58,14 +48,12 @@
         <div class="intro-copy">
           <p class="eyebrow">Open source agent runtime</p>
           <h1>Eva-CLI</h1>
-          <p class="tagline">多Agent调度中枢</p>
-          <p class="lead">
-            为多 Agent 协作而设计的可扩展运行时：用 Rust 承载稳定核心和记忆事实源，用 Lua 交付热更新能力，并通过统一事件总线连接外部 Agent、MCP、Skill 与硬件设备。
-          </p>
-          <div class="actions" aria-label="快捷入口">
-            <a class="primary-action" href="docs/">了解 Eva-CLI</a>
-            <a class="secondary-action" href="docs/README.md">阅读文档</a>
-            <a class="secondary-action" href="#feedback">反馈建议</a>
+          <p class="tagline">A controlled runtime for multi-Agent automation</p>
+          <p class="lead">Eva-CLI uses Rust for reliable runtime boundaries and Lua for hot-reloadable Agent behavior, then connects external Agents, MCP servers, skills, memory, knowledge bases, and hardware through a unified Topic EventBus.</p>
+          <div class="actions" aria-label="Project entrances">
+            <a class="primary-action" href="docs/">Read the docs</a>
+            <a class="secondary-action" href="docs/en/architecture-overview.md">Architecture overview</a>
+            <a class="secondary-action" href="#feedback">Feedback</a>
           </div>
         </div>
       </section>
@@ -73,46 +61,42 @@
       <section class="architecture" aria-labelledby="architecture-title">
         <div class="section-heading">
           <p class="eyebrow">Architecture</p>
-          <h2 id="architecture-title">从运行时到能力接入</h2>
+          <h2 id="architecture-title">From runtime boundary to controlled capabilities</h2>
         </div>
         <figure class="diagram">
-          <img src="assets/eva-cli-architecture.svg" alt="Eva-CLI 总体架构图">
+          <img src="assets/eva-cli-architecture.svg" alt="Eva-CLI architecture diagram">
         </figure>
       </section>
 
       <section class="doc-grid" aria-labelledby="docs-title">
         <div class="section-heading">
           <p class="eyebrow">Docs</p>
-          <h2 id="docs-title">按主题阅读架构文档</h2>
+          <h2 id="docs-title">Read by architecture topic</h2>
         </div>
         <div class="links-grid">
-          <a class="doc-link" href="docs/总体架构方案.md">
-            <span>总体架构</span>
-            <small>快速了解系统目标、模块边界和核心运行链路</small>
+          <a class="doc-link" href="docs/en/architecture-overview.md">
+            <span>Architecture Overview</span>
+            <small>System goals, module boundaries, runtime chain, safety principles, and open design contracts.</small>
           </a>
-          <a class="doc-link" href="docs/Rust与Lua事件总线智能体调度架构方案.md">
-            <span>Runtime 与 EventBus</span>
-            <small>梳理 Rust 核心、Lua Agent、Topic 路由与调度模型</small>
+          <a class="doc-link" href="docs/en/rust-lua-eventbus-scheduler.md">
+            <span>Runtime and EventBus</span>
+            <small>Rust core, Lua Agents, Topic routing, Scheduler behavior, and recoverable event delivery.</small>
           </a>
-          <a class="doc-link" href="docs/Lua调用外部Agent动态Adapter架构方案.md">
-            <span>动态 Adapter</span>
-            <small>统一接入外部 Agent、CLI、HTTP、MCP 与 Skill 能力</small>
+          <a class="doc-link" href="docs/en/lua-external-agent-adapter.md">
+            <span>Dynamic Adapter Layer</span>
+            <small>Controlled access to external Agents, CLI tools, HTTP services, MCP servers, skills, and hardware.</small>
           </a>
-          <a class="doc-link" href="docs/Lua承载Skill-MCP-Tool热更新架构方案.md">
-            <span>Lua Capability</span>
-            <small>定义 Tool、Skill、MCP handler 的热更新边界</small>
+          <a class="doc-link" href="docs/en/lua-skill-mcp-tool-hot-reload.md">
+            <span>Lua Capability Runtime</span>
+            <small>Hot-reloadable Tool, Skill, and MCP handler behavior with Rust-owned permissions and rollback.</small>
           </a>
-          <a class="doc-link" href="docs/Agent记忆与知识库架构方案.md">
-            <span>记忆与知识库</span>
-            <small>明确 Runtime 托管记忆事实源、ContextBuilder 与 Lua API 边界</small>
+          <a class="doc-link" href="docs/en/agent-memory-knowledge-base.md">
+            <span>Memory and Knowledge</span>
+            <small>Runtime-owned memory facts, knowledge retrieval, ContextBuilder policy, and Lua API boundaries.</small>
           </a>
-          <a class="doc-link" href="docs/Agent扫描与发现架构方案.md">
-            <span>扫描与发现</span>
-            <small>规范 Agent、Adapter、MCP 与 capability 的发现和注册流程</small>
-          </a>
-          <a class="doc-link" href="docs/项目配置方案.md">
-            <span>项目配置</span>
-            <small>沉淀 YAML、schema、policy、manifest 与热加载策略</small>
+          <a class="doc-link" href="docs/en/agent-discovery.md">
+            <span>Discovery and Registration</span>
+            <small>How Agents, adapters, MCP servers, skills, and Lua capabilities are discovered and validated.</small>
           </a>
         </div>
       </section>
@@ -120,80 +104,47 @@
       <section class="feedback-section" id="feedback" aria-labelledby="feedback-title">
         <div class="feedback-copy">
           <p class="eyebrow">Feedback</p>
-          <h2 id="feedback-title">反馈和建议</h2>
-          <p class="section-copy">
-            如果你对 Eva-CLI 的文档、架构方案或使用场景有建议，可以通过表单生成反馈邮件，也可以直接发送到联系邮箱。
-          </p>
+          <h2 id="feedback-title">Feedback and suggestions</h2>
+          <p class="section-copy">Send documentation, architecture, or use-case feedback by email. The repository is still in the design-spec stage, so clear constraints and missing contracts are especially useful.</p>
           <p class="contact-line">
-            <span>联系邮箱</span>
+            <span>Contact email</span>
             <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>
           </p>
         </div>
-        <form class="feedback-form" data-feedback-form action="mailto:iyetmos@gmail.com" method="post" enctype="text/plain">
+        <form class="feedback-form" action="mailto:iyetmos@gmail.com" method="post" enctype="text/plain">
           <div class="field-grid">
             <label class="field">
-              <span>反馈类型</span>
+              <span>Feedback type</span>
               <select name="category" required>
-                <option value="功能建议">功能建议</option>
-                <option value="问题反馈">问题反馈</option>
-                <option value="文档建议">文档建议</option>
-                <option value="合作交流">合作交流</option>
-                <option value="其他">其他</option>
+                <option value="Feature suggestion">Feature suggestion</option>
+                <option value="Issue report">Issue report</option>
+                <option value="Documentation suggestion">Documentation suggestion</option>
+                <option value="Collaboration">Collaboration</option>
+                <option value="Other">Other</option>
               </select>
             </label>
             <label class="field">
-              <span>联系方式</span>
-              <input name="contact" type="text" autocomplete="email" placeholder="邮箱或其他联系方式（可选）">
+              <span>Contact</span>
+              <input name="contact" type="text" autocomplete="email" placeholder="Email or another contact method (optional)">
             </label>
           </div>
           <label class="field">
-            <span>主题</span>
-            <input name="subject" type="text" required placeholder="例如：希望补充快速开始示例">
+            <span>Subject</span>
+            <input name="subject" type="text" required placeholder="For example: add a quick start example">
           </label>
           <label class="field">
-            <span>反馈内容</span>
-            <textarea name="message" required placeholder="请描述你的建议、遇到的问题或希望补充的内容"></textarea>
+            <span>Message</span>
+            <textarea name="message" required placeholder="Describe the suggestion, problem, or missing content."></textarea>
           </label>
-          <button class="primary-action feedback-submit" type="submit">发送反馈邮件</button>
-          <p class="form-note">提交后会打开本地邮件客户端，邮件将发送至 iyetmos@gmail.com。</p>
+          <button class="primary-action feedback-submit" type="submit">Send feedback email</button>
+          <p class="form-note">Submitting opens your local email client and sends the message to iyetmos@gmail.com.</p>
         </form>
       </section>
     </main>
     <footer class="site-footer">
-      <span>作者：<a href="https://github.com/Yetmos">Yetmos</a></span>
-      <span>反馈和建议：<a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
-      <a href="#feedback">提交反馈</a>
+      <span>Author: <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>Feedback: <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="#feedback">Submit feedback</a>
     </footer>
-    <script>
-      (() => {
-        const form = document.querySelector("[data-feedback-form]");
-        const feedbackEmail = "iyetmos@gmail.com";
-
-        if (!form) {
-          return;
-        }
-
-        form.addEventListener("submit", (event) => {
-          event.preventDefault();
-
-          const formData = new FormData(form);
-          const category = String(formData.get("category") || "其他").trim();
-          const contact = String(formData.get("contact") || "未填写").trim();
-          const subject = String(formData.get("subject") || "反馈和建议").trim();
-          const message = String(formData.get("message") || "").trim();
-          const body = [
-            `反馈类型：${category}`,
-            `联系方式：${contact || "未填写"}`,
-            "",
-            "反馈内容：",
-            message
-          ].join("\n");
-          const emailSubject = encodeURIComponent(`[Eva-CLI反馈] ${subject}`);
-          const emailBody = encodeURIComponent(body);
-
-          window.location.href = `mailto:${feedbackEmail}?subject=${emailSubject}&body=${emailBody}`;
-        });
-      })();
-    </script>
   </body>
 </html>

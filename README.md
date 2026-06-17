@@ -1,6 +1,6 @@
 # Eva-CLI
 
-Eva-CLI 当前处于架构方案整理阶段，仓库内主要内容是 `docs/` 下的设计文档，还不是可运行实现。
+Eva-CLI 当前处于架构方案整理阶段，仓库内主要内容是 `docs/` 下的设计文档，还不是可运行实现。文档与官网已迁移为英语 canonical source + 多语言可扩展结构。
 
 官网：
 
@@ -22,7 +22,7 @@ Eva-CLI/
   .github/workflows/   # CI、部署和自动化工作流
 ```
 
-当前官网是零依赖静态页面。GitHub Pages 工作流会把 `website/`、`docs/` 和 `assets/` 组合后发布。
+当前官网是零运行时依赖静态页面。GitHub Pages 工作流会先运行 `scripts/build-site-i18n.ps1` 生成本地化 HTML，再运行 `scripts/validate-i18n.ps1` 校验结构，然后把 `website/`、`docs/` 和 `assets/` 组合后发布。
 
 ## 架构总览
 
@@ -32,33 +32,39 @@ Eva-CLI/
 
 ## 文档入口
 
-建议先按以下顺序阅读：
+默认文档入口：
 
-1. [总体架构方案](docs/总体架构方案.md)：先建立系统边界、核心模块和总体结论。
-2. [Rust 与 Lua 事件总线智能体调度架构方案](docs/Rust与Lua事件总线智能体调度架构方案.md)：理解 Runtime、EventBus、Scheduler、Lua Agent 和 Topic 路由。
-3. [Lua 调用外部 Agent 动态 Adapter 架构方案](docs/Lua调用外部Agent动态Adapter架构方案.md)：理解外部 Agent、CLI、HTTP、MCP、Skill 如何通过 Adapter 接入。
-4. [Lua 承载 Skill-MCP-Tool 热更新架构方案](docs/Lua承载Skill-MCP-Tool热更新架构方案.md)：理解 Tool、Lua Skill 和 MCP tool handler 如何下沉到 Lua 并热更新。
-5. [Agent 记忆与知识库架构方案](docs/Agent记忆与知识库架构方案.md)：理解 Agent 私有记忆、系统总记忆库、知识库和上下文构建边界。
-6. [Agent 扫描与发现架构方案](docs/Agent扫描与发现架构方案.md)：理解项目配置、用户环境、MCP、Skill 和 Lua capability 如何被发现与注册。
-7. [外接硬件接入与热插拔架构方案](docs/外接硬件接入与热插拔架构方案.md)：理解 USB、串口、BLE、网络设备和厂商 SDK 设备如何通过 HardwareAdapter 接入并支持热插拔。
-8. [项目配置方案](docs/项目配置方案.md)：理解 YAML 配置、schema、policy、manifest 和热加载边界。
-9. [进程级停机升级架构方案](docs/进程级停机升级架构方案.md)：理解 Supervisor、Runtime generation、blue-green、draining、恢复和回滚。
-10. [方案设计风险评审](docs/方案设计风险评审.md)：集中查看当前方案的纯设计风险、语义缺口和需要补强的设计面。
+- [English canonical docs](docs/en/README.md)
+- [简体中文文档](docs/zh-CN/README.md)
+- [文档维护入口](docs/README.md)
+
+建议先按以下顺序阅读英文 canonical 文档：
+
+1. [Architecture Overview](docs/en/architecture-overview.md)：先建立系统边界、核心模块和总体结论。
+2. [Rust, Lua, and EventBus Scheduler](docs/en/rust-lua-eventbus-scheduler.md)：理解 Runtime、EventBus、Scheduler、Lua Agent 和 Topic 路由。
+3. [Lua External Agent Adapter](docs/en/lua-external-agent-adapter.md)：理解外部 Agent、CLI、HTTP、MCP、Skill 如何通过 Adapter 接入。
+4. [Lua Skill, MCP, and Tool Hot Reload](docs/en/lua-skill-mcp-tool-hot-reload.md)：理解 Tool、Lua Skill 和 MCP tool handler 如何下沉到 Lua 并热更新。
+5. [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md)：理解 Agent 私有记忆、系统总记忆库、知识库和上下文构建边界。
+6. [Agent Discovery](docs/en/agent-discovery.md)：理解项目配置、用户环境、MCP、Skill 和 Lua capability 如何被发现与注册。
+7. [Hardware Hotplug](docs/en/hardware-hotplug.md)：理解 USB、串口、BLE、网络设备和厂商 SDK 设备如何通过 HardwareAdapter 接入并支持热插拔。
+8. [Project Configuration](docs/en/project-configuration.md)：理解 YAML 配置、schema、policy、manifest 和热加载边界。
+9. [Process-Level Upgrade](docs/en/process-level-upgrade.md)：理解 Supervisor、Runtime generation、blue-green、draining、恢复和回滚。
+10. [Design Risk Review](docs/en/design-risk-review.md)：集中查看当前方案的纯设计风险、语义缺口和需要补强的设计面。
 
 ## 文档职责
 
 | 文档 | 职责 |
 | --- | --- |
-| [总体架构方案](docs/总体架构方案.md) | 总入口，统一系统目标、非目标、模块边界、运行链路、安全原则和待补设计。 |
-| [Rust 与 Lua 事件总线智能体调度架构方案](docs/Rust与Lua事件总线智能体调度架构方案.md) | 定义 Rust Runtime、Lua Agent、EventBus、Topic、Scheduler、状态、一致性和热更新。 |
-| [Lua 调用外部 Agent 动态 Adapter 架构方案](docs/Lua调用外部Agent动态Adapter架构方案.md) | 定义 AdapterRegistry、AdapterRouter、McpAdapter、SkillAdapter、HardwareAdapter、stdio/http/eventbus/hardware 等外部能力接入。 |
-| [Lua 承载 Skill-MCP-Tool 热更新架构方案](docs/Lua承载Skill-MCP-Tool热更新架构方案.md) | 定义 `lua_tool`、`lua_skill`、`lua_mcp_handler`、Lua Capability Runtime、host API、安全沙箱和 generation swap。 |
-| [Agent 记忆与知识库架构方案](docs/Agent记忆与知识库架构方案.md) | 定义 Agent 私有记忆、系统总记忆库、知识库、ContextBuilder、权限、审计和一致性边界。 |
-| [Agent 扫描与发现架构方案](docs/Agent扫描与发现架构方案.md) | 定义 AgentDiscoveryService 如何扫描、识别、校验、缓存和注册 Agent、Adapter、MCP、Skill、Lua capability。 |
-| [外接硬件接入与热插拔架构方案](docs/外接硬件接入与热插拔架构方案.md) | 定义 HardwareDiscoveryService、DeviceRegistry、DriverBinding、HardwareAdapterRuntime、设备热插拔、硬件 Topic 和安全边界。 |
-| [项目配置方案](docs/项目配置方案.md) | 定义 `config/` 目录、`eva.yaml`、Agent/Adapter/Capability manifest、policy、schema 和热加载策略。 |
-| [进程级停机升级架构方案](docs/进程级停机升级架构方案.md) | 定义 OS service manager、Supervisor、Runtime、Ingress Gate、Durable Event Log、State Store 和双活切流。 |
-| [方案设计风险评审](docs/方案设计风险评审.md) | 评审当前方案在 Bot 行为、事件一致性、状态归属、权限闭包、capability 语义和错误恢复上的设计风险。 |
+| [Architecture Overview](docs/en/architecture-overview.md) | 总入口，统一系统目标、非目标、模块边界、运行链路、安全原则和待补设计。 |
+| [Rust, Lua, and EventBus Scheduler](docs/en/rust-lua-eventbus-scheduler.md) | 定义 Rust Runtime、Lua Agent、EventBus、Topic、Scheduler、状态、一致性和热更新。 |
+| [Lua External Agent Adapter](docs/en/lua-external-agent-adapter.md) | 定义 AdapterRegistry、AdapterRouter、McpAdapter、SkillAdapter、HardwareAdapter、stdio/http/eventbus/hardware 等外部能力接入。 |
+| [Lua Skill, MCP, and Tool Hot Reload](docs/en/lua-skill-mcp-tool-hot-reload.md) | 定义 `lua_tool`、`lua_skill`、`lua_mcp_handler`、Lua Capability Runtime、host API、安全沙箱和 generation swap。 |
+| [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md) | 定义 Agent 私有记忆、系统总记忆库、知识库、ContextBuilder、权限、审计和一致性边界。 |
+| [Agent Discovery](docs/en/agent-discovery.md) | 定义 AgentDiscoveryService 如何扫描、识别、校验、缓存和注册 Agent、Adapter、MCP、Skill、Lua capability。 |
+| [Hardware Hotplug](docs/en/hardware-hotplug.md) | 定义 HardwareDiscoveryService、DeviceRegistry、DriverBinding、HardwareAdapterRuntime、设备热插拔、硬件 Topic 和安全边界。 |
+| [Project Configuration](docs/en/project-configuration.md) | 定义 `config/` 目录、`eva.yaml`、Agent/Adapter/Capability manifest、policy、schema 和热加载策略。 |
+| [Process-Level Upgrade](docs/en/process-level-upgrade.md) | 定义 OS service manager、Supervisor、Runtime、Ingress Gate、Durable Event Log、State Store 和双活切流。 |
+| [Design Risk Review](docs/en/design-risk-review.md) | 评审当前方案在 Bot 行为、事件一致性、状态归属、权限闭包、capability 语义和错误恢复上的设计风险。 |
 
 ## 当前方案定位
 

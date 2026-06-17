@@ -1,22 +1,34 @@
-# Eva-CLI 文档
+# Eva-CLI Documentation
 
-这里集中维护 Eva-CLI 的架构方案、设计评审和后续实现规范。建议从总体架构开始阅读，再按模块深入。
+The documentation now uses English as the canonical source and keeps localized
+content under locale-specific directories.
 
-## 推荐阅读顺序
+## Language Entrances
 
-1. [总体架构方案](总体架构方案.md)
-2. [Rust 与 Lua 事件总线智能体调度架构方案](Rust与Lua事件总线智能体调度架构方案.md)
-3. [Lua 调用外部 Agent 动态 Adapter 架构方案](Lua调用外部Agent动态Adapter架构方案.md)
-4. [Lua 承载 Skill-MCP-Tool 热更新架构方案](Lua承载Skill-MCP-Tool热更新架构方案.md)
-5. [Agent 记忆与知识库架构方案](Agent记忆与知识库架构方案.md)
-6. [Agent 扫描与发现架构方案](Agent扫描与发现架构方案.md)
-7. [外接硬件接入与热插拔架构方案](外接硬件接入与热插拔架构方案.md)
-8. [项目配置方案](项目配置方案.md)
-9. [进程级停机升级架构方案](进程级停机升级架构方案.md)
-10. [方案设计风险评审](方案设计风险评审.md)
+- [English](en/README.md) - canonical documentation source.
+- [简体中文](zh-CN/README.md) - current Chinese translation set.
 
-## 资源
+## Maintenance Rules
 
-- [架构总览图](../assets/eva-cli-architecture.svg)
-- [官网源码](../website/)
-- [源码目录](../src/)
+- Create or update the English canonical document first.
+- Register every document ID, source path, translation path, and translation
+  status in [_i18n/manifest.json](_i18n/manifest.json).
+- Keep published document IDs and English slugs stable.
+- Keep old Chinese root-level paths readable during the migration window.
+- Do not translate code, commands, JSON keys, Topic names, Lua bindings, file
+  paths, or error codes.
+
+## Translation Status
+
+Translation status values:
+
+- `current`: synchronized with the English source.
+- `needs-review`: translated, but needs human review.
+- `stale`: English source changed after the translation.
+- `missing`: the locale has no page for that document.
+- `partial`: only a summary, navigation, or key sections are translated.
+
+## Locale Rules
+
+Locale codes use BCP 47 exactly as written in the manifest, HTML `lang`,
+`hreflang`, and directory names. Examples: `en`, `zh-CN`, `pt-BR`, `ar`.

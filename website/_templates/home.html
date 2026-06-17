@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="{{lang}}" dir="{{dir}}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{title}}</title>
+    <meta name="description" content="{{description}}">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="{{title}}">
+    <meta property="og:description" content="{{description}}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="{{canonicalUrl}}">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="{{canonicalUrl}}">
+{{alternateLinks}}
+    <link rel="icon" type="image/svg+xml" href="{{assetPrefix}}assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="{{assetPrefix}}styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="{{homeUrl}}" aria-label="Eva-CLI home">
+        <img src="{{assetPrefix}}assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">{{brandTagline}}</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="{{navLabel}}">
+{{navLinks}}
+      </nav>
+{{languageSwitch}}
+    </header>
+
+    <main>
+      <section class="intro">
+        <div class="intro-copy">
+          <p class="eyebrow">{{heroEyebrow}}</p>
+          <h1>{{heroTitle}}</h1>
+          <p class="tagline">{{heroTagline}}</p>
+          <p class="lead">{{heroLead}}</p>
+          <div class="actions" aria-label="{{actionsLabel}}">
+{{heroActions}}
+          </div>
+        </div>
+      </section>
+
+      <section class="architecture" aria-labelledby="architecture-title">
+        <div class="section-heading">
+          <p class="eyebrow">{{architectureEyebrow}}</p>
+          <h2 id="architecture-title">{{architectureTitle}}</h2>
+        </div>
+        <figure class="diagram">
+          <img src="{{assetPrefix}}assets/eva-cli-architecture.svg" alt="{{architectureAlt}}">
+        </figure>
+      </section>
+
+      <section class="doc-grid" aria-labelledby="docs-title">
+        <div class="section-heading">
+          <p class="eyebrow">{{docsEyebrow}}</p>
+          <h2 id="docs-title">{{docsTitle}}</h2>
+        </div>
+        <div class="links-grid">
+{{docCards}}
+        </div>
+      </section>
+
+      <section class="feedback-section" id="feedback" aria-labelledby="feedback-title">
+        <div class="feedback-copy">
+          <p class="eyebrow">{{feedbackEyebrow}}</p>
+          <h2 id="feedback-title">{{feedbackTitle}}</h2>
+          <p class="section-copy">{{feedbackBody}}</p>
+          <p class="contact-line">
+            <span>{{feedbackContactLabel}}</span>
+            <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>
+          </p>
+        </div>
+        <form class="feedback-form" action="mailto:iyetmos@gmail.com" method="post" enctype="text/plain">
+          <div class="field-grid">
+            <label class="field">
+              <span>{{feedbackCategoryLabel}}</span>
+              <select name="category" required>
+{{feedbackOptions}}
+              </select>
+            </label>
+            <label class="field">
+              <span>{{feedbackContactField}}</span>
+              <input name="contact" type="text" autocomplete="email" placeholder="{{feedbackContactPlaceholder}}">
+            </label>
+          </div>
+          <label class="field">
+            <span>{{feedbackSubjectLabel}}</span>
+            <input name="subject" type="text" required placeholder="{{feedbackSubjectPlaceholder}}">
+          </label>
+          <label class="field">
+            <span>{{feedbackMessageLabel}}</span>
+            <textarea name="message" required placeholder="{{feedbackMessagePlaceholder}}"></textarea>
+          </label>
+          <button class="primary-action feedback-submit" type="submit">{{feedbackSubmit}}</button>
+          <p class="form-note">{{feedbackNote}}</p>
+        </form>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <span>{{footerAuthor}} <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>{{footerFeedback}} <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="#feedback">{{footerSubmit}}</a>
+    </footer>
+  </body>
+</html>
