@@ -11,6 +11,7 @@
     "home": "首页",
     "docs": "文档",
     "architecture": "架构",
+    "discussion": "讨论",
     "feedback": "反馈"
   },
   "home": {
@@ -58,6 +59,11 @@
         "description": "Agent、Adapter、MCP、Skill 与 Lua capability 的发现、校验和注册规则。"
       }
     ]
+  },
+  "discussion": {
+    "eyebrow": "讨论",
+    "title": "讨论 Eva-CLI",
+    "body": "通过 GitHub Discussions 提问、交流实现思路或留下设计反馈。"
   },
   "docsIndex": {
     "metaTitle": "Eva-CLI 文档",

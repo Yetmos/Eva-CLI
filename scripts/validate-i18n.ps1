@@ -78,7 +78,7 @@ foreach ($locale in $locales) {
   }
 
   $localeData = Read-JsonFile -Path $localeFile
-  foreach ($path in @("meta", "brand", "nav", "home", "docsIndex", "feedback", "footer")) {
+  foreach ($path in @("meta", "brand", "nav", "home", "discussion", "docsIndex", "feedback", "footer")) {
     if ($null -eq (Get-PropertyValue -Object $localeData -Name $path)) {
       Fail "website/_i18n/$($locale.code).json missing '$path'."
     }
@@ -103,6 +103,32 @@ foreach ($locale in $locales) {
   }
   if ($homeHtml -notmatch 'hreflang="x-default"') {
     Fail "Generated home page for '$($locale.code)' is missing x-default hreflang."
+  }
+  if ($homeHtml -notmatch 'id="discussion"') {
+    Fail "Generated home page for '$($locale.code)' is missing the discussion section."
+  }
+  if ($homeHtml -notmatch 'href="#discussion"') {
+    Fail "Generated home page for '$($locale.code)' is missing the discussion navigation link."
+  }
+  if ($homeHtml -notmatch 'https://giscus\.app/client\.js') {
+    Fail "Generated home page for '$($locale.code)' is missing the giscus embed script."
+  }
+  if ($homeHtml -match 'REPLACE_WITH_') {
+    Fail "Generated home page for '$($locale.code)' still contains a giscus placeholder."
+  }
+  if ($homeHtml -notmatch 'data-category-id="DIC_kwDOS4ZJEM4C_Tf8"') {
+    Fail "Generated home page for '$($locale.code)' has incorrect giscus category id."
+  }
+  if ($homeHtml -notmatch 'data-mapping="specific"') {
+    Fail "Generated home page for '$($locale.code)' must use a fixed giscus mapping."
+  }
+  if ($homeHtml -notmatch 'data-term="Eva-CLI site discussion"') {
+    Fail "Generated home page for '$($locale.code)' must use the shared site discussion term."
+  }
+
+  $expectedGiscusLang = if ($locale.code -eq "zh-CN") { "zh-CN" } else { "en" }
+  if ($homeHtml -notmatch "data-lang=`"$([regex]::Escape($expectedGiscusLang))`"") {
+    Fail "Generated home page for '$($locale.code)' has incorrect giscus language."
   }
 }
 

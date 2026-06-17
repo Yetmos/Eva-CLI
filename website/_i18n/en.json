@@ -11,6 +11,7 @@
     "home": "Home",
     "docs": "Docs",
     "architecture": "Architecture",
+    "discussion": "Discussion",
     "feedback": "Feedback"
   },
   "home": {
@@ -58,6 +59,11 @@
         "description": "How Agents, adapters, MCP servers, skills, and Lua capabilities are discovered and validated."
       }
     ]
+  },
+  "discussion": {
+    "eyebrow": "Discussion",
+    "title": "Discuss Eva-CLI",
+    "body": "Ask questions, share implementation ideas, or leave design feedback through GitHub Discussions."
   },
   "docsIndex": {
     "metaTitle": "Eva-CLI Documentation",

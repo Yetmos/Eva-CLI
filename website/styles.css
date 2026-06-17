@@ -256,6 +256,7 @@ h3 {
 
 .architecture,
 .doc-grid,
+.discussion-section,
 .feedback-section {
   padding-top: 56px;
 }
@@ -320,6 +321,17 @@ h3 {
   margin-top: 10px;
   color: var(--muted);
   font-size: 14px;
+}
+
+.discussion-frame {
+  min-height: 220px;
+  margin-top: 20px;
+  padding: 24px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 14px 34px rgba(127, 29, 29, 0.08);
 }
 
 .feedback-section {
