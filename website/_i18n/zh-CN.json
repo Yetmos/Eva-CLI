@@ -151,6 +151,11 @@
         "description": "Supervisor、Runtime generation、draining、回滚和持久化恢复。"
       },
       {
+        "id": "backup-migration-release-snapshot",
+        "title": "备份、迁移包与 Release Snapshot",
+        "description": "由 Runtime 托管备份、迁移包、release snapshot、restore、rollback 和 artifact audit 的安全能力边界。"
+      },
+      {
         "id": "design-risk-review",
         "title": "方案设计风险评审",
         "description": "已知架构风险与需要补齐的后续契约。"

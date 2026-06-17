@@ -35,11 +35,12 @@ Eva-CLI separates authority from hot-reloadable behavior:
 
 1. [[Architecture Overview]]
 2. [[Runtime and Scheduling]]
-3. [[Adapters and Capabilities]]
-4. [[Memory, Knowledge, and Discovery]]
-5. [[Configuration and Localization]]
-6. [[Roadmap and Open Risks]]
-7. [[Contributor Guide]]
+3. [[Backup, Migration, and Release Snapshot]]
+4. [[Adapters and Capabilities]]
+5. [[Memory, Knowledge, and Discovery]]
+6. [[Configuration and Localization]]
+7. [[Roadmap and Open Risks]]
+8. [[Contributor Guide]]
 
 For full source-of-truth detail, read the canonical repository docs:
 

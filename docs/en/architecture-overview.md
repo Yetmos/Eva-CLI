@@ -9,8 +9,9 @@ Updated: 2026-06-16
 ## Purpose
 
 This document is the canonical architecture entry for Eva-CLI. It consolidates
-the runtime, EventBus, Adapter, Lua capability, memory, discovery, hardware, and
-process recovery designs into one system boundary.
+the runtime, EventBus, Adapter, Lua capability, memory, discovery, hardware,
+process recovery, backup, migration package, and release snapshot designs into
+one system boundary.
 
 ## Architecture Decision
 
@@ -34,6 +35,9 @@ events, memory, and external adapters.
 - MemoryService, KnowledgeService, and ContextBuilder provide controlled context.
 - Supervisor and Runtime generation switching provide process recovery and
   upgrade safety.
+- BackupService, MigrationPackageService, ReleaseSnapshotService, and
+  ArtifactStore provide trusted backup, migration, release evidence, restore,
+  rollback, manifest verification, and audit boundaries.
 
 ## Architecture Diagram
 
@@ -55,5 +59,9 @@ events, memory, and external adapters.
 - Hot reload can update scripts, routes, registrations, and selected manifest
   fields. Permission expansion, transport changes, state backend changes, and
   MCP command changes require a stricter runtime switch or restart path.
+- Backup, migration package, and release snapshot operations must be implemented
+  as Runtime services. Agents may request and explain these operations, but
+  Runtime owns scope resolution, verification, mutation, restore, rollback, and
+  audit records.
 - English canonical documentation is the source for future implementation
   specs; translations must not change architectural conclusions.

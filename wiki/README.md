@@ -13,6 +13,7 @@ from the GitHub web UI or by a successful first push.
 - `_Footer.md`
 - `Architecture-Overview.md`
 - `Runtime-and-Scheduling.md`
+- `Backup,-Migration,-and-Release-Snapshot.md`
 - `Adapters-and-Capabilities.md`
 - `Memory,-Knowledge,-and-Discovery.md`
 - `Configuration-and-Localization.md`
@@ -25,7 +26,7 @@ After the GitHub Wiki remote is available, publish from this directory:
 
 ```powershell
 git clone git@github.com:Yetmos/Eva-CLI.wiki.git ..\Eva-CLI.wiki
-Copy-Item -Path .\wiki\Home.md, .\wiki\_Sidebar.md, .\wiki\_Footer.md, .\wiki\Architecture-Overview.md, .\wiki\Runtime-and-Scheduling.md, .\wiki\Adapters-and-Capabilities.md, '.\wiki\Memory,-Knowledge,-and-Discovery.md', .\wiki\Configuration-and-Localization.md, .\wiki\Roadmap-and-Open-Risks.md, .\wiki\Contributor-Guide.md -Destination ..\Eva-CLI.wiki -Force
+Copy-Item -Path .\wiki\Home.md, .\wiki\_Sidebar.md, .\wiki\_Footer.md, .\wiki\Architecture-Overview.md, .\wiki\Runtime-and-Scheduling.md, '.\wiki\Backup,-Migration,-and-Release-Snapshot.md', .\wiki\Adapters-and-Capabilities.md, '.\wiki\Memory,-Knowledge,-and-Discovery.md', .\wiki\Configuration-and-Localization.md, .\wiki\Roadmap-and-Open-Risks.md, .\wiki\Contributor-Guide.md -Destination ..\Eva-CLI.wiki -Force
 git -C ..\Eva-CLI.wiki add .
 git -C ..\Eva-CLI.wiki commit -m "Improve architecture wiki"
 git -C ..\Eva-CLI.wiki push origin master

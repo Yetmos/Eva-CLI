@@ -79,7 +79,11 @@ Recommended reading order for the English canonical documentation:
 9. [Process-Level Upgrade](docs/en/process-level-upgrade.md): understand the
    Supervisor, runtime generations, blue-green switching, draining, recovery,
    and rollback.
-10. [Design Risk Review](docs/en/design-risk-review.md): review design-only
+10. [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md):
+    understand why trusted backup, migration, release snapshot, restore, and
+    rollback execution belongs to the Runtime while Agents only request and
+    explain operations.
+11. [Design Risk Review](docs/en/design-risk-review.md): review design-only
     risks, semantic gaps, and areas that still need stronger specification.
 
 ## Document Responsibilities
@@ -95,6 +99,7 @@ Recommended reading order for the English canonical documentation:
 | [Hardware Hotplug](docs/en/hardware-hotplug.md) | Defines HardwareDiscoveryService, DeviceRegistry, DriverBinding, HardwareAdapterRuntime, device hotplug, hardware Topics, and security boundaries. |
 | [Project Configuration](docs/en/project-configuration.md) | Defines the `config/` directory, `eva.yaml`, Agent/Adapter/Capability manifests, policies, schemas, and hot-reload strategy. |
 | [Process-Level Upgrade](docs/en/process-level-upgrade.md) | Defines the OS service manager, Supervisor, Runtime, Ingress Gate, Durable Event Log, State Store, and blue-green traffic switching. |
+| [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md) | Defines why backup, migration package, release snapshot, restore, rollback, manifest verification, and artifact audit belong to Runtime services. |
 | [Design Risk Review](docs/en/design-risk-review.md) | Reviews design risks around Bot behavior, event consistency, state ownership, permission closure, capability semantics, and error recovery. |
 
 ## Current Design Position

@@ -3,6 +3,7 @@
 - [[Home]]
 - [[Architecture Overview]]
 - [[Runtime and Scheduling]]
+- [[Backup, Migration, and Release Snapshot]]
 - [[Adapters and Capabilities]]
 - [[Memory, Knowledge, and Discovery]]
 - [[Configuration and Localization]]

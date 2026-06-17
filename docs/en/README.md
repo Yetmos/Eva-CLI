@@ -20,8 +20,9 @@ the executable implementation is finalized.
 7. [Hardware Hotplug](hardware-hotplug.md)
 8. [Project Configuration](project-configuration.md)
 9. [Process-Level Upgrade](process-level-upgrade.md)
-10. [Design Risk Review](design-risk-review.md)
-11. [Website and Documentation i18n](website-docs-i18n.md)
+10. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
+11. [Design Risk Review](design-risk-review.md)
+12. [Website and Documentation i18n](website-docs-i18n.md)
 
 ## Core Boundaries
 

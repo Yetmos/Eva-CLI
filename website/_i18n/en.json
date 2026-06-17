@@ -151,6 +151,11 @@
         "description": "Supervisor, Runtime generations, draining, rollback, and durable recovery."
       },
       {
+        "id": "backup-migration-release-snapshot",
+        "title": "Backup, Migration, and Release Snapshots",
+        "description": "Runtime-owned safety capabilities for backups, migration packages, release snapshots, restores, rollback, and artifact audit."
+      },
+      {
         "id": "design-risk-review",
         "title": "Design Risk Review",
         "description": "Known architecture risks and required follow-up contracts."

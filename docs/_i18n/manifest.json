@@ -148,6 +148,17 @@
       }
     },
     {
+      "id": "backup-migration-release-snapshot",
+      "title": "Backup, Migration Package, and Release Snapshot",
+      "source": "docs/en/backup-migration-release-snapshot.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/备份迁移包与ReleaseSnapshot架构方案.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
       "id": "design-risk-review",
       "title": "Design Risk Review",
       "source": "docs/en/design-risk-review.md",

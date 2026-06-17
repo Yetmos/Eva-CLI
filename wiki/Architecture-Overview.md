@@ -47,6 +47,7 @@ Ingress
 | KnowledgeService | Provide searchable project and reference knowledge. |
 | ContextBuilder | Assemble policy-filtered context for a specific Agent invocation. |
 | Supervisor | Manage Runtime lifecycle, health, generation switching, draining, and rollback. |
+| BackupService / MigrationPackageService / ReleaseSnapshotService | Own trusted backup, migration package, release snapshot, restore, rollback, manifest verification, and artifact audit operations. |
 
 ## Architecture Diagram
 
@@ -60,6 +61,9 @@ Ingress
   fields.
 - Permission expansion, transport changes, state backend changes, and MCP
   command changes require a runtime switch or restart path.
+- Backup, migration package, and release snapshot operations are Runtime
+  services. Agents can request and explain them, but Runtime owns scope,
+  verification, mutation, restore, rollback, and audit.
 - Translations must preserve the architectural meaning of the English canonical
   docs.
 

@@ -51,7 +51,8 @@ Eva-CLI/
 7. [Hardware Hotplug](docs/en/hardware-hotplug.md)：理解 USB、串口、BLE、网络设备和厂商 SDK 设备如何通过 HardwareAdapter 接入并支持热插拔。
 8. [Project Configuration](docs/en/project-configuration.md)：理解 YAML 配置、schema、policy、manifest 和热加载边界。
 9. [Process-Level Upgrade](docs/en/process-level-upgrade.md)：理解 Supervisor、Runtime generation、blue-green、draining、恢复和回滚。
-10. [Design Risk Review](docs/en/design-risk-review.md)：集中查看当前方案的纯设计风险、语义缺口和需要补强的设计面。
+10. [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md)：理解为什么备份、迁移包、release snapshot、restore 和 rollback 的可信执行应归 Runtime，Agent 只负责请求与解释。
+11. [Design Risk Review](docs/en/design-risk-review.md)：集中查看当前方案的纯设计风险、语义缺口和需要补强的设计面。
 
 ## 文档职责
 
@@ -66,6 +67,7 @@ Eva-CLI/
 | [Hardware Hotplug](docs/en/hardware-hotplug.md) | 定义 HardwareDiscoveryService、DeviceRegistry、DriverBinding、HardwareAdapterRuntime、设备热插拔、硬件 Topic 和安全边界。 |
 | [Project Configuration](docs/en/project-configuration.md) | 定义 `config/` 目录、`eva.yaml`、Agent/Adapter/Capability manifest、policy、schema 和热加载策略。 |
 | [Process-Level Upgrade](docs/en/process-level-upgrade.md) | 定义 OS service manager、Supervisor、Runtime、Ingress Gate、Durable Event Log、State Store 和双活切流。 |
+| [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md) | 定义备份、迁移包、release snapshot、restore、rollback、manifest 校验和 artifact audit 为什么应由 Runtime service 承担。 |
 | [Design Risk Review](docs/en/design-risk-review.md) | 评审当前方案在 Bot 行为、事件一致性、状态归属、权限闭包、capability 语义和错误恢复上的设计风险。 |
 
 ## 当前方案定位

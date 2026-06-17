@@ -7,6 +7,7 @@ Canonical sources:
 
 - [docs/en/rust-lua-eventbus-scheduler.md](https://github.com/Yetmos/Eva-CLI/blob/main/docs/en/rust-lua-eventbus-scheduler.md)
 - [docs/en/process-level-upgrade.md](https://github.com/Yetmos/Eva-CLI/blob/main/docs/en/process-level-upgrade.md)
+- [docs/en/backup-migration-release-snapshot.md](https://github.com/Yetmos/Eva-CLI/blob/main/docs/en/backup-migration-release-snapshot.md)
 
 ## Ownership Split
 
@@ -94,3 +95,10 @@ Eva-CLI uses layered recovery:
 Long-running tasks need explicit snapshot, reattach, timeout, idempotency, and
 event replay contracts. Best-effort in-memory work must be labeled as
 best-effort.
+
+## Backup and Release Evidence
+
+Backups, migration packages, and release snapshots are Runtime-owned safety
+capabilities. Agents can request and explain these operations, but Runtime owns
+scope resolution, locks, manifests, checksums, dry-run/apply separation,
+restore, rollback, release pointer movement, and audit records.
