@@ -83,6 +83,20 @@ function Get-Document {
   return $document
 }
 
+function Get-Asset {
+  param(
+    [Parameter(Mandatory = $true)]$Manifest,
+    [Parameter(Mandatory = $true)][string]$Id
+  )
+
+  $asset = @($Manifest.assets | Where-Object { $_.id -eq $Id }) | Select-Object -First 1
+  if ($null -eq $asset) {
+    throw "Asset '$Id' is not registered in docs/_i18n/manifest.json."
+  }
+
+  return $asset
+}
+
 function Get-DocumentPath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -103,6 +117,26 @@ function Get-DocumentPath {
   return $translation
 }
 
+function Get-AssetPath {
+  param(
+    [Parameter(Mandatory = $true)]$Manifest,
+    [Parameter(Mandatory = $true)][string]$AssetId,
+    [Parameter(Mandatory = $true)][string]$LocaleCode
+  )
+
+  $asset = Get-Asset -Manifest $Manifest -Id $AssetId
+  if ($LocaleCode -eq $Manifest.defaultLocale) {
+    return $asset.source
+  }
+
+  $translation = Get-PropertyValue -Object $asset.translations -Name $LocaleCode
+  if ([string]::IsNullOrWhiteSpace($translation)) {
+    return $asset.source
+  }
+
+  return $translation
+}
+
 function Convert-DocPathToRelativeHref {
   param(
     [Parameter(Mandatory = $true)][string]$DocPath,
@@ -113,6 +147,19 @@ function Convert-DocPathToRelativeHref {
     "root" { return $DocPath }
     "locale-home" { return "../$DocPath" }
     "docs-index" { return ($DocPath -replace "^docs/", "") }
+  }
+}
+
+function Convert-SitePathToRelativeHref {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][ValidateSet("root", "locale-home", "docs-index")][string]$Context
+  )
+
+  switch ($Context) {
+    "root" { return $Path }
+    "locale-home" { return "../$Path" }
+    "docs-index" { return "../$Path" }
   }
 }
 
@@ -336,6 +383,8 @@ foreach ($locale in $locales) {
 
   $readmePath = Get-DocumentPath -Manifest $manifest -DocumentId "readme" -LocaleCode $localeCode
   $architecturePath = Get-DocumentPath -Manifest $manifest -DocumentId "architecture-overview" -LocaleCode $localeCode
+  $architectureImagePath = Get-AssetPath -Manifest $manifest -AssetId "architecture-diagram" -LocaleCode $localeCode
+  $architectureImageHref = Convert-SitePathToRelativeHref -Path $architectureImagePath -Context $context
   $docsHref = if ($localeCode -eq $manifest.defaultLocale) {
     "docs/"
   } else {
@@ -357,6 +406,8 @@ foreach ($locale in $locales) {
     navLabel = Html $localeData.nav.label
     navLinks = New-NavLinks -LocaleData $localeData -HomeHref "./" -DocsHref $docsHref -ArchitectureHref $architectureHref -FeedbackHref "#feedback"
     languageSwitch = New-LanguageSwitch -Locales $locales -HrefByLocale $homeHrefByLocale -CurrentLocale $localeCode
+    architectureImageSrc = Html $architectureImageHref
+    architectureImageUrl = Html $architectureImageHref
     heroEyebrow = Html $localeData.home.heroEyebrow
     heroTitle = Html $localeData.home.heroTitle
     heroTagline = Html $localeData.home.heroTagline

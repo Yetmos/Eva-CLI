@@ -26,7 +26,7 @@ Eva-CLI/
 
 ## 架构总览
 
-![Eva-CLI 总体架构](assets/eva-cli-architecture.svg)
+![Eva-CLI 总体架构](assets/eva-cli-architecture.zh-CN.svg)
 
 这张图概括当前方案的主链路：入口与配置热加载进入 Rust 托管 Runtime，经过 Recoverable EventBus 和 Scheduler 投递到 Lua Agent；Lua 只在沙箱内处理业务逻辑，并通过 Rust Tool Layer、AdapterRegistry、MemoryService、KnowledgeService 和 HardwareAdapter 访问受控能力。
 

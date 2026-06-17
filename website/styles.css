@@ -150,7 +150,7 @@ main {
   border-block: 1px solid var(--line);
   background:
     linear-gradient(90deg, rgba(255, 245, 245, 0.96), rgba(255, 245, 245, 0.76)),
-    url("assets/eva-cli-architecture.svg") right center / min(640px, 64vw) auto no-repeat;
+    var(--architecture-image-url, url("assets/eva-cli-architecture.svg")) right center / min(640px, 64vw) auto no-repeat;
 }
 
 .intro-copy {
@@ -461,7 +461,7 @@ h3 {
   border-block: 1px solid var(--line);
   background:
     linear-gradient(90deg, rgba(255, 245, 245, 0.99) 0%, rgba(255, 245, 245, 0.87) 58%, rgba(237, 233, 254, 0.58) 100%),
-    url("/assets/eva-cli-architecture.svg") right center / min(620px, 52vw) auto no-repeat;
+    var(--architecture-image-url, url("/assets/eva-cli-architecture.svg")) right center / min(620px, 52vw) auto no-repeat;
 }
 
 .promo-hero-copy {
@@ -991,7 +991,7 @@ h3 {
     min-height: 0;
     background:
       linear-gradient(180deg, rgba(255, 245, 245, 0.98), rgba(255, 245, 245, 0.9)),
-      url("assets/eva-cli-architecture.svg") center bottom / 720px auto no-repeat;
+      var(--architecture-image-url, url("assets/eva-cli-architecture.svg")) center bottom / 720px auto no-repeat;
   }
 
   .intro-copy {
@@ -1030,7 +1030,7 @@ h3 {
     padding: 48px 0;
     background:
       linear-gradient(180deg, rgba(255, 245, 245, 0.98), rgba(255, 245, 245, 0.9)),
-      url("/assets/eva-cli-architecture.svg") center bottom / 720px auto no-repeat;
+      var(--architecture-image-url, url("/assets/eva-cli-architecture.svg")) center bottom / 720px auto no-repeat;
   }
 
   .promo-hero h1 {

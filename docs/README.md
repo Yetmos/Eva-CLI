@@ -13,6 +13,8 @@ content under locale-specific directories.
 - Create or update the English canonical document first.
 - Register every document ID, source path, translation path, and translation
   status in [_i18n/manifest.json](_i18n/manifest.json).
+- Register content assets that contain readable text in the manifest `assets`
+  section, with locale-specific image paths and translation status.
 - Keep published document IDs and English slugs stable.
 - Keep old Chinese root-level paths readable during the migration window.
 - Do not translate code, commands, JSON keys, Topic names, Lua bindings, file

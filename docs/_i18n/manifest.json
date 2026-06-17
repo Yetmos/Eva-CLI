@@ -23,6 +23,19 @@
       "coverage": "current"
     }
   ],
+  "assets": [
+    {
+      "id": "architecture-diagram",
+      "title": "Eva-CLI Architecture Diagram",
+      "source": "assets/eva-cli-architecture.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-architecture.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    }
+  ],
   "documents": [
     {
       "id": "readme",

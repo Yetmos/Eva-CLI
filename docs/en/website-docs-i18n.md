@@ -28,8 +28,29 @@ documentation.
 
 The first implemented rollout includes English and Simplified Chinese website
 pages, English canonical documentation, Simplified Chinese documentation copies,
-`docs/_i18n/manifest.json`, `docs/_i18n/glossary.json`, build scripts, and
-validation scripts.
+localized architecture diagrams, `docs/_i18n/manifest.json`,
+`docs/_i18n/glossary.json`, build scripts, and validation scripts.
 
 The build pipeline supports adding more locales by adding manifest entries,
-locale JSON, and translated documentation without duplicating HTML templates.
+locale JSON, translated documentation, and localized content assets without
+duplicating HTML templates.
+
+## Localized Assets
+
+Content images that contain readable text are tracked in the manifest `assets`
+section. The English source image remains the default asset, and each localized
+variant is mapped by locale code:
+
+```json
+{
+  "id": "architecture-diagram",
+  "source": "assets/eva-cli-architecture.svg",
+  "translations": {
+    "zh-CN": "assets/eva-cli-architecture.zh-CN.svg"
+  }
+}
+```
+
+Website templates resolve these asset mappings at build time. Documentation
+pages should reference the asset for their own language directly. Brand assets
+such as the Eva-CLI logo are language-neutral and do not need locale variants.

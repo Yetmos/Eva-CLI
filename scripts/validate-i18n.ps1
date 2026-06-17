@@ -143,6 +143,80 @@ foreach ($document in $manifest.documents) {
   }
 }
 
+if ($null -eq (Get-PropertyValue -Object $manifest -Name "assets")) {
+  Fail "manifest.assets is required for localized content assets."
+}
+
+foreach ($asset in $manifest.assets) {
+  if ([string]::IsNullOrWhiteSpace($asset.id)) {
+    Fail "An asset entry is missing id."
+  }
+  if ([string]::IsNullOrWhiteSpace($asset.source)) {
+    Fail "Asset '$($asset.id)' is missing source."
+  }
+  if (-not (Test-RepoPath -RelativePath $asset.source)) {
+    Fail "Asset '$($asset.id)' source does not exist: $($asset.source)"
+  }
+
+  foreach ($locale in $locales) {
+    if ($locale.code -eq $manifest.defaultLocale) {
+      continue
+    }
+
+    $status = Get-PropertyValue -Object $asset.status -Name $locale.code
+    if ([string]::IsNullOrWhiteSpace($status)) {
+      Fail "Asset '$($asset.id)' is missing translation status for '$($locale.code)'."
+    }
+
+    if ($status -notin @("current", "needs-review", "stale", "missing", "partial")) {
+      Fail "Asset '$($asset.id)' has invalid status '$status' for '$($locale.code)'."
+    }
+
+    $translation = Get-PropertyValue -Object $asset.translations -Name $locale.code
+    if ($status -ne "missing") {
+      if ([string]::IsNullOrWhiteSpace($translation)) {
+        Fail "Asset '$($asset.id)' has status '$status' but no translation path for '$($locale.code)'."
+      }
+      if (-not (Test-RepoPath -RelativePath $translation)) {
+        Fail "Asset '$($asset.id)' translation does not exist for '$($locale.code)': $translation"
+      }
+    }
+  }
+}
+
+$architectureAsset = @($manifest.assets | Where-Object { $_.id -eq "architecture-diagram" }) | Select-Object -First 1
+if ($null -eq $architectureAsset) {
+  Fail "Missing asset mapping for 'architecture-diagram'."
+}
+
+foreach ($locale in $locales) {
+  $homePath = if ($locale.code -eq $manifest.defaultLocale) {
+    Join-Path $WebsiteRoot "index.html"
+  } else {
+    Join-Path $WebsiteRoot "$($locale.code)/index.html"
+  }
+  $homeHtml = Get-Content -Raw -Encoding UTF8 -LiteralPath $homePath
+  $expectedAssetPath = if ($locale.code -eq $manifest.defaultLocale) {
+    $architectureAsset.source
+  } else {
+    $localizedAssetPath = Get-PropertyValue -Object $architectureAsset.translations -Name $locale.code
+    if ([string]::IsNullOrWhiteSpace($localizedAssetPath)) {
+      $architectureAsset.source
+    } else {
+      $localizedAssetPath
+    }
+  }
+  $expectedHref = if ($locale.code -eq $manifest.defaultLocale) {
+    $expectedAssetPath
+  } else {
+    "../$expectedAssetPath"
+  }
+
+  if ($homeHtml -notmatch [regex]::Escape($expectedHref)) {
+    Fail "Generated home page for '$($locale.code)' does not reference localized architecture asset '$expectedHref'."
+  }
+}
+
 $docsIndexPath = Join-Path $WebsiteRoot "docs/index.html"
 if (-not (Test-Path -LiteralPath $docsIndexPath)) {
   Fail "Missing generated website/docs/index.html."

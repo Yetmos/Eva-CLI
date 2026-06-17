@@ -35,6 +35,10 @@ events, memory, and external adapters.
 - Supervisor and Runtime generation switching provide process recovery and
   upgrade safety.
 
+## Architecture Diagram
+
+![Eva-CLI architecture diagram](../../assets/eva-cli-architecture.svg)
+
 ## Non-Goals
 
 - Lua must not directly execute shell commands, read secrets, scan user
