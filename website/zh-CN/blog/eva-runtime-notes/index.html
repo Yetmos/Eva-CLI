@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Eva 运行时笔记 | Eva-CLI 博客</title>
+    <meta name="description" content="关于 Eva-CLI 运行时边界的设计笔记。">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="Eva 运行时笔记 | Eva-CLI 博客">
+    <meta property="og:description" content="关于 Eva-CLI 运行时边界的设计笔记。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://Eva-CLI.com/zh-CN/blog/eva-runtime-notes/">
+    <meta property="article:published_time" content="2026-06-17">
+    <meta property="article:section" content="运行时">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/zh-CN/blog/eva-runtime-notes/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/blog/eva-runtime-notes/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/blog/eva-runtime-notes/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/blog/eva-runtime-notes/">
+    <link rel="icon" type="image/svg+xml" href="../../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../../" aria-label="Eva-CLI home">
+        <img src="../../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">多 Agent 运行时</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../../../">首页</a>
+        <a href="../../../docs/zh-CN/README.md">文档</a>
+        <a href="../../../zh-CN/blog/">博客</a>
+        <a href="../../../docs/zh-CN/总体架构方案.md">架构</a>
+        <a href="../../../#discussion">讨论</a>
+        <a href="../../../#feedback">反馈</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../../blog/eva-runtime-notes/" hreflang="en" lang="en">English</a>
+          <a href="../../../zh-CN/blog/eva-runtime-notes/" hreflang="zh-CN" lang="zh-CN" aria-current="page">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">博客</p>
+          <h1>Eva 运行时笔记</h1>
+          <p class="blog-lead">关于 Eva-CLI 运行时边界的设计笔记。</p>
+          <div class="blog-meta">
+            <span>发布： <time datetime="2026-06-17">2026-06-17</time></span>
+            <a href="../../../zh-CN/blog/category/runtime/">分类： 运行时</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>Eva-CLI 用 Rust 承载运行时所有权，用 Lua 承载可热更新行为。这个边界让恢复、策略、记忆归属和能力控制都有明确的负责层。</p>
+
+<h2>运行时边界</h2>
+<p>核心设计点是不要把策略和恢复逻辑放进可热更新脚本里。Lua 可以描述 Agent 行为，但 Rust 运行时仍然负责校验能力、管理进程状态，并决定事件如何在系统中流动。</p>
+
+<h2>为什么重要</h2>
+<p>受控运行时边界让系统更容易检查，也更容易安全演进。Adapter、MCP server、Tool、Skill、记忆和硬件能力都可以通过显式权限接入，而不是依赖脚本的隐式访问。</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../../zh-CN/blog/">返回博客</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>作者： <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../../#feedback">提交反馈</a>
+    </footer>
+  </body>
+</html>

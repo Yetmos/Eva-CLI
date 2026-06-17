@@ -10,6 +10,7 @@
     "label": "Primary navigation",
     "home": "Home",
     "docs": "Docs",
+    "blog": "Blog",
     "architecture": "Architecture",
     "discussion": "Discussion",
     "feedback": "Feedback"
@@ -166,6 +167,20 @@
         "description": "The multilingual website and documentation migration plan."
       }
     ]
+  },
+  "blog": {
+    "metaTitle": "Eva-CLI Blog",
+    "metaDescription": "Updates, design notes, and implementation articles from Eva-CLI.",
+    "heroEyebrow": "Blog",
+    "heroTitle": "Eva-CLI Blog",
+    "heroLead": "Updates, design notes, and implementation articles.",
+    "categoriesTitle": "Categories",
+    "allPostsTitle": "All posts",
+    "categoryLabel": "Category:",
+    "dateLabel": "Published:",
+    "readMore": "Read more",
+    "backToBlog": "Back to blog",
+    "emptyState": "No posts yet."
   },
   "feedback": {
     "eyebrow": "Feedback",

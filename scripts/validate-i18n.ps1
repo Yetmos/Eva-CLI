@@ -7,6 +7,7 @@ $ManifestPath = Join-Path $Root "docs/_i18n/manifest.json"
 $LocaleRoot = Join-Path $Root "website/_i18n"
 $WebsiteRoot = Join-Path $Root "website"
 $DocsRoot = Join-Path $Root "docs"
+$BlogDataPath = Join-Path $Root "website/_blog/posts.json"
 
 function Read-JsonFile {
   param([Parameter(Mandatory = $true)][string]$Path)
@@ -36,6 +37,105 @@ function Get-PropertyValue {
   }
 
   return $property.Value
+}
+
+function Get-BlogIndexSitePath {
+  param(
+    [Parameter(Mandatory = $true)]$Manifest,
+    [Parameter(Mandatory = $true)][string]$LocaleCode
+  )
+
+  if ($LocaleCode -eq $Manifest.defaultLocale) {
+    return "/blog/"
+  }
+
+  return "/$LocaleCode/blog/"
+}
+
+function Get-BlogCategorySitePath {
+  param(
+    [Parameter(Mandatory = $true)]$Manifest,
+    [Parameter(Mandatory = $true)][string]$LocaleCode,
+    [Parameter(Mandatory = $true)][string]$CategoryId
+  )
+
+  return "$(Get-BlogIndexSitePath -Manifest $Manifest -LocaleCode $LocaleCode)category/$CategoryId/"
+}
+
+function Get-BlogPostSitePath {
+  param(
+    [Parameter(Mandatory = $true)]$Manifest,
+    [Parameter(Mandatory = $true)][string]$LocaleCode,
+    [Parameter(Mandatory = $true)][string]$Slug
+  )
+
+  return "$(Get-BlogIndexSitePath -Manifest $Manifest -LocaleCode $LocaleCode)$Slug/"
+}
+
+function Get-BlogIndexOutputPath {
+  param(
+    [Parameter(Mandatory = $true)]$Manifest,
+    [Parameter(Mandatory = $true)][string]$LocaleCode
+  )
+
+  if ($LocaleCode -eq $Manifest.defaultLocale) {
+    return Join-Path $WebsiteRoot "blog/index.html"
+  }
+
+  return Join-Path $WebsiteRoot "$LocaleCode/blog/index.html"
+}
+
+function Get-BlogCategoryOutputPath {
+  param(
+    [Parameter(Mandatory = $true)]$Manifest,
+    [Parameter(Mandatory = $true)][string]$LocaleCode,
+    [Parameter(Mandatory = $true)][string]$CategoryId
+  )
+
+  if ($LocaleCode -eq $Manifest.defaultLocale) {
+    return Join-Path $WebsiteRoot "blog/category/$CategoryId/index.html"
+  }
+
+  return Join-Path $WebsiteRoot "$LocaleCode/blog/category/$CategoryId/index.html"
+}
+
+function Get-BlogPostOutputPath {
+  param(
+    [Parameter(Mandatory = $true)]$Manifest,
+    [Parameter(Mandatory = $true)][string]$LocaleCode,
+    [Parameter(Mandatory = $true)][string]$Slug
+  )
+
+  if ($LocaleCode -eq $Manifest.defaultLocale) {
+    return Join-Path $WebsiteRoot "blog/$Slug/index.html"
+  }
+
+  return Join-Path $WebsiteRoot "$LocaleCode/blog/$Slug/index.html"
+}
+
+function Join-SiteUrl {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+
+  $base = $BaseUrl.TrimEnd("/")
+  if ($Path.StartsWith("/")) {
+    return "$base$Path"
+  }
+
+  return "$base/$Path"
+}
+
+function Assert-NoTemplateToken {
+  param(
+    [Parameter(Mandatory = $true)][string]$Html,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+
+  if ($Html -match "{{[^}]+}}") {
+    Fail "Generated HTML contains unresolved token '$($Matches[0])': $Path"
+  }
 }
 
 if (-not (Test-Path -LiteralPath $ManifestPath)) {
@@ -78,9 +178,19 @@ foreach ($locale in $locales) {
   }
 
   $localeData = Read-JsonFile -Path $localeFile
-  foreach ($path in @("meta", "brand", "nav", "home", "discussion", "docsIndex", "feedback", "footer")) {
+  foreach ($path in @("meta", "brand", "nav", "home", "discussion", "docsIndex", "blog", "feedback", "footer")) {
     if ($null -eq (Get-PropertyValue -Object $localeData -Name $path)) {
       Fail "website/_i18n/$($locale.code).json missing '$path'."
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($localeData.nav.blog)) {
+    Fail "website/_i18n/$($locale.code).json missing 'nav.blog'."
+  }
+
+  foreach ($field in @("metaTitle", "metaDescription", "heroEyebrow", "heroTitle", "heroLead", "categoriesTitle", "allPostsTitle", "categoryLabel", "dateLabel", "readMore", "backToBlog", "emptyState")) {
+    if ([string]::IsNullOrWhiteSpace($localeData.blog.$field)) {
+      Fail "website/_i18n/$($locale.code).json missing 'blog.$field'."
     }
   }
 
@@ -95,6 +205,7 @@ foreach ($locale in $locales) {
   }
 
   $homeHtml = Get-Content -Raw -Encoding UTF8 -LiteralPath $homePath
+  Assert-NoTemplateToken -Html $homeHtml -Path $homePath
   if ($homeHtml -notmatch "<html lang=`"$([regex]::Escape($locale.code))`" dir=`"$([regex]::Escape($locale.dir))`"") {
     Fail "Generated home page for '$($locale.code)' has incorrect html lang/dir."
   }
@@ -109,6 +220,9 @@ foreach ($locale in $locales) {
   }
   if ($homeHtml -notmatch 'href="#discussion"') {
     Fail "Generated home page for '$($locale.code)' is missing the discussion navigation link."
+  }
+  if ($homeHtml -notmatch 'blog/') {
+    Fail "Generated home page for '$($locale.code)' is missing the blog navigation link."
   }
   if ($homeHtml -notmatch 'https://giscus\.app/client\.js') {
     Fail "Generated home page for '$($locale.code)' is missing the giscus embed script."
@@ -249,6 +363,7 @@ if (-not (Test-Path -LiteralPath $docsIndexPath)) {
 }
 
 $docsIndexHtml = Get-Content -Raw -Encoding UTF8 -LiteralPath $docsIndexPath
+Assert-NoTemplateToken -Html $docsIndexHtml -Path $docsIndexPath
 if ($docsIndexHtml -notmatch '<html lang="en" dir="ltr"') {
   Fail "website/docs/index.html must be the English docs entry."
 }
@@ -270,4 +385,117 @@ if (-not (Test-Path -LiteralPath (Join-Path $DocsRoot "zh-CN"))) {
   Fail "Missing docs/zh-CN directory."
 }
 
-Write-Host "i18n structure validated for $($locales.Count) locale(s) and $($manifest.documents.Count) document(s)."
+if (-not (Test-Path -LiteralPath $BlogDataPath)) {
+  Fail "Missing website/_blog/posts.json."
+}
+
+$blogData = Read-JsonFile -Path $BlogDataPath
+$blogCategories = @($blogData.categories)
+$blogPosts = @($blogData.posts)
+if ($blogCategories.Count -eq 0) {
+  Fail "website/_blog/posts.json must define at least one category."
+}
+if ($blogPosts.Count -eq 0) {
+  Fail "website/_blog/posts.json must define at least one post."
+}
+
+$localeCodes = @($locales | ForEach-Object { [string]$_.code })
+$categoryIds = New-Object System.Collections.Generic.HashSet[string]
+foreach ($category in $blogCategories) {
+  if ([string]::IsNullOrWhiteSpace($category.id)) {
+    Fail "A blog category is missing id."
+  }
+  if (-not $categoryIds.Add([string]$category.id)) {
+    Fail "Duplicate blog category id '$($category.id)'."
+  }
+}
+
+$slugsByLocale = @{}
+foreach ($locale in $locales) {
+  $slugsByLocale[[string]$locale.code] = New-Object System.Collections.Generic.HashSet[string]
+}
+
+foreach ($post in $blogPosts) {
+  foreach ($field in @("id", "locale", "slug", "title", "description", "date", "category", "contentPath")) {
+    $value = Get-PropertyValue -Object $post -Name $field
+    if ([string]::IsNullOrWhiteSpace([string]$value)) {
+      Fail "A blog post is missing '$field'."
+    }
+  }
+
+  if ([string]$post.locale -notin $localeCodes) {
+    Fail "Blog post '$($post.id)' uses unknown or disabled locale '$($post.locale)'."
+  }
+  if (-not $categoryIds.Contains([string]$post.category)) {
+    Fail "Blog post '$($post.id)' references unknown category '$($post.category)'."
+  }
+  if (-not $slugsByLocale[[string]$post.locale].Add([string]$post.slug)) {
+    Fail "Duplicate blog slug '$($post.slug)' for locale '$($post.locale)'."
+  }
+  if (-not (Test-RepoPath -RelativePath ([string]$post.contentPath))) {
+    Fail "Blog post '$($post.id)' content file does not exist: $($post.contentPath)"
+  }
+  try {
+    [void][datetime]::Parse([string]$post.date)
+  } catch {
+    Fail "Blog post '$($post.id)' has invalid date '$($post.date)'."
+  }
+}
+
+foreach ($locale in $locales) {
+  $localeCode = [string]$locale.code
+  $blogIndexPath = Get-BlogIndexOutputPath -Manifest $manifest -LocaleCode $localeCode
+  if (-not (Test-Path -LiteralPath $blogIndexPath)) {
+    Fail "Missing generated blog index for locale '$localeCode': $blogIndexPath"
+  }
+
+  $blogIndexHtml = Get-Content -Raw -Encoding UTF8 -LiteralPath $blogIndexPath
+  Assert-NoTemplateToken -Html $blogIndexHtml -Path $blogIndexPath
+  $expectedIndexCanonical = Join-SiteUrl -BaseUrl $manifest.siteUrl -Path (Get-BlogIndexSitePath -Manifest $manifest -LocaleCode $localeCode)
+  if ($blogIndexHtml -notmatch [regex]::Escape("rel=`"canonical`" href=`"$expectedIndexCanonical`"")) {
+    Fail "Generated blog index for '$localeCode' is missing expected canonical URL."
+  }
+  if ($blogIndexHtml -notmatch 'hreflang="x-default"') {
+    Fail "Generated blog index for '$localeCode' is missing x-default hreflang."
+  }
+
+  foreach ($category in $blogCategories) {
+    $categoryId = [string]$category.id
+    $categoryPath = Get-BlogCategoryOutputPath -Manifest $manifest -LocaleCode $localeCode -CategoryId $categoryId
+    if (-not (Test-Path -LiteralPath $categoryPath)) {
+      Fail "Missing generated blog category page for locale '$localeCode' and category '$categoryId': $categoryPath"
+    }
+
+    $categoryHtml = Get-Content -Raw -Encoding UTF8 -LiteralPath $categoryPath
+    Assert-NoTemplateToken -Html $categoryHtml -Path $categoryPath
+    $expectedCategoryCanonical = Join-SiteUrl -BaseUrl $manifest.siteUrl -Path (Get-BlogCategorySitePath -Manifest $manifest -LocaleCode $localeCode -CategoryId $categoryId)
+    if ($categoryHtml -notmatch [regex]::Escape("rel=`"canonical`" href=`"$expectedCategoryCanonical`"")) {
+      Fail "Generated blog category page for '$localeCode/$categoryId' is missing expected canonical URL."
+    }
+  }
+
+  $localePosts = @($blogPosts | Where-Object { $_.locale -eq $localeCode })
+  foreach ($post in $localePosts) {
+    $postPath = Get-BlogPostOutputPath -Manifest $manifest -LocaleCode $localeCode -Slug ([string]$post.slug)
+    if (-not (Test-Path -LiteralPath $postPath)) {
+      Fail "Missing generated blog post page for '$localeCode/$($post.slug)': $postPath"
+    }
+
+    $postHtml = Get-Content -Raw -Encoding UTF8 -LiteralPath $postPath
+    Assert-NoTemplateToken -Html $postHtml -Path $postPath
+    $expectedPostCanonical = Join-SiteUrl -BaseUrl $manifest.siteUrl -Path (Get-BlogPostSitePath -Manifest $manifest -LocaleCode $localeCode -Slug ([string]$post.slug))
+    if ($postHtml -notmatch [regex]::Escape("rel=`"canonical`" href=`"$expectedPostCanonical`"")) {
+      Fail "Generated blog post '$localeCode/$($post.slug)' is missing expected canonical URL."
+    }
+
+    $localizedSiblings = @($blogPosts | Where-Object { $_.id -eq $post.id })
+    foreach ($sibling in $localizedSiblings) {
+      $siblingHref = Join-SiteUrl -BaseUrl $manifest.siteUrl -Path (Get-BlogPostSitePath -Manifest $manifest -LocaleCode ([string]$sibling.locale) -Slug ([string]$sibling.slug))
+      if ($postHtml -notmatch [regex]::Escape("hreflang=`"$($sibling.locale)`" href=`"$siblingHref`"")) {
+        Fail "Generated blog post '$localeCode/$($post.slug)' is missing hreflang for '$($sibling.locale)'."
+      }
+    }
+  }
+}
+
+Write-Host "i18n and blog structure validated for $($locales.Count) locale(s), $($manifest.documents.Count) document(s), and $($blogPosts.Count) blog post(s)."

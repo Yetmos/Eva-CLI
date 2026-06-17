@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="{{lang}}" dir="{{dir}}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{title}}</title>
+    <meta name="description" content="{{description}}">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="{{title}}">
+    <meta property="og:description" content="{{description}}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="{{canonicalUrl}}">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="{{canonicalUrl}}">
+{{alternateLinks}}
+    <link rel="icon" type="image/svg+xml" href="{{assetPrefix}}assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="{{assetPrefix}}styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="{{homeUrl}}" aria-label="Eva-CLI home">
+        <img src="{{assetPrefix}}assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">{{brandTagline}}</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="{{navLabel}}">
+{{navLinks}}
+      </nav>
+{{languageSwitch}}
+    </header>
+
+    <main class="blog-page">
+      <section class="blog-hero" aria-labelledby="blog-title">
+        <p class="eyebrow">{{heroEyebrow}}</p>
+        <h1 id="blog-title">{{heroTitle}}</h1>
+        <p class="blog-lead">{{heroLead}}</p>
+      </section>
+
+      <section class="blog-layout" aria-label="{{allPostsTitle}}">
+        <aside class="blog-sidebar" aria-labelledby="blog-categories-title">
+          <h2 id="blog-categories-title">{{categoriesTitle}}</h2>
+          <div class="blog-category-list">
+{{categoryLinks}}
+          </div>
+        </aside>
+        <div class="blog-main">
+          <div class="section-heading">
+            <h2>{{allPostsTitle}}</h2>
+          </div>
+          <div class="blog-post-list">
+{{postCards}}
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>{{footerAuthor}} <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>{{footerFeedback}} <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="{{feedbackUrl}}">{{footerSubmit}}</a>
+    </footer>
+  </body>
+</html>

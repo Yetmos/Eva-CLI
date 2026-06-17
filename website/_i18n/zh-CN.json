@@ -10,6 +10,7 @@
     "label": "主导航",
     "home": "首页",
     "docs": "文档",
+    "blog": "博客",
     "architecture": "架构",
     "discussion": "讨论",
     "feedback": "反馈"
@@ -166,6 +167,20 @@
         "description": "多语言官网与文档迁移方案。"
       }
     ]
+  },
+  "blog": {
+    "metaTitle": "Eva-CLI 博客",
+    "metaDescription": "来自 Eva-CLI 的更新、设计笔记与实现文章。",
+    "heroEyebrow": "博客",
+    "heroTitle": "Eva-CLI 博客",
+    "heroLead": "项目更新、设计笔记和实现文章。",
+    "categoriesTitle": "分类",
+    "allPostsTitle": "全部文章",
+    "categoryLabel": "分类：",
+    "dateLabel": "发布：",
+    "readMore": "阅读全文",
+    "backToBlog": "返回博客",
+    "emptyState": "暂无文章。"
   },
   "feedback": {
     "eyebrow": "反馈",

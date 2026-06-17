@@ -1,0 +1,7 @@
+<p>Eva-CLI keeps runtime ownership in Rust and puts hot-reloadable behavior in Lua. That split gives the project a clear place for recovery, policy, memory ownership, and capability control.</p>
+
+<h2>Runtime boundary</h2>
+<p>The key design point is keeping policy and recovery outside hot-reloaded scripts. Lua can describe Agent behavior, but the Rust runtime remains responsible for validating capabilities, managing process state, and deciding how events move through the system.</p>
+
+<h2>Why it matters</h2>
+<p>A controlled runtime boundary makes the system easier to inspect and safer to evolve. Adapters, MCP servers, tools, skills, memory, and hardware can be connected through explicit permissions instead of implicit script access.</p>

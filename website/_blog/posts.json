@@ -1,0 +1,33 @@
+{
+  "categories": [
+    {
+      "id": "runtime",
+      "labels": {
+        "en": "Runtime",
+        "zh-CN": "运行时"
+      }
+    }
+  ],
+  "posts": [
+    {
+      "id": "eva-runtime-notes",
+      "locale": "en",
+      "slug": "eva-runtime-notes",
+      "title": "Eva Runtime Notes",
+      "description": "Design notes about Eva-CLI runtime boundaries.",
+      "date": "2026-06-17",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/eva-runtime-notes.html"
+    },
+    {
+      "id": "eva-runtime-notes",
+      "locale": "zh-CN",
+      "slug": "eva-runtime-notes",
+      "title": "Eva 运行时笔记",
+      "description": "关于 Eva-CLI 运行时边界的设计笔记。",
+      "date": "2026-06-17",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/eva-runtime-notes.html"
+    }
+  ]
+}

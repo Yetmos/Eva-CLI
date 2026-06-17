@@ -44,7 +44,7 @@ jobs:
           cp -R docs/. public/docs/
           cp -R website/docs/. public/docs/
           cp -R assets public/assets
-          rm -rf public/_templates public/_i18n
+          rm -rf public/_templates public/_i18n public/_blog
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
