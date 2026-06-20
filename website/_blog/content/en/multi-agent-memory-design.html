@@ -1,0 +1,24 @@
+<p>A useful multi-Agent memory system should not behave like one shared notebook that every Agent can rewrite. Eva-CLI can treat memory as a runtime-owned service with two scopes: each Agent keeps a private memory space, and the project keeps a shared memory module that only accepts promoted, validated facts.</p>
+
+<h2>Memory scopes</h2>
+<p>The first boundary is ownership. Agent memory belongs to a single Agent identity and records local preferences, task history, capability observations, and working assumptions. Project memory belongs to the workspace and stores facts that should survive across Agents, such as architecture decisions, reusable constraints, release notes, user preferences, and known risks.</p>
+<p>Agents should read project memory through the runtime, but they should not write to it directly. Writes go through a promotion path that records the source Agent, evidence, confidence, freshness, and reason for promotion. That keeps shared memory useful without turning it into an unreviewed transcript.</p>
+
+<h2>Layered project memory</h2>
+<p>The project memory module can be split into layers with different retention and retrieval behavior. Short-term memory is a session or task window: active goals, recent tool results, unresolved questions, and temporary assumptions. Long-term memory stores stable facts: repository conventions, architecture decisions, dependency choices, and recurring workflows. Important memory is a protected layer for high-signal constraints that should be retrieved before ordinary long-term entries, such as security rules, irreversible operational limits, and user-level preferences.</p>
+<p>These layers should use the same record shape but different policies. A memory record can include scope, layer, owner, title, body, tags, source, confidence, priority, created time, last accessed time, expiration, and revision. Short-term entries can expire aggressively. Long-term entries require deduplication and periodic summarization. Important entries require explicit promotion, stronger provenance, and a small review surface.</p>
+
+<h2>Write path</h2>
+<p>The runtime should normalize every write request before persistence. A good write path is: capture an event, classify its candidate layer, check permissions, merge it with similar records, attach provenance, and write an append-only revision. For project memory, an Agent can propose a memory, but a memory policy decides whether it becomes short-term, long-term, or important.</p>
+<p>This makes conflict handling concrete. If two Agents disagree, the memory module keeps separate claims until evidence resolves them. If a fact becomes obsolete, the system marks it superseded instead of silently deleting it. Agents then see the current summary while the audit trail remains available for debugging.</p>
+
+<h2>Read path</h2>
+<p>Context building should be selective. The ContextBuilder can retrieve important project memory first, then relevant long-term project records, then the requesting Agent's private memory, and finally short-term entries tied to the active task. Ranking should combine tags, semantic similarity, recency, priority, confidence, and the current topic.</p>
+<p>The key rule is budget control: memory retrieval should produce a compact context pack, not a dump. Each pack can include required constraints, likely useful facts, open questions, and sources. That keeps Agents grounded while leaving room for live task context.</p>
+
+<h2>Implementation sketch</h2>
+<p>A pragmatic implementation starts with a Rust-owned memory service behind a small API: write memory, propose project memory, promote memory, search memory, summarize memory, and expire memory. Storage can begin with structured JSON or SQLite records, then add vector indexes later when semantic retrieval becomes necessary.</p>
+<p>Lua Agents call the API through capability-checked functions. The Rust runtime owns permissions, persistence, promotion rules, and compaction jobs. This keeps Agent behavior hot-reloadable while memory integrity stays inside the stable runtime boundary.</p>
+
+<h2>Why this shape works</h2>
+<p>Per-Agent memory preserves specialization. Project memory gives the whole workspace continuity. Layering short-term, long-term, and important memory prevents urgent context, durable knowledge, and non-negotiable constraints from competing in the same bucket. The result is a memory system that can grow with more Agents without losing traceability or control.</p>

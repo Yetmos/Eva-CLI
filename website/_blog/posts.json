@@ -10,6 +10,26 @@
   ],
   "posts": [
     {
+      "id": "multi-agent-memory-design",
+      "locale": "en",
+      "slug": "multi-agent-memory-design",
+      "title": "Multi-Agent Memory Design",
+      "description": "An implementation sketch for per-Agent memory, project memory, and layered short-term, long-term, and important memory.",
+      "date": "2026-06-20",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/multi-agent-memory-design.html"
+    },
+    {
+      "id": "multi-agent-memory-design",
+      "locale": "zh-CN",
+      "slug": "multi-agent-memory-design",
+      "title": "多 Agent 记忆设计实现思路",
+      "description": "围绕每个 Agent 的独立记忆、项目总记忆，以及短期、长期、重要记忆分层的实现草案。",
+      "date": "2026-06-20",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/multi-agent-memory-design.html"
+    },
+    {
       "id": "eva-runtime-notes",
       "locale": "en",
       "slug": "eva-runtime-notes",
