@@ -61,6 +61,11 @@
         <div class="blog-content">
 <p>一个可用的多 Agent 记忆系统，不应该像所有 Agent 都能随意改写的共享笔记。Eva-CLI 可以把记忆作为 Runtime 托管服务来设计：每个 Agent 有自己的独立记忆空间，项目本身有一个总的记忆模块，并且只有经过提升和校验的事实才能进入项目级共享记忆。</p>
 
+<figure class="blog-figure">
+  <img src="../../../assets/multi-agent-memory-design.zh-CN.svg" alt="每个 Agent 的私有记忆通过提升策略进入短期、长期和重要项目记忆，并由 ContextBuilder 检索。">
+  <figcaption>每个 Agent 保留私有记忆，Runtime 将通过校验的事实提升到短期、长期或重要项目记忆层。</figcaption>
+</figure>
+
 <h2>记忆归属</h2>
 <p>第一层边界是所有权。Agent 记忆归属于单个 Agent 身份，用来记录本地偏好、任务历史、能力观察和工作假设。项目记忆归属于当前 workspace，用来保存跨 Agent 都应该继承的事实，例如架构决策、可复用约束、发布记录、用户偏好和已知风险。</p>
 <p>Agent 可以通过 Runtime 读取项目记忆，但不应该直接写入项目记忆。写入需要走提升路径，记录来源 Agent、证据、置信度、时效性和提升原因。这样项目记忆不会退化成未经整理的对话流水账。</p>

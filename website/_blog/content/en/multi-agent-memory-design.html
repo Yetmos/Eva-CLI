@@ -1,5 +1,10 @@
 <p>A useful multi-Agent memory system should not behave like one shared notebook that every Agent can rewrite. Eva-CLI can treat memory as a runtime-owned service with two scopes: each Agent keeps a private memory space, and the project keeps a shared memory module that only accepts promoted, validated facts.</p>
 
+<figure class="blog-figure">
+  <img src="../../assets/multi-agent-memory-design.svg" alt="Diagram of per-Agent private memory flowing through a promotion policy into layered project memory and ContextBuilder retrieval.">
+  <figcaption>Each Agent keeps private memory while the runtime promotes validated facts into short-term, long-term, or important project memory.</figcaption>
+</figure>
+
 <h2>Memory scopes</h2>
 <p>The first boundary is ownership. Agent memory belongs to a single Agent identity and records local preferences, task history, capability observations, and working assumptions. Project memory belongs to the workspace and stores facts that should survive across Agents, such as architecture decisions, reusable constraints, release notes, user preferences, and known risks.</p>
 <p>Agents should read project memory through the runtime, but they should not write to it directly. Writes go through a promotion path that records the source Agent, evidence, confidence, freshness, and reason for promotion. That keeps shared memory useful without turning it into an unreviewed transcript.</p>

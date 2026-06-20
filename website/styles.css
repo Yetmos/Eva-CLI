@@ -827,6 +827,30 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.blog-figure {
+  margin: 30px 0 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(23, 32, 51, 0.06);
+}
+
+.blog-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.blog-figure figcaption {
+  margin: 10px 4px 0;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .blog-article-footer {
   margin-top: 42px;
   padding-top: 24px;
