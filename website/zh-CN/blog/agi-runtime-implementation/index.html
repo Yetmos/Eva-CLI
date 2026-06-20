@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>基于 Eva-CLI 实现 AGI Runtime 的实现思路 | Eva-CLI 博客</title>
+    <meta name="description" content="如何把 Eva-CLI 当前的 Rust Runtime、Lua Agent、EventBus、记忆、发现、Adapter、验证和 Release Snapshot 组合成一个受控的 AGI 风格运行时。">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="基于 Eva-CLI 实现 AGI Runtime 的实现思路 | Eva-CLI 博客">
+    <meta property="og:description" content="如何把 Eva-CLI 当前的 Rust Runtime、Lua Agent、EventBus、记忆、发现、Adapter、验证和 Release Snapshot 组合成一个受控的 AGI 风格运行时。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://Eva-CLI.com/zh-CN/blog/agi-runtime-implementation/">
+    <meta property="article:published_time" content="2026-06-21">
+    <meta property="article:section" content="运行时">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/zh-CN/blog/agi-runtime-implementation/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/blog/agi-runtime-implementation/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/blog/agi-runtime-implementation/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/blog/agi-runtime-implementation/">
+    <link rel="icon" type="image/svg+xml" href="../../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../../" aria-label="Eva-CLI home">
+        <img src="../../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">多 Agent 运行时</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../../../">首页</a>
+        <a href="../../../docs/zh-CN/README.md">文档</a>
+        <a href="../../../zh-CN/blog/">博客</a>
+        <a href="../../../docs/zh-CN/总体架构方案.md">架构</a>
+        <a href="../../../#discussion">讨论</a>
+        <a href="../../../#feedback">反馈</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../../blog/agi-runtime-implementation/" hreflang="en" lang="en">English</a>
+          <a href="../../../zh-CN/blog/agi-runtime-implementation/" hreflang="zh-CN" lang="zh-CN" aria-current="page">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">博客</p>
+          <h1>基于 Eva-CLI 实现 AGI Runtime 的实现思路</h1>
+          <p class="blog-lead">如何把 Eva-CLI 当前的 Rust Runtime、Lua Agent、EventBus、记忆、发现、Adapter、验证和 Release Snapshot 组合成一个受控的 AGI 风格运行时。</p>
+          <div class="blog-meta">
+            <span>发布： <time datetime="2026-06-21">2026-06-21</time></span>
+            <a href="../../../zh-CN/blog/category/runtime/">分类： 运行时</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>如果把“实现 AGI”理解成一次性造出一个拥有无限泛化能力的模型，那么 Eva-CLI 不应该也无法直接承诺这种目标。更务实的定义是：在本地 Runtime 里构建一个能长期感知任务、拆解目标、调用工具、积累记忆、验证结果、升级自身工作流，并且始终受权限、审计和回滚约束的 AGI 风格运行时。模型负责推理和生成，Eva-CLI 负责把推理落到可执行、可恢复、可验证的系统边界里。</p>
+
+<p>当前项目已经给出了这条路需要的主要构件：Rust 托管 Runtime、Lua Agent、Topic EventBus、Scheduler、AdapterRegistry、MemoryService、KnowledgeService、ContextBuilder、AgentDiscoveryService、Lua Capability 热更新、Release Snapshot、BackupService、MigrationPackageService、进程级 Runtime generation 切换和 Supervisor。AGI Runtime 的实现思路，就是把这些构件组织成一个从“目标进入”到“行动、学习、验证、升级”的闭环，而不是把所有能力压进单个 Agent prompt。</p>
+
+<p class="blog-note">本文讨论的是 Eva-CLI 当前架构之上的实现路线。它更接近“受控自主 Agent Runtime”，不是宣称项目已经具备完整 AGI 能力。真正关键的不是让 Agent 拥有最高权限，而是让 Agent 能提出计划、请求能力、执行可审计步骤，并被 Runtime 强制验证。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/agi-runtime-stack.zh-CN.svg" alt="Eva-CLI AGI Runtime 分层架构图，从用户目标进入 Runtime 边界，经 EventBus、Scheduler、Lua Agent、记忆、知识、Adapter、验证和 Release Snapshot 形成闭环。">
+  <figcaption>Eva-CLI 的 AGI 实现不应是单个超级 Agent，而应是 Rust Runtime 托管下的多 Agent、记忆、能力、验证和升级系统。</figcaption>
+</figure>
+
+<h2>一、先定义 Eva-CLI 里的 AGI</h2>
+<p>在 Eva-CLI 里，“AGI”更适合被定义成一种运行时能力，而不是一个单独模型。这个运行时至少需要具备七类能力：理解目标、保持长期上下文、拆解任务、调用外部能力、执行计划、验证结果，以及把经验沉淀为后续可用的记忆或能力更新。</p>
+
+<p>这一定义避免了两个危险方向。第一，不把模型输出当成系统事实。模型可以建议，但 Runtime 需要用 schema、policy、测试、snapshot 和审计来确认。第二，不把自动化能力等同于授权能力。Agent 可以请求读取文件、调用外部 CLI、写入记忆或切换能力 generation，但最后是否允许，必须由 Rust Runtime 判断。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>AGI 能力</th>
+    <th>Eva-CLI 对应实现边界</th>
+    <th>关键约束</th>
+  </tr>
+  <tr>
+    <td>理解目标</td>
+    <td>入口 Agent、Topic 事件、ContextBuilder</td>
+    <td>目标必须结构化为事件、任务和约束，不能只停留在自然语言。</td>
+  </tr>
+  <tr>
+    <td>长期上下文</td>
+    <td>Agent 私有记忆、项目记忆、KnowledgeService</td>
+    <td>记忆有来源、置信度、scope、TTL 和审计，不能无限堆上下文。</td>
+  </tr>
+  <tr>
+    <td>任务拆解</td>
+    <td>Lua Agent、本地 workflow、Topic 子任务</td>
+    <td>拆解结果应进入 EventBus，而不是隐式保存在 prompt 里。</td>
+  </tr>
+  <tr>
+    <td>能力调用</td>
+    <td>AdapterRegistry、Rust Tool Layer、MCP、SkillAdapter、HardwareAdapter</td>
+    <td>Lua 只表达意图，权限、路径、网络、shell、密钥和生命周期由 Rust 管。</td>
+  </tr>
+  <tr>
+    <td>执行与恢复</td>
+    <td>Scheduler、Agent 私有队列、Durable Event Log、dead letter</td>
+    <td>事件接受后应可恢复，外部副作用必须有 idempotency key。</td>
+  </tr>
+  <tr>
+    <td>验证结果</td>
+    <td>VerificationService、测试命令、schema 校验、health check</td>
+    <td>完成标准必须可执行、可记录、可复现。</td>
+  </tr>
+  <tr>
+    <td>自我改进</td>
+    <td>Lua Capability generation swap、Release Snapshot、Runtime generation</td>
+    <td>Agent 可以提出升级，Runtime 拥有激活、回滚和审计权。</td>
+  </tr>
+</table>
+
+<h2>二、总体架构：Runtime 托管自主性</h2>
+<p>AGI Runtime 的最外层是 Rust Runtime Boundary。所有不可妥协的边界都在这里：权限、状态、文件系统、网络、shell、密钥、Adapter 生命周期、MCP transport、硬件句柄、备份、迁移、snapshot、release pointer、审计日志和恢复策略。Lua Agent 位于这个边界内部，但它只能通过窄 API 表达业务意图。</p>
+
+<p>用户输入、CLI、API、MCP client 或外部事件首先被归一成 Event。Event 至少应包含 topic、payload、source、target、correlation_id、causation_id、priority、created_at 和 risk metadata。EventBus 负责发布事件，Scheduler 负责按 Topic、目标 Agent、订阅规则、优先级和负载把事件投递给 Agent 私有队列。每个 Agent 有独立 Lua State 和 inbox，避免多个 Agent 通过隐式共享变量互相污染。</p>
+
+<p>这种结构对 AGI 很重要。通用智能系统不是一次函数调用，而是一串长期事件链。目标拆解、工具调用、检查点、失败重试、人工确认、结果验证和经验沉淀都应该留下链路。EventBus + Scheduler + Agent 私有队列可以让每一步都有 correlation id、causation id 和 audit id，从而让系统知道“为什么发生了这件事”。</p>
+
+<pre class="blog-code"><code>Goal
+  -> /input/user
+  -> /goal/normalized
+  -> /plan/proposed
+  -> /task/created
+  -> /adapter/invoke
+  -> /task/verified
+  -> /memory/proposed
+  -> /capability/upgrade/proposed
+  -> /release/snapshot/requested</code></pre>
+
+<h2>三、目标理解：从自然语言到可执行任务树</h2>
+<p>第一层 Agent 不应该直接开始执行，它应该先把用户目标转成结构化目标包。目标包包含原始请求、意图分类、约束、风险等级、可接受输出、需要确认的高风险动作、候选验证方式和上下文需求。这个步骤可以由 Lua Agent 调用模型完成，但结果必须经过 Runtime schema 校验。</p>
+
+<p>目标包之后进入规划阶段。规划不是写一段漂亮文本，而是把目标拆成可投递的 Task Spec。每个 Task Spec 都应该声明：输入、输出、依赖、可调用 capability、所需权限、超时、重试策略、完成判据、失败处理和是否需要人工确认。这样 Scheduler 可以把任务派发给不同 Agent 或外部 Adapter，VerificationService 也能知道如何判断任务完成。</p>
+
+<pre class="blog-code"><code>{
+  "goal_id": "goal_20260621_agi_article",
+  "intent": "publish_blog_post",
+  "constraints": ["use current Eva-CLI architecture", "include SVG diagrams"],
+  "tasks": [
+    {
+      "topic": "/task/content/draft",
+      "capability": "blog.write",
+      "done_when": ["article has architecture, loop, roadmap, risks"]
+    },
+    {
+      "topic": "/task/asset/draw",
+      "capability": "svg.diagram.create",
+      "done_when": ["diagram files exist", "images render in page"]
+    },
+    {
+      "topic": "/task/site/verify",
+      "capability": "site.build.verify",
+      "done_when": ["i18n build passes", "generated page has no unresolved tokens"]
+    }
+  ]
+}</code></pre>
+
+<p>这个结构化过程是 Eva-CLI 和普通聊天机器人的分界线。普通聊天通常只返回答案；AGI Runtime 必须把答案变成可调度、可验证、可回滚的行动单元。</p>
+
+<h2>四、记忆系统：让经验可提升、可过期、可引用</h2>
+<p>AGI 的“长期性”首先来自记忆。Eva-CLI 里不应该让所有 Agent 直接改同一个共享笔记。更合理的结构是三层：Agent 私有记忆、项目级总记忆、可溯源知识库。Agent 私有记忆记录单个 Agent 的工具偏好、失败经验、局部任务状态和临时假设。项目记忆记录跨 Agent 都应该继承的事实，例如架构决策、发布约束、用户偏好和已知风险。知识库索引文档、代码、release note、issue、PR 和外部资料摘录。</p>
+
+<p>记忆写入必须走提升路径。Agent 可以提出候选记忆，但 MemoryService 要检查 scope、来源、敏感信息、重复记录、冲突事实、置信度、TTL 和审计字段。能被多个 Agent 复用且证据明确的事实，才可以从私有记忆提升为项目记忆。高风险约束，例如“禁止直接移动 release pointer”或“外部副作用必须有 idempotency key”，应进入重要记忆或 policy，而不是普通摘要。</p>
+
+<p>读取时由 ContextBuilder 生成 context pack，而不是把历史全部塞进 prompt。一个 context pack 可以包含四部分：必须遵守的约束、与当前目标相关的项目事实、请求方 Agent 的私有经验、以及知识库检索出的引用片段。这样系统能在长期运行中保持连续性，同时不会被低质量历史上下文淹没。</p>
+
+<h2>五、能力系统：Adapter 是受控行动器</h2>
+<p>AGI Runtime 需要能调用外部能力：LLM、CLI、MCP server、本地模型、代码工具、硬件、浏览器、文件系统、测试框架和部署流程。但 Eva-CLI 的关键设计是：Lua Agent 不直接访问这些能力。Lua 只通过 `ctx.tools.invoke_agent` 或发布 `/adapter/invoke` 表达意图，Rust Tool Layer 负责真正的 Adapter 路由和权限控制。</p>
+
+<p>Adapter 的完整定义不是一个命令字符串，而是 `manifest + capability + policy + transport + protocol + runtime state`。例如 Codex CLI、Claude API、Gemini、本地模型、MCP server、Workflow Skill 和 HardwareAdapter 都可以作为 Adapter，但它们必须声明 capability、输入输出 schema、超时、并发限制、路径权限、网络权限、secret 来源、审计策略和健康检查。</p>
+
+<p>这会让 Agent 的“行动能力”变成可治理资源。一个 Agent 可以请求 `repo.analyze`、`code.review`、`mcp.tool.call` 或 `workflow.code_review`，但不能偷偷拼 shell 命令、读取任意目录、改环境变量或绕过 MCP policy。AGI Runtime 的能力越强，越需要这种能力注册表来限制 blast radius。</p>
+
+<h2>六、执行循环：观察、计划、行动、验证、沉淀</h2>
+<p>Eva-CLI 的 AGI 主循环可以被拆成六个阶段：Observe、Plan、Act、Verify、Reflect、Improve。Observe 收集当前事件、上下文、状态、记忆、知识和工具结果。Plan 生成任务树和风险分级。Act 通过 Adapter 和 Lua capability 执行。Verify 运行声明过的检查。Reflect 总结事实、失败原因和可复用经验。Improve 把经验转成记忆、配置、Lua workflow 或候选 capability。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/agi-runtime-learning-loop.zh-CN.svg" alt="Eva-CLI AGI Runtime 学习闭环图，展示观察、规划、行动、验证、反思、记忆提升和能力升级之间的受控循环。">
+  <figcaption>AGI Runtime 的核心不是一次性回答，而是每轮执行都产生证据、记忆和可审查的能力改进。</figcaption>
+</figure>
+
+<p>这个循环里的 Verify 是硬边界。没有验证，系统只是在自动生成文本；有验证，系统才能逐步积累可信能力。VerificationService 至少要支持 schema 校验、静态检查、单元测试、集成测试、smoke test、迁移 dry run、健康探针和人工确认 gate。每个任务都应该声明最低验证等级。</p>
+
+<p>Reflect 也不应该是自由发挥的总结。它应该输出结构化记录：发生了什么、证据是什么、哪些检查通过、失败在哪里、是否产生新风险、是否值得写入记忆、是否需要升级 capability、是否需要创建 snapshot。这个结构化反思再交给 MemoryService 或 UpgradeService 处理。</p>
+
+<h2>七、自我升级：Agent 提案，Runtime 激活</h2>
+<p>AGI Runtime 最重要的长期能力是自我改进，但这也是最容易失控的地方。Eva-CLI 应该坚持一条原则：Agent 可以提出升级，不能自我授权升级。升级对象分为三类。第一类是行为升级，例如 prompt、Lua Agent 脚本、Lua tool、Lua skill、路由规则和响应整形。第二类是能力元数据升级，例如 Adapter manifest、schema、非扩权 policy metadata。第三类是 Runtime 边界升级，例如新权限类别、transport、状态后端、MCP command surface 或 host API 变化。</p>
+
+<p>第一类可以走 Lua generation swap：新 Lua State 先加载、schema 检查、policy 检查、smoke test，通过后原子切新流量，旧 generation 保留到 in-flight work 排空。第二类走 candidate registry：发现、归一化、冲突检查、policy diff、健康检查，通过后进入正式 Registry。第三类必须走 Supervisor 托管的 Runtime generation：新 Runtime 作为 candidate 预热，加载配置和状态，跑兼容性检查，再通过 Ingress Gate 切新流量。</p>
+
+<p>每次升级都应该产生 Release Snapshot。Snapshot 记录源码版本、配置 digest、policy digest、manifest registry digest、Lua capability generation、AdapterRegistry generation、State Store schema、Durable Event Log watermark、验证输出、迁移包 ID、backup artifact ID、rollback eligibility 和 audit id。没有这些证据，自我升级就是不可追踪的变异。</p>
+
+<h2>八、AGI Runtime 的核心服务划分</h2>
+<p>为了让实现可落地，Eva-CLI 可以把 AGI 能力拆成一组 Runtime-owned service。Agent 调用这些服务，但不拥有这些服务的规则。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>服务</th>
+    <th>职责</th>
+    <th>为什么必须在 Runtime</th>
+  </tr>
+  <tr>
+    <td>GoalService</td>
+    <td>目标归一化、任务树、依赖和完成条件。</td>
+    <td>目标需要稳定 ID、状态机和恢复语义。</td>
+  </tr>
+  <tr>
+    <td>ContextBuilder</td>
+    <td>组合会话、记忆、知识、约束和工具结果。</td>
+    <td>上下文预算、权限和敏感信息过滤不能交给 Agent 自判。</td>
+  </tr>
+  <tr>
+    <td>MemoryService</td>
+    <td>私有记忆、项目记忆、提升、合并、过期和审计。</td>
+    <td>长期事实需要来源、冲突处理和可回滚 revision。</td>
+  </tr>
+  <tr>
+    <td>KnowledgeService</td>
+    <td>文档索引、chunk、引用、检索和重建。</td>
+    <td>知识必须可溯源，不能变成无来源生成内容。</td>
+  </tr>
+  <tr>
+    <td>AdapterRegistry</td>
+    <td>外部模型、CLI、MCP、Skill、硬件能力注册和路由。</td>
+    <td>能力调用涉及密钥、进程、网络、权限和审计。</td>
+  </tr>
+  <tr>
+    <td>VerificationService</td>
+    <td>测试、schema、health、dry run、人工 gate。</td>
+    <td>完成标准必须可执行、可持久化、可复现。</td>
+  </tr>
+  <tr>
+    <td>UpgradeService</td>
+    <td>候选 generation、policy diff、激活、drain 和回滚。</td>
+    <td>升级是高副作用操作，必须由 Runtime 控制。</td>
+  </tr>
+  <tr>
+    <td>ReleaseSnapshotService</td>
+    <td>发布证据、版本 digest、验证输出和 rollback 记录。</td>
+    <td>Snapshot 是回滚依据，不能由 Agent 自己伪造。</td>
+  </tr>
+</table>
+
+<h2>九、最小可行版本路线</h2>
+<p>第一阶段不需要做完整 AGI。应先让 Eva-CLI 拥有“可恢复的多 Agent 任务运行时”。具体实现包括：Event schema、Topic matcher、Scheduler、Agent 私有队列、Lua Agent 容器、基础 AdapterRegistry、受控 `ctx.tools.invoke_agent`、tracing、audit、dead letter 和简单状态持久化。这个阶段的目标是把单次请求变成可追踪事件链。</p>
+
+<p>第二阶段建立记忆和知识。先用 SQLite 或结构化 JSON 保存 Agent 私有记忆、项目记忆、知识 source metadata 和 context pack 输出；之后再加入全文检索、语义检索和摘要压缩。这个阶段要重点实现记忆提升、冲突记录、TTL、敏感信息拒绝和来源引用。</p>
+
+<p>第三阶段建立验证驱动执行。每个 Task Spec 都要声明完成判据，VerificationService 能运行 schema check、lint、test、smoke test、health probe 和 dry run。Agent 输出不再直接等于完成，只有验证证据通过后任务才进入 completed 状态。</p>
+
+<p>第四阶段实现 Lua Capability 热更新。把项目内 tool、skill、MCP handler 的业务实现下沉到 Lua，Rust Capability Kernel 负责权限、schema、transport、审计、超时和 generation swap。这个阶段开始出现受控自我改进：Agent 能提出候选 Lua capability，Runtime 验证后激活。</p>
+
+<p>第五阶段加入 Release Snapshot 和 Runtime generation。BackupService、MigrationPackageService、ReleaseSnapshotService、Supervisor、Ingress Gate 和 Recoverable EventBus 让系统可以升级、回滚和恢复。到这里，AGI Runtime 才具备“长期自主运行”的基础安全条件。</p>
+
+<p>第六阶段再扩大自主性：多 Agent 自动规划、跨任务长期目标、能力发现、候选升级生成、失败自诊断、成本控制、人工审核队列和 policy-aware 自动执行。此时 Agent 的职责仍然是提案、编排、解释和总结；Runtime 仍然负责授权、执行边界和证据。</p>
+
+<h2>十、风险与底线</h2>
+<p>实现 AGI Runtime 最大的风险不是模型不够聪明，而是系统边界不够硬。必须防止几类问题：Agent 把自然语言当权限、记忆污染全局事实、工具调用绕过 Adapter policy、自我升级绕过验证、Release Snapshot 缺失、外部副作用无法幂等、事件崩溃后不可追踪、以及长任务没有人工中断点。</p>
+
+<p>因此 Eva-CLI 的底线应该很明确：Lua 不直接碰 shell、密钥、任意文件系统、任意网络和 release pointer；Discovery 不等于授权；Agent 记忆不等于项目事实；模型建议不等于验证结果；自我升级不等于自我授权；已 accepted 的事件必须有恢复语义；高副作用操作必须有 operation state、audit 和 rollback 证据。</p>
+
+<h2>结论</h2>
+<p>基于当前项目实现 AGI，最稳妥的路径不是追求一个“全能 Agent”，而是实现一个能托管自主性的 Runtime。Rust 管边界、状态、权限、验证、恢复和发布证据；Lua 管业务意图、局部编排和可热更新逻辑；EventBus 管长期事件链；MemoryService 和 KnowledgeService 管可提升的经验；AdapterRegistry 管外部行动能力；Release Snapshot 和 generation switching 管演进和回滚。</p>
+
+<p>当这些部件闭合后，Eva-CLI 才有资格逐步扩大自主性：从能完成任务，到能验证任务；从能记住经验，到能提升经验；从能调用工具，到能治理工具；从能修改脚本，到能安全升级运行时。这个方向比“让 Agent 随便改自己”慢一些，但它能让系统在能力增长时仍然可解释、可审计、可恢复。</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../../zh-CN/blog/">返回博客</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>作者： <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../../#feedback">提交反馈</a>
+    </footer>
+  </body>
+</html>

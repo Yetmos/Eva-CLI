@@ -56,6 +56,28 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "agi-runtime-stack-diagram",
+      "title": "AGI Runtime Stack Diagram",
+      "source": "assets/agi-runtime-stack.svg",
+      "translations": {
+        "zh-CN": "assets/agi-runtime-stack.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "agi-runtime-learning-loop-diagram",
+      "title": "AGI Runtime Learning Loop Diagram",
+      "source": "assets/agi-runtime-learning-loop.svg",
+      "translations": {
+        "zh-CN": "assets/agi-runtime-learning-loop.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [

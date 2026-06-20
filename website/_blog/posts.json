@@ -10,6 +10,26 @@
   ],
   "posts": [
     {
+      "id": "agi-runtime-implementation",
+      "locale": "en",
+      "slug": "agi-runtime-implementation",
+      "title": "An AGI Runtime Implementation Path Based on Eva-CLI",
+      "description": "A detailed implementation path for turning Eva-CLI's Rust runtime, Lua Agents, EventBus, memory, discovery, adapters, verification, and release snapshots into a controlled AGI-style runtime.",
+      "date": "2026-06-21",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/agi-runtime-implementation.html"
+    },
+    {
+      "id": "agi-runtime-implementation",
+      "locale": "zh-CN",
+      "slug": "agi-runtime-implementation",
+      "title": "基于 Eva-CLI 实现 AGI Runtime 的实现思路",
+      "description": "如何把 Eva-CLI 当前的 Rust Runtime、Lua Agent、EventBus、记忆、发现、Adapter、验证和 Release Snapshot 组合成一个受控的 AGI 风格运行时。",
+      "date": "2026-06-21",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/agi-runtime-implementation.html"
+    },
+    {
       "id": "self-upgrading-agent-system",
       "locale": "en",
       "slug": "self-upgrading-agent-system",

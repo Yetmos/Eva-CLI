@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>An AGI Runtime Implementation Path Based on Eva-CLI | Eva-CLI Blog</title>
+    <meta name="description" content="A detailed implementation path for turning Eva-CLI&#39;s Rust runtime, Lua Agents, EventBus, memory, discovery, adapters, verification, and release snapshots into a controlled AGI-style runtime.">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="An AGI Runtime Implementation Path Based on Eva-CLI | Eva-CLI Blog">
+    <meta property="og:description" content="A detailed implementation path for turning Eva-CLI&#39;s Rust runtime, Lua Agents, EventBus, memory, discovery, adapters, verification, and release snapshots into a controlled AGI-style runtime.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://Eva-CLI.com/blog/agi-runtime-implementation/">
+    <meta property="article:published_time" content="2026-06-21">
+    <meta property="article:section" content="Runtime">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/blog/agi-runtime-implementation/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/blog/agi-runtime-implementation/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/blog/agi-runtime-implementation/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/blog/agi-runtime-implementation/">
+    <link rel="icon" type="image/svg+xml" href="../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../" aria-label="Eva-CLI home">
+        <img src="../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">Multi-Agent Runtime</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="../../">Home</a>
+        <a href="../../docs/en/README.md">Docs</a>
+        <a href="../../blog/">Blog</a>
+        <a href="../../docs/en/architecture-overview.md">Architecture</a>
+        <a href="../../#discussion">Discussion</a>
+        <a href="../../#feedback">Feedback</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../blog/agi-runtime-implementation/" hreflang="en" lang="en" aria-current="page">English</a>
+          <a href="../../zh-CN/blog/agi-runtime-implementation/" hreflang="zh-CN" lang="zh-CN">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">Blog</p>
+          <h1>An AGI Runtime Implementation Path Based on Eva-CLI</h1>
+          <p class="blog-lead">A detailed implementation path for turning Eva-CLI&#39;s Rust runtime, Lua Agents, EventBus, memory, discovery, adapters, verification, and release snapshots into a controlled AGI-style runtime.</p>
+          <div class="blog-meta">
+            <span>Published: <time datetime="2026-06-21">2026-06-21</time></span>
+            <a href="../../blog/category/runtime/">Category: Runtime</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>If "building AGI" means producing a single model with unlimited general intelligence, Eva-CLI should not claim that. A more useful engineering definition is a local runtime that can understand goals, preserve long-term context, decompose work, call tools, verify results, learn from execution, and safely upgrade its workflows while remaining constrained by permissions, audit, and rollback.</p>
+
+<p>The current Eva-CLI architecture already has the pieces for that runtime: a Rust-owned runtime boundary, Lua Agents, a Topic EventBus, Scheduler, AdapterRegistry, MemoryService, KnowledgeService, ContextBuilder, AgentDiscoveryService, Lua capability hot reload, Release Snapshot, BackupService, MigrationPackageService, process-level Runtime generation switching, and Supervisor. The AGI implementation path is to connect these pieces into a controlled loop from goal intake to action, verification, memory, and upgrade.</p>
+
+<p class="blog-note">This article treats AGI as a controlled autonomous Agent runtime built on Eva-CLI's current design. It does not claim that the project already ships full AGI. The important goal is to let Agents propose plans and improvements while the Runtime enforces authority, validation, evidence, and rollback.</p>
+
+<figure class="blog-figure">
+  <img src="../../assets/agi-runtime-stack.svg" alt="Eva-CLI AGI Runtime stack diagram showing user goals entering the Rust Runtime boundary through EventBus, Scheduler, Lua Agents, memory, knowledge, adapters, verification, and Release Snapshot.">
+  <figcaption>Eva-CLI should implement AGI-like behavior as a Rust-governed runtime, not as one unrestricted super Agent.</figcaption>
+</figure>
+
+<h2>Defining AGI inside Eva-CLI</h2>
+<p>Inside Eva-CLI, AGI is better understood as a runtime capability rather than a single model. The runtime needs seven capabilities: goal understanding, long-term context, task decomposition, tool access, plan execution, result verification, and the ability to turn experience into memory or capability updates.</p>
+
+<p>This avoids two unsafe shortcuts. First, model output is not treated as system truth; the Runtime validates it with schemas, policies, tests, snapshots, and audit records. Second, automation is not treated as authorization. An Agent may request file access, an external CLI call, memory writes, or a generation switch, but Rust decides whether that request is allowed.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Capability</th>
+    <th>Eva-CLI boundary</th>
+    <th>Constraint</th>
+  </tr>
+  <tr>
+    <td>Goal understanding</td>
+    <td>entry Agent, Topic events, ContextBuilder</td>
+    <td>Goals become structured events, tasks, constraints, and verification criteria.</td>
+  </tr>
+  <tr>
+    <td>Long-term context</td>
+    <td>Agent memory, project memory, KnowledgeService</td>
+    <td>Memory has source, confidence, scope, TTL, and audit metadata.</td>
+  </tr>
+  <tr>
+    <td>Task decomposition</td>
+    <td>Lua Agents, workflows, Topic subtasks</td>
+    <td>Plans are emitted as schedulable tasks, not hidden inside prompts.</td>
+  </tr>
+  <tr>
+    <td>Capability calls</td>
+    <td>AdapterRegistry, Rust Tool Layer, MCP, SkillAdapter</td>
+    <td>Lua expresses intent; Rust owns paths, secrets, shell, network, and process lifecycle.</td>
+  </tr>
+  <tr>
+    <td>Execution and recovery</td>
+    <td>Scheduler, private queues, Durable Event Log</td>
+    <td>Accepted events should be recoverable and side effects should be idempotent.</td>
+  </tr>
+  <tr>
+    <td>Verification</td>
+    <td>VerificationService, tests, schema checks, health checks</td>
+    <td>Completion criteria must be executable and recorded.</td>
+  </tr>
+  <tr>
+    <td>Self-improvement</td>
+    <td>Lua generation swap, Release Snapshot, Runtime generation</td>
+    <td>Agents propose upgrades; Runtime owns activation and rollback.</td>
+  </tr>
+</table>
+
+<h2>Runtime-governed autonomy</h2>
+<p>The outer boundary is the Rust Runtime. Permissions, state, filesystem access, network access, shell execution, secrets, Adapter lifecycle, MCP transport, hardware handles, backups, migrations, snapshots, release pointers, audit logs, and recovery policy all live there. Lua Agents operate inside that boundary through narrow host APIs.</p>
+
+<p>User input, CLI calls, API requests, MCP clients, or external events are normalized into Events. The EventBus publishes them, and the Scheduler routes them by Topic, target Agent, subscription rules, priority, and load. Each Agent has a private inbox and independent Lua State. That isolation is what lets long-running autonomy remain observable instead of becoming implicit shared prompt state.</p>
+
+<pre class="blog-code"><code>Goal
+  -> /input/user
+  -> /goal/normalized
+  -> /plan/proposed
+  -> /task/created
+  -> /adapter/invoke
+  -> /task/verified
+  -> /memory/proposed
+  -> /capability/upgrade/proposed
+  -> /release/snapshot/requested</code></pre>
+
+<h2>From natural language to executable task trees</h2>
+<p>The first Agent should not immediately execute a user request. It should produce a structured goal package containing the raw request, intent, constraints, risk level, desired output, high-risk actions that require confirmation, candidate verification steps, and context requirements. The model can help produce that package, but Runtime schema validation should accept or reject it.</p>
+
+<p>The planner then converts the goal into Task Specs. Each Task Spec declares inputs, outputs, dependencies, allowed capabilities, required permissions, timeout, retry policy, completion criteria, failure behavior, and whether human confirmation is required. That turns planning into a schedulable contract rather than a narrative.</p>
+
+<h2>Memory and knowledge</h2>
+<p>Long-running autonomy depends on memory. Eva-CLI should use three layers: Agent private memory, project memory, and a source-backed knowledge base. Private memory stores local tool preferences, failures, task state, and hypotheses. Project memory stores facts that should apply across Agents: architecture decisions, release constraints, user preferences, and known risks. The knowledge base indexes documents, code, release notes, issues, pull requests, and approved external excerpts.</p>
+
+<p>Writes should pass through a promotion path. An Agent may propose memory, but MemoryService checks scope, source, sensitive data, duplicates, conflicts, confidence, TTL, and audit metadata. ContextBuilder then returns compact context packs instead of dumping all history into a prompt.</p>
+
+<h2>Adapters as controlled actuators</h2>
+<p>An AGI runtime needs to call external capabilities: LLMs, CLIs, MCP servers, local models, code tools, hardware, browsers, test runners, and deployment commands. Eva-CLI's key rule is that Lua does not access these directly. Lua calls `ctx.tools.invoke_agent` or emits `/adapter/invoke`; the Rust Tool Layer performs routing and policy enforcement.</p>
+
+<p>An Adapter is not a command string. It is `manifest + capability + policy + transport + protocol + runtime state`. Codex CLI, Claude API, Gemini, local models, MCP servers, workflow skills, and hardware devices can all become Adapters only after they declare capabilities, schemas, limits, paths, network rights, secret sources, audit rules, and health checks.</p>
+
+<h2>The execution and learning loop</h2>
+<p>The main AGI loop can be implemented as Observe, Plan, Act, Verify, Reflect, and Improve. Observe collects the current event, state, memory, knowledge, and tool results. Plan builds a task tree. Act calls Adapters and Lua capabilities. Verify runs declared checks. Reflect records evidence, failures, risks, and reusable lessons. Improve turns that evidence into memory, configuration, Lua workflow updates, or candidate capabilities.</p>
+
+<figure class="blog-figure">
+  <img src="../../assets/agi-runtime-learning-loop.svg" alt="Eva-CLI AGI Runtime learning loop showing observation, planning, action, verification, reflection, memory promotion, and capability upgrade.">
+  <figcaption>The runtime becomes more capable only when each execution round produces evidence, memory, and reviewable capability updates.</figcaption>
+</figure>
+
+<p>Verification is the hard boundary. Without it, the system is just generating text. With it, the system can accumulate trustworthy capability. VerificationService should cover schema checks, static checks, unit tests, integration tests, smoke tests, migration dry runs, health probes, and human approval gates.</p>
+
+<h2>Self-upgrade without self-authorization</h2>
+<p>Self-improvement is powerful and dangerous. Eva-CLI should keep one rule: Agents can propose upgrades, but they cannot authorize upgrades. Behavior changes such as prompts, Lua Agent scripts, Lua tools, Lua skills, route mappings, and response shaping can use Lua generation swaps. Capability metadata changes can enter a candidate registry. Runtime boundary changes such as new permissions, transports, state backends, MCP surfaces, or host APIs require Supervisor-managed Runtime generation switching.</p>
+
+<p>Every accepted upgrade should create a Release Snapshot. It records source revision, config digest, policy digest, manifest registry digest, Lua capability generation, AdapterRegistry generation, State Store schema, Durable Event Log watermark, verification output, migration package ID, backup artifact ID, rollback eligibility, and audit identity. Without that evidence, self-upgrade becomes untraceable mutation.</p>
+
+<h2>Minimum viable path</h2>
+<p>The first phase is not full AGI. It is a recoverable multi-Agent task runtime: Event schema, Topic matcher, Scheduler, private Agent queues, Lua Agent containers, AdapterRegistry, controlled `ctx.tools.invoke_agent`, tracing, audit, dead letter handling, and basic state persistence.</p>
+
+<p>The second phase adds memory and knowledge with structured storage, promotion, conflict tracking, TTL, sensitive data rejection, source citations, and compact context packs. The third phase makes execution verification-driven: every Task Spec declares completion criteria, and tasks are only completed after evidence passes.</p>
+
+<p>The fourth phase adds Lua capability hot reload through a Rust Capability Kernel and Lua Capability Runtime. The fifth phase adds Release Snapshot, BackupService, MigrationPackageService, Supervisor, Ingress Gate, and Recoverable EventBus. Only after those safety contracts exist should Eva-CLI expand autonomy into automatic planning, candidate upgrade generation, failure diagnosis, cost control, and policy-aware execution.</p>
+
+<h2>Conclusion</h2>
+<p>The practical path to AGI in Eva-CLI is not one unrestricted super Agent. It is a runtime that can host autonomy safely. Rust owns boundaries, state, permissions, verification, recovery, and release evidence. Lua owns business intent, local orchestration, and hot-reloadable logic. EventBus owns the long-running event chain. MemoryService and KnowledgeService own promoted experience. AdapterRegistry owns external action. Release Snapshot and generation switching own evolution and rollback.</p>
+
+<p>That route is slower than letting an Agent edit everything directly, but it lets capability grow while the system remains explainable, auditable, and recoverable.</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../blog/">Back to blog</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>Author: <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>Feedback: <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../#feedback">Submit feedback</a>
+    </footer>
+  </body>
+</html>

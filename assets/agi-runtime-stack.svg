@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI AGI Runtime Stack</title>
+  <desc id="desc">Layered architecture for an AGI-style Eva-CLI runtime, showing user goals, Rust runtime boundary, EventBus, Scheduler, Lua Agents, memory, knowledge, adapters, verification, release snapshots, and controlled rollback.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .title { font: 700 34px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .subtitle { font: 400 16px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #617086; }
+      .section { font: 700 19px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .label { font: 700 15px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .small { font: 400 12.5px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #435466; }
+      .tiny { font: 400 11.5px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #617086; }
+      .mono { font: 600 12px Menlo, Consolas, monospace; fill: #435466; }
+      .runtime { fill: #ffffff; stroke: #2563eb; stroke-width: 2.4; stroke-dasharray: 10 7; rx: 8; }
+      .lane { fill: #ffffff; stroke: #c6d4e5; stroke-width: 1.6; rx: 8; }
+      .goal { fill: #eef5ff; stroke: #76a7f4; stroke-width: 1.8; rx: 8; }
+      .event { fill: #f5f0ff; stroke: #a989e8; stroke-width: 1.8; rx: 8; }
+      .agent { fill: #edf8f2; stroke: #6ec191; stroke-width: 1.8; rx: 8; }
+      .memory { fill: #fff8e7; stroke: #dfb052; stroke-width: 1.8; rx: 8; }
+      .adapter { fill: #f4f6f8; stroke: #b7c1cc; stroke-width: 1.8; rx: 8; }
+      .verify { fill: #fff0f0; stroke: #e28787; stroke-width: 1.8; rx: 8; }
+      .release { fill: #eff6ff; stroke: #2563eb; stroke-width: 1.8; rx: 8; }
+      .pill { fill: #ffffff; stroke: #ccd5df; stroke-width: 1.1; rx: 14; }
+      .arrow { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+      .arrow-blue { stroke: #2563eb; stroke-width: 2.3; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-green { stroke: #218455; stroke-width: 2.3; fill: none; marker-end: url(#arrow-green); }
+      .arrow-amber { stroke: #af7600; stroke-width: 2.2; fill: none; marker-end: url(#arrow-amber); }
+      .arrow-red { stroke: #b91c1c; stroke-width: 2.1; fill: none; marker-end: url(#arrow-red); }
+      .arrow-dash { stroke: #64748b; stroke-width: 1.9; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow-gray); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#218455"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#af7600"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b91c1c"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="900"/>
+  <text class="title" x="48" y="58">Eva-CLI AGI Runtime Stack</text>
+  <text class="subtitle" x="48" y="88">A controlled autonomy stack: Agents reason and propose; the Rust Runtime validates, executes, records, and rolls back.</text>
+
+  <rect class="goal" x="70" y="128" width="260" height="112"/>
+  <text class="section" x="112" y="164">Goal Intake</text>
+  <text class="small" x="104" y="192">CLI / API / MCP / UI</text>
+  <text class="small" x="104" y="214">natural language to goal package</text>
+
+  <rect class="runtime" x="58" y="286" width="1484" height="522"/>
+  <text class="section" x="86" y="322">Rust Runtime Boundary</text>
+  <text class="small" x="86" y="346">permissions, policy, schemas, state, external I/O, verification, snapshots, audit, rollback</text>
+
+  <rect class="event" x="112" y="388" width="242" height="126"/>
+  <text class="section" x="158" y="424">Event Layer</text>
+  <text class="small" x="144" y="452">Topic EventBus</text>
+  <text class="small" x="144" y="474">Durable Event Log</text>
+  <text class="small" x="144" y="496">correlation + causation</text>
+
+  <rect class="event" x="418" y="388" width="242" height="126"/>
+  <text class="section" x="474" y="424">Scheduler</text>
+  <text class="small" x="450" y="452">Topic matcher</text>
+  <text class="small" x="450" y="474">private Agent queues</text>
+  <text class="small" x="450" y="496">retry + dead letter</text>
+
+  <rect class="agent" x="724" y="374" width="310" height="154"/>
+  <text class="section" x="822" y="410">Lua Agents</text>
+  <text class="small" x="762" y="440">intent recognition, local workflow,</text>
+  <text class="small" x="762" y="462">task decomposition, result mapping,</text>
+  <text class="small" x="762" y="484">hot-reloadable business logic</text>
+  <rect class="pill" x="762" y="502" width="236" height="28"/>
+  <text class="tiny" x="814" y="520">no direct shell / secrets / FS</text>
+
+  <rect class="adapter" x="1098" y="374" width="318" height="154"/>
+  <text class="section" x="1194" y="410">Adapters</text>
+  <text class="small" x="1136" y="440">LLM, CLI, MCP, workflow skill,</text>
+  <text class="small" x="1136" y="462">hardware, local model, internal Agent</text>
+  <text class="small" x="1136" y="484">manifest + capability + policy</text>
+  <rect class="pill" x="1136" y="502" width="226" height="28"/>
+  <text class="tiny" x="1190" y="520">controlled actuators</text>
+
+  <rect class="memory" x="112" y="600" width="300" height="128"/>
+  <text class="section" x="174" y="636">Memory + Knowledge</text>
+  <text class="small" x="146" y="664">Agent memory, project memory, KB</text>
+  <text class="small" x="146" y="686">promotion, TTL, source, confidence</text>
+  <text class="small" x="146" y="708">ContextBuilder creates compact packs</text>
+
+  <rect class="verify" x="486" y="600" width="300" height="128"/>
+  <text class="section" x="568" y="636">Verification</text>
+  <text class="small" x="520" y="664">schema, tests, smoke checks, health</text>
+  <text class="small" x="520" y="686">migration dry run, human approval</text>
+  <text class="small" x="520" y="708">completion only with evidence</text>
+
+  <rect class="release" x="860" y="600" width="300" height="128"/>
+  <text class="section" x="930" y="636">Release Evidence</text>
+  <text class="small" x="894" y="664">Release Snapshot, BackupService</text>
+  <text class="small" x="894" y="686">generation, policy, registry digest</text>
+  <text class="small" x="894" y="708">rollback eligibility</text>
+
+  <rect class="release" x="1234" y="600" width="244" height="128"/>
+  <text class="section" x="1290" y="636">Evolution</text>
+  <text class="small" x="1266" y="664">Lua generation swap</text>
+  <text class="small" x="1266" y="686">Runtime generation switch</text>
+  <text class="small" x="1266" y="708">Supervisor + Ingress Gate</text>
+
+  <path class="arrow-blue" d="M 200 240 C 200 290 222 330 233 388"/>
+  <path class="arrow-blue" d="M 354 451 C 382 451 390 451 418 451"/>
+  <path class="arrow-green" d="M 660 451 C 690 451 696 451 724 451"/>
+  <path class="arrow-green" d="M 1034 451 C 1062 451 1070 451 1098 451"/>
+  <path class="arrow-amber" d="M 879 528 C 758 578 404 544 262 600"/>
+  <path class="arrow-red" d="M 879 528 C 808 580 704 562 636 600"/>
+  <path class="arrow-blue" d="M 786 664 C 810 664 834 664 860 664"/>
+  <path class="arrow-blue" d="M 1160 664 C 1188 664 1206 664 1234 664"/>
+  <path class="arrow-dash" d="M 1356 600 C 1318 554 1290 530 1257 528"/>
+  <path class="arrow-dash" d="M 262 600 C 368 548 616 536 724 486"/>
+
+  <rect class="lane" x="70" y="830" width="1458" height="42"/>
+  <text class="tiny" x="100" y="856">Invariant: autonomy grows through verified tasks, promoted memory, controlled capabilities, release evidence, and recoverable generations.</text>
+</svg>

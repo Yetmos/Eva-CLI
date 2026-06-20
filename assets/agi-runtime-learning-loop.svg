@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI AGI Runtime Learning Loop</title>
+  <desc id="desc">A controlled execution and learning loop for Eva-CLI, showing observe, plan, act, verify, reflect, memory promotion, capability upgrade, release evidence, and rollback gates.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .title { font: 700 34px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .subtitle { font: 400 16px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #617086; }
+      .section { font: 700 18px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .label { font: 700 15px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .small { font: 400 12.5px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #435466; }
+      .tiny { font: 400 11.5px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #617086; }
+      .runtime { fill: #ffffff; stroke: #2563eb; stroke-width: 2.3; stroke-dasharray: 10 7; rx: 8; }
+      .node { fill: #ffffff; stroke: #c6d4e5; stroke-width: 1.7; rx: 8; }
+      .observe { fill: #eef5ff; stroke: #76a7f4; }
+      .plan { fill: #f5f0ff; stroke: #a989e8; }
+      .act { fill: #edf8f2; stroke: #6ec191; }
+      .verify { fill: #fff0f0; stroke: #e28787; }
+      .reflect { fill: #fff8e7; stroke: #dfb052; }
+      .store { fill: #f4f6f8; stroke: #b7c1cc; }
+      .gate { fill: #ffffff; stroke: #2563eb; stroke-width: 1.8; rx: 8; }
+      .arrow { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+      .arrow-blue { stroke: #2563eb; stroke-width: 2.3; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-green { stroke: #218455; stroke-width: 2.3; fill: none; marker-end: url(#arrow-green); }
+      .arrow-amber { stroke: #af7600; stroke-width: 2.2; fill: none; marker-end: url(#arrow-amber); }
+      .arrow-red { stroke: #b91c1c; stroke-width: 2.1; fill: none; marker-end: url(#arrow-red); }
+      .arrow-dash { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow-gray); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#218455"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#af7600"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b91c1c"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="900"/>
+  <text class="title" x="48" y="58">Eva-CLI AGI Runtime Learning Loop</text>
+  <text class="subtitle" x="48" y="88">Every autonomous cycle must produce evidence, memory updates, and reviewable capability changes.</text>
+
+  <rect class="runtime" x="52" y="122" width="1496" height="672"/>
+  <text class="section" x="82" y="158">Runtime-owned loop</text>
+  <text class="small" x="82" y="182">Agents reason inside the loop; Runtime controls tools, persistence, verification, upgrade gates, and rollback.</text>
+
+  <rect class="node observe" x="146" y="260" width="224" height="128"/>
+  <text class="section" x="222" y="296">Observe</text>
+  <text class="small" x="178" y="326">event + goal state</text>
+  <text class="small" x="178" y="348">memory + knowledge</text>
+  <text class="small" x="178" y="370">tool results + health</text>
+
+  <rect class="node plan" x="456" y="184" width="240" height="128"/>
+  <text class="section" x="538" y="220">Plan</text>
+  <text class="small" x="490" y="250">task tree + dependencies</text>
+  <text class="small" x="490" y="272">permissions + risk level</text>
+  <text class="small" x="490" y="294">done criteria</text>
+
+  <rect class="node act" x="806" y="184" width="240" height="128"/>
+  <text class="section" x="894" y="220">Act</text>
+  <text class="small" x="840" y="250">invoke Adapters</text>
+  <text class="small" x="840" y="272">run Lua capability</text>
+  <text class="small" x="840" y="294">emit Topic events</text>
+
+  <rect class="node verify" x="1160" y="260" width="250" height="128"/>
+  <text class="section" x="1244" y="296">Verify</text>
+  <text class="small" x="1194" y="326">schema, test, smoke</text>
+  <text class="small" x="1194" y="348">health, dry run, review</text>
+  <text class="small" x="1194" y="370">evidence or rejection</text>
+
+  <rect class="node reflect" x="806" y="520" width="240" height="128"/>
+  <text class="section" x="884" y="556">Reflect</text>
+  <text class="small" x="840" y="586">what changed</text>
+  <text class="small" x="840" y="608">why it worked or failed</text>
+  <text class="small" x="840" y="630">remaining risk</text>
+
+  <rect class="node store" x="456" y="520" width="240" height="128"/>
+  <text class="section" x="512" y="556">Promote Memory</text>
+  <text class="small" x="490" y="586">private to project facts</text>
+  <text class="small" x="490" y="608">source + confidence + TTL</text>
+  <text class="small" x="490" y="630">conflict-aware revision</text>
+
+  <rect class="gate" x="1084" y="520" width="310" height="128"/>
+  <text class="section" x="1164" y="556">Improve Capability</text>
+  <text class="small" x="1118" y="586">candidate Lua generation</text>
+  <text class="small" x="1118" y="608">policy diff + smoke test</text>
+  <text class="small" x="1118" y="630">Release Snapshot before activation</text>
+
+  <rect class="gate" x="146" y="520" width="224" height="128"/>
+  <text class="section" x="194" y="556">Context Pack</text>
+  <text class="small" x="178" y="586">constraints</text>
+  <text class="small" x="178" y="608">relevant facts</text>
+  <text class="small" x="178" y="630">open questions</text>
+
+  <path class="arrow-blue" d="M 370 314 C 414 286 426 270 456 248"/>
+  <path class="arrow-blue" d="M 696 248 C 740 248 762 248 806 248"/>
+  <path class="arrow-green" d="M 1046 248 C 1102 260 1116 290 1160 324"/>
+  <path class="arrow-red" d="M 1285 388 C 1268 474 1128 520 1046 584"/>
+  <path class="arrow-amber" d="M 806 584 C 764 584 738 584 696 584"/>
+  <path class="arrow-blue" d="M 456 584 C 418 584 408 584 370 584"/>
+  <path class="arrow-blue" d="M 258 520 C 224 468 224 438 258 388"/>
+  <path class="arrow-green" d="M 1046 584 C 1060 584 1070 584 1084 584"/>
+  <path class="arrow-dash" d="M 1239 520 C 1206 438 1218 406 1285 388"/>
+  <path class="arrow-dash" d="M 576 520 C 534 434 468 394 370 350"/>
+
+  <rect class="node store" x="128" y="704" width="1320" height="50"/>
+  <text class="tiny" x="162" y="725">Hard gates: no direct Lua shell, no unreviewed secret access, no memory promotion without source, no upgrade without verification, no release without snapshot evidence.</text>
+  <text class="tiny" x="162" y="743">Failed verification routes to diagnosis or rollback; passed verification can update memory and propose bounded capability improvements.</text>
+</svg>
