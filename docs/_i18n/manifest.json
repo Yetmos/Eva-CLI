@@ -45,6 +45,17 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "self-upgrading-agent-system-diagram",
+      "title": "Self-Upgrading Agent System Diagram",
+      "source": "assets/self-upgrading-agent-system.svg",
+      "translations": {
+        "zh-CN": "assets/self-upgrading-agent-system.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [

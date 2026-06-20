@@ -63,6 +63,11 @@
 
 <p>当前 Eva-CLI 的设计里已经有这条路径需要的组件：Rust 托管运行时边界、Lua 承载可热更新行为、Topic EventBus、受控 Adapter 访问、Agent 记忆与知识库、Discovery manifest、Release Snapshot，以及进程级 Runtime generation 切换。可自我升级系统，就是把这些组件连成一条不失控的闭环。</p>
 
+<figure class="blog-figure">
+  <img src="../../../assets/self-upgrading-agent-system.zh-CN.svg" alt="Eva-CLI 受控自我升级闭环示意图，从 Agent 观察到升级提案、候选校验、Release Snapshot、激活、监控和回滚。">
+  <figcaption>Eva-CLI 可以让 Agent 提出升级，但校验、发布证据、激活路径和回滚仍由 Rust Runtime 掌握。</figcaption>
+</figure>
+
 <h2>自我升级应该升级什么</h2>
 <p>自我升级需要拆成三个范围。最小范围是行为升级：prompt、Lua Agent 脚本、Lua skill、路由规则和容易验证的转换逻辑，都可以走热更新。中等范围是能力形态升级：adapter manifest、schema，以及不扩大权限的 policy metadata，可以先发现、校验，再进入 registry。最大范围是运行时边界升级：权限扩张、transport 变化、状态后端变化和 host API 变化，都必须走更严格的 Runtime generation 或进程级升级路径。</p>
 

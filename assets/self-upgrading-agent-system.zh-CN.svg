@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">可自我升级 Agent 系统</title>
+  <desc id="desc">Eva-CLI 受控自我升级闭环示意图：Agent 提出变更，Rust Runtime 校验候选版本，Release Snapshot 记录证据，并通过 Lua 热更新或 Runtime generation 切换激活和回滚。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .title { font: 700 32px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .subtitle { font: 400 15px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #617086; }
+      .section { font: 700 18px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .label { font: 700 15px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .small { font: 400 12px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #435466; }
+      .tiny { font: 400 11px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #617086; }
+      .mono { font: 600 12px Menlo, Consolas, monospace; fill: #435466; }
+      .runtime { fill: #fdfefe; stroke: #2563eb; stroke-width: 2.2; stroke-dasharray: 10 7; rx: 8; }
+      .lane { fill: #ffffff; stroke: #c6d4e5; stroke-width: 1.7; rx: 8; }
+      .agent { fill: #eef5ff; stroke: #76a7f4; stroke-width: 1.8; rx: 8; }
+      .memory { fill: #edf8f2; stroke: #6ec191; stroke-width: 1.8; rx: 8; }
+      .candidate { fill: #fff8e7; stroke: #dfb052; stroke-width: 1.8; rx: 8; }
+      .verify { fill: #f5f0ff; stroke: #a989e8; stroke-width: 1.8; rx: 8; }
+      .snapshot { fill: #f4f6f8; stroke: #b7c1cc; stroke-width: 1.7; rx: 8; }
+      .activate { fill: #edf8f2; stroke: #218455; stroke-width: 1.9; rx: 8; }
+      .guard { fill: #fff0f0; stroke: #e28787; stroke-width: 1.7; rx: 8; }
+      .pill { fill: #ffffff; stroke: #ccd5df; stroke-width: 1.1; rx: 14; }
+      .arrow { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+      .arrow-blue { stroke: #2563eb; stroke-width: 2.3; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-green { stroke: #218455; stroke-width: 2.3; fill: none; marker-end: url(#arrow-green); }
+      .arrow-amber { stroke: #af7600; stroke-width: 2.2; fill: none; marker-end: url(#arrow-amber); }
+      .arrow-red { stroke: #b91c1c; stroke-width: 2.1; fill: none; marker-end: url(#arrow-red); }
+      .arrow-dash { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow-gray); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#218455"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#af7600"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b91c1c"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="900"/>
+  <text class="title" x="48" y="56">可自我升级 Agent 系统</text>
+  <text class="subtitle" x="48" y="84">Agent 可以提出改进；Rust Runtime 掌握校验、激活、证据和回滚权威。</text>
+
+  <rect class="runtime" x="36" y="112" width="1488" height="670"/>
+  <text class="section" x="64" y="148">Rust Runtime 边界</text>
+  <text class="small" x="64" y="171">policy、权限、schema、状态变更、发布证据、健康检查和审计</text>
+
+  <rect class="lane" x="72" y="206" width="240" height="236"/>
+  <text class="section" x="104" y="238">Agent 观察</text>
+  <rect class="agent" x="104" y="266" width="176" height="56"/>
+  <text class="label" x="141" y="291">Lua Agent</text>
+  <text class="small" x="128" y="310">workflow 诊断</text>
+  <rect class="memory" x="104" y="346" width="176" height="70"/>
+  <text class="label" x="134" y="374">记忆 + 知识库</text>
+  <text class="small" x="124" y="394">失败、反馈、文档</text>
+  <text class="small" x="124" y="410">以及历史尝试</text>
+
+  <rect class="candidate" x="380" y="206" width="236" height="236"/>
+  <text class="section" x="428" y="238">升级提案</text>
+  <text class="small" x="414" y="272">scope + 变更文件</text>
+  <text class="small" x="414" y="296">所需权限</text>
+  <text class="small" x="414" y="320">兼容性说明</text>
+  <text class="small" x="414" y="344">验证命令</text>
+  <text class="small" x="414" y="368">回滚方案</text>
+  <rect class="pill" x="414" y="392" width="168" height="30"/>
+  <text class="tiny" x="443" y="411">不能自我授权</text>
+
+  <rect class="verify" x="690" y="190" width="320" height="268"/>
+  <text class="section" x="760" y="222">候选 generation</text>
+  <text class="small" x="724" y="256">manifest + schema 校验</text>
+  <text class="small" x="724" y="282">policy 兼容性检查</text>
+  <text class="small" x="724" y="308">隔离加载 Lua</text>
+  <text class="small" x="724" y="334">smoke test + 回归测试</text>
+  <text class="small" x="724" y="360">必要时迁移 dry run</text>
+  <rect class="guard" x="724" y="386" width="248" height="46"/>
+  <text class="label" x="778" y="414">拒绝不安全 delta</text>
+
+  <rect class="snapshot" x="1110" y="206" width="280" height="236"/>
+  <text class="section" x="1160" y="238">Release Snapshot</text>
+  <text class="small" x="1142" y="272">源码版本</text>
+  <text class="small" x="1142" y="296">产物 + manifest</text>
+  <text class="small" x="1142" y="320">验证输出</text>
+  <text class="small" x="1142" y="344">迁移元数据</text>
+  <text class="small" x="1142" y="368">审计身份</text>
+  <rect class="pill" x="1142" y="392" width="180" height="30"/>
+  <text class="tiny" x="1190" y="411">回滚证据</text>
+
+  <rect class="activate" x="190" y="540" width="316" height="120"/>
+  <text class="section" x="232" y="574">快速路径：Lua 热更新</text>
+  <text class="small" x="224" y="604">不突破现有权限的行为变更</text>
+  <text class="mono" x="224" y="632">Agent script / Lua tool / Lua skill</text>
+
+  <rect class="activate" x="550" y="540" width="380" height="120"/>
+  <text class="section" x="604" y="574">严格路径：Runtime generation</text>
+  <text class="small" x="588" y="604">权限、transport、状态或 host API 变化</text>
+  <text class="mono" x="588" y="632">Supervisor 启动并检查新 generation</text>
+
+  <rect class="guard" x="978" y="540" width="330" height="120"/>
+  <text class="section" x="1062" y="574">监控 + 回滚</text>
+  <text class="small" x="1012" y="604">排空旧任务、健康检查、安全重放</text>
+  <text class="mono" x="1012" y="632">旧 generation 可恢复</text>
+
+  <path class="arrow-blue" d="M 280 294 C 322 294 338 294 380 294"/>
+  <path class="arrow-green" d="M 280 386 C 324 404 338 394 380 368"/>
+  <path class="arrow-amber" d="M 616 324 C 646 324 660 324 690 324"/>
+  <path class="arrow-blue" d="M 1010 324 C 1042 324 1078 324 1110 324"/>
+  <path class="arrow-green" d="M 1250 442 C 1160 512 430 494 348 540"/>
+  <path class="arrow-green" d="M 1250 442 C 1160 528 820 510 740 540"/>
+  <path class="arrow-red" d="M 978 600 C 900 724 430 736 348 660"/>
+  <path class="arrow-red" d="M 1308 600 C 1390 520 1348 456 1280 442"/>
+  <path class="arrow-dash" d="M 848 432 C 784 512 526 510 456 442"/>
+
+  <rect class="lane" x="72" y="704" width="1436" height="58"/>
+  <text class="tiny" x="104" y="724">核心规则：Agent 可以提出和解释升级；Runtime 决定什么被允许、什么必须验证、什么需要 snapshot 证据。</text>
+  <text class="tiny" x="104" y="744">激活之后，Runtime 继续负责监控、排空旧任务，并在健康检查失败时回滚到可恢复 generation。</text>
+</svg>

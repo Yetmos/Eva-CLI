@@ -63,6 +63,11 @@
 
 <p>The current Eva-CLI design already has the pieces for that shape: a Rust-owned runtime boundary, Lua-hosted hot-reloadable behavior, a Topic EventBus, controlled Adapter access, Agent memory and knowledge services, discovery manifests, release snapshots, and process-level generation switching. A self-upgrading system is the loop that connects those pieces without giving up control.</p>
 
+<figure class="blog-figure">
+  <img src="../../assets/self-upgrading-agent-system.svg" alt="Diagram of Eva-CLI's controlled self-upgrade loop from Agent observation to upgrade proposal, candidate validation, Release Snapshot, activation, monitoring, and rollback.">
+  <figcaption>Eva-CLI can let Agents propose upgrades while the Rust Runtime owns validation, release evidence, activation paths, and rollback.</figcaption>
+</figure>
+
 <h2>What self-upgrading should mean</h2>
 <p>Self-upgrading should be split into three upgrade scopes. The smallest scope is behavior: prompts, Lua Agent scripts, Lua skills, routing rules, and validation-friendly transformations can be updated through hot reload. The middle scope is capability shape: adapter manifests, schemas, and non-expanding policy metadata can be discovered and validated before they enter the registry. The largest scope is runtime shape: permission expansion, transport changes, state backend changes, and host API changes require a stricter runtime generation or process-level upgrade path.</p>
 
