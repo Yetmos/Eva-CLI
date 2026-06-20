@@ -57,6 +57,32 @@
         </aside>
       </section>
 
+      <section class="development-progress" id="development-progress" aria-labelledby="development-progress-title">
+        <div class="section-heading progress-heading">
+          <div>
+            <p class="eyebrow">{{progressEyebrow}}</p>
+            <h2 id="development-progress-title">{{progressTitle}}</h2>
+          </div>
+          <a class="secondary-action progress-roadmap-link" href="{{progressRoadmapHref}}">{{progressRoadmapLabel}}</a>
+        </div>
+        <div class="progress-layout">
+          <article class="progress-current" aria-label="{{progressCurrentLabel}}">
+            <span class="status-label">{{progressCurrentKicker}}</span>
+            <h3>{{progressCurrentTitle}}</h3>
+            <p>{{progressCurrentBody}}</p>
+          </article>
+          <ol class="progress-timeline" aria-label="{{progressTimelineLabel}}">
+{{progressStages}}
+          </ol>
+        </div>
+        <div class="progress-next">
+          <strong>{{progressNextTitle}}</strong>
+          <ul>
+{{progressNextItems}}
+          </ul>
+        </div>
+      </section>
+
       <section class="architecture" aria-labelledby="architecture-title">
         <div class="section-heading">
           <p class="eyebrow">{{architectureEyebrow}}</p>

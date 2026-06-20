@@ -42,6 +42,47 @@
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
+    "progressAction": "Development progress",
+    "progressEyebrow": "Development progress",
+    "progressTitle": "From design documents to 1.0",
+    "progressCurrentLabel": "Current development stage",
+    "progressCurrentKicker": "Current stage",
+    "progressCurrentTitle": "Architecture and design documents",
+    "progressCurrentBody": "Most of the first implementation cycle is still in the design-document stage. The next practical work is module layout, executable contracts, a minimum CLI skeleton, and one end-to-end Runtime loop.",
+    "progressTimelineLabel": "Release progress stages",
+    "progressRoadmapLabel": "Open roadmap",
+    "progressNextTitle": "Next implementation work",
+    "progressNextItems": [
+      "Create the Rust project and module layout.",
+      "Define manifest, event, policy, error, and Lua host API contracts.",
+      "Build a minimum runnable CLI skeleton and Runtime loop."
+    ],
+    "progressStages": [
+      {
+        "status": "complete",
+        "badge": "Done",
+        "label": "Architecture and design documents",
+        "description": "System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, and docs are in place."
+      },
+      {
+        "status": "current",
+        "badge": "Now",
+        "label": "Module layout and contracts",
+        "description": "Next work: Rust source layout, manifest schemas, event types, policy rules, error model, and Lua host API contracts."
+      },
+      {
+        "status": "next",
+        "badge": "Next",
+        "label": "Minimum runnable skeleton",
+        "description": "Create the CLI entry point, config loading, runtime initialization, no-op implementations, and CI build/test loop."
+      },
+      {
+        "status": "later",
+        "badge": "Later",
+        "label": "Runtime loop and module implementation",
+        "description": "Prove Ingress -> EventBus -> Scheduler -> Lua Agent -> Rust Tool, then fill in modules one slice at a time."
+      }
+    ],
     "architectureEyebrow": "Architecture",
     "architectureTitle": "From runtime boundary to controlled capabilities",
     "architectureAlt": "Eva-CLI architecture diagram",

@@ -60,6 +60,7 @@
           <div class="actions" aria-label="Project entrances">
             <a class="primary-action" href="docs/">Read the docs</a>
             <a class="secondary-action" href="docs/en/architecture-overview.md">Architecture overview</a>
+            <a class="secondary-action" href="#development-progress">Development progress</a>
             <a class="secondary-action" href="#discussion">Discussion</a>
             <a class="secondary-action" href="#feedback">Feedback</a>
           </div>
@@ -85,6 +86,61 @@
           </ol>
           <p class="stage-note">Architecture specs are organized for implementation planning and review.</p>
         </aside>
+      </section>
+
+      <section class="development-progress" id="development-progress" aria-labelledby="development-progress-title">
+        <div class="section-heading progress-heading">
+          <div>
+            <p class="eyebrow">Development progress</p>
+            <h2 id="development-progress-title">From design documents to 1.0</h2>
+          </div>
+          <a class="secondary-action progress-roadmap-link" href="docs/en/zero-to-one-roadmap.md">Open roadmap</a>
+        </div>
+        <div class="progress-layout">
+          <article class="progress-current" aria-label="Current development stage">
+            <span class="status-label">Current stage</span>
+            <h3>Architecture and design documents</h3>
+            <p>Most of the first implementation cycle is still in the design-document stage. The next practical work is module layout, executable contracts, a minimum CLI skeleton, and one end-to-end Runtime loop.</p>
+          </article>
+          <ol class="progress-timeline" aria-label="Release progress stages">
+            <li class="progress-stage progress-stage-complete">
+              <span class="progress-marker">Done</span>
+              <div>
+                <strong>Architecture and design documents</strong>
+                <p>System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, and docs are in place.</p>
+              </div>
+            </li>
+            <li class="progress-stage progress-stage-current">
+              <span class="progress-marker">Now</span>
+              <div>
+                <strong>Module layout and contracts</strong>
+                <p>Next work: Rust source layout, manifest schemas, event types, policy rules, error model, and Lua host API contracts.</p>
+              </div>
+            </li>
+            <li class="progress-stage progress-stage-next">
+              <span class="progress-marker">Next</span>
+              <div>
+                <strong>Minimum runnable skeleton</strong>
+                <p>Create the CLI entry point, config loading, runtime initialization, no-op implementations, and CI build/test loop.</p>
+              </div>
+            </li>
+            <li class="progress-stage progress-stage-later">
+              <span class="progress-marker">Later</span>
+              <div>
+                <strong>Runtime loop and module implementation</strong>
+                <p>Prove Ingress -&gt; EventBus -&gt; Scheduler -&gt; Lua Agent -&gt; Rust Tool, then fill in modules one slice at a time.</p>
+              </div>
+            </li>
+          </ol>
+        </div>
+        <div class="progress-next">
+          <strong>Next implementation work</strong>
+          <ul>
+            <li>Create the Rust project and module layout.</li>
+            <li>Define manifest, event, policy, error, and Lua host API contracts.</li>
+            <li>Build a minimum runnable CLI skeleton and Runtime loop.</li>
+          </ul>
+        </div>
       </section>
 
       <section class="architecture" aria-labelledby="architecture-title">

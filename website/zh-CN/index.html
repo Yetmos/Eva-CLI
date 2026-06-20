@@ -60,6 +60,7 @@
           <div class="actions" aria-label="项目入口">
             <a class="primary-action" href="../docs/zh-CN/README.md">阅读文档</a>
             <a class="secondary-action" href="../docs/zh-CN/总体架构方案.md">总体架构</a>
+            <a class="secondary-action" href="#development-progress">开发进度</a>
             <a class="secondary-action" href="#discussion">讨论</a>
             <a class="secondary-action" href="#feedback">反馈</a>
           </div>
@@ -85,6 +86,61 @@
           </ol>
           <p class="stage-note">架构文档围绕实现规划和评审组织。</p>
         </aside>
+      </section>
+
+      <section class="development-progress" id="development-progress" aria-labelledby="development-progress-title">
+        <div class="section-heading progress-heading">
+          <div>
+            <p class="eyebrow">开发进度</p>
+            <h2 id="development-progress-title">从方案文档走向 1.0</h2>
+          </div>
+          <a class="secondary-action progress-roadmap-link" href="../docs/zh-CN/从零到1.0版本路线图.md">查看路线图</a>
+        </div>
+        <div class="progress-layout">
+          <article class="progress-current" aria-label="当前开发阶段">
+            <span class="status-label">当前阶段</span>
+            <h3>架构和方案文档</h3>
+            <p>第一轮实现所需的大部分工作仍处在方案文档阶段。下一步实际工作是模块划分、可执行契约、最小 CLI 骨架和一条端到端 Runtime 闭环。</p>
+          </article>
+          <ol class="progress-timeline" aria-label="发布进度阶段">
+            <li class="progress-stage progress-stage-complete">
+              <span class="progress-marker">已完成</span>
+              <div>
+                <strong>架构和方案文档</strong>
+                <p>系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网和文档结构已经建立。</p>
+              </div>
+            </li>
+            <li class="progress-stage progress-stage-current">
+              <span class="progress-marker">当前</span>
+              <div>
+                <strong>模块划分和契约定义</strong>
+                <p>下一步是 Rust 源码结构、manifest schema、event 类型、policy 规则、错误模型和 Lua host API 契约。</p>
+              </div>
+            </li>
+            <li class="progress-stage progress-stage-next">
+              <span class="progress-marker">下一步</span>
+              <div>
+                <strong>最小可运行骨架</strong>
+                <p>创建 CLI 入口、配置读取、Runtime 初始化、no-op 实现，以及 CI 构建和测试闭环。</p>
+              </div>
+            </li>
+            <li class="progress-stage progress-stage-later">
+              <span class="progress-marker">后续</span>
+              <div>
+                <strong>Runtime 闭环和模块实现</strong>
+                <p>验证 Ingress -&gt; EventBus -&gt; Scheduler -&gt; Lua Agent -&gt; Rust Tool，再按模块逐个补齐。</p>
+              </div>
+            </li>
+          </ol>
+        </div>
+        <div class="progress-next">
+          <strong>下一步实现工作</strong>
+          <ul>
+            <li>创建 Rust 项目和模块结构。</li>
+            <li>定义 manifest、event、policy、error 和 Lua host API 契约。</li>
+            <li>搭建最小可运行 CLI 骨架和 Runtime 闭环。</li>
+          </ul>
+        </div>
       </section>
 
       <section class="architecture" aria-labelledby="architecture-title">

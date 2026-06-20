@@ -719,6 +719,42 @@ function New-RuntimeSteps {
   return ($items -join "`n")
 }
 
+function New-ProgressStages {
+  param([Parameter(Mandatory = $true)]$Stages)
+
+  $allowedStatuses = @("complete", "current", "next", "later")
+  $items = New-Object System.Collections.Generic.List[string]
+  foreach ($stage in $Stages) {
+    $status = [string]$stage.status
+    if ($status -notin $allowedStatuses) {
+      throw "Unsupported home.progressStages status '$status'."
+    }
+
+    $items.Add(@"
+            <li class="progress-stage progress-stage-$status">
+              <span class="progress-marker">$(Html $stage.badge)</span>
+              <div>
+                <strong>$(Html $stage.label)</strong>
+                <p>$(Html $stage.description)</p>
+              </div>
+            </li>
+"@)
+  }
+
+  return ($items -join "`n")
+}
+
+function New-ProgressNextItems {
+  param([Parameter(Mandatory = $true)]$Items)
+
+  $output = New-Object System.Collections.Generic.List[string]
+  foreach ($item in $Items) {
+    $output.Add("            <li>$(Html $item)</li>")
+  }
+
+  return ($output -join "`n")
+}
+
 function New-LanguageList {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -810,6 +846,7 @@ foreach ($locale in $locales) {
 
   $readmePath = Get-DocumentPath -Manifest $manifest -DocumentId "readme" -LocaleCode $localeCode
   $architecturePath = Get-DocumentPath -Manifest $manifest -DocumentId "architecture-overview" -LocaleCode $localeCode
+  $progressRoadmapPath = Get-DocumentPath -Manifest $manifest -DocumentId "zero-to-one-roadmap" -LocaleCode $localeCode
   $architectureImagePath = Get-AssetPath -Manifest $manifest -AssetId "architecture-diagram" -LocaleCode $localeCode
   $architectureImageHref = Convert-SitePathToRelativeHref -Path $architectureImagePath -Context $context
   $docsHref = if ($localeCode -eq $manifest.defaultLocale) {
@@ -818,6 +855,7 @@ foreach ($locale in $locales) {
     Convert-DocPathToRelativeHref -DocPath $readmePath -Context $context
   }
   $architectureHref = Convert-DocPathToRelativeHref -DocPath $architecturePath -Context $context
+  $progressRoadmapHref = Convert-DocPathToRelativeHref -DocPath $progressRoadmapPath -Context $context
   $blogHref = "blog/"
   $canonicalUrl = Join-SiteUrl -BaseUrl $manifest.siteUrl -Path (Get-LocaleHomePath -Manifest $manifest -LocaleCode $localeCode)
 
@@ -850,9 +888,22 @@ foreach ($locale in $locales) {
     heroActions = @"
             <a class="primary-action" href="$(Html $docsHref)">$(Html $localeData.home.primaryAction)</a>
             <a class="secondary-action" href="$(Html $architectureHref)">$(Html $localeData.home.secondaryAction)</a>
+            <a class="secondary-action" href="#development-progress">$(Html $localeData.home.progressAction)</a>
             <a class="secondary-action" href="#discussion">$(Html $localeData.nav.discussion)</a>
             <a class="secondary-action" href="#feedback">$(Html $localeData.nav.feedback)</a>
 "@
+    progressEyebrow = Html $localeData.home.progressEyebrow
+    progressTitle = Html $localeData.home.progressTitle
+    progressCurrentLabel = Html $localeData.home.progressCurrentLabel
+    progressCurrentKicker = Html $localeData.home.progressCurrentKicker
+    progressCurrentTitle = Html $localeData.home.progressCurrentTitle
+    progressCurrentBody = Html $localeData.home.progressCurrentBody
+    progressTimelineLabel = Html $localeData.home.progressTimelineLabel
+    progressStages = New-ProgressStages -Stages $localeData.home.progressStages
+    progressNextTitle = Html $localeData.home.progressNextTitle
+    progressNextItems = New-ProgressNextItems -Items $localeData.home.progressNextItems
+    progressRoadmapHref = Html $progressRoadmapHref
+    progressRoadmapLabel = Html $localeData.home.progressRoadmapLabel
     architectureEyebrow = Html $localeData.home.architectureEyebrow
     architectureTitle = Html $localeData.home.architectureTitle
     architectureAlt = Html $localeData.home.architectureAlt

@@ -188,6 +188,20 @@ foreach ($locale in $locales) {
     Fail "website/_i18n/$($locale.code).json missing 'nav.blog'."
   }
 
+  foreach ($field in @("progressAction", "progressEyebrow", "progressTitle", "progressCurrentLabel", "progressCurrentKicker", "progressCurrentTitle", "progressCurrentBody", "progressTimelineLabel", "progressRoadmapLabel", "progressNextTitle")) {
+    if ([string]::IsNullOrWhiteSpace($localeData.home.$field)) {
+      Fail "website/_i18n/$($locale.code).json missing 'home.$field'."
+    }
+  }
+
+  if ($null -eq $localeData.home.progressStages -or @($localeData.home.progressStages).Count -eq 0) {
+    Fail "website/_i18n/$($locale.code).json missing 'home.progressStages'."
+  }
+
+  if ($null -eq $localeData.home.progressNextItems -or @($localeData.home.progressNextItems).Count -eq 0) {
+    Fail "website/_i18n/$($locale.code).json missing 'home.progressNextItems'."
+  }
+
   foreach ($field in @("metaTitle", "metaDescription", "heroEyebrow", "heroTitle", "heroLead", "categoriesTitle", "allPostsTitle", "categoryLabel", "dateLabel", "readMore", "backToBlog", "emptyState")) {
     if ([string]::IsNullOrWhiteSpace($localeData.blog.$field)) {
       Fail "website/_i18n/$($locale.code).json missing 'blog.$field'."
@@ -220,6 +234,18 @@ foreach ($locale in $locales) {
   }
   if ($homeHtml -notmatch 'href="#discussion"') {
     Fail "Generated home page for '$($locale.code)' is missing the discussion navigation link."
+  }
+  if ($homeHtml -notmatch 'id="development-progress"') {
+    Fail "Generated home page for '$($locale.code)' is missing the development progress section."
+  }
+  if ($homeHtml -notmatch 'href="#development-progress"') {
+    Fail "Generated home page for '$($locale.code)' is missing the development progress navigation link."
+  }
+  if ($homeHtml -notmatch 'progress-stage-current') {
+    Fail "Generated home page for '$($locale.code)' is missing the current progress stage."
+  }
+  if ($homeHtml -notmatch 'zero-to-one-roadmap|从零到1\.0版本路线图') {
+    Fail "Generated home page for '$($locale.code)' is missing the zero-to-one roadmap link."
   }
   if ($homeHtml -notmatch 'blog/') {
     Fail "Generated home page for '$($locale.code)' is missing the blog navigation link."

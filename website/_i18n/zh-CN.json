@@ -42,6 +42,47 @@
     "actionsLabel": "项目入口",
     "primaryAction": "阅读文档",
     "secondaryAction": "总体架构",
+    "progressAction": "开发进度",
+    "progressEyebrow": "开发进度",
+    "progressTitle": "从方案文档走向 1.0",
+    "progressCurrentLabel": "当前开发阶段",
+    "progressCurrentKicker": "当前阶段",
+    "progressCurrentTitle": "架构和方案文档",
+    "progressCurrentBody": "第一轮实现所需的大部分工作仍处在方案文档阶段。下一步实际工作是模块划分、可执行契约、最小 CLI 骨架和一条端到端 Runtime 闭环。",
+    "progressTimelineLabel": "发布进度阶段",
+    "progressRoadmapLabel": "查看路线图",
+    "progressNextTitle": "下一步实现工作",
+    "progressNextItems": [
+      "创建 Rust 项目和模块结构。",
+      "定义 manifest、event、policy、error 和 Lua host API 契约。",
+      "搭建最小可运行 CLI 骨架和 Runtime 闭环。"
+    ],
+    "progressStages": [
+      {
+        "status": "complete",
+        "badge": "已完成",
+        "label": "架构和方案文档",
+        "description": "系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网和文档结构已经建立。"
+      },
+      {
+        "status": "current",
+        "badge": "当前",
+        "label": "模块划分和契约定义",
+        "description": "下一步是 Rust 源码结构、manifest schema、event 类型、policy 规则、错误模型和 Lua host API 契约。"
+      },
+      {
+        "status": "next",
+        "badge": "下一步",
+        "label": "最小可运行骨架",
+        "description": "创建 CLI 入口、配置读取、Runtime 初始化、no-op 实现，以及 CI 构建和测试闭环。"
+      },
+      {
+        "status": "later",
+        "badge": "后续",
+        "label": "Runtime 闭环和模块实现",
+        "description": "验证 Ingress -> EventBus -> Scheduler -> Lua Agent -> Rust Tool，再按模块逐个补齐。"
+      }
+    ],
     "architectureEyebrow": "架构",
     "architectureTitle": "从运行时边界到受控能力接入",
     "architectureAlt": "Eva-CLI 总体架构图",
