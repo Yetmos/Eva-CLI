@@ -1,0 +1,66 @@
+<p>Eva-CLI 目前仍处在架构和方案文档阶段，所以“可自我升级 Agent 系统”更适合作为实现方向来描述，而不是宣称能力已经全部完成。真正有价值的目标不是让 Agent 随意改写宿主程序，而是让 Agent 能够提出改进、验证改进、打包改进，并通过 Runtime 受控激活改进；权限、状态、回滚和审计仍然由 Runtime 掌握。</p>
+
+<p>当前 Eva-CLI 的设计里已经有这条路径需要的组件：Rust 托管运行时边界、Lua 承载可热更新行为、Topic EventBus、受控 Adapter 访问、Agent 记忆与知识库、Discovery manifest、Release Snapshot，以及进程级 Runtime generation 切换。可自我升级系统，就是把这些组件连成一条不失控的闭环。</p>
+
+<h2>自我升级应该升级什么</h2>
+<p>自我升级需要拆成三个范围。最小范围是行为升级：prompt、Lua Agent 脚本、Lua skill、路由规则和容易验证的转换逻辑，都可以走热更新。中等范围是能力形态升级：adapter manifest、schema，以及不扩大权限的 policy metadata，可以先发现、校验，再进入 registry。最大范围是运行时边界升级：权限扩张、transport 变化、状态后端变化和 host API 变化，都必须走更严格的 Runtime generation 或进程级升级路径。</p>
+
+<p>这个拆分很关键，因为系统应该优先支持可逆更新。Lua workflow 的小错误应该能快速回滚，不需要替换宿主进程。新的文件系统权限或 MCP command 不能伪装成普通脚本更新混进去。状态迁移在激活前必须有备份、重放和回滚证据。</p>
+
+<h2>受控升级闭环</h2>
+<p>一个务实的自我升级闭环可以作为 Eva-CLI 的普通工作流运行：</p>
+
+<ol>
+  <li>观察运行时事件、测试结果、失败记录、用户反馈和记忆记录。</li>
+  <li>判断问题属于行为、能力元数据、配置，还是 Runtime 代码边界。</li>
+  <li>生成升级提案，说明变更文件、所需权限、兼容性、回滚方案和验证命令。</li>
+  <li>根据提案构建隔离的候选 generation。</li>
+  <li>运行 schema 检查、policy 检查、smoke test 和定向回归测试。</li>
+  <li>创建 Release Snapshot，记录源码版本、产物、manifest、验证输出和迁移元数据。</li>
+  <li>通过热更新或 Runtime generation 切换激活候选版本。</li>
+  <li>观察健康状态，排空旧任务，并在激活失败时自动回滚。</li>
+</ol>
+
+<p>Agent 可以编写提案并解释取舍，但带有权限含义的步骤都应该由 Rust 接管：manifest 校验、权限检查、sandbox 选择、外部 I/O、状态变更、snapshot 创建、激活、回滚和审计日志。</p>
+
+<h2>Runtime 的角色</h2>
+<p>Rust Core 应该扮演升级治理者。它托管 EventBus、Scheduler、Agent lifecycle、policy engine、MemoryService、KnowledgeService、DiscoveryRegistry、AdapterRegistry、ReleaseSnapshotService 和 Supervisor 接口。Lua Agent 则在窄 host API 内负责意图识别、本地编排、工具选择和结果映射。</p>
+
+<p>这条边界让 Agent 可以改进自己，但不会变成最高权限主体。比如，一个 Lua Agent 发现某个重复任务需要更好的 workflow。它可以写出候选 Lua skill，更新 manifest，并请求 Runtime 校验。Runtime 在隔离环境加载候选 generation，运行兼容性检查，只有通过后才把新调用路由到新 generation。如果候选失败，旧 generation 继续保持 active。</p>
+
+<h2>记忆是升级经验库</h2>
+<p>自我升级的质量取决于系统记住了什么。Agent 私有记忆可以记录本地错误、成功的工具选择、prompt 调整和任务级启发。项目记忆可以保存被提升后的事实，例如仓库约定、架构决策、发布约束、已知风险和用户偏好。知识库可以索引设计文档和发布证据。</p>
+
+<p>用于升级的记忆记录不应该只写“改了什么”。它还应该记录为什么改、证据是什么、哪些验证命令通过、还剩什么风险，以及什么时候需要过期或复审。ContextBuilder 随后可以组装一个升级上下文包，包含必须遵守的约束、相关历史尝试、当前架构文档和回滚要求，而不是把所有历史对话都塞给 Agent。</p>
+
+<h2>发现不等于信任</h2>
+<p>Discovery 是新 Agent、skill、adapter、MCP handler 和 Lua capability 的入口，但发现不等于执行权限。发现流程应该只扫描批准过的根目录，用结构化解析器读取 manifest，归一化 ID 和版本，校验 schema，构建 candidate registry，标记冲突，并只发布通过校验的能力。</p>
+
+<p>在自我升级系统里，candidate registry 就是升级暂存区。Agent 可以提出新的 adapter 或 skill，但 Runtime 会把提案同 policy 和现有 registry 状态进行比较。权限扩张、transport 变化、secret 访问和 command 变化都应该表现为可审查 delta，而不是藏在生成代码里。</p>
+
+<h2>两条激活路径</h2>
+<p>Eva-CLI 可以同时保留快速路径和严格路径。快速路径是 Lua generation switching，适合没有突破现有权限和 host API 契约的行为变更：Agent script、Lua tool、Lua skill、校验逻辑、响应整形和路由映射。Runtime 加载新 generation，运行 smoke test，原子地把新调用切过去，并在 in-flight work 排空前保留旧 generation。</p>
+
+<p>严格路径是进程级 Runtime generation switching，适合宿主边界变化：新的权限类别、adapter transport、状态后端、MCP command surface、破坏性 schema 变化和迁移。Supervisor 启动新的 Runtime generation，加载配置和 manifest，运行健康和兼容性检查，迁移新工作流量，按 policy 排空或取消旧工作，并保留回滚证据。</p>
+
+<h2>把验证变成一等能力</h2>
+<p>可自我升级 Agent 需要的是验证契约，而不只是“看起来可信”。每个升级提案都应该声明证明它可用的检查：格式化、schema 校验、静态检查、单元测试、集成测试、smoke test、迁移 dry run 和健康探针。Runtime 可以拒绝缺少相应风险等级验证计划的提案。</p>
+
+<p>验证输出应该和 Release Snapshot 一起持久化。这样系统就能回答三个问题：激活了什么，为什么认为它安全，以及如何回滚。没有这些证据，自我升级就会退化成不可追踪的变更。</p>
+
+<h2>最小实现路径</h2>
+<p>第一版不需要完整自主编码闭环。更小的路径已经足够：</p>
+
+<ol>
+  <li>定义 upgrade proposal schema，包含 scope、files、permissions、tests、risk level 和 rollback plan。</li>
+  <li>为 Lua capability generation 和 manifest 变更建立 candidate registry。</li>
+  <li>实现 Lua 加载、schema 兼容性、policy 兼容性和路由注册的 smoke check。</li>
+  <li>对每个通过的升级候选写入 Release Snapshot 记录。</li>
+  <li>先支持 Lua 行为变更的快速激活路径。</li>
+  <li>等宿主边界稳定后，再加入 Supervisor 托管的 Runtime generation 切换。</li>
+</ol>
+
+<p>这条路径能让第一版保持现实。它先让自我升级变得可观察、可回滚，再逐步扩大范围。等这些契约可靠后，Agent 可以承担更多提案编写和诊断工作，而 Rust Runtime 仍然是最终激活权威。</p>
+
+<h2>核心原则</h2>
+<p>可自我升级 Agent 系统不应该是可自我授权系统。Eva-CLI 可以让 Agent 从记忆中学习、读取项目知识、生成候选变更并请求激活。Runtime 则负责决定什么被允许、什么必须验证、什么需要 snapshot 证据，以及什么可以回滚。这是“Agent 自己乱改自己”和“Agent Runtime 安全演进”之间的关键区别。</p>

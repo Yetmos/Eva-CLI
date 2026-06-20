@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Self-Upgrading Agent System Design for Eva-CLI | Eva-CLI Blog</title>
+    <meta name="description" content="How Eva-CLI can combine Rust-owned runtime authority, Lua hot reload, memory, discovery, release snapshots, and process generation switching into a controlled self-upgrade loop.">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="Self-Upgrading Agent System Design for Eva-CLI | Eva-CLI Blog">
+    <meta property="og:description" content="How Eva-CLI can combine Rust-owned runtime authority, Lua hot reload, memory, discovery, release snapshots, and process generation switching into a controlled self-upgrade loop.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://Eva-CLI.com/blog/self-upgrading-agent-system/">
+    <meta property="article:published_time" content="2026-06-20">
+    <meta property="article:section" content="Runtime">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/blog/self-upgrading-agent-system/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/blog/self-upgrading-agent-system/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/blog/self-upgrading-agent-system/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/blog/self-upgrading-agent-system/">
+    <link rel="icon" type="image/svg+xml" href="../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../" aria-label="Eva-CLI home">
+        <img src="../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">Multi-Agent Runtime</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="../../">Home</a>
+        <a href="../../docs/en/README.md">Docs</a>
+        <a href="../../blog/">Blog</a>
+        <a href="../../docs/en/architecture-overview.md">Architecture</a>
+        <a href="../../#discussion">Discussion</a>
+        <a href="../../#feedback">Feedback</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../blog/self-upgrading-agent-system/" hreflang="en" lang="en" aria-current="page">English</a>
+          <a href="../../zh-CN/blog/self-upgrading-agent-system/" hreflang="zh-CN" lang="zh-CN">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">Blog</p>
+          <h1>Self-Upgrading Agent System Design for Eva-CLI</h1>
+          <p class="blog-lead">How Eva-CLI can combine Rust-owned runtime authority, Lua hot reload, memory, discovery, release snapshots, and process generation switching into a controlled self-upgrade loop.</p>
+          <div class="blog-meta">
+            <span>Published: <time datetime="2026-06-20">2026-06-20</time></span>
+            <a href="../../blog/category/runtime/">Category: Runtime</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>Eva-CLI is still in the architecture and design-document stage, so a self-upgrading Agent system should be described as an implementation direction rather than a shipped capability. The useful goal is not to let an Agent rewrite the host at will. The goal is to let Agents propose, test, package, and activate improvements through a runtime that keeps authority over permissions, state, rollback, and audit.</p>
+
+<p>The current Eva-CLI design already has the pieces for that shape: a Rust-owned runtime boundary, Lua-hosted hot-reloadable behavior, a Topic EventBus, controlled Adapter access, Agent memory and knowledge services, discovery manifests, release snapshots, and process-level generation switching. A self-upgrading system is the loop that connects those pieces without giving up control.</p>
+
+<h2>What self-upgrading should mean</h2>
+<p>Self-upgrading should be split into three upgrade scopes. The smallest scope is behavior: prompts, Lua Agent scripts, Lua skills, routing rules, and validation-friendly transformations can be updated through hot reload. The middle scope is capability shape: adapter manifests, schemas, and non-expanding policy metadata can be discovered and validated before they enter the registry. The largest scope is runtime shape: permission expansion, transport changes, state backend changes, and host API changes require a stricter runtime generation or process-level upgrade path.</p>
+
+<p>This separation matters because the system should optimize for reversible updates. A Lua workflow bug should roll back quickly without replacing the host process. A new file-system permission or MCP command should not be smuggled in as a script edit. A state migration should have backup, replay, and rollback evidence before activation.</p>
+
+<h2>The controlled upgrade loop</h2>
+<p>A practical self-upgrade loop can run as a normal Eva-CLI workflow:</p>
+
+<ol>
+  <li>Observe runtime events, test results, failures, user feedback, and memory records.</li>
+  <li>Diagnose whether the issue belongs to behavior, capability metadata, configuration, or runtime code.</li>
+  <li>Draft an upgrade proposal with changed files, required permissions, compatibility notes, rollback plan, and verification commands.</li>
+  <li>Build an isolated candidate generation from the proposal.</li>
+  <li>Run schema checks, policy checks, smoke tests, and targeted regression tests.</li>
+  <li>Create a Release Snapshot that records source revisions, artifacts, manifests, validation output, and migration metadata.</li>
+  <li>Activate the candidate by hot reload or runtime generation switch.</li>
+  <li>Monitor health, drain old work, and roll back automatically if activation fails.</li>
+</ol>
+
+<p>The Agent can author the proposal and explain the tradeoffs, but Rust should own every authority-bearing step: manifest validation, permission checks, sandbox selection, external I/O, state mutation, snapshot creation, activation, rollback, and audit logging.</p>
+
+<h2>Runtime roles</h2>
+<p>The Rust core should act as the upgrade governor. It owns the EventBus, Scheduler, Agent lifecycle, policy engine, MemoryService, KnowledgeService, DiscoveryRegistry, AdapterRegistry, ReleaseSnapshotService, and Supervisor interface. Lua Agents own intent recognition, local orchestration, tool selection, and result mapping inside a narrow host API.</p>
+
+<p>That boundary lets an Agent improve itself without becoming root authority. For example, a Lua Agent may notice that a recurring task needs a better workflow. It can write a candidate Lua skill, update a manifest, and request validation. The runtime loads the candidate in isolation, runs compatibility checks, and routes calls to the new generation only after the candidate passes. If the candidate fails, the previous generation remains active.</p>
+
+<h2>Memory as the upgrade memory</h2>
+<p>Self-upgrade quality depends on what the system remembers. Agent private memory can track local mistakes, successful tool choices, prompt refinements, and task-specific heuristics. Project memory can store promoted facts such as repository conventions, architecture decisions, release constraints, known risks, and user preferences. The knowledge base can index design documents and release evidence.</p>
+
+<p>For upgrades, memory records should not just say what changed. They should also record why it changed, what evidence supported it, which verification commands passed, what risks remained, and when the entry should expire or be reviewed. ContextBuilder can then assemble an upgrade context pack that includes required constraints, relevant prior attempts, current architecture documents, and rollback requirements without dumping every past conversation into the Agent.</p>
+
+<h2>Discovery without implicit trust</h2>
+<p>Discovery is the entry point for new Agents, skills, adapters, MCP handlers, and Lua capabilities, but discovery should never mean execution permission. The discovery pipeline should scan approved roots, parse manifests with structured parsers, normalize IDs and versions, validate schemas, build a candidate registry, mark conflicts, and publish only validated capabilities.</p>
+
+<p>In a self-upgrading system, that candidate registry becomes the staging area. An Agent can propose a new adapter or skill, but the runtime compares the proposal against policy and existing registry state. Permission expansion, transport changes, secret access, and command changes should be visible as reviewable deltas, not hidden inside generated code.</p>
+
+<h2>Two activation paths</h2>
+<p>Eva-CLI can use a fast path and a strict path. The fast path is Lua generation switching. It is suitable for behavior edits that stay inside existing permissions and host API contracts: Agent scripts, Lua tools, Lua skills, validation logic, response shaping, and route mappings. The runtime loads the new generation, smoke-tests it, atomically routes new calls, and keeps the old generation until in-flight work drains.</p>
+
+<p>The strict path is process-level runtime generation switching. It is suitable for host boundary changes: new permission classes, adapter transports, state backends, MCP command surfaces, schema-breaking changes, and migrations. A Supervisor starts a new runtime generation, loads configuration and manifests, runs health and compatibility checks, shifts new work, drains or cancels old work by policy, and keeps rollback evidence.</p>
+
+<h2>Verification as a first-class capability</h2>
+<p>A self-upgrading Agent needs a verification contract, not just confidence. Each upgrade proposal should declare the checks that prove it: formatting, schema validation, static checks, unit tests, integration tests, smoke tests, migration dry runs, and health probes. The runtime can reject proposals that lack a verification plan for their risk level.</p>
+
+<p>Verification output should be stored with the Release Snapshot. That gives the system a durable answer to three questions: what was activated, why was it considered safe, and how can it be rolled back? Without that evidence, self-upgrade becomes untraceable mutation.</p>
+
+<h2>A minimum implementation path</h2>
+<p>The first implementation does not need a fully autonomous coding loop. A smaller path is enough:</p>
+
+<ol>
+  <li>Define an upgrade proposal schema with scope, files, permissions, tests, risk level, and rollback plan.</li>
+  <li>Add a candidate registry for Lua capability generations and manifest changes.</li>
+  <li>Implement smoke checks for Lua loading, schema compatibility, policy compatibility, and route registration.</li>
+  <li>Write Release Snapshot records for every accepted upgrade candidate.</li>
+  <li>Support fast-path activation for Lua behavior changes.</li>
+  <li>Add Supervisor-backed runtime generation switching after the host boundary is stable.</li>
+</ol>
+
+<p>This path keeps the first version realistic. It makes self-upgrade observable and reversible before it becomes broad. Once those contracts are reliable, Agents can take on more of the proposal-writing and diagnosis work while the Rust runtime remains the final authority for activation.</p>
+
+<h2>The core principle</h2>
+<p>A self-upgrading Agent system should not be self-authorizing. Eva-CLI can let Agents learn from memory, read project knowledge, generate candidate changes, and request activation. The runtime should decide what is allowed, what must be verified, what gets snapshot evidence, and what can be rolled back. That is the difference between an Agent that edits itself and an Agent runtime that can evolve safely.</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../blog/">Back to blog</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>Author: <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>Feedback: <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../#feedback">Submit feedback</a>
+    </footer>
+  </body>
+</html>

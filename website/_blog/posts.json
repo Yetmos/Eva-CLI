@@ -10,6 +10,26 @@
   ],
   "posts": [
     {
+      "id": "self-upgrading-agent-system",
+      "locale": "en",
+      "slug": "self-upgrading-agent-system",
+      "title": "Self-Upgrading Agent System Design for Eva-CLI",
+      "description": "How Eva-CLI can combine Rust-owned runtime authority, Lua hot reload, memory, discovery, release snapshots, and process generation switching into a controlled self-upgrade loop.",
+      "date": "2026-06-20",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/self-upgrading-agent-system.html"
+    },
+    {
+      "id": "self-upgrading-agent-system",
+      "locale": "zh-CN",
+      "slug": "self-upgrading-agent-system",
+      "title": "Eva-CLI 可自我升级 Agent 系统实现思路",
+      "description": "如何把 Rust 托管运行时、Lua 热更新、记忆、发现、Release Snapshot 和进程 generation 切换组合成受控的自我升级闭环。",
+      "date": "2026-06-20",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/self-upgrading-agent-system.html"
+    },
+    {
       "id": "multi-agent-memory-design",
       "locale": "en",
       "slug": "multi-agent-memory-design",
