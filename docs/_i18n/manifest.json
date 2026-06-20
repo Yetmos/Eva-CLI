@@ -34,6 +34,17 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "multi-agent-memory-design-diagram",
+      "title": "Multi-Agent Memory Design Diagram",
+      "source": "assets/multi-agent-memory-design.svg",
+      "translations": {
+        "zh-CN": "assets/multi-agent-memory-design.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -164,6 +175,17 @@
       "source": "docs/en/design-risk-review.md",
       "translations": {
         "zh-CN": "docs/zh-CN/方案设计风险评审.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "zero-to-one-roadmap",
+      "title": "Zero to 1.0 Roadmap",
+      "source": "docs/en/zero-to-one-roadmap.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/从零到1.0版本路线图.md"
       },
       "status": {
         "zh-CN": "current"

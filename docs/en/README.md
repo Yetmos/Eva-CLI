@@ -22,7 +22,8 @@ the executable implementation is finalized.
 9. [Process-Level Upgrade](process-level-upgrade.md)
 10. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
 11. [Design Risk Review](design-risk-review.md)
-12. [Website and Documentation i18n](website-docs-i18n.md)
+12. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
+13. [Website and Documentation i18n](website-docs-i18n.md)
 
 ## Core Boundaries
 

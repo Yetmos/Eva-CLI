@@ -17,6 +17,21 @@ The website source is maintained in [website/](website/), documentation is
 maintained in [docs/](docs/), and future Rust source code will live in
 [src/](src/) and [crates/](crates/).
 
+## Current Progress
+
+Eva-CLI has completed most of the architecture and design-document stage for
+the first implementation cycle. The next milestone is to move from documents
+into executable structure:
+
+1. create the Rust project and module layout;
+2. define the first manifest, event, policy, error, and Lua host API contracts;
+3. build a minimum runnable CLI skeleton;
+4. implement the minimum end-to-end Runtime loop;
+5. expand one module at a time under test coverage.
+
+See [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md) for the staged
+release path from design documents to a 1.0 release.
+
 ## Repository Layout
 
 ```text
@@ -85,6 +100,9 @@ Recommended reading order for the English canonical documentation:
     explain operations.
 11. [Design Risk Review](docs/en/design-risk-review.md): review design-only
     risks, semantic gaps, and areas that still need stronger specification.
+12. [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md): follow the staged
+    implementation path from architecture documents to module layout,
+    contracts, a minimum runtime loop, and release readiness.
 
 ## Document Responsibilities
 
@@ -101,6 +119,7 @@ Recommended reading order for the English canonical documentation:
 | [Process-Level Upgrade](docs/en/process-level-upgrade.md) | Defines the OS service manager, Supervisor, Runtime, Ingress Gate, Durable Event Log, State Store, and blue-green traffic switching. |
 | [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md) | Defines why backup, migration package, release snapshot, restore, rollback, manifest verification, and artifact audit belong to Runtime services. |
 | [Design Risk Review](docs/en/design-risk-review.md) | Reviews design risks around Bot behavior, event consistency, state ownership, permission closure, capability semantics, and error recovery. |
+| [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md) | Defines the staged path from architecture documents to module layout, contracts, a minimum runnable skeleton, a minimum Runtime loop, module implementation, and 1.0 release readiness. |
 
 ## Current Design Position
 

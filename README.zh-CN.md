@@ -11,6 +11,19 @@ Eva-CLI 当前处于架构方案整理阶段，仓库内主要内容是 `docs/` 
 
 官网源码维护在 [website/](website/)，文档维护在 [docs/](docs/)，后续 Rust 源码维护在 [src/](src/) 和 [crates/](crates/)。
 
+## 当前进度
+
+Eva-CLI 已经完成第一轮实现所需的大部分架构和方案文档工作。下一阶段应从文档进入
+可执行结构：
+
+1. 创建 Rust 项目和模块结构；
+2. 定义第一批 manifest、event、policy、error 和 Lua host API 契约；
+3. 搭建最小可运行 CLI 骨架；
+4. 实现最小端到端 Runtime 闭环；
+5. 在测试保护下逐个模块扩展。
+
+完整阶段划分见 [从零到 1.0 版本路线图](docs/zh-CN/从零到1.0版本路线图.md)。
+
 ## 仓库结构
 
 ```text
@@ -53,6 +66,7 @@ Eva-CLI/
 9. [Process-Level Upgrade](docs/en/process-level-upgrade.md)：理解 Supervisor、Runtime generation、blue-green、draining、恢复和回滚。
 10. [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md)：理解为什么备份、迁移包、release snapshot、restore 和 rollback 的可信执行应归 Runtime，Agent 只负责请求与解释。
 11. [Design Risk Review](docs/en/design-risk-review.md)：集中查看当前方案的纯设计风险、语义缺口和需要补强的设计面。
+12. [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md)：了解从架构文档到模块划分、契约定义、最小运行闭环和 1.0 发布准备的阶段路径。
 
 ## 文档职责
 
@@ -69,6 +83,7 @@ Eva-CLI/
 | [Process-Level Upgrade](docs/en/process-level-upgrade.md) | 定义 OS service manager、Supervisor、Runtime、Ingress Gate、Durable Event Log、State Store 和双活切流。 |
 | [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md) | 定义备份、迁移包、release snapshot、restore、rollback、manifest 校验和 artifact audit 为什么应由 Runtime service 承担。 |
 | [Design Risk Review](docs/en/design-risk-review.md) | 评审当前方案在 Bot 行为、事件一致性、状态归属、权限闭包、capability 语义和错误恢复上的设计风险。 |
+| [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md) | 定义从架构文档到模块划分、契约定义、最小可运行骨架、最小 Runtime 闭环、模块实现和 1.0 发布准备的阶段路径。 |
 
 ## 当前方案定位
 

@@ -162,6 +162,11 @@
         "description": "已知架构风险与需要补齐的后续契约。"
       },
       {
+        "id": "zero-to-one-roadmap",
+        "title": "从零到 1.0 版本路线图",
+        "description": "从架构文档到模块划分、契约定义、最小运行闭环和 1.0 发布准备的阶段路径。"
+      },
+      {
         "id": "website-docs-i18n",
         "title": "网站与文档多语言适配",
         "description": "多语言官网与文档迁移方案。"

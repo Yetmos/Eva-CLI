@@ -162,6 +162,11 @@
         "description": "Known architecture risks and required follow-up contracts."
       },
       {
+        "id": "zero-to-one-roadmap",
+        "title": "Zero to 1.0 Roadmap",
+        "description": "The staged implementation path from architecture documents to module layout, contracts, a minimum runtime loop, and 1.0 release readiness."
+      },
+      {
         "id": "website-docs-i18n",
         "title": "Website and Documentation i18n",
         "description": "The multilingual website and documentation migration plan."
