@@ -110,6 +110,11 @@
         "description": "Hot-reloadable Tool, Skill, and MCP handler behavior with Rust-owned permissions and rollback."
       },
       {
+        "id": "skill-implementation",
+        "title": "Skill Implementation",
+        "description": "How workflow Skills, runtime workers, and Lua Skills become controlled workflow capabilities."
+      },
+      {
         "id": "agent-memory-knowledge-base",
         "title": "Memory and Knowledge",
         "description": "Runtime-owned memory facts, knowledge retrieval, ContextBuilder policy, and Lua API boundaries."
@@ -166,6 +171,11 @@
         "id": "lua-skill-mcp-tool-hot-reload",
         "title": "Lua Skill, MCP, and Tool Hot Reload",
         "description": "How Lua-hosted capabilities update safely through generation switching."
+      },
+      {
+        "id": "skill-implementation",
+        "title": "Skill Implementation Plan",
+        "description": "The concrete Skill implementation model: classification, manifests, runtime gates, invocation, and verification."
       },
       {
         "id": "agent-memory-knowledge-base",

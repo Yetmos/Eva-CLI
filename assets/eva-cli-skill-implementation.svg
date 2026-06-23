@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="680" viewBox="0 0 1180 680" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI skill implementation boundary</title>
+  <desc id="desc">A diagram showing skill discovery, policy validation, registry publication, invocation routing, and hot reload boundaries.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#172033" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+  <rect width="1180" height="680" fill="#f7f9fc"/>
+  <rect x="28" y="28" width="1124" height="624" rx="18" fill="#ffffff" stroke="#dce5f1"/>
+
+  <text x="60" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="800" fill="#172033">Eva-CLI Skill Implementation</text>
+  <text x="60" y="108" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" fill="#617086">Skill is exposed as a controlled capability, not as raw script execution.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="60" y="145" width="225" height="122" rx="10" fill="#eef6ff" stroke="#c6d4e5"/>
+    <text x="82" y="180" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#1e3a8a">Workflow Skill</text>
+    <text x="82" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Codex or OMX SKILL.md</text>
+    <text x="82" y="229" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Adapter transport: skill</text>
+    <text x="82" y="251" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Capability: workflow.*</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="60" y="288" width="225" height="122" rx="10" fill="#fff7ed" stroke="#fed7aa"/>
+    <text x="82" y="323" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#9a3412">Runtime Worker</text>
+    <text x="82" y="350" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Team, swarm, or worker mode</text>
+    <text x="82" y="372" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Display only by default</text>
+    <text x="82" y="394" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Not a normal Adapter</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="60" y="431" width="225" height="122" rx="10" fill="#f0fdfa" stroke="#99f6e4"/>
+    <text x="82" y="466" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#115e59">Lua Skill</text>
+    <text x="82" y="493" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Project manifest plus Lua</text>
+    <text x="82" y="515" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">LuaCapabilityRuntime</text>
+    <text x="82" y="537" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Generation swap</text>
+  </g>
+
+  <path d="M305 206 H365" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M305 349 H365" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M305 492 H365" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="385" y="142" width="245" height="130" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="409" y="177" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">Discovery</text>
+    <text x="409" y="205" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Approved roots only</text>
+    <text x="409" y="227" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Normalize id, source, kind</text>
+    <text x="409" y="249" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">No execution permission yet</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="385" y="303" width="245" height="130" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="409" y="338" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">Validation Gate</text>
+    <text x="409" y="366" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Manifest and schema</text>
+    <text x="409" y="388" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Policy and trust level</text>
+    <text x="409" y="410" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Runtime gate and limits</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="385" y="464" width="245" height="130" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="409" y="499" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">Registration Decision</text>
+    <text x="409" y="527" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Register, reject, or display</text>
+    <text x="409" y="549" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Record diagnostics</text>
+    <text x="409" y="571" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Publish capability index</text>
+  </g>
+
+  <path d="M508 272 V303" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M508 433 V464" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M630 529 H691" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="710" y="145" width="185" height="90" rx="10" fill="#ede9fe" stroke="#d8ccff"/>
+    <text x="732" y="180" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#5b21b6">Lua Agent</text>
+    <text x="732" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Calls workflow capability</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="710" y="267" width="185" height="90" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="732" y="302" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">Rust Tool Layer</text>
+    <text x="732" y="329" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Checks caller permissions</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="710" y="389" width="185" height="90" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="732" y="424" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">AdapterRouter</text>
+    <text x="732" y="451" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Selects registered provider</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="710" y="511" width="185" height="90" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="732" y="546" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">Skill Runtime</text>
+    <text x="732" y="573" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">SkillAdapter or Lua adapter</text>
+  </g>
+
+  <path d="M802 235 V267" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M802 357 V389" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M802 479 V511" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="940" y="145" width="165" height="197" rx="10" fill="#f8fafc" stroke="#c6d4e5"/>
+    <text x="962" y="180" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17" font-weight="800" fill="#172033">Rust owns</text>
+    <text x="962" y="210" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Permissions</text>
+    <text x="962" y="232" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Secrets</text>
+    <text x="962" y="254" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">FS and network</text>
+    <text x="962" y="276" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Timeout and cancel</text>
+    <text x="962" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Audit and rollback</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="940" y="382" width="165" height="126" rx="10" fill="#f0fdfa" stroke="#99f6e4"/>
+    <text x="962" y="417" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17" font-weight="800" fill="#115e59">Skill owns</text>
+    <text x="962" y="447" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Business flow</text>
+    <text x="962" y="469" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Payload mapping</text>
+    <text x="962" y="491" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">Result shaping</text>
+  </g>
+
+  <path d="M895 556 H940" stroke="#1e3a8a" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <rect x="690" y="620" width="435" height="24" rx="12" fill="#dbeafe"/>
+  <text x="712" y="637" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#1e3a8a">Lua skill hot reload: shadow load -> health check -> activate -> drain old generation</text>
+</svg>

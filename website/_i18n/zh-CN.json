@@ -110,6 +110,11 @@
         "description": "Tool、Skill、MCP handler 的热更新行为、权限边界和回滚语义。"
       },
       {
+        "id": "skill-implementation",
+        "title": "Skill 实现方案",
+        "description": "workflow Skill、runtime worker 和 Lua Skill 如何进入受控 workflow capability。"
+      },
+      {
         "id": "agent-memory-knowledge-base",
         "title": "记忆与知识库",
         "description": "Runtime 托管记忆事实源、知识检索、ContextBuilder policy 和 Lua API 边界。"
@@ -166,6 +171,11 @@
         "id": "lua-skill-mcp-tool-hot-reload",
         "title": "Lua Skill、MCP 与 Tool 热更新",
         "description": "Lua 承载能力如何通过 generation 切换安全更新。"
+      },
+      {
+        "id": "skill-implementation",
+        "title": "Skill 实现方案",
+        "description": "Skill 的分类、manifest、runtime gate、调用链和验证矩阵。"
       },
       {
         "id": "agent-memory-knowledge-base",

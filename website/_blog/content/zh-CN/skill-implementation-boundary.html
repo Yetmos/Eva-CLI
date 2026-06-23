@@ -1,0 +1,16 @@
+<p>Eva-CLI 现在有了一份独立的 Skill 实现方案。核心决策是：Skill 是受控 capability surface，不是原始 <code>SKILL.md</code> 解释器，也不是 Lua 拥有宿主权限的路径。</p>
+
+<h2>三类 Skill</h2>
+<p>方案把 Skill 分成 <code>workflow_skill</code>、<code>runtime_worker</code> 和 <code>lua_skill</code>。workflow Skill 只有通过 manifest、schema、policy 和 runtime gate 校验后，才能经由 <code>SkillAdapter</code> 注册成 <code>workflow.*</code> capability。runtime worker 在不匹配的编排模式下只展示。Lua Skill 是项目内工作流逻辑，由 <code>LuaCapabilityRuntime</code> 加载，并支持 generation swap。</p>
+
+<figure>
+  <img src="../../../assets/eva-cli-skill-implementation.zh-CN.svg" alt="Eva-CLI Skill 实现边界图">
+</figure>
+
+<h2>为什么这个边界重要</h2>
+<p>如果没有这条边界，Skill 支持很容易退化成另一个不受控脚本执行器。Eva-CLI 把 source discovery、trust level、schema 校验、文件系统访问、密钥、网络策略、超时、取消、审计和回滚都留在 Rust。Skill 只负责领域工作流、payload 映射、受控 host API 编排和结果整理。</p>
+
+<h2>调用形态</h2>
+<p>Lua Agent 调用稳定 capability，例如 <code>workflow.code_review</code>。它不能传入 Skill 路径、命令模板、shell 片段、环境变量或 runtime mode override。Rust 会通过 Tool Layer、AdapterRouter、<code>SkillAdapter</code> 或 <code>LuaCapabilityAdapter</code> 解析调用，并校验输入与输出 schema。</p>
+
+<p>完整设计见 <a href="../../../docs/zh-CN/Skill实现方案.md">Skill 实现方案</a>。</p>

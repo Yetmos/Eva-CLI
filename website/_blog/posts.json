@@ -88,6 +88,26 @@
       "date": "2026-06-17",
       "category": "runtime",
       "contentPath": "website/_blog/content/zh-CN/eva-runtime-notes.html"
+    },
+    {
+      "id": "skill-implementation-boundary",
+      "locale": "en",
+      "slug": "skill-implementation-boundary",
+      "title": "Skill Implementation Boundary",
+      "description": "How Eva-CLI turns Skills into controlled workflow capabilities instead of raw script execution.",
+      "date": "2026-06-23",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/skill-implementation-boundary.html"
+    },
+    {
+      "id": "skill-implementation-boundary",
+      "locale": "zh-CN",
+      "slug": "skill-implementation-boundary",
+      "title": "Skill 实现边界",
+      "description": "Eva-CLI 如何把 Skill 收束为受控 workflow capability，而不是原始脚本执行入口。",
+      "date": "2026-06-23",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/skill-implementation-boundary.html"
     }
   ]
 }

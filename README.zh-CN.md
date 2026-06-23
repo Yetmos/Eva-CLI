@@ -59,14 +59,15 @@ Eva-CLI/
 2. [Rust, Lua, and EventBus Scheduler](docs/en/rust-lua-eventbus-scheduler.md)：理解 Runtime、EventBus、Scheduler、Lua Agent 和 Topic 路由。
 3. [Lua External Agent Adapter](docs/en/lua-external-agent-adapter.md)：理解外部 Agent、CLI、HTTP、MCP、Skill 如何通过 Adapter 接入。
 4. [Lua Skill, MCP, and Tool Hot Reload](docs/en/lua-skill-mcp-tool-hot-reload.md)：理解 Tool、Lua Skill 和 MCP tool handler 如何下沉到 Lua 并热更新。
-5. [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md)：理解 Agent 私有记忆、系统总记忆库、知识库和上下文构建边界。
-6. [Agent Discovery](docs/en/agent-discovery.md)：理解项目配置、用户环境、MCP、Skill 和 Lua capability 如何被发现与注册。
-7. [Hardware Hotplug](docs/en/hardware-hotplug.md)：理解 USB、串口、BLE、网络设备和厂商 SDK 设备如何通过 HardwareAdapter 接入并支持热插拔。
-8. [Project Configuration](docs/en/project-configuration.md)：理解 YAML 配置、schema、policy、manifest 和热加载边界。
-9. [Process-Level Upgrade](docs/en/process-level-upgrade.md)：理解 Supervisor、Runtime generation、blue-green、draining、恢复和回滚。
-10. [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md)：理解为什么备份、迁移包、release snapshot、restore 和 rollback 的可信执行应归 Runtime，Agent 只负责请求与解释。
-11. [Design Risk Review](docs/en/design-risk-review.md)：集中查看当前方案的纯设计风险、语义缺口和需要补强的设计面。
-12. [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md)：了解从架构文档到模块划分、契约定义、最小运行闭环和 1.0 发布准备的阶段路径。
+5. [Skill Implementation Plan](docs/en/skill-implementation.md)：理解 workflow Skill、runtime worker 和 Lua Skill 如何进入受控 `workflow.*` capability。
+6. [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md)：理解 Agent 私有记忆、系统总记忆库、知识库和上下文构建边界。
+7. [Agent Discovery](docs/en/agent-discovery.md)：理解项目配置、用户环境、MCP、Skill 和 Lua capability 如何被发现与注册。
+8. [Hardware Hotplug](docs/en/hardware-hotplug.md)：理解 USB、串口、BLE、网络设备和厂商 SDK 设备如何通过 HardwareAdapter 接入并支持热插拔。
+9. [Project Configuration](docs/en/project-configuration.md)：理解 YAML 配置、schema、policy、manifest 和热加载边界。
+10. [Process-Level Upgrade](docs/en/process-level-upgrade.md)：理解 Supervisor、Runtime generation、blue-green、draining、恢复和回滚。
+11. [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md)：理解为什么备份、迁移包、release snapshot、restore 和 rollback 的可信执行应归 Runtime，Agent 只负责请求与解释。
+12. [Design Risk Review](docs/en/design-risk-review.md)：集中查看当前方案的纯设计风险、语义缺口和需要补强的设计面。
+13. [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md)：了解从架构文档到模块划分、契约定义、最小运行闭环和 1.0 发布准备的阶段路径。
 
 ## 文档职责
 
@@ -76,6 +77,7 @@ Eva-CLI/
 | [Rust, Lua, and EventBus Scheduler](docs/en/rust-lua-eventbus-scheduler.md) | 定义 Rust Runtime、Lua Agent、EventBus、Topic、Scheduler、状态、一致性和热更新。 |
 | [Lua External Agent Adapter](docs/en/lua-external-agent-adapter.md) | 定义 AdapterRegistry、AdapterRouter、McpAdapter、SkillAdapter、HardwareAdapter、stdio/http/eventbus/hardware 等外部能力接入。 |
 | [Lua Skill, MCP, and Tool Hot Reload](docs/en/lua-skill-mcp-tool-hot-reload.md) | 定义 `lua_tool`、`lua_skill`、`lua_mcp_handler`、Lua Capability Runtime、host API、安全沙箱和 generation swap。 |
+| [Skill Implementation Plan](docs/en/skill-implementation.md) | 定义 Skill 分类、manifest、runtime gate、调用路由、安全边界、热更新和验证规则。 |
 | [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md) | 定义 Agent 私有记忆、系统总记忆库、知识库、ContextBuilder、权限、审计和一致性边界。 |
 | [Agent Discovery](docs/en/agent-discovery.md) | 定义 AgentDiscoveryService 如何扫描、识别、校验、缓存和注册 Agent、Adapter、MCP、Skill、Lua capability。 |
 | [Hardware Hotplug](docs/en/hardware-hotplug.md) | 定义 HardwareDiscoveryService、DeviceRegistry、DriverBinding、HardwareAdapterRuntime、设备热插拔、硬件 Topic 和安全边界。 |

@@ -11,6 +11,7 @@
 - 总体入口：`总体架构方案.md`
 - Topic EventBus 与 Lua Agent 调度核心：`Rust与Lua事件总线智能体调度架构方案.md`
 - Lua 承载 Tool / Skill / MCP handler 热更新：`Lua承载Skill-MCP-Tool热更新架构方案.md`
+- Skill 独立实现方案：`Skill实现方案.md`
 
 ## 1. 方案定位
 
@@ -526,7 +527,7 @@ MCP server 可以使用 stdio 或 HTTP/SSE 等连接方式，但这些是 `McpAd
 
 ### 9.6 SkillAdapter
 
-SkillAdapter 用于把本地受信任 workflow skill 接入 Adapter 系统。它不是让 Lua 直接执行 skill，也不是让 Lua 读取 `SKILL.md` 后自行解释步骤，而是由 Rust 在 discovery 和 policy 之后把 skill 封装为 capability。
+SkillAdapter 用于把本地受信任 workflow skill 接入 Adapter 系统。它不是让 Lua 直接执行 skill，也不是让 Lua 读取 `SKILL.md` 后自行解释步骤，而是由 Rust 在 discovery 和 policy 之后把 skill 封装为 capability。Skill 的分类、manifest、runtime gate、调用链和验证矩阵见 `Skill实现方案.md`。
 
 适合接入：
 

@@ -78,6 +78,17 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "skill-implementation-diagram",
+      "title": "Eva-CLI Skill Implementation Diagram",
+      "source": "assets/eva-cli-skill-implementation.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-skill-implementation.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -131,6 +142,17 @@
       "source": "docs/en/lua-skill-mcp-tool-hot-reload.md",
       "translations": {
         "zh-CN": "docs/zh-CN/Lua承载Skill-MCP-Tool热更新架构方案.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "skill-implementation",
+      "title": "Skill Implementation Plan",
+      "source": "docs/en/skill-implementation.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/Skill实现方案.md"
       },
       "status": {
         "zh-CN": "current"

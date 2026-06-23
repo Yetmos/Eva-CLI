@@ -19,6 +19,8 @@ Eva-CLI configuration should cover:
 - Agent manifests.
 - Adapter manifests.
 - Capability manifests.
+- Skill manifests and runtime gates, as specified in
+  [Skill Implementation Plan](skill-implementation.md).
 - MCP policy.
 - Hardware policy.
 - Sandbox policy.

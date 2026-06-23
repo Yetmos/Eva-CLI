@@ -244,7 +244,7 @@ foreach ($locale in $locales) {
   if ($homeHtml -notmatch 'progress-stage-current') {
     Fail "Generated home page for '$($locale.code)' is missing the current progress stage."
   }
-  if ($homeHtml -notmatch 'zero-to-one-roadmap|从零到1\.0版本路线图') {
+  if ($homeHtml -notmatch 'progress-roadmap-link') {
     Fail "Generated home page for '$($locale.code)' is missing the zero-to-one roadmap link."
   }
   if ($homeHtml -notmatch 'blog/') {

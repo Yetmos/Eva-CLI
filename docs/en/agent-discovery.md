@@ -37,6 +37,10 @@ Discovery is not execution permission. A discovered capability still needs
 manifest validation, policy approval, schema validation, sandbox selection, and
 runtime audit before it can be invoked.
 
+Skill discovery follows the same rule. A discovered `SKILL.md` becomes
+display-only unless it can be classified and registered through the
+[Skill Implementation Plan](skill-implementation.md) contract.
+
 ## Conflict Handling
 
 Capability IDs must be stable. Conflicts should be deterministic and visible:

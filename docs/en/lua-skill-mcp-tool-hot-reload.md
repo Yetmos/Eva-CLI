@@ -25,6 +25,10 @@ host binary.
 - `lua_skill`: a workflow or domain skill implemented in Lua.
 - `lua_mcp_handler`: an MCP tool handler exposed by Eva-CLI as an MCP server.
 
+For the full Skill execution model, including `workflow_skill`,
+`runtime_worker`, `lua_skill`, manifest requirements, runtime gates, and
+verification rules, see [Skill Implementation Plan](skill-implementation.md).
+
 ## Host-Owned Boundaries
 
 Rust remains responsible for:

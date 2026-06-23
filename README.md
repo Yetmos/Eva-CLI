@@ -80,25 +80,28 @@ Recommended reading order for the English canonical documentation:
 4. [Lua Skill, MCP, and Tool Hot Reload](docs/en/lua-skill-mcp-tool-hot-reload.md):
    understand how tools, Lua Skills, and MCP tool handlers are pushed down into
    Lua and updated through hot reload.
-5. [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md):
+5. [Skill Implementation Plan](docs/en/skill-implementation.md): understand
+   how workflow Skills, runtime workers, and Lua Skills become controlled
+   `workflow.*` capabilities.
+6. [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md):
    understand Agent-private memory, system-wide memory, knowledge bases, and
    context-building boundaries.
-6. [Agent Discovery](docs/en/agent-discovery.md): understand how project
+7. [Agent Discovery](docs/en/agent-discovery.md): understand how project
    configuration, user environments, MCP, Skills, and Lua capabilities are
    discovered and registered.
-7. [Hardware Hotplug](docs/en/hardware-hotplug.md): understand how USB, serial,
+8. [Hardware Hotplug](docs/en/hardware-hotplug.md): understand how USB, serial,
    BLE, network, and vendor SDK devices are connected through HardwareAdapter
    with hotplug support.
-8. [Project Configuration](docs/en/project-configuration.md): understand YAML
+9. [Project Configuration](docs/en/project-configuration.md): understand YAML
    configuration, schemas, policies, manifests, and hot-reload boundaries.
-9. [Process-Level Upgrade](docs/en/process-level-upgrade.md): understand the
+10. [Process-Level Upgrade](docs/en/process-level-upgrade.md): understand the
    Supervisor, runtime generations, blue-green switching, draining, recovery,
    and rollback.
-10. [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md):
+11. [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md):
     understand why trusted backup, migration, release snapshot, restore, and
     rollback execution belongs to the Runtime while Agents only request and
     explain operations.
-11. [Design Risk Review](docs/en/design-risk-review.md): review design-only
+12. [Design Risk Review](docs/en/design-risk-review.md): review design-only
     risks, semantic gaps, and areas that still need stronger specification.
 12. [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md): follow the staged
     implementation path from architecture documents to module layout,
@@ -112,6 +115,7 @@ Recommended reading order for the English canonical documentation:
 | [Rust, Lua, and EventBus Scheduler](docs/en/rust-lua-eventbus-scheduler.md) | Defines the Rust Runtime, Lua Agents, EventBus, Topics, Scheduler, state, consistency, and hot reload. |
 | [Lua External Agent Adapter](docs/en/lua-external-agent-adapter.md) | Defines AdapterRegistry, AdapterRouter, McpAdapter, SkillAdapter, HardwareAdapter, and external capability transports such as stdio, HTTP, EventBus, and hardware. |
 | [Lua Skill, MCP, and Tool Hot Reload](docs/en/lua-skill-mcp-tool-hot-reload.md) | Defines `lua_tool`, `lua_skill`, `lua_mcp_handler`, the Lua Capability Runtime, host APIs, security sandboxing, and generation swaps. |
+| [Skill Implementation Plan](docs/en/skill-implementation.md) | Defines Skill classification, manifests, runtime gates, invocation routing, security boundaries, hot reload, and verification rules. |
 | [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md) | Defines Agent-private memory, system-wide memory, knowledge bases, ContextBuilder, permissions, audit, and consistency boundaries. |
 | [Agent Discovery](docs/en/agent-discovery.md) | Defines how AgentDiscoveryService scans, identifies, validates, caches, and registers Agents, adapters, MCP, Skills, and Lua capabilities. |
 | [Hardware Hotplug](docs/en/hardware-hotplug.md) | Defines HardwareDiscoveryService, DeviceRegistry, DriverBinding, HardwareAdapterRuntime, device hotplug, hardware Topics, and security boundaries. |

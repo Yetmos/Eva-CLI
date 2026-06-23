@@ -22,7 +22,9 @@ Supported adapter families include:
 
 - External Agent adapters such as Claude, Codex, Gemini, and local models.
 - MCP server adapters.
-- Skill and workflow adapters.
+- Skill and workflow adapters. The concrete Skill classification, manifest,
+  runtime gate, and invocation contract are defined in
+  [Skill Implementation Plan](skill-implementation.md).
 - CLI, HTTP, and internal service adapters.
 - Hardware adapters.
 
