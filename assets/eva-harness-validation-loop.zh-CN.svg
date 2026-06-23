@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="680" viewBox="0 0 1180 680" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI Harness 验证闭环</title>
+  <desc id="desc">一张闭环图，展示 scenario fixture、runtime sandbox、能力替身、观测、断言、回放和契约反馈之间的验证流程。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#172033" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+  <rect width="1180" height="680" fill="#f7f9fc"/>
+  <rect x="28" y="28" width="1124" height="624" rx="18" fill="#ffffff" stroke="#dce5f1"/>
+
+  <text x="60" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="800" fill="#172033">Harness 验证闭环</text>
+  <text x="60" y="108" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" fill="#617086">在扩展所有 Adapter 家族之前，Harness 先证明最小 Runtime 闭环。</text>
+
+  <circle cx="590" cy="365" r="176" fill="#eef6ff" stroke="#dce5f1" stroke-width="2"/>
+  <circle cx="590" cy="365" r="92" fill="#ffffff" stroke="#c6d4e5" stroke-width="2"/>
+  <text x="538" y="350" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="800" fill="#1e3a8a">Runtime</text>
+  <text x="542" y="378" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#617086">被测对象</text>
+  <text x="488" y="405" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">EventBus、Scheduler、Lua、Tool Layer</text>
+
+  <g filter="url(#shadow)">
+    <rect x="80" y="234" width="230" height="96" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="106" y="272" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">1. 场景 Fixture</text>
+    <text x="106" y="300" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">事件、manifest、策略、记忆种子</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="226" y="492" width="230" height="96" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="252" y="530" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">2. 沙箱运行</text>
+    <text x="252" y="558" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">隔离临时状态，不接触真实密钥</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="806" y="492" width="230" height="96" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="832" y="530" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">3. 能力替身</text>
+    <text x="832" y="558" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">确定性的 Adapter 和 Tool 结果</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="870" y="234" width="230" height="96" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="896" y="272" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">4. 观测</text>
+    <text x="896" y="300" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">trace、审计、事件日志、状态差异</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="474" y="122" width="230" height="96" rx="10" fill="#ffffff" stroke="#c6d4e5"/>
+    <text x="500" y="160" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">5. 断言</text>
+    <text x="500" y="188" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#617086">schema、策略、不变量、错误语义</text>
+  </g>
+
+  <path d="M310 282 C378 214 445 174 474 170" stroke="#1e3a8a" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <path d="M704 170 C779 179 844 218 870 282" stroke="#1e3a8a" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <path d="M985 330 C1008 404 988 462 921 492" stroke="#1e3a8a" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <path d="M806 540 C686 598 561 598 456 540" stroke="#1e3a8a" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <path d="M341 492 C272 451 227 398 195 330" stroke="#1e3a8a" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <path d="M310 282 H408" stroke="#1e3a8a" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M772 282 H870" stroke="#1e3a8a" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M456 540 C500 478 526 432 545 401" stroke="#1e3a8a" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M806 540 C750 484 702 431 647 401" stroke="#1e3a8a" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+
+  <rect x="402" y="604" width="376" height="26" rx="13" fill="#fef3c7"/>
+  <text x="424" y="622" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#a16207">先把失败回放成更小契约，再扩大平台能力。</text>
+</svg>

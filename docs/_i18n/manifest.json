@@ -89,6 +89,28 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "architecture-harness-boundary-diagram",
+      "title": "Eva-CLI Architecture and Harness Boundary Diagram",
+      "source": "assets/eva-architecture-harness-boundary.svg",
+      "translations": {
+        "zh-CN": "assets/eva-architecture-harness-boundary.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "harness-validation-loop-diagram",
+      "title": "Eva-CLI Harness Validation Loop Diagram",
+      "source": "assets/eva-harness-validation-loop.svg",
+      "translations": {
+        "zh-CN": "assets/eva-harness-validation-loop.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [

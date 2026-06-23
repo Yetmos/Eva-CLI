@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>关于 Eva-CLI 当前架构与 Harness 架构的思考 | Eva-CLI 博客</title>
+    <meta name="description" content="Eva-CLI 如何通过窄而确定性的 Harness 层，把 Rust 托管 Runtime 架构转化为可执行证据。">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="关于 Eva-CLI 当前架构与 Harness 架构的思考 | Eva-CLI 博客">
+    <meta property="og:description" content="Eva-CLI 如何通过窄而确定性的 Harness 层，把 Rust 托管 Runtime 架构转化为可执行证据。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://Eva-CLI.com/zh-CN/blog/architecture-and-harness-reflections/">
+    <meta property="article:published_time" content="2026-06-23">
+    <meta property="article:section" content="运行时">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/zh-CN/blog/architecture-and-harness-reflections/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/blog/architecture-and-harness-reflections/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/blog/architecture-and-harness-reflections/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/blog/architecture-and-harness-reflections/">
+    <link rel="icon" type="image/svg+xml" href="../../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../../" aria-label="Eva-CLI home">
+        <img src="../../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">多 Agent 运行时</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../../../">首页</a>
+        <a href="../../../docs/zh-CN/README.md">文档</a>
+        <a href="../../../zh-CN/blog/">博客</a>
+        <a href="../../../docs/zh-CN/总体架构方案.md">架构</a>
+        <a href="../../../#discussion">讨论</a>
+        <a href="../../../#feedback">反馈</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../../blog/architecture-and-harness-reflections/" hreflang="en" lang="en">English</a>
+          <a href="../../../zh-CN/blog/architecture-and-harness-reflections/" hreflang="zh-CN" lang="zh-CN" aria-current="page">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">博客</p>
+          <h1>关于 Eva-CLI 当前架构与 Harness 架构的思考</h1>
+          <p class="blog-lead">Eva-CLI 如何通过窄而确定性的 Harness 层，把 Rust 托管 Runtime 架构转化为可执行证据。</p>
+          <div class="blog-meta">
+            <span>发布： <time datetime="2026-06-23">2026-06-23</time></span>
+            <a href="../../../zh-CN/blog/category/runtime/">分类： 运行时</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>Eva-CLI 目前仍处于架构与规格整理阶段，所以最关键的工程问题不是能列出多少模块，而是这些架构决策如何变成可执行证据。当前设计已经明确：Rust 托管权限边界，Lua 承载可热更新业务行为，Topic event 串联工作，AdapterRegistry 控制外部能力，记忆、知识、Release Snapshot 和恢复能力保留在 Runtime service 内。Harness 架构应该成为这些判断和第一条可运行闭环之间的桥。</p>
+
+<p class="blog-note">本文把 harness 作为建议中的验证与执行 fixture 层来讨论，并不表示 Eva-CLI 已经交付该模块。它的重点是：在平台面铺得很大之前，先定义项目如何测试自己的架构。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/eva-architecture-harness-boundary.zh-CN.svg" alt="Eva-CLI 产品 Runtime 架构与 Harness 架构对比图，Harness 负责驱动场景、替换外部边界、观察证据并验证契约。">
+  <figcaption>Harness 不应该替代 Runtime，而应该用确定性输入、受控替身和可执行断言包住 Runtime。</figcaption>
+</figure>
+
+<h2>当前架构真正表达的是什么</h2>
+<p>这套架构不只是 Rust 加 Lua 的技术拆分，而是一套权限模型。Lua Agent 可以表达业务意图和工作流逻辑，但不能直接读取密钥、执行 shell、扫描文件系统、打开任意网络连接，也不能直接修改 release 状态。Rust 通过 schema、policy、capability manifest、audit identity 和恢复边界来托管这些决定。</p>
+
+<p>这很重要，因为后续实现会遇到很多容易放松边界的入口：本地 CLI、MCP server、workflow skill、浏览器自动化、硬件 Adapter、记忆写入和进程 generation 切换。如果没有 Harness，每个集成都可能看起来能跑，却悄悄削弱架构最想保护的边界。</p>
+
+<h2>Harness 是可执行的架构阅读器</h2>
+<p>好的 Harness 应该把架构读成契约，而不是读成说明文字。它要向 Ingress 注入类型化事件，在隔离的 runtime sandbox 中运行 Scheduler 和 Lua Agent，用确定性的能力替身替换外部能力，收集 trace 和 audit 输出，然后断言每个场景之后应该成立的不变量。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>架构判断</th>
+    <th>Harness 职责</th>
+    <th>应保留的证据</th>
+  </tr>
+  <tr>
+    <td>Lua 不能拥有宿主权限。</td>
+    <td>通过 Lua 可见 API 尝试被禁止的文件系统、密钥、网络和进程动作。</td>
+    <td>副作用发生前的 policy rejection，并带有 origin 与 audit reason。</td>
+  </tr>
+  <tr>
+    <td>Topic 路由必须显式。</td>
+    <td>发布场景事件，并验证被选中的 Agent、队列、优先级和 dead-letter 行为。</td>
+    <td>Event log、scheduler trace、delivery decision、结构化错误。</td>
+  </tr>
+  <tr>
+    <td>Adapter 是受控 capability。</td>
+    <td>注册带 schema 与 policy 限制的 mock adapter，再测试允许调用与拒绝调用。</td>
+    <td>已校验输入、选中的 provider、输出 schema、超时与取消记录。</td>
+  </tr>
+  <tr>
+    <td>记忆必须有来源。</td>
+    <td>注入记忆种子，请求写入，并验证提升、冲突、TTL、敏感信息和 source 字段。</td>
+    <td>Memory delta、拒绝写入原因、ContextBuilder 返回的上下文包。</td>
+  </tr>
+  <tr>
+    <td>升级和发布证据归 Runtime 托管。</td>
+    <td>驱动候选 generation swap 或 release snapshot 请求，但不授予真实部署权限。</td>
+    <td>Snapshot manifest、健康检查结果、回滚资格、audit identity。</td>
+  </tr>
+</table>
+
+<h2>第一版有用的 Harness 必须很窄</h2>
+<p>第一版 Harness 不应该模拟整个未来平台。它只需要证明路线图里的最小 Runtime 闭环：用户输入变成类型化事件，Scheduler 路由到一个 Agent 队列，Lua 在隔离状态中处理事件，Lua 请求一个受控 Rust tool，Rust 在执行前校验 schema 和 policy，Runtime 输出 trace、audit 和结构化失败数据。</p>
+
+<p>这个窄闭环能尽早测试最硬的架构不变量：Lua 不能直接接触宿主权限，路由必须确定，policy rejection 必须早于副作用，错误必须可观测，证据必须可回放。只要这些成立，更大的 capability family 才能在不重复搭建运行世界的情况下逐步接入。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/eva-harness-validation-loop.zh-CN.svg" alt="Eva-CLI Harness 验证闭环图，展示场景 fixture、runtime sandbox、能力替身、观测、断言、回放和契约反馈。">
+  <figcaption>Harness 闭环应该让失败变小：每个失败场景都反向沉淀成更清晰的 Runtime 契约。</figcaption>
+</figure>
+
+<h2>用 Scenario Pack 替代零散测试</h2>
+<p>Harness 应该使用 scenario pack。一个 scenario pack 包含输入事件、配置片段、manifest、policy 文件、记忆种子、adapter double 定义、期望的 trace checkpoint 和断言。这样的形态可以把示例、集成测试和架构评审放在一起。一个场景既能解释设计决策，也能证明它。</p>
+
+<pre class="blog-code"><code>scenario
+  -> fixture input
+  -> runtime sandbox
+  -> EventBus and Scheduler
+  -> Lua Agent
+  -> controlled Tool or Adapter double
+  -> trace and audit capture
+  -> assertions
+  -> replay artifact</code></pre>
+
+<p>scenario 格式还能避免早期常见错误：把测试和产品契约分开。如果 Harness 必须描述允许的能力、权限、记忆种子和期望证据，实现就会被迫把边界显式化。</p>
+
+<h2>替身也必须遵守真实能力的契约</h2>
+<p>Adapter double 不是随手写的 mock。它应该携带和真实 Adapter 一样的 manifest 形态、capability 名称、schema、policy 限制、超时行为、错误分类和 audit identity。唯一差别是 transport。double 返回确定性的 fixture 输出，而不触碰真实 CLI、网络服务、MCP server、模型、浏览器或设备。</p>
+
+<p>这样 Eva-CLI 可以在不授予意外宿主权限的情况下测试能力路由，也能覆盖负向案例：schema 不匹配、缺少权限、policy 冲突、超时、取消、可重试 provider 失败、不可重试 provider 失败以及不安全输出。</p>
+
+<h2>观测本身就是契约的一部分</h2>
+<p>只检查返回值的 Harness 会漏掉架构重点。Eva-CLI 需要证明正确的边界做出了正确的决定。Harness 应该捕获 event log record、scheduler decision、tool invocation record、policy evaluation result、memory delta、state snapshot、structured error 和 release evidence。断言应该能指向这些证据，而不只是最终回答。</p>
+
+<p>回放是观测的另一半。失败场景应该能用同一组 fixture 和确定性 double 回放。如果失败无法回放，说明 Harness 还没有让 Runtime 足够可观测。</p>
+
+<h2>Harness 不应该变成什么</h2>
+<p>Harness 不应该变成拥有另一套规则的第二个 Runtime。它不应该因为测试方便而绕过 policy，不应该默认使用真实密钥、真实用户目录或不受控网络访问，也不应该在已经有结构化事件时靠抓取松散日志字符串做断言。最重要的是，它不应该在最小闭环被证明之前扩大生产架构。</p>
+
+<h2>结论</h2>
+<p>当前 Eva-CLI 架构最强的地方，是它可以被读成一条权限边界：Rust 治理执行，Lua 表达 workflow，Topic event 保持工作可观测，AdapterRegistry 控制外部动作，记忆和发布服务保存证据。Harness 架构应该让这条边界可执行。它驱动 Runtime 场景，用遵守契约的替身替换危险外部边界，捕获 trace 和 audit 证据，并把失败转成更小的契约。</p>
+
+<p>这才是从架构文档走向实现的实际路径。不要先把所有规划能力都做出来。先做能证明一个小闭环诚实运行的 Harness。</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../../zh-CN/blog/">返回博客</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>作者： <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../../#feedback">提交反馈</a>
+    </footer>
+  </body>
+</html>

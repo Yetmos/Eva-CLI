@@ -1,113 +1,161 @@
 {
-  "categories": [
-    {
-      "id": "runtime",
-      "labels": {
-        "en": "Runtime",
-        "zh-CN": "运行时"
-      }
-    }
-  ],
-  "posts": [
-    {
-      "id": "agi-runtime-implementation",
-      "locale": "en",
-      "slug": "agi-runtime-implementation",
-      "title": "An AGI Runtime Implementation Path Based on Eva-CLI",
-      "description": "A detailed implementation path for turning Eva-CLI's Rust runtime, Lua Agents, EventBus, memory, discovery, adapters, verification, and release snapshots into a controlled AGI-style runtime.",
-      "date": "2026-06-21",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/en/agi-runtime-implementation.html"
-    },
-    {
-      "id": "agi-runtime-implementation",
-      "locale": "zh-CN",
-      "slug": "agi-runtime-implementation",
-      "title": "基于 Eva-CLI 实现 AGI Runtime 的实现思路",
-      "description": "如何把 Eva-CLI 当前的 Rust Runtime、Lua Agent、EventBus、记忆、发现、Adapter、验证和 Release Snapshot 组合成一个受控的 AGI 风格运行时。",
-      "date": "2026-06-21",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/zh-CN/agi-runtime-implementation.html"
-    },
-    {
-      "id": "self-upgrading-agent-system",
-      "locale": "en",
-      "slug": "self-upgrading-agent-system",
-      "title": "Self-Upgrading Agent System Design for Eva-CLI",
-      "description": "How Eva-CLI can combine Rust-owned runtime authority, Lua hot reload, memory, discovery, release snapshots, and process generation switching into a controlled self-upgrade loop.",
-      "date": "2026-06-20",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/en/self-upgrading-agent-system.html"
-    },
-    {
-      "id": "self-upgrading-agent-system",
-      "locale": "zh-CN",
-      "slug": "self-upgrading-agent-system",
-      "title": "Eva-CLI 可自我升级 Agent 系统实现思路",
-      "description": "如何把 Rust 托管运行时、Lua 热更新、记忆、发现、Release Snapshot 和进程 generation 切换组合成受控的自我升级闭环。",
-      "date": "2026-06-20",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/zh-CN/self-upgrading-agent-system.html"
-    },
-    {
-      "id": "multi-agent-memory-design",
-      "locale": "en",
-      "slug": "multi-agent-memory-design",
-      "title": "Multi-Agent Memory Design",
-      "description": "An implementation sketch for per-Agent memory, project memory, and layered short-term, long-term, and important memory.",
-      "date": "2026-06-20",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/en/multi-agent-memory-design.html"
-    },
-    {
-      "id": "multi-agent-memory-design",
-      "locale": "zh-CN",
-      "slug": "multi-agent-memory-design",
-      "title": "多 Agent 记忆设计实现思路",
-      "description": "围绕每个 Agent 的独立记忆、项目总记忆，以及短期、长期、重要记忆分层的实现草案。",
-      "date": "2026-06-20",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/zh-CN/multi-agent-memory-design.html"
-    },
-    {
-      "id": "eva-runtime-notes",
-      "locale": "en",
-      "slug": "eva-runtime-notes",
-      "title": "Eva Runtime Notes",
-      "description": "Design notes about Eva-CLI runtime boundaries.",
-      "date": "2026-06-17",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/en/eva-runtime-notes.html"
-    },
-    {
-      "id": "eva-runtime-notes",
-      "locale": "zh-CN",
-      "slug": "eva-runtime-notes",
-      "title": "Eva 运行时笔记",
-      "description": "关于 Eva-CLI 运行时边界的设计笔记。",
-      "date": "2026-06-17",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/zh-CN/eva-runtime-notes.html"
-    },
-    {
-      "id": "skill-implementation-boundary",
-      "locale": "en",
-      "slug": "skill-implementation-boundary",
-      "title": "Skill Implementation Boundary",
-      "description": "How Eva-CLI turns Skills into controlled workflow capabilities instead of raw script execution.",
-      "date": "2026-06-23",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/en/skill-implementation-boundary.html"
-    },
-    {
-      "id": "skill-implementation-boundary",
-      "locale": "zh-CN",
-      "slug": "skill-implementation-boundary",
-      "title": "Skill 实现边界",
-      "description": "Eva-CLI 如何把 Skill 收束为受控 workflow capability，而不是原始脚本执行入口。",
-      "date": "2026-06-23",
-      "category": "runtime",
-      "contentPath": "website/_blog/content/zh-CN/skill-implementation-boundary.html"
-    }
-  ]
+    "categories":  [
+                       {
+                           "id":  "runtime",
+                           "labels":  {
+                                          "en":  "Runtime",
+                                          "zh-CN":  "运行时"
+                                      }
+                       },
+                       {
+                           "id":  "product",
+                           "labels":  {
+                                          "en":  "Product",
+                                          "zh-CN":  "产品"
+                                      }
+                       }
+                   ],
+    "posts":  [
+                  {
+                      "id":  "evalauncher-mobile-client-thinking",
+                      "locale":  "en",
+                      "slug":  "evalauncher-mobile-client-thinking",
+                      "title":  "Thoughts on EvaLauncher as Eva\u0027s Mobile Client",
+                      "description":  "How EvaLauncher.com points toward a mobile Eva client built around presence, fast intent capture, runtime handoff, and explicit privacy boundaries.",
+                      "date":  "2026-06-23",
+                      "category":  "product",
+                      "contentPath":  "website/_blog/content/en/evalauncher-mobile-client-thinking.html"
+                  },
+                  {
+                      "id":  "evalauncher-mobile-client-thinking",
+                      "locale":  "zh-CN",
+                      "slug":  "evalauncher-mobile-client-thinking",
+                      "title":  "关于 EvaLauncher 作为 Eva 移动客户端的思考",
+                      "description":  "从 EvaLauncher.com 展示的 Android launcher 出发，思考 Eva 移动客户端应如何围绕陪伴感、快速意图捕获、运行时交接和明确隐私边界展开。",
+                      "date":  "2026-06-23",
+                      "category":  "product",
+                      "contentPath":  "website/_blog/content/zh-CN/evalauncher-mobile-client-thinking.html"
+                  },
+                  {
+                      "id":  "architecture-and-harness-reflections",
+                      "locale":  "en",
+                      "slug":  "architecture-and-harness-reflections",
+                      "title":  "Reflections on Eva-CLI Architecture and Harness Design",
+                      "description":  "How Eva-CLI can turn its Rust-governed runtime architecture into executable evidence through a narrow, deterministic harness layer.",
+                      "date":  "2026-06-23",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/en/architecture-and-harness-reflections.html"
+                  },
+                  {
+                      "id":  "architecture-and-harness-reflections",
+                      "locale":  "zh-CN",
+                      "slug":  "architecture-and-harness-reflections",
+                      "title":  "关于 Eva-CLI 当前架构与 Harness 架构的思考",
+                      "description":  "Eva-CLI 如何通过窄而确定性的 Harness 层，把 Rust 托管 Runtime 架构转化为可执行证据。",
+                      "date":  "2026-06-23",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/zh-CN/architecture-and-harness-reflections.html"
+                  },
+                  {
+                      "id":  "agi-runtime-implementation",
+                      "locale":  "en",
+                      "slug":  "agi-runtime-implementation",
+                      "title":  "An AGI Runtime Implementation Path Based on Eva-CLI",
+                      "description":  "A detailed implementation path for turning Eva-CLI\u0027s Rust runtime, Lua Agents, EventBus, memory, discovery, adapters, verification, and release snapshots into a controlled AGI-style runtime.",
+                      "date":  "2026-06-21",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/en/agi-runtime-implementation.html"
+                  },
+                  {
+                      "id":  "agi-runtime-implementation",
+                      "locale":  "zh-CN",
+                      "slug":  "agi-runtime-implementation",
+                      "title":  "基于 Eva-CLI 实现 AGI Runtime 的实现思路",
+                      "description":  "如何把 Eva-CLI 当前的 Rust Runtime、Lua Agent、EventBus、记忆、发现、Adapter、验证和 Release Snapshot 组合成一个受控的 AGI 风格运行时。",
+                      "date":  "2026-06-21",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/zh-CN/agi-runtime-implementation.html"
+                  },
+                  {
+                      "id":  "self-upgrading-agent-system",
+                      "locale":  "en",
+                      "slug":  "self-upgrading-agent-system",
+                      "title":  "Self-Upgrading Agent System Design for Eva-CLI",
+                      "description":  "How Eva-CLI can combine Rust-owned runtime authority, Lua hot reload, memory, discovery, release snapshots, and process generation switching into a controlled self-upgrade loop.",
+                      "date":  "2026-06-20",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/en/self-upgrading-agent-system.html"
+                  },
+                  {
+                      "id":  "self-upgrading-agent-system",
+                      "locale":  "zh-CN",
+                      "slug":  "self-upgrading-agent-system",
+                      "title":  "Eva-CLI 可自我升级 Agent 系统实现思路",
+                      "description":  "如何把 Rust 托管运行时、Lua 热更新、记忆、发现、Release Snapshot 和进程 generation 切换组合成受控的自我升级闭环。",
+                      "date":  "2026-06-20",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/zh-CN/self-upgrading-agent-system.html"
+                  },
+                  {
+                      "id":  "multi-agent-memory-design",
+                      "locale":  "en",
+                      "slug":  "multi-agent-memory-design",
+                      "title":  "Multi-Agent Memory Design",
+                      "description":  "An implementation sketch for per-Agent memory, project memory, and layered short-term, long-term, and important memory.",
+                      "date":  "2026-06-20",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/en/multi-agent-memory-design.html"
+                  },
+                  {
+                      "id":  "multi-agent-memory-design",
+                      "locale":  "zh-CN",
+                      "slug":  "multi-agent-memory-design",
+                      "title":  "多 Agent 记忆设计实现思路",
+                      "description":  "围绕每个 Agent 的独立记忆、项目总记忆，以及短期、长期、重要记忆分层的实现草案。",
+                      "date":  "2026-06-20",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/zh-CN/multi-agent-memory-design.html"
+                  },
+                  {
+                      "id":  "eva-runtime-notes",
+                      "locale":  "en",
+                      "slug":  "eva-runtime-notes",
+                      "title":  "Eva Runtime Notes",
+                      "description":  "Design notes about Eva-CLI runtime boundaries.",
+                      "date":  "2026-06-17",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/en/eva-runtime-notes.html"
+                  },
+                  {
+                      "id":  "eva-runtime-notes",
+                      "locale":  "zh-CN",
+                      "slug":  "eva-runtime-notes",
+                      "title":  "Eva 运行时笔记",
+                      "description":  "关于 Eva-CLI 运行时边界的设计笔记。",
+                      "date":  "2026-06-17",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/zh-CN/eva-runtime-notes.html"
+                  },
+                  {
+                      "id":  "skill-implementation-boundary",
+                      "locale":  "en",
+                      "slug":  "skill-implementation-boundary",
+                      "title":  "Skill Implementation Boundary",
+                      "description":  "How Eva-CLI turns Skills into controlled workflow capabilities instead of raw script execution.",
+                      "date":  "2026-06-23",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/en/skill-implementation-boundary.html"
+                  },
+                  {
+                      "id":  "skill-implementation-boundary",
+                      "locale":  "zh-CN",
+                      "slug":  "skill-implementation-boundary",
+                      "title":  "Skill 实现边界",
+                      "description":  "Eva-CLI 如何把 Skill 收束为受控 workflow capability，而不是原始脚本执行入口。",
+                      "date":  "2026-06-23",
+                      "category":  "runtime",
+                      "contentPath":  "website/_blog/content/zh-CN/skill-implementation-boundary.html"
+                  }
+              ]
 }
+

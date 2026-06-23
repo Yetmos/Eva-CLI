@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reflections on Eva-CLI Architecture and Harness Design | Eva-CLI Blog</title>
+    <meta name="description" content="How Eva-CLI can turn its Rust-governed runtime architecture into executable evidence through a narrow, deterministic harness layer.">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="Reflections on Eva-CLI Architecture and Harness Design | Eva-CLI Blog">
+    <meta property="og:description" content="How Eva-CLI can turn its Rust-governed runtime architecture into executable evidence through a narrow, deterministic harness layer.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://Eva-CLI.com/blog/architecture-and-harness-reflections/">
+    <meta property="article:published_time" content="2026-06-23">
+    <meta property="article:section" content="Runtime">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/blog/architecture-and-harness-reflections/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/blog/architecture-and-harness-reflections/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/blog/architecture-and-harness-reflections/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/blog/architecture-and-harness-reflections/">
+    <link rel="icon" type="image/svg+xml" href="../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../" aria-label="Eva-CLI home">
+        <img src="../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">Multi-Agent Runtime</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="../../">Home</a>
+        <a href="../../docs/en/README.md">Docs</a>
+        <a href="../../blog/">Blog</a>
+        <a href="../../docs/en/architecture-overview.md">Architecture</a>
+        <a href="../../#discussion">Discussion</a>
+        <a href="../../#feedback">Feedback</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../blog/architecture-and-harness-reflections/" hreflang="en" lang="en" aria-current="page">English</a>
+          <a href="../../zh-CN/blog/architecture-and-harness-reflections/" hreflang="zh-CN" lang="zh-CN">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">Blog</p>
+          <h1>Reflections on Eva-CLI Architecture and Harness Design</h1>
+          <p class="blog-lead">How Eva-CLI can turn its Rust-governed runtime architecture into executable evidence through a narrow, deterministic harness layer.</p>
+          <div class="blog-meta">
+            <span>Published: <time datetime="2026-06-23">2026-06-23</time></span>
+            <a href="../../blog/category/runtime/">Category: Runtime</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>Eva-CLI is still an architecture-stage project, so the most important engineering question is not how many modules can be named. The harder question is how those architecture decisions become executable evidence. The current design already says that Rust owns authority, Lua owns hot-reloadable behavior, Topic events connect work, AdapterRegistry controls external capabilities, and memory, knowledge, release snapshots, and recovery stay inside runtime-owned services. A harness architecture should be the bridge between those claims and the first runnable loop.</p>
+
+<p class="blog-note">This article treats harness as a proposed validation and execution fixture layer. It does not claim that Eva-CLI already ships this module. The point is to define how the project can test its architecture before broad implementation makes the surface too large.</p>
+
+<figure class="blog-figure">
+  <img src="../../assets/eva-architecture-harness-boundary.svg" alt="Diagram comparing Eva-CLI's product runtime architecture with the harness architecture that drives scenarios, replaces external edges, observes evidence, and verifies contracts.">
+  <figcaption>The harness should not replace the runtime. It should surround the runtime with deterministic inputs, controlled doubles, and executable assertions.</figcaption>
+</figure>
+
+<h2>What the current architecture is really saying</h2>
+<p>The architecture is not just a Rust plus Lua split. It is an authority model. Lua Agents can express business intent and workflow logic, but they do not directly read secrets, run shell commands, scan the filesystem, open arbitrary network connections, or mutate release state. Rust keeps those decisions behind schemas, policies, capability manifests, audit identity, and recovery boundaries.</p>
+
+<p>That matters because the future implementation will include many tempting escape routes: local CLIs, MCP servers, workflow skills, browser automation, hardware adapters, memory writes, and process generation switches. Without a harness, each integration can appear to work while quietly weakening the same boundary the architecture is trying to protect.</p>
+
+<h2>Harness as an executable architecture reader</h2>
+<p>A good harness reads the architecture as contracts, not prose. It should feed typed events into Ingress, run a Scheduler and Lua Agent inside an isolated runtime sandbox, replace external capabilities with deterministic doubles, collect trace and audit output, then assert the invariant that should hold after each scenario.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Architecture claim</th>
+    <th>Harness responsibility</th>
+    <th>Evidence to keep</th>
+  </tr>
+  <tr>
+    <td>Lua cannot own host authority.</td>
+    <td>Try forbidden filesystem, secret, network, and process actions through Lua-facing APIs.</td>
+    <td>Policy rejection before side effects, with origin and audit reason.</td>
+  </tr>
+  <tr>
+    <td>Topic routing is explicit.</td>
+    <td>Publish scenario events and verify the selected Agent, queue, priority, and dead-letter behavior.</td>
+    <td>Event log, scheduler trace, delivery decision, structured error.</td>
+  </tr>
+  <tr>
+    <td>Adapters are controlled capabilities.</td>
+    <td>Register mock adapters with schemas and policy limits, then test allowed and rejected calls.</td>
+    <td>Validated input, selected provider, output schema, timeout and cancellation record.</td>
+  </tr>
+  <tr>
+    <td>Memory has provenance.</td>
+    <td>Seed memory, request writes, and verify promotion, conflict, TTL, sensitivity, and source fields.</td>
+    <td>Memory delta, rejected write reason, context pack contents.</td>
+  </tr>
+  <tr>
+    <td>Upgrade and release evidence are runtime-owned.</td>
+    <td>Drive a candidate generation swap or release snapshot request without real deployment authority.</td>
+    <td>Snapshot manifest, health check result, rollback eligibility, audit identity.</td>
+  </tr>
+</table>
+
+<h2>The first useful harness is narrow</h2>
+<p>The first harness should not try to simulate the whole future platform. It should prove the minimum runtime loop from the roadmap: user input becomes a typed event, the Scheduler routes it to one Agent queue, Lua handles it in an isolated state, Lua requests one controlled Rust tool, Rust validates schema and policy before execution, and the runtime emits trace, audit, and structured failure data.</p>
+
+<p>That narrow loop gives the project a place to test the hardest architectural invariants early: no direct Lua host access, deterministic routing, policy rejection before side effects, observable errors, and replayable evidence. Once those are true, broader capability families can be added without making every later test invent its own runtime world.</p>
+
+<figure class="blog-figure">
+  <img src="../../assets/eva-harness-validation-loop.svg" alt="Eva-CLI harness validation loop showing scenario fixtures, runtime sandbox execution, capability doubles, observation, assertions, replay, and contract feedback.">
+  <figcaption>The harness loop should make failures smaller: every failed scenario becomes a sharper contract for the runtime.</figcaption>
+</figure>
+
+<h2>Scenario packs instead of one-off tests</h2>
+<p>The harness should use scenario packs. A scenario pack contains input events, config fragments, manifests, policy files, memory seeds, adapter double definitions, expected trace checkpoints, and assertions. That shape keeps examples, integration tests, and architecture review close to each other. A scenario can explain a design decision while also proving it.</p>
+
+<pre class="blog-code"><code>scenario
+  -> fixture input
+  -> runtime sandbox
+  -> EventBus and Scheduler
+  -> Lua Agent
+  -> controlled Tool or Adapter double
+  -> trace and audit capture
+  -> assertions
+  -> replay artifact</code></pre>
+
+<p>The scenario format also prevents an early mistake: treating tests as separate from product contracts. If the harness has to describe allowed capabilities, permissions, memory seeds, and expected evidence, the implementation is forced to make those boundaries explicit.</p>
+
+<h2>Doubles must obey the same contracts as real capabilities</h2>
+<p>Adapter doubles are not casual mocks. They should carry the same manifest shape, capability names, schemas, policy limits, timeout behavior, error classes, and audit identity as real Adapters. The only difference is transport. A double returns deterministic fixture output instead of touching a real CLI, network service, MCP server, model, browser, or device.</p>
+
+<p>This lets Eva-CLI test capability routing without granting accidental host authority. It also lets tests cover negative cases: schema mismatch, missing permission, policy conflict, timeout, cancellation, retryable provider failure, non-retryable provider failure, and unsafe output.</p>
+
+<h2>Observation is part of the contract</h2>
+<p>A harness that only checks returned values will miss the architecture. Eva-CLI needs evidence that the right boundary made the right decision. The harness should capture event log records, scheduler decisions, tool invocation records, policy evaluation results, memory deltas, state snapshots, structured errors, and release evidence. Assertions should be able to target all of these, not just the final answer.</p>
+
+<p>Replay is the other half of observation. A failed scenario should be replayable with the same fixtures and deterministic doubles. If a failure cannot be replayed, the harness has not yet made the runtime observable enough.</p>
+
+<h2>What harness should not become</h2>
+<p>The harness should not become a second runtime with its own rules. It should not bypass policy because tests are inconvenient. It should not use real secrets, real user directories, or uncontrolled network access by default. It should not make assertions by scraping loose log strings when structured events are available. Most importantly, it should not widen the production design before the minimum loop is proven.</p>
+
+<h2>Conclusion</h2>
+<p>The current Eva-CLI architecture is strongest when read as an authority boundary: Rust governs execution, Lua expresses workflow, Topic events keep work observable, AdapterRegistry controls external action, and memory plus release services preserve evidence. The harness architecture should make that boundary executable. It should drive the runtime with scenarios, replace dangerous edges with contract-faithful doubles, capture trace and audit evidence, and turn failures into smaller contracts.</p>
+
+<p>That is the practical path from architecture documents to implementation. Do not first build every planned capability. First build the harness that can prove one small loop is honest.</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../blog/">Back to blog</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>Author: <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>Feedback: <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../#feedback">Submit feedback</a>
+    </footer>
+  </body>
+</html>
