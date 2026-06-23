@@ -5,9 +5,11 @@
 - [[Runtime and Scheduling]]
 - [[Backup, Migration, and Release Snapshot]]
 - [[Adapters and Capabilities]]
+- [[Skill Implementation]]
 - [[Memory, Knowledge, and Discovery]]
 - [[Configuration and Localization]]
 - [[Roadmap and Open Risks]]
+- [[Zero to 1.0 Roadmap]]
 - [[Contributor Guide]]
 
 ## Canonical Docs

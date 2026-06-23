@@ -15,6 +15,8 @@ should stay aligned with the canonical documents.
 - Implementation status: no finalized runnable CLI runtime yet.
 - Canonical docs: English documents under `docs/en/`.
 - Localized docs: Simplified Chinese documents under `docs/zh-CN/`.
+- Latest roadmap source: `docs/en/zero-to-one-roadmap.md`.
+- Latest Skill implementation source: `docs/en/skill-implementation.md`.
 - Website: static GitHub Pages site maintained under `website/`.
 - Main architecture image: `assets/eva-cli-architecture.svg`.
 
@@ -37,16 +39,35 @@ Eva-CLI separates authority from hot-reloadable behavior:
 2. [[Runtime and Scheduling]]
 3. [[Backup, Migration, and Release Snapshot]]
 4. [[Adapters and Capabilities]]
-5. [[Memory, Knowledge, and Discovery]]
-6. [[Configuration and Localization]]
-7. [[Roadmap and Open Risks]]
-8. [[Contributor Guide]]
+5. [[Skill Implementation]]
+6. [[Memory, Knowledge, and Discovery]]
+7. [[Configuration and Localization]]
+8. [[Roadmap and Open Risks]]
+9. [[Zero to 1.0 Roadmap]]
+10. [[Contributor Guide]]
 
 For full source-of-truth detail, read the canonical repository docs:
 
 - [English documentation](https://github.com/Yetmos/Eva-CLI/blob/main/docs/en/README.md)
 - [Simplified Chinese documentation](https://github.com/Yetmos/Eva-CLI/blob/main/docs/zh-CN/README.md)
 - [Website source](https://github.com/Yetmos/Eva-CLI/blob/main/website/README.md)
+
+## Current Delivery Focus
+
+The documentation now frames the next implementation work as a staged path:
+
+1. keep `docs/en/` as the canonical architecture source;
+2. convert the architecture into a concrete Rust module layout;
+3. define executable contracts for manifests, events, policies, errors, and
+   Lua host APIs;
+4. build the minimum runnable CLI skeleton;
+5. prove one end-to-end Runtime loop before expanding adapters, MCP, Skills,
+   hardware, backup, and release automation.
+
+Skill support follows the same control-plane rule as the rest of the runtime:
+Skills are discovered as candidates, classified, schema-validated,
+policy-checked, and exposed as controlled capabilities only after Rust-owned
+registration succeeds.
 
 ## Non-Goals
 
