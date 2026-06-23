@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-labelledby="title desc">
+  <title id="title">EvaLauncher runtime handoff</title>
+  <desc id="desc">Diagram showing a mobile intent package moving from EvaLauncher to the Eva runtime for planning, tool use, verification, and result return.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="130%">
+      <feDropShadow dx="0" dy="9" stdDeviation="9" flood-color="#172033" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #dce5f1; stroke-width: 2; }
+      .runtime { fill: #fdfefe; stroke: #2563eb; stroke-width: 2.4; stroke-dasharray: 10 7; }
+      .mobile { fill: #eef6ff; stroke: #c6d4e5; }
+      .step { fill: #ffffff; stroke: #c6d4e5; }
+      .verify { fill: #f0fdfa; stroke: #99f6e4; }
+      .risk { fill: #fff7ed; stroke: #fed7aa; }
+      .purple { fill: #ede9fe; stroke: #d8ccff; }
+      .title { font: 800 34px Inter, "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .subtitle { font: 500 16px Inter, "Segoe UI", Arial, sans-serif; fill: #617086; }
+      .section { font: 800 20px Inter, "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .label { font: 800 15px Inter, "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .small { font: 500 13px Inter, "Segoe UI", Arial, sans-serif; fill: #617086; }
+      .mono { font: 700 13px Menlo, Consolas, monospace; fill: #1e3a8a; }
+      .line { stroke: #1e3a8a; stroke-width: 2.6; fill: none; marker-end: url(#arrow); }
+      .line-soft { stroke: #64748b; stroke-width: 2.2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1400" height="820"/>
+  <rect class="panel" x="34" y="34" width="1332" height="752" rx="18"/>
+  <text class="title" x="76" y="92">Capture, Package, Handoff, Report Back</text>
+  <text class="subtitle" x="76" y="122">EvaLauncher should start mobile work; the governed runtime should own long-running execution.</text>
+
+  <g filter="url(#shadow)">
+    <rect class="mobile" x="78" y="194" width="276" height="430" rx="16"/>
+    <text class="section" x="112" y="236">EvaLauncher</text>
+    <text class="small" x="112" y="263">mobile intent surface</text>
+    <rect class="step" x="112" y="304" width="208" height="54" rx="10"/>
+    <text class="label" x="136" y="337">User request</text>
+    <rect class="step" x="112" y="376" width="208" height="54" rx="10"/>
+    <text class="label" x="136" y="409">Visible surface</text>
+    <rect class="step" x="112" y="448" width="208" height="54" rx="10"/>
+    <text class="label" x="136" y="481">Consent state</text>
+    <rect class="step" x="112" y="520" width="208" height="54" rx="10"/>
+    <text class="label" x="136" y="553">Completion criteria</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect class="purple" x="446" y="284" width="238" height="250" rx="14"/>
+    <text class="section" x="480" y="326">Intent Package</text>
+    <text class="mono" x="480" y="362">request_text</text>
+    <text class="mono" x="480" y="390">source_surface</text>
+    <text class="mono" x="480" y="418">locale</text>
+    <text class="mono" x="480" y="446">permissions</text>
+    <text class="mono" x="480" y="474">deadline</text>
+    <text class="mono" x="480" y="502">evidence_needed</text>
+  </g>
+
+  <rect class="runtime" x="760" y="184" width="538" height="450" rx="18"/>
+  <text class="section" x="796" y="226">Eva Runtime Boundary</text>
+  <text class="small" x="796" y="252">permissions, adapters, memory, verification, audit, recovery</text>
+
+  <g filter="url(#shadow)">
+    <rect class="step" x="804" y="296" width="198" height="94" rx="12"/>
+    <text class="label" x="834" y="330">Plan task</text>
+    <text class="small" x="834" y="356">schema + risk level</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect class="risk" x="1052" y="296" width="198" height="94" rx="12"/>
+    <text class="label" x="1082" y="330">Invoke tools</text>
+    <text class="small" x="1082" y="356">adapter policy gate</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect class="verify" x="804" y="460" width="198" height="94" rx="12"/>
+    <text class="label" x="834" y="494">Verify result</text>
+    <text class="small" x="834" y="520">tests, checks, evidence</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect class="step" x="1052" y="460" width="198" height="94" rx="12"/>
+    <text class="label" x="1082" y="494">Return status</text>
+    <text class="small" x="1082" y="520">progress + result</text>
+  </g>
+
+  <path class="line" d="M354 408 H446"/>
+  <path class="line" d="M684 408 H760"/>
+  <path class="line" d="M1002 343 H1052"/>
+  <path class="line" d="M1151 390 V460"/>
+  <path class="line" d="M1052 507 H1002"/>
+  <path class="line-soft" d="M804 507 C650 690 286 690 216 624"/>
+
+  <rect x="160" y="668" width="1080" height="54" rx="12" fill="#ffffff" stroke="#dce5f1"/>
+  <text class="label" x="190" y="701">Mobile owns the start and inspection loop; runtime owns authority, execution, verification, and recovery.</text>
+</svg>

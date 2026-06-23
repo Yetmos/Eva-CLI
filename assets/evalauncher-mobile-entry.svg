@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-labelledby="title desc">
+  <title id="title">EvaLauncher mobile entry surfaces</title>
+  <desc id="desc">Diagram showing EvaLauncher as Eva's mobile entry across Live2D home, floating hub, app drawer, and settings.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-12%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#172033" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #dce5f1; stroke-width: 2; }
+      .phone { fill: #172033; }
+      .screen { fill: #f8fafc; }
+      .title { font: 800 34px Inter, "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .subtitle { font: 500 16px Inter, "Segoe UI", Arial, sans-serif; fill: #617086; }
+      .section { font: 800 20px Inter, "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .label { font: 800 15px Inter, "Segoe UI", Arial, sans-serif; fill: #1e3a8a; }
+      .small { font: 500 13px Inter, "Segoe UI", Arial, sans-serif; fill: #617086; }
+      .chip { fill: #dbeafe; stroke: #c6d4e5; }
+      .green { fill: #f0fdfa; stroke: #99f6e4; }
+      .purple { fill: #ede9fe; stroke: #d8ccff; }
+      .amber { fill: #fff7ed; stroke: #fed7aa; }
+      .line { stroke: #1e3a8a; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1400" height="820"/>
+  <rect class="panel" x="34" y="34" width="1332" height="752" rx="18"/>
+  <text class="title" x="76" y="92">EvaLauncher as Eva's Mobile Entry</text>
+  <text class="subtitle" x="76" y="122">A launcher can capture intent where mobile work already starts: the Android home screen.</text>
+
+  <g filter="url(#shadow)">
+    <rect class="phone" x="98" y="174" width="320" height="560" rx="44"/>
+    <rect class="screen" x="124" y="214" width="268" height="474" rx="28"/>
+    <circle cx="258" cy="707" r="10" fill="#334155"/>
+    <rect x="214" y="192" width="88" height="8" rx="4" fill="#334155"/>
+
+    <rect x="148" y="244" width="220" height="250" rx="18" fill="#eef6ff" stroke="#c6d4e5"/>
+    <circle cx="258" cy="326" r="58" fill="#ede9fe" stroke="#d8ccff"/>
+    <path d="M236 316 C238 292 278 292 280 316 C294 328 292 362 258 374 C224 362 222 328 236 316 Z" fill="#7c3aed" opacity="0.86"/>
+    <circle cx="238" cy="318" r="5" fill="#ffffff"/>
+    <circle cx="278" cy="318" r="5" fill="#ffffff"/>
+    <path d="M242 350 C252 360 264 360 274 350" stroke="#ffffff" stroke-width="5" fill="none" stroke-linecap="round"/>
+    <text class="label" x="188" y="436">Live2D home</text>
+    <text class="small" x="174" y="462">presence without friction</text>
+
+    <circle cx="332" cy="548" r="32" fill="#2563eb"/>
+    <path d="M318 548 H346 M332 534 V562" stroke="#ffffff" stroke-width="7" stroke-linecap="round"/>
+    <rect x="148" y="608" width="220" height="46" rx="12" fill="#ffffff" stroke="#dce5f1"/>
+    <rect x="168" y="624" width="58" height="14" rx="7" fill="#c6d4e5"/>
+    <rect x="240" y="624" width="88" height="14" rx="7" fill="#dbeafe"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="512" y="186" width="342" height="126" rx="12" class="chip"/>
+    <text class="section" x="544" y="226">1. Character-first home</text>
+    <text class="small" x="544" y="255">The companion makes Eva visible, but</text>
+    <text class="small" x="544" y="277">the user stays in control of when to act.</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="908" y="186" width="342" height="126" rx="12" class="green"/>
+    <text class="section" x="940" y="226">2. Floating hub</text>
+    <text class="small" x="940" y="255">Fast capture for notes, app actions,</text>
+    <text class="small" x="940" y="277">reminders, and task handoff.</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="512" y="412" width="342" height="126" rx="12" class="purple"/>
+    <text class="section" x="544" y="452">3. App drawer context</text>
+    <text class="small" x="544" y="481">Search, launch history, and folders can</text>
+    <text class="small" x="544" y="503">help Eva understand visible intent.</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="908" y="412" width="342" height="126" rx="12" class="amber"/>
+    <text class="section" x="940" y="452">4. Settings boundary</text>
+    <text class="small" x="940" y="481">Language, floating behavior, permissions,</text>
+    <text class="small" x="940" y="503">privacy, and runtime handoff switches.</text>
+  </g>
+
+  <path class="line" d="M418 334 C470 284 484 250 512 250"/>
+  <path class="line" d="M386 548 C560 574 770 292 908 250"/>
+  <path class="line" d="M418 470 C462 474 482 474 512 474"/>
+  <path class="line" d="M404 650 C562 670 764 526 908 474"/>
+
+  <rect x="512" y="624" width="738" height="54" rx="12" fill="#ffffff" stroke="#dce5f1"/>
+  <text class="label" x="540" y="657">Design rule: keep the mobile entry lightweight; hand long-running work to the governed Eva runtime.</text>
+</svg>

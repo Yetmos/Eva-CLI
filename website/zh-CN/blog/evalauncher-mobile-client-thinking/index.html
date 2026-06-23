@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>关于 EvaLauncher 作为 Eva 移动客户端的思考 | Eva-CLI 博客</title>
+    <meta name="description" content="从 EvaLauncher.com 展示的 Android launcher 出发，思考 Eva 移动客户端应如何围绕陪伴感、快速意图捕获、运行时交接和明确隐私边界展开。">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="关于 EvaLauncher 作为 Eva 移动客户端的思考 | Eva-CLI 博客">
+    <meta property="og:description" content="从 EvaLauncher.com 展示的 Android launcher 出发，思考 Eva 移动客户端应如何围绕陪伴感、快速意图捕获、运行时交接和明确隐私边界展开。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://Eva-CLI.com/zh-CN/blog/evalauncher-mobile-client-thinking/">
+    <meta property="article:published_time" content="2026-06-23">
+    <meta property="article:section" content="产品">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/zh-CN/blog/evalauncher-mobile-client-thinking/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/blog/evalauncher-mobile-client-thinking/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/blog/evalauncher-mobile-client-thinking/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/blog/evalauncher-mobile-client-thinking/">
+    <link rel="icon" type="image/svg+xml" href="../../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../../" aria-label="Eva-CLI home">
+        <img src="../../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">多 Agent 运行时</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../../../">首页</a>
+        <a href="../../../docs/zh-CN/README.md">文档</a>
+        <a href="../../../zh-CN/blog/">博客</a>
+        <a href="../../../docs/zh-CN/总体架构方案.md">架构</a>
+        <a href="../../../#discussion">讨论</a>
+        <a href="../../../#feedback">反馈</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../../blog/evalauncher-mobile-client-thinking/" hreflang="en" lang="en">English</a>
+          <a href="../../../zh-CN/blog/evalauncher-mobile-client-thinking/" hreflang="zh-CN" lang="zh-CN" aria-current="page">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">博客</p>
+          <h1>关于 EvaLauncher 作为 Eva 移动客户端的思考</h1>
+          <p class="blog-lead">从 EvaLauncher.com 展示的 Android launcher 出发，思考 Eva 移动客户端应如何围绕陪伴感、快速意图捕获、运行时交接和明确隐私边界展开。</p>
+          <div class="blog-meta">
+            <span>发布： <time datetime="2026-06-23">2026-06-23</time></span>
+            <a href="../../../zh-CN/blog/category/product/">分类： 产品</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p><a href="https://EvaLauncher.com">EvaLauncher.com</a> 已经公开展示了 EvaLauncher：一个以角色存在感为核心的 Android launcher。官网描述了 Live2D companion、浮动快捷中心、支持搜索/历史/文件夹的 app drawer、浮动行为与语言设置，以及隐私政策入口。这些信息足以说明 EvaLauncher 不只是换肤 launcher，它可以成为 Eva 在移动端真正“在场”的入口。</p>
+
+<p>这篇文章是产品和运行时层面的思考，不是在宣称 Eva-CLI 已经发布移动运行时。真正值得讨论的问题是：如果 Eva-CLI 负责长任务、记忆、Adapter、验证和可恢复执行，那么移动客户端应该负责什么？</p>
+
+<p class="blog-note">移动客户端一开始不应该把完整 Agent runtime 搬进手机。它更应该成为高质量的意图入口：有陪伴感、足够快、可解释、重视隐私，并且能在任务变成长时间或高风险工作时交给受控运行时。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/evalauncher-mobile-entry.zh-CN.svg" alt="EvaLauncher 移动入口图，展示 Live2D 主屏、浮动中心、应用抽屉和设置四个移动端表面。">
+  <figcaption>EvaLauncher 可以把 Android 主屏变成 Eva 随手可达的入口，同时避免让每次移动端交互都变得沉重。</figcaption>
+</figure>
+
+<h2>为什么 launcher 是很好的移动客户端形态</h2>
+<p>大多数助手从 app 图标、聊天页或系统分享入口开始。Launcher 的优势不同：它本来就是意图产生的地方。用户解锁手机、寻找应用、查看最近操作、打开相机或消息，并迅速做决定。如果 Eva 要参与真实日常工作，这个入口比另一个独立收件箱更重要。</p>
+
+<p>关键是克制。EvaLauncher 不应该用自动化表演打断主屏。Live2D companion 提供存在感，浮动中心提供一触即达的入口，app drawer 让应用可搜索、可组织，设置页让敏感行为可见。这四个表面组合起来，可以用很少的仪式感捕获用户意图。</p>
+
+<h2>四个表面，四种职责</h2>
+<p>从官网展示的产品形态看，EvaLauncher 可以自然拆成四种职责。主屏负责存在感和信任；浮动中心负责快速指令；app drawer 把应用选择、最近历史和文件夹变成上下文；设置页负责权限、语言、浮动行为和隐私入口。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>移动表面</th>
+    <th>适合承担的 Eva 职责</th>
+    <th>边界</th>
+  </tr>
+  <tr>
+    <td>Live2D 主屏</td>
+    <td>轻量存在感、状态提示和用户主动交互。</td>
+    <td>不要隐藏自动化；用户未请求时保持安静。</td>
+  </tr>
+  <tr>
+    <td>浮动中心</td>
+    <td>快速捕获笔记、提醒、应用动作和任务交接。</td>
+    <td>短指令可以本地处理；高风险工作需要确认。</td>
+  </tr>
+  <tr>
+    <td>App drawer</td>
+    <td>提供应用、最近使用、文件夹和搜索意图上下文。</td>
+    <td>使用信号要最小化，并且只服务于用户可见的产品价值。</td>
+  </tr>
+  <tr>
+    <td>设置页</td>
+    <td>权限、语言、浮动模式、隐私政策和同步控制。</td>
+    <td>每个跨设备或云端行为都需要明确开关和说明。</td>
+  </tr>
+</table>
+
+<h2>移动端应该捕获意图，而不是拥有全部执行</h2>
+<p>Eva-CLI 的运行时方向是由 Rust 托管边界：权限、Adapter、记忆、验证、Release Snapshot 和回滚都属于受控运行时。EvaLauncher 应该尊重这个拆分。手机非常适合捕获意图和本地上下文，但不是所有任务都应该在 launcher 进程里完成。</p>
+
+<p>更清晰的模型是“捕获、打包、交接、回报”。Launcher 收集用户请求、当前表面、可选应用上下文、同意状态和期望完成条件。Runtime 把这些变成任务，决定允许使用哪些能力，验证完成结果，再返回简洁状态。移动端负责展示进度、请求缺失确认或呈现完成结果。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/evalauncher-runtime-handoff.zh-CN.svg" alt="EvaLauncher 运行时交接图，展示移动端意图包交给 Eva runtime 进行规划、工具调用、验证和结果返回。">
+  <figcaption>手机应该是启动和检查任务的最佳位置；受控运行时应该拥有长时间执行。</figcaption>
+</figure>
+
+<h2>隐私是产品功能，不是页脚链接</h2>
+<p>Launcher 能看到非常敏感的信号：应用列表、启动历史、悬浮层、快捷入口、语言偏好，甚至用户输入的指令。因此隐私不是补充说明，而是核心产品架构。EvaLauncher.com 已经提供隐私政策入口；下一步应该是在产品流程中让隐私行为本身可见。</p>
+
+<p>用户应该清楚哪些数据留在本机，哪些信号用于改善 launcher 行为，哪些任务会交给 Eva runtime，以及每个功能需要哪些权限。跨设备记忆和云端执行应该是可选择、可检查、可撤回的。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/evalauncher-privacy-boundary.zh-CN.svg" alt="EvaLauncher 隐私边界图，区分本地 launcher 信号、同意门、Eva runtime 交接和用户可见控制。">
+  <figcaption>Launcher 的信任来自可见边界：本地信号、用户同意、运行时交接、审计和删除控制。</figcaption>
+</figure>
+
+<h2>先建设什么</h2>
+<p>第一个实际里程碑不是完整移动 Agent，而是可靠的意图层：浮动中心里的快速捕获动作、小型任务状态表面、按语言适配的提示语，以及一个清楚区分本地 launcher 控制和 Eva runtime 交接控制的设置页。</p>
+
+<p>第二个里程碑是任务桥。桥接层应该发送结构化包，而不是自由文本记录：请求文本、来源表面、可选选中应用、语言、权限状态、必要附件，以及用户可见的完成标准。Runtime 返回状态事件和证据，而不只是自然语言结果。</p>
+
+<p>第三个里程碑是克制的记忆。移动端记忆应该从用户批准的偏好和可复用任务上下文开始，不应该悄悄从应用使用中建立画像。Eva 如果明确询问哪些内容可以长期记住，并让删除足够简单，会更值得信任。</p>
+
+<h2>结论</h2>
+<p>EvaLauncher 给 Eva 提供了比通用聊天 app 更好的移动形态，因为它从意图产生的地方开始：主屏。Live2D companion 提供存在感，浮动中心快速捕获命令，app drawer 提供用户可见上下文，设置页让隐私和运行时交接变得明确。</p>
+
+<p>正确的架构不是“把整个 Eva-CLI 搬进 Android”。更好的路线是：移动客户端优雅地捕获意图，再把长时间工作交给受控运行时。这样手机体验保持轻快，同时保留 Eva-CLI 更重要的承诺：权威边界、验证、记忆纪律、审计和恢复。</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../../zh-CN/blog/">返回博客</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>作者： <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../../#feedback">提交反馈</a>
+    </footer>
+  </body>
+</html>

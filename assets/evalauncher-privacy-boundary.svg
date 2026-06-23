@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-labelledby="title desc">
+  <title id="title">EvaLauncher privacy boundary</title>
+  <desc id="desc">Diagram separating local launcher signals, consent, runtime handoff, audit, and deletion controls for EvaLauncher.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="130%">
+      <feDropShadow dx="0" dy="9" stdDeviation="9" flood-color="#172033" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #dce5f1; stroke-width: 2; }
+      .local { fill: #eef6ff; stroke: #c6d4e5; }
+      .gate { fill: #fff7ed; stroke: #fed7aa; }
+      .runtime { fill: #fdfefe; stroke: #2563eb; stroke-width: 2.3; stroke-dasharray: 10 7; }
+      .control { fill: #f0fdfa; stroke: #99f6e4; }
+      .card { fill: #ffffff; stroke: #dce5f1; }
+      .title { font: 800 34px Inter, "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .subtitle { font: 500 16px Inter, "Segoe UI", Arial, sans-serif; fill: #617086; }
+      .section { font: 800 20px Inter, "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .label { font: 800 15px Inter, "Segoe UI", Arial, sans-serif; fill: #172033; }
+      .small { font: 500 13px Inter, "Segoe UI", Arial, sans-serif; fill: #617086; }
+      .warn { font: 800 13px Inter, "Segoe UI", Arial, sans-serif; fill: #9a3412; }
+      .line { stroke: #1e3a8a; stroke-width: 2.6; fill: none; marker-end: url(#arrow); }
+      .line-soft { stroke: #64748b; stroke-width: 2.2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1400" height="820"/>
+  <rect class="panel" x="34" y="34" width="1332" height="752" rx="18"/>
+  <text class="title" x="76" y="92">Privacy Boundary for a Launcher Client</text>
+  <text class="subtitle" x="76" y="122">A launcher sees sensitive signals, so privacy must be part of the interaction model.</text>
+
+  <g filter="url(#shadow)">
+    <rect class="local" x="78" y="188" width="278" height="422" rx="16"/>
+    <text class="section" x="112" y="228">Local launcher signals</text>
+    <text class="small" x="112" y="255">Keep scope narrow and visible.</text>
+    <rect class="card" x="112" y="302" width="210" height="48" rx="10"/>
+    <text class="label" x="136" y="333">App inventory</text>
+    <rect class="card" x="112" y="368" width="210" height="48" rx="10"/>
+    <text class="label" x="136" y="399">Launch history</text>
+    <rect class="card" x="112" y="434" width="210" height="48" rx="10"/>
+    <text class="label" x="136" y="465">Floating actions</text>
+    <rect class="card" x="112" y="500" width="210" height="48" rx="10"/>
+    <text class="label" x="136" y="531">User commands</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect class="gate" x="444" y="258" width="250" height="230" rx="16"/>
+    <text class="section" x="480" y="300">Consent gate</text>
+    <text class="warn" x="480" y="334">No silent expansion</text>
+    <text class="small" x="480" y="364">Feature switch</text>
+    <text class="small" x="480" y="392">Permission prompt</text>
+    <text class="small" x="480" y="420">Data scope label</text>
+    <text class="small" x="480" y="448">Revoke path</text>
+  </g>
+
+  <rect class="runtime" x="788" y="188" width="250" height="422" rx="16"/>
+  <text class="section" x="824" y="228">Eva runtime</text>
+  <text class="small" x="824" y="255">Only after explicit handoff.</text>
+  <rect class="card" x="824" y="302" width="178" height="48" rx="10"/>
+  <text class="label" x="850" y="333">Task package</text>
+  <rect class="card" x="824" y="368" width="178" height="48" rx="10"/>
+  <text class="label" x="850" y="399">Policy check</text>
+  <rect class="card" x="824" y="434" width="178" height="48" rx="10"/>
+  <text class="label" x="850" y="465">Audit trail</text>
+  <rect class="card" x="824" y="500" width="178" height="48" rx="10"/>
+  <text class="label" x="850" y="531">Verified result</text>
+
+  <g filter="url(#shadow)">
+    <rect class="control" x="1130" y="258" width="188" height="230" rx="16"/>
+    <text class="section" x="1162" y="300">User controls</text>
+    <text class="small" x="1162" y="336">Inspect memory</text>
+    <text class="small" x="1162" y="366">Delete data</text>
+    <text class="small" x="1162" y="396">Pause sync</text>
+    <text class="small" x="1162" y="426">Open policy</text>
+  </g>
+
+  <path class="line" d="M356 399 H444"/>
+  <path class="line" d="M694 399 H788"/>
+  <path class="line-soft" d="M1038 399 H1130"/>
+  <path class="line-soft" d="M1224 488 C1168 674 340 690 216 610"/>
+
+  <rect x="160" y="662" width="1080" height="58" rx="12" fill="#ffffff" stroke="#dce5f1"/>
+  <text class="label" x="190" y="687">Product rule: privacy controls belong in the main settings flow, not only in a policy link.</text>
+  <text class="small" x="190" y="710">Every cross-device memory or runtime handoff should be opt-in, inspectable, and reversible.</text>
+</svg>
