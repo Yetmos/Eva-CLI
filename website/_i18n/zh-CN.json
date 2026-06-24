@@ -57,6 +57,10 @@
       "定义 manifest、event、policy、error 和 Lua host API 契约。",
       "搭建最小可运行 CLI 骨架和 Runtime 闭环。"
     ],
+    "featuredBlogEyebrow": "推荐阅读",
+    "featuredBlogTitle": "来自博客的最新设计笔记",
+    "featuredBlogBody": "跟进 Eva-CLI 背后的实现思考：运行时边界、LuaAgent 工具链、产品方向和受控自动化设计。",
+    "featuredBlogAction": "打开博客",
     "progressStages": [
       {
         "status": "complete",

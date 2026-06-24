@@ -521,6 +521,55 @@ function New-BlogPostCards {
   return ($items -join "`n")
 }
 
+function New-FeaturedBlogCards {
+  param(
+    [Parameter(Mandatory = $true)]$Manifest,
+    [Parameter(Mandatory = $true)]$Posts,
+    [Parameter(Mandatory = $true)]$Categories,
+    [Parameter(Mandatory = $true)]$LocaleData,
+    [Parameter(Mandatory = $true)][string]$LocaleCode,
+    [Parameter(Mandatory = $true)][ValidateSet("root", "locale-home")][string]$Context,
+    [int]$Limit = 3
+  )
+
+  $items = New-Object System.Collections.Generic.List[string]
+  $sortedPosts = @($Posts |
+    Sort-Object -Property @{ Expression = { [datetime]$_.date }; Descending = $true }, @{ Expression = { [string]$_.title }; Ascending = $true } |
+    Select-Object -First $Limit)
+
+  foreach ($post in $sortedPosts) {
+    $category = @($Categories | Where-Object { $_.id -eq $post.category }) | Select-Object -First 1
+    $categoryLabel = Get-CategoryLabel -Category $category -LocaleCode $LocaleCode
+    $postPath = Get-BlogPostSitePath -Manifest $Manifest -LocaleCode $LocaleCode -Slug ([string]$post.slug)
+    $categoryPath = Get-BlogCategorySitePath -Manifest $Manifest -LocaleCode $LocaleCode -CategoryId ([string]$post.category)
+    if ($Context -eq "locale-home") {
+      $localePrefix = "/$LocaleCode/"
+      $postHref = if ($postPath.StartsWith($localePrefix)) { $postPath.Substring($localePrefix.Length) } else { Convert-SitePathToRelativeHref -Path ($postPath.TrimStart("/")) -Context $Context }
+      $categoryHref = if ($categoryPath.StartsWith($localePrefix)) { $categoryPath.Substring($localePrefix.Length) } else { Convert-SitePathToRelativeHref -Path ($categoryPath.TrimStart("/")) -Context $Context }
+    } else {
+      $postHref = $postPath.TrimStart("/")
+      $categoryHref = $categoryPath.TrimStart("/")
+    }
+    $items.Add(@"
+          <article class="blog-card home-blog-card">
+            <div class="blog-meta">
+              <span>$(Html $LocaleData.blog.dateLabel) <time datetime="$(Html $post.date)">$(Html $post.date)</time></span>
+              <a href="$(Html $categoryHref)">$(Html $LocaleData.blog.categoryLabel) $(Html $categoryLabel)</a>
+            </div>
+            <h3><a href="$(Html $postHref)">$(Html $post.title)</a></h3>
+            <p>$(Html $post.description)</p>
+            <a class="blog-card-link" href="$(Html $postHref)">$(Html $LocaleData.blog.readMore)</a>
+          </article>
+"@)
+  }
+
+  if ($items.Count -eq 0) {
+    return "          <p class=`"blog-empty`">$(Html $LocaleData.blog.emptyState)</p>"
+  }
+
+  return ($items -join "`n")
+}
+
 function Assert-BlogData {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -858,6 +907,7 @@ foreach ($locale in $locales) {
   $progressRoadmapHref = Convert-DocPathToRelativeHref -DocPath $progressRoadmapPath -Context $context
   $blogHref = "blog/"
   $canonicalUrl = Join-SiteUrl -BaseUrl $manifest.siteUrl -Path (Get-LocaleHomePath -Manifest $manifest -LocaleCode $localeCode)
+  $localePosts = @($blogPosts | Where-Object { $_.locale -eq $localeCode })
 
   $homeTokens = @{
     lang = Html $localeCode
@@ -904,6 +954,12 @@ foreach ($locale in $locales) {
     progressNextItems = New-ProgressNextItems -Items $localeData.home.progressNextItems
     progressRoadmapHref = Html $progressRoadmapHref
     progressRoadmapLabel = Html $localeData.home.progressRoadmapLabel
+    featuredBlogEyebrow = Html $localeData.home.featuredBlogEyebrow
+    featuredBlogTitle = Html $localeData.home.featuredBlogTitle
+    featuredBlogBody = Html $localeData.home.featuredBlogBody
+    featuredBlogHref = Html $blogHref
+    featuredBlogAction = Html $localeData.home.featuredBlogAction
+    featuredBlogCards = New-FeaturedBlogCards -Manifest $manifest -Posts $localePosts -Categories $blogCategories -LocaleData $localeData -LocaleCode $localeCode -Context $context
     architectureEyebrow = Html $localeData.home.architectureEyebrow
     architectureTitle = Html $localeData.home.architectureTitle
     architectureAlt = Html $localeData.home.architectureAlt

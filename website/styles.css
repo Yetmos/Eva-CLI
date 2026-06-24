@@ -312,6 +312,7 @@ h3 {
 
 .architecture,
 .development-progress,
+.featured-blog,
 .doc-grid,
 .discussion-section,
 .feedback-section {
@@ -476,6 +477,21 @@ h3 {
   font-size: 14px;
   font-weight: 750;
   overflow-wrap: anywhere;
+}
+
+.featured-blog-copy {
+  max-width: 780px;
+}
+
+.home-blog-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 22px;
+}
+
+.home-blog-card {
+  align-content: start;
 }
 
 .links-grid {
@@ -1672,6 +1688,7 @@ h3 {
   .principle-grid,
   .decision-grid,
   .snapshot-strip,
+  .home-blog-grid,
   .progress-next ul,
   .scenario-grid,
   .field-grid {

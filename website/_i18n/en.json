@@ -57,6 +57,10 @@
       "Define manifest, event, policy, error, and Lua host API contracts.",
       "Build a minimum runnable CLI skeleton and Runtime loop."
     ],
+    "featuredBlogEyebrow": "Recommended reading",
+    "featuredBlogTitle": "Latest design notes from the blog",
+    "featuredBlogBody": "Follow the implementation thinking behind Eva-CLI: runtime boundaries, LuaAgent tooling, product direction, and controlled automation design.",
+    "featuredBlogAction": "Open blog",
     "progressStages": [
       {
         "status": "complete",
