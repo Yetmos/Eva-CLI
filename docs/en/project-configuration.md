@@ -4,6 +4,8 @@
 > Canonical: docs/en/project-configuration.md
 > Translation: [简体中文](../zh-CN/项目配置方案.md)
 
+![Project Configuration illustration](../../assets/eva-cli-doc-project-configuration.svg)
+
 Updated: 2026-06-16
 
 ## Purpose

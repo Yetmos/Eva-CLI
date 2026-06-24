@@ -1,5 +1,7 @@
 # Agent 扫描与发现架构方案
 
+![Agent 扫描与发现 插图](../assets/eva-cli-doc-agent-discovery.zh-CN.svg)
+
 更新日期：2026-06-12
 
 文档关系：

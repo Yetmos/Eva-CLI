@@ -4,6 +4,8 @@
 > Canonical: docs/en/backup-migration-release-snapshot.md
 > Translation: [简体中文](../zh-CN/备份迁移包与ReleaseSnapshot架构方案.md)
 
+![Backup, Migration Package, and Release Snapshot illustration](../../assets/eva-cli-doc-backup-migration-release-snapshot.svg)
+
 Updated: 2026-06-17
 
 ## Purpose

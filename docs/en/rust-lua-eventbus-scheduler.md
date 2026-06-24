@@ -4,6 +4,8 @@
 > Canonical: docs/en/rust-lua-eventbus-scheduler.md
 > Translation: [简体中文](../zh-CN/Rust与Lua事件总线智能体调度架构方案.md)
 
+![Rust, Lua, and EventBus Scheduler illustration](../../assets/eva-cli-doc-rust-lua-eventbus-scheduler.svg)
+
 Updated: 2026-06-16
 
 ## Purpose

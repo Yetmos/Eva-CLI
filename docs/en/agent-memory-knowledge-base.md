@@ -4,6 +4,8 @@
 > Canonical: docs/en/agent-memory-knowledge-base.md
 > Translation: [简体中文](../zh-CN/Agent记忆与知识库架构方案.md)
 
+![Agent Memory and Knowledge Base illustration](../../assets/eva-cli-doc-agent-memory-knowledge-base.svg)
+
 Updated: 2026-06-16
 
 ## Purpose

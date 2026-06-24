@@ -4,6 +4,8 @@
 > Canonical: docs/en/design-risk-review.md
 > Translation: [简体中文](../zh-CN/方案设计风险评审.md)
 
+![Design Risk Review illustration](../../assets/eva-cli-doc-design-risk-review.svg)
+
 Updated: 2026-06-16
 
 ## Purpose

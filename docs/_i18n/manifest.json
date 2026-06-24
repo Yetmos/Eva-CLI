@@ -111,6 +111,171 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "readme-illustration",
+      "title": "Documentation Home Illustration",
+      "source": "assets/eva-cli-doc-docs-home.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-docs-home.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "architecture-overview-illustration",
+      "title": "Architecture Overview Illustration",
+      "source": "assets/eva-cli-doc-architecture-overview.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-architecture-overview.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "rust-lua-eventbus-scheduler-illustration",
+      "title": "Rust, Lua, and EventBus Scheduler Illustration",
+      "source": "assets/eva-cli-doc-rust-lua-eventbus-scheduler.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-rust-lua-eventbus-scheduler.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "lua-external-agent-adapter-illustration",
+      "title": "Lua External Agent Adapter Illustration",
+      "source": "assets/eva-cli-doc-lua-external-agent-adapter.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-lua-external-agent-adapter.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "lua-skill-mcp-tool-hot-reload-illustration",
+      "title": "Lua Skill, MCP, and Tool Hot Reload Illustration",
+      "source": "assets/eva-cli-doc-lua-skill-mcp-tool-hot-reload.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-lua-skill-mcp-tool-hot-reload.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "skill-implementation-illustration",
+      "title": "Skill Implementation Plan Illustration",
+      "source": "assets/eva-cli-doc-skill-implementation.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-skill-implementation.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "agent-memory-knowledge-base-illustration",
+      "title": "Agent Memory and Knowledge Base Illustration",
+      "source": "assets/eva-cli-doc-agent-memory-knowledge-base.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-agent-memory-knowledge-base.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "agent-discovery-illustration",
+      "title": "Agent Discovery Illustration",
+      "source": "assets/eva-cli-doc-agent-discovery.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-agent-discovery.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "hardware-hotplug-illustration",
+      "title": "Hardware Hotplug Illustration",
+      "source": "assets/eva-cli-doc-hardware-hotplug.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-hardware-hotplug.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "project-configuration-illustration",
+      "title": "Project Configuration Illustration",
+      "source": "assets/eva-cli-doc-project-configuration.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-project-configuration.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "process-level-upgrade-illustration",
+      "title": "Process-Level Upgrade Illustration",
+      "source": "assets/eva-cli-doc-process-level-upgrade.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-process-level-upgrade.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "backup-migration-release-snapshot-illustration",
+      "title": "Backup, Migration Package, and Release Snapshot Illustration",
+      "source": "assets/eva-cli-doc-backup-migration-release-snapshot.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-backup-migration-release-snapshot.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "design-risk-review-illustration",
+      "title": "Design Risk Review Illustration",
+      "source": "assets/eva-cli-doc-design-risk-review.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-design-risk-review.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "zero-to-one-roadmap-illustration",
+      "title": "Zero to 1.0 Roadmap Illustration",
+      "source": "assets/eva-cli-doc-zero-to-one-roadmap.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-zero-to-one-roadmap.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "website-docs-i18n-illustration",
+      "title": "Website and Documentation i18n Illustration",
+      "source": "assets/eva-cli-doc-website-docs-i18n.svg",
+      "translations": {
+        "zh-CN": "assets/eva-cli-doc-website-docs-i18n.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [

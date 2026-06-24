@@ -4,6 +4,8 @@
 
 # Rust + Lua + EventBus Topic Agent 调度架构方案
 
+![Rust、Lua 与 EventBus 调度 插图](../../assets/eva-cli-doc-rust-lua-eventbus-scheduler.zh-CN.svg)
+
 更新日期：2026-06-12
 
 文档关系：

@@ -4,6 +4,8 @@
 > Canonical: docs/en/process-level-upgrade.md
 > Translation: [简体中文](../zh-CN/进程级停机升级架构方案.md)
 
+![Process-Level Upgrade illustration](../../assets/eva-cli-doc-process-level-upgrade.svg)
+
 Updated: 2026-06-16
 
 ## Purpose

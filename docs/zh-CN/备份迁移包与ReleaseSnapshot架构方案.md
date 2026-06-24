@@ -4,6 +4,8 @@
 > Canonical source: ../en/backup-migration-release-snapshot.md
 > Translation status: current
 
+![备份、迁移包与 Release Snapshot 插图](../../assets/eva-cli-doc-backup-migration-release-snapshot.zh-CN.svg)
+
 更新日期：2026-06-17
 
 ## 1. 文档定位

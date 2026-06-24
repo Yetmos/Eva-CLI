@@ -4,6 +4,8 @@
 > Canonical: docs/en/agent-discovery.md
 > Translation: [简体中文](../zh-CN/Agent扫描与发现架构方案.md)
 
+![Agent Discovery illustration](../../assets/eva-cli-doc-agent-discovery.svg)
+
 Updated: 2026-06-16
 
 ## Purpose

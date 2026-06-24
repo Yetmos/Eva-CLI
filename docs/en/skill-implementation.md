@@ -4,6 +4,8 @@
 > Canonical: docs/en/skill-implementation.md
 > Translation: [Simplified Chinese](../zh-CN/Skill实现方案.md)
 
+![Skill Implementation Plan illustration](../../assets/eva-cli-doc-skill-implementation.svg)
+
 Updated: 2026-06-23
 
 ## Purpose

@@ -1,5 +1,7 @@
 # Eva-CLI Lua 承载 Skill / MCP / Tool 热更新架构方案
 
+![Lua Skill / MCP / Tool 热更新 插图](../assets/eva-cli-doc-lua-skill-mcp-tool-hot-reload.zh-CN.svg)
+
 更新日期：2026-06-12
 
 文档关系：

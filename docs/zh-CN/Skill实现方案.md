@@ -4,6 +4,8 @@
 > Canonical source: ../en/skill-implementation.md
 > Translation status: current
 
+![Skill 实现方案 插图](../../assets/eva-cli-doc-skill-implementation.zh-CN.svg)
+
 更新时间：2026-06-23
 
 ## 方案定位

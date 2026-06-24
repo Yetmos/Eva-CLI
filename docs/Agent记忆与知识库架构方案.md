@@ -1,5 +1,7 @@
 # Agent 记忆与知识库架构方案
 
+![Agent 记忆与知识库 插图](../assets/eva-cli-doc-agent-memory-knowledge-base.zh-CN.svg)
+
 更新日期：2026-06-16
 
 文档关系：

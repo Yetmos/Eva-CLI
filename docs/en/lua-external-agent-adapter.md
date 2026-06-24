@@ -4,6 +4,8 @@
 > Canonical: docs/en/lua-external-agent-adapter.md
 > Translation: [简体中文](../zh-CN/Lua调用外部Agent动态Adapter架构方案.md)
 
+![Lua External Agent Adapter illustration](../../assets/eva-cli-doc-lua-external-agent-adapter.svg)
+
 Updated: 2026-06-16
 
 ## Purpose
