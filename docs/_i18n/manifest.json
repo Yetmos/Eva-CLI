@@ -91,6 +91,28 @@
       }
     },
     {
+      "id": "luaagent-idea-community-ide-diagram",
+      "title": "LuaAgent IDEA Community IDE Architecture Diagram",
+      "source": "assets/luaagent-idea-community-ide.svg",
+      "translations": {
+        "zh-CN": "assets/luaagent-idea-community-ide.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "luaagent-ide-runtime-loop-diagram",
+      "title": "LuaAgent IDE Runtime Feedback Loop Diagram",
+      "source": "assets/luaagent-ide-runtime-loop.svg",
+      "translations": {
+        "zh-CN": "assets/luaagent-ide-runtime-loop.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
       "id": "architecture-harness-boundary-diagram",
       "title": "Eva-CLI Architecture and Harness Boundary Diagram",
       "source": "assets/eva-architecture-harness-boundary.svg",

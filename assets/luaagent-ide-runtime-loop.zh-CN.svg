@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="740" viewBox="0 0 1200 740" role="img" aria-labelledby="title desc">
+  <title id="title">LuaAgent IDE 运行时反馈闭环</title>
+  <desc id="desc">环形开发流程图，展示从编辑器分析到运行时校验、受监督 dry run、审计结果和 quick fix 的反馈闭环。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #d8e2ef; stroke-width: 1.6; }
+      .title { font: 800 30px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .subtitle { font: 400 15px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #617086; }
+      .step-title { font: 800 17px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .small { font: 400 12px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #55657a; }
+      .center-title { font: 800 19px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .center-small { font: 400 12px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #475569; }
+      .step1 { fill: #eef6ff; stroke: #8eb8f5; stroke-width: 1.7; }
+      .step2 { fill: #f0fdfa; stroke: #7dd3c7; stroke-width: 1.7; }
+      .step3 { fill: #fff7ed; stroke: #f4bd77; stroke-width: 1.7; }
+      .step4 { fill: #f5f0ff; stroke: #c8b6f2; stroke-width: 1.7; }
+      .step5 { fill: #fff1f2; stroke: #f0a3aa; stroke-width: 1.7; }
+      .center { fill: #ffffff; stroke: #c6d4e5; stroke-width: 1.8; }
+      .cap { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.3; }
+      .arrow { stroke: #1e3a8a; stroke-width: 2.6; fill: none; marker-end: url(#arrow); }
+      .arrow-green { stroke: #0f766e; stroke-width: 2.6; fill: none; marker-end: url(#arrow-green); }
+      .arrow-dash { stroke: #64748b; stroke-width: 2.2; fill: none; stroke-dasharray: 8 7; marker-end: url(#arrow-gray); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="740"/>
+  <rect class="panel" x="34" y="30" width="1132" height="680" rx="8"/>
+
+  <text class="title" x="64" y="78">LuaAgent IDE 运行时反馈闭环</text>
+  <text class="subtitle" x="64" y="106">编辑器快速反馈，Runtime 托管策略，执行结果可审计。</text>
+
+  <rect class="step1" x="84" y="194" width="218" height="126" rx="8"/>
+  <text class="step-title" x="112" y="232">编辑与索引</text>
+  <text class="small" x="112" y="258">LuaAgent PSI</text>
+  <text class="small" x="112" y="278">Manifest 模型</text>
+  <text class="small" x="112" y="298">Topic 与 schema 索引</text>
+
+  <rect class="step2" x="356" y="128" width="218" height="126" rx="8"/>
+  <text class="step-title" x="384" y="166">静态诊断</text>
+  <text class="small" x="384" y="192">引用解析</text>
+  <text class="small" x="384" y="212">权限提示</text>
+  <text class="small" x="384" y="232">安全 quick fix</text>
+
+  <rect class="step3" x="856" y="194" width="218" height="126" rx="8"/>
+  <text class="step-title" x="884" y="232">运行时校验</text>
+  <text class="small" x="884" y="258">类型化 bridge 请求</text>
+  <text class="small" x="884" y="278">策略与 schema 校验</text>
+  <text class="small" x="884" y="298">能力快照</text>
+
+  <rect class="step4" x="778" y="476" width="218" height="126" rx="8"/>
+  <text class="step-title" x="806" y="514">受监督 dry run</text>
+  <text class="small" x="806" y="540">场景执行</text>
+  <text class="small" x="806" y="560">EventBus trace</text>
+  <text class="small" x="806" y="580">Adapter stub 或 policy gate</text>
+
+  <rect class="step5" x="214" y="476" width="218" height="126" rx="8"/>
+  <text class="step-title" x="242" y="514">审计结果</text>
+  <text class="small" x="242" y="540">Trace 与诊断</text>
+  <text class="small" x="242" y="560">内联失败</text>
+  <text class="small" x="242" y="580">修复建议</text>
+
+  <circle class="center" cx="600" cy="366" r="118"/>
+  <text class="center-title" x="538" y="342">Runtime Bridge</text>
+  <text class="center-small" x="522" y="370">版本化类型协议</text>
+  <text class="center-small" x="516" y="392">编辑器不拥有 shell 权威</text>
+
+  <rect class="cap" x="492" y="508" width="216" height="76" rx="8"/>
+  <text class="step-title" x="526" y="540">Eva-CLI 权威</text>
+  <text class="small" x="526" y="564">策略、密钥、记忆、Adapter</text>
+
+  <path class="arrow" d="M302 237 C330 202 330 190 356 188"/>
+  <path class="arrow" d="M574 190 C690 166 802 178 856 233"/>
+  <path class="arrow" d="M965 320 C968 396 944 444 902 476"/>
+  <path class="arrow-green" d="M778 545 C680 610 536 612 432 548"/>
+  <path class="arrow-green" d="M214 540 C132 494 108 390 166 320"/>
+  <path class="arrow-dash" d="M856 258 C748 280 690 306 678 330"/>
+  <path class="arrow-dash" d="M600 484 V508"/>
+  <path class="arrow-dash" d="M492 544 C430 520 396 492 376 476"/>
+
+  <text class="small" x="82" y="658">编辑器闭环：PSI 可以提前预测大量错误。Runtime 闭环：Eva-CLI 仍是执行事实源。</text>
+</svg>

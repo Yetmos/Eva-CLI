@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">LuaAgent IDE architecture on IDEA Community</title>
+  <desc id="desc">A layered architecture diagram showing an IDEA Community product fork, a LuaAgent language plugin, a runtime bridge, Eva-CLI Runtime authority, and LuaAgent project contracts.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #d8e2ef; stroke-width: 1.6; }
+      .band { fill: #fbfdff; stroke: #c6d4e5; stroke-width: 1.5; }
+      .title { font: 800 30px Arial, "Segoe UI", sans-serif; fill: #172033; }
+      .subtitle { font: 400 15px Arial, "Segoe UI", sans-serif; fill: #617086; }
+      .h { font: 800 18px Arial, "Segoe UI", sans-serif; fill: #172033; }
+      .label { font: 700 14px Arial, "Segoe UI", sans-serif; fill: #172033; }
+      .small { font: 400 12px Arial, "Segoe UI", sans-serif; fill: #55657a; }
+      .tiny { font: 700 11px Arial, "Segoe UI", sans-serif; fill: #2563eb; }
+      .blue { fill: #eef6ff; stroke: #8eb8f5; stroke-width: 1.6; }
+      .green { fill: #f0fdfa; stroke: #7dd3c7; stroke-width: 1.6; }
+      .amber { fill: #fff7ed; stroke: #f4bd77; stroke-width: 1.6; }
+      .violet { fill: #f5f0ff; stroke: #c8b6f2; stroke-width: 1.6; }
+      .slate { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.6; }
+      .guard { fill: #fff1f2; stroke: #f0a3aa; stroke-width: 1.6; }
+      .pill { fill: #ffffff; stroke: #ccd6e2; stroke-width: 1.1; }
+      .arrow { stroke: #1e3a8a; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .arrow-green { stroke: #0f766e; stroke-width: 2.4; fill: none; marker-end: url(#arrow-green); }
+      .arrow-dash { stroke: #64748b; stroke-width: 2.1; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow-gray); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="720"/>
+  <rect class="panel" x="32" y="28" width="1136" height="664" rx="8"/>
+
+  <text class="title" x="60" y="74">LuaAgent IDE on IDEA Community</text>
+  <text class="subtitle" x="60" y="102">Keep the product fork thin, move LuaAgent intelligence into a plugin, and route execution through Eva-CLI.</text>
+
+  <rect class="band" x="58" y="132" width="512" height="492" rx="8"/>
+  <text class="h" x="86" y="166">IDE product layer</text>
+  <text class="small" x="86" y="188">Reusable IntelliJ editor, project model, indexing, VCS, and run configuration surfaces</text>
+
+  <rect class="blue" x="86" y="220" width="196" height="118" rx="8"/>
+  <text class="label" x="112" y="253">IDEA Community fork</text>
+  <text class="small" x="112" y="278">Branding</text>
+  <text class="small" x="112" y="298">Bundled plugins</text>
+  <text class="small" x="112" y="318">Distribution settings</text>
+
+  <rect class="green" x="330" y="220" width="196" height="118" rx="8"/>
+  <text class="label" x="356" y="253">LuaAgent plugin</text>
+  <text class="small" x="356" y="278">File types and PSI</text>
+  <text class="small" x="356" y="298">Inspections and fixes</text>
+  <text class="small" x="356" y="318">Completion and navigation</text>
+
+  <rect class="violet" x="86" y="396" width="196" height="118" rx="8"/>
+  <text class="label" x="112" y="429">Tool windows</text>
+  <text class="small" x="112" y="454">Capability index</text>
+  <text class="small" x="112" y="474">Runtime diagnostics</text>
+  <text class="small" x="112" y="494">Audit trace viewer</text>
+
+  <rect class="amber" x="330" y="396" width="196" height="118" rx="8"/>
+  <text class="label" x="356" y="429">Run configurations</text>
+  <text class="small" x="356" y="454">Manifest validate</text>
+  <text class="small" x="356" y="474">Scenario dry run</text>
+  <text class="small" x="356" y="494">Supervised session</text>
+
+  <path class="arrow" d="M282 279 H330"/>
+  <path class="arrow" d="M428 338 V396"/>
+  <path class="arrow-dash" d="M330 455 H282"/>
+
+  <rect class="band" x="628" y="132" width="484" height="492" rx="8"/>
+  <text class="h" x="656" y="166">Runtime and contract layer</text>
+  <text class="small" x="656" y="188">The editor asks for facts and controlled actions. Runtime authority stays outside the IDE.</text>
+
+  <rect class="slate" x="656" y="220" width="176" height="118" rx="8"/>
+  <text class="label" x="682" y="253">LuaAgent workspace</text>
+  <text class="small" x="682" y="278">.eva/agent.yaml</text>
+  <text class="small" x="682" y="298">agents/*.lua</text>
+  <text class="small" x="682" y="318">topics and schemas</text>
+
+  <rect class="guard" x="890" y="220" width="176" height="118" rx="8"/>
+  <text class="label" x="916" y="253">Runtime Bridge</text>
+  <text class="small" x="916" y="278">Versioned protocol</text>
+  <text class="small" x="916" y="298">Typed requests</text>
+  <text class="small" x="916" y="318">No raw shell path</text>
+
+  <rect class="green" x="656" y="396" width="176" height="118" rx="8"/>
+  <text class="label" x="682" y="429">Eva-CLI Runtime</text>
+  <text class="small" x="682" y="454">Policy and secrets</text>
+  <text class="small" x="682" y="474">EventBus and adapters</text>
+  <text class="small" x="682" y="494">Memory and audit</text>
+
+  <rect class="blue" x="890" y="396" width="176" height="118" rx="8"/>
+  <text class="label" x="916" y="429">Feedback to IDE</text>
+  <text class="small" x="916" y="454">Diagnostics</text>
+  <text class="small" x="916" y="474">Quick fixes</text>
+  <text class="small" x="916" y="494">Run results</text>
+
+  <path class="arrow-green" d="M526 279 C596 279 596 279 656 279"/>
+  <path class="arrow" d="M832 279 H890"/>
+  <path class="arrow" d="M978 338 V396"/>
+  <path class="arrow-green" d="M890 455 H832"/>
+  <path class="arrow-dash" d="M744 396 V338"/>
+  <path class="arrow-dash" d="M890 279 C810 354 742 353 742 396"/>
+
+  <rect class="pill" x="92" y="554" width="424" height="38" rx="8"/>
+  <text class="tiny" x="114" y="578">Fork rule: product changes are branding and packaging, not LuaAgent semantics.</text>
+
+  <rect class="pill" x="676" y="554" width="386" height="38" rx="8"/>
+  <text class="tiny" x="698" y="578">Bridge rule: IDE sends typed requests, Eva-CLI enforces policy.</text>
+
+  <text class="small" x="60" y="660">Result: a LuaAgent-focused IDE that reuses the IntelliJ Platform while preserving Eva-CLI runtime boundaries.</text>
+</svg>

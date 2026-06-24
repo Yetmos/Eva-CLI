@@ -1,0 +1,82 @@
+<p>A LuaAgent IDE should not be treated as a skinned text editor. LuaAgent development combines Lua code, Agent manifests, runtime capabilities, Topic events, memory contracts, and verification results. That shape makes IntelliJ IDEA Community a practical base: keep the IDE fork thin, put language behavior in a plugin, and connect runtime execution through an explicit bridge instead of letting the editor become another script host.</p>
+
+<p>JetBrains describes the IntelliJ open-source repository as the open-source part of the JetBrains IDE codebase and the basis for IntelliJ Platform development. That gives this plan a mature editor, project model, indexing system, VCS integration, run configuration framework, and extension-point model before we write LuaAgent-specific code.</p>
+
+<figure class="blog-figure">
+  <img src="../../assets/luaagent-idea-community-ide.svg" alt="LuaAgent IDE architecture based on IDEA Community, with a thin product fork, LuaAgent language plugin, runtime bridge, Eva-CLI runtime, and project contract files.">
+  <figcaption>The product fork should stay thin. Most LuaAgent behavior belongs in a plugin and a small runtime bridge.</figcaption>
+</figure>
+
+<h2>Thin fork, strong plugin</h2>
+<p>The first architectural decision is to separate product ownership from language ownership. The IDEA Community fork owns branding, bundled plugins, default settings, project templates, update channels, and distribution packaging. The LuaAgent plugin owns file types, syntax, PSI, references, inspections, completion, structure view, run configurations, and runtime panels.</p>
+
+<p>This split matters because a fork of the IDE platform is expensive to maintain. Every product-level change has to survive upstream platform movement. A plugin can evolve faster, can be tested independently, and can remain compatible with the IntelliJ Platform extension model.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Layer</th>
+    <th>Owns</th>
+    <th>Should avoid</th>
+  </tr>
+  <tr>
+    <td>IDEA Community fork</td>
+    <td>Branding, default plugins, product metadata, bundled templates, distribution shape.</td>
+    <td>Embedding LuaAgent semantics directly into platform code.</td>
+  </tr>
+  <tr>
+    <td>LuaAgent plugin</td>
+    <td>Language model, editor intelligence, inspections, run configurations, tool windows.</td>
+    <td>Raw process execution, secrets access, filesystem mutation outside IDE APIs.</td>
+  </tr>
+  <tr>
+    <td>Runtime bridge</td>
+    <td>Typed requests to Eva-CLI, diagnostics, dry runs, capability index snapshots, test results.</td>
+    <td>Bypassing policy with direct shell snippets from the editor.</td>
+  </tr>
+  <tr>
+    <td>Eva-CLI Runtime</td>
+    <td>Policy, permissions, Agent execution, EventBus, adapters, memory, audit, rollback.</td>
+    <td>IDE UI state or editor-only assumptions.</td>
+  </tr>
+</table>
+
+<h2>Language support starts with PSI</h2>
+<p>IntelliJ language features are built by combining language-independent platform services with language-specific pieces. For LuaAgent, the minimum language surface is not just Lua syntax. It also needs Agent declarations, manifest keys, capability names, Topic names, memory scope declarations, tool schema references, and runtime constraints.</p>
+
+<p>The plugin should define LuaAgent files around stable program structure: lexer, parser, PSI elements, stub indexes where needed, references and resolve, inspections, quick fixes, and completion contributors. JetBrains' Custom Language Support documentation frames this exact path through parser and PSI implementation, lexer definition, syntax highlighting, navigation, completion, inspections, and refactoring hooks.</p>
+
+<pre class="blog-code"><code>LuaAgent project model
+  .eva/agent.yaml          -> Agent identity, permissions, runtime gates
+  agents/*.lua             -> Agent behavior and host API calls
+  capabilities/*.schema    -> tool input/output contracts
+  topics/*.topic           -> EventBus topic declarations
+  tests/*.scenario         -> dry-run and harness scenarios</code></pre>
+
+<p>A pragmatic first version can support existing Lua files plus LuaAgent sidecar files. The IDE can then add richer cross-file resolution: <code>agent:emit("runtime.task.started")</code> resolves to a Topic declaration, <code>host.call("memory.query")</code> resolves to a capability contract, and a manifest permission warning appears before the runtime rejects the call.</p>
+
+<h2>The runtime bridge is a safety boundary</h2>
+<p>The IDE should never become the authority for Agent execution. It should ask the runtime for facts and controlled actions: list available capabilities, validate a manifest, run a dry-run scenario, request diagnostics, start a supervised Agent session, or open an audit record. Eva-CLI remains the place that owns policy, permissions, secrets, adapters, EventBus delivery, memory, and rollback.</p>
+
+<figure class="blog-figure">
+  <img src="../../assets/luaagent-ide-runtime-loop.svg" alt="LuaAgent IDE development loop from edit and PSI analysis to runtime validation, supervised dry run, audit results, and quick fixes.">
+  <figcaption>The IDE feedback loop should be fast, but runtime authority stays outside the editor process.</figcaption>
+</figure>
+
+<p>The bridge can be deliberately small. A local Eva-CLI process exposes a versioned protocol with typed methods such as <code>runtime.capabilities.snapshot</code>, <code>agent.manifest.validate</code>, <code>agent.scenario.dryRun</code>, <code>event.topic.resolve</code>, and <code>audit.trace.open</code>. The IDE plugin turns those responses into editor diagnostics, gutter actions, run results, and navigation targets.</p>
+
+<h2>What the first usable IDE should include</h2>
+<p>The MVP should be biased toward daily Agent design work, not platform novelty. The first release should open a LuaAgent workspace, recognize Agent manifests, index capabilities and Topics, highlight unsafe host API calls, provide completion for capabilities and event names, run a supervised dry run, and show runtime diagnostics inline.</p>
+
+<ol>
+  <li>Create a branded IDEA Community distribution with the LuaAgent plugin bundled and nonessential default plugins trimmed.</li>
+  <li>Implement file types and project model discovery for <code>.eva/agent.yaml</code>, Agent Lua files, Topic declarations, schema files, and scenario tests.</li>
+  <li>Build lexer, parser, PSI, references, completion, navigation, structure view, inspections, and quick fixes for the LuaAgent layer.</li>
+  <li>Add a runtime bridge that talks to Eva-CLI through typed requests and never executes arbitrary editor-provided commands.</li>
+  <li>Add run configurations for manifest validation, scenario dry run, supervised local Agent session, and audit trace opening.</li>
+  <li>Lock behavior with plugin tests, fixture projects, parser golden files, and bridge contract tests.</li>
+</ol>
+
+<h2>Keep upstream movement survivable</h2>
+<p>The long-term success of a LuaAgent IDE depends on how little has to be carried as a product fork. Avoid editing platform internals for anything that can be implemented through extension points. Keep branding and distribution changes isolated. Treat the LuaAgent plugin as the main product surface. Treat the runtime bridge as a contract, not an implementation shortcut.</p>
+
+<p>Relevant upstream references: <a href="https://github.com/JetBrains/intellij-community">JetBrains/intellij-community</a>, <a href="https://plugins.jetbrains.com/docs/intellij/custom-language-support.html">Custom Language Support</a>, <a href="https://plugins.jetbrains.com/docs/intellij/grammar-and-parser.html">Grammar and Parser</a>, and <a href="https://plugins.jetbrains.com/docs/intellij/lexer-and-parser-definition.html">Lexer and Parser Definition</a>.</p>

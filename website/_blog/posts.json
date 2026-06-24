@@ -13,9 +13,36 @@
         "en": "Product",
         "zh-CN": "产品"
       }
+    },
+    {
+      "id": "tooling",
+      "labels": {
+        "en": "Tooling",
+        "zh-CN": "工具链"
+      }
     }
   ],
   "posts": [
+    {
+      "id": "luaagent-idea-community-ide",
+      "locale": "en",
+      "slug": "luaagent-idea-community-ide",
+      "title": "Designing a LuaAgent IDE on IDEA Community",
+      "description": "How to build a LuaAgent-focused IDE by reusing the open-source IntelliJ IDEA Community codebase, keeping the product fork thin, and putting language intelligence into a controlled plugin and runtime bridge.",
+      "date": "2026-06-24",
+      "category": "tooling",
+      "contentPath": "website/_blog/content/en/luaagent-idea-community-ide.html"
+    },
+    {
+      "id": "luaagent-idea-community-ide",
+      "locale": "zh-CN",
+      "slug": "luaagent-idea-community-ide",
+      "title": "基于 IDEA Community 二次开发 LuaAgent IDE 的设计思路",
+      "description": "如何复用开源 IntelliJ IDEA Community 代码基座，保持产品 fork 足够薄，把 LuaAgent 的语言智能、运行时连接和安全边界放进受控插件与 Runtime Bridge。",
+      "date": "2026-06-24",
+      "category": "tooling",
+      "contentPath": "website/_blog/content/zh-CN/luaagent-idea-community-ide.html"
+    },
     {
       "id": "module-partitioning-boundaries",
       "locale": "en",

@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">基于 IDEA Community 的 LuaAgent IDE 架构</title>
+  <desc id="desc">分层架构图，展示 IDEA Community 产品 fork、LuaAgent 语言插件、Runtime Bridge、Eva-CLI Runtime 权威和 LuaAgent 项目契约。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #d8e2ef; stroke-width: 1.6; }
+      .band { fill: #fbfdff; stroke: #c6d4e5; stroke-width: 1.5; }
+      .title { font: 800 30px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .subtitle { font: 400 15px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #617086; }
+      .h { font: 800 18px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .label { font: 700 14px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+      .small { font: 400 12px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #55657a; }
+      .tiny { font: 700 11px Arial, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #2563eb; }
+      .blue { fill: #eef6ff; stroke: #8eb8f5; stroke-width: 1.6; }
+      .green { fill: #f0fdfa; stroke: #7dd3c7; stroke-width: 1.6; }
+      .amber { fill: #fff7ed; stroke: #f4bd77; stroke-width: 1.6; }
+      .violet { fill: #f5f0ff; stroke: #c8b6f2; stroke-width: 1.6; }
+      .slate { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.6; }
+      .guard { fill: #fff1f2; stroke: #f0a3aa; stroke-width: 1.6; }
+      .pill { fill: #ffffff; stroke: #ccd6e2; stroke-width: 1.1; }
+      .arrow { stroke: #1e3a8a; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .arrow-green { stroke: #0f766e; stroke-width: 2.4; fill: none; marker-end: url(#arrow-green); }
+      .arrow-dash { stroke: #64748b; stroke-width: 2.1; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow-gray); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="720"/>
+  <rect class="panel" x="32" y="28" width="1136" height="664" rx="8"/>
+
+  <text class="title" x="60" y="74">基于 IDEA Community 的 LuaAgent IDE</text>
+  <text class="subtitle" x="60" y="102">产品 fork 保持薄，LuaAgent 智能放进插件，执行通过 Eva-CLI 受控路由。</text>
+
+  <rect class="band" x="58" y="132" width="512" height="492" rx="8"/>
+  <text class="h" x="86" y="166">IDE 产品层</text>
+  <text class="small" x="86" y="188">复用 IntelliJ 编辑器、项目模型、索引、VCS 和运行配置能力</text>
+
+  <rect class="blue" x="86" y="220" width="196" height="118" rx="8"/>
+  <text class="label" x="112" y="253">IDEA Community fork</text>
+  <text class="small" x="112" y="278">品牌</text>
+  <text class="small" x="112" y="298">内置插件</text>
+  <text class="small" x="112" y="318">分发设置</text>
+
+  <rect class="green" x="330" y="220" width="196" height="118" rx="8"/>
+  <text class="label" x="356" y="253">LuaAgent 插件</text>
+  <text class="small" x="356" y="278">文件类型与 PSI</text>
+  <text class="small" x="356" y="298">检查与修复</text>
+  <text class="small" x="356" y="318">补全与导航</text>
+
+  <rect class="violet" x="86" y="396" width="196" height="118" rx="8"/>
+  <text class="label" x="112" y="429">工具窗口</text>
+  <text class="small" x="112" y="454">能力索引</text>
+  <text class="small" x="112" y="474">运行时诊断</text>
+  <text class="small" x="112" y="494">审计 trace 查看</text>
+
+  <rect class="amber" x="330" y="396" width="196" height="118" rx="8"/>
+  <text class="label" x="356" y="429">运行配置</text>
+  <text class="small" x="356" y="454">Manifest 校验</text>
+  <text class="small" x="356" y="474">Scenario dry run</text>
+  <text class="small" x="356" y="494">受监督会话</text>
+
+  <path class="arrow" d="M282 279 H330"/>
+  <path class="arrow" d="M428 338 V396"/>
+  <path class="arrow-dash" d="M330 455 H282"/>
+
+  <rect class="band" x="628" y="132" width="484" height="492" rx="8"/>
+  <text class="h" x="656" y="166">Runtime 与契约层</text>
+  <text class="small" x="656" y="188">编辑器请求事实和受控动作，运行时权威留在 IDE 之外</text>
+
+  <rect class="slate" x="656" y="220" width="176" height="118" rx="8"/>
+  <text class="label" x="682" y="253">LuaAgent 工作区</text>
+  <text class="small" x="682" y="278">.eva/agent.yaml</text>
+  <text class="small" x="682" y="298">agents/*.lua</text>
+  <text class="small" x="682" y="318">topics 与 schemas</text>
+
+  <rect class="guard" x="890" y="220" width="176" height="118" rx="8"/>
+  <text class="label" x="916" y="253">Runtime Bridge</text>
+  <text class="small" x="916" y="278">版本化协议</text>
+  <text class="small" x="916" y="298">类型化请求</text>
+  <text class="small" x="916" y="318">无原始 shell 通道</text>
+
+  <rect class="green" x="656" y="396" width="176" height="118" rx="8"/>
+  <text class="label" x="682" y="429">Eva-CLI Runtime</text>
+  <text class="small" x="682" y="454">策略与密钥</text>
+  <text class="small" x="682" y="474">EventBus 与 Adapter</text>
+  <text class="small" x="682" y="494">记忆与审计</text>
+
+  <rect class="blue" x="890" y="396" width="176" height="118" rx="8"/>
+  <text class="label" x="916" y="429">反馈到 IDE</text>
+  <text class="small" x="916" y="454">诊断</text>
+  <text class="small" x="916" y="474">Quick fix</text>
+  <text class="small" x="916" y="494">运行结果</text>
+
+  <path class="arrow-green" d="M526 279 C596 279 596 279 656 279"/>
+  <path class="arrow" d="M832 279 H890"/>
+  <path class="arrow" d="M978 338 V396"/>
+  <path class="arrow-green" d="M890 455 H832"/>
+  <path class="arrow-dash" d="M744 396 V338"/>
+  <path class="arrow-dash" d="M890 279 C810 354 742 353 742 396"/>
+
+  <rect class="pill" x="92" y="554" width="424" height="38" rx="8"/>
+  <text class="tiny" x="114" y="578">Fork 规则：产品改动只做品牌与分发，不承载 LuaAgent 语义。</text>
+
+  <rect class="pill" x="676" y="554" width="386" height="38" rx="8"/>
+  <text class="tiny" x="698" y="578">Bridge 规则：IDE 发送类型化请求，Eva-CLI 执行策略。</text>
+
+  <text class="small" x="60" y="660">结果：复用 IntelliJ Platform，同时保留 Eva-CLI 运行时边界的 LuaAgent 专用 IDE。</text>
+</svg>
