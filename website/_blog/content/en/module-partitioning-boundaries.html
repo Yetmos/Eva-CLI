@@ -1,0 +1,72 @@
+<p>Eva-CLI's module partitioning is not a crate-naming exercise. It is the architecture boundary that decides where authority lives, where side effects are allowed, and how hot-reloadable Agent behavior can evolve without turning the runtime into an unstructured script host.</p>
+
+<p>The short version is deliberate: Rust owns trusted runtime boundaries, Lua owns replaceable business behavior, EventBus and Scheduler own coordination, Adapter and service crates own side effects, and <code>eva-runtime</code> is the only place where concrete implementations are composed.</p>
+
+<figure class="blog-figure">
+  <img src="../../docs/assets/module-partition-overview.svg" alt="Eva-CLI module partition overview showing CLI, runtime, core contracts, event routing, Agents, Lua host, adapters, memory, storage, discovery, lifecycle, and observability boundaries.">
+  <figcaption>The module map separates stable ownership boundaries from temporary implementation phases.</figcaption>
+</figure>
+
+<h2>Start with ownership, not folders</h2>
+<p>The planned workspace uses crates for stable bounded contexts and modules inside each crate for implementation detail. That distinction matters. A folder layout can be reshuffled cheaply; an ownership boundary is harder to repair after behavior starts depending on the wrong direction.</p>
+
+<p>The first rule is that lower-level crates do not import the application composition root. <code>eva-core</code>, <code>eva-eventbus</code>, <code>eva-scheduler</code>, <code>eva-agent</code>, <code>eva-lua-host</code>, <code>eva-adapter</code>, <code>eva-storage</code>, and service crates should remain independently testable. <code>eva-runtime</code> wires them together, but it should not leak back into them.</p>
+
+<h2>The core dependency direction</h2>
+<p>The dependency direction should keep contracts at the center and concrete transports at the edge. Core types, Topic rules, structured errors, permission shapes, and observability fields can be shared inward. Provider protocols, shell execution, MCP transport, HTTP, hardware I/O, and release mutation must stay behind adapter or service boundaries.</p>
+
+<figure class="blog-figure">
+  <img src="../../docs/assets/module-dependency-rules.svg" alt="Eva-CLI module dependency rules showing core contracts at the center, runtime composition above, and adapters, services, Lua host, storage, policy, discovery, lifecycle, and observability depending in controlled directions.">
+  <figcaption>Dependency direction is the enforcement mechanism behind the module plan.</figcaption>
+</figure>
+
+<table class="blog-table">
+  <tr>
+    <th>Boundary</th>
+    <th>Owns</th>
+    <th>Must not own</th>
+  </tr>
+  <tr>
+    <td><code>eva-core</code></td>
+    <td>Events, Topics, IDs, schema-shaped contracts, common error shape.</td>
+    <td>Runtime orchestration, filesystem access, provider protocols, policy decisions.</td>
+  </tr>
+  <tr>
+    <td><code>eva-eventbus</code> and <code>eva-scheduler</code></td>
+    <td>Publish/subscribe, delivery, routing rules, queues, dead letters.</td>
+    <td>Business decisions, Lua execution, external capability calls.</td>
+  </tr>
+  <tr>
+    <td><code>eva-agent</code> and <code>eva-lua-host</code></td>
+    <td>Agent lifecycle, private inboxes, sandboxed Lua state, controlled host APIs.</td>
+    <td>Raw shell, raw network, secrets, device handles, release pointer mutation.</td>
+  </tr>
+  <tr>
+    <td><code>eva-adapter</code> and service crates</td>
+    <td>Capabilities, provider routing, side-effect boundaries, storage, memory, discovery, lifecycle.</td>
+    <td>Unvalidated Lua authority or hidden global state shared across modules.</td>
+  </tr>
+</table>
+
+<h2>Runtime handoff should be explicit</h2>
+<p>A good module boundary becomes visible in runtime handoff. User input enters through an ingress surface and becomes a typed Event. EventBus persists and publishes it. Scheduler decides delivery. AgentRuntime isolates each Agent inbox. Lua handles business logic through a narrow host context. AdapterRouter and service crates execute side effects only after schema and policy checks.</p>
+
+<figure class="blog-figure">
+  <img src="../../docs/assets/module-runtime-flow.svg" alt="Eva-CLI runtime module flow showing ingress to EventBus, Scheduler, AgentRuntime, Lua Host, Tool Layer, AdapterRouter, external providers, service modules, storage, lifecycle, and observability.">
+  <figcaption>The runtime flow keeps side effects outside Lua and makes each handoff observable.</figcaption>
+</figure>
+
+<h2>Cross-cutting rules</h2>
+<p>Some rules are not owned by one crate, but every crate must preserve them. Cross-module errors need stable fields such as <code>kind</code>, <code>message</code>, <code>retryable</code>, <code>provider_code</code>, and correlation identifiers. Permissions only narrow as requests move from system policy to manifest permissions, user or session policy, request constraints, and effective permissions. State ownership must remain explicit: Agent local state belongs to Agent and Lua generations, durable business state belongs to storage and memory, event recovery state belongs to EventBus, Adapter runtime state belongs to Adapter, and generation state belongs to lifecycle.</p>
+
+<pre class="blog-code"><code>foundation contracts
+  -> event and routing kernel
+  -> isolated Agent and Lua execution boundary
+  -> controlled capability and adapter boundary
+  -> discovery and runtime services
+  -> application, supervisor, and operational surfaces</code></pre>
+
+<h2>Why this matters for implementation</h2>
+<p>Eva-CLI will eventually need Skills, MCP, external Agents, memory, hardware, backup, release snapshots, and process generation switching. Each of those features wants direct access to something powerful. The module partition is what keeps those powers reviewable: discovery can find candidates, policy can authorize them, adapters can execute them, observability can record them, and runtime can compose them without letting Lua or Scheduler become hidden system APIs.</p>
+
+<p>The complete technical plan is available in <a href="../../docs/en/module-partitioning.md">Module Partitioning Plan</a>.</p>

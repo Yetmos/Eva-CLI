@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Eva-CLI 的模块划分边界 | Eva-CLI 博客</title>
+    <meta name="description" content="Eva-CLI 如何把架构决策落实为 Rust crate 边界、依赖方向、运行时交接和受控副作用归属。">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="Eva-CLI 的模块划分边界 | Eva-CLI 博客">
+    <meta property="og:description" content="Eva-CLI 如何把架构决策落实为 Rust crate 边界、依赖方向、运行时交接和受控副作用归属。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://Eva-CLI.com/zh-CN/blog/module-partitioning-boundaries/">
+    <meta property="article:published_time" content="2026-06-24">
+    <meta property="article:section" content="运行时">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/zh-CN/blog/module-partitioning-boundaries/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/blog/module-partitioning-boundaries/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/blog/module-partitioning-boundaries/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/blog/module-partitioning-boundaries/">
+    <link rel="icon" type="image/svg+xml" href="../../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../../" aria-label="Eva-CLI home">
+        <img src="../../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">多 Agent 运行时</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../../../">首页</a>
+        <a href="../../../docs/zh-CN/README.md">文档</a>
+        <a href="../../../zh-CN/blog/">博客</a>
+        <a href="../../../docs/zh-CN/总体架构方案.md">架构</a>
+        <a href="../../../#discussion">讨论</a>
+        <a href="../../../#feedback">反馈</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../../blog/module-partitioning-boundaries/" hreflang="en" lang="en">English</a>
+          <a href="../../../zh-CN/blog/module-partitioning-boundaries/" hreflang="zh-CN" lang="zh-CN" aria-current="page">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">博客</p>
+          <h1>Eva-CLI 的模块划分边界</h1>
+          <p class="blog-lead">Eva-CLI 如何把架构决策落实为 Rust crate 边界、依赖方向、运行时交接和受控副作用归属。</p>
+          <div class="blog-meta">
+            <span>发布： <time datetime="2026-06-24">2026-06-24</time></span>
+            <a href="../../../zh-CN/blog/category/runtime/">分类： 运行时</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>Eva-CLI 的模块划分不是给 crate 起名字。它真正要固定的是架构边界：权力归属在哪里，副作用在哪里发生，热更新 Agent 行为如何演进，同时又不把运行时变成一个没有结构的脚本宿主。</p>
+
+<p>简短结论是：Rust 托管可信运行时边界，Lua 承载可替换业务行为，EventBus 与 Scheduler 负责协作，Adapter 和服务 crate 负责副作用，<code>eva-runtime</code> 是唯一组合具体实现的位置。</p>
+
+<figure class="blog-figure">
+  <img src="../../../docs/assets/module-partition-overview.zh-CN.svg" alt="Eva-CLI 模块划分总览图，展示 CLI、runtime、核心契约、事件路由、Agent、Lua host、adapter、memory、storage、discovery、lifecycle 与 observability 边界。">
+  <figcaption>模块图表达的是稳定职责边界，不是临时实施阶段。</figcaption>
+</figure>
+
+<h2>先划职责，再排目录</h2>
+<p>推荐的 workspace 使用 crate 承载稳定职责域，crate 内部再用 module 组织实现细节。这个区别很重要：目录结构可以较低成本调整，职责边界一旦被错误依赖穿透，后续修复成本会高很多。</p>
+
+<p>第一条规则是底层 crate 不反向依赖应用组合根。<code>eva-core</code>、<code>eva-eventbus</code>、<code>eva-scheduler</code>、<code>eva-agent</code>、<code>eva-lua-host</code>、<code>eva-adapter</code>、<code>eva-storage</code> 和服务 crate 都应保持可独立测试。<code>eva-runtime</code> 负责装配它们，但不能把自身泄漏回这些模块。</p>
+
+<h2>核心依赖方向</h2>
+<p>依赖方向应把契约留在中心，把具体 transport 留在边缘。核心类型、Topic 规则、结构化错误、权限形状和观测字段可以向内共享。provider 协议、shell 执行、MCP transport、HTTP、硬件 I/O 和 release mutation 必须藏在 adapter 或服务边界之后。</p>
+
+<figure class="blog-figure">
+  <img src="../../../docs/assets/module-dependency-rules.zh-CN.svg" alt="Eva-CLI 模块依赖规则图，展示核心契约、runtime 组合根，以及 adapter、service、Lua host、storage、policy、discovery、lifecycle 和 observability 的受控依赖方向。">
+  <figcaption>依赖方向是模块方案真正的约束手段。</figcaption>
+</figure>
+
+<table class="blog-table">
+  <tr>
+    <th>边界</th>
+    <th>负责</th>
+    <th>不负责</th>
+  </tr>
+  <tr>
+    <td><code>eva-core</code></td>
+    <td>Event、Topic、ID、schema 形态契约、通用错误形态。</td>
+    <td>运行时编排、文件系统访问、provider 协议、策略决策。</td>
+  </tr>
+  <tr>
+    <td><code>eva-eventbus</code> 与 <code>eva-scheduler</code></td>
+    <td>发布订阅、投递、路由规则、队列、死信。</td>
+    <td>业务决策、Lua 执行、外部 capability 调用。</td>
+  </tr>
+  <tr>
+    <td><code>eva-agent</code> 与 <code>eva-lua-host</code></td>
+    <td>Agent 生命周期、私有 inbox、沙箱 Lua state、受控 host API。</td>
+    <td>原始 shell、原始网络、密钥、设备句柄、release pointer mutation。</td>
+  </tr>
+  <tr>
+    <td><code>eva-adapter</code> 与服务 crate</td>
+    <td>capability、provider 路由、副作用边界、storage、memory、discovery、lifecycle。</td>
+    <td>未经校验的 Lua 权力，或跨模块共享的隐式全局状态。</td>
+  </tr>
+</table>
+
+<h2>运行时交接必须显式</h2>
+<p>好的模块边界会在运行时交接上显形。用户输入通过 ingress surface 进入并变成 typed Event。EventBus 持久化并发布事件。Scheduler 决定投递。AgentRuntime 隔离每个 Agent inbox。Lua 通过窄 host context 处理业务逻辑。AdapterRouter 和服务 crate 只有在 schema 与 policy 校验通过后才执行副作用。</p>
+
+<figure class="blog-figure">
+  <img src="../../../docs/assets/module-runtime-flow.zh-CN.svg" alt="Eva-CLI 运行时模块流图，展示 ingress 到 EventBus、Scheduler、AgentRuntime、Lua Host、Tool Layer、AdapterRouter、外部 provider、服务模块、storage、lifecycle 与 observability 的交接。">
+  <figcaption>运行时流程把副作用留在 Lua 之外，并让每次交接可观测。</figcaption>
+</figure>
+
+<h2>横切规则</h2>
+<p>有些规则不属于单个 crate，但每个 crate 都必须保留。跨模块错误需要稳定字段，例如 <code>kind</code>、<code>message</code>、<code>retryable</code>、<code>provider_code</code> 和 correlation 标识。权限只能沿着 system policy、manifest permissions、user/session policy、request constraints、effective permissions 逐层收紧。状态归属也必须显式：Agent 局部状态归 Agent 与 Lua generation，业务持久状态归 storage 与 memory，事件恢复状态归 EventBus，Adapter 运行状态归 Adapter，generation 状态归 lifecycle。</p>
+
+<pre class="blog-code"><code>基础契约
+  -> 事件与路由内核
+  -> 隔离的 Agent 与 Lua 执行边界
+  -> 受控 capability 与 Adapter 边界
+  -> Discovery 与 Runtime services
+  -> CLI、Supervisor 和运维工作流</code></pre>
+
+<h2>为什么这会影响实现</h2>
+<p>Eva-CLI 后续会接入 Skills、MCP、外部 Agent、记忆、硬件、备份、Release Snapshot 和进程 generation 切换。每个功能都天然想直接拿到某种强权力。模块划分的价值就是把这些权力保持在可审查路径上：Discovery 可以发现候选，Policy 可以授权，Adapter 可以执行，Observability 可以记录，Runtime 可以组合，而 Lua 或 Scheduler 不会变成隐藏系统 API。</p>
+
+<p>完整技术方案见 <a href="../../../docs/zh-CN/模块划分方案.md">模块划分方案</a>。</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../../zh-CN/blog/">返回博客</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>作者： <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../../#feedback">提交反馈</a>
+    </footer>
+  </body>
+</html>

@@ -17,6 +17,26 @@
   ],
   "posts": [
     {
+      "id": "module-partitioning-boundaries",
+      "locale": "en",
+      "slug": "module-partitioning-boundaries",
+      "title": "Module Partitioning Boundaries in Eva-CLI",
+      "description": "How Eva-CLI turns architecture decisions into Rust crate boundaries, dependency direction, runtime handoffs, and controlled side-effect ownership.",
+      "date": "2026-06-24",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/module-partitioning-boundaries.html"
+    },
+    {
+      "id": "module-partitioning-boundaries",
+      "locale": "zh-CN",
+      "slug": "module-partitioning-boundaries",
+      "title": "Eva-CLI 的模块划分边界",
+      "description": "Eva-CLI 如何把架构决策落实为 Rust crate 边界、依赖方向、运行时交接和受控副作用归属。",
+      "date": "2026-06-24",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/module-partitioning-boundaries.html"
+    },
+    {
       "id": "evalauncher-mobile-client-thinking",
       "locale": "en",
       "slug": "evalauncher-mobile-client-thinking",
