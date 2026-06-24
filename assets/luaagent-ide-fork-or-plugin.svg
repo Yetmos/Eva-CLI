@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">LuaAgent IDE fork or plugin decision map</title>
+  <desc id="desc">A comparison diagram showing when to build LuaAgent as an IntelliJ IDEA plugin and when to create a thin IDEA Community based IDE distribution.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #d8e2ef; stroke-width: 1.6; }
+      .card { fill: #ffffff; stroke: #cfdae8; stroke-width: 1.5; }
+      .title { font: 800 30px Arial, "Segoe UI", sans-serif; fill: #172033; }
+      .subtitle { font: 400 15px Arial, "Segoe UI", sans-serif; fill: #617086; }
+      .h { font: 800 19px Arial, "Segoe UI", sans-serif; fill: #172033; }
+      .label { font: 800 15px Arial, "Segoe UI", sans-serif; fill: #172033; }
+      .text { font: 400 13px Arial, "Segoe UI", sans-serif; fill: #55657a; }
+      .small { font: 700 12px Arial, "Segoe UI", sans-serif; fill: #2563eb; }
+      .plugin { fill: #f0fdfa; stroke: #78cfc3; stroke-width: 1.6; }
+      .fork { fill: #eef6ff; stroke: #8eb8f5; stroke-width: 1.6; }
+      .runtime { fill: #fff7ed; stroke: #f4bd77; stroke-width: 1.6; }
+      .guard { fill: #fff1f2; stroke: #f0a3aa; stroke-width: 1.6; }
+      .neutral { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.6; }
+      .arrow { stroke: #1e3a8a; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .arrow-green { stroke: #0f766e; stroke-width: 2.4; fill: none; marker-end: url(#arrow-green); }
+      .arrow-dash { stroke: #64748b; stroke-width: 2.1; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow-gray); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="720"/>
+  <rect class="panel" x="32" y="28" width="1136" height="664" rx="8"/>
+
+  <text class="title" x="60" y="74">LuaAgent IDE: fork IDEA Community or ship a plugin?</text>
+  <text class="subtitle" x="60" y="102">A branded IDE is a product shell decision. The durable LuaAgent work should start in a plugin and a typed runtime bridge.</text>
+
+  <rect class="card" x="70" y="136" width="310" height="426" rx="8"/>
+  <text class="h" x="98" y="174">Plugin path</text>
+  <text class="text" x="98" y="198">Best when the goal is to validate</text>
+  <text class="text" x="98" y="216">language intelligence and runtime flow.</text>
+
+  <rect class="plugin" x="98" y="246" width="226" height="54" rx="8"/>
+  <text class="label" x="120" y="278">Fast iteration</text>
+  <text class="text" x="120" y="294">release without platform fork work</text>
+
+  <rect class="plugin" x="98" y="320" width="226" height="54" rx="8"/>
+  <text class="label" x="120" y="352">Native IDE APIs</text>
+  <text class="text" x="120" y="368">PSI, inspections, completion, run UI</text>
+
+  <rect class="plugin" x="98" y="394" width="226" height="54" rx="8"/>
+  <text class="label" x="120" y="426">Lower maintenance</text>
+  <text class="text" x="120" y="442">track extension points, not a fork</text>
+
+  <rect class="guard" x="98" y="468" width="226" height="54" rx="8"/>
+  <text class="label" x="120" y="500">Main limitation</text>
+  <text class="text" x="120" y="516">less control over product shell</text>
+
+  <rect class="card" x="445" y="136" width="310" height="426" rx="8"/>
+  <text class="h" x="473" y="174">Shared core</text>
+  <text class="text" x="473" y="198">The core should be identical in both</text>
+  <text class="text" x="473" y="216">delivery modes.</text>
+
+  <rect class="neutral" x="473" y="246" width="226" height="54" rx="8"/>
+  <text class="label" x="495" y="278">LuaAgent project model</text>
+  <text class="text" x="495" y="294">manifest, Lua files, topics, schemas</text>
+
+  <rect class="neutral" x="473" y="320" width="226" height="54" rx="8"/>
+  <text class="label" x="495" y="352">Language intelligence</text>
+  <text class="text" x="495" y="368">references, validation, quick fixes</text>
+
+  <rect class="runtime" x="473" y="394" width="226" height="54" rx="8"/>
+  <text class="label" x="495" y="426">Runtime Bridge</text>
+  <text class="text" x="495" y="442">typed requests into Eva-CLI</text>
+
+  <rect class="guard" x="473" y="468" width="226" height="54" rx="8"/>
+  <text class="label" x="495" y="500">Safety boundary</text>
+  <text class="text" x="495" y="516">IDE reports facts, runtime enforces</text>
+
+  <rect class="card" x="820" y="136" width="310" height="426" rx="8"/>
+  <text class="h" x="848" y="174">IDEA Community fork</text>
+  <text class="text" x="848" y="198">Best when the goal is a standalone</text>
+  <text class="text" x="848" y="216">LuaAgent IDE distribution.</text>
+
+  <rect class="fork" x="848" y="246" width="226" height="54" rx="8"/>
+  <text class="label" x="870" y="278">Controlled defaults</text>
+  <text class="text" x="870" y="294">bundled plugin, templates, settings</text>
+
+  <rect class="fork" x="848" y="320" width="226" height="54" rx="8"/>
+  <text class="label" x="870" y="352">Product identity</text>
+  <text class="text" x="870" y="368">branding, onboarding, update channel</text>
+
+  <rect class="fork" x="848" y="394" width="226" height="54" rx="8"/>
+  <text class="label" x="870" y="426">Curated runtime UX</text>
+  <text class="text" x="870" y="442">ship bridge and Eva-CLI defaults</text>
+
+  <rect class="guard" x="848" y="468" width="226" height="54" rx="8"/>
+  <text class="label" x="870" y="500">Main cost</text>
+  <text class="text" x="870" y="516">upstream merge and release burden</text>
+
+  <path class="arrow-green" d="M380 350 H445"/>
+  <path class="arrow" d="M755 350 H820"/>
+  <path class="arrow-dash" d="M975 562 C975 626 224 626 224 562"/>
+
+  <rect class="neutral" x="102" y="594" width="996" height="58" rx="8"/>
+  <text class="small" x="130" y="625">Recommended sequence: build the LuaAgent plugin first, prove the Runtime Bridge, then create a thin IDEA Community distribution only when packaging control becomes necessary.</text>
+</svg>

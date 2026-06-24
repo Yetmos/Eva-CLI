@@ -24,6 +24,26 @@
   ],
   "posts": [
     {
+      "id": "luaagent-ide-fork-vs-plugin",
+      "locale": "en",
+      "slug": "luaagent-ide-fork-vs-plugin",
+      "title": "LuaAgent IDE: IDEA Community Fork or IDEA Plugin?",
+      "description": "A practical comparison of building LuaAgent tooling as an IntelliJ IDEA plugin versus a thin IDEA Community based IDE distribution, with tradeoffs, risks, and a recommended implementation sequence.",
+      "date": "2026-06-24",
+      "category": "tooling",
+      "contentPath": "website/_blog/content/en/luaagent-ide-fork-vs-plugin.html"
+    },
+    {
+      "id": "luaagent-ide-fork-vs-plugin",
+      "locale": "zh-CN",
+      "slug": "luaagent-ide-fork-vs-plugin",
+      "title": "LuaAgent IDE：基于 IDEA Community 二次开发，还是做 IDEA 插件？",
+      "description": "对比用 IntelliJ IDEA 插件实现 LuaAgent 工具链，以及基于 IDEA Community 做薄 IDE 发行版的优缺点、风险边界和推荐实现顺序。",
+      "date": "2026-06-24",
+      "category": "tooling",
+      "contentPath": "website/_blog/content/zh-CN/luaagent-ide-fork-vs-plugin.html"
+    },
+    {
       "id": "luaagent-idea-community-ide",
       "locale": "en",
       "slug": "luaagent-idea-community-ide",

@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">LuaAgent IDE 二次开发与插件路线对比图</title>
+  <desc id="desc">对比 LuaAgent 应先做 IntelliJ IDEA 插件，还是基于 IDEA Community 做一个薄产品发行版。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #d8e2ef; stroke-width: 1.6; }
+      .card { fill: #ffffff; stroke: #cfdae8; stroke-width: 1.5; }
+      .title { font: 800 30px Arial, "Microsoft YaHei", "PingFang SC", sans-serif; fill: #172033; }
+      .subtitle { font: 400 15px Arial, "Microsoft YaHei", "PingFang SC", sans-serif; fill: #617086; }
+      .h { font: 800 19px Arial, "Microsoft YaHei", "PingFang SC", sans-serif; fill: #172033; }
+      .label { font: 800 15px Arial, "Microsoft YaHei", "PingFang SC", sans-serif; fill: #172033; }
+      .text { font: 400 13px Arial, "Microsoft YaHei", "PingFang SC", sans-serif; fill: #55657a; }
+      .small { font: 700 12px Arial, "Microsoft YaHei", "PingFang SC", sans-serif; fill: #2563eb; }
+      .plugin { fill: #f0fdfa; stroke: #78cfc3; stroke-width: 1.6; }
+      .fork { fill: #eef6ff; stroke: #8eb8f5; stroke-width: 1.6; }
+      .runtime { fill: #fff7ed; stroke: #f4bd77; stroke-width: 1.6; }
+      .guard { fill: #fff1f2; stroke: #f0a3aa; stroke-width: 1.6; }
+      .neutral { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.6; }
+      .arrow { stroke: #1e3a8a; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .arrow-green { stroke: #0f766e; stroke-width: 2.4; fill: none; marker-end: url(#arrow-green); }
+      .arrow-dash { stroke: #64748b; stroke-width: 2.1; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow-gray); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#1e3a8a"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="720"/>
+  <rect class="panel" x="32" y="28" width="1136" height="664" rx="8"/>
+
+  <text class="title" x="60" y="74">LuaAgent IDE：二次开发 IDEA Community，还是做 IDEA 插件？</text>
+  <text class="subtitle" x="60" y="102">品牌 IDE 是产品外壳决策。真正耐用的 LuaAgent 能力应先落在插件和类型化 Runtime Bridge 里。</text>
+
+  <rect class="card" x="70" y="136" width="310" height="426" rx="8"/>
+  <text class="h" x="98" y="174">插件路线</text>
+  <text class="text" x="98" y="198">适合先验证语言智能、运行时连接</text>
+  <text class="text" x="98" y="216">和日常开发闭环。</text>
+
+  <rect class="plugin" x="98" y="246" width="226" height="54" rx="8"/>
+  <text class="label" x="120" y="278">迭代快</text>
+  <text class="text" x="120" y="294">不用承担平台 fork 发布成本</text>
+
+  <rect class="plugin" x="98" y="320" width="226" height="54" rx="8"/>
+  <text class="label" x="120" y="352">原生 IDE API</text>
+  <text class="text" x="120" y="368">PSI、检查、补全、运行配置</text>
+
+  <rect class="plugin" x="98" y="394" width="226" height="54" rx="8"/>
+  <text class="label" x="120" y="426">维护成本低</text>
+  <text class="text" x="120" y="442">跟扩展点走，不背平台分支</text>
+
+  <rect class="guard" x="98" y="468" width="226" height="54" rx="8"/>
+  <text class="label" x="120" y="500">主要限制</text>
+  <text class="text" x="120" y="516">对产品外壳控制较弱</text>
+
+  <rect class="card" x="445" y="136" width="310" height="426" rx="8"/>
+  <text class="h" x="473" y="174">共享核心</text>
+  <text class="text" x="473" y="198">两条交付路线不应分裂核心能力。</text>
+  <text class="text" x="473" y="216">插件和 IDE 发行版复用同一套内核。</text>
+
+  <rect class="neutral" x="473" y="246" width="226" height="54" rx="8"/>
+  <text class="label" x="495" y="278">LuaAgent 项目模型</text>
+  <text class="text" x="495" y="294">manifest、Lua、Topic、schema</text>
+
+  <rect class="neutral" x="473" y="320" width="226" height="54" rx="8"/>
+  <text class="label" x="495" y="352">语言智能</text>
+  <text class="text" x="495" y="368">引用、校验、quick fix</text>
+
+  <rect class="runtime" x="473" y="394" width="226" height="54" rx="8"/>
+  <text class="label" x="495" y="426">Runtime Bridge</text>
+  <text class="text" x="495" y="442">类型化请求进入 Eva-CLI</text>
+
+  <rect class="guard" x="473" y="468" width="226" height="54" rx="8"/>
+  <text class="label" x="495" y="500">安全边界</text>
+  <text class="text" x="495" y="516">IDE 反馈事实，Runtime 执行策略</text>
+
+  <rect class="card" x="820" y="136" width="310" height="426" rx="8"/>
+  <text class="h" x="848" y="174">IDEA Community 二次开发</text>
+  <text class="text" x="848" y="198">适合需要独立 LuaAgent IDE</text>
+  <text class="text" x="848" y="216">发行版和默认体验时使用。</text>
+
+  <rect class="fork" x="848" y="246" width="226" height="54" rx="8"/>
+  <text class="label" x="870" y="278">默认体验可控</text>
+  <text class="text" x="870" y="294">内置插件、模板、设置</text>
+
+  <rect class="fork" x="848" y="320" width="226" height="54" rx="8"/>
+  <text class="label" x="870" y="352">产品身份明确</text>
+  <text class="text" x="870" y="368">品牌、引导、更新通道</text>
+
+  <rect class="fork" x="848" y="394" width="226" height="54" rx="8"/>
+  <text class="label" x="870" y="426">运行时体验统一</text>
+  <text class="text" x="870" y="442">随包提供 Bridge 和 Eva-CLI 默认项</text>
+
+  <rect class="guard" x="848" y="468" width="226" height="54" rx="8"/>
+  <text class="label" x="870" y="500">主要成本</text>
+  <text class="text" x="870" y="516">上游合并、构建和发布负担</text>
+
+  <path class="arrow-green" d="M380 350 H445"/>
+  <path class="arrow" d="M755 350 H820"/>
+  <path class="arrow-dash" d="M975 562 C975 626 224 626 224 562"/>
+
+  <rect class="neutral" x="102" y="594" width="996" height="58" rx="8"/>
+  <text class="small" x="130" y="625">建议顺序：先做 LuaAgent 插件，跑通 Runtime Bridge；只有当分发、品牌和默认体验需要统一时，再做薄 IDEA Community 发行版。</text>
+</svg>

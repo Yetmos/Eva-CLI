@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LuaAgent IDE：基于 IDEA Community 二次开发，还是做 IDEA 插件？ | Eva-CLI 博客</title>
+    <meta name="description" content="对比用 IntelliJ IDEA 插件实现 LuaAgent 工具链，以及基于 IDEA Community 做薄 IDE 发行版的优缺点、风险边界和推荐实现顺序。">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="LuaAgent IDE：基于 IDEA Community 二次开发，还是做 IDEA 插件？ | Eva-CLI 博客">
+    <meta property="og:description" content="对比用 IntelliJ IDEA 插件实现 LuaAgent 工具链，以及基于 IDEA Community 做薄 IDE 发行版的优缺点、风险边界和推荐实现顺序。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://Eva-CLI.com/zh-CN/blog/luaagent-ide-fork-vs-plugin/">
+    <meta property="article:published_time" content="2026-06-24">
+    <meta property="article:section" content="工具链">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://Eva-CLI.com/zh-CN/blog/luaagent-ide-fork-vs-plugin/">
+    <link rel="alternate" hreflang="en" href="https://Eva-CLI.com/blog/luaagent-ide-fork-vs-plugin/">
+    <link rel="alternate" hreflang="zh-CN" href="https://Eva-CLI.com/zh-CN/blog/luaagent-ide-fork-vs-plugin/">
+    <link rel="alternate" hreflang="x-default" href="https://Eva-CLI.com/blog/luaagent-ide-fork-vs-plugin/">
+    <link rel="icon" type="image/svg+xml" href="../../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../../" aria-label="Eva-CLI home">
+        <img src="../../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">多 Agent 运行时</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../../../">首页</a>
+        <a href="../../../docs/zh-CN/README.md">文档</a>
+        <a href="../../../zh-CN/blog/">博客</a>
+        <a href="../../../docs/zh-CN/总体架构方案.md">架构</a>
+        <a href="../../../#discussion">讨论</a>
+        <a href="../../../#feedback">反馈</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../../blog/luaagent-ide-fork-vs-plugin/" hreflang="en" lang="en">English</a>
+          <a href="../../../zh-CN/blog/luaagent-ide-fork-vs-plugin/" hreflang="zh-CN" lang="zh-CN" aria-current="page">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">博客</p>
+          <h1>LuaAgent IDE：基于 IDEA Community 二次开发，还是做 IDEA 插件？</h1>
+          <p class="blog-lead">对比用 IntelliJ IDEA 插件实现 LuaAgent 工具链，以及基于 IDEA Community 做薄 IDE 发行版的优缺点、风险边界和推荐实现顺序。</p>
+          <div class="blog-meta">
+            <span>发布： <time datetime="2026-06-24">2026-06-24</time></span>
+            <a href="../../../zh-CN/blog/category/tooling/">分类： 工具链</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>在 IntelliJ 生态里做 LuaAgent 工具链，有两条合理路线。一条是做普通 IDEA 插件。另一条是基于 IDEA Community 二次开发一个带品牌的 LuaAgent IDE。两者不是同等成本的选择。插件适合验证语言模型、Runtime Bridge、检查、补全和日常 Agent 开发闭环；产品 fork 只有在需要统一分发、默认工作区、内置运行时和首启体验时才值得承担。</p>
+
+<p>所以务实答案不是简单地二选一。应该先做 LuaAgent 插件，并保证它能在原生 IntelliJ IDEA Community 中独立可用。等插件中的语言能力和 Runtime Bridge 被证明稳定后，再把同一套插件打包进一个薄的 IDEA Community LuaAgent IDE 发行版，用它解决一键上手、默认配置和品牌体验问题。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/luaagent-ide-fork-or-plugin.zh-CN.svg" alt="LuaAgent IDEA 插件路线、共享 LuaAgent 工具核心和基于 IDEA Community 二次开发 IDE 路线的对比决策图。">
+  <figcaption>插件和品牌 IDE 应共享同一套 LuaAgent 核心。二次开发 IDE 应负责包装体验，而不是复制语言逻辑。</figcaption>
+</figure>
+
+<h2>两条路线分别负责什么</h2>
+<p>LuaAgent IDE 需要的不只是语法高亮。它要理解 Lua 代码、Agent manifest、capability schema、EventBus Topic、记忆作用域、dry-run 场景和 Eva-CLI 运行时诊断。IntelliJ Platform 的扩展点很适合承载这部分核心能力：文件类型、PSI、引用、检查、补全、运行配置、工具窗口和项目模型发现，都可以放在插件里。</p>
+
+<p>IDEA Community fork 应该做得更少。它应该负责产品级选择：应用名、图标、内置插件集合、默认设置、项目模板、更新元数据、市场策略和分发包。如果把 LuaAgent 语义直接写进平台内部，每次合并上游都会更重，也会制造第二套可能漂移的 Agent 行为实现。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>决策项</th>
+    <th>IDEA 插件</th>
+    <th>基于 IDEA Community 的 IDE</th>
+  </tr>
+  <tr>
+    <td>适合场景</td>
+    <td>验证 LuaAgent 语言支持、检查、补全、运行配置和 Runtime Bridge 行为。</td>
+    <td>发布完整 LuaAgent IDE，统一品牌、默认插件、模板、首启引导和分发体验。</td>
+  </tr>
+  <tr>
+    <td>主要优点</td>
+    <td>迭代快，维护成本低，发布面小，并且可兼容用户已有 JetBrains IDE。</td>
+    <td>产品身份强，默认环境可预测，安装和配置摩擦低，运行时体验可以随包统一。</td>
+  </tr>
+  <tr>
+    <td>主要成本</td>
+    <td>对外壳、已安装插件、首启流程、更新通道和跨 IDE 环境一致性的控制较弱。</td>
+    <td>需要长期合并上游，维护更大的构建和发布流水线，处理许可、QA、签名和安装包。</td>
+  </tr>
+  <tr>
+    <td>过度使用风险</td>
+    <td>插件试图模拟完整产品，把 onboarding、运行时安装和策略工作都塞进插件。</td>
+    <td>fork 变厚，把 LuaAgent 行为写入平台代码，使每次 IntelliJ 更新都很昂贵。</td>
+  </tr>
+  <tr>
+    <td>建议定位</td>
+    <td>作为 LuaAgent 语言智能和运行时集成的主要工程表面。</td>
+    <td>作为薄分发外壳，在工作流被证明后内置并配置同一套插件。</td>
+  </tr>
+</table>
+
+<h2>为什么先做插件</h2>
+<p>插件路线是拿到证据的最短路径。它能先回答真正重要的技术问题：LuaAgent 文件能否稳定解析，manifest 权限能否在运行前检查，Topic 和 capability 引用能否跨工作区解析，scenario dry run 能否把诊断内联回编辑器，Eva-CLI 能否继续保持执行权威。</p>
+
+<p>这也符合 IntelliJ Platform 的开发形态。具备语言智能的插件可以使用 custom language support、parser 与 PSI、引用、inspection、intention、run configuration 和 tool window，而不需要修改 IDE 产品本身。LuaAgent 团队可以独立测试 fixture 项目、parser golden 输出、bridge contract 和 UI 工作流，不必每一步都跑完整 IDE 发行版。</p>
+
+<pre class="blog-code"><code>建议第一版
+  LuaAgent 插件
+    文件类型：agent.yaml、*.lua、*.topic、*.schema、*.scenario
+    索引：capability、Topic、记忆作用域、运行时 gate
+    编辑器：补全、导航、检查、quick fix
+    运行 UI：manifest validate、scenario dry run、受监督会话
+    Bridge：类型化请求进入 Eva-CLI，不执行编辑器拼出的 shell</code></pre>
+
+<h2>什么时候值得做品牌 IDE</h2>
+<p>当用户体验必须从首次启动就被控制时，独立 LuaAgent IDE 才有价值。比如预装 LuaAgent 工具链，提供默认 Eva-CLI runtime 位置，内置常见 Agent 模板，让欢迎页直接打开 Agent workspace，以及让发布节奏跟随 Eva-CLI，而不是完全受插件市场节奏影响。</p>
+
+<p>约束是 fork 必须保持薄。它可以内置 LuaAgent 插件，裁剪无关默认插件，设置产品元数据，调整默认设置，提供项目模板，接入更新通道。但它不应该负责解析、Agent 策略、Runtime Bridge 行为或执行决策。这些能力应该留在插件和 Eva-CLI runtime 里，让同一套核心既能运行在原生 IDEA Community，也能运行在带品牌的 LuaAgent IDE 中。</p>
+
+<h2>运行时权威必须留在 IDE 外面</h2>
+<p>两条路线都需要同一个安全边界。IDE 可以请求事实和受控动作，但策略必须由 Eva-CLI 执行。插件通过带版本的 Runtime Bridge 请求 capability 快照、manifest 校验、Topic 解析、scenario dry run、audit trace 和受监督会话。编辑器不应该从 UI 状态拼任意 shell 命令，也不应该直接持有密钥和权限判定。</p>
+
+<p>这对 fork 出来的 IDE 尤其重要，因为产品控制力会让不安全捷径看起来很方便。更好的拆分很简单：IntelliJ 提供编辑表面，LuaAgent 插件把项目结构转成开发反馈，Runtime Bridge 传递类型化请求，Eva-CLI 负责执行、权限、EventBus 投递、Adapter、记忆、审计和回滚。</p>
+
+<h2>实现顺序</h2>
+<ol>
+  <li>先定义 LuaAgent 项目模型和 Bridge 协议，再考虑产品包装。</li>
+  <li>在原生 IDEA Community 内构建插件，用测试覆盖 parser、PSI、引用、检查、补全、运行配置和 Bridge contract。</li>
+  <li>用真实 LuaAgent fixture 项目验证日常工作流：创建 Agent、校验 manifest、解析 capability、运行 scenario、查看 trace。</li>
+  <li>等工作流稳定后，再创建基于 IDEA Community 的发行版，内置同一套插件和默认配置。</li>
+  <li>给 fork 设预算：每个产品 fork patch 都必须归类为品牌、分发、默认设置、模板或更新通道工作。</li>
+</ol>
+
+<p>这个顺序把最高风险的工程工作留在插件里，让它更容易测试和发布。品牌 IDE 于是成为包装和 onboarding 层，而不是另一套 LuaAgent 智能实现。</p>
+
+<p>相关上游资料：<a href="https://github.com/JetBrains/intellij-community">JetBrains/intellij-community</a>、<a href="https://plugins.jetbrains.com/docs/intellij/custom-language-support.html">Custom Language Support</a>、<a href="https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html">Plugin Configuration File</a>、<a href="https://plugins.jetbrains.com/docs/intellij/run-configurations.html">Run Configurations</a>。</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../../zh-CN/blog/">返回博客</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>作者： <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../../#feedback">提交反馈</a>
+    </footer>
+  </body>
+</html>

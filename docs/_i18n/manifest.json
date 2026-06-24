@@ -113,6 +113,17 @@
       }
     },
     {
+      "id": "luaagent-ide-fork-or-plugin-diagram",
+      "title": "LuaAgent IDE Fork or Plugin Decision Diagram",
+      "source": "assets/luaagent-ide-fork-or-plugin.svg",
+      "translations": {
+        "zh-CN": "assets/luaagent-ide-fork-or-plugin.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
       "id": "architecture-harness-boundary-diagram",
       "title": "Eva-CLI Architecture and Harness Boundary Diagram",
       "source": "assets/eva-architecture-harness-boundary.svg",
