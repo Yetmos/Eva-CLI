@@ -4,8 +4,6 @@
 > Canonical: docs/en/architecture-overview.md
 > Translation: [简体中文](../zh-CN/总体架构方案.md)
 
-![Architecture Overview illustration](../../assets/eva-cli-doc-architecture-overview.svg)
-
 Updated: 2026-06-16
 
 ## Purpose

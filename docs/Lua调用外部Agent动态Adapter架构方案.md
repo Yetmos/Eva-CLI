@@ -1,7 +1,5 @@
 # Lua 调用外部 Agent 动态 Adapter 架构方案
 
-![Lua 外部 Agent Adapter 插图](../assets/eva-cli-doc-lua-external-agent-adapter.zh-CN.svg)
-
 更新日期：2026-06-12
 
 文档关系：

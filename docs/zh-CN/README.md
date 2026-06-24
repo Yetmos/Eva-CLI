@@ -4,8 +4,6 @@
 > Canonical source: ../en/README.md
 > Translation status: current
 
-![文档中心 插图](../../assets/eva-cli-doc-docs-home.zh-CN.svg)
-
 这里维护 Eva-CLI 的中文文档入口。英文文档位于
 [../en/README.md](../en/README.md)，是后续实现规范的 canonical source。
 

@@ -1,7 +1,5 @@
 # Eva-CLI Documentation
 
-![Documentation Home illustration](../assets/eva-cli-doc-docs-home.svg)
-
 The documentation now uses English as the canonical source and keeps localized
 content under locale-specific directories.
 

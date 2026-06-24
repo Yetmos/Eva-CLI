@@ -1,7 +1,5 @@
 # 备份、迁移包与 Release Snapshot 架构方案
 
-![备份、迁移包与 Release Snapshot 插图](../assets/eva-cli-doc-backup-migration-release-snapshot.zh-CN.svg)
-
 本文档已纳入多语言文档结构：
 
 - 中文正文：[zh-CN/备份迁移包与ReleaseSnapshot架构方案.md](zh-CN/备份迁移包与ReleaseSnapshot架构方案.md)

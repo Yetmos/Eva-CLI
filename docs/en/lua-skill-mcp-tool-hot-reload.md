@@ -4,8 +4,6 @@
 > Canonical: docs/en/lua-skill-mcp-tool-hot-reload.md
 > Translation: [简体中文](../zh-CN/Lua承载Skill-MCP-Tool热更新架构方案.md)
 
-![Lua Skill, MCP, and Tool Hot Reload illustration](../../assets/eva-cli-doc-lua-skill-mcp-tool-hot-reload.svg)
-
 Updated: 2026-06-16
 
 ## Purpose

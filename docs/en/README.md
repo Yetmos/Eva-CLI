@@ -4,8 +4,6 @@
 > Canonical: docs/en/README.md
 > Translation: [简体中文](../zh-CN/README.md)
 
-![Documentation Home illustration](../../assets/eva-cli-doc-docs-home.svg)
-
 Eva-CLI is currently in the architecture-design stage. The repository documents
 the target runtime, extension model, memory model, discovery model, hardware
 integration, configuration system, and process-level recovery strategy before

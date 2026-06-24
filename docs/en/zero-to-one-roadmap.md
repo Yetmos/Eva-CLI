@@ -1,7 +1,5 @@
 # Zero to 1.0 Roadmap
 
-![Zero to 1.0 Roadmap illustration](../../assets/eva-cli-doc-zero-to-one-roadmap.svg)
-
 Eva-CLI should move from architecture design to a 1.0 release through a staged
 implementation path. The project should not jump directly from documents to a
 large runtime implementation. Each stage must leave behind reviewable artifacts

@@ -4,8 +4,6 @@
 > Canonical: docs/en/website-docs-i18n.md
 > Translation: [简体中文](../zh-CN/网站与文档多语言适配方案.md)
 
-![Website and Documentation i18n illustration](../../assets/eva-cli-doc-website-docs-i18n.svg)
-
 Updated: 2026-06-16
 
 ## Purpose
