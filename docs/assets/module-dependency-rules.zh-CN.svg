@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="700" viewBox="0 0 1180 700" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 依赖方向规则</title>
+  <desc id="desc">应用、运行时、集成、内核和基础契约模块之间允许的依赖方向。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .ring0 { fill: #e0f2fe; stroke: #0369a1; stroke-width: 2; }
+      .ring1 { fill: #dcfce7; stroke: #15803d; stroke-width: 2; }
+      .ring2 { fill: #fef3c7; stroke: #b45309; stroke-width: 2; }
+      .ring3 { fill: #fae8ff; stroke: #a21caf; stroke-width: 2; }
+      .ring4 { fill: #ede9fe; stroke: #6d28d9; stroke-width: 2; }
+      .title { font: 700 22px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .label { font: 700 15px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .small { font: 400 12px Arial, "Microsoft YaHei", sans-serif; fill: #334155; }
+      .note { font: 700 13px Arial, "Microsoft YaHei", sans-serif; fill: #991b1b; }
+      .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .bad { stroke: #dc2626; stroke-width: 2.4; stroke-dasharray: 8 6; fill: none; marker-end: url(#badArrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <marker id="badArrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1180" height="700"/>
+  <text class="title" x="50" y="50">依赖方向与边界规则</text>
+  <text class="small" x="50" y="74">具体 transport、Lua handler、硬件 driver 和外部工具留在内核之外，只由组合运行时装配。</text>
+
+  <circle class="ring4" cx="520" cy="360" r="280"/>
+  <circle class="ring3" cx="520" cy="360" r="224"/>
+  <circle class="ring2" cx="520" cy="360" r="168"/>
+  <circle class="ring1" cx="520" cy="360" r="112"/>
+  <circle class="ring0" cx="520" cy="360" r="58"/>
+
+  <text class="label" x="486" y="355">基础契约</text>
+  <text class="small" x="458" y="376">core, storage, obs</text>
+  <text class="label" x="486" y="275">调度内核</text>
+  <text class="small" x="421" y="296">eventbus, scheduler</text>
+  <text class="label" x="457" y="198">执行宿主</text>
+  <text class="small" x="385" y="219">agent, lua-host, capability</text>
+  <text class="label" x="457" y="122">外部集成</text>
+  <text class="small" x="345" y="143">adapter, mcp, memory, hardware</text>
+  <text class="label" x="472" y="612">应用入口</text>
+  <text class="small" x="384" y="633">cli, supervisor, tests</text>
+
+  <path class="arrow" d="M815 170 C760 222 704 270 645 315"/>
+  <text class="small" x="833" y="170">允许：外层模块向内依赖</text>
+  <path class="bad" d="M380 355 C258 310 220 230 255 150"/>
+  <text class="note" x="78" y="143">禁止：core/kernel 反向导入 runtime、adapter 或 CLI</text>
+
+  <rect x="815" y="230" width="295" height="270" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text class="label" x="838" y="262">实践规则</text>
+  <text class="small" x="838" y="294">1. eva-core 不做 Tokio 运行时装配。</text>
+  <text class="small" x="838" y="320">2. Scheduler 不导入 Lua 或 Adapter。</text>
+  <text class="small" x="838" y="346">3. Lua host 调用端口，不调具体工具。</text>
+  <text class="small" x="838" y="372">4. Adapter transport 不能改写 policy。</text>
+  <text class="small" x="838" y="398">5. Discovery 只发现，Policy 才授权。</text>
+  <text class="small" x="838" y="424">6. Runtime 是唯一组合根。</text>
+  <text class="small" x="838" y="450">7. 测试可跨层使用 fixtures。</text>
+</svg>

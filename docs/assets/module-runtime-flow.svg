@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="620" viewBox="0 0 1180 620" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI runtime call flow</title>
+  <desc id="desc">Main runtime flow from ingress to EventBus, Scheduler, Lua Agent, Tool Layer, AdapterRouter, and external capabilities.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 8; }
+      .hot { fill: #fef3c7; stroke: #d97706; }
+      .rust { fill: #e0f2fe; stroke: #0284c7; }
+      .adapter { fill: #fce7f3; stroke: #db2777; }
+      .store { fill: #dcfce7; stroke: #16a34a; }
+      .title { font: 700 22px Arial, sans-serif; fill: #0f172a; }
+      .label { font: 700 14px Arial, sans-serif; fill: #0f172a; }
+      .small { font: 400 12px Arial, sans-serif; fill: #334155; }
+      .arrow { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .audit { stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 6 5; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1180" height="620"/>
+  <text class="title" x="50" y="48">Runtime Flow and Module Handoffs</text>
+  <text class="small" x="50" y="72">The critical path keeps side effects behind Rust-controlled tools and adapters.</text>
+
+  <rect class="box rust" x="60" y="125" width="130" height="70"/>
+  <text class="label" x="90" y="156">Ingress</text>
+  <text class="small" x="78" y="176">CLI / API / UI</text>
+
+  <rect class="box rust" x="240" y="125" width="130" height="70"/>
+  <text class="label" x="276" y="156">EventBus</text>
+  <text class="small" x="262" y="176">typed Topic</text>
+
+  <rect class="box rust" x="420" y="125" width="130" height="70"/>
+  <text class="label" x="452" y="156">Scheduler</text>
+  <text class="small" x="444" y="176">route to inbox</text>
+
+  <rect class="box hot" x="600" y="125" width="145" height="70"/>
+  <text class="label" x="631" y="156">AgentRuntime</text>
+  <text class="small" x="628" y="176">Lua State queue</text>
+
+  <rect class="box hot" x="795" y="125" width="145" height="70"/>
+  <text class="label" x="832" y="156">Lua Logic</text>
+  <text class="small" x="817" y="176">on_event + state</text>
+
+  <rect class="box rust" x="795" y="285" width="145" height="70"/>
+  <text class="label" x="824" y="316">Tool Layer</text>
+  <text class="small" x="816" y="336">schema + policy</text>
+
+  <rect class="box adapter" x="600" y="285" width="145" height="70"/>
+  <text class="label" x="628" y="316">AdapterRouter</text>
+  <text class="small" x="622" y="336">provider selection</text>
+
+  <rect class="box adapter" x="410" y="285" width="150" height="70"/>
+  <text class="label" x="430" y="316">AdapterRuntime</text>
+  <text class="small" x="432" y="336">stdio/http/mcp/skill</text>
+
+  <rect class="box adapter" x="210" y="285" width="150" height="70"/>
+  <text class="label" x="244" y="316">External</text>
+  <text class="small" x="233" y="336">Agent / MCP / HW</text>
+
+  <rect class="box store" x="420" y="455" width="150" height="70"/>
+  <text class="label" x="452" y="486">StateStore</text>
+  <text class="small" x="435" y="506">memory + durable log</text>
+
+  <rect class="box store" x="640" y="455" width="150" height="70"/>
+  <text class="label" x="676" y="486">Audit</text>
+  <text class="small" x="662" y="506">trace + metrics</text>
+
+  <path class="arrow" d="M190 160 L236 160"/>
+  <path class="arrow" d="M370 160 L416 160"/>
+  <path class="arrow" d="M550 160 L596 160"/>
+  <path class="arrow" d="M745 160 L791 160"/>
+  <path class="arrow" d="M867 195 L867 281"/>
+  <path class="arrow" d="M795 320 L749 320"/>
+  <path class="arrow" d="M600 320 L564 320"/>
+  <path class="arrow" d="M410 320 L364 320"/>
+  <path class="arrow" d="M285 285 C285 235 660 235 842 279"/>
+  <path class="arrow" d="M285 355 C285 405 667 406 672 199"/>
+  <path class="audit" d="M485 195 L485 451"/>
+  <path class="audit" d="M672 355 L715 451"/>
+  <path class="audit" d="M867 355 C840 430 786 459 790 489"/>
+  <text class="small" x="74" y="565">Important boundary: Lua can express intent and transform results, but it cannot open files, shell, network, MCP sessions, or device handles directly.</text>
+</svg>

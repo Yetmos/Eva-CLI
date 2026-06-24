@@ -48,12 +48,12 @@
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
     "progressCurrentTitle": "Architecture and design documents",
-    "progressCurrentBody": "Most of the first implementation cycle is still in the design-document stage. The next practical work is module layout, executable contracts, a minimum CLI skeleton, and one end-to-end Runtime loop.",
+    "progressCurrentBody": "The architecture and module partitioning documents are now in place. The next practical work is to create the Rust workspace, lock executable contracts, scaffold a minimum CLI skeleton, and prove one end-to-end Runtime loop.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Create the Rust project and module layout.",
+      "Create the Rust workspace from the module partitioning plan.",
       "Define manifest, event, policy, error, and Lua host API contracts.",
       "Build a minimum runnable CLI skeleton and Runtime loop."
     ],
@@ -61,14 +61,14 @@
       {
         "status": "complete",
         "badge": "Done",
-        "label": "Architecture and design documents",
-        "description": "System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, and docs are in place."
+        "label": "Architecture and module partitioning",
+        "description": "System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, docs, and module partitioning are in place."
       },
       {
         "status": "current",
         "badge": "Now",
-        "label": "Module layout and contracts",
-        "description": "Next work: Rust source layout, manifest schemas, event types, policy rules, error model, and Lua host API contracts."
+        "label": "Workspace scaffold and contracts",
+        "description": "Next work: create the Rust workspace, manifest schemas, event types, policy rules, error model, and Lua host API contracts."
       },
       {
         "status": "next",
@@ -93,6 +93,11 @@
         "id": "architecture-overview",
         "title": "Architecture Overview",
         "description": "System goals, module boundaries, runtime chain, safety principles, and open design contracts."
+      },
+      {
+        "id": "module-partitioning",
+        "title": "Module Partitioning",
+        "description": "Target Rust workspace layout, crate boundaries, dependency direction, runtime handoffs, and delivery slices."
       },
       {
         "id": "rust-lua-eventbus-scheduler",
@@ -156,6 +161,11 @@
         "id": "architecture-overview",
         "title": "Architecture Overview",
         "description": "The canonical entry for system goals, runtime boundaries, and core decisions."
+      },
+      {
+        "id": "module-partitioning",
+        "title": "Module Partitioning Plan",
+        "description": "The implementation-oriented module map: workspace layout, crate responsibilities, dependency rules, runtime handoffs, staged delivery, and tests."
       },
       {
         "id": "rust-lua-eventbus-scheduler",

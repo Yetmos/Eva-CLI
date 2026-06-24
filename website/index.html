@@ -100,21 +100,21 @@
           <article class="progress-current" aria-label="Current development stage">
             <span class="status-label">Current stage</span>
             <h3>Architecture and design documents</h3>
-            <p>Most of the first implementation cycle is still in the design-document stage. The next practical work is module layout, executable contracts, a minimum CLI skeleton, and one end-to-end Runtime loop.</p>
+            <p>The architecture and module partitioning documents are now in place. The next practical work is to create the Rust workspace, lock executable contracts, scaffold a minimum CLI skeleton, and prove one end-to-end Runtime loop.</p>
           </article>
           <ol class="progress-timeline" aria-label="Release progress stages">
             <li class="progress-stage progress-stage-complete">
               <span class="progress-marker">Done</span>
               <div>
-                <strong>Architecture and design documents</strong>
-                <p>System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, and docs are in place.</p>
+                <strong>Architecture and module partitioning</strong>
+                <p>System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, docs, and module partitioning are in place.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">Now</span>
               <div>
-                <strong>Module layout and contracts</strong>
-                <p>Next work: Rust source layout, manifest schemas, event types, policy rules, error model, and Lua host API contracts.</p>
+                <strong>Workspace scaffold and contracts</strong>
+                <p>Next work: create the Rust workspace, manifest schemas, event types, policy rules, error model, and Lua host API contracts.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-next">
@@ -136,7 +136,7 @@
         <div class="progress-next">
           <strong>Next implementation work</strong>
           <ul>
-            <li>Create the Rust project and module layout.</li>
+            <li>Create the Rust workspace from the module partitioning plan.</li>
             <li>Define manifest, event, policy, error, and Lua host API contracts.</li>
             <li>Build a minimum runnable CLI skeleton and Runtime loop.</li>
           </ul>
@@ -162,6 +162,10 @@
           <a class="doc-link" href="docs/en/architecture-overview.md">
             <span>Architecture Overview</span>
             <small>System goals, module boundaries, runtime chain, safety principles, and open design contracts.</small>
+          </a>
+          <a class="doc-link" href="docs/en/module-partitioning.md">
+            <span>Module Partitioning</span>
+            <small>Target Rust workspace layout, crate boundaries, dependency direction, runtime handoffs, and delivery slices.</small>
           </a>
           <a class="doc-link" href="docs/en/rust-lua-eventbus-scheduler.md">
             <span>Runtime and EventBus</span>

@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="760" viewBox="0 0 1180 760" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI module partition overview</title>
+  <desc id="desc">Layered module partition for the Eva-CLI Rust and Lua runtime.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .band { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.4; rx: 10; }
+      .foundation { fill: #e0f2fe; stroke: #0284c7; }
+      .runtime { fill: #dcfce7; stroke: #16a34a; }
+      .execution { fill: #fef3c7; stroke: #d97706; }
+      .extension { fill: #fce7f3; stroke: #db2777; }
+      .surface { fill: #ede9fe; stroke: #7c3aed; }
+      .service { fill: #f1f5f9; stroke: #64748b; }
+      .box { stroke-width: 1.4; rx: 8; }
+      .title { font: 700 22px Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 13px Arial, sans-serif; fill: #475569; }
+      .label { font: 700 14px Arial, sans-serif; fill: #0f172a; }
+      .small { font: 400 12px Arial, sans-serif; fill: #334155; }
+      .arrow { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1180" height="760"/>
+  <text class="title" x="50" y="48">Eva-CLI Module Partition Overview</text>
+  <text class="subtitle" x="50" y="72">Outer surfaces compose the runtime. Inner contracts do not depend on shells, providers, Lua scripts, or transport implementations.</text>
+
+  <rect class="band" x="40" y="100" width="1100" height="92"/>
+  <text class="label" x="62" y="128">Application Surfaces</text>
+  <rect class="box surface" x="220" y="118" width="150" height="48"/>
+  <text class="label" x="242" y="146">eva-cli</text>
+  <rect class="box surface" x="390" y="118" width="165" height="48"/>
+  <text class="label" x="412" y="146">eva-mcp-server</text>
+  <rect class="box surface" x="575" y="118" width="165" height="48"/>
+  <text class="label" x="602" y="146">eva-supervisor</text>
+  <rect class="box surface" x="760" y="118" width="165" height="48"/>
+  <text class="label" x="792" y="146">test harness</text>
+
+  <rect class="band" x="40" y="212" width="1100" height="104"/>
+  <text class="label" x="62" y="240">Composition Runtime</text>
+  <rect class="box runtime" x="220" y="236" width="170" height="52"/>
+  <text class="label" x="258" y="264">eva-runtime</text>
+  <rect class="box runtime" x="415" y="236" width="170" height="52"/>
+  <text class="label" x="454" y="264">eva-discovery</text>
+  <rect class="box runtime" x="610" y="236" width="170" height="52"/>
+  <text class="label" x="652" y="264">eva-config</text>
+  <rect class="box runtime" x="805" y="236" width="170" height="52"/>
+  <text class="label" x="845" y="264">eva-policy</text>
+
+  <rect class="band" x="40" y="336" width="1100" height="112"/>
+  <text class="label" x="62" y="364">Event and Agent Kernel</text>
+  <rect class="box execution" x="165" y="370" width="155" height="52"/>
+  <text class="label" x="204" y="398">eva-eventbus</text>
+  <rect class="box execution" x="340" y="370" width="155" height="52"/>
+  <text class="label" x="382" y="398">eva-scheduler</text>
+  <rect class="box execution" x="515" y="370" width="155" height="52"/>
+  <text class="label" x="546" y="398">eva-agent</text>
+  <rect class="box execution" x="690" y="370" width="155" height="52"/>
+  <text class="label" x="728" y="398">eva-lua-host</text>
+  <rect class="box execution" x="865" y="370" width="155" height="52"/>
+  <text class="label" x="901" y="398">eva-capability</text>
+
+  <rect class="band" x="40" y="468" width="1100" height="116"/>
+  <text class="label" x="62" y="496">Extension and Service Modules</text>
+  <rect class="box extension" x="125" y="506" width="145" height="52"/>
+  <text class="label" x="164" y="534">eva-adapter</text>
+  <rect class="box extension" x="290" y="506" width="145" height="52"/>
+  <text class="label" x="337" y="534">eva-mcp</text>
+  <rect class="box extension" x="455" y="506" width="145" height="52"/>
+  <text class="label" x="484" y="534">eva-memory</text>
+  <rect class="box extension" x="620" y="506" width="145" height="52"/>
+  <text class="label" x="648" y="534">eva-hardware</text>
+  <rect class="box extension" x="785" y="506" width="145" height="52"/>
+  <text class="label" x="820" y="534">eva-backup</text>
+  <rect class="box extension" x="950" y="506" width="145" height="52"/>
+  <text class="label" x="978" y="534">eva-lifecycle</text>
+
+  <rect class="band" x="40" y="604" width="1100" height="104"/>
+  <text class="label" x="62" y="632">Foundation Contracts</text>
+  <rect class="box foundation" x="180" y="632" width="160" height="52"/>
+  <text class="label" x="225" y="660">eva-core</text>
+  <rect class="box foundation" x="365" y="632" width="170" height="52"/>
+  <text class="label" x="397" y="660">eva-storage</text>
+  <rect class="box foundation" x="560" y="632" width="190" height="52"/>
+  <text class="label" x="591" y="660">eva-observability</text>
+  <rect class="box foundation" x="775" y="632" width="190" height="52"/>
+  <text class="label" x="807" y="660">schema fixtures</text>
+
+  <path class="arrow" d="M305 166 C305 198 305 204 305 232"/>
+  <path class="arrow" d="M500 288 C500 326 500 334 500 366"/>
+  <path class="arrow" d="M595 422 C595 452 595 466 595 502"/>
+  <path class="arrow" d="M595 558 C595 590 595 598 595 628"/>
+  <text class="small" x="950" y="724">Rule: dependencies point downward; runtime composition is the only place that wires concrete implementations.</text>
+</svg>

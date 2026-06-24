@@ -100,21 +100,21 @@
           <article class="progress-current" aria-label="当前开发阶段">
             <span class="status-label">当前阶段</span>
             <h3>架构和方案文档</h3>
-            <p>第一轮实现所需的大部分工作仍处在方案文档阶段。下一步实际工作是模块划分、可执行契约、最小 CLI 骨架和一条端到端 Runtime 闭环。</p>
+            <p>架构方案和模块划分方案已经补齐。下一步实际工作是创建 Rust workspace、固化可执行契约、搭建最小 CLI 骨架，并验证一条端到端 Runtime 闭环。</p>
           </article>
           <ol class="progress-timeline" aria-label="发布进度阶段">
             <li class="progress-stage progress-stage-complete">
               <span class="progress-marker">已完成</span>
               <div>
-                <strong>架构和方案文档</strong>
-                <p>系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网和文档结构已经建立。</p>
+                <strong>架构和模块划分</strong>
+                <p>系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网、文档结构和模块划分方案已经建立。</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">当前</span>
               <div>
-                <strong>模块划分和契约定义</strong>
-                <p>下一步是 Rust 源码结构、manifest schema、event 类型、policy 规则、错误模型和 Lua host API 契约。</p>
+                <strong>Workspace 骨架和契约定义</strong>
+                <p>下一步是创建 Rust workspace、manifest schema、event 类型、policy 规则、错误模型和 Lua host API 契约。</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-next">
@@ -136,7 +136,7 @@
         <div class="progress-next">
           <strong>下一步实现工作</strong>
           <ul>
-            <li>创建 Rust 项目和模块结构。</li>
+            <li>按模块划分方案创建 Rust workspace。</li>
             <li>定义 manifest、event、policy、error 和 Lua host API 契约。</li>
             <li>搭建最小可运行 CLI 骨架和 Runtime 闭环。</li>
           </ul>
@@ -162,6 +162,10 @@
           <a class="doc-link" href="../docs/zh-CN/总体架构方案.md">
             <span>总体架构</span>
             <small>系统目标、模块边界、运行链路、安全原则和待补设计契约。</small>
+          </a>
+          <a class="doc-link" href="../docs/zh-CN/模块划分方案.md">
+            <span>模块划分</span>
+            <small>目标 Rust workspace 结构、crate 边界、依赖方向、运行时交接链路和分阶段落地顺序。</small>
           </a>
           <a class="doc-link" href="../docs/zh-CN/Rust与Lua事件总线智能体调度架构方案.md">
             <span>Runtime 与 EventBus</span>

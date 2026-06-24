@@ -12,19 +12,20 @@ the executable implementation is finalized.
 ## Recommended Reading Order
 
 1. [Architecture Overview](architecture-overview.md)
-2. [Rust, Lua, and EventBus Scheduler](rust-lua-eventbus-scheduler.md)
-3. [Lua External Agent Adapter](lua-external-agent-adapter.md)
-4. [Lua Skill, MCP, and Tool Hot Reload](lua-skill-mcp-tool-hot-reload.md)
-5. [Skill Implementation Plan](skill-implementation.md)
-6. [Agent Memory and Knowledge Base](agent-memory-knowledge-base.md)
-7. [Agent Discovery](agent-discovery.md)
-8. [Hardware Hotplug](hardware-hotplug.md)
-9. [Project Configuration](project-configuration.md)
-10. [Process-Level Upgrade](process-level-upgrade.md)
-11. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
-12. [Design Risk Review](design-risk-review.md)
-13. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
-14. [Website and Documentation i18n](website-docs-i18n.md)
+2. [Module Partitioning Plan](module-partitioning.md)
+3. [Rust, Lua, and EventBus Scheduler](rust-lua-eventbus-scheduler.md)
+4. [Lua External Agent Adapter](lua-external-agent-adapter.md)
+5. [Lua Skill, MCP, and Tool Hot Reload](lua-skill-mcp-tool-hot-reload.md)
+6. [Skill Implementation Plan](skill-implementation.md)
+7. [Agent Memory and Knowledge Base](agent-memory-knowledge-base.md)
+8. [Agent Discovery](agent-discovery.md)
+9. [Hardware Hotplug](hardware-hotplug.md)
+10. [Project Configuration](project-configuration.md)
+11. [Process-Level Upgrade](process-level-upgrade.md)
+12. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
+13. [Design Risk Review](design-risk-review.md)
+14. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
+15. [Website and Documentation i18n](website-docs-i18n.md)
 
 ## Core Boundaries
 

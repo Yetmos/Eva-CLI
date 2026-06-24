@@ -48,12 +48,12 @@
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
     "progressCurrentTitle": "架构和方案文档",
-    "progressCurrentBody": "第一轮实现所需的大部分工作仍处在方案文档阶段。下一步实际工作是模块划分、可执行契约、最小 CLI 骨架和一条端到端 Runtime 闭环。",
+    "progressCurrentBody": "架构方案和模块划分方案已经补齐。下一步实际工作是创建 Rust workspace、固化可执行契约、搭建最小 CLI 骨架，并验证一条端到端 Runtime 闭环。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
-      "创建 Rust 项目和模块结构。",
+      "按模块划分方案创建 Rust workspace。",
       "定义 manifest、event、policy、error 和 Lua host API 契约。",
       "搭建最小可运行 CLI 骨架和 Runtime 闭环。"
     ],
@@ -61,14 +61,14 @@
       {
         "status": "complete",
         "badge": "已完成",
-        "label": "架构和方案文档",
-        "description": "系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网和文档结构已经建立。"
+        "label": "架构和模块划分",
+        "description": "系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网、文档结构和模块划分方案已经建立。"
       },
       {
         "status": "current",
         "badge": "当前",
-        "label": "模块划分和契约定义",
-        "description": "下一步是 Rust 源码结构、manifest schema、event 类型、policy 规则、错误模型和 Lua host API 契约。"
+        "label": "Workspace 骨架和契约定义",
+        "description": "下一步是创建 Rust workspace、manifest schema、event 类型、policy 规则、错误模型和 Lua host API 契约。"
       },
       {
         "status": "next",
@@ -93,6 +93,11 @@
         "id": "architecture-overview",
         "title": "总体架构",
         "description": "系统目标、模块边界、运行链路、安全原则和待补设计契约。"
+      },
+      {
+        "id": "module-partitioning",
+        "title": "模块划分",
+        "description": "目标 Rust workspace 结构、crate 边界、依赖方向、运行时交接链路和分阶段落地顺序。"
       },
       {
         "id": "rust-lua-eventbus-scheduler",
@@ -156,6 +161,11 @@
         "id": "architecture-overview",
         "title": "总体架构",
         "description": "系统目标、运行时边界和核心决策的 canonical 入口。"
+      },
+      {
+        "id": "module-partitioning",
+        "title": "模块划分方案",
+        "description": "面向实现的模块地图：workspace 结构、crate 职责、依赖规则、运行时交接、分阶段交付和测试策略。"
       },
       {
         "id": "rust-lua-eventbus-scheduler",

@@ -111,6 +111,39 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "module-partition-overview-diagram",
+      "title": "Eva-CLI Module Partition Overview Diagram",
+      "source": "docs/assets/module-partition-overview.svg",
+      "translations": {
+        "zh-CN": "docs/assets/module-partition-overview.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "module-dependency-rules-diagram",
+      "title": "Eva-CLI Module Dependency Rules Diagram",
+      "source": "docs/assets/module-dependency-rules.svg",
+      "translations": {
+        "zh-CN": "docs/assets/module-dependency-rules.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "module-runtime-flow-diagram",
+      "title": "Eva-CLI Runtime Module Flow Diagram",
+      "source": "docs/assets/module-runtime-flow.svg",
+      "translations": {
+        "zh-CN": "docs/assets/module-runtime-flow.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -131,6 +164,17 @@
       "source": "docs/en/architecture-overview.md",
       "translations": {
         "zh-CN": "docs/zh-CN/总体架构方案.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "module-partitioning",
+      "title": "Module Partitioning Plan",
+      "source": "docs/en/module-partitioning.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/模块划分方案.md"
       },
       "status": {
         "zh-CN": "current"
