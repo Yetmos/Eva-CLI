@@ -8,11 +8,11 @@ Updated: 2026-06-24
 
 ## Purpose
 
-This document turns the existing Eva-CLI architecture into an implementation
-module plan. The repository is still mostly documentation, so the goal is not
-to describe current Rust code. The goal is to define the workspace layout,
-crate boundaries, dependency direction, runtime handoffs, and staged delivery
-order that should guide the first executable implementation.
+This document turns the existing Eva-CLI architecture into a module
+architecture plan. The repository is still mostly documentation, so the goal is
+not to describe current Rust code. The goal is to define the target workspace
+shape, crate boundaries, dependency direction, runtime handoffs, and ownership
+rules.
 
 The plan follows the established architecture rule: Rust owns runtime authority,
 permissions, schemas, sandboxing, external I/O, recovery, audit, and long-term
@@ -28,17 +28,17 @@ state; Lua owns hot-reloadable Agent and capability business logic.
 - Let `Discovery` discover and normalize capabilities; let `Policy` decide
   whether execution is allowed.
 - Keep EventBus, Scheduler, AgentRuntime, Lua host, AdapterRegistry, and MCP
-  server separable so each can be tested in isolation.
-- Prefer a few clear crates first, then split only when a boundary is stable.
+  server separable by ownership and dependency direction.
+- Keep module names aligned with stable architecture concepts, not temporary
+  implementation phases.
 
 ## Module Overview
 
 ![Module partition overview](../assets/module-partition-overview.svg)
 
 The target workspace should use crates for stable bounded contexts and modules
-inside each crate for implementation detail. During the first scaffold, it is
-acceptable to keep some crates thin, but their dependency direction should
-already match the target boundary.
+inside each crate for implementation detail. This structure is an architecture
+boundary map, not a delivery sequence.
 
 ## Recommended Workspace Layout
 
@@ -309,95 +309,96 @@ The handoff rules are:
 - AdapterRouter chooses a provider by explicit provider or capability index.
 - Concrete transports own provider protocol details only after authorization.
 
-## First Delivery Slices
+## Cross-Cutting Architecture Rules
 
-1. Foundation contracts: implement `eva-core`, minimal errors, Topic parser,
-   Topic matcher tests, and JSON serialization contracts.
-2. Event loop skeleton: implement in-memory EventBus, Scheduler, bounded Agent
-   queue, one mock Agent, dead-letter path, and trace IDs.
-3. Lua closed loop: add `eva-lua-host`, sandboxed `on_event`, `ctx.emit`, and a
-   minimal hot-reload generation swap.
-4. Adapter closed loop: add Adapter manifest, registry, router, mock
-   `BuiltinAdapter`, `StdioAdapter` shell-safe argv model, timeout, and
-   structured errors.
-5. Discovery bootstrap: scan only project-local manifests first, normalize
-   candidates, reject invalid manifests without panic, and register only after
-   policy checks.
-6. Runtime composition: wire CLI `run`, `emit`, `inspect`, `agent list`, and
-   `adapter list` through `eva-runtime`.
-7. Persistence and recovery: add durable event log, StateStore, ack/watermark,
-   replay, and dead-letter inspection.
-8. MCP, memory, hardware, backup, and lifecycle: add these after the core
-   event-Agent-adapter loop is test-protected.
+### Error Model
 
-## Test Strategy
-
-- `eva-core`: Topic parsing, Topic matching, event serialization, error JSON
-  shape.
-- `eva-policy`: permission narrowing, denied expansion, sandbox defaults.
-- `eva-eventbus`: publish/subscribe, accepted-before-durable-write behavior,
-  replay, dead-letter writes.
-- `eva-scheduler`: target priority, exact Topic, `*`, `**`, no string-prefix
-  false positives, queue full behavior.
-- `eva-agent`: timeout, cancellation, idempotency guard, local state version.
-- `eva-lua-host`: disabled dangerous libraries, host API allowlist, output
-  schema rejection, failed generation rollback.
-- `eva-adapter`: provider selection, unhealthy filtering, timeout, cancellation,
-  structured error mapping, argv-safe stdio execution.
-- `eva-discovery`: trusted source scanning, invalid manifest rejection, no
-  execution during scanning, cache read/write.
-- `eva-runtime`: end-to-end `/input/user -> /agent/reply` and
-  `/adapter/invoke -> /adapter/completed`.
-
-## Acceptance Criteria
-
-The module partition is ready to implement when:
-
-- Every crate has a short `README.md` or `lib.rs` module comment with ownership
-  and non-ownership rules.
-- No crate below `eva-runtime` imports `eva-runtime`.
-- `eva-core`, `eva-eventbus`, `eva-scheduler`, `eva-agent`, `eva-lua-host`, and
-  `eva-adapter` can be tested without launching the full CLI.
-- Lua cannot access shell, file system, network, environment variables, MCP
-  sessions, or device handles except through authorized host APIs.
-- Every executable capability has manifest, schema, policy, version, owner,
-  audit identity, and structured error behavior.
-- The first implementation can prove one local closed loop:
+Cross-module errors must be structured rather than plain strings:
 
 ```text
-eva emit /input/user
-  -> EventBus
-  -> Scheduler
-  -> EchoAgent Lua on_event
-  -> ctx.emit("/agent/reply")
-  -> inspect trace by correlation_id
+kind
+message
+retryable
+provider_code?
+correlation_id?
+causation_id?
 ```
 
-## Risks
+Individual crates may use richer internal error types, but public cross-crate
+APIs should preserve stable error kinds and JSON-compatible shapes.
+
+### Permission Model
+
+Permissions only narrow as requests move through the system:
+
+```text
+system policy
+  -> manifest permissions
+  -> user/session policy
+  -> request constraints
+  -> effective permissions
+```
+
+No crate may expand effective permissions. A module that detects a required
+permission expansion must return a structured rejection.
+
+### State Ownership
+
+- Agent local state belongs to `eva-agent` and Lua generations.
+- Durable business state belongs to `eva-storage` and `eva-memory`.
+- Event recovery state belongs to `eva-eventbus`.
+- Adapter runtime state belongs to `eva-adapter`.
+- Runtime generation state belongs to `eva-lifecycle`.
+
+Modules must not share hidden mutable global state across these boundaries.
+
+### Observability Fields
+
+Critical handoffs must preserve these fields where applicable:
+
+```text
+event_id
+request_id
+topic
+agent_id
+adapter_id
+capability
+provider
+correlation_id
+causation_id
+subscription_pattern
+generation
+script_version
+latency_ms
+error_kind
+```
+
+## Architecture Risks
 
 | Risk | Control |
 | --- | --- |
-| Too many crates before behavior exists | Scaffold boundaries, but implement thin slices end to end |
 | Scheduler grows business logic | Keep routing rule data-only and move business decisions to Agents |
 | Lua host becomes a hidden system API | Expose only typed host APIs with manifest + policy checks |
 | Adapter registry becomes a plugin free-for-all | Require manifest, schema, policy, health, audit, and explicit trust source |
 | MCP becomes an unrestricted proxy | Maintain tool/resource/prompt allowlists and per-client policy |
 | Discovery accidentally authorizes execution | Keep discovered candidates separate from registered runtime handles |
-| Durable event recovery changes semantics late | Add event IDs, ack/watermark, and dead-letter shape in the first event loop |
+| State ownership becomes ambiguous | Keep Agent, durable business, event recovery, Adapter, and lifecycle state in separate modules |
+| Concrete transports leak inward | Restrict provider, MCP, shell, HTTP, skill, and hardware details to adapter/service crates |
 
 ## Summary
 
 The clean module cut is:
 
 ```text
-contracts first
+foundation contracts
   -> event and routing kernel
-  -> isolated Agent and Lua execution
-  -> controlled capabilities and adapters
+  -> isolated Agent and Lua execution boundary
+  -> controlled capability and adapter boundary
   -> discovery and runtime services
-  -> CLI, supervisor, and operational workflows
+  -> application, supervisor, and operational surfaces
 ```
 
-This lets Eva-CLI start with a small executable loop while preserving the
-architecture needed for hot reload, external Agents, MCP, memory, hardware,
-backup, recovery, and audit.
+This partition keeps Eva-CLI's architecture explicit: Rust owns trusted
+runtime boundaries, Lua owns replaceable business behavior, EventBus and
+Scheduler own coordination, Adapter and service crates own side effects, and
+`eva-runtime` is the only place where concrete implementations are composed.

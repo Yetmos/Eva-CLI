@@ -97,7 +97,7 @@
       {
         "id": "module-partitioning",
         "title": "Module Partitioning",
-        "description": "Target Rust workspace layout, crate boundaries, dependency direction, runtime handoffs, and delivery slices."
+        "description": "Target Rust workspace shape, crate boundaries, dependency direction, runtime handoffs, and ownership rules."
       },
       {
         "id": "rust-lua-eventbus-scheduler",
@@ -165,7 +165,7 @@
       {
         "id": "module-partitioning",
         "title": "Module Partitioning Plan",
-        "description": "The implementation-oriented module map: workspace layout, crate responsibilities, dependency rules, runtime handoffs, staged delivery, and tests."
+        "description": "The module architecture map: workspace shape, crate responsibilities, dependency rules, runtime handoffs, state ownership, and side-effect boundaries."
       },
       {
         "id": "rust-lua-eventbus-scheduler",
