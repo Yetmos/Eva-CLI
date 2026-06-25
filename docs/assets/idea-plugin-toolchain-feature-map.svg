@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">IDEA Plugin toolchain feature map</title>
+  <desc id="desc">Developer-facing IDEA Plugin capabilities mapped to Eva-CLI project files, Runtime Bridge, and Runtime authority.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.4; rx: 10; }
+      .ide { fill: #dbeafe; stroke: #2563eb; }
+      .project { fill: #dcfce7; stroke: #16a34a; }
+      .bridge { fill: #fef3c7; stroke: #d97706; }
+      .runtime { fill: #fce7f3; stroke: #db2777; }
+      .quality { fill: #ede9fe; stroke: #7c3aed; }
+      .box { stroke-width: 1.4; rx: 8; }
+      .title { font: 700 24px Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 13px Arial, sans-serif; fill: #475569; }
+      .section { font: 700 15px Arial, sans-serif; fill: #0f172a; }
+      .label { font: 700 13px Arial, sans-serif; fill: #0f172a; }
+      .small { font: 400 12px Arial, sans-serif; fill: #334155; }
+      .tiny { font: 400 11px Arial, sans-serif; fill: #475569; }
+      .arrow { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 5 5; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="760"/>
+  <text class="title" x="48" y="48">IDEA Plugin Toolchain Feature Map</text>
+  <text class="subtitle" x="48" y="72">The plugin improves authoring and feedback. Eva-CLI Runtime still owns execution authority, policy, secrets, audit, and recovery.</text>
+
+  <rect class="panel" x="44" y="104" width="250" height="560"/>
+  <text class="section" x="68" y="136">Developer Workflow</text>
+  <rect class="box quality" x="72" y="166" width="194" height="58"/>
+  <text class="label" x="111" y="191">Create Agent</text>
+  <text class="small" x="96" y="210">manifest + Lua + scenario</text>
+  <rect class="box quality" x="72" y="250" width="194" height="58"/>
+  <text class="label" x="112" y="275">Edit Capability</text>
+  <text class="small" x="99" y="294">schema-aware completion</text>
+  <rect class="box quality" x="72" y="334" width="194" height="58"/>
+  <text class="label" x="111" y="359">Run Dry Run</text>
+  <text class="small" x="101" y="378">scenario + structured result</text>
+  <rect class="box quality" x="72" y="418" width="194" height="58"/>
+  <text class="label" x="105" y="443">Inspect Trace</text>
+  <text class="small" x="95" y="462">events, policy, adapters</text>
+  <rect class="box quality" x="72" y="502" width="194" height="58"/>
+  <text class="label" x="114" y="527">Fix Source</text>
+  <text class="small" x="100" y="546">quick fix + validation</text>
+
+  <rect class="panel" x="334" y="104" width="282" height="560"/>
+  <text class="section" x="358" y="136">IDEA Plugin Surfaces</text>
+  <rect class="box ide" x="362" y="166" width="226" height="56"/>
+  <text class="label" x="388" y="190">Eva Project Tool Window</text>
+  <text class="tiny" x="392" y="208">Agents, adapters, routes, docs</text>
+  <rect class="box ide" x="362" y="244" width="226" height="56"/>
+  <text class="label" x="404" y="268">Editor Intelligence</text>
+  <text class="tiny" x="386" y="286">Lua, YAML, Topic, capability refs</text>
+  <rect class="box ide" x="362" y="322" width="226" height="56"/>
+  <text class="label" x="407" y="346">Problems + Quick Fix</text>
+  <text class="tiny" x="390" y="364">schema, policy, unsafe API checks</text>
+  <rect class="box ide" x="362" y="400" width="226" height="56"/>
+  <text class="label" x="407" y="424">Run Configurations</text>
+  <text class="tiny" x="394" y="442">validate, dry run, health check</text>
+  <rect class="box ide" x="362" y="478" width="226" height="56"/>
+  <text class="label" x="417" y="502">Trace Viewer</text>
+  <text class="tiny" x="389" y="520">EventBus to Adapter timeline</text>
+  <rect class="box ide" x="362" y="556" width="226" height="56"/>
+  <text class="label" x="407" y="580">Policy Inspector</text>
+  <text class="tiny" x="394" y="598">effective permissions chain</text>
+
+  <rect class="panel" x="656" y="104" width="250" height="560"/>
+  <text class="section" x="680" y="136">Workspace Contracts</text>
+  <rect class="box project" x="684" y="164" width="194" height="54"/>
+  <text class="label" x="733" y="187">eva.yaml</text>
+  <text class="tiny" x="716" y="205">runtime config root</text>
+  <rect class="box project" x="684" y="238" width="194" height="54"/>
+  <text class="label" x="713" y="261">Agent Manifests</text>
+  <text class="tiny" x="711" y="279">agent.yaml + Lua entry</text>
+  <rect class="box project" x="684" y="312" width="194" height="54"/>
+  <text class="label" x="710" y="335">Adapter Manifests</text>
+  <text class="tiny" x="708" y="353">providers, limits, policy</text>
+  <rect class="box project" x="684" y="386" width="194" height="54"/>
+  <text class="label" x="724" y="409">Topic Routes</text>
+  <text class="tiny" x="707" y="427">patterns + subscriptions</text>
+  <rect class="box project" x="684" y="460" width="194" height="54"/>
+  <text class="label" x="721" y="483">Scenarios</text>
+  <text class="tiny" x="708" y="501">dry-run fixture inputs</text>
+  <rect class="box project" x="684" y="534" width="194" height="54"/>
+  <text class="label" x="716" y="557">Architecture Docs</text>
+  <text class="tiny" x="708" y="575">design links + decisions</text>
+
+  <rect class="panel" x="946" y="104" width="286" height="560"/>
+  <text class="section" x="970" y="136">Runtime Bridge and Authority</text>
+  <rect class="box bridge" x="974" y="166" width="230" height="70"/>
+  <text class="label" x="1025" y="191">Typed Bridge</text>
+  <text class="tiny" x="1004" y="210">health, validate, dryRun, trace</text>
+  <rect class="box runtime" x="974" y="272" width="230" height="62"/>
+  <text class="label" x="1017" y="296">Eva-CLI Runtime</text>
+  <text class="tiny" x="1005" y="314">policy, sandbox, audit, state</text>
+  <rect class="box runtime" x="974" y="370" width="230" height="62"/>
+  <text class="label" x="1031" y="394">Adapters</text>
+  <text class="tiny" x="1000" y="412">MCP, Skill, HTTP, stdio, hardware</text>
+  <rect class="box runtime" x="974" y="468" width="230" height="62"/>
+  <text class="label" x="1034" y="492">Audit Trace</text>
+  <text class="tiny" x="1002" y="510">structured diagnostics + artifacts</text>
+  <rect class="box runtime" x="974" y="566" width="230" height="62"/>
+  <text class="label" x="1015" y="590">Validation Result</text>
+  <text class="tiny" x="1002" y="608">source spans, denials, warnings</text>
+
+  <path class="arrow" d="M266 195 C306 195 320 195 358 195"/>
+  <path class="arrow" d="M266 279 C306 279 320 272 358 272"/>
+  <path class="arrow" d="M266 363 C306 363 320 428 358 428"/>
+  <path class="arrow" d="M266 447 C306 447 320 506 358 506"/>
+  <path class="arrow" d="M266 531 C306 531 320 352 358 352"/>
+
+  <path class="arrow" d="M588 194 C632 194 642 191 680 191"/>
+  <path class="arrow" d="M588 272 C632 272 642 265 680 265"/>
+  <path class="arrow" d="M588 350 C632 350 642 339 680 339"/>
+  <path class="arrow" d="M588 428 C632 428 642 413 680 413"/>
+  <path class="arrow" d="M588 506 C632 506 642 487 680 487"/>
+  <path class="arrow" d="M588 584 C632 584 642 561 680 561"/>
+
+  <path class="arrow" d="M878 191 C912 191 930 196 970 201"/>
+  <path class="arrow" d="M878 265 C918 250 930 224 970 209"/>
+  <path class="arrow" d="M878 487 C918 478 930 594 970 599"/>
+  <path class="dash" d="M1089 236 C1089 252 1089 258 1089 268"/>
+  <path class="dash" d="M1089 334 C1089 350 1089 356 1089 366"/>
+  <path class="dash" d="M1089 432 C1089 448 1089 454 1089 464"/>
+  <path class="dash" d="M1089 530 C1089 546 1089 552 1089 562"/>
+
+  <text class="small" x="48" y="708">Rule: editor actions are file edits or typed bridge calls. Runtime remains the only execution authority.</text>
+</svg>

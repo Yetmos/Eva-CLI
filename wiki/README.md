@@ -15,6 +15,7 @@ from the GitHub web UI or by a successful first push.
 - `Runtime-and-Scheduling.md`
 - `Backup,-Migration,-and-Release-Snapshot.md`
 - `Adapters-and-Capabilities.md`
+- `IDEA-Plugin-Toolchain.md`
 - `Skill-Implementation.md`
 - `Memory,-Knowledge,-and-Discovery.md`
 - `Configuration-and-Localization.md`

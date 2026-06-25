@@ -132,6 +132,11 @@
         "id": "agent-discovery",
         "title": "扫描与发现",
         "description": "Agent、Adapter、MCP、Skill 与 Lua capability 的发现、校验和注册规则。"
+      },
+      {
+        "id": "idea-plugin-toolchain",
+        "title": "IDEA Plugin 开发工具链",
+        "description": "项目索引、Lua Agent 编辑、Runtime Bridge 校验、dry run、trace 和 policy 诊断的开发工具链需求。"
       }
     ]
   },
@@ -210,6 +215,11 @@
         "id": "project-configuration",
         "title": "项目配置",
         "description": "配置目录、schema 校验、policy 和热加载边界。"
+      },
+      {
+        "id": "idea-plugin-toolchain",
+        "title": "IDEA Plugin 开发工具链",
+        "description": "项目索引、Lua Agent 编辑、manifest 校验、Runtime Bridge 命令、dry run、trace 和 policy 诊断的开发工具链需求。"
       },
       {
         "id": "process-level-upgrade",

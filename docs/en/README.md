@@ -21,11 +21,12 @@ the executable implementation is finalized.
 8. [Agent Discovery](agent-discovery.md)
 9. [Hardware Hotplug](hardware-hotplug.md)
 10. [Project Configuration](project-configuration.md)
-11. [Process-Level Upgrade](process-level-upgrade.md)
-12. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
-13. [Design Risk Review](design-risk-review.md)
-14. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
-15. [Website and Documentation i18n](website-docs-i18n.md)
+11. [IDEA Plugin Toolchain Requirements](idea-plugin-toolchain.md)
+12. [Process-Level Upgrade](process-level-upgrade.md)
+13. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
+14. [Design Risk Review](design-risk-review.md)
+15. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
+16. [Website and Documentation i18n](website-docs-i18n.md)
 
 ## Core Boundaries
 

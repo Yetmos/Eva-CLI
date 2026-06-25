@@ -177,6 +177,17 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "idea-plugin-toolchain-feature-map-diagram",
+      "title": "IDEA Plugin Toolchain Feature Map",
+      "source": "docs/assets/idea-plugin-toolchain-feature-map.svg",
+      "translations": {
+        "zh-CN": "docs/assets/idea-plugin-toolchain-feature-map.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -296,6 +307,17 @@
       "source": "docs/en/project-configuration.md",
       "translations": {
         "zh-CN": "docs/zh-CN/项目配置方案.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "idea-plugin-toolchain",
+      "title": "IDEA Plugin Toolchain Requirements",
+      "source": "docs/en/idea-plugin-toolchain.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/IDEA插件开发工具链功能方案.md"
       },
       "status": {
         "zh-CN": "current"

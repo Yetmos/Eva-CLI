@@ -5,6 +5,7 @@
 - [[Runtime and Scheduling]]
 - [[Backup, Migration, and Release Snapshot]]
 - [[Adapters and Capabilities]]
+- [[IDEA Plugin Toolchain]]
 - [[Skill Implementation]]
 - [[Memory, Knowledge, and Discovery]]
 - [[Configuration and Localization]]

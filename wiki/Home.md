@@ -17,6 +17,7 @@ should stay aligned with the canonical documents.
 - Localized docs: Simplified Chinese documents under `docs/zh-CN/`.
 - Latest roadmap source: `docs/en/zero-to-one-roadmap.md`.
 - Latest Skill implementation source: `docs/en/skill-implementation.md`.
+- Latest IDEA Plugin toolchain source: `docs/en/idea-plugin-toolchain.md`.
 - Website: static GitHub Pages site maintained under `website/`.
 - Main architecture image: `assets/eva-cli-architecture.svg`.
 
@@ -39,12 +40,13 @@ Eva-CLI separates authority from hot-reloadable behavior:
 2. [[Runtime and Scheduling]]
 3. [[Backup, Migration, and Release Snapshot]]
 4. [[Adapters and Capabilities]]
-5. [[Skill Implementation]]
-6. [[Memory, Knowledge, and Discovery]]
-7. [[Configuration and Localization]]
-8. [[Roadmap and Open Risks]]
-9. [[Zero to 1.0 Roadmap]]
-10. [[Contributor Guide]]
+5. [[IDEA Plugin Toolchain]]
+6. [[Skill Implementation]]
+7. [[Memory, Knowledge, and Discovery]]
+8. [[Configuration and Localization]]
+9. [[Roadmap and Open Risks]]
+10. [[Zero to 1.0 Roadmap]]
+11. [[Contributor Guide]]
 
 For full source-of-truth detail, read the canonical repository docs:
 
@@ -68,6 +70,11 @@ Skill support follows the same control-plane rule as the rest of the runtime:
 Skills are discovered as candidates, classified, schema-validated,
 policy-checked, and exposed as controlled capabilities only after Rust-owned
 registration succeeds.
+
+IDEA Plugin support follows the same authority split. The plugin can index
+workspace files, provide editor intelligence, run validation, dry run scenarios,
+and display traces, but Eva-CLI Runtime remains the only execution authority for
+policy, sandboxing, Adapter execution, audit, state, and rollback.
 
 ## Non-Goals
 
