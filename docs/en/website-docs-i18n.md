@@ -1,7 +1,7 @@
 # Website and Documentation i18n
 
 > Language: English
-> Canonical: docs/en/website-docs-i18n.md
+> Published default: docs/en/website-docs-i18n.md
 > Translation: [简体中文](../zh-CN/网站与文档多语言适配方案.md)
 
 Updated: 2026-06-16
@@ -13,7 +13,10 @@ documentation.
 
 ## Decisions
 
-- English is the canonical content source.
+- English is the default website and documentation locale with stable public
+  slugs. During the current migration window, Simplified Chinese is the
+  content authority for full-detail architecture and implementation-spec
+  documents.
 - `/` and `/docs/` are English by default.
 - Localized website pages live at `/<locale>/`.
 - Localized documentation lives under `/docs/<locale>/`.
@@ -27,9 +30,13 @@ documentation.
 ## Current Rollout
 
 The first implemented rollout includes English and Simplified Chinese website
-pages, English canonical documentation, Simplified Chinese documentation copies,
+pages, English default documentation entries, Simplified Chinese detailed sources,
 localized architecture diagrams, `docs/_i18n/manifest.json`,
 `docs/_i18n/glossary.json`, build scripts, and validation scripts.
+
+Most English documentation pages are summary-level entries. The manifest marks
+`en` coverage as `default-summary` and `zh-CN` coverage as `detailed-source`
+until full-detail English documents are produced.
 
 The build pipeline supports adding more locales by adding manifest entries,
 locale JSON, translated documentation, and localized content assets without

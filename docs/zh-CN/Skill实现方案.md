@@ -1,7 +1,7 @@
 # Skill 实现方案
 
 > Language: 简体中文
-> Canonical source: ../en/skill-implementation.md
+> English default entry: ../en/skill-implementation.md
 > Translation status: current
 
 更新时间：2026-06-23

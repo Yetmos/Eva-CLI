@@ -4,9 +4,10 @@
 
 Eva-CLI is currently in the architecture and specification consolidation stage.
 The repository mainly contains design documents under `docs/`; it is not yet a
-final runnable CLI implementation. The documentation and website have been
-migrated to an English canonical source with a multilingual structure that can
-expand over time.
+final runnable CLI implementation. The website uses English as the default
+public entry with stable slugs, while the Simplified Chinese documents currently
+remain the source of truth for detailed architecture and implementation-spec
+content.
 
 Website:
 
@@ -64,11 +65,11 @@ Layer, AdapterRegistry, MemoryService, KnowledgeService, and HardwareAdapter.
 
 Default documentation entrances:
 
-- [English canonical docs](docs/en/README.md)
-- [Simplified Chinese docs](docs/zh-CN/README.md)
+- [English docs](docs/en/README.md) - default public entry and stable slug set.
+- [Simplified Chinese docs](docs/zh-CN/README.md) - current detailed source of truth.
 - [Documentation maintenance guide](docs/README.md)
 
-Recommended reading order for the English canonical documentation:
+Recommended reading order for the English default documentation:
 
 1. [Architecture Overview](docs/en/architecture-overview.md): start with system
    boundaries, core modules, and the overall conclusion.

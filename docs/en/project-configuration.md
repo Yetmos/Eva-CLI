@@ -1,7 +1,7 @@
 # Project Configuration
 
 > Language: English
-> Canonical: docs/en/project-configuration.md
+> Published default: docs/en/project-configuration.md
 > Translation: [简体中文](../zh-CN/项目配置方案.md)
 
 Updated: 2026-06-16

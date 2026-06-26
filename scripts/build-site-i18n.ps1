@@ -815,7 +815,13 @@ function New-LanguageList {
     $code = [string]$locale.code
     $readmePath = Get-DocumentPath -Manifest $Manifest -DocumentId "readme" -LocaleCode $code
     $href = Convert-DocPathToRelativeHref -DocPath $readmePath -Context "docs-index"
-    $label = if ($code -eq $Manifest.defaultLocale) { "Canonical source" } else { "Translation: $($locale.coverage)" }
+    $label = if ($code -eq $Manifest.defaultLocale) {
+      "Default entry"
+    } elseif ($locale.coverage -eq "detailed-source") {
+      "Detailed source"
+    } else {
+      "Translation: $($locale.coverage)"
+    }
     $items.Add(@"
             <a class="language-option" href="$(Html $href)" hreflang="$(Html $code)" lang="$(Html $code)" dir="$(Html $locale.dir)">
               <strong>$(Html $locale.nativeLabel)</strong>

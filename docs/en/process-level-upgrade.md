@@ -1,7 +1,7 @@
 # Process-Level Upgrade
 
 > Language: English
-> Canonical: docs/en/process-level-upgrade.md
+> Published default: docs/en/process-level-upgrade.md
 > Translation: [简体中文](../zh-CN/进程级停机升级架构方案.md)
 
 Updated: 2026-06-16

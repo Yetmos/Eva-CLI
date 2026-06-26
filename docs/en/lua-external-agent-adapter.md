@@ -1,7 +1,7 @@
 # Lua External Agent Adapter
 
 > Language: English
-> Canonical: docs/en/lua-external-agent-adapter.md
+> Published default: docs/en/lua-external-agent-adapter.md
 > Translation: [简体中文](../zh-CN/Lua调用外部Agent动态Adapter架构方案.md)
 
 Updated: 2026-06-16

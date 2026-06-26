@@ -10,7 +10,7 @@
       "tier": "P0",
       "isDefault": true,
       "enabled": true,
-      "coverage": "canonical"
+      "coverage": "default-summary"
     },
     {
       "code": "zh-CN",
@@ -20,7 +20,7 @@
       "tier": "P1",
       "isDefault": false,
       "enabled": true,
-      "coverage": "current"
+      "coverage": "detailed-source"
     }
   ],
   "assets": [
@@ -200,7 +200,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/README.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "architecture-overview",
@@ -211,7 +217,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/总体架构方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "module-partitioning",
@@ -222,7 +234,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/模块划分方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "rust-lua-eventbus-scheduler",
@@ -233,7 +251,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/Rust与Lua事件总线智能体调度架构方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "lua-external-agent-adapter",
@@ -244,7 +268,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/Lua调用外部Agent动态Adapter架构方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "lua-skill-mcp-tool-hot-reload",
@@ -255,7 +285,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/Lua承载Skill-MCP-Tool热更新架构方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "skill-implementation",
@@ -266,7 +302,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/Skill实现方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "agent-memory-knowledge-base",
@@ -277,7 +319,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/Agent记忆与知识库架构方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "agent-discovery",
@@ -288,7 +336,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/Agent扫描与发现架构方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "hardware-hotplug",
@@ -299,7 +353,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/外接硬件接入与热插拔架构方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "project-configuration",
@@ -310,7 +370,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/项目配置方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "idea-plugin-toolchain",
@@ -321,7 +387,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/IDEA插件开发工具链功能方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "process-level-upgrade",
@@ -332,7 +404,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/进程级停机升级架构方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "backup-migration-release-snapshot",
@@ -343,7 +421,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/备份迁移包与ReleaseSnapshot架构方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "design-risk-review",
@@ -354,7 +438,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/方案设计风险评审.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "zero-to-one-roadmap",
@@ -365,7 +455,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/从零到1.0版本路线图.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "website-docs-i18n",
@@ -376,7 +472,13 @@
       },
       "status": {
         "zh-CN": "current"
-      }
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/网站与文档多语言适配方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
     }
   ],
   "fallbacks": {
@@ -384,5 +486,11 @@
     "zh-SG": "zh-CN",
     "pt-PT": "pt-BR",
     "es-MX": "es"
+  },
+  "contentAuthority": {
+    "locale": "zh-CN",
+    "pathRoot": "docs/zh-CN",
+    "reason": "Current Simplified Chinese documents contain the full architecture and implementation-spec detail; English documents are default public entries and summaries until the full-detail migration is complete.",
+    "englishRole": "default-public-entry-and-stable-slugs"
   }
 }

@@ -1,7 +1,7 @@
 # Agent Discovery
 
 > Language: English
-> Canonical: docs/en/agent-discovery.md
+> Published default: docs/en/agent-discovery.md
 > Translation: [简体中文](../zh-CN/Agent扫描与发现架构方案.md)
 
 Updated: 2026-06-16

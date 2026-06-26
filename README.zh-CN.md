@@ -2,7 +2,7 @@
 
 > 语言：[English](README.md) | 简体中文
 
-Eva-CLI 当前处于架构方案整理阶段，仓库内主要内容是 `docs/` 下的设计文档，还不是可运行实现。文档与官网已迁移为英语 canonical source + 多语言可扩展结构。
+Eva-CLI 当前处于架构方案整理阶段，仓库内主要内容是 `docs/` 下的设计文档，还不是可运行实现。官网默认入口和稳定 slug 使用英文，中文文档当前仍是架构详案与实现规格细节的事实主源。
 
 官网：
 
@@ -49,11 +49,11 @@ Eva-CLI/
 
 默认文档入口：
 
-- [English canonical docs](docs/en/README.md)
-- [简体中文文档](docs/zh-CN/README.md)
+- [English docs](docs/en/README.md)：默认公开入口和稳定 slug。
+- [简体中文文档](docs/zh-CN/README.md)：当前详案事实主源。
 - [文档维护入口](docs/README.md)
 
-建议先按以下顺序阅读英文 canonical 文档：
+建议先按以下顺序阅读英文默认入口；需要实现级细节时，以对应中文详案为准：
 
 1. [Architecture Overview](docs/en/architecture-overview.md)：先建立系统边界、核心模块和总体结论。
 2. [Rust, Lua, and EventBus Scheduler](docs/en/rust-lua-eventbus-scheduler.md)：理解 Runtime、EventBus、Scheduler、Lua Agent 和 Topic 路由。

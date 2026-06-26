@@ -1,13 +1,18 @@
 # Eva-CLI Documentation
 
 > Language: English
-> Canonical: docs/en/README.md
-> Translation: [简体中文](../zh-CN/README.md)
+> Published default: docs/en/README.md
+> Current detail authority: [简体中文](../zh-CN/README.md)
 
 Eva-CLI is currently in the architecture-design stage. The repository documents
 the target runtime, extension model, memory model, discovery model, hardware
 integration, configuration system, and process-level recovery strategy before
 the executable implementation is finalized.
+
+Important source rule: English documents currently provide the default public
+entry, stable slugs, and summary coverage. The Simplified Chinese documents
+under `docs/zh-CN/` remain the source of truth for detailed architecture and
+implementation-spec content until the English full-detail migration catches up.
 
 ## Recommended Reading Order
 
@@ -44,6 +49,12 @@ the executable implementation is finalized.
 
 ## Source and Translation Policy
 
-English documents under `docs/en/` are the canonical source. Localized documents
-must be registered in `docs/_i18n/manifest.json` and must preserve the
-architecture decisions, constraints, and API semantics of the English source.
+`docs/en/` owns the default public entry and stable English URLs. For detailed
+architecture decisions, constraints, API semantics, and implementation specs,
+use the mapped `docs/zh-CN/` document as the current authority unless
+`docs/_i18n/manifest.json` explicitly marks a full-detail English page as caught
+up.
+
+When changing architecture-detail content, update the Chinese detailed source
+first, then sync the English page and manifest metadata honestly as summary,
+partial, or full-detail coverage.

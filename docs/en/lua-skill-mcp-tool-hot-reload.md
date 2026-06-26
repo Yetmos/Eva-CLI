@@ -1,7 +1,7 @@
 # Lua Skill, MCP, and Tool Hot Reload
 
 > Language: English
-> Canonical: docs/en/lua-skill-mcp-tool-hot-reload.md
+> Published default: docs/en/lua-skill-mcp-tool-hot-reload.md
 > Translation: [简体中文](../zh-CN/Lua承载Skill-MCP-Tool热更新架构方案.md)
 
 Updated: 2026-06-16

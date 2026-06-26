@@ -1,5 +1,5 @@
 > Language: 简体中文
-> Canonical source: ../en/lua-external-agent-adapter.md
+> English default entry: ../en/lua-external-agent-adapter.md
 > Translation status: current
 
 # Lua 调用外部 Agent 动态 Adapter 架构方案

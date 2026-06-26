@@ -1,7 +1,7 @@
 # Skill Implementation Plan
 
 > Language: English
-> Canonical: docs/en/skill-implementation.md
+> Published default: docs/en/skill-implementation.md
 > Translation: [Simplified Chinese](../zh-CN/Skill实现方案.md)
 
 Updated: 2026-06-23

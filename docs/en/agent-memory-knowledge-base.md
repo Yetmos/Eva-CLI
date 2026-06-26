@@ -1,7 +1,7 @@
 # Agent Memory and Knowledge Base
 
 > Language: English
-> Canonical: docs/en/agent-memory-knowledge-base.md
+> Published default: docs/en/agent-memory-knowledge-base.md
 > Translation: [简体中文](../zh-CN/Agent记忆与知识库架构方案.md)
 
 Updated: 2026-06-16

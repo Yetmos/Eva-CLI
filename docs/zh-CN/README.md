@@ -1,11 +1,12 @@
 # Eva-CLI 文档
 
 > Language: 简体中文
-> Canonical source: ../en/README.md
-> Translation status: current
+> Content authority: current detailed architecture source
+> English default entry: [../en/README.md](../en/README.md)
 
-这里维护 Eva-CLI 的中文文档入口。英文文档位于
-[../en/README.md](../en/README.md)，是后续实现规范的 canonical source。
+这里维护 Eva-CLI 当前最完整的中文架构详案入口。英文文档位于
+[../en/README.md](../en/README.md)，当前承担默认公开入口和稳定英文 slug 的职责；
+在英文详案补齐之前，不能用英文摘要覆盖本目录中的详细架构规格。
 
 ## 推荐阅读顺序
 
@@ -28,5 +29,6 @@
 
 ## 说明
 
-中文文档当前保留完整原始方案内容。新增和结构性更新应先进入英文
-canonical 文档，再同步到本目录并更新 `../_i18n/manifest.json` 中的翻译状态。
+中文文档当前保留完整原始方案内容，并暂时作为架构细节与实现规格的事实主源。
+新增和结构性更新应先进入对应中文详案，再同步英文摘要或全文，并更新
+`../_i18n/manifest.json` 中的内容权威、覆盖度和翻译状态。

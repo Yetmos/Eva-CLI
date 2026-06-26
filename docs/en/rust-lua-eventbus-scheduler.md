@@ -1,7 +1,7 @@
 # Rust, Lua, and EventBus Scheduler
 
 > Language: English
-> Canonical: docs/en/rust-lua-eventbus-scheduler.md
+> Published default: docs/en/rust-lua-eventbus-scheduler.md
 > Translation: [简体中文](../zh-CN/Rust与Lua事件总线智能体调度架构方案.md)
 
 Updated: 2026-06-16

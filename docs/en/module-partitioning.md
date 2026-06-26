@@ -1,7 +1,7 @@
 # Module Partitioning Plan
 
 > Language: English
-> Canonical: docs/en/module-partitioning.md
+> Published default: docs/en/module-partitioning.md
 > Translation: [简体中文](../zh-CN/模块划分方案.md)
 
 Updated: 2026-06-24

@@ -1,7 +1,7 @@
 # Hardware Hotplug
 
 > Language: English
-> Canonical: docs/en/hardware-hotplug.md
+> Published default: docs/en/hardware-hotplug.md
 > Translation: [简体中文](../zh-CN/外接硬件接入与热插拔架构方案.md)
 
 Updated: 2026-06-16

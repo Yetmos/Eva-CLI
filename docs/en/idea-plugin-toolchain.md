@@ -1,7 +1,7 @@
 # IDEA Plugin Toolchain Requirements
 
 > Language: English
-> Canonical: docs/en/idea-plugin-toolchain.md
+> Published default: docs/en/idea-plugin-toolchain.md
 > Translation: [简体中文](../zh-CN/IDEA插件开发工具链功能方案.md)
 
 Updated: 2026-06-25

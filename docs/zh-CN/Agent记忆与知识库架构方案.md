@@ -1,5 +1,5 @@
 > Language: 简体中文
-> Canonical source: ../en/agent-memory-knowledge-base.md
+> English default entry: ../en/agent-memory-knowledge-base.md
 > Translation status: current
 
 # Agent 记忆与知识库架构方案

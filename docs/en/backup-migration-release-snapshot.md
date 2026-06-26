@@ -1,7 +1,7 @@
 # Backup, Migration Package, and Release Snapshot
 
 > Language: English
-> Canonical: docs/en/backup-migration-release-snapshot.md
+> Published default: docs/en/backup-migration-release-snapshot.md
 > Translation: [简体中文](../zh-CN/备份迁移包与ReleaseSnapshot架构方案.md)
 
 Updated: 2026-06-17

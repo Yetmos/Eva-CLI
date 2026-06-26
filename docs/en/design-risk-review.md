@@ -1,7 +1,7 @@
 # Design Risk Review
 
 > Language: English
-> Canonical: docs/en/design-risk-review.md
+> Published default: docs/en/design-risk-review.md
 > Translation: [简体中文](../zh-CN/方案设计风险评审.md)
 
 Updated: 2026-06-16

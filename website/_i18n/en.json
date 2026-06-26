@@ -147,19 +147,19 @@
   },
   "docsIndex": {
     "metaTitle": "Eva-CLI Documentation",
-    "metaDescription": "Eva-CLI documentation entry for the English canonical source and localized documentation sets.",
+    "metaDescription": "Eva-CLI documentation entry for the English default docs and current detailed source documents.",
     "heroEyebrow": "Documentation",
     "heroTitle": "Eva-CLI Documentation",
-    "heroLead": "Start with the English canonical source, then switch to localized documentation where translations are available.",
+    "heroLead": "Start with the English default entry, and use the Simplified Chinese docs for the current full-detail architecture specifications.",
     "actionsLabel": "Documentation actions",
     "primaryAction": "Start with Architecture Overview",
     "secondaryAction": "Open GitHub",
     "languagePanelLabel": "Available languages",
     "languagePanelKicker": "Languages",
     "languagePanelTitle": "Choose a documentation language",
-    "fallbackNote": "Missing localized pages fall back to the English canonical source and are marked in the manifest.",
-    "documentsEyebrow": "Canonical Docs",
-    "documentsTitle": "English source documents",
+    "fallbackNote": "The manifest marks English pages as summary/default entries and Simplified Chinese pages as the current detailed source.",
+    "documentsEyebrow": "Documentation",
+    "documentsTitle": "Default English entries and detailed Chinese sources",
     "documents": [
       {
         "id": "readme",
@@ -169,7 +169,7 @@
       {
         "id": "architecture-overview",
         "title": "Architecture Overview",
-        "description": "The canonical entry for system goals, runtime boundaries, and core decisions."
+        "description": "The default English entry for system goals, runtime boundaries, and core decisions; use the mapped Chinese page for full detail."
       },
       {
         "id": "module-partitioning",

@@ -147,19 +147,19 @@
   },
   "docsIndex": {
     "metaTitle": "Eva-CLI 文档",
-    "metaDescription": "Eva-CLI 文档入口，提供英文 canonical source 和本地化文档集合。",
+    "metaDescription": "Eva-CLI 文档入口，提供英文默认入口和当前中文详案事实主源。",
     "heroEyebrow": "文档",
     "heroTitle": "Eva-CLI 文档",
-    "heroLead": "建议先阅读英文 canonical source，再按可用翻译切换到本地化文档。",
+    "heroLead": "可以先阅读英文默认入口；需要当前完整架构规格时，以简体中文详案为准。",
     "actionsLabel": "文档操作",
     "primaryAction": "阅读总体架构",
     "secondaryAction": "打开 GitHub",
     "languagePanelLabel": "可用语言",
     "languagePanelKicker": "语言",
     "languagePanelTitle": "选择文档语言",
-    "fallbackNote": "缺失的本地化页面会显式回退到英文 canonical source，并在 manifest 中标记状态。",
-    "documentsEyebrow": "Canonical 文档",
-    "documentsTitle": "英文源文档",
+    "fallbackNote": "manifest 会标记英文页面为默认摘要入口，简体中文页面为当前详案事实主源。",
+    "documentsEyebrow": "文档",
+    "documentsTitle": "英文默认入口与中文详案源",
     "documents": [
       {
         "id": "readme",
@@ -169,7 +169,7 @@
       {
         "id": "architecture-overview",
         "title": "总体架构",
-        "description": "系统目标、运行时边界和核心决策的 canonical 入口。"
+        "description": "系统目标、运行时边界和核心决策的英文默认入口；完整细节以映射的中文页面为准。"
       },
       {
         "id": "module-partitioning",

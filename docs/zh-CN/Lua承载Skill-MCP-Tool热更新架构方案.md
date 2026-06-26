@@ -1,5 +1,5 @@
 > Language: 简体中文
-> Canonical source: ../en/lua-skill-mcp-tool-hot-reload.md
+> English default entry: ../en/lua-skill-mcp-tool-hot-reload.md
 > Translation status: current
 
 # Eva-CLI Lua 承载 Skill / MCP / Tool 热更新架构方案

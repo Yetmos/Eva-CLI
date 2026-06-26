@@ -2,7 +2,7 @@
 
 完整中文方案见：[zh-CN/IDEA插件开发工具链功能方案.md](zh-CN/IDEA插件开发工具链功能方案.md)
 
-English canonical source: [en/idea-plugin-toolchain.md](en/idea-plugin-toolchain.md)
+English default entry: [en/idea-plugin-toolchain.md](en/idea-plugin-toolchain.md)
 
 配套 SVG 插图：
 

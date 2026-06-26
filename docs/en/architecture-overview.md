@@ -1,7 +1,7 @@
 # Architecture Overview
 
 > Language: English
-> Canonical: docs/en/architecture-overview.md
+> Published default: docs/en/architecture-overview.md
 > Translation: [简体中文](../zh-CN/总体架构方案.md)
 
 Updated: 2026-06-16
@@ -63,5 +63,6 @@ events, memory, and external adapters.
   as Runtime services. Agents may request and explain these operations, but
   Runtime owns scope resolution, verification, mutation, restore, rollback, and
   audit records.
-- English canonical documentation is the source for future implementation
-  specs; translations must not change architectural conclusions.
+- English documentation owns the default public entry and stable slugs. During
+  the current migration window, mapped `docs/zh-CN/` documents remain the
+  detailed implementation-spec authority.

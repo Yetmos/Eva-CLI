@@ -1,18 +1,31 @@
 # Eva-CLI Documentation
 
-The documentation now uses English as the canonical source and keeps localized
-content under locale-specific directories.
+The documentation currently separates the published default language from the
+content authority:
+
+- `docs/en/` is the default public documentation entry and owns stable English
+  slugs for the website.
+- `docs/zh-CN/` is the current source of truth for detailed architecture and
+  implementation-spec content. Most English pages are summaries until the
+  full-detail English migration is completed.
 
 ## Language Entrances
 
-- [English](en/README.md) - canonical documentation source.
-- [简体中文](zh-CN/README.md) - current Chinese translation set.
+- [English](en/README.md) - default public entry and stable slug set.
+- [简体中文](zh-CN/README.md) - current detailed architecture source.
 
 ## Maintenance Rules
 
-- Create or update the English canonical document first.
+- For architecture-detail or implementation-spec changes, update the
+  corresponding `docs/zh-CN/` document first while `zh-CN` remains the content
+  authority.
+- Then sync the English page as either a faithful full-detail translation or a
+  clearly scoped summary. Do not let an English summary override the Chinese
+  detailed specification.
 - Register every document ID, source path, translation path, and translation
   status in [_i18n/manifest.json](_i18n/manifest.json).
+- Keep `contentAuthority.locale` in the manifest aligned with the locale that
+  currently contains the most complete implementation-spec detail.
 - Register content assets that contain readable text in the manifest `assets`
   section, with locale-specific image paths and translation status.
 - Keep published document IDs and English slugs stable.
@@ -29,6 +42,13 @@ Translation status values:
 - `stale`: English source changed after the translation.
 - `missing`: the locale has no page for that document.
 - `partial`: only a summary, navigation, or key sections are translated.
+
+## Coverage Labels
+
+Locale `coverage` values describe content completeness, not URL ownership:
+
+- `default-summary`: default public entry, stable slugs, summary-level detail.
+- `detailed-source`: current source of truth for detailed architecture specs.
 
 ## Locale Rules
 

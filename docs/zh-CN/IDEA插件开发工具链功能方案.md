@@ -1,5 +1,5 @@
 > Language: 简体中文
-> Canonical source: ../en/idea-plugin-toolchain.md
+> English default entry: ../en/idea-plugin-toolchain.md
 > Translation status: current
 
 # IDEA Plugin 开发工具链功能方案
