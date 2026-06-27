@@ -32,6 +32,7 @@ implementation-spec content until the English full-detail migration catches up.
 14. [Design Risk Review](design-risk-review.md)
 15. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
 16. [Website and Documentation i18n](website-docs-i18n.md)
+17. [Discussion Area Chat with Firebase](discussion-chat-firebase-plan.md)
 
 ## Core Boundaries
 

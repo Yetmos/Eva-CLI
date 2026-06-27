@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">官网讨论区聊天 Firebase 架构</title>
+  <desc id="desc">基于 Firebase Auth、Cloud Functions、Cloud Messaging、Firestore、Cloud Storage、Realtime Database、Security Rules 和 App Check 的官网讨论区聊天架构。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 8; }
+      .client { fill: #e0f2fe; stroke: #0284c7; }
+      .trusted { fill: #dcfce7; stroke: #16a34a; }
+      .data { fill: #fef3c7; stroke: #d97706; }
+      .guard { fill: #fce7f3; stroke: #db2777; }
+      .ops { fill: #ede9fe; stroke: #7c3aed; }
+      .title { font: 700 24px Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 13px Arial, sans-serif; fill: #475569; }
+      .label { font: 700 15px Arial, sans-serif; fill: #0f172a; }
+      .small { font: 400 12px Arial, sans-serif; fill: #334155; }
+      .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #64748b; stroke-width: 1.8; stroke-dasharray: 7 5; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1280" height="720"/>
+  <text class="title" x="48" y="50">官网讨论区 Firebase 聊天架构</text>
+  <text class="subtitle" x="48" y="74">实时读取保持客户端友好；特权写入和账号注销由服务端控制。</text>
+
+  <rect class="panel client" x="48" y="120" width="210" height="110"/>
+  <text class="label" x="86" y="152">官网客户端</text>
+  <text class="small" x="72" y="176">GitHub 登录</text>
+  <text class="small" x="72" y="196">会话列表</text>
+  <text class="small" x="72" y="216">聊天窗口和输入框</text>
+
+  <rect class="panel guard" x="308" y="120" width="210" height="110"/>
+  <text class="label" x="382" y="152">App Check</text>
+  <text class="small" x="338" y="176">浏览器来源校验</text>
+  <text class="small" x="338" y="196">函数和上传入口保护</text>
+  <text class="small" x="338" y="216">降低脚本滥用</text>
+
+  <rect class="panel trusted" x="568" y="120" width="210" height="110"/>
+  <text class="label" x="600" y="152">Firebase Auth</text>
+  <text class="small" x="598" y="176">GitHub provider</text>
+  <text class="small" x="598" y="196">UID 身份</text>
+  <text class="small" x="598" y="216">近期登录校验</text>
+
+  <rect class="panel trusted" x="828" y="120" width="250" height="110"/>
+  <text class="label" x="890" y="152">Cloud Functions</text>
+  <text class="small" x="858" y="176">发消息、邀请、建群</text>
+  <text class="small" x="858" y="196">匿名名分配和投影</text>
+  <text class="small" x="858" y="216">账号注销流程</text>
+
+  <rect class="panel guard" x="1108" y="120" width="124" height="110"/>
+  <text class="label" x="1140" y="152">FCM 推送</text>
+  <text class="small" x="1124" y="176">Web Push</text>
+  <text class="small" x="1124" y="196">后台通知</text>
+  <text class="small" x="1124" y="216">清理失效 token</text>
+
+  <rect class="panel guard" x="48" y="310" width="210" height="110"/>
+  <text class="label" x="88" y="342">Security Rules</text>
+  <text class="small" x="72" y="366">只允许成员读取</text>
+  <text class="small" x="72" y="386">收窄客户端写入</text>
+  <text class="small" x="72" y="406">限制上传大小和 MIME</text>
+
+  <rect class="panel data" x="308" y="310" width="230" height="110"/>
+  <text class="label" x="360" y="342">Cloud Firestore</text>
+  <text class="small" x="338" y="366">users、sessions、threads</text>
+  <text class="small" x="338" y="386">members、messages、invites</text>
+  <text class="small" x="338" y="406">deletion jobs</text>
+
+  <rect class="panel data" x="588" y="310" width="210" height="110"/>
+  <text class="label" x="640" y="342">Cloud Storage</text>
+  <text class="small" x="618" y="366">聊天图片</text>
+  <text class="small" x="618" y="386">表情包资源</text>
+  <text class="small" x="618" y="406">按用户和会话记录 metadata</text>
+
+  <rect class="panel data" x="848" y="310" width="230" height="110"/>
+  <text class="label" x="886" y="342">Realtime Database</text>
+  <text class="small" x="878" y="366">在线状态</text>
+  <text class="small" x="878" y="386">输入中状态</text>
+  <text class="small" x="878" y="406">连接状态</text>
+
+  <rect class="panel ops" x="218" y="520" width="230" height="110"/>
+  <text class="label" x="278" y="552">管理后台</text>
+  <text class="small" x="248" y="576">表情包目录</text>
+  <text class="small" x="248" y="596">内容审核</text>
+  <text class="small" x="248" y="616">撤销邀请链接</text>
+
+  <rect class="panel ops" x="508" y="520" width="230" height="110"/>
+  <text class="label" x="570" y="552">可观测性</text>
+  <text class="small" x="538" y="576">函数错误</text>
+  <text class="small" x="538" y="596">发送频率</text>
+  <text class="small" x="538" y="616">注销任务统计</text>
+
+  <rect class="panel ops" x="798" y="520" width="230" height="110"/>
+  <text class="label" x="860" y="552">Emulators</text>
+  <text class="small" x="828" y="576">Auth、Firestore、Storage</text>
+  <text class="small" x="828" y="596">Functions 和 Rules 测试</text>
+  <text class="small" x="828" y="616">上线前 staging 验证</text>
+
+  <path class="arrow" d="M258 175 L304 175"/>
+  <path class="arrow" d="M518 175 L564 175"/>
+  <path class="arrow" d="M778 175 L824 175"/>
+  <path class="arrow" d="M1078 175 L1104 175"/>
+  <path class="arrow" d="M953 230 L953 306"/>
+  <path class="arrow" d="M828 202 C690 256 604 300 538 344"/>
+  <path class="arrow" d="M828 214 C764 256 746 284 720 306"/>
+  <path class="arrow" d="M258 365 L304 365"/>
+  <path class="dash" d="M153 230 L153 306"/>
+  <path class="dash" d="M413 230 L413 306"/>
+  <path class="dash" d="M1170 120 C1060 70 250 70 153 116"/>
+  <path class="dash" d="M1078 365 C1138 480 1010 520 913 520"/>
+  <path class="dash" d="M738 575 L794 575"/>
+  <path class="dash" d="M448 575 L504 575"/>
+</svg>
