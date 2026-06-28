@@ -210,6 +210,17 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "command-line-feature-map-diagram",
+      "title": "Eva-CLI Command Feature Map",
+      "source": "docs/assets/eva-cli-command-feature-map.svg",
+      "translations": {
+        "zh-CN": "docs/assets/eva-cli-command-feature-map.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -484,6 +495,23 @@
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
+    },
+    {
+      "id": "command-line-tool-feature-design",
+      "title": "Command-Line Tool Feature Design",
+      "source": "docs/en/command-line-tool-feature-design.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/Eva-CLI命令行工具功能设计文档.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/Eva-CLI命令行工具功能设计文档.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "website-docs-i18n",

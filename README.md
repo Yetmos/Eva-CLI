@@ -104,9 +104,13 @@ Recommended reading order for the English default documentation:
     explain operations.
 12. [Design Risk Review](docs/en/design-risk-review.md): review design-only
     risks, semantic gaps, and areas that still need stronger specification.
-12. [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md): follow the staged
+13. [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md): follow the staged
     implementation path from architecture documents to module layout,
     contracts, a minimum runtime loop, and release readiness.
+14. [Command-Line Tool Feature Design](docs/en/command-line-tool-feature-design.md):
+    turn the runtime architecture into the target `eva` command surface,
+    including command groups, output contracts, safety gates, and release
+    priorities.
 
 ## Document Responsibilities
 
@@ -125,6 +129,7 @@ Recommended reading order for the English default documentation:
 | [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md) | Defines why backup, migration package, release snapshot, restore, rollback, manifest verification, and artifact audit belong to Runtime services. |
 | [Design Risk Review](docs/en/design-risk-review.md) | Reviews design risks around Bot behavior, event consistency, state ownership, permission closure, capability semantics, and error recovery. |
 | [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md) | Defines the staged path from architecture documents to module layout, contracts, a minimum runnable skeleton, a minimum Runtime loop, module implementation, and 1.0 release readiness. |
+| [Command-Line Tool Feature Design](docs/en/command-line-tool-feature-design.md) | Defines the target `eva` command groups, global flags, safety gates, output contract, exit codes, and staged CLI implementation priorities. |
 
 ## Current Design Position
 

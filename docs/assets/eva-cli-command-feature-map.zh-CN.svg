@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="660" viewBox="0 0 1180 660" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 命令功能地图</title>
+  <desc id="desc">展示 Eva-CLI 命令入口、运行时控制路径、扩展能力管理和运维安全边界的功能地图。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.4; rx: 8; }
+      .cli { fill: #dbeafe; stroke: #2563eb; }
+      .runtime { fill: #dcfce7; stroke: #16a34a; }
+      .extension { fill: #fef3c7; stroke: #d97706; }
+      .ops { fill: #fce7f3; stroke: #db2777; }
+      .guard { fill: #ede9fe; stroke: #7c3aed; }
+      .title { font: 700 23px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 13px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
+      .label { font: 700 15px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .small { font: 400 12px Arial, "Microsoft YaHei", sans-serif; fill: #334155; }
+      .mono { font: 700 12px "SFMono-Regular", Consolas, monospace; fill: #1e293b; }
+      .arrow { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .audit { stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 6 5; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1180" height="660"/>
+  <text class="title" x="48" y="48">Eva-CLI 命令功能地图</text>
+  <text class="subtitle" x="48" y="72">CLI 是运行时执行、能力发现、配置管理和恢复操作的受控入口。</text>
+
+  <rect class="panel cli" x="70" y="125" width="190" height="95"/>
+  <text class="label" x="112" y="154">入口命令</text>
+  <text class="mono" x="96" y="179">eva init</text>
+  <text class="mono" x="96" y="199">eva run</text>
+  <text class="mono" x="96" y="219">eva doctor</text>
+
+  <rect class="panel cli" x="310" y="125" width="220" height="95"/>
+  <text class="label" x="350" y="154">操作控制</text>
+  <text class="mono" x="335" y="179">--profile --workspace</text>
+  <text class="mono" x="335" y="199">--output json|text</text>
+  <text class="mono" x="335" y="219">--dry-run --yes</text>
+
+  <rect class="panel guard" x="585" y="110" width="245" height="125"/>
+  <text class="label" x="635" y="142">安全闸口</text>
+  <text class="small" x="614" y="168">schema 校验</text>
+  <text class="small" x="614" y="190">policy 与权限合并</text>
+  <text class="small" x="614" y="212">确认提示与审计上下文</text>
+
+  <rect class="panel runtime" x="900" y="125" width="210" height="95"/>
+  <text class="label" x="943" y="154">运行时核心</text>
+  <text class="small" x="928" y="179">EventBus 与 Scheduler</text>
+  <text class="small" x="928" y="199">Lua AgentRuntime</text>
+  <text class="small" x="928" y="219">Tool Layer</text>
+
+  <rect class="panel runtime" x="75" y="310" width="210" height="130"/>
+  <text class="label" x="124" y="340">运行时命令</text>
+  <text class="mono" x="102" y="366">eva task *</text>
+  <text class="mono" x="102" y="388">eva agent *</text>
+  <text class="mono" x="102" y="410">eva event *</text>
+  <text class="mono" x="102" y="432">eva memory *</text>
+
+  <rect class="panel extension" x="350" y="310" width="210" height="130"/>
+  <text class="label" x="394" y="340">扩展能力命令</text>
+  <text class="mono" x="378" y="366">eva skill *</text>
+  <text class="mono" x="378" y="388">eva mcp *</text>
+  <text class="mono" x="378" y="410">eva adapter *</text>
+  <text class="mono" x="378" y="432">eva hardware *</text>
+
+  <rect class="panel ops" x="625" y="310" width="210" height="130"/>
+  <text class="label" x="674" y="340">恢复运维命令</text>
+  <text class="mono" x="652" y="366">eva snapshot *</text>
+  <text class="mono" x="652" y="388">eva backup *</text>
+  <text class="mono" x="652" y="410">eva upgrade *</text>
+  <text class="mono" x="652" y="432">eva restore *</text>
+
+  <rect class="panel guard" x="900" y="310" width="210" height="130"/>
+  <text class="label" x="950" y="340">证据输出</text>
+  <text class="small" x="928" y="366">稳定 exit code</text>
+  <text class="small" x="928" y="388">机器可读 JSON</text>
+  <text class="small" x="928" y="410">trace 与 audit 记录</text>
+  <text class="small" x="928" y="432">release artifact</text>
+
+  <rect class="panel" x="150" y="515" width="880" height="82"/>
+  <text class="label" x="388" y="546">设计边界</text>
+  <text class="small" x="207" y="573">命令只表达意图；Rust 负责校验、授权、记录，并通过 Runtime service 与 Adapter 执行副作用。</text>
+
+  <path class="arrow" d="M260 172 L306 172"/>
+  <path class="arrow" d="M530 172 L581 172"/>
+  <path class="arrow" d="M830 172 L896 172"/>
+  <path class="arrow" d="M1005 220 C1005 260 182 260 180 306"/>
+  <path class="arrow" d="M1005 220 C1005 260 455 260 455 306"/>
+  <path class="arrow" d="M1005 220 C1005 260 730 260 730 306"/>
+  <path class="arrow" d="M285 375 L346 375"/>
+  <path class="arrow" d="M560 375 L621 375"/>
+  <path class="arrow" d="M835 375 L896 375"/>
+  <path class="audit" d="M180 440 C180 485 590 494 590 511"/>
+  <path class="audit" d="M455 440 C455 478 590 493 590 511"/>
+  <path class="audit" d="M730 440 C730 478 590 493 590 511"/>
+  <path class="audit" d="M1005 440 C1005 492 710 501 710 511"/>
+</svg>
