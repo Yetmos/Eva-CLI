@@ -551,6 +551,12 @@ h3 {
   min-width: 0;
 }
 
+.giscus-panel {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
 .chat-status {
   min-height: 38px;
   padding: 9px 12px;

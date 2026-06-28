@@ -8,6 +8,11 @@ $TemplateRoot = Join-Path $Root "website/_templates"
 $LocaleRoot = Join-Path $Root "website/_i18n"
 $WebsiteRoot = Join-Path $Root "website"
 $BlogDataPath = Join-Path $Root "website/_blog/posts.json"
+$GiscusRepo = "Yetmos/Eva-CLI"
+$GiscusRepoId = "R_kgDOS4ZJEA"
+$GiscusCategory = "General"
+$GiscusCategoryId = "DIC_kwDOS4ZJEM4C_Tf8"
+$GiscusTerm = "Eva-CLI site discussion"
 
 function Read-JsonFile {
   param([Parameter(Mandatory = $true)][string]$Path)
@@ -680,6 +685,8 @@ function New-DiscussionEmbed {
     [Parameter(Mandatory = $true)][string]$LocaleCode
   )
 
+  $giscusLang = if ($LocaleCode -eq "zh-CN") { "zh-CN" } else { "en" }
+
   return @"
           <div class="chat-app" data-eva-chat data-locale="$(Html $LocaleCode)">
             <div class="chat-status" data-chat-status role="status"></div>
@@ -758,6 +765,24 @@ function New-DiscussionEmbed {
                 </form>
               </section>
             </div>
+          </div>
+          <div class="giscus-panel" aria-label="GitHub Discussions">
+            <script src="https://giscus.app/client.js"
+              data-repo="$(Html $GiscusRepo)"
+              data-repo-id="$(Html $GiscusRepoId)"
+              data-category="$(Html $GiscusCategory)"
+              data-category-id="$(Html $GiscusCategoryId)"
+              data-mapping="specific"
+              data-term="$(Html $GiscusTerm)"
+              data-strict="0"
+              data-reactions-enabled="1"
+              data-emit-metadata="0"
+              data-input-position="top"
+              data-theme="preferred_color_scheme"
+              data-lang="$(Html $giscusLang)"
+              crossorigin="anonymous"
+              async>
+            </script>
           </div>
 "@
 }

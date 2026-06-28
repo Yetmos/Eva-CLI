@@ -250,9 +250,6 @@ foreach ($locale in $locales) {
   if ($homeHtml -notmatch 'blog/') {
     Fail "Generated home page for '$($locale.code)' is missing the blog navigation link."
   }
-  if ($homeHtml -match 'https://giscus\.app/client\.js') {
-    Fail "Generated home page for '$($locale.code)' still contains the removed giscus embed script."
-  }
   if ($homeHtml -notmatch 'data-eva-chat') {
     Fail "Generated home page for '$($locale.code)' is missing the Firebase chat app mount."
   }
@@ -264,6 +261,23 @@ foreach ($locale in $locales) {
   }
   if ($homeHtml -notmatch 'data-chat-action="sign-in"') {
     Fail "Generated home page for '$($locale.code)' is missing the Firebase chat sign-in action."
+  }
+  if ($homeHtml -notmatch 'https://giscus\.app/client\.js') {
+    Fail "Generated home page for '$($locale.code)' is missing the giscus embed script."
+  }
+  if ($homeHtml -notmatch 'data-category-id="DIC_kwDOS4ZJEM4C_Tf8"') {
+    Fail "Generated home page for '$($locale.code)' has incorrect giscus category id."
+  }
+  if ($homeHtml -notmatch 'data-mapping="specific"') {
+    Fail "Generated home page for '$($locale.code)' must use a fixed giscus mapping."
+  }
+  if ($homeHtml -notmatch 'data-term="Eva-CLI site discussion"') {
+    Fail "Generated home page for '$($locale.code)' must use the shared site discussion term."
+  }
+
+  $expectedGiscusLang = if ($locale.code -eq "zh-CN") { "zh-CN" } else { "en" }
+  if ($homeHtml -notmatch "data-lang=`"$([regex]::Escape($expectedGiscusLang))`"") {
+    Fail "Generated home page for '$($locale.code)' has incorrect giscus language."
   }
 }
 
