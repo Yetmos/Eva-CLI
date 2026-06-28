@@ -24,6 +24,26 @@
   ],
   "posts": [
     {
+      "id": "command-line-tool-feature-design",
+      "locale": "en",
+      "slug": "command-line-tool-feature-design",
+      "title": "Designing the Eva-CLI Command Surface",
+      "description": "How Eva-CLI should turn the Rust-managed runtime into a practical command-line surface with workspace setup, task execution, Agent controls, extension probes, recovery commands, and script-friendly output contracts.",
+      "date": "2026-06-28",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/command-line-tool-feature-design.html"
+    },
+    {
+      "id": "command-line-tool-feature-design",
+      "locale": "zh-CN",
+      "slug": "command-line-tool-feature-design",
+      "title": "Eva-CLI 命令行工具功能设计",
+      "description": "Eva-CLI 应如何把 Rust 托管运行时收束成可使用的命令行入口，覆盖 workspace 初始化、任务执行、Agent 控制、扩展能力探测、恢复命令和适合脚本的输出契约。",
+      "date": "2026-06-28",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/command-line-tool-feature-design.html"
+    },
+    {
       "id": "luaagent-ide-fork-vs-plugin",
       "locale": "en",
       "slug": "luaagent-ide-fork-vs-plugin",

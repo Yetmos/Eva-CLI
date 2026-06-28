@@ -1,0 +1,92 @@
+<p>Eva-CLI's architecture is intentionally strict about authority: Rust owns validation, permissions, process lifecycle, audit, and side effects, while Lua Agents express hot-reloadable behavior. The command-line tool should expose that architecture without leaking those powers directly to scripts.</p>
+
+<p>The target <code>eva</code> command should feel small at the entry point and disciplined under automation. A new user needs <code>eva init</code>, <code>eva doctor</code>, and <code>eva run</code>. A CI job needs JSON, deterministic exit codes, dry-run planning, and trace IDs. Operators need recovery commands that produce evidence instead of hidden mutation.</p>
+
+<figure class="blog-figure">
+  <img src="../../docs/assets/eva-cli-command-feature-map.svg" alt="Eva-CLI command feature map showing entry commands, operator controls, safety gates, runtime commands, extension commands, recovery commands, and evidence output.">
+  <figcaption>The CLI should be the runtime front door, not a bypass around policy and audit.</figcaption>
+</figure>
+
+<h2>Start with one command shape</h2>
+<p>The command model should stay predictable:</p>
+
+<pre class="blog-code"><code>eva &lt;command&gt; [subcommand] [flags]</code></pre>
+
+<p>Global flags such as <code>--workspace</code>, <code>--profile</code>, <code>--output json</code>, <code>--dry-run</code>, <code>--yes</code>, <code>--locale</code>, and <code>--trace</code> should behave consistently across command groups. That consistency matters more than adding many narrow shortcuts early.</p>
+
+<h2>Command groups</h2>
+<p>The first usable version does not need every future capability. It needs the groups that prove the runtime loop, the configuration boundary, and the operator evidence model.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Group</th>
+    <th>Example commands</th>
+    <th>Priority</th>
+  </tr>
+  <tr>
+    <td>Workspace</td>
+    <td><code>init</code>, <code>doctor</code>, <code>config validate</code></td>
+    <td>P0</td>
+  </tr>
+  <tr>
+    <td>Task execution</td>
+    <td><code>run</code>, <code>task status</code>, <code>task cancel</code></td>
+    <td>P0</td>
+  </tr>
+  <tr>
+    <td>Agent runtime</td>
+    <td><code>agent list</code>, <code>agent inspect</code>, <code>agent reload</code></td>
+    <td>P0</td>
+  </tr>
+  <tr>
+    <td>Extensions</td>
+    <td><code>skill list</code>, <code>mcp probe</code>, <code>adapter probe</code></td>
+    <td>P1</td>
+  </tr>
+  <tr>
+    <td>Operations</td>
+    <td><code>snapshot create</code>, <code>backup create</code>, <code>restore plan</code></td>
+    <td>P1</td>
+  </tr>
+</table>
+
+<h2>Plan before mutation</h2>
+<p>Commands that can change runtime state should first build an execution plan. That plan should resolve the workspace, profile, runtime generation, manifests, schemas, and policy merge result before any mutation happens. In text mode, the user sees the mutation scope and confirmation prompt. In JSON mode, automation receives a plan object and a clear <code>requires_confirmation</code> field.</p>
+
+<p>This rule is especially important for restore, upgrade, snapshot promotion, hardware binding, and any Adapter call with write permissions. The CLI can be convenient, but it must not become a quiet privilege expansion path.</p>
+
+<h2>Output is part of the product</h2>
+<p>Eva-CLI should treat output format as an API. Human output can use tables and recovery hints. Machine output should stay stable enough for CI and local automation.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Result</th>
+    <th>Meaning</th>
+    <th>Automation fields</th>
+  </tr>
+  <tr>
+    <td><code>ok</code></td>
+    <td>The command completed.</td>
+    <td><code>status</code>, <code>data</code>, <code>trace_id</code></td>
+  </tr>
+  <tr>
+    <td><code>planned</code></td>
+    <td>No mutation happened; a plan is ready.</td>
+    <td><code>status</code>, <code>plan</code>, <code>requires_confirmation</code></td>
+  </tr>
+  <tr>
+    <td><code>accepted</code></td>
+    <td>Long-running work entered Runtime.</td>
+    <td><code>status</code>, <code>task_id</code>, <code>trace_id</code></td>
+  </tr>
+  <tr>
+    <td><code>blocked</code></td>
+    <td>Policy or prerequisites stopped execution.</td>
+    <td><code>status</code>, <code>error</code>, <code>missing</code></td>
+  </tr>
+</table>
+
+<h2>Implementation path</h2>
+<p>The lowest-risk path is to ship the CLI in layers. First, create and validate a workspace. Then submit a task into the minimum EventBus and Scheduler loop. After that, expose Agent inspection and safe reload. Extension commands should begin as list and probe surfaces before write-capable invocation becomes available. Recovery commands should start with plans and verification before apply-style commands exist.</p>
+
+<p>The full technical design is available in <a href="../../docs/en/command-line-tool-feature-design.md">Command-Line Tool Feature Design</a>.</p>
