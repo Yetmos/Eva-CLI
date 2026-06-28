@@ -143,7 +143,7 @@
   "discussion": {
     "eyebrow": "讨论",
     "title": "讨论 Eva-CLI",
-    "body": "通过 GitHub Discussions 提问、交流实现思路或留下设计反馈。"
+    "body": "使用 GitHub 登录后，可以加入 Eva-CLI 官网讨论区、发起单聊、创建群聊，并按需开启浏览器通知。"
   },
   "docsIndex": {
     "metaTitle": "Eva-CLI 文档",

@@ -1,0 +1,30 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isThreadMember(threadId) {
+      return isSignedIn()
+        && firestore.exists(/databases/(default)/documents/threads/$(threadId)/members/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/threads/$(threadId)/members/$(request.auth.uid)).data.state == "active";
+    }
+
+    match /chat/{threadId}/{messageId}/{fileName} {
+      allow read: if isThreadMember(threadId);
+      allow write: if isThreadMember(threadId)
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches("image/.*")
+        && request.resource.metadata.ownerUid == request.auth.uid
+        && request.resource.metadata.threadId == threadId
+        && request.resource.metadata.messageId == messageId;
+    }
+
+    match /stickers/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+  }
+}
