@@ -33,6 +33,46 @@ into executable structure:
 See [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md) for the staged
 release path from design documents to a 1.0 release.
 
+## eva-core Implementation Scope
+
+`eva-core` is the foundation contract layer for the Eva-CLI Rust workspace. It
+does not start the runtime, execute Lua, access networks, or persist data.
+Instead, it defines the stable data models shared by downstream crates. The
+current source tree already has placeholders for `event`, `topic`, `ids`,
+`capability`, `invoke`, and `error`; the first implementation milestone is to
+turn those placeholders into testable, serializable, side-effect-free contract
+types.
+
+`eva-core` should implement:
+
+- Topic contracts: `Topic` and `TopicPattern` parsing, validation, and wildcard
+  matching for exact, `*`, and `**`, while rejecting empty segments, invalid
+  prefixes, and invalid `**` placement.
+- Identifier contracts: newtypes such as `AgentId`, `AdapterId`,
+  `CapabilityName`, `RequestId`, and `EventId`, with parsing, display, and
+  serialization support so IDs are not mixed as plain strings.
+- Event contracts: `Event`, `EventTarget`, payload, timestamps,
+  `correlation_id`, `causation_id`, and trace linkage fields shared by the
+  EventBus, Scheduler, and AgentRuntime.
+- Invoke contracts: Agent, Capability, and Adapter request/response structures,
+  including target, input payload, status, output, and error carrying.
+- Capability contracts: capability names and provider-selection primitives used
+  by `eva-capability`, `eva-adapter`, and Agent tool calls.
+- Error contracts: `EvaError`, `ErrorKind`, retryable flags, and provider codes
+  as the common cross-crate error boundary.
+
+`eva-core` explicitly does not implement event persistence, subscription
+tables, Agent mailboxes, scheduling policy, Lua bindings, Adapter transports,
+MCP protocol details, policy merging, runtime builders, CLI commands, or direct
+filesystem/network/database/shell/hardware access. Those responsibilities
+belong to crates such as `eva-eventbus`, `eva-scheduler`, `eva-agent`,
+`eva-lua-host`, `eva-adapter`, `eva-mcp`, `eva-policy`, `eva-runtime`, and
+`eva-cli`.
+
+See [eva-core Module Design](docs/en/eva-core-module.md) and
+[crates/eva-core/README.md](crates/eva-core/README.md) for the detailed module
+contract.
+
 ## Repository Layout
 
 ```text

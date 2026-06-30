@@ -24,6 +24,23 @@ Eva-CLI 已经完成第一轮实现所需的大部分架构和方案文档工作
 
 完整阶段划分见 [从零到 1.0 版本路线图](docs/zh-CN/从零到1.0版本路线图.md)。
 
+## eva-core 模块要实现的功能
+
+`eva-core` 是 Eva-CLI Rust workspace 的基础契约层。它不负责启动 runtime、执行 Lua、访问网络或落盘数据，而是先把下游 crate 会共同依赖的稳定数据模型定义清楚。当前源码已经有 `event`、`topic`、`ids`、`capability`、`invoke` 和 `error` 模块占位，第一阶段要把这些占位落成可测试、可序列化、无副作用的契约类型。
+
+`eva-core` 的具体实现范围：
+
+- Topic 契约：实现 `Topic` 和 `TopicPattern` 的解析、格式校验和通配匹配，支持 exact、`*`、`**`，并拒绝空段、非法前缀以及位置不合法的 `**`。
+- ID 契约：实现 `AgentId`、`AdapterId`、`CapabilityName`、`RequestId`、`EventId` 等 newtype，提供解析、显示和序列化能力，避免把不同 ID 当普通字符串混用。
+- Event 契约：实现 `Event`、`EventTarget`、payload、时间戳、`correlation_id`、`causation_id` 等链路字段，让 EventBus、Scheduler 和 AgentRuntime 使用同一事件结构。
+- Invoke 契约：实现 Agent、Capability、Adapter 调用请求与响应结构，包括调用目标、输入 payload、状态、输出和错误承载方式。
+- Capability 契约：实现能力命名和 provider 选择所需的基础类型，为 `eva-capability`、`eva-adapter` 和 Agent 工具调用提供统一引用。
+- Error 契约：实现 `EvaError`、`ErrorKind`、`retryable`、provider code 等结构化错误模型，作为跨 crate 的统一错误边界。
+
+`eva-core` 明确不实现：事件持久化、订阅表、Agent mailbox、调度策略、Lua binding、Adapter transport、MCP 协议、policy 合并、runtime builder、CLI 命令、文件系统/网络/数据库/shell/硬件访问。这些职责分别归 `eva-eventbus`、`eva-scheduler`、`eva-agent`、`eva-lua-host`、`eva-adapter`、`eva-mcp`、`eva-policy`、`eva-runtime` 和 `eva-cli` 等模块。
+
+详细设计见 [eva-core 模块设计](docs/zh-CN/eva-core模块设计.md) 和 [crates/eva-core/README.md](crates/eva-core/README.md)。
+
 ## 仓库结构
 
 ```text
