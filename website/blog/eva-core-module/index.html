@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Designing eva-core as Eva-CLI&#39;s Contract Layer | Eva-CLI Blog</title>
+    <meta name="description" content="Why eva-core should be the first implementation module: stable Topics, IDs, Events, invocation contracts, and structured errors before runtime behavior spreads across crates.">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="Designing eva-core as Eva-CLI&#39;s Contract Layer | Eva-CLI Blog">
+    <meta property="og:description" content="Why eva-core should be the first implementation module: stable Topics, IDs, Events, invocation contracts, and structured errors before runtime behavior spreads across crates.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://www.eva-cli.com/blog/eva-core-module/">
+    <meta property="article:published_time" content="2026-06-30">
+    <meta property="article:section" content="Runtime">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://www.eva-cli.com/blog/eva-core-module/">
+    <link rel="alternate" hreflang="en" href="https://www.eva-cli.com/blog/eva-core-module/">
+    <link rel="alternate" hreflang="zh-CN" href="https://www.eva-cli.com/zh-CN/blog/eva-core-module/">
+    <link rel="alternate" hreflang="x-default" href="https://www.eva-cli.com/blog/eva-core-module/">
+    <link rel="icon" type="image/svg+xml" href="../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../" aria-label="Eva-CLI home">
+        <img src="../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">Multi-Agent Runtime</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="../../">Home</a>
+        <a href="../../docs/en/README.md">Docs</a>
+        <a href="../../blog/">Blog</a>
+        <a href="../../docs/en/architecture-overview.md">Architecture</a>
+        <a href="../../#discussion">Discussion</a>
+        <a href="../../#feedback">Feedback</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../blog/eva-core-module/" hreflang="en" lang="en" aria-current="page">English</a>
+          <a href="../../zh-CN/blog/eva-core-module/" hreflang="zh-CN" lang="zh-CN">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">Blog</p>
+          <h1>Designing eva-core as Eva-CLI&#39;s Contract Layer</h1>
+          <p class="blog-lead">Why eva-core should be the first implementation module: stable Topics, IDs, Events, invocation contracts, and structured errors before runtime behavior spreads across crates.</p>
+          <div class="blog-meta">
+            <span>Published: <time datetime="2026-06-30">2026-06-30</time></span>
+            <a href="../../blog/category/runtime/">Category: Runtime</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p><code>eva-core</code> is the right first implementation module because it defines the contracts every other crate will depend on. Before Eva-CLI grows EventBus delivery, Scheduler routing, Lua Agent execution, Adapter transports, memory, hardware, and runtime generation switching, it needs a small shared vocabulary that does not perform side effects.</p>
+
+<p>The point is not to make <code>eva-core</code> powerful. The point is to make it boring, stable, and hard to misuse: Topics are validated before routing, IDs cannot be mixed accidentally, Events have trace linkage, invoke requests have predictable shapes, and errors carry structured fields instead of loose strings.</p>
+
+<figure class="blog-figure">
+  <img src="../../docs/assets/eva-core-contract-boundary.svg" alt="eva-core contract boundary diagram showing eva-core as the stable layer for Event, Topic, IDs, Capability, Invoke, and structured errors between config, EventBus, Scheduler, Agent, Adapter, Runtime, and CLI modules.">
+  <figcaption><code>eva-core</code> should stay at the contract boundary: shared by everyone, owned by no runtime side effect.</figcaption>
+</figure>
+
+<h2>The first module should reduce future rewrites</h2>
+<p>Starting with a transport or an Agent runtime can feel more visible, but those modules need common types immediately. If each crate invents its own Topic strings, request identifiers, payload wrappers, and error categories, the project will spend its second implementation pass deleting duplicate contracts.</p>
+
+<p><code>eva-core</code> prevents that by fixing the lowest-level shapes first. It should not decide policy, execute Lua, call providers, read configuration files, or publish events. It should only make the data moving through those modules explicit and testable.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Contract</th>
+    <th>Why it belongs in <code>eva-core</code></th>
+    <th>Who uses it first</th>
+  </tr>
+  <tr>
+    <td>Topic</td>
+    <td>Routing, subscriptions, emitted topics, and policy checks all need the same validation rules.</td>
+    <td><code>eva-scheduler</code>, <code>eva-policy</code>, <code>eva-config</code></td>
+  </tr>
+  <tr>
+    <td>ID newtypes</td>
+    <td>Agent, Adapter, Capability, Event, and Request identifiers should not be interchangeable strings.</td>
+    <td>All runtime crates</td>
+  </tr>
+  <tr>
+    <td>Event</td>
+    <td>EventBus, Scheduler, AgentRuntime, audit, and recovery all need one event envelope.</td>
+    <td><code>eva-eventbus</code>, <code>eva-scheduler</code>, <code>eva-agent</code></td>
+  </tr>
+  <tr>
+    <td>Invoke</td>
+    <td>Agent and capability calls need a stable request/response boundary before transports exist.</td>
+    <td><code>eva-agent</code>, <code>eva-capability</code>, <code>eva-adapter</code></td>
+  </tr>
+  <tr>
+    <td>Error</td>
+    <td>Cross-crate failures need kind, message, retryability, provider code, and trace linkage.</td>
+    <td>Every crate boundary</td>
+  </tr>
+</table>
+
+<h2>Keep the crate deliberately narrow</h2>
+<p>A good <code>eva-core</code> design is defined as much by what it rejects as by what it owns. It should not load YAML, evaluate permissions, persist events, run Lua, own Adapter manifests, speak MCP, or manage lifecycle generations. Those are runtime responsibilities. Putting them in <code>eva-core</code> would make the base layer too heavy and eventually create dependency cycles.</p>
+
+<pre class="blog-code"><code>eva-core
+  -> Topic, TopicPattern
+  -> AgentId, AdapterId, CapabilityName, RequestId, EventId
+  -> Event, EventTarget, trace linkage fields
+  -> AgentInvokeRequest, CapabilityInvokeRequest, InvokeResponse
+  -> EvaError, ErrorKind, retryable, provider_code</code></pre>
+
+<h2>A practical first milestone</h2>
+<p>The first milestone should be small enough to finish and strict enough to unblock the next modules. Topic parsing and pattern validation should come first because configuration, routing, permissions, and Agent emission all depend on it. ID newtypes come next because they prevent later APIs from accepting arbitrary strings. Events and invoke contracts then give EventBus, Scheduler, AgentRuntime, and AdapterRouter a shared surface.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Priority</th>
+    <th>Deliverable</th>
+    <th>Acceptance check</th>
+  </tr>
+  <tr>
+    <td>1</td>
+    <td><code>Topic</code> and <code>TopicPattern</code></td>
+    <td>Accepts <code>/input/user</code>, rejects empty segments, restricts <code>**</code> to the final segment.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>ID newtypes</td>
+    <td>Agent IDs, Adapter IDs, and Request IDs cannot be passed to the wrong API by accident.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><code>Event</code></td>
+    <td>Includes <code>event_id</code>, <code>topic</code>, payload, optional target, and trace linkage fields.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>Invoke request/response</td>
+    <td>Agent and capability calls have one stable shape before transports are implemented.</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>Structured errors</td>
+    <td>Every cross-module error includes category, message, retryability, and optional provider context.</td>
+  </tr>
+</table>
+
+<h2>What it unlocks next</h2>
+<p>Once <code>eva-core</code> is stable, <code>eva-config</code> can parse YAML into strongly typed references, <code>eva-eventbus</code> can publish a real <code>Event</code>, <code>eva-scheduler</code> can match Topics without string ad hoc logic, and <code>eva-agent</code> can receive a clear event envelope. That is the smallest foundation that makes the rest of Eva-CLI implementation feel incremental instead of speculative.</p>
+
+<p>The detailed module document is available in <a href="../../docs/en/eva-core-module.md">eva-core Module Design</a>.</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../blog/">Back to blog</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>Author: <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>Feedback: <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../#feedback">Submit feedback</a>
+    </footer>
+  </body>
+</html>

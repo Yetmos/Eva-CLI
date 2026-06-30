@@ -199,6 +199,17 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "eva-core-contract-boundary-diagram",
+      "title": "eva-core Contract Boundary Diagram",
+      "source": "docs/assets/eva-core-contract-boundary.svg",
+      "translations": {
+        "zh-CN": "docs/assets/eva-core-contract-boundary.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -252,6 +263,23 @@
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
+    },
+    {
+      "id": "eva-core-module",
+      "title": "eva-core Module Design",
+      "source": "docs/en/eva-core-module.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/eva-core模块设计.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/eva-core模块设计.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "rust-lua-eventbus-scheduler",

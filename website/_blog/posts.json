@@ -24,6 +24,26 @@
   ],
   "posts": [
     {
+      "id": "eva-core-module",
+      "locale": "en",
+      "slug": "eva-core-module",
+      "title": "Designing eva-core as Eva-CLI's Contract Layer",
+      "description": "Why eva-core should be the first implementation module: stable Topics, IDs, Events, invocation contracts, and structured errors before runtime behavior spreads across crates.",
+      "date": "2026-06-30",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/eva-core-module.html"
+    },
+    {
+      "id": "eva-core-module",
+      "locale": "zh-CN",
+      "slug": "eva-core-module",
+      "title": "把 eva-core 设计成 Eva-CLI 的基础契约层",
+      "description": "为什么 eva-core 应该作为第一个实现模块：先稳定 Topic、ID、Event、调用契约和结构化错误，再让运行时行为扩散到其他 crate。",
+      "date": "2026-06-30",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/eva-core-module.html"
+    },
+    {
       "id": "project-structure-and-config",
       "locale": "en",
       "slug": "project-structure-and-config",
