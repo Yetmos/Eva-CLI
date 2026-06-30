@@ -92,36 +92,36 @@
         <div class="section-heading progress-heading">
           <div>
             <p class="eyebrow">开发进度</p>
-            <h2 id="development-progress-title">从方案文档走向 1.0</h2>
+            <h2 id="development-progress-title">从架构骨架走向可运行 Runtime</h2>
           </div>
           <a class="secondary-action progress-roadmap-link" href="../docs/zh-CN/从零到1.0版本路线图.md">查看路线图</a>
         </div>
         <div class="progress-layout">
           <article class="progress-current" aria-label="当前开发阶段">
             <span class="status-label">当前阶段</span>
-            <h3>架构和方案文档</h3>
-            <p>架构方案和模块划分方案已经补齐。下一步实际工作是创建 Rust workspace、固化可执行契约、搭建最小 CLI 骨架，并验证一条端到端 Runtime 闭环。</p>
+            <h3>Workspace、配置树和 Agent 目录已落地</h3>
+            <p>仓库已经建立可编译 Rust workspace、配置目录、JSON Schema、示例 Agent/Adapter/Policy/Route，并把 Agent 存放结构整理为一 Agent 一目录。下一步实际工作是补齐配置校验、Agent discovery 和最小运行闭环。</p>
           </article>
           <ol class="progress-timeline" aria-label="发布进度阶段">
             <li class="progress-stage progress-stage-complete">
               <span class="progress-marker">已完成</span>
               <div>
-                <strong>架构和模块划分</strong>
-                <p>系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网、文档结构和模块划分方案已经建立。</p>
+                <strong>架构、模块划分和配置方案</strong>
+                <p>系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网、文档结构、配置方案和模块划分方案已经建立。</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">当前</span>
               <div>
-                <strong>Workspace 骨架和契约定义</strong>
-                <p>下一步是创建 Rust workspace、manifest schema、event 类型、policy 规则、错误模型和 Lua host API 契约。</p>
+                <strong>Workspace 骨架和配置样例</strong>
+                <p>Rust workspace、crate 边界、根 CLI shim、配置树、Schema、示例 Agent 和扁平 Agent 目录已经落地。</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-next">
               <span class="progress-marker">下一步</span>
               <div>
-                <strong>最小可运行骨架</strong>
-                <p>创建 CLI 入口、配置读取、Runtime 初始化、no-op 实现，以及 CI 构建和测试闭环。</p>
+                <strong>配置校验和发现闭环</strong>
+                <p>实现配置读取、schema 校验、policy 校验、Agent/Adapter discovery，以及可检查的 effective config。</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
@@ -136,9 +136,9 @@
         <div class="progress-next">
           <strong>下一步实现工作</strong>
           <ul>
-            <li>按模块划分方案创建 Rust workspace。</li>
-            <li>定义 manifest、event、policy、error 和 Lua host API 契约。</li>
-            <li>搭建最小可运行 CLI 骨架和 Runtime 闭环。</li>
+            <li>实现 eva config validate / inspect / dump-effective。</li>
+            <li>把 config/agents/&lt;agent-id&gt;/ 接入 Agent discovery 与注册流程。</li>
+            <li>验证 Ingress -&gt; EventBus -&gt; Scheduler -&gt; Lua Agent -&gt; Rust Tool 的最小闭环。</li>
           </ul>
         </div>
       </section>
@@ -205,7 +205,7 @@
           </a>
           <a class="doc-link" href="../docs/zh-CN/模块划分方案.md">
             <span>模块划分</span>
-            <small>目标 Rust workspace 形态、crate 边界、依赖方向、运行时交接链路和职责归属。</small>
+            <small>已落地的 Rust workspace 形态、crate 边界、依赖方向、运行时交接链路和职责归属。</small>
           </a>
           <a class="doc-link" href="../docs/zh-CN/Rust与Lua事件总线智能体调度架构方案.md">
             <span>Runtime 与 EventBus</span>

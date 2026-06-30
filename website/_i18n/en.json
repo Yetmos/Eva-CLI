@@ -44,18 +44,18 @@
     "secondaryAction": "Architecture overview",
     "progressAction": "Development progress",
     "progressEyebrow": "Development progress",
-    "progressTitle": "From design documents to 1.0",
+    "progressTitle": "From architecture scaffold to runnable Runtime",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "Architecture and design documents",
-    "progressCurrentBody": "The architecture and module partitioning documents are now in place. The next practical work is to create the Rust workspace, lock executable contracts, scaffold a minimum CLI skeleton, and prove one end-to-end Runtime loop.",
+    "progressCurrentTitle": "Workspace, configuration tree, and Agent layout are in place",
+    "progressCurrentBody": "The repository now has a compileable Rust workspace, configuration tree, JSON Schemas, sample Agents, Adapters, policies, routes, and a flat one-Agent-one-directory layout. Next practical work is configuration validation, Agent discovery, and a minimum runtime loop.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Create the Rust workspace from the module partitioning plan.",
-      "Define manifest, event, policy, error, and Lua host API contracts.",
-      "Build a minimum runnable CLI skeleton and Runtime loop."
+      "Implement eva config validate / inspect / dump-effective.",
+      "Wire config/agents/<agent-id>/ into Agent discovery and registration.",
+      "Prove the minimum Ingress -> EventBus -> Scheduler -> Lua Agent -> Rust Tool loop."
     ],
     "featuredBlogEyebrow": "Recommended reading",
     "featuredBlogTitle": "Latest design notes from the blog",
@@ -65,20 +65,20 @@
       {
         "status": "complete",
         "badge": "Done",
-        "label": "Architecture and module partitioning",
-        "description": "System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, docs, and module partitioning are in place."
+        "label": "Architecture, module partitioning, and configuration",
+        "description": "System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, docs, configuration, and module partitioning are in place."
       },
       {
         "status": "current",
         "badge": "Now",
-        "label": "Workspace scaffold and contracts",
-        "description": "Next work: create the Rust workspace, manifest schemas, event types, policy rules, error model, and Lua host API contracts."
+        "label": "Workspace scaffold and configuration samples",
+        "description": "The Rust workspace, crate boundaries, root CLI shim, configuration tree, schemas, sample Agents, and flat Agent layout are now in place."
       },
       {
         "status": "next",
         "badge": "Next",
-        "label": "Minimum runnable skeleton",
-        "description": "Create the CLI entry point, config loading, runtime initialization, no-op implementations, and CI build/test loop."
+        "label": "Configuration validation and discovery loop",
+        "description": "Implement configuration loading, schema validation, policy validation, Agent/Adapter discovery, and inspectable effective config."
       },
       {
         "status": "later",
@@ -101,7 +101,7 @@
       {
         "id": "module-partitioning",
         "title": "Module Partitioning",
-        "description": "Target Rust workspace shape, crate boundaries, dependency direction, runtime handoffs, and ownership rules."
+        "description": "The landed Rust workspace shape, crate boundaries, dependency direction, runtime handoffs, and ownership rules."
       },
       {
         "id": "rust-lua-eventbus-scheduler",
@@ -214,7 +214,7 @@
       {
         "id": "project-configuration",
         "title": "Project Configuration",
-        "description": "Configuration layout, schema validation, policy, and hot reload limits."
+        "description": "The landed configuration layout, flat Agent storage model, schema validation, policy, and hot reload limits."
       },
       {
         "id": "idea-plugin-toolchain",

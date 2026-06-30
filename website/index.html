@@ -92,36 +92,36 @@
         <div class="section-heading progress-heading">
           <div>
             <p class="eyebrow">Development progress</p>
-            <h2 id="development-progress-title">From design documents to 1.0</h2>
+            <h2 id="development-progress-title">From architecture scaffold to runnable Runtime</h2>
           </div>
           <a class="secondary-action progress-roadmap-link" href="docs/en/zero-to-one-roadmap.md">Open roadmap</a>
         </div>
         <div class="progress-layout">
           <article class="progress-current" aria-label="Current development stage">
             <span class="status-label">Current stage</span>
-            <h3>Architecture and design documents</h3>
-            <p>The architecture and module partitioning documents are now in place. The next practical work is to create the Rust workspace, lock executable contracts, scaffold a minimum CLI skeleton, and prove one end-to-end Runtime loop.</p>
+            <h3>Workspace, configuration tree, and Agent layout are in place</h3>
+            <p>The repository now has a compileable Rust workspace, configuration tree, JSON Schemas, sample Agents, Adapters, policies, routes, and a flat one-Agent-one-directory layout. Next practical work is configuration validation, Agent discovery, and a minimum runtime loop.</p>
           </article>
           <ol class="progress-timeline" aria-label="Release progress stages">
             <li class="progress-stage progress-stage-complete">
               <span class="progress-marker">Done</span>
               <div>
-                <strong>Architecture and module partitioning</strong>
-                <p>System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, docs, and module partitioning are in place.</p>
+                <strong>Architecture, module partitioning, and configuration</strong>
+                <p>System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, docs, configuration, and module partitioning are in place.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">Now</span>
               <div>
-                <strong>Workspace scaffold and contracts</strong>
-                <p>Next work: create the Rust workspace, manifest schemas, event types, policy rules, error model, and Lua host API contracts.</p>
+                <strong>Workspace scaffold and configuration samples</strong>
+                <p>The Rust workspace, crate boundaries, root CLI shim, configuration tree, schemas, sample Agents, and flat Agent layout are now in place.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-next">
               <span class="progress-marker">Next</span>
               <div>
-                <strong>Minimum runnable skeleton</strong>
-                <p>Create the CLI entry point, config loading, runtime initialization, no-op implementations, and CI build/test loop.</p>
+                <strong>Configuration validation and discovery loop</strong>
+                <p>Implement configuration loading, schema validation, policy validation, Agent/Adapter discovery, and inspectable effective config.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
@@ -136,9 +136,9 @@
         <div class="progress-next">
           <strong>Next implementation work</strong>
           <ul>
-            <li>Create the Rust workspace from the module partitioning plan.</li>
-            <li>Define manifest, event, policy, error, and Lua host API contracts.</li>
-            <li>Build a minimum runnable CLI skeleton and Runtime loop.</li>
+            <li>Implement eva config validate / inspect / dump-effective.</li>
+            <li>Wire config/agents/&lt;agent-id&gt;/ into Agent discovery and registration.</li>
+            <li>Prove the minimum Ingress -&gt; EventBus -&gt; Scheduler -&gt; Lua Agent -&gt; Rust Tool loop.</li>
           </ul>
         </div>
       </section>
@@ -205,7 +205,7 @@
           </a>
           <a class="doc-link" href="docs/en/module-partitioning.md">
             <span>Module Partitioning</span>
-            <small>Target Rust workspace shape, crate boundaries, dependency direction, runtime handoffs, and ownership rules.</small>
+            <small>The landed Rust workspace shape, crate boundaries, dependency direction, runtime handoffs, and ownership rules.</small>
           </a>
           <a class="doc-link" href="docs/en/rust-lua-eventbus-scheduler.md">
             <span>Runtime and EventBus</span>

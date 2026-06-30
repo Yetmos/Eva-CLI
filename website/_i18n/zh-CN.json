@@ -44,18 +44,18 @@
     "secondaryAction": "总体架构",
     "progressAction": "开发进度",
     "progressEyebrow": "开发进度",
-    "progressTitle": "从方案文档走向 1.0",
+    "progressTitle": "从架构骨架走向可运行 Runtime",
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
-    "progressCurrentTitle": "架构和方案文档",
-    "progressCurrentBody": "架构方案和模块划分方案已经补齐。下一步实际工作是创建 Rust workspace、固化可执行契约、搭建最小 CLI 骨架，并验证一条端到端 Runtime 闭环。",
+    "progressCurrentTitle": "Workspace、配置树和 Agent 目录已落地",
+    "progressCurrentBody": "仓库已经建立可编译 Rust workspace、配置目录、JSON Schema、示例 Agent/Adapter/Policy/Route，并把 Agent 存放结构整理为一 Agent 一目录。下一步实际工作是补齐配置校验、Agent discovery 和最小运行闭环。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
-      "按模块划分方案创建 Rust workspace。",
-      "定义 manifest、event、policy、error 和 Lua host API 契约。",
-      "搭建最小可运行 CLI 骨架和 Runtime 闭环。"
+      "实现 eva config validate / inspect / dump-effective。",
+      "把 config/agents/<agent-id>/ 接入 Agent discovery 与注册流程。",
+      "验证 Ingress -> EventBus -> Scheduler -> Lua Agent -> Rust Tool 的最小闭环。"
     ],
     "featuredBlogEyebrow": "推荐阅读",
     "featuredBlogTitle": "来自博客的最新设计笔记",
@@ -65,20 +65,20 @@
       {
         "status": "complete",
         "badge": "已完成",
-        "label": "架构和模块划分",
-        "description": "系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网、文档结构和模块划分方案已经建立。"
+        "label": "架构、模块划分和配置方案",
+        "description": "系统边界、运行时模型、Adapter、记忆、发现、硬件、恢复、官网、文档结构、配置方案和模块划分方案已经建立。"
       },
       {
         "status": "current",
         "badge": "当前",
-        "label": "Workspace 骨架和契约定义",
-        "description": "下一步是创建 Rust workspace、manifest schema、event 类型、policy 规则、错误模型和 Lua host API 契约。"
+        "label": "Workspace 骨架和配置样例",
+        "description": "Rust workspace、crate 边界、根 CLI shim、配置树、Schema、示例 Agent 和扁平 Agent 目录已经落地。"
       },
       {
         "status": "next",
         "badge": "下一步",
-        "label": "最小可运行骨架",
-        "description": "创建 CLI 入口、配置读取、Runtime 初始化、no-op 实现，以及 CI 构建和测试闭环。"
+        "label": "配置校验和发现闭环",
+        "description": "实现配置读取、schema 校验、policy 校验、Agent/Adapter discovery，以及可检查的 effective config。"
       },
       {
         "status": "later",
@@ -101,7 +101,7 @@
       {
         "id": "module-partitioning",
         "title": "模块划分",
-        "description": "目标 Rust workspace 形态、crate 边界、依赖方向、运行时交接链路和职责归属。"
+        "description": "已落地的 Rust workspace 形态、crate 边界、依赖方向、运行时交接链路和职责归属。"
       },
       {
         "id": "rust-lua-eventbus-scheduler",
@@ -214,7 +214,7 @@
       {
         "id": "project-configuration",
         "title": "项目配置",
-        "description": "配置目录、schema 校验、policy 和热加载边界。"
+        "description": "已落地的配置目录、扁平 Agent 存放结构、schema 校验、policy 和热加载边界。"
       },
       {
         "id": "idea-plugin-toolchain",
