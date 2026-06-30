@@ -1,86 +1,170 @@
+# Eva-CLI main runtime configuration.
+# Eva-CLI 主运行时配置。
+#
+# Human-maintained configuration uses YAML; runtime protocol messages use JSON.
+# 人工维护配置使用 YAML；运行时协议消息使用 JSON。
+
+# Runtime paths and hot-reload behavior.
+# 运行时路径与热更新行为。
 runtime:
+  # Current environment name. / 当前环境名称。
   env: dev
+  # Workspace root used to resolve relative paths. / 用于解析相对路径的工作区根目录。
   workspace: .
+  # Runtime data directory for local state, logs, and indexes. / 本地状态、日志和索引的数据目录。
   data_dir: .eva/data
+  # Lua Agent script root. / Lua Agent 脚本根目录。
   script_dir: config/agents
+  # Adapter manifest root. / Adapter manifest 根目录。
   adapter_dir: config/adapters
+  # Allow reloadable configuration and Lua script generations where supported. / 在支持的边界内允许配置和 Lua 脚本 generation 热更新。
   hot_reload: true
 
+# Process topology for runtime replacement and upgrade.
+# 运行时替换和升级所用的进程拓扑。
 process:
+  # Supervisor coordinates blue-green runtime generations. / Supervisor 协调蓝绿 runtime generation。
   topology: supervisor_runtime_blue_green
 
+# Local service manager integration.
+# 本地服务管理器集成。
 service_manager:
+  # Enable service-manager behavior. / 启用服务管理行为。
   enabled: true
+  # Do not auto-start on boot in the sample configuration. / 示例配置默认不随系统启动。
   start_on_boot: false
+  # Let the service manager restart the supervisor process. / 允许服务管理器重启 supervisor 进程。
   restart_supervisor: true
 
+# EventBus publication, recovery, and dead-letter behavior.
+# EventBus 发布、恢复和死信行为。
 eventbus:
+  # Recoverable in-process bus backed by a durable event log. / 由持久事件日志支撑的可恢复进程内总线。
   backend: recoverable_in_process
+  # Broadcast channel capacity before backpressure handling. / 触发背压处理前的广播通道容量。
   broadcast_capacity: 4096
   durable_log:
+    # Durable event log directory. / 持久事件日志目录。
     path: .eva/data/eventlog
+    # Strict durability favors recovery correctness over throughput. / strict 持久化优先保证恢复正确性。
     durability: strict
+    # Retain replayable events for this many days. / 可重放事件保留天数。
     retention_days: 7
+    # Replay durable events during startup recovery. / 启动恢复时重放持久事件。
     replay_on_start: true
   dead_letter:
+    # Store undeliverable or overflowed events. / 保存无法投递或溢出的事件。
     enabled: true
+    # Dead letters are stored in local SQLite. / 死信写入本地 SQLite。
     backend: sqlite
+    # Dead-letter retention window in days. / 死信保留天数。
     retention_days: 7
 
+# Runtime upgrade and rollback policy.
+# 运行时升级和回滚策略。
 upgrade:
+  # Blue-green mode starts a candidate generation before cutover. / 蓝绿模式在切换前启动候选 generation。
   mode: blue_green
+  # Time allowed for candidate generation warmup. / 候选 generation 预热超时。
   warmup_timeout_ms: 30000
+  # Time allowed for old generation draining. / 旧 generation drain 超时。
   drain_timeout_ms: 30000
+  # Require snapshot evidence before upgrade activation. / 激活升级前要求 snapshot 证据。
   snapshot_required: true
+  # Keep rollback path available after failed activation. / 激活失败后保留回滚路径。
   rollback_enabled: true
+  # New ingress traffic is routed to the candidate during evaluation. / 评估阶段把新入口流量路由到候选 generation。
   ingress_policy: route_new_to_candidate
 
+# Topic scheduling defaults.
+# Topic 调度默认策略。
 scheduler:
+  # Explicit event target takes precedence over topic routing. / 显式 target 优先于 topic 路由。
   target_overrides_topic: true
+  # Default delivery mode for route matches. / route 命中后的默认投递模式。
   default_delivery: fanout
+  # Maximum targets allowed from a single route expansion. / 单次路由展开允许的最大目标数。
   max_route_targets: 32
 
+# Durable runtime state storage.
+# 持久运行时状态存储。
 state:
+  # Local SQLite state store. / 本地 SQLite 状态存储。
   backend: sqlite
+  # State database path. / 状态数据库路径。
   sqlite_path: .eva/data/state.db
 
+# Agent and global memory configuration.
+# Agent 私有记忆和全局记忆配置。
 memory:
   storage:
+    # Memory facts are stored locally in SQLite. / 记忆事实写入本地 SQLite。
     backend: sqlite
+    # Memory database path. / 记忆数据库路径。
     sqlite_path: .eva/data/memory.db
+    # Use bundled SQLite where the runtime supports it. / 运行时支持时使用内置 SQLite。
     sqlite_bundled: true
+    # Enable write-ahead logging for local durability. / 启用 WAL 提升本地持久化行为。
     wal: true
   agent:
+    # Enable per-Agent private memory. / 启用每个 Agent 的私有记忆。
     enabled: true
+    # Per-Agent record budget. / 单个 Agent 的记录预算。
     max_records_per_agent: 1000
   global:
+    # Enable project/global memory surface. / 启用项目/全局记忆面。
     enabled: true
+    # Agents propose global writes; runtime owns acceptance. / Agent 只能提出全局写入，是否接受由 runtime 决定。
     write_mode: proposed
 
+# Project knowledge base and indexes.
+# 项目知识库和索引配置。
 knowledge:
   storage:
+    # Knowledge records are stored locally in SQLite. / 知识库记录写入本地 SQLite。
     backend: sqlite
+    # Knowledge database path. / 知识库数据库路径。
     sqlite_path: .eva/data/knowledge.db
+    # Use bundled SQLite where the runtime supports it. / 运行时支持时使用内置 SQLite。
     sqlite_bundled: true
+    # Enable WAL for the knowledge database. / 为知识库数据库启用 WAL。
     wal: true
   index:
     text:
+      # Full-text search backend. / 全文检索后端。
       backend: sqlite_fts5
     vector:
+      # Vector search is intentionally disabled until a backend is selected. / 在选定后端前暂不启用向量检索。
       enabled: false
+      # No vector backend configured. / 未配置向量后端。
       backend: none
 
+# Logging, tracing, metrics, and audit settings.
+# 日志、追踪、指标和审计配置。
 observability:
+  # Default runtime log level. / 默认运行时日志级别。
   log_level: info
+  # Emit tracing spans on critical handoffs. / 在关键交接点输出 tracing span。
   tracing: true
+  # Expose runtime metrics where supported. / 在支持的环境中暴露运行时指标。
   metrics: true
+  # Record security- and authority-relevant events. / 记录安全和权力相关事件。
   audit: true
+  # Optional OpenTelemetry endpoint is read from this env var. / 可选 OpenTelemetry endpoint 从该环境变量读取。
   otel_endpoint_env: OTEL_EXPORTER_OTLP_ENDPOINT
 
+# Pointers to split configuration roots.
+# 拆分配置根目录的位置。
 config:
+  # Flat one-Agent-one-directory root. / 扁平的一 Agent 一目录根。
   agent_dir: config/agents
+  # Adapter manifest directory. / Adapter manifest 目录。
   adapter_dir: config/adapters
+  # Capability declaration directory. / Capability 声明目录。
   capability_dir: config/capabilities
+  # Policy directory. / Policy 目录。
   policy_dir: config/policies
+  # Topic route table. / Topic 路由表。
   route_file: config/routes/topics.yaml
+  # JSON Schema directory. / JSON Schema 目录。
   schema_dir: config/schemas
