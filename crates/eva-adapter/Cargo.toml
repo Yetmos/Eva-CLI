@@ -1,0 +1,12 @@
+[package]
+name = "eva-adapter"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+eva-capability = { path = "../eva-capability" }
+eva-config = { path = "../eva-config" }
+eva-core = { path = "../eva-core" }
+eva-observability = { path = "../eva-observability" }
+eva-policy = { path = "../eva-policy" }

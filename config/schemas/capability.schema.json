@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eva-cli.local/schemas/capability.schema.json",
+  "title": "Eva capability definition",
+  "type": "object",
+  "required": ["id", "name", "version", "enabled", "kind", "capability"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "kind": {
+      "type": "string",
+      "enum": ["adapter_capability", "lua_capability", "mcp_tool", "skill"]
+    },
+    "capability": { "type": "string" },
+    "input_schema": { "type": "object" },
+    "output_schema": { "type": "object" },
+    "permissions": { "type": "object" },
+    "limits": { "type": "object" }
+  },
+  "additionalProperties": true
+}

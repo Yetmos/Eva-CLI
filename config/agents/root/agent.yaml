@@ -1,0 +1,53 @@
+id: root-agent
+enabled: true
+script: main.lua
+script_version: 2026-06-09.1
+constraints:
+  file: constraints.md
+  mutable: false
+  priority: agent_policy
+
+subscriptions:
+  - /sys
+
+inbox:
+  capacity: 256
+  overflow: dead_letter
+
+timeout:
+  event_ms: 30000
+  tool_ms: 60000
+
+state:
+  backend: sqlite
+  namespace: agent.root
+
+permissions:
+  emit:
+    - /sys/**
+  tools:
+    - invoke_agent
+    - state_get
+    - state_set
+    - memory.search
+    - knowledge.search
+  adapters:
+    capabilities:
+      - chat.reply
+      - task.plan
+      - repo.analyze
+    providers:
+      - codex-cli
+      - claude-api
+  memory:
+    read:
+      - agent:self
+      - global:project
+    write:
+      - agent:self
+    propose_global: true
+  knowledge:
+    search:
+      - workspace_doc
+      - project_config
+      - markdown

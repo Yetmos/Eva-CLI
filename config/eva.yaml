@@ -1,0 +1,86 @@
+runtime:
+  env: dev
+  workspace: .
+  data_dir: .eva/data
+  script_dir: config/agents
+  adapter_dir: config/adapters
+  hot_reload: true
+
+process:
+  topology: supervisor_runtime_blue_green
+
+service_manager:
+  enabled: true
+  start_on_boot: false
+  restart_supervisor: true
+
+eventbus:
+  backend: recoverable_in_process
+  broadcast_capacity: 4096
+  durable_log:
+    path: .eva/data/eventlog
+    durability: strict
+    retention_days: 7
+    replay_on_start: true
+  dead_letter:
+    enabled: true
+    backend: sqlite
+    retention_days: 7
+
+upgrade:
+  mode: blue_green
+  warmup_timeout_ms: 30000
+  drain_timeout_ms: 30000
+  snapshot_required: true
+  rollback_enabled: true
+  ingress_policy: route_new_to_candidate
+
+scheduler:
+  target_overrides_topic: true
+  default_delivery: fanout
+  max_route_targets: 32
+
+state:
+  backend: sqlite
+  sqlite_path: .eva/data/state.db
+
+memory:
+  storage:
+    backend: sqlite
+    sqlite_path: .eva/data/memory.db
+    sqlite_bundled: true
+    wal: true
+  agent:
+    enabled: true
+    max_records_per_agent: 1000
+  global:
+    enabled: true
+    write_mode: proposed
+
+knowledge:
+  storage:
+    backend: sqlite
+    sqlite_path: .eva/data/knowledge.db
+    sqlite_bundled: true
+    wal: true
+  index:
+    text:
+      backend: sqlite_fts5
+    vector:
+      enabled: false
+      backend: none
+
+observability:
+  log_level: info
+  tracing: true
+  metrics: true
+  audit: true
+  otel_endpoint_env: OTEL_EXPORTER_OTLP_ENDPOINT
+
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas

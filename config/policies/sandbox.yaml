@@ -1,0 +1,21 @@
+lua_sandbox:
+  disabled_libs:
+    - os
+    - io
+    - debug
+
+  limits:
+    memory_mb: 64
+    execution_timeout_ms: 30000
+
+  filesystem:
+    enabled: false
+
+  network:
+    enabled: false
+
+  environment:
+    enabled: false
+
+  return_schema_validation: true
+  emitted_topic_validation: true

@@ -1,0 +1,43 @@
+id: github-mcp
+name: GitHub MCP Adapter
+version: 1.0.0
+enabled: true
+transport: mcp
+
+mcp:
+  server_transport: stdio
+  command: github-mcp-server
+  args: []
+  tool_allowlist:
+    - create_issue
+    - list_issues
+    - get_pull_request
+  resource_allowlist: []
+  prompt_allowlist: []
+
+capabilities:
+  - mcp.tool.call
+  - mcp.resource.read
+  - mcp.prompt.render
+  - github.issue.create
+  - github.issue.list
+  - github.pr.get
+
+permissions:
+  read_workspace: false
+  write_workspace: false
+  network: true
+  shell: false
+  env:
+    - GITHUB_TOKEN
+
+limits:
+  timeout_ms: 60000
+  max_concurrency: 2
+  max_prompt_bytes: 20000
+
+routing:
+  priority: 70
+  default_for:
+    - github.issue.create
+    - github.issue.list

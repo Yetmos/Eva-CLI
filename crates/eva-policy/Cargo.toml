@@ -1,0 +1,9 @@
+[package]
+name = "eva-policy"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+eva-config = { path = "../eva-config" }
+eva-core = { path = "../eva-core" }

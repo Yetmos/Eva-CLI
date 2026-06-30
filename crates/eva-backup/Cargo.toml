@@ -1,0 +1,11 @@
+[package]
+name = "eva-backup"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+eva-core = { path = "../eva-core" }
+eva-observability = { path = "../eva-observability" }
+eva-policy = { path = "../eva-policy" }
+eva-storage = { path = "../eva-storage" }

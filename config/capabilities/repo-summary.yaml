@@ -1,0 +1,28 @@
+id: repo-summary
+name: Repository Summary
+version: 1.0.0
+enabled: true
+kind: adapter_capability
+capability: repo.analyze
+default_provider: codex-cli
+input_schema:
+  type: object
+  properties:
+    scope:
+      type: string
+      enum:
+        - workspace
+        - current_diff
+output_schema:
+  type: object
+  properties:
+    summary:
+      type: string
+permissions:
+  adapters:
+    providers:
+      - codex-cli
+    capabilities:
+      - repo.analyze
+limits:
+  timeout_ms: 120000

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eva-cli.local/schemas/eva.schema.json",
+  "title": "Eva runtime configuration",
+  "type": "object",
+  "required": ["runtime", "eventbus", "scheduler", "observability", "config"],
+  "properties": {
+    "runtime": {
+      "type": "object",
+      "required": ["env", "workspace", "hot_reload"],
+      "properties": {
+        "env": { "type": "string" },
+        "workspace": { "type": "string" },
+        "data_dir": { "type": "string" },
+        "script_dir": { "type": "string" },
+        "adapter_dir": { "type": "string" },
+        "hot_reload": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "eventbus": { "type": "object" },
+    "scheduler": { "type": "object" },
+    "observability": { "type": "object" },
+    "config": { "type": "object" }
+  },
+  "additionalProperties": true
+}

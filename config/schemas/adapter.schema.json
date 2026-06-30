@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eva-cli.local/schemas/adapter.schema.json",
+  "title": "Eva Adapter manifest",
+  "type": "object",
+  "required": ["id", "name", "version", "enabled", "transport", "capabilities", "permissions", "limits", "routing"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$" },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "transport": {
+      "type": "string",
+      "enum": ["builtin", "stdio", "http", "eventbus", "mcp", "skill", "hardware", "lua_capability"]
+    },
+    "capabilities": { "type": "array", "items": { "type": "string" } },
+    "permissions": { "type": "object" },
+    "limits": { "type": "object" },
+    "routing": { "type": "object" }
+  },
+  "additionalProperties": true
+}

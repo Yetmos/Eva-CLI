@@ -1,0 +1,34 @@
+mcp_server:
+  enabled: true
+  bind: 127.0.0.1:8765
+
+  tools:
+    agent.invoke:
+      enabled: true
+      allowed_agents:
+        - root-agent
+        - agent-a
+      timeout_ms: 120000
+
+    adapter.invoke:
+      enabled: true
+      allowed_capabilities:
+        - repo.analyze
+        - code.review
+        - chat.reply
+      allowed_providers:
+        - codex-cli
+        - claude-api
+      timeout_ms: 120000
+
+    adapter.list:
+      enabled: true
+
+    adapter.health:
+      enabled: true
+
+    topic.emit:
+      enabled: false
+      allowed_topics:
+        - /input/user
+        - /task/**

@@ -1,0 +1,28 @@
+id: project-summary-mcp
+name: Project Summary MCP Tool
+version: 1.0.0
+enabled: true
+kind: mcp_tool
+capability: mcp.tool.call
+provider: github-mcp
+tool: list_issues
+input_schema:
+  type: object
+  properties:
+    owner:
+      type: string
+    repo:
+      type: string
+output_schema:
+  type: object
+  properties:
+    items:
+      type: array
+permissions:
+  adapters:
+    providers:
+      - github-mcp
+    capabilities:
+      - mcp.tool.call
+limits:
+  timeout_ms: 60000

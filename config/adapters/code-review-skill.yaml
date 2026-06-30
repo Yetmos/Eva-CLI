@@ -1,0 +1,60 @@
+id: code-review-skill
+name: Code Review Skill Adapter
+version: 1.0.0
+enabled: true
+transport: skill
+
+skill:
+  source: codex
+  id: code-review
+  path: ~/.codex/skills/code-review/SKILL.md
+  kind: workflow_skill
+  runtime_gate: normal
+  entry:
+    type: codex_skill
+  input_schema:
+    type: object
+    required:
+      - scope
+    properties:
+      scope:
+        type: string
+        enum:
+          - current_diff
+          - workspace
+      severity:
+        type: string
+        enum:
+          - all
+          - major
+          - critical
+  output_schema:
+    type: object
+    required:
+      - summary
+      - findings
+    properties:
+      summary:
+        type: string
+      findings:
+        type: array
+
+capabilities:
+  - workflow.code_review
+
+permissions:
+  read_workspace: true
+  write_workspace: false
+  network: false
+  shell: false
+  env: []
+
+limits:
+  timeout_ms: 120000
+  max_concurrency: 1
+  max_prompt_bytes: 100000
+
+routing:
+  priority: 60
+  default_for:
+    - workflow.code_review

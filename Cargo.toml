@@ -1,0 +1,37 @@
+[package]
+name = "eva"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+eva-cli = { path = "crates/eva-cli" }
+
+[workspace]
+members = [
+  "crates/eva-core",
+  "crates/eva-config",
+  "crates/eva-policy",
+  "crates/eva-observability",
+  "crates/eva-storage",
+  "crates/eva-eventbus",
+  "crates/eva-scheduler",
+  "crates/eva-agent",
+  "crates/eva-lua-host",
+  "crates/eva-capability",
+  "crates/eva-adapter",
+  "crates/eva-mcp",
+  "crates/eva-discovery",
+  "crates/eva-memory",
+  "crates/eva-hardware",
+  "crates/eva-backup",
+  "crates/eva-lifecycle",
+  "crates/eva-runtime",
+  "crates/eva-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false

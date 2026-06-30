@@ -1,0 +1,27 @@
+id: agent-a11
+enabled: true
+parent: agent-a
+script: main.lua
+script_version: 2026-06-09.1
+
+subscriptions:
+  - /sys/route-a/route-aa
+
+inbox:
+  capacity: 128
+  overflow: dead_letter
+
+timeout:
+  event_ms: 30000
+  tool_ms: 60000
+
+state:
+  backend: sqlite
+  namespace: agent.agent-a11
+
+permissions:
+  emit:
+    - /sys/route-a/route-aa/reply
+  tools:
+    - state_get
+    - state_set

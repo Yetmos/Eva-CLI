@@ -1,0 +1,19 @@
+hardware_policy:
+  enabled: true
+  defaults:
+    allow_raw_io: false
+    claim: exclusive
+    network_bridge: false
+    max_timeout_ms: 10000
+  allowed_buses:
+    - usb
+    - hid
+    - serial
+  denied_capabilities:
+    - hardware.raw.write
+  hotplug:
+    require_identity_match: true
+    quarantine_unknown_devices: true
+    emit_events:
+      - /hardware/connected
+      - /hardware/disconnected

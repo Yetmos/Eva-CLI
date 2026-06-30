@@ -1,0 +1,38 @@
+id: agent-a
+enabled: true
+parent: root-agent
+script: main.lua
+script_version: 2026-06-09.1
+
+subscriptions:
+  - /sys/route-a
+
+children:
+  - agent-a11
+  - agent-a12
+
+routes:
+  route-aa:
+    topic: /sys/route-a/route-aa
+    targets:
+      - agent-a11
+      - agent-a12
+
+inbox:
+  capacity: 256
+  overflow: dead_letter
+
+timeout:
+  event_ms: 30000
+  tool_ms: 60000
+
+state:
+  backend: sqlite
+  namespace: agent.agent-a
+
+permissions:
+  emit:
+    - /sys/route-a/**
+  tools:
+    - state_get
+    - state_set

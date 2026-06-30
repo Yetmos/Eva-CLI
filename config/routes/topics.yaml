@@ -1,0 +1,21 @@
+routes:
+  - pattern: /input/user
+    delivery: fanout
+    agents:
+      - root-agent
+
+  - pattern: /sys
+    delivery: fanout
+    agents:
+      - root-agent
+
+  - pattern: /sys/route-a
+    delivery: fanout
+    agents:
+      - agent-a
+
+  - pattern: /sys/route-a/route-aa
+    delivery: fanout
+    agents:
+      - agent-a11
+      - agent-a12

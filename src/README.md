@@ -1,12 +1,9 @@
-# Eva-CLI 源码
+# Eva-CLI Source / 主程序源码
 
-这里用于维护 Eva-CLI 的主程序源码。
+## 中文
 
-当前仓库仍处于架构方案整理阶段，尚未放入可运行实现。开始实现时，建议优先补齐：
+根目录 `src/main.rs` 是很薄的 binary shim，只负责把进程入口转交给 `crates/eva-cli`。核心运行时、配置、调度、Adapter、Lua host、MCP、记忆和生命周期逻辑都应放在 `crates/` 下对应 crate 中。
 
-- `Cargo.toml`
-- `src/main.rs`
-- `src/lib.rs`
-- 与 `docs/` 中设计边界对应的模块目录
+## English
 
-如果后续拆成 Rust workspace，公共库和子 crate 放入 `crates/`，主 CLI 入口仍保留在这里或迁移到 `crates/eva-cli/`。
+The root `src/main.rs` is a thin binary shim that delegates process startup to `crates/eva-cli`. Core runtime, configuration, scheduling, Adapter, Lua host, MCP, memory, and lifecycle logic should live in the corresponding crates under `crates/`.

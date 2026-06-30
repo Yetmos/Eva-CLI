@@ -1,0 +1,33 @@
+adapter_policy:
+  defaults:
+    network: false
+    shell: false
+    read_workspace: false
+    write_workspace: false
+    max_timeout_ms: 120000
+
+  allow_write_workspace:
+    - codex-cli
+
+  deny_capabilities:
+    - shell.execute
+    - deployment.run
+
+  skill:
+    require_schema: true
+    allow_user_local_skills: false
+    allowed_runtime_gates:
+      - normal
+    deny_kinds:
+      - runtime_worker
+
+  retry:
+    default:
+      max_attempts: 0
+    capabilities:
+      repo.analyze:
+        max_attempts: 2
+        backoff_ms: 1000
+      code.review:
+        max_attempts: 1
+        backoff_ms: 1000

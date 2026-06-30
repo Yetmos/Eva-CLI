@@ -1,0 +1,13 @@
+[package]
+name = "eva-agent"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+eva-config = { path = "../eva-config" }
+eva-core = { path = "../eva-core" }
+eva-observability = { path = "../eva-observability" }
+eva-policy = { path = "../eva-policy" }
+eva-scheduler = { path = "../eva-scheduler" }
+eva-storage = { path = "../eva-storage" }

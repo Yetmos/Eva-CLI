@@ -1,0 +1,31 @@
+id: claude-api
+name: Claude API Adapter
+version: 1.0.0
+enabled: true
+transport: http
+
+endpoint: https://api.anthropic.com/v1/messages
+
+capabilities:
+  - chat.reply
+  - task.plan
+  - code.review
+
+permissions:
+  read_workspace: false
+  write_workspace: false
+  network: true
+  shell: false
+  env:
+    - ANTHROPIC_API_KEY
+
+limits:
+  timeout_ms: 120000
+  max_concurrency: 4
+  max_prompt_bytes: 100000
+
+routing:
+  priority: 80
+  default_for:
+    - chat.reply
+    - task.plan

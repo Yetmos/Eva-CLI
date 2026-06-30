@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eva-cli.local/schemas/routes.schema.json",
+  "title": "Eva Topic routes",
+  "type": "object",
+  "required": ["routes"],
+  "properties": {
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pattern", "delivery", "agents"],
+        "properties": {
+          "pattern": { "type": "string", "pattern": "^/.+" },
+          "delivery": { "type": "string", "enum": ["fanout", "compete"] },
+          "agents": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

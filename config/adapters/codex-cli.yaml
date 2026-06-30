@@ -1,0 +1,33 @@
+id: codex-cli
+name: Codex CLI Adapter
+version: 1.0.0
+enabled: true
+transport: stdio
+
+command: codex
+args:
+  - exec
+  - --json
+
+capabilities:
+  - repo.analyze
+  - code.review
+  - code.generate
+
+permissions:
+  read_workspace: true
+  write_workspace: true
+  network: false
+  shell: false
+  env: []
+
+limits:
+  timeout_ms: 300000
+  max_concurrency: 1
+  max_prompt_bytes: 200000
+
+routing:
+  priority: 100
+  default_for:
+    - repo.analyze
+    - code.review

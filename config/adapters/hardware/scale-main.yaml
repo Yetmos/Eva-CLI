@@ -1,0 +1,42 @@
+id: scale-main
+name: Main Scale Hardware Adapter
+version: 1.0.0
+enabled: false
+transport: hardware
+
+hardware:
+  bus: usb
+  match:
+    vendor_id: "0000"
+    product_id: "0000"
+    serial: EVA-SCALE-PLACEHOLDER
+  identity:
+    device_class: scale
+    logical_name: main-scale
+  protocol:
+    kind: line_json
+    baud_rate: 115200
+  hotplug:
+    claim: exclusive
+    reconnect_backoff_ms: 1000
+    max_reconnect_attempts: 5
+
+capabilities:
+  - hardware.scale.read
+
+permissions:
+  read_workspace: false
+  write_workspace: false
+  network: false
+  shell: false
+  env: []
+
+limits:
+  timeout_ms: 5000
+  max_concurrency: 1
+  max_prompt_bytes: 4096
+
+routing:
+  priority: 50
+  default_for:
+    - hardware.scale.read
