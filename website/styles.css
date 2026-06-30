@@ -314,6 +314,7 @@ h3 {
 .development-progress,
 .featured-blog,
 .doc-grid,
+.discussion-section,
 .feedback-section {
   padding-top: 68px;
 }
@@ -531,6 +532,17 @@ h3 {
   margin-top: 10px;
   color: var(--muted);
   font-size: 14px;
+}
+
+.discussion-frame {
+  min-height: 220px;
+  margin-top: 20px;
+  padding: 24px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
 }
 
 .feedback-section {

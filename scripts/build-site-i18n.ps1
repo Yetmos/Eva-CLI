@@ -8,6 +8,11 @@ $TemplateRoot = Join-Path $Root "website/_templates"
 $LocaleRoot = Join-Path $Root "website/_i18n"
 $WebsiteRoot = Join-Path $Root "website"
 $BlogDataPath = Join-Path $Root "website/_blog/posts.json"
+$GiscusRepo = "Yetmos/Eva-CLI"
+$GiscusRepoId = "R_kgDOS4ZJEA"
+$GiscusCategory = "General"
+$GiscusCategoryId = "DIC_kwDOS4ZJEM4C_Tf8"
+$GiscusTerm = "Eva-CLI site discussion"
 
 function Read-JsonFile {
   param([Parameter(Mandatory = $true)][string]$Path)
@@ -660,6 +665,7 @@ function New-NavLinks {
     [Parameter(Mandatory = $true)][string]$DocsHref,
     [Parameter(Mandatory = $true)][string]$BlogHref,
     [Parameter(Mandatory = $true)][string]$ArchitectureHref,
+    [Parameter(Mandatory = $true)][string]$DiscussionHref,
     [Parameter(Mandatory = $true)][string]$FeedbackHref
   )
 
@@ -668,8 +674,36 @@ function New-NavLinks {
         <a href="$(Html $DocsHref)">$(Html $LocaleData.nav.docs)</a>
         <a href="$(Html $BlogHref)">$(Html $LocaleData.nav.blog)</a>
         <a href="$(Html $ArchitectureHref)">$(Html $LocaleData.nav.architecture)</a>
+        <a href="$(Html $DiscussionHref)">$(Html $LocaleData.nav.discussion)</a>
         <a href="$(Html $FeedbackHref)">$(Html $LocaleData.nav.feedback)</a>
         <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+"@
+}
+
+function New-DiscussionEmbed {
+  param(
+    [Parameter(Mandatory = $true)][string]$LocaleCode
+  )
+
+  $giscusLang = if ($LocaleCode -eq "zh-CN") { "zh-CN" } else { "en" }
+
+  return @"
+          <script src="https://giscus.app/client.js"
+            data-repo="$(Html $GiscusRepo)"
+            data-repo-id="$(Html $GiscusRepoId)"
+            data-category="$(Html $GiscusCategory)"
+            data-category-id="$(Html $GiscusCategoryId)"
+            data-mapping="specific"
+            data-term="$(Html $GiscusTerm)"
+            data-strict="0"
+            data-reactions-enabled="1"
+            data-emit-metadata="0"
+            data-input-position="top"
+            data-theme="preferred_color_scheme"
+            data-lang="$(Html $giscusLang)"
+            crossorigin="anonymous"
+            async>
+          </script>
 "@
 }
 
@@ -892,7 +926,7 @@ foreach ($locale in $locales) {
     homeUrl = Html "./"
     brandTagline = Html $localeData.brand.tagline
     navLabel = Html $localeData.nav.label
-    navLinks = New-NavLinks -LocaleData $localeData -HomeHref "./" -DocsHref $docsHref -BlogHref $blogHref -ArchitectureHref $architectureHref -FeedbackHref "#feedback"
+    navLinks = New-NavLinks -LocaleData $localeData -HomeHref "./" -DocsHref $docsHref -BlogHref $blogHref -ArchitectureHref $architectureHref -DiscussionHref "#discussion" -FeedbackHref "#feedback"
     languageSwitch = New-LanguageSwitch -Locales $locales -HrefByLocale $homeHrefByLocale -CurrentLocale $localeCode
     architectureImageSrc = Html $architectureImageHref
     architectureImageUrl = Html $architectureImageHref
@@ -911,6 +945,7 @@ foreach ($locale in $locales) {
             <a class="primary-action" href="$(Html $docsHref)">$(Html $localeData.home.primaryAction)</a>
             <a class="secondary-action" href="$(Html $architectureHref)">$(Html $localeData.home.secondaryAction)</a>
             <a class="secondary-action" href="#development-progress">$(Html $localeData.home.progressAction)</a>
+            <a class="secondary-action" href="#discussion">$(Html $localeData.nav.discussion)</a>
             <a class="secondary-action" href="#feedback">$(Html $localeData.nav.feedback)</a>
 "@
     progressEyebrow = Html $localeData.home.progressEyebrow
@@ -937,6 +972,10 @@ foreach ($locale in $locales) {
     docsEyebrow = Html $localeData.home.docsEyebrow
     docsTitle = Html $localeData.home.docsTitle
     docCards = New-HomeDocCards -Manifest $manifest -Cards $localeData.home.docCards -LocaleCode $localeCode -Context $context
+    discussionEyebrow = Html $localeData.discussion.eyebrow
+    discussionTitle = Html $localeData.discussion.title
+    discussionBody = Html $localeData.discussion.body
+    discussionEmbed = New-DiscussionEmbed -LocaleCode $localeCode
     feedbackEyebrow = Html $localeData.feedback.eyebrow
     feedbackTitle = Html $localeData.feedback.title
     feedbackBody = Html $localeData.feedback.body
@@ -983,7 +1022,7 @@ $docsIndexTokens = @{
   homeUrl = "../"
   brandTagline = Html $defaultLocaleData.brand.tagline
   navLabel = Html $defaultLocaleData.nav.label
-  navLinks = New-NavLinks -LocaleData $defaultLocaleData -HomeHref "../" -DocsHref "./" -BlogHref "../blog/" -ArchitectureHref "en/architecture-overview.md" -FeedbackHref "../#feedback"
+  navLinks = New-NavLinks -LocaleData $defaultLocaleData -HomeHref "../" -DocsHref "./" -BlogHref "../blog/" -ArchitectureHref "en/architecture-overview.md" -DiscussionHref "../#discussion" -FeedbackHref "../#feedback"
   languageSwitch = New-LanguageSwitch -Locales $locales -HrefByLocale $docsHrefByLocale -CurrentLocale $defaultLocaleCode
   heroEyebrow = Html $defaultLocaleData.docsIndex.heroEyebrow
   heroTitle = Html $defaultLocaleData.docsIndex.heroTitle
@@ -1035,6 +1074,7 @@ foreach ($locale in $locales) {
       -DocsHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $blogIndexFromKind -TargetSitePath "/$readmePath") `
       -BlogHref "./" `
       -ArchitectureHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $blogIndexFromKind -TargetSitePath "/$architecturePath") `
+      -DiscussionHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $blogIndexFromKind -TargetSitePath "/#discussion") `
       -FeedbackHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $blogIndexFromKind -TargetSitePath "/#feedback")
     languageSwitch = New-BlogLanguageSwitch -Manifest $manifest -Locales $locales -CurrentLocale $localeCode -FromKind $blogIndexFromKind -TargetKind "index" -Posts $blogPosts
     heroEyebrow = Html $localeData.blog.heroEyebrow
@@ -1075,6 +1115,7 @@ foreach ($locale in $locales) {
         -DocsHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $categoryFromKind -TargetSitePath "/$readmePath") `
         -BlogHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $categoryFromKind -TargetSitePath $blogIndexPath) `
         -ArchitectureHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $categoryFromKind -TargetSitePath "/$architecturePath") `
+        -DiscussionHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $categoryFromKind -TargetSitePath "/#discussion") `
         -FeedbackHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $categoryFromKind -TargetSitePath "/#feedback")
       languageSwitch = New-BlogLanguageSwitch -Manifest $manifest -Locales $locales -CurrentLocale $localeCode -FromKind $categoryFromKind -TargetKind "category" -CategoryId $categoryId -Posts $blogPosts
       heroEyebrow = Html $localeData.blog.heroEyebrow
@@ -1120,6 +1161,7 @@ foreach ($locale in $locales) {
         -DocsHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $postFromKind -TargetSitePath "/$readmePath") `
         -BlogHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $postFromKind -TargetSitePath $blogIndexPath) `
         -ArchitectureHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $postFromKind -TargetSitePath "/$architecturePath") `
+        -DiscussionHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $postFromKind -TargetSitePath "/#discussion") `
         -FeedbackHref (Get-BlogRelativeHref -Manifest $manifest -FromLocale $localeCode -FromKind $postFromKind -TargetSitePath "/#feedback")
       languageSwitch = New-BlogLanguageSwitch -Manifest $manifest -Locales $locales -CurrentLocale $localeCode -FromKind $postFromKind -TargetKind "post" -Post $post -Posts $blogPosts
       heroEyebrow = Html $localeData.blog.heroEyebrow
