@@ -12,7 +12,6 @@
     "docs": "Docs",
     "blog": "Blog",
     "architecture": "Architecture",
-    "discussion": "Discussion",
     "feedback": "Feedback"
   },
   "home": {
@@ -139,11 +138,6 @@
         "description": "Developer tooling requirements for project indexing, Lua Agent editing, Runtime Bridge validation, dry runs, traces, and policy diagnostics."
       }
     ]
-  },
-  "discussion": {
-    "eyebrow": "Discussion",
-    "title": "Discuss Eva-CLI",
-    "body": "Sign in with GitHub to join the Eva-CLI website chat, start direct conversations, create groups, and receive optional browser notifications."
   },
   "docsIndex": {
     "metaTitle": "Eva-CLI Documentation",

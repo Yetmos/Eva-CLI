@@ -12,7 +12,6 @@
     "docs": "文档",
     "blog": "博客",
     "architecture": "架构",
-    "discussion": "讨论",
     "feedback": "反馈"
   },
   "home": {
@@ -139,11 +138,6 @@
         "description": "项目索引、Lua Agent 编辑、Runtime Bridge 校验、dry run、trace 和 policy 诊断的开发工具链需求。"
       }
     ]
-  },
-  "discussion": {
-    "eyebrow": "讨论",
-    "title": "讨论 Eva-CLI",
-    "body": "使用 GitHub 登录后，可以加入 Eva-CLI 官网讨论区、发起单聊、创建群聊，并按需开启浏览器通知。"
   },
   "docsIndex": {
     "metaTitle": "Eva-CLI 文档",

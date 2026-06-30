@@ -5,5 +5,4 @@ node_modules/
 dist/
 .site/
 bug/
-tmp/
 .omx/

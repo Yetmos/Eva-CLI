@@ -33,7 +33,6 @@ implementation-spec content until the English full-detail migration catches up.
 15. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
 16. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
 17. [Website and Documentation i18n](website-docs-i18n.md)
-18. [Discussion Area Chat with Firebase](discussion-chat-firebase-plan.md)
 
 ## Core Boundaries
 

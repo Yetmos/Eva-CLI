@@ -32,7 +32,6 @@
         <a href="../docs/zh-CN/README.md">文档</a>
         <a href="blog/">博客</a>
         <a href="../docs/zh-CN/总体架构方案.md">架构</a>
-        <a href="#discussion">讨论</a>
         <a href="#feedback">反馈</a>
         <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
       </nav>
@@ -61,7 +60,6 @@
             <a class="primary-action" href="../docs/zh-CN/README.md">阅读文档</a>
             <a class="secondary-action" href="../docs/zh-CN/总体架构方案.md">总体架构</a>
             <a class="secondary-action" href="#development-progress">开发进度</a>
-            <a class="secondary-action" href="#discussion">讨论</a>
             <a class="secondary-action" href="#feedback">反馈</a>
           </div>
         </div>
@@ -155,6 +153,15 @@
         <div class="home-blog-grid">
           <article class="blog-card home-blog-card">
             <div class="blog-meta">
+              <span>发布： <time datetime="2026-06-28">2026-06-28</time></span>
+              <a href="blog/category/runtime/">分类： 运行时</a>
+            </div>
+            <h3><a href="blog/command-line-tool-feature-design/">Eva-CLI 命令行工具功能设计</a></h3>
+            <p>Eva-CLI 应如何把 Rust 托管运行时收束成可使用的命令行入口，覆盖 workspace 初始化、任务执行、Agent 控制、扩展能力探测、恢复命令和适合脚本的输出契约。</p>
+            <a class="blog-card-link" href="blog/command-line-tool-feature-design/">阅读全文</a>
+          </article>
+          <article class="blog-card home-blog-card">
+            <div class="blog-meta">
               <span>发布： <time datetime="2026-06-24">2026-06-24</time></span>
               <a href="blog/category/runtime/">分类： 运行时</a>
             </div>
@@ -170,15 +177,6 @@
             <h3><a href="blog/luaagent-ide-fork-vs-plugin/">LuaAgent IDE：基于 IDEA Community 二次开发，还是做 IDEA 插件？</a></h3>
             <p>对比用 IntelliJ IDEA 插件实现 LuaAgent 工具链，以及基于 IDEA Community 做薄 IDE 发行版的优缺点、风险边界和推荐实现顺序。</p>
             <a class="blog-card-link" href="blog/luaagent-ide-fork-vs-plugin/">阅读全文</a>
-          </article>
-          <article class="blog-card home-blog-card">
-            <div class="blog-meta">
-              <span>发布： <time datetime="2026-06-24">2026-06-24</time></span>
-              <a href="blog/category/tooling/">分类： 工具链</a>
-            </div>
-            <h3><a href="blog/luaagent-idea-community-ide/">基于 IDEA Community 二次开发 LuaAgent IDE 的设计思路</a></h3>
-            <p>如何复用开源 IntelliJ IDEA Community 代码基座，保持产品 fork 足够薄，把 LuaAgent 的语言智能、运行时连接和安全边界放进受控插件与 Runtime Bridge。</p>
-            <a class="blog-card-link" href="blog/luaagent-idea-community-ide/">阅读全文</a>
           </article>
         </div>
       </section>
@@ -238,114 +236,6 @@
         </div>
       </section>
 
-      <section class="discussion-section" id="discussion" aria-labelledby="discussion-title">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">讨论</p>
-            <h2 id="discussion-title">讨论 Eva-CLI</h2>
-          </div>
-        </div>
-        <p class="section-copy">使用 GitHub 登录后，可以加入 Eva-CLI 官网讨论区、发起单聊、创建群聊，并按需开启浏览器通知。</p>
-        <div class="discussion-frame">
-          <div class="chat-app" data-eva-chat data-locale="zh-CN">
-            <div class="chat-status" data-chat-status role="status"></div>
-            <div class="chat-auth" data-chat-auth>
-              <div class="chat-auth-copy">
-                <strong data-chat-auth-title></strong>
-                <span data-chat-auth-body></span>
-              </div>
-              <button class="primary-action chat-auth-button" type="button" data-chat-action="sign-in"></button>
-            </div>
-            <div class="chat-shell" data-chat-shell hidden>
-              <aside class="chat-sidebar" aria-label="Chat conversations">
-                <div class="chat-profile">
-                  <img class="chat-avatar" data-chat-avatar alt="">
-                  <div class="chat-profile-copy">
-                    <strong data-chat-display-name></strong>
-                    <span data-chat-uid></span>
-                  </div>
-                  <button class="chat-icon-button" type="button" data-chat-action="sign-out" title="Sign out" aria-label="Sign out">↗</button>
-                </div>
-                <form class="chat-name-form" data-chat-name-form>
-                  <label class="field">
-                    <span data-chat-label="displayName"></span>
-                    <input type="text" name="displayName" maxlength="24" autocomplete="nickname">
-                  </label>
-                  <button class="secondary-action" type="submit" data-chat-label="saveName"></button>
-                </form>
-                <button class="primary-action chat-wide-action" type="button" data-chat-action="join-site"></button>
-                <div class="chat-notification-row">
-                  <button class="secondary-action" type="button" data-chat-action="enable-notifications"></button>
-                  <button class="secondary-action" type="button" data-chat-action="delete-account"></button>
-                </div>
-                <form class="chat-create-form" data-chat-direct-form>
-                  <label class="field">
-                    <span data-chat-label="targetUid"></span>
-                    <input type="text" name="targetUid" autocomplete="off">
-                  </label>
-                  <button class="secondary-action" type="submit" data-chat-label="startDirect"></button>
-                </form>
-                <form class="chat-create-form" data-chat-group-form>
-                  <label class="field">
-                    <span data-chat-label="groupTitle"></span>
-                    <input type="text" name="title" maxlength="48" autocomplete="off">
-                  </label>
-                  <button class="secondary-action" type="submit" data-chat-label="createGroup"></button>
-                </form>
-                <div class="chat-invite-panel" data-chat-invite-panel hidden>
-                  <div>
-                    <strong data-chat-invite-title></strong>
-                    <span data-chat-invite-body></span>
-                  </div>
-                  <button class="primary-action" type="button" data-chat-action="accept-invite"></button>
-                </div>
-                <div class="chat-session-list" data-chat-sessions role="list"></div>
-              </aside>
-              <section class="chat-thread" aria-label="Chat thread">
-                <header class="chat-thread-header">
-                  <div>
-                    <span class="status-label" data-chat-thread-kind></span>
-                    <h3 data-chat-thread-title></h3>
-                  </div>
-                  <div class="chat-thread-actions">
-                    <button class="secondary-action" type="button" data-chat-action="mark-read"></button>
-                    <button class="secondary-action" type="button" data-chat-action="toggle-anonymous"></button>
-                    <button class="secondary-action" type="button" data-chat-action="create-invite"></button>
-                  </div>
-                </header>
-                <div class="chat-messages" data-chat-messages role="log" aria-live="polite"></div>
-                <form class="chat-composer" data-chat-composer>
-                  <label class="chat-file-control">
-                    <span data-chat-label="image"></span>
-                    <input type="file" name="image" accept="image/*">
-                  </label>
-                  <textarea name="text" rows="2" maxlength="2000"></textarea>
-                  <button class="primary-action" type="submit" data-chat-label="send"></button>
-                </form>
-              </section>
-            </div>
-          </div>
-          <div class="giscus-panel" aria-label="GitHub Discussions">
-            <script src="https://giscus.app/client.js"
-              data-repo="Yetmos/Eva-CLI"
-              data-repo-id="R_kgDOS4ZJEA"
-              data-category="General"
-              data-category-id="DIC_kwDOS4ZJEM4C_Tf8"
-              data-mapping="specific"
-              data-term="Eva-CLI site discussion"
-              data-strict="0"
-              data-reactions-enabled="1"
-              data-emit-metadata="0"
-              data-input-position="top"
-              data-theme="preferred_color_scheme"
-              data-lang="zh-CN"
-              crossorigin="anonymous"
-              async>
-            </script>
-          </div>
-        </div>
-      </section>
-
       <section class="feedback-section" id="feedback" aria-labelledby="feedback-title">
         <div class="feedback-copy">
           <p class="eyebrow">反馈</p>
@@ -391,6 +281,5 @@
       <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
       <a href="#feedback">提交反馈</a>
     </footer>
-    <script type="module" src="../chat/chat-app.js"></script>
   </body>
 </html>

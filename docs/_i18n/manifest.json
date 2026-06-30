@@ -190,28 +190,6 @@
       }
     },
     {
-      "id": "discussion-chat-firebase-architecture-diagram",
-      "title": "Discussion Chat Firebase Architecture Diagram",
-      "source": "docs/assets/discussion-chat-firebase-architecture.svg",
-      "translations": {
-        "zh-CN": "docs/assets/discussion-chat-firebase-architecture.zh-CN.svg"
-      },
-      "status": {
-        "zh-CN": "current"
-      }
-    },
-    {
-      "id": "discussion-chat-firebase-flow-diagram",
-      "title": "Discussion Chat Firebase Flow Diagram",
-      "source": "docs/assets/discussion-chat-firebase-flow.svg",
-      "translations": {
-        "zh-CN": "docs/assets/discussion-chat-firebase-flow.zh-CN.svg"
-      },
-      "status": {
-        "zh-CN": "current"
-      }
-    },
-    {
       "id": "command-line-feature-map-diagram",
       "title": "Eva-CLI Command Feature Map",
       "source": "docs/assets/eva-cli-command-feature-map.svg",
@@ -529,23 +507,6 @@
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
-    },
-    {
-      "id": "discussion-chat-firebase-plan",
-      "title": "Discussion Area Chat with Firebase",
-      "source": "docs/en/discussion-chat-firebase-plan.md",
-      "translations": {
-        "zh-CN": "docs/zh-CN/官网讨论区聊天功能Firebase接入方案.md"
-      },
-      "status": {
-        "zh-CN": "current"
-      },
-      "contentAuthority": {
-        "locale": "zh-CN",
-        "path": "docs/zh-CN/官网讨论区聊天功能Firebase接入方案.md",
-        "coverage": "full-detail"
-      },
-      "sourceCoverage": "full-detail"
     }
   ],
   "fallbacks": {
