@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Eva-CLI 项目文件夹结构与配置文件导览 | Eva-CLI 博客</title>
+    <meta name="description" content="介绍 Eva-CLI 已落地的目录布局、Rust workspace 骨架、扁平 Agent 目录、配置文件、Schema 校验和 policy 边界。">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="Eva-CLI 项目文件夹结构与配置文件导览 | Eva-CLI 博客">
+    <meta property="og:description" content="介绍 Eva-CLI 已落地的目录布局、Rust workspace 骨架、扁平 Agent 目录、配置文件、Schema 校验和 policy 边界。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://www.eva-cli.com/zh-CN/blog/project-structure-and-config/">
+    <meta property="article:published_time" content="2026-06-30">
+    <meta property="article:section" content="运行时">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://www.eva-cli.com/zh-CN/blog/project-structure-and-config/">
+    <link rel="alternate" hreflang="en" href="https://www.eva-cli.com/blog/project-structure-and-config/">
+    <link rel="alternate" hreflang="zh-CN" href="https://www.eva-cli.com/zh-CN/blog/project-structure-and-config/">
+    <link rel="alternate" hreflang="x-default" href="https://www.eva-cli.com/blog/project-structure-and-config/">
+    <link rel="icon" type="image/svg+xml" href="../../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../../" aria-label="Eva-CLI home">
+        <img src="../../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">多 Agent 运行时</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../../../">首页</a>
+        <a href="../../../docs/zh-CN/README.md">文档</a>
+        <a href="../../../zh-CN/blog/">博客</a>
+        <a href="../../../docs/zh-CN/总体架构方案.md">架构</a>
+        <a href="../../../#discussion">讨论</a>
+        <a href="../../../#feedback">反馈</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../../blog/project-structure-and-config/" hreflang="en" lang="en">English</a>
+          <a href="../../../zh-CN/blog/project-structure-and-config/" hreflang="zh-CN" lang="zh-CN" aria-current="page">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">博客</p>
+          <h1>Eva-CLI 项目文件夹结构与配置文件导览</h1>
+          <p class="blog-lead">介绍 Eva-CLI 已落地的目录布局、Rust workspace 骨架、扁平 Agent 目录、配置文件、Schema 校验和 policy 边界。</p>
+          <div class="blog-meta">
+            <span>发布： <time datetime="2026-06-30">2026-06-30</time></span>
+            <a href="../../../zh-CN/blog/category/runtime/">分类： 运行时</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>Eva-CLI 当前仓库已经有两个具体基础：可编译的 Rust workspace 骨架，以及项目配置树。这意味着项目不再只是架构笔记，而是已经具备后续运行时代码可以校验、检查和执行的结构。</p>
+
+<p>最关键的设计选择是：目录不授予权力。目录只让内容可发现。真正的权力仍来自 manifest、schema、policy、route 和 Runtime 组合根。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/project-structure-config.zh-CN.svg" alt="Eva-CLI 项目结构地图，展示 Rust workspace crate、配置目录、扁平 Agent 目录、schema、policy、route、adapter 和运行时交接。">
+  <figcaption>当前仓库把实现归属、人工维护配置和运行时权力分开表达。</figcaption>
+</figure>
+
+<h2>顶层目录分别表达什么</h2>
+<p>根目录布局刻意保持直接。静态官网在 <code>website/</code>，架构文档在 <code>docs/</code>，共享插图在 <code>assets/</code>，运行配置在 <code>config/</code>，Rust 实现边界在 <code>crates/</code>。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>目录</th>
+    <th>用途</th>
+    <th>运行时规则</th>
+  </tr>
+  <tr>
+    <td><code>config/</code></td>
+    <td>人工维护的 YAML、JSON Schema、Agent manifest、Adapter manifest、policy、route 和 capability 声明。</td>
+    <td>运行时注册前必须解析和校验。密钥只引用环境变量名，不在配置里明文保存。</td>
+  </tr>
+  <tr>
+    <td><code>crates/</code></td>
+    <td>Rust workspace crate，承载 core contract、config、policy、scheduler、adapter、discovery、runtime 等稳定职责边界。</td>
+    <td>下层 crate 不反向依赖 <code>eva-runtime</code>；<code>eva-runtime</code> 是组合根。</td>
+  </tr>
+  <tr>
+    <td><code>src/</code></td>
+    <td>很薄的 binary shim，只把进程入口转交给 <code>eva-cli</code>。</td>
+    <td>保持很小。CLI 行为属于 <code>crates/eva-cli</code>。</td>
+  </tr>
+  <tr>
+    <td><code>docs/</code></td>
+    <td>架构、模块划分、配置、发现、记忆、硬件、生命周期和路线图文档。</td>
+    <td>文档描述实现需要保持的契约，但不是运行时配置。</td>
+  </tr>
+  <tr>
+    <td><code>website/</code></td>
+    <td>静态官网源文件和生成页面，包括博客内容和多语言 JSON。</td>
+    <td>由模板和 i18n 数据生成；源数据和生成后的 HTML 应一起提交。</td>
+  </tr>
+</table>
+
+<h2>配置树的边界</h2>
+<p>主运行时配置是 <code>config/eva.yaml</code>。它描述环境、workspace 路径、EventBus、Scheduler 默认值、状态、记忆、知识库、观测配置，以及其他配置目录的位置。它应该保持全局。单个 Agent 的订阅、单个 Adapter 的命令、MCP allowlist 应该放到各自文件里。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>配置路径</th>
+    <th>负责</th>
+    <th>不负责</th>
+  </tr>
+  <tr>
+    <td><code>config/agents/&lt;agent-id&gt;/</code></td>
+    <td>Agent manifest、Lua 入口脚本、可选 constraints、订阅、inbox、timeout、状态命名空间和权限。</td>
+    <td>API key、provider command、全局 policy，或通过目录嵌套隐式表达父子行为。</td>
+  </tr>
+  <tr>
+    <td><code>config/adapters/</code></td>
+    <td>CLI、HTTP、MCP、Skill、硬件等 provider manifest。</td>
+    <td>明文密钥或用户可控 shell 片段。</td>
+  </tr>
+  <tr>
+    <td><code>config/policies/</code></td>
+    <td>沙箱、Adapter、MCP server、硬件、重试和全局权限下限。</td>
+    <td>业务路由或 provider 私有 payload 逻辑。</td>
+  </tr>
+  <tr>
+    <td><code>config/routes/topics.yaml</code></td>
+    <td>Topic pattern 到 Agent 的投递规则。</td>
+    <td>业务逻辑，或通过目录层级做自动递归投递。</td>
+  </tr>
+  <tr>
+    <td><code>config/schemas/</code></td>
+    <td>校验 YAML 解析后结构的 JSON Schema。</td>
+    <td>校验之后的运行时策略裁决。</td>
+  </tr>
+</table>
+
+<h2>为什么 Agent 目录要扁平</h2>
+<p>早期嵌套示例把 Topic 层级和 Agent 存放层级混在了一起。这会误导读者，因为 <code>/sys/route-a/route-aa</code> 是路由，不是 Agent。当前模型保持一个目录只表达一个 Agent 实体：</p>
+
+<pre class="blog-code"><code>config/agents/
+  root-agent/
+    agent.yaml
+    constraints.md
+    main.lua
+  agent-a/
+    agent.yaml
+    constraints.md
+    main.lua
+  agent-a11/
+    agent.yaml
+    main.lua
+  agent-a12/
+    agent.yaml
+    main.lua</code></pre>
+
+<p>运行时父子关系仍然通过 <code>agent.yaml</code> 中的 <code>parent</code>、<code>children</code>、<code>subscriptions</code> 和 <code>permissions.emit</code> 显式表达。Topic 投递仍然通过 <code>config/routes/topics.yaml</code> 表达。这样 discovery、热加载和 policy audit 都更简单：先扫描 Agent manifest，再校验它声明的权力。</p>
+
+<h2>配置如何变成运行时权力</h2>
+<p>推荐加载顺序是确定的：内置默认配置、<code>config/eva.yaml</code>、policy 文件、routes、Agent manifest、Adapter manifest、环境变量引用、低风险 CLI 覆盖。每一步可以补充信息，但权限只能在合并到 effective policy 的过程中逐层收紧。</p>
+
+<pre class="blog-code"><code>YAML 文件
+  -> 解析成结构化值
+  -> 使用 JSON Schema 校验
+  -> 归一化 manifest
+  -> 合并 policy 下限
+  -> 构建 effective config
+  -> 注册 runtime handle</code></pre>
+
+<p>下一步实际实现工作，是通过 <code>eva config validate</code>、<code>eva config inspect</code> 和 <code>eva config dump-effective</code> 这类命令把它变成可见证据。目录树不只是整齐，它应该成为 Runtime 可执行、可审计的输入。</p>
+
+<p>相关技术文档：<a href="../../../docs/zh-CN/项目配置方案.md">项目配置方案</a> 和 <a href="../../../docs/zh-CN/模块划分方案.md">模块划分方案</a>。</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../../zh-CN/blog/">返回博客</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>作者： <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../../#feedback">提交反馈</a>
+    </footer>
+  </body>
+</html>

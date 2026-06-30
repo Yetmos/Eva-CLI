@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Eva-CLI Project Structure and Configuration Guide | Eva-CLI Blog</title>
+    <meta name="description" content="A tour of the landed Eva-CLI folder layout, Rust workspace scaffold, flat Agent directories, configuration files, schema validation, and policy boundaries.">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="Eva-CLI Project Structure and Configuration Guide | Eva-CLI Blog">
+    <meta property="og:description" content="A tour of the landed Eva-CLI folder layout, Rust workspace scaffold, flat Agent directories, configuration files, schema validation, and policy boundaries.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://www.eva-cli.com/blog/project-structure-and-config/">
+    <meta property="article:published_time" content="2026-06-30">
+    <meta property="article:section" content="Runtime">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://www.eva-cli.com/blog/project-structure-and-config/">
+    <link rel="alternate" hreflang="en" href="https://www.eva-cli.com/blog/project-structure-and-config/">
+    <link rel="alternate" hreflang="zh-CN" href="https://www.eva-cli.com/zh-CN/blog/project-structure-and-config/">
+    <link rel="alternate" hreflang="x-default" href="https://www.eva-cli.com/blog/project-structure-and-config/">
+    <link rel="icon" type="image/svg+xml" href="../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../" aria-label="Eva-CLI home">
+        <img src="../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">Multi-Agent Runtime</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="../../">Home</a>
+        <a href="../../docs/en/README.md">Docs</a>
+        <a href="../../blog/">Blog</a>
+        <a href="../../docs/en/architecture-overview.md">Architecture</a>
+        <a href="../../#discussion">Discussion</a>
+        <a href="../../#feedback">Feedback</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../blog/project-structure-and-config/" hreflang="en" lang="en" aria-current="page">English</a>
+          <a href="../../zh-CN/blog/project-structure-and-config/" hreflang="zh-CN" lang="zh-CN">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">Blog</p>
+          <h1>Eva-CLI Project Structure and Configuration Guide</h1>
+          <p class="blog-lead">A tour of the landed Eva-CLI folder layout, Rust workspace scaffold, flat Agent directories, configuration files, schema validation, and policy boundaries.</p>
+          <div class="blog-meta">
+            <span>Published: <time datetime="2026-06-30">2026-06-30</time></span>
+            <a href="../../blog/category/runtime/">Category: Runtime</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>Eva-CLI now has two concrete foundations in the repository: a compileable Rust workspace skeleton and a project configuration tree. That changes the project from "architecture notes only" into a structure that future runtime code can validate, inspect, and execute against.</p>
+
+<p>The important design choice is that folders do not grant authority. Folders make things discoverable. Authority still comes from manifests, schemas, policies, routes, and the runtime composition root.</p>
+
+<figure class="blog-figure">
+  <img src="../../assets/project-structure-config.svg" alt="Eva-CLI project structure map showing Rust workspace crates, configuration folders, flat Agent directories, schemas, policies, routes, adapters, and runtime handoff.">
+  <figcaption>The current repository separates implementation ownership, human-maintained configuration, and runtime authority.</figcaption>
+</figure>
+
+<h2>What the top-level folders mean</h2>
+<p>The root layout is intentionally boring. The static website lives in <code>website/</code>, architecture documents live in <code>docs/</code>, shared diagrams live in <code>assets/</code>, configuration lives in <code>config/</code>, and Rust implementation boundaries live in <code>crates/</code>.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Folder</th>
+    <th>Purpose</th>
+    <th>Runtime rule</th>
+  </tr>
+  <tr>
+    <td><code>config/</code></td>
+    <td>Human-maintained YAML, JSON Schemas, Agent manifests, Adapter manifests, policies, routes, and capability declarations.</td>
+    <td>Parsed and validated before runtime registration. Secrets are referenced by environment variable name, not stored inline.</td>
+  </tr>
+  <tr>
+    <td><code>crates/</code></td>
+    <td>Rust workspace crates for stable ownership boundaries such as core contracts, config, policy, scheduler, adapter, discovery, and runtime.</td>
+    <td>Lower crates must not depend back on <code>eva-runtime</code>; the runtime crate is the composition root.</td>
+  </tr>
+  <tr>
+    <td><code>src/</code></td>
+    <td>A thin binary shim that delegates process startup to <code>eva-cli</code>.</td>
+    <td>Keep it small. CLI behavior belongs in <code>crates/eva-cli</code>.</td>
+  </tr>
+  <tr>
+    <td><code>docs/</code></td>
+    <td>Architecture, module partitioning, configuration, discovery, memory, hardware, lifecycle, and roadmap documents.</td>
+    <td>Docs describe contracts that implementation should preserve; they are not runtime configuration.</td>
+  </tr>
+  <tr>
+    <td><code>website/</code></td>
+    <td>Static website source and generated pages, including blog content and locale JSON.</td>
+    <td>Generated from templates and i18n data; source data and generated HTML should be committed together.</td>
+  </tr>
+</table>
+
+<h2>The configuration tree</h2>
+<p>The main runtime file is <code>config/eva.yaml</code>. It describes environment, workspace paths, EventBus, scheduler defaults, state, memory, knowledge, observability, and where the rest of the config tree lives. It should stay global. Per-Agent subscriptions, per-Adapter commands, and MCP allowlists belong in their own files.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Config path</th>
+    <th>Owns</th>
+    <th>Does not own</th>
+  </tr>
+  <tr>
+    <td><code>config/agents/&lt;agent-id&gt;/</code></td>
+    <td>Agent manifest, Lua entry script, optional constraints, subscriptions, inbox, timeout, state namespace, and permissions.</td>
+    <td>API keys, provider commands, global policy, or implicit parent-child behavior from folder nesting.</td>
+  </tr>
+  <tr>
+    <td><code>config/adapters/</code></td>
+    <td>Provider manifests for CLI, HTTP, MCP, skill, hardware, and other transports.</td>
+    <td>Plaintext secrets or user-controlled shell snippets.</td>
+  </tr>
+  <tr>
+    <td><code>config/policies/</code></td>
+    <td>Sandbox, Adapter, MCP server, hardware, retry, and global permission floors.</td>
+    <td>Business routing or provider-specific payload logic.</td>
+  </tr>
+  <tr>
+    <td><code>config/routes/topics.yaml</code></td>
+    <td>Topic pattern to Agent delivery rules.</td>
+    <td>Business logic or automatic recursive delivery through folder hierarchy.</td>
+  </tr>
+  <tr>
+    <td><code>config/schemas/</code></td>
+    <td>JSON Schemas for validating parsed YAML structures.</td>
+    <td>Runtime policy decisions after validation.</td>
+  </tr>
+</table>
+
+<h2>Why Agents are flat now</h2>
+<p>The earlier nested example mixed Topic hierarchy with Agent storage. That was misleading because <code>/sys/route-a/route-aa</code> is a route, not an Agent. The current model keeps one Agent entity per directory:</p>
+
+<pre class="blog-code"><code>config/agents/
+  root-agent/
+    agent.yaml
+    constraints.md
+    main.lua
+  agent-a/
+    agent.yaml
+    constraints.md
+    main.lua
+  agent-a11/
+    agent.yaml
+    main.lua
+  agent-a12/
+    agent.yaml
+    main.lua</code></pre>
+
+<p>Runtime parent-child relationships remain explicit in <code>agent.yaml</code> through fields such as <code>parent</code>, <code>children</code>, <code>subscriptions</code>, and <code>permissions.emit</code>. Topic delivery remains explicit in <code>config/routes/topics.yaml</code>. This makes discovery, hot reload, and policy audit simpler: scan for Agent manifests, then validate what they claim.</p>
+
+<h2>How config becomes runtime authority</h2>
+<p>The intended load order is deterministic: built-in defaults, <code>config/eva.yaml</code>, policy files, routes, Agent manifests, Adapter manifests, environment variable references, then low-risk CLI overrides. Each step may add information, but permissions only narrow as they approach effective policy.</p>
+
+<pre class="blog-code"><code>YAML files
+  -> parse into structured values
+  -> validate with JSON Schema
+  -> normalize manifests
+  -> merge policy floors
+  -> build effective config
+  -> register runtime handles</code></pre>
+
+<p>The next practical implementation work is to make this visible through commands such as <code>eva config validate</code>, <code>eva config inspect</code>, and <code>eva config dump-effective</code>. Those commands should prove that the directory tree is not just tidy; it is executable evidence for the runtime.</p>
+
+<p>Related technical documents: <a href="../../docs/en/project-configuration.md">Project Configuration</a> and <a href="../../docs/en/module-partitioning.md">Module Partitioning</a>.</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../blog/">Back to blog</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>Author: <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>Feedback: <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../#feedback">Submit feedback</a>
+    </footer>
+  </body>
+</html>

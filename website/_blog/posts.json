@@ -24,6 +24,26 @@
   ],
   "posts": [
     {
+      "id": "project-structure-and-config",
+      "locale": "en",
+      "slug": "project-structure-and-config",
+      "title": "Eva-CLI Project Structure and Configuration Guide",
+      "description": "A tour of the landed Eva-CLI folder layout, Rust workspace scaffold, flat Agent directories, configuration files, schema validation, and policy boundaries.",
+      "date": "2026-06-30",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/project-structure-and-config.html"
+    },
+    {
+      "id": "project-structure-and-config",
+      "locale": "zh-CN",
+      "slug": "project-structure-and-config",
+      "title": "Eva-CLI 项目文件夹结构与配置文件导览",
+      "description": "介绍 Eva-CLI 已落地的目录布局、Rust workspace 骨架、扁平 Agent 目录、配置文件、Schema 校验和 policy 边界。",
+      "date": "2026-06-30",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/project-structure-and-config.html"
+    },
+    {
       "id": "command-line-tool-feature-design",
       "locale": "en",
       "slug": "command-line-tool-feature-design",

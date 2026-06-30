@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="680" viewBox="0 0 1180 680" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 项目结构与配置地图</title>
+  <desc id="desc">图中展示 Rust workspace、配置目录、扁平 Agent 目录、schema、policy、route、adapter 和运行时交接关系。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="50%" stop-color="#19324d"/>
+      <stop offset="100%" stop-color="#1f4f46"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="100%" stop-color="#e8f2f1" stop-opacity="0.94"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#020617" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect width="1180" height="680" rx="28" fill="url(#bg)"/>
+  <text x="56" y="76" fill="#f8fafc" font-family="Segoe UI, Microsoft YaHei, Arial, sans-serif" font-size="36" font-weight="700">Eva-CLI 项目结构地图</text>
+  <text x="56" y="112" fill="#cbd5e1" font-family="Segoe UI, Microsoft YaHei, Arial, sans-serif" font-size="17">目录表达职责归属，配置表达运行时权力。</text>
+
+  <g filter="url(#shadow)">
+    <rect x="48" y="154" width="335" height="422" rx="18" fill="url(#panel)"/>
+    <rect x="422" y="154" width="335" height="422" rx="18" fill="url(#panel)"/>
+    <rect x="796" y="154" width="335" height="422" rx="18" fill="url(#panel)"/>
+  </g>
+
+  <g font-family="Segoe UI, Microsoft YaHei, Arial, sans-serif">
+    <text x="78" y="202" fill="#0f172a" font-size="23" font-weight="700">Rust workspace</text>
+    <text x="78" y="232" fill="#475569" font-size="15">可编译的 crate 边界</text>
+    <g font-size="15" fill="#0f172a">
+      <rect x="78" y="260" width="120" height="34" rx="8" fill="#dbeafe"/>
+      <text x="96" y="282">eva-core</text>
+      <rect x="214" y="260" width="138" height="34" rx="8" fill="#dbeafe"/>
+      <text x="232" y="282">eva-config</text>
+      <rect x="78" y="308" width="150" height="34" rx="8" fill="#ccfbf1"/>
+      <text x="96" y="330">eva-policy</text>
+      <rect x="244" y="308" width="108" height="34" rx="8" fill="#ccfbf1"/>
+      <text x="262" y="330">storage</text>
+      <rect x="78" y="356" width="150" height="34" rx="8" fill="#dcfce7"/>
+      <text x="96" y="378">eventbus</text>
+      <rect x="244" y="356" width="108" height="34" rx="8" fill="#dcfce7"/>
+      <text x="262" y="378">scheduler</text>
+      <rect x="78" y="404" width="120" height="34" rx="8" fill="#fef3c7"/>
+      <text x="96" y="426">eva-agent</text>
+      <rect x="214" y="404" width="138" height="34" rx="8" fill="#fef3c7"/>
+      <text x="232" y="426">eva-lua-host</text>
+      <rect x="78" y="452" width="120" height="34" rx="8" fill="#fee2e2"/>
+      <text x="96" y="474">adapter</text>
+      <rect x="214" y="452" width="138" height="34" rx="8" fill="#fee2e2"/>
+      <text x="232" y="474">discovery</text>
+      <rect x="78" y="500" width="274" height="40" rx="10" fill="#e0e7ff"/>
+      <text x="142" y="525" font-weight="700">eva-runtime 组合根</text>
+    </g>
+
+    <text x="452" y="202" fill="#0f172a" font-size="23" font-weight="700">配置根目录</text>
+    <text x="452" y="232" fill="#475569" font-size="15">人工维护 YAML，JSON Schema 校验</text>
+    <g font-size="15">
+      <rect x="452" y="260" width="275" height="44" rx="10" fill="#d1fae5"/>
+      <text x="474" y="287" fill="#064e3b" font-weight="700">config/eva.yaml</text>
+      <rect x="452" y="326" width="130" height="36" rx="8" fill="#dbeafe"/>
+      <text x="475" y="349" fill="#1e3a8a">schemas/</text>
+      <rect x="596" y="326" width="131" height="36" rx="8" fill="#ede9fe"/>
+      <text x="620" y="349" fill="#4c1d95">policies/</text>
+      <rect x="452" y="382" width="130" height="36" rx="8" fill="#fef3c7"/>
+      <text x="475" y="405" fill="#78350f">routes/</text>
+      <rect x="596" y="382" width="131" height="36" rx="8" fill="#fee2e2"/>
+      <text x="620" y="405" fill="#7f1d1d">adapters/</text>
+      <rect x="452" y="438" width="275" height="76" rx="12" fill="#ecfeff"/>
+      <text x="474" y="466" fill="#155e75" font-weight="700">capabilities/</text>
+      <text x="474" y="492" fill="#155e75">Skill、MCP Tool、Lua capability 入口</text>
+    </g>
+
+    <text x="826" y="202" fill="#0f172a" font-size="23" font-weight="700">扁平 Agent 目录</text>
+    <text x="826" y="232" fill="#475569" font-size="15">一个目录只表达一个 Agent 实体</text>
+    <g font-size="15" fill="#0f172a">
+      <rect x="826" y="260" width="275" height="48" rx="10" fill="#dbeafe"/>
+      <text x="850" y="290" font-weight="700">config/agents/root-agent/</text>
+      <rect x="826" y="326" width="275" height="48" rx="10" fill="#dcfce7"/>
+      <text x="850" y="356" font-weight="700">config/agents/agent-a/</text>
+      <rect x="826" y="392" width="128" height="48" rx="10" fill="#fef3c7"/>
+      <text x="844" y="422" font-weight="700">agent-a11/</text>
+      <rect x="973" y="392" width="128" height="48" rx="10" fill="#fef3c7"/>
+      <text x="991" y="422" font-weight="700">agent-a12/</text>
+      <rect x="826" y="470" width="275" height="50" rx="12" fill="#fff1f2"/>
+      <text x="850" y="492" fill="#881337" font-weight="700">Topic 路径留在配置里</text>
+      <text x="850" y="512" fill="#881337">/sys/route-a/route-aa 不是目录</text>
+    </g>
+  </g>
+
+  <g stroke="#e2e8f0" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M383 365 C407 365 397 365 422 365"/>
+    <path d="M757 365 C782 365 771 365 796 365"/>
+  </g>
+  <g fill="#e2e8f0">
+    <path d="M421 365 l-12 -7 v14z"/>
+    <path d="M795 365 l-12 -7 v14z"/>
+  </g>
+
+  <g font-family="Segoe UI, Microsoft YaHei, Arial, sans-serif" font-size="14" fill="#dbeafe">
+    <text x="436" y="610">加载顺序：内置默认 -> eva.yaml -> policies/routes -> agents/adapters -> 环境变量引用 -> CLI 覆盖</text>
+    <text x="436" y="638">运行时规则：目录只是可发现来源，manifest、schema 和 policy 决定权力。</text>
+  </g>
+</svg>
