@@ -121,22 +121,21 @@ config/agents/**/main.lua
 
 ```text
 config/agents/
-  root/
+  root-agent/
     agent.yaml
     main.lua
-  route-a/
+  agent-a/
     agent.yaml
     main.lua
-    route-aa/
-      agent-a11/
-        agent.yaml
-        main.lua
-      agent-a12/
-        agent.yaml
-        main.lua
+  agent-a11/
+    agent.yaml
+    main.lua
+  agent-a12/
+    agent.yaml
+    main.lua
 ```
 
-目录可以物理嵌套，但运行时父子关系必须以 `agent.yaml` 中的 `parent`、`children`、`subscriptions` 和 `permissions.emit` 为准。
+Agent 目录推荐保持扁平，并优先使用 Agent ID 作为目录名。运行时父子关系必须以 `agent.yaml` 中的 `parent`、`children`、`subscriptions` 和 `permissions.emit` 为准；Topic 层级不能通过目录嵌套表达。
 
 示例：
 
@@ -1207,7 +1206,7 @@ pub enum DiscoveryErrorKind {
 
 ```text
 ID              TYPE        SOURCE                         STATUS
-agent-a         lua_agent   config/agents/route-a/agent.yaml enabled
+agent-a         lua_agent   config/agents/agent-a/agent.yaml enabled
 codex-cli       cli_agent   PATH:/usr/local/bin/codex      available
 code-review     skill       ~/.codex/skills/code-review    available
 github-mcp      mcp_server  config/mcp/github.yaml         invalid-policy
