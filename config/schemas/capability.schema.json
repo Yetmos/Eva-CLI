@@ -2,22 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://eva-cli.local/schemas/capability.schema.json",
   "title": "Eva capability definition",
+  "$comment": "Schema for adapter-backed, Lua-backed, MCP-backed, and skill capabilities. / 基于 Adapter、Lua、MCP 和 Skill 的能力定义 schema。",
   "type": "object",
   "required": ["id", "name", "version", "enabled", "kind", "capability"],
   "properties": {
-    "id": { "type": "string" },
-    "name": { "type": "string" },
-    "version": { "type": "string" },
-    "enabled": { "type": "boolean" },
+    "id": { "$comment": "Stable capability manifest id. / 稳定的能力 manifest ID。", "type": "string" },
+    "name": { "$comment": "Human-readable capability name. / 便于人工识别的能力名称。", "type": "string" },
+    "version": { "$comment": "Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。", "type": "string" },
+    "enabled": { "$comment": "Whether this capability can be registered. / 是否允许注册此能力。", "type": "boolean" },
     "kind": {
+      "$comment": "Capability implementation category. / 能力实现类别。",
       "type": "string",
       "enum": ["adapter_capability", "lua_capability", "mcp_tool", "skill"]
     },
-    "capability": { "type": "string" },
-    "input_schema": { "type": "object" },
-    "output_schema": { "type": "object" },
-    "permissions": { "type": "object" },
-    "limits": { "type": "object" }
+    "capability": { "$comment": "Runtime capability exposed to callers. / 暴露给调用方的运行时能力。", "type": "string" },
+    "input_schema": { "$comment": "Input contract for invocation. / 调用输入契约。", "type": "object" },
+    "output_schema": { "$comment": "Output contract returned by the capability. / 能力返回的输出契约。", "type": "object" },
+    "permissions": { "$comment": "Permission boundary for this capability. / 此能力的权限边界。", "type": "object" },
+    "limits": { "$comment": "Runtime limits for this capability. / 此能力的运行限制。", "type": "object" }
   },
   "additionalProperties": true
 }

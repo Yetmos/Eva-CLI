@@ -1,31 +1,57 @@
+# Adapter manifest for the Claude API provider.
+# Claude API provider 的 Adapter manifest。
+#
+# This file declares connectivity, capabilities, permissions, and runtime limits.
+# 本文件声明连接方式、能力、权限和运行限制。
+
+# Stable adapter id used by routing and policy allowlists. / 路由和策略白名单使用的稳定 Adapter ID。
 id: claude-api
+# Human-readable adapter name. / 便于人工识别的 Adapter 名称。
 name: Claude API Adapter
+# Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。
 version: 1.0.0
+# Whether this adapter can be registered at runtime. / 是否允许运行时注册此 Adapter。
 enabled: true
+# HTTP transport calls the remote provider endpoint. / HTTP transport 调用远程 provider endpoint。
 transport: http
 
+# Anthropic Messages API endpoint. / Anthropic Messages API endpoint。
 endpoint: https://api.anthropic.com/v1/messages
 
+# Capabilities exposed through this adapter. / 通过此 Adapter 暴露的能力。
 capabilities:
   - chat.reply
   - task.plan
   - code.review
 
+# Permission boundary for adapter execution. / Adapter 执行权限边界。
 permissions:
+  # Remote API calls do not need workspace reads. / 远程 API 调用不需要读取工作区。
   read_workspace: false
+  # Remote API calls must not write workspace files. / 远程 API 调用不得写入工作区文件。
   write_workspace: false
+  # Network access is required for the provider API. / 访问 provider API 需要网络权限。
   network: true
+  # Shell execution is not required. / 不需要 shell 执行权限。
   shell: false
+  # Allowed environment variables; store only names here, never secrets. / 允许注入的环境变量；这里只保存名称，不保存密钥。
   env:
     - ANTHROPIC_API_KEY
 
+# Runtime limits for this adapter. / 此 Adapter 的运行限制。
 limits:
+  # Request timeout in milliseconds. / 请求超时时间，单位毫秒。
   timeout_ms: 120000
+  # Maximum concurrent requests. / 最大并发请求数。
   max_concurrency: 4
+  # Maximum prompt payload size in bytes. / 最大 prompt 载荷字节数。
   max_prompt_bytes: 100000
 
+# Routing preferences when several adapters can serve the same capability. / 多个 Adapter 可处理同一能力时的路由偏好。
 routing:
+  # Higher priority wins route selection. / 数值越高，路由优先级越高。
   priority: 80
+  # Capabilities this adapter should serve by default. / 默认由此 Adapter 承载的能力。
   default_for:
     - chat.reply
     - task.plan

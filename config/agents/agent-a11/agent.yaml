@@ -1,27 +1,51 @@
+# Agent A11 manifest.
+# Agent A11 的 manifest。
+#
+# This child Agent consumes delegated /sys/route-a/route-aa work.
+# 此子 Agent 消费分发到 /sys/route-a/route-aa 的任务。
+
+# Stable Agent id used by routes, permissions, and state namespaces. / routes、permissions 和 state namespace 使用的稳定 Agent ID。
 id: agent-a11
+# Whether this Agent is available for registration. / 是否允许注册此 Agent。
 enabled: true
+# Parent Agent id for management intent. / 用于表达管理意图的父 Agent ID。
 parent: agent-a
+# Lua entry script relative to this Agent directory. / 相对此 Agent 目录的 Lua 入口脚本。
 script: main.lua
+# Script generation marker used by hot-reload and audit. / 热更新和审计使用的脚本 generation 标记。
 script_version: 2026-06-09.1
 
+# Topic subscriptions consumed by this Agent. / 此 Agent 消费的 Topic 订阅。
 subscriptions:
   - /sys/route-a/route-aa
 
+# Inbox backpressure settings. / Inbox 背压设置。
 inbox:
+  # Maximum queued events. / 最大排队事件数。
   capacity: 128
+  # Overflow events are sent to the dead-letter path. / 溢出事件进入死信路径。
   overflow: dead_letter
 
+# Per-event and tool-call timeouts. / 单事件和工具调用超时。
 timeout:
+  # Event handling timeout in milliseconds. / 事件处理超时时间，单位毫秒。
   event_ms: 30000
+  # Tool invocation timeout in milliseconds. / 工具调用超时时间，单位毫秒。
   tool_ms: 60000
 
+# Durable state backend and namespace. / 持久状态后端和命名空间。
 state:
+  # Use the global SQLite state store. / 使用全局 SQLite 状态存储。
   backend: sqlite
+  # Namespace for this Agent's state records. / 此 Agent 状态记录的命名空间。
   namespace: agent.agent-a11
 
+# Explicit permission boundary for this Agent. / 此 Agent 的显式权限边界。
 permissions:
+  # Topic patterns this Agent may emit. / 此 Agent 可发布的 Topic pattern。
   emit:
     - /sys/route-a/route-aa/reply
+  # Host tools available to Lua code. / Lua 代码可见的宿主工具。
   tools:
     - state_get
     - state_set

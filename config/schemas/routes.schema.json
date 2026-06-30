@@ -2,18 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://eva-cli.local/schemas/routes.schema.json",
   "title": "Eva Topic routes",
+  "$comment": "Schema for mapping topic patterns to target Agents. / 将 Topic pattern 映射到目标 Agent 的 schema。",
   "type": "object",
   "required": ["routes"],
   "properties": {
     "routes": {
+      "$comment": "Ordered route rules evaluated by the scheduler. / Scheduler 按顺序评估的路由规则。",
       "type": "array",
       "items": {
+        "$comment": "Single route rule. / 单条路由规则。",
         "type": "object",
         "required": ["pattern", "delivery", "agents"],
         "properties": {
-          "pattern": { "type": "string", "pattern": "^/.+" },
-          "delivery": { "type": "string", "enum": ["fanout", "compete"] },
-          "agents": { "type": "array", "items": { "type": "string" } }
+          "pattern": { "$comment": "Topic pattern beginning with '/'. / 以 '/' 开头的 Topic pattern。", "type": "string", "pattern": "^/.+" },
+          "delivery": { "$comment": "Delivery mode for matched events. / 命中事件的投递模式。", "type": "string", "enum": ["fanout", "compete"] },
+          "agents": { "$comment": "Target Agent ids. / 目标 Agent ID。", "type": "array", "items": { "type": "string" } }
         },
         "additionalProperties": false
       }

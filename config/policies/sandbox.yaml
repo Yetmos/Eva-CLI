@@ -1,21 +1,40 @@
+# Lua sandbox policy.
+# Lua 沙箱策略。
+#
+# Agent and capability code can only be restricted further from this baseline.
+# Agent 与能力代码只能在此基线之上进一步收紧。
+
+# Lua sandbox root. / Lua 沙箱根节点。
 lua_sandbox:
+  # Lua standard libraries disabled inside the sandbox. / 沙箱内禁用的 Lua 标准库。
   disabled_libs:
     - os
     - io
     - debug
 
+  # Resource limits for sandboxed Lua execution. / 沙箱 Lua 执行的资源限制。
   limits:
+    # Maximum Lua memory budget in megabytes. / Lua 最大内存预算，单位 MB。
     memory_mb: 64
+    # Execution timeout in milliseconds. / 执行超时时间，单位毫秒。
     execution_timeout_ms: 30000
 
+  # Filesystem access from Lua code. / Lua 代码的文件系统访问。
   filesystem:
+    # Disabled by default; use host tools for controlled reads. / 默认关闭；通过宿主工具执行受控读取。
     enabled: false
 
+  # Network access from Lua code. / Lua 代码的网络访问。
   network:
+    # Disabled by default; use adapters for controlled network calls. / 默认关闭；通过 Adapter 执行受控网络调用。
     enabled: false
 
+  # Environment variable access from Lua code. / Lua 代码的环境变量访问。
   environment:
+    # Disabled to prevent secret leakage into Lua scripts. / 默认关闭，防止密钥泄漏到 Lua 脚本。
     enabled: false
 
+  # Validate Lua returns against declared output schemas. / 按声明的输出 schema 校验 Lua 返回值。
   return_schema_validation: true
+  # Validate emitted topics against Agent permissions. / 按 Agent 权限校验发布的 Topic。
   emitted_topic_validation: true

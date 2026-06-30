@@ -1,34 +1,60 @@
+# Local MCP server policy.
+# 本地 MCP Server 策略。
+#
+# This file controls which runtime operations external MCP clients may invoke.
+# 此文件控制外部 MCP client 可以调用哪些运行时操作。
+
+# MCP server exposure settings. / MCP server 暴露设置。
 mcp_server:
+  # Enable the local MCP server. / 启用本地 MCP server。
   enabled: true
+  # Bind only to localhost by default. / 默认仅绑定本机地址。
   bind: 127.0.0.1:8765
 
+  # Tool-level policies. / tool 级策略。
   tools:
+    # Invoke a registered Agent through the runtime. / 通过运行时调用已注册 Agent。
     agent.invoke:
+      # Enable this MCP tool. / 启用此 MCP tool。
       enabled: true
+      # Agents allowed for external invocation. / 允许外部调用的 Agent。
       allowed_agents:
         - root-agent
         - agent-a
+      # Tool timeout in milliseconds. / tool 超时时间，单位毫秒。
       timeout_ms: 120000
 
+    # Invoke an adapter capability through the runtime. / 通过运行时调用 Adapter 能力。
     adapter.invoke:
+      # Enable this MCP tool. / 启用此 MCP tool。
       enabled: true
+      # Capabilities allowed for external invocation. / 允许外部调用的能力。
       allowed_capabilities:
         - repo.analyze
         - code.review
         - chat.reply
+      # Adapter providers allowed for external invocation. / 允许外部调用的 Adapter provider。
       allowed_providers:
         - codex-cli
         - claude-api
+      # Tool timeout in milliseconds. / tool 超时时间，单位毫秒。
       timeout_ms: 120000
 
+    # List registered adapters. / 列出已注册 Adapter。
     adapter.list:
+      # Enable read-only listing. / 启用只读列表能力。
       enabled: true
 
+    # Check adapter health. / 检查 Adapter 健康状态。
     adapter.health:
+      # Enable read-only health checks. / 启用只读健康检查。
       enabled: true
 
+    # Emit runtime topics from external MCP clients. / 允许外部 MCP client 发布运行时 Topic。
     topic.emit:
+      # Disabled by default because topic injection is high risk. / 默认关闭，因为 Topic 注入风险较高。
       enabled: false
+      # Topic patterns that would be allowed if topic.emit is enabled. / 如果启用 topic.emit，则允许的 Topic pattern。
       allowed_topics:
         - /input/user
         - /task/**

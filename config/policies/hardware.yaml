@@ -1,19 +1,38 @@
+# Global hardware access policy.
+# 全局硬件访问策略。
+#
+# Hardware adapter manifests can only narrow this policy, not expand it.
+# 硬件 Adapter manifest 只能收紧此策略，不能放宽。
+
+# Hardware policy root. / 硬件策略根节点。
 hardware_policy:
+  # Enable hardware integration at the policy layer. / 在策略层启用硬件集成。
   enabled: true
+  # Default hardware execution boundary. / 默认硬件执行边界。
   defaults:
+    # Raw I/O is denied unless a future policy explicitly allows it. / 默认拒绝 raw I/O，除非后续策略显式允许。
     allow_raw_io: false
+    # Devices are claimed exclusively by default. / 默认独占设备。
     claim: exclusive
+    # Prevent hardware devices from bridging to the network. / 禁止硬件设备桥接到网络。
     network_bridge: false
+    # Global upper bound for hardware operation timeout. / 硬件操作超时的全局上限。
     max_timeout_ms: 10000
+  # Physical buses allowed for discovery. / 允许发现设备的物理总线。
   allowed_buses:
     - usb
     - hid
     - serial
+  # Hardware capabilities denied globally. / 全局禁止的硬件能力。
   denied_capabilities:
     - hardware.raw.write
+  # Hotplug safety rules. / 热插拔安全规则。
   hotplug:
+    # Require a manifest identity match before activation. / 激活前要求匹配 manifest 身份。
     require_identity_match: true
+    # Unknown devices are quarantined instead of attached. / 未知设备进入隔离而不是直接接入。
     quarantine_unknown_devices: true
+    # Topics emitted for hardware lifecycle changes. / 硬件生命周期变化时发布的 Topic。
     emit_events:
       - /hardware/connected
       - /hardware/disconnected

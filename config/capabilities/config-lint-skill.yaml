@@ -1,26 +1,54 @@
+# Lua capability manifest for configuration linting.
+# 配置检查 Lua 能力 manifest。
+#
+# This capability lets the runtime invoke a controlled Lua lint handler.
+# 此能力允许运行时调用受控的 Lua 配置检查 handler。
+
+# Stable capability manifest id. / 稳定的能力 manifest ID。
 id: config-lint-skill
+# Human-readable capability name. / 便于人工识别的能力名称。
 name: Configuration Lint Skill
+# Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。
 version: 1.0.0
+# Whether this capability can be registered. / 是否允许注册此能力。
 enabled: true
+# Lua capability means the handler runs inside the Lua host boundary. / lua_capability 表示 handler 在 Lua host 边界内运行。
 kind: lua_capability
+# Capability name requested by Agents or adapters. / Agent 或 Adapter 请求的能力名称。
 capability: config.lint
+# Lua handler binding. / Lua handler 绑定。
 handler:
+  # Handler script path relative to the workspace. / 相对工作区的 handler 脚本路径。
   script: config/capabilities/config-lint.lua
+  # Function exported by the handler script. / handler 脚本导出的函数。
   function: lint
+# Input contract for this capability. / 此能力的输入契约。
 input_schema:
+  # JSON-Schema-like object payload. / 类 JSON Schema 的对象载荷。
   type: object
+  # Supported input fields. / 支持的输入字段。
   properties:
     config_dir:
+      # Directory to lint. / 需要检查的配置目录。
       type: string
+# Output contract for this capability. / 此能力的输出契约。
 output_schema:
+  # JSON-Schema-like object payload. / 类 JSON Schema 的对象载荷。
   type: object
+  # Supported output fields. / 支持的输出字段。
   properties:
     valid:
+      # Whether the inspected configuration passed linting. / 被检查配置是否通过 lint。
       type: boolean
     findings:
+      # Structured lint findings. / 结构化 lint 结果列表。
       type: array
+# Permission boundary for this capability. / 此能力的权限边界。
 permissions:
+  # Host tools available to the Lua handler. / Lua handler 可用的宿主工具。
   tools:
     - config.read
+# Runtime limits for this capability. / 此能力的运行限制。
 limits:
+  # Handler timeout in milliseconds. / handler 超时时间，单位毫秒。
   timeout_ms: 30000

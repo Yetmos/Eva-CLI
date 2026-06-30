@@ -1,21 +1,40 @@
+# Topic routing table.
+# Topic 路由表。
+#
+# Routes map incoming topics to one or more target Agents.
+# 路由表把输入 Topic 映射到一个或多个目标 Agent。
+
+# Ordered route rules evaluated by the scheduler. / Scheduler 按顺序评估的路由规则。
 routes:
+  # User input enters through the root Agent. / 用户输入通过根 Agent 进入。
   - pattern: /input/user
+    # Fanout delivers the event to every listed Agent. / fanout 会把事件投递给列出的所有 Agent。
     delivery: fanout
+    # Target Agent ids. / 目标 Agent ID。
     agents:
       - root-agent
 
+  # System-level events are owned by the root Agent. / 系统级事件由根 Agent 处理。
   - pattern: /sys
+    # Fanout delivers the event to every listed Agent. / fanout 会把事件投递给列出的所有 Agent。
     delivery: fanout
+    # Target Agent ids. / 目标 Agent ID。
     agents:
       - root-agent
 
+  # Route branch handled by Agent A. / 由 Agent A 处理的路由分支。
   - pattern: /sys/route-a
+    # Fanout delivers the event to every listed Agent. / fanout 会把事件投递给列出的所有 Agent。
     delivery: fanout
+    # Target Agent ids. / 目标 Agent ID。
     agents:
       - agent-a
 
+  # Child route delegated to Agent A11 and Agent A12. / 分发给 Agent A11 与 Agent A12 的子路由。
   - pattern: /sys/route-a/route-aa
+    # Fanout lets both child Agents inspect the same event. / fanout 允许两个子 Agent 检查同一事件。
     delivery: fanout
+    # Target Agent ids. / 目标 Agent ID。
     agents:
       - agent-a11
       - agent-a12

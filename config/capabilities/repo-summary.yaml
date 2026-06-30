@@ -1,28 +1,55 @@
+# Adapter-backed capability manifest for repository summaries.
+# 基于 Adapter 的仓库摘要能力 manifest。
+#
+# This capability maps repository analysis requests to the default Codex CLI provider.
+# 此能力把仓库分析请求映射到默认 Codex CLI provider。
+
+# Stable capability manifest id. / 稳定的能力 manifest ID。
 id: repo-summary
+# Human-readable capability name. / 便于人工识别的能力名称。
 name: Repository Summary
+# Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。
 version: 1.0.0
+# Whether this capability can be registered. / 是否允许注册此能力。
 enabled: true
+# Adapter capability delegates execution to an adapter provider. / adapter_capability 将执行委托给 Adapter provider。
 kind: adapter_capability
+# Runtime capability exposed to callers. / 暴露给调用方的运行时能力。
 capability: repo.analyze
+# Default provider selected when callers do not specify one. / 调用方未指定 provider 时使用的默认 provider。
 default_provider: codex-cli
+# Input contract for this capability. / 此能力的输入契约。
 input_schema:
+  # JSON-Schema-like object payload. / 类 JSON Schema 的对象载荷。
   type: object
+  # Supported input fields. / 支持的输入字段。
   properties:
     scope:
+      # Repository analysis scope. / 仓库分析范围。
       type: string
       enum:
         - workspace
         - current_diff
+# Output contract for this capability. / 此能力的输出契约。
 output_schema:
+  # JSON-Schema-like object payload. / 类 JSON Schema 的对象载荷。
   type: object
+  # Supported output fields. / 支持的输出字段。
   properties:
     summary:
+      # Human-readable repository summary. / 便于人工阅读的仓库摘要。
       type: string
+# Permission boundary for this capability. / 此能力的权限边界。
 permissions:
+  # Adapter provider and capability allowlists. / Adapter provider 与能力白名单。
   adapters:
+    # Providers that may serve this capability. / 可承载此能力的 provider。
     providers:
       - codex-cli
+    # Adapter capabilities required for invocation. / 调用所需的 Adapter 能力。
     capabilities:
       - repo.analyze
+# Runtime limits for this capability. / 此能力的运行限制。
 limits:
+  # Analysis timeout in milliseconds. / 分析超时时间，单位毫秒。
   timeout_ms: 120000

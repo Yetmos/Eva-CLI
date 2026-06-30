@@ -1,60 +1,105 @@
+# Adapter manifest for exposing a trusted Codex workflow skill.
+# 用于暴露可信 Codex 工作流 Skill 的 Adapter manifest。
+#
+# Skill adapters wrap workflow skills behind schemas and policy gates.
+# Skill Adapter 通过 schema 和策略门禁封装工作流 Skill。
+
+# Stable adapter id used by routing and policy allowlists. / 路由和策略白名单使用的稳定 Adapter ID。
 id: code-review-skill
+# Human-readable adapter name. / 便于人工识别的 Adapter 名称。
 name: Code Review Skill Adapter
+# Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。
 version: 1.0.0
+# Whether this adapter can be registered at runtime. / 是否允许运行时注册此 Adapter。
 enabled: true
+# Skill transport invokes a controlled workflow skill instead of an external process. / Skill transport 调用受控工作流 Skill，而不是任意外部进程。
 transport: skill
 
+# Trusted skill binding and schemas. / 可信 Skill 绑定与 schema。
 skill:
+  # Skill source namespace. / Skill 来源命名空间。
   source: codex
+  # Skill identifier in the source namespace. / 来源命名空间中的 Skill ID。
   id: code-review
+  # Trusted local path to the skill instructions. / 可信本地 Skill 指令路径。
   path: ~/.codex/skills/code-review/SKILL.md
+  # Workflow skills execute under adapter control. / 工作流 Skill 在 Adapter 控制下执行。
   kind: workflow_skill
+  # Runtime gate allowed for this skill adapter. / 此 Skill Adapter 允许的运行时门禁。
   runtime_gate: normal
+  # Entry point declaration for the host runtime. / 供宿主运行时使用的入口声明。
   entry:
+    # Codex-native skill entry type. / Codex 原生 Skill 入口类型。
     type: codex_skill
+  # Input contract required before invocation. / 调用前必须满足的输入契约。
   input_schema:
+    # JSON-Schema-like object payload. / 类 JSON Schema 的对象载荷。
     type: object
+    # Required request fields. / 必填请求字段。
     required:
       - scope
+    # Field definitions for user input. / 用户输入字段定义。
     properties:
       scope:
+        # Review target scope. / 评审目标范围。
         type: string
         enum:
           - current_diff
           - workspace
       severity:
+        # Minimum severity filter. / 最低严重级别过滤条件。
         type: string
         enum:
           - all
           - major
           - critical
+  # Output contract produced by the skill adapter. / Skill Adapter 输出契约。
   output_schema:
+    # JSON-Schema-like object payload. / 类 JSON Schema 的对象载荷。
     type: object
+    # Required response fields. / 必填响应字段。
     required:
       - summary
       - findings
+    # Field definitions for returned data. / 返回数据字段定义。
     properties:
       summary:
+        # Human-readable review summary. / 便于人工阅读的评审摘要。
         type: string
       findings:
+        # Structured finding list. / 结构化问题列表。
         type: array
 
+# Capabilities exposed through this adapter. / 通过此 Adapter 暴露的能力。
 capabilities:
   - workflow.code_review
 
+# Permission boundary for adapter execution. / Adapter 执行权限边界。
 permissions:
+  # Code review needs workspace reads. / 代码评审需要读取工作区。
   read_workspace: true
+  # Review must not modify workspace files. / 评审不得修改工作区文件。
   write_workspace: false
+  # This workflow does not require network access. / 此工作流不需要网络权限。
   network: false
+  # Shell execution is not required. / 不需要 shell 执行权限。
   shell: false
+  # No environment variables are injected. / 不注入环境变量。
   env: []
 
+# Runtime limits for this adapter. / 此 Adapter 的运行限制。
 limits:
+  # Request timeout in milliseconds. / 请求超时时间，单位毫秒。
   timeout_ms: 120000
+  # Keep skill execution single-flight. / Skill 执行保持单并发。
   max_concurrency: 1
+  # Maximum prompt payload size in bytes. / 最大 prompt 载荷字节数。
   max_prompt_bytes: 100000
 
+# Routing preferences when several adapters can serve the same capability. / 多个 Adapter 可处理同一能力时的路由偏好。
 routing:
+  # Higher priority wins route selection. / 数值越高，路由优先级越高。
   priority: 60
+  # Capabilities this adapter should serve by default. / 默认由此 Adapter 承载的能力。
   default_for:
     - workflow.code_review

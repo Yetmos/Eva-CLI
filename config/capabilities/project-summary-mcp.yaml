@@ -1,28 +1,57 @@
+# MCP-backed capability manifest for project summary data.
+# 基于 MCP 的项目摘要能力 manifest。
+#
+# This capability maps a controlled GitHub MCP tool call into the runtime registry.
+# 此能力把受控的 GitHub MCP tool 调用映射到运行时注册表。
+
+# Stable capability manifest id. / 稳定的能力 manifest ID。
 id: project-summary-mcp
+# Human-readable capability name. / 便于人工识别的能力名称。
 name: Project Summary MCP Tool
+# Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。
 version: 1.0.0
+# Whether this capability can be registered. / 是否允许注册此能力。
 enabled: true
+# MCP tool capability delegates to an MCP provider. / mcp_tool 能力委托给 MCP provider。
 kind: mcp_tool
+# Runtime capability exposed to callers. / 暴露给调用方的运行时能力。
 capability: mcp.tool.call
+# Provider adapter that hosts the MCP server. / 承载 MCP server 的 provider Adapter。
 provider: github-mcp
+# Allowlisted MCP tool name. / 白名单中的 MCP tool 名称。
 tool: list_issues
+# Input contract for this capability. / 此能力的输入契约。
 input_schema:
+  # JSON-Schema-like object payload. / 类 JSON Schema 的对象载荷。
   type: object
+  # Supported input fields. / 支持的输入字段。
   properties:
     owner:
+      # GitHub organization or user name. / GitHub 组织或用户名。
       type: string
     repo:
+      # GitHub repository name. / GitHub 仓库名。
       type: string
+# Output contract for this capability. / 此能力的输出契约。
 output_schema:
+  # JSON-Schema-like object payload. / 类 JSON Schema 的对象载荷。
   type: object
+  # Supported output fields. / 支持的输出字段。
   properties:
     items:
+      # Returned issue-like records from the MCP tool. / MCP tool 返回的 issue 类记录。
       type: array
+# Permission boundary for this capability. / 此能力的权限边界。
 permissions:
+  # Adapter provider and capability allowlists. / Adapter provider 与能力白名单。
   adapters:
+    # Providers that may serve this capability. / 可承载此能力的 provider。
     providers:
       - github-mcp
+    # Adapter capabilities required for invocation. / 调用所需的 Adapter 能力。
     capabilities:
       - mcp.tool.call
+# Runtime limits for this capability. / 此能力的运行限制。
 limits:
+  # Tool call timeout in milliseconds. / tool 调用超时时间，单位毫秒。
   timeout_ms: 60000

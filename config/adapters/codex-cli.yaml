@@ -1,33 +1,60 @@
+# Adapter manifest for the local Codex CLI.
+# 本地 Codex CLI 的 Adapter manifest。
+#
+# The adapter exposes repository analysis, review, and generation capabilities.
+# 此 Adapter 暴露仓库分析、代码评审和代码生成能力。
+
+# Stable adapter id used by routing and policy allowlists. / 路由和策略白名单使用的稳定 Adapter ID。
 id: codex-cli
+# Human-readable adapter name. / 便于人工识别的 Adapter 名称。
 name: Codex CLI Adapter
+# Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。
 version: 1.0.0
+# Whether this adapter can be registered at runtime. / 是否允许运行时注册此 Adapter。
 enabled: true
+# Stdio transport starts a local command with structured I/O. / stdio transport 启动本地命令并使用结构化输入输出。
 transport: stdio
 
+# Executable name resolved by the host environment. / 由宿主环境解析的可执行文件名称。
 command: codex
+# Command arguments passed without shell interpolation. / 不经过 shell 插值的命令参数。
 args:
   - exec
   - --json
 
+# Capabilities exposed through this adapter. / 通过此 Adapter 暴露的能力。
 capabilities:
   - repo.analyze
   - code.review
   - code.generate
 
+# Permission boundary for adapter execution. / Adapter 执行权限边界。
 permissions:
+  # Repository analysis and generation may read workspace files. / 仓库分析和生成可能需要读取工作区文件。
   read_workspace: true
+  # Code generation may write workspace files when policy allows. / 策略允许时，代码生成可写入工作区文件。
   write_workspace: true
+  # Keep the default local adapter offline unless explicitly changed. / 默认本地 Adapter 不开启网络权限。
   network: false
+  # Do not grant arbitrary shell access through this adapter. / 不通过此 Adapter 授予任意 shell 权限。
   shell: false
+  # No environment variables are injected by default. / 默认不注入环境变量。
   env: []
 
+# Runtime limits for this adapter. / 此 Adapter 的运行限制。
 limits:
+  # Request timeout in milliseconds. / 请求超时时间，单位毫秒。
   timeout_ms: 300000
+  # Keep CLI execution single-flight. / CLI 执行保持单并发。
   max_concurrency: 1
+  # Maximum prompt payload size in bytes. / 最大 prompt 载荷字节数。
   max_prompt_bytes: 200000
 
+# Routing preferences when several adapters can serve the same capability. / 多个 Adapter 可处理同一能力时的路由偏好。
 routing:
+  # Higher priority wins route selection. / 数值越高，路由优先级越高。
   priority: 100
+  # Capabilities this adapter should serve by default. / 默认由此 Adapter 承载的能力。
   default_for:
     - repo.analyze
     - code.review

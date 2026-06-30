@@ -2,26 +2,28 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://eva-cli.local/schemas/eva.schema.json",
   "title": "Eva runtime configuration",
+  "$comment": "Schema for the project-level Eva runtime configuration. / 项目级 Eva 运行时配置的 schema。",
   "type": "object",
   "required": ["runtime", "eventbus", "scheduler", "observability", "config"],
   "properties": {
     "runtime": {
+      "$comment": "Runtime paths, environment, and hot-reload settings. / 运行时路径、环境和热更新设置。",
       "type": "object",
       "required": ["env", "workspace", "hot_reload"],
       "properties": {
-        "env": { "type": "string" },
-        "workspace": { "type": "string" },
-        "data_dir": { "type": "string" },
-        "script_dir": { "type": "string" },
-        "adapter_dir": { "type": "string" },
-        "hot_reload": { "type": "boolean" }
+        "env": { "$comment": "Current environment name. / 当前环境名称。", "type": "string" },
+        "workspace": { "$comment": "Workspace root used to resolve relative paths. / 用于解析相对路径的工作区根目录。", "type": "string" },
+        "data_dir": { "$comment": "Runtime data directory for state, logs, and indexes. / 状态、日志和索引的运行时数据目录。", "type": "string" },
+        "script_dir": { "$comment": "Lua Agent script root. / Lua Agent 脚本根目录。", "type": "string" },
+        "adapter_dir": { "$comment": "Adapter manifest root. / Adapter manifest 根目录。", "type": "string" },
+        "hot_reload": { "$comment": "Whether reloadable runtime configuration is allowed. / 是否允许可热更新的运行时配置。", "type": "boolean" }
       },
       "additionalProperties": true
     },
-    "eventbus": { "type": "object" },
-    "scheduler": { "type": "object" },
-    "observability": { "type": "object" },
-    "config": { "type": "object" }
+    "eventbus": { "$comment": "EventBus publication, recovery, and dead-letter settings. / EventBus 发布、恢复和死信设置。", "type": "object" },
+    "scheduler": { "$comment": "Default topic scheduling and delivery behavior. / Topic 调度与投递默认行为。", "type": "object" },
+    "observability": { "$comment": "Logging, tracing, metrics, and audit settings. / 日志、追踪、指标和审计设置。", "type": "object" },
+    "config": { "$comment": "Pointers to split configuration roots. / 拆分配置根目录的位置。", "type": "object" }
   },
   "additionalProperties": true
 }

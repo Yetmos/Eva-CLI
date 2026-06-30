@@ -1,42 +1,83 @@
+# Hardware adapter manifest for the primary scale device.
+# 主秤设备的硬件 Adapter manifest。
+#
+# Placeholder USB identifiers must be replaced before enabling the adapter.
+# 启用此 Adapter 前必须替换占位 USB 标识。
+
+# Stable adapter id used by routing and policy allowlists. / 路由和策略白名单使用的稳定 Adapter ID。
 id: scale-main
+# Human-readable adapter name. / 便于人工识别的 Adapter 名称。
 name: Main Scale Hardware Adapter
+# Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。
 version: 1.0.0
+# Disabled until real device identifiers are configured. / 在配置真实设备标识前保持禁用。
 enabled: false
+# Hardware transport binds to a physical device through the runtime. / hardware transport 通过运行时绑定物理设备。
 transport: hardware
 
+# Device discovery, identity, protocol, and hotplug settings. / 设备发现、身份、协议和热插拔设置。
 hardware:
+  # Physical bus used to discover the scale. / 用于发现秤设备的物理总线。
   bus: usb
+  # Match rule for selecting the intended device. / 用于选择目标设备的匹配规则。
   match:
+    # USB vendor id placeholder. / USB vendor id 占位值。
     vendor_id: "0000"
+    # USB product id placeholder. / USB product id 占位值。
     product_id: "0000"
+    # Expected serial number placeholder. / 期望序列号占位值。
     serial: EVA-SCALE-PLACEHOLDER
+  # Logical identity exposed to the runtime. / 暴露给运行时的逻辑身份。
   identity:
+    # Device class used by capability routing. / 能力路由使用的设备类别。
     device_class: scale
+    # Stable logical device name. / 稳定的逻辑设备名称。
     logical_name: main-scale
+  # Wire protocol settings for the device. / 设备线协议设置。
   protocol:
+    # Device sends line-delimited JSON. / 设备发送按行分隔的 JSON。
     kind: line_json
+    # Serial baud rate when applicable. / 适用时使用的串口波特率。
     baud_rate: 115200
+  # Reconnect and ownership behavior. / 重连与设备占用行为。
   hotplug:
+    # Claim the device exclusively while active. / 活跃期间独占该设备。
     claim: exclusive
+    # Backoff before reconnect attempts in milliseconds. / 重连尝试前的退避时间，单位毫秒。
     reconnect_backoff_ms: 1000
+    # Maximum reconnect attempts before surfacing failure. / 暴露失败前的最大重连次数。
     max_reconnect_attempts: 5
 
+# Capabilities exposed through this adapter. / 通过此 Adapter 暴露的能力。
 capabilities:
   - hardware.scale.read
 
+# Permission boundary for adapter execution. / Adapter 执行权限边界。
 permissions:
+  # Hardware reads do not need workspace access. / 硬件读取不需要工作区访问。
   read_workspace: false
+  # Hardware reads must not write workspace files. / 硬件读取不得写入工作区文件。
   write_workspace: false
+  # No network bridge is allowed for this device. / 此设备不允许网络桥接。
   network: false
+  # No shell execution is required. / 不需要 shell 执行权限。
   shell: false
+  # No environment variables are injected. / 不注入环境变量。
   env: []
 
+# Runtime limits for this adapter. / 此 Adapter 的运行限制。
 limits:
+  # Hardware read timeout in milliseconds. / 硬件读取超时时间，单位毫秒。
   timeout_ms: 5000
+  # Keep physical device access single-flight. / 物理设备访问保持单并发。
   max_concurrency: 1
+  # Maximum request payload size in bytes. / 最大请求载荷字节数。
   max_prompt_bytes: 4096
 
+# Routing preferences when several adapters can serve the same capability. / 多个 Adapter 可处理同一能力时的路由偏好。
 routing:
+  # Higher priority wins route selection. / 数值越高，路由优先级越高。
   priority: 50
+  # Capabilities this adapter should serve by default. / 默认由此 Adapter 承载的能力。
   default_for:
     - hardware.scale.read

@@ -1,20 +1,39 @@
+# Adapter manifest for the GitHub MCP server.
+# GitHub MCP Server 的 Adapter manifest。
+#
+# MCP adapters expose selected tools, resources, and prompts through allowlists.
+# MCP Adapter 通过白名单暴露选定的 tool、resource 和 prompt。
+
+# Stable adapter id used by routing and policy allowlists. / 路由和策略白名单使用的稳定 Adapter ID。
 id: github-mcp
+# Human-readable adapter name. / 便于人工识别的 Adapter 名称。
 name: GitHub MCP Adapter
+# Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。
 version: 1.0.0
+# Whether this adapter can be registered at runtime. / 是否允许运行时注册此 Adapter。
 enabled: true
+# MCP transport connects to a Model Context Protocol server. / MCP transport 连接 Model Context Protocol server。
 transport: mcp
 
+# MCP server launch and allowlist settings. / MCP server 启动方式与白名单设置。
 mcp:
+  # Launch the MCP server as a stdio subprocess. / 以 stdio 子进程启动 MCP server。
   server_transport: stdio
+  # MCP server executable name. / MCP server 可执行文件名称。
   command: github-mcp-server
+  # Command arguments passed without shell interpolation. / 不经过 shell 插值的命令参数。
   args: []
+  # Tools exposed to the runtime. / 暴露给运行时的 tool 白名单。
   tool_allowlist:
     - create_issue
     - list_issues
     - get_pull_request
+  # No MCP resources are exposed by default. / 默认不暴露 MCP resource。
   resource_allowlist: []
+  # No MCP prompts are exposed by default. / 默认不暴露 MCP prompt。
   prompt_allowlist: []
 
+# Capabilities exposed through this adapter. / 通过此 Adapter 暴露的能力。
 capabilities:
   - mcp.tool.call
   - mcp.resource.read
@@ -23,21 +42,34 @@ capabilities:
   - github.issue.list
   - github.pr.get
 
+# Permission boundary for adapter execution. / Adapter 执行权限边界。
 permissions:
+  # GitHub MCP calls do not need workspace reads. / GitHub MCP 调用不需要读取工作区。
   read_workspace: false
+  # GitHub MCP calls must not write workspace files. / GitHub MCP 调用不得写入工作区文件。
   write_workspace: false
+  # Network access is required for GitHub API calls. / 调用 GitHub API 需要网络权限。
   network: true
+  # Shell execution is limited to launching the MCP server, not arbitrary shell use. / shell 不开放给任意命令，仅由 transport 启动 MCP server。
   shell: false
+  # Allowed environment variables; store only names here, never secrets. / 允许注入的环境变量；这里只保存名称，不保存密钥。
   env:
     - GITHUB_TOKEN
 
+# Runtime limits for this adapter. / 此 Adapter 的运行限制。
 limits:
+  # Request timeout in milliseconds. / 请求超时时间，单位毫秒。
   timeout_ms: 60000
+  # Maximum concurrent MCP requests. / 最大 MCP 并发请求数。
   max_concurrency: 2
+  # Maximum prompt payload size in bytes. / 最大 prompt 载荷字节数。
   max_prompt_bytes: 20000
 
+# Routing preferences when several adapters can serve the same capability. / 多个 Adapter 可处理同一能力时的路由偏好。
 routing:
+  # Higher priority wins route selection. / 数值越高，路由优先级越高。
   priority: 70
+  # Capabilities this adapter should serve by default. / 默认由此 Adapter 承载的能力。
   default_for:
     - github.issue.create
     - github.issue.list

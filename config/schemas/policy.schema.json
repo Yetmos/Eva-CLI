@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://eva-cli.local/schemas/policy.schema.json",
   "title": "Eva policy configuration",
+  "$comment": "Schema for policy files; policy documents are intentionally extensible by domain. / 策略文件 schema；策略文档按领域保持可扩展。",
   "type": "object",
   "minProperties": 1,
   "additionalProperties": true

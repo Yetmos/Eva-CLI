@@ -1,33 +1,61 @@
+# Global adapter policy.
+# 全局 Adapter 策略。
+#
+# Effective permissions are the intersection of global policy, adapter manifest, and caller permissions.
+# 最终权限由全局策略、Adapter manifest 和调用方权限取交集得到。
+
+# Adapter policy root. / Adapter 策略根节点。
 adapter_policy:
+  # Default deny-oriented execution boundary. / 默认偏拒绝的执行边界。
   defaults:
+    # Network is denied unless an adapter explicitly needs it and policy allows it. / 默认拒绝网络，除非 Adapter 明确需要且策略允许。
     network: false
+    # Arbitrary shell access is denied by default. / 默认拒绝任意 shell 权限。
     shell: false
+    # Workspace reads are denied by default. / 默认拒绝读取工作区。
     read_workspace: false
+    # Workspace writes are denied by default. / 默认拒绝写入工作区。
     write_workspace: false
+    # Global upper bound for adapter request timeout. / Adapter 请求超时的全局上限。
     max_timeout_ms: 120000
 
+  # Adapter ids allowed to request workspace write access. / 允许请求工作区写权限的 Adapter ID。
   allow_write_workspace:
     - codex-cli
 
+  # Capabilities denied regardless of individual adapter manifests. / 无论单个 Adapter 如何声明都禁止的能力。
   deny_capabilities:
     - shell.execute
     - deployment.run
 
+  # Policy for workflow skill adapters. / 工作流 Skill Adapter 策略。
   skill:
+    # Skill adapters must declare input and output schemas. / Skill Adapter 必须声明输入和输出 schema。
     require_schema: true
+    # User-local skills are not exposed unless explicitly approved. / 未显式批准时不暴露用户本地 Skill。
     allow_user_local_skills: false
+    # Runtime gates allowed for normal adapter registration. / 允许注册为普通 Adapter 的运行时门禁。
     allowed_runtime_gates:
       - normal
+    # Skill kinds that must not be registered as normal adapters. / 不得注册为普通 Adapter 的 Skill 类型。
     deny_kinds:
       - runtime_worker
 
+  # Retry policy by capability. / 按能力划分的重试策略。
   retry:
+    # Default retry behavior for capabilities without overrides. / 未配置覆盖项的能力使用的默认重试行为。
     default:
+      # Zero means no automatic retry. / 0 表示不自动重试。
       max_attempts: 0
+    # Capability-specific retry overrides. / 针对具体能力的重试覆盖项。
     capabilities:
       repo.analyze:
+        # Repository analysis can retry transient adapter failures. / 仓库分析可重试瞬时 Adapter 失败。
         max_attempts: 2
+        # Delay between attempts in milliseconds. / 两次尝试之间的退避时间，单位毫秒。
         backoff_ms: 1000
       code.review:
+        # Code review gets one retry for transient adapter failures. / 代码评审可针对瞬时 Adapter 失败重试一次。
         max_attempts: 1
+        # Delay between attempts in milliseconds. / 两次尝试之间的退避时间，单位毫秒。
         backoff_ms: 1000

@@ -2,21 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://eva-cli.local/schemas/adapter.schema.json",
   "title": "Eva Adapter manifest",
+  "$comment": "Schema for external, skill, MCP, and hardware adapter manifests. / 外部、Skill、MCP 和硬件 Adapter manifest 的 schema。",
   "type": "object",
   "required": ["id", "name", "version", "enabled", "transport", "capabilities", "permissions", "limits", "routing"],
   "properties": {
-    "id": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$" },
-    "name": { "type": "string" },
-    "version": { "type": "string" },
-    "enabled": { "type": "boolean" },
+    "id": { "$comment": "Stable adapter id used by routing and policy allowlists. / 路由和策略白名单使用的稳定 Adapter ID。", "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$" },
+    "name": { "$comment": "Human-readable adapter name. / 便于人工识别的 Adapter 名称。", "type": "string" },
+    "version": { "$comment": "Manifest version for compatibility checks. / 用于兼容性检查的 manifest 版本。", "type": "string" },
+    "enabled": { "$comment": "Whether this adapter can be registered. / 是否允许注册此 Adapter。", "type": "boolean" },
     "transport": {
+      "$comment": "Adapter transport implementation. / Adapter transport 实现类型。",
       "type": "string",
       "enum": ["builtin", "stdio", "http", "eventbus", "mcp", "skill", "hardware", "lua_capability"]
     },
-    "capabilities": { "type": "array", "items": { "type": "string" } },
-    "permissions": { "type": "object" },
-    "limits": { "type": "object" },
-    "routing": { "type": "object" }
+    "capabilities": { "$comment": "Capabilities exposed through this adapter. / 通过此 Adapter 暴露的能力。", "type": "array", "items": { "type": "string" } },
+    "permissions": { "$comment": "Permission boundary for adapter execution. / Adapter 执行权限边界。", "type": "object" },
+    "limits": { "$comment": "Runtime limits for this adapter. / 此 Adapter 的运行限制。", "type": "object" },
+    "routing": { "$comment": "Routing preferences for capability selection. / 能力选择时的路由偏好。", "type": "object" }
   },
   "additionalProperties": true
 }

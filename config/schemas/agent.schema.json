@@ -2,23 +2,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://eva-cli.local/schemas/agent.schema.json",
   "title": "Eva Agent manifest",
+  "$comment": "Schema for a single Lua Agent manifest. / 单个 Lua Agent manifest 的 schema。",
   "type": "object",
   "required": ["id", "enabled", "script", "subscriptions", "permissions"],
   "properties": {
-    "id": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$" },
-    "enabled": { "type": "boolean" },
-    "parent": { "type": "string" },
-    "children": { "type": "array", "items": { "type": "string" } },
-    "script": { "type": "string" },
-    "script_version": { "type": "string" },
+    "id": { "$comment": "Stable Agent id used by routes and state namespaces. / routes 和状态命名空间使用的稳定 Agent ID。", "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$" },
+    "enabled": { "$comment": "Whether this Agent can be registered. / 是否允许注册此 Agent。", "type": "boolean" },
+    "parent": { "$comment": "Parent Agent id for management intent. / 用于表达管理意图的父 Agent ID。", "type": "string" },
+    "children": { "$comment": "Declared child Agents for planning and routing intent. / 用于表达计划和路由意图的子 Agent 声明。", "type": "array", "items": { "type": "string" } },
+    "script": { "$comment": "Lua entry script relative to the Agent directory. / 相对 Agent 目录的 Lua 入口脚本。", "type": "string" },
+    "script_version": { "$comment": "Script generation marker for hot reload and audit. / 热更新和审计使用的脚本 generation 标记。", "type": "string" },
     "subscriptions": {
+      "$comment": "Topic subscriptions consumed by this Agent. / 此 Agent 消费的 Topic 订阅。",
       "type": "array",
       "items": { "type": "string", "pattern": "^/.+" }
     },
-    "inbox": { "type": "object" },
-    "timeout": { "type": "object" },
-    "state": { "type": "object" },
-    "permissions": { "type": "object" }
+    "inbox": { "$comment": "Inbox backpressure settings. / Inbox 背压设置。", "type": "object" },
+    "timeout": { "$comment": "Per-event and tool-call timeouts. / 单事件和工具调用超时。", "type": "object" },
+    "state": { "$comment": "Durable state backend and namespace. / 持久状态后端和命名空间。", "type": "object" },
+    "permissions": { "$comment": "Explicit Agent permission boundary. / Agent 的显式权限边界。", "type": "object" }
   },
   "additionalProperties": true
 }
