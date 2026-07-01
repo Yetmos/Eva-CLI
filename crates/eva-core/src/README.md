@@ -1,9 +1,18 @@
-# eva-core/src / 基础契约源码
+# eva-core/src
 
-## 中文
+This directory contains side-effect-free data contracts shared across Eva
+modules.
 
-这里保存跨模块共享的纯数据契约源码。实现时应保持无副作用，不引入运行时装配、文件系统、网络、Lua、MCP 或 CLI 依赖。
+Implemented contracts:
 
-## English
+- `error`: `EvaError`, `ErrorKind`, provider codes, and non-sensitive context.
+- `topic`: concrete `Topic`, `TopicPattern`, `*` and trailing `**` matching.
+- `ids`: strong ID newtypes for Agents, Adapters, Capabilities, Requests,
+  Events, and Generations.
+- `capability`: dot-separated `CapabilityName`, provider hints, and
+  `CapabilityRef`.
+- `event`: `Event`, targets, opaque payloads, metadata, and trace context.
+- `invoke`: invoke targets, requests, responses, statuses, and metadata.
 
-This directory contains pure data contracts shared across modules. Keep implementation side-effect free and avoid runtime wiring, filesystem, network, Lua, MCP, or CLI dependencies.
+Keep this crate free of runtime wiring, file access, network access, shell
+execution, databases, Lua, MCP, hardware I/O, and provider-private protocols.

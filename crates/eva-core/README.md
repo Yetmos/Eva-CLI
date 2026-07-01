@@ -6,7 +6,23 @@
 
 `eva-core` 是 Eva-CLI Rust workspace 的基础契约 crate。它只定义跨模块共享、长期稳定、无副作用的数据结构和纯逻辑，不负责启动 runtime、执行 Lua、访问网络、读写文件、连接数据库、调度任务或调用任何 provider。
 
-当前 `src/` 中的 `topic`、`ids`、`capability`、`event`、`invoke`、`error` 都还是占位模块。本 README 定义这些占位模块应逐步落成的完整逻辑功能、实现顺序、修改粒度和验收标准。
+当前 `src/` 中的 `topic`、`ids`、`capability`、`event`、`invoke`、`error` 已完成第一轮基础契约实现。本 README 同时保留设计目标、实现顺序、修改粒度和验收标准，后续下游接入应继续按这些边界推进。
+
+## 当前实现进度
+
+更新时间：2026-07-01
+
+| 范围 | 状态 | 已完成 | 还差/后续 |
+| --- | --- | --- | --- |
+| `error` | 已完成 | `ErrorKind`、`EvaError`、默认 retryable、provider code、非敏感 context、`Display` 和 `std::error::Error`。 | 暂无本模块缺口；后续下游统一改用 `EvaError`。 |
+| `topic` | 已完成 | `Topic` 解析与校验、`TopicPattern` 解析、`*` 单段匹配、尾部 `**` 匹配、exact pattern 转 Topic。 | 暂无本模块缺口；后续 `eva-scheduler` 接入匹配逻辑。 |
+| `ids` | 已完成 | `AgentId`、`AdapterId`、`CapabilityId`、`RequestId`、`EventId`、`GenerationId` newtype，共享稳定 ID 校验。 | 暂无本模块缺口；不包含 ID 分配策略。 |
+| `capability` | 已完成 | `CapabilityName` 点分段校验、namespace 查询、`ProviderHint`、`CapabilityRef`。 | 暂无本模块缺口；不包含 provider registry 或路由决策。 |
+| `event` | 已完成 | `Event`、`EventTarget`、`EventPayload`、`EventMetadata`、`TraceContext`、父子事件链路传播。 | payload 目前是 `Empty/Text/Bytes`；如需 JSON/serde，应单独评审加入依赖。 |
+| `invoke` | 已完成 | `InvokeTarget`、`InvokeRequest`、`InvokeResponse`、`InvokeStatus`、`InvokeMetadata`，含 accepted/completed/failed/cancelled/timeout 构造器。 | 不执行真实 Agent/Adapter 调用；执行层属于 runtime/adapter crate。 |
+| `lib.rs` 公共出口 | 已完成 | 稳定 re-export：`EvaError`、`Topic`、ID、Capability、Event、Invoke 类型可通过 `eva_core::*` 使用。 | 下游 crate 仍需逐步迁移到这些公共类型。 |
+| `src/README.md` | 已完成 | 已更新源码目录说明，列出实现契约与禁止事项。 | 根 README 后续应随下游接入状态继续更新。 |
+| 验证 | 已完成 | `cargo fmt --check`、`cargo test -p eva-core`、`cargo check --workspace`、`cargo doc -p eva-core --no-deps`、`cargo test --workspace` 均已通过。 | 后续接入下游时需重新运行 workspace 级检查。 |
 
 ## 目标与非目标
 

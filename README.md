@@ -2,12 +2,13 @@
 
 > Language: English | [简体中文](README.zh-CN.md)
 
-Eva-CLI is currently in the architecture and specification consolidation stage.
-The repository mainly contains design documents under `docs/`; it is not yet a
-final runnable CLI implementation. The website uses English as the default
-public entry with stable slugs, while the Simplified Chinese documents currently
-remain the source of truth for detailed architecture and implementation-spec
-content.
+Eva-CLI is currently moving from architecture and specification consolidation
+into executable Rust implementation. The repository is not yet a final runnable
+CLI, but it now contains the Rust workspace scaffold, configuration examples,
+schemas, and the first implemented foundation contract crate. The website uses
+English as the default public entry with stable slugs, while the Simplified
+Chinese documents remain the source of truth for some detailed architecture and
+implementation-spec content.
 
 Website:
 
@@ -15,70 +16,66 @@ Website:
 - https://www.Eva-CLI.com
 
 The website source is maintained in [website/](website/), documentation is
-maintained in [docs/](docs/), and future Rust source code will live in
-[src/](src/) and [crates/](crates/).
+maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
+[crates/](crates/).
 
-## Current Progress
+## Current Project Progress
 
-Eva-CLI has completed most of the architecture and design-document stage for
-the first implementation cycle. The next milestone is to move from documents
-into executable structure:
+Updated: 2026-07-01
 
-1. create the Rust project and module layout;
-2. define the first manifest, event, policy, error, and Lua host API contracts;
-3. build a minimum runnable CLI skeleton;
-4. implement the minimum end-to-end Runtime loop;
-5. expand one module at a time under test coverage.
+Eva-CLI has moved past a design-only repository. It now has a compileable Rust
+workspace, module boundary scaffolding, configuration examples and schemas, and
+the first real foundation contract crate (`eva-core`). Most runtime crates are
+still placeholders that define ownership boundaries but do not yet implement
+behavior.
+
+| Area | Status | Evidence | Remaining Work |
+| --- | --- | --- | --- |
+| Architecture and docs | Mostly complete for the first implementation cycle | English and Simplified Chinese docs, diagrams, website pages, roadmap, risk review | Keep docs synchronized with implementation; turn remaining design assumptions into executable contracts |
+| Website and docs publishing | Implemented | Static website source, localized content, validation/build scripts | Continue content maintenance and CI verification as product behavior changes |
+| Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 19 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
+| Configuration examples and schemas | Partial | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, and JSON schemas | Wire schema loading and validation into `eva-config` and CLI commands |
+| `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with 47 unit tests and stable re-exports | Downstream crates still need to adopt these public types; serde/JSON support should be reviewed separately |
+| `eva-cli` | Scaffold only | Root binary delegates to `eva-cli`; command modules exist | Implement real `run`, `validate`, `doctor`, `emit`, `inspect`, agent, adapter, and capability commands |
+| Runtime composition | Scaffold only | `eva-runtime` crate and modules exist | Build service wiring, startup/shutdown, config loading, and runtime lifecycle |
+| EventBus and Scheduler | Scaffold only | `eva-eventbus` and `eva-scheduler` crates exist | Implement publish/recover/dead-letter behavior, topic subscriptions, routing, and mailbox delivery |
+| Agent and Lua host | Scaffold only | `eva-agent` and `eva-lua-host` crates exist | Implement lifecycle, queues, Lua loading, sandboxing, bindings, and hot reload |
+| Capability and Adapter layers | Scaffold only | `eva-capability` and `eva-adapter` crates exist | Implement registries, provider routing, authorized transports, errors, and generation swaps |
+| Policy, observability, storage | Scaffold only | `eva-policy`, `eva-observability`, and `eva-storage` crates exist | Implement effective permission narrowing, trace/audit/metrics contracts, state store, event log, and artifacts |
+| Discovery, MCP, memory, hardware, backup, lifecycle | Scaffold only | Dedicated crates and module boundaries exist | Implement trusted discovery, MCP mapping, memory/context services, hardware hotplug, backup/release snapshots, and supervisor generation flow |
+| Verification baseline | Passing | `cargo fmt --check`, `cargo test -p eva-core`, `cargo check --workspace`, `cargo doc -p eva-core --no-deps`, `cargo test --workspace` | Add CI coverage for future runtime behavior, schema validation, examples, and integration tests |
+
+## Implementation Plan
+
+The implementation should continue in small, testable stages. Each stage should
+leave behind compileable artifacts, focused tests, and updated documentation.
+
+| Phase | Goal | Main Deliverables | Exit Criteria |
+| --- | --- | --- | --- |
+| 0. Documentation and architecture baseline | Keep the design intent clear before adding behavior | Architecture docs, roadmap, module partitioning, risk review, website/docs structure | Docs explain ownership, non-goals, and release path |
+| 1. Workspace and module scaffolding | Make crate boundaries and dependency direction concrete | Root binary shim, workspace crates, module files, README files | `cargo check --workspace` passes with all crates present |
+| 2. Foundation contracts | Stabilize shared types before runtime behavior | `eva-core` Topic, IDs, Capability, Event, Invoke, Error contracts | `cargo test -p eva-core` covers parsing, validation, matching, construction, and status semantics |
+| 3. Config and policy contracts | Turn manifests and policies into machine-verifiable inputs | `eva-config` schema loading/validation, manifest normalization, `eva-policy` effective permissions | `eva validate` can reject invalid sample config and unsafe policy expansions |
+| 4. CLI skeleton | Establish user-facing development loop | Real `eva doctor`, `eva validate`, `eva run`, `eva emit`, `eva inspect` command surfaces | CLI builds from clean checkout and returns structured output and exit codes |
+| 5. Event and scheduling kernel | Route one typed event without Lua or external providers | EventBus publish/recover path, scheduler subscriptions, agent mailbox contracts | One in-process event can be routed deterministically under tests |
+| 6. Agent and Lua execution boundary | Run one controlled Lua Agent safely | Agent lifecycle, queue, Lua loader, sandbox, host bindings, timeout boundary | One Lua Agent can process one event in an isolated state generation |
+| 7. Capability and adapter execution | Allow controlled tool/provider calls | Capability registry/router, AdapterRegistry, built-in/stdio/MCP/skill/hardware transport boundaries | One authorized capability call completes with trace, audit, and structured error handling |
+| 8. Minimum end-to-end runtime loop | Prove the full architecture with one narrow path | Ingress -> EventBus -> Scheduler -> Agent -> Lua -> Tool -> response, plus example project | `examples/basic/` runs and integration tests cover success and failure |
+| 9. Hot reload, recovery, and lifecycle | Make runtime changes and failures controlled | Generation swaps, drain, rollback, durable event log, backup/release snapshot integration | Runtime can reject unsafe changes, drain old generations, and recover from known failures |
+| 10. Hardening and 1.0 readiness | Turn working internals into a release-quality CLI | CI, cross-platform checks, security review, quickstart, install docs, release notes, migration guidance | New users can install, run quickstart, diagnose failures, and rely on stable documented contracts |
 
 See [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md) for the staged
-release path from design documents to a 1.0 release.
-
-## eva-core Implementation Scope
-
-`eva-core` is the foundation contract layer for the Eva-CLI Rust workspace. It
-does not start the runtime, execute Lua, access networks, or persist data.
-Instead, it defines the stable data models shared by downstream crates. The
-current source tree already has placeholders for `event`, `topic`, `ids`,
-`capability`, `invoke`, and `error`; the first implementation milestone is to
-turn those placeholders into testable, serializable, side-effect-free contract
-types.
-
-`eva-core` should implement:
-
-- Topic contracts: `Topic` and `TopicPattern` parsing, validation, and wildcard
-  matching for exact, `*`, and `**`, while rejecting empty segments, invalid
-  prefixes, and invalid `**` placement.
-- Identifier contracts: newtypes such as `AgentId`, `AdapterId`,
-  `CapabilityName`, `RequestId`, and `EventId`, with parsing, display, and
-  serialization support so IDs are not mixed as plain strings.
-- Event contracts: `Event`, `EventTarget`, payload, timestamps,
-  `correlation_id`, `causation_id`, and trace linkage fields shared by the
-  EventBus, Scheduler, and AgentRuntime.
-- Invoke contracts: Agent, Capability, and Adapter request/response structures,
-  including target, input payload, status, output, and error carrying.
-- Capability contracts: capability names and provider-selection primitives used
-  by `eva-capability`, `eva-adapter`, and Agent tool calls.
-- Error contracts: `EvaError`, `ErrorKind`, retryable flags, and provider codes
-  as the common cross-crate error boundary.
-
-`eva-core` explicitly does not implement event persistence, subscription
-tables, Agent mailboxes, scheduling policy, Lua bindings, Adapter transports,
-MCP protocol details, policy merging, runtime builders, CLI commands, or direct
-filesystem/network/database/shell/hardware access. Those responsibilities
-belong to crates such as `eva-eventbus`, `eva-scheduler`, `eva-agent`,
-`eva-lua-host`, `eva-adapter`, `eva-mcp`, `eva-policy`, `eva-runtime`, and
-`eva-cli`.
-
-See [eva-core Module Design](docs/en/eva-core-module.md) and
-[crates/eva-core/README.md](crates/eva-core/README.md) for the detailed module
-contract.
+release path from design documents to a 1.0 release, and see
+[eva-core Module Design](docs/en/eva-core-module.md) plus
+[crates/eva-core/README.md](crates/eva-core/README.md) for the implemented
+foundation contract layer.
 
 ## Repository Layout
 
 ```text
 Eva-CLI/
-  src/                 # Future main program source
-  crates/              # Future Rust workspace crates
+  src/                 # Thin binary shim that delegates to eva-cli
+  crates/              # Rust workspace crates and module boundaries
   docs/                # Architecture documents and implementation specs
   website/             # Static website source
   examples/            # Examples and integration demos

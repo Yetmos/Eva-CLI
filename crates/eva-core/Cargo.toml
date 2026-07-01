@@ -1,7 +1,11 @@
 [package]
+# 中文：eva-core 继承 workspace 统一版本、edition 与发布策略，避免基础契约 crate 自行漂移。
+# English: eva-core inherits workspace versioning, edition, and publishing policy so the contract crate does not drift.
 name = "eva-core"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+# 中文：当前保持零依赖；只有跨模块契约本身确实需要时才在这里新增依赖。
+# English: Keep this dependency-free unless a shared contract truly requires an external crate.
