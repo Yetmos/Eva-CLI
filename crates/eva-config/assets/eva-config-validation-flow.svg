@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="640" viewBox="0 0 1180 640" role="img" aria-labelledby="title desc">
+  <title id="title">eva-config validation flow</title>
+  <desc id="desc">Diagram showing how eva-config loads project configuration, validates stable fields through eva-core, and produces ProjectConfig for eva validate and runtime composition.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 28px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 15px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
+      .lane-title { font: 700 15px Arial, "Microsoft YaHei", sans-serif; fill: #334155; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 8; }
+      .input { fill: #eff6ff; stroke: #2563eb; }
+      .config { fill: #f0fdfa; stroke: #0f766e; }
+      .core { fill: #fff7ed; stroke: #ea580c; }
+      .output { fill: #f5f3ff; stroke: #7c3aed; }
+      .blocked { fill: #fee2e2; stroke: #dc2626; }
+      .label { font: 700 15px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .small { font: 500 12px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
+      .tiny { font: 500 11px Arial, "Microsoft YaHei", sans-serif; fill: #64748b; }
+      .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #64748b; stroke-width: 1.6; stroke-dasharray: 6 5; fill: none; marker-end: url(#arrow); }
+      .divider { stroke: #cbd5e1; stroke-width: 1; stroke-dasharray: 4 5; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1180" height="640"/>
+
+  <text class="title" x="52" y="54">eva-config validation flow / 配置验证流</text>
+  <text class="subtitle" x="52" y="82">Load human-maintained configuration, normalize it, validate stable fields through eva-core, and hand a typed ProjectConfig to later layers.</text>
+
+  <line class="divider" x1="52" y1="118" x2="1128" y2="118"/>
+  <text class="lane-title" x="68" y="144">Inputs / 输入</text>
+  <text class="lane-title" x="312" y="144">eva-config</text>
+  <text class="lane-title" x="602" y="144">eva-core contracts / 基础契约</text>
+  <text class="lane-title" x="880" y="144">Outputs / 输出</text>
+
+  <rect class="box input" x="64" y="172" width="188" height="72"/>
+  <text class="label" x="158" y="202" text-anchor="middle">eva.yaml</text>
+  <text class="small" x="158" y="224" text-anchor="middle">main runtime config</text>
+
+  <rect class="box input" x="64" y="276" width="188" height="72"/>
+  <text class="label" x="158" y="306" text-anchor="middle">agent.yaml</text>
+  <text class="small" x="158" y="328" text-anchor="middle">Agent manifests</text>
+
+  <rect class="box input" x="64" y="380" width="188" height="72"/>
+  <text class="label" x="158" y="410" text-anchor="middle">adapter.yaml</text>
+  <text class="small" x="158" y="432" text-anchor="middle">Adapter manifests</text>
+
+  <rect class="box input" x="64" y="484" width="188" height="72"/>
+  <text class="label" x="158" y="514" text-anchor="middle">capability.yaml</text>
+  <text class="small" x="158" y="536" text-anchor="middle">Capability manifests</text>
+
+  <rect class="box config" x="310" y="172" width="210" height="72"/>
+  <text class="label" x="415" y="202" text-anchor="middle">EvaConfig</text>
+  <text class="small" x="415" y="224" text-anchor="middle">runtime + config roots</text>
+
+  <rect class="box config" x="310" y="276" width="210" height="72"/>
+  <text class="label" x="415" y="306" text-anchor="middle">Manifest structs</text>
+  <text class="small" x="415" y="328" text-anchor="middle">Agent / Adapter / Capability</text>
+
+  <rect class="box config" x="310" y="380" width="210" height="72"/>
+  <text class="label" x="415" y="410" text-anchor="middle">Schema alignment</text>
+  <text class="small" x="415" y="432" text-anchor="middle">field names + required keys</text>
+
+  <rect class="box config" x="310" y="484" width="210" height="72"/>
+  <text class="label" x="415" y="514" text-anchor="middle">ProjectConfig</text>
+  <text class="small" x="415" y="536" text-anchor="middle">typed project input</text>
+
+  <rect class="box core" x="598" y="196" width="210" height="72"/>
+  <text class="label" x="703" y="226" text-anchor="middle">ID newtypes</text>
+  <text class="small" x="703" y="248" text-anchor="middle">AgentId / AdapterId</text>
+
+  <rect class="box core" x="598" y="316" width="210" height="72"/>
+  <text class="label" x="703" y="346" text-anchor="middle">TopicPattern</text>
+  <text class="small" x="703" y="368" text-anchor="middle">subscription validation</text>
+
+  <rect class="box core" x="598" y="436" width="210" height="72"/>
+  <text class="label" x="703" y="466" text-anchor="middle">CapabilityName</text>
+  <text class="small" x="703" y="488" text-anchor="middle">runtime capability names</text>
+
+  <rect class="box output" x="884" y="188" width="220" height="82"/>
+  <text class="label" x="994" y="220" text-anchor="middle">eva validate</text>
+  <text class="small" x="994" y="244" text-anchor="middle">structured validation report</text>
+
+  <rect class="box output" x="884" y="322" width="220" height="82"/>
+  <text class="label" x="994" y="354" text-anchor="middle">runtime builder</text>
+  <text class="small" x="994" y="378" text-anchor="middle">composition input only</text>
+
+  <rect class="box blocked" x="884" y="470" width="220" height="82"/>
+  <text class="label" x="994" y="502" text-anchor="middle">not here</text>
+  <text class="small" x="994" y="526" text-anchor="middle">no Lua / no Adapter calls</text>
+
+  <path class="arrow" d="M252 208 H306"/>
+  <path class="arrow" d="M252 312 H306"/>
+  <path class="arrow" d="M252 416 H306"/>
+  <path class="arrow" d="M252 520 H306"/>
+
+  <path class="arrow" d="M520 312 C548 312 560 232 594 232"/>
+  <path class="arrow" d="M520 312 H594"/>
+  <path class="arrow" d="M520 416 C552 416 560 472 594 472"/>
+  <path class="arrow" d="M520 520 C562 520 554 472 594 472"/>
+
+  <path class="arrow" d="M808 232 H880"/>
+  <path class="arrow" d="M808 352 C840 352 848 229 880 229"/>
+  <path class="arrow" d="M808 472 C848 472 842 363 880 363"/>
+
+  <path class="arrow" d="M520 520 C680 586 826 562 884 520"/>
+  <path class="dash" d="M994 404 V466"/>
+
+  <text class="tiny" x="66" y="604">Boundary: eva-config validates and normalizes configuration. Final policy decisions, runtime mutation, Lua execution, and provider transport stay in downstream crates.</text>
+</svg>
