@@ -27,13 +27,14 @@ implementation-spec content until the English full-detail migration catches up.
 9. [Agent Discovery](agent-discovery.md)
 10. [Hardware Hotplug](hardware-hotplug.md)
 11. [Project Configuration](project-configuration.md)
-12. [IDEA Plugin Toolchain Requirements](idea-plugin-toolchain.md)
-13. [Process-Level Upgrade](process-level-upgrade.md)
-14. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
-15. [Design Risk Review](design-risk-review.md)
-16. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
-17. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
-18. [Website and Documentation i18n](website-docs-i18n.md)
+12. [Topic Routing Hybrid Sync](topic-routing-hybrid-sync.md)
+13. [IDEA Plugin Toolchain Requirements](idea-plugin-toolchain.md)
+14. [Process-Level Upgrade](process-level-upgrade.md)
+15. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
+16. [Design Risk Review](design-risk-review.md)
+17. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
+18. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
+19. [Website and Documentation i18n](website-docs-i18n.md)
 
 ## Core Boundaries
 

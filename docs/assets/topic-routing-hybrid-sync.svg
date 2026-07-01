@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="640" viewBox="0 0 1120 640" role="img" aria-labelledby="title desc">
+  <title id="title">Topic Routing Hybrid Sync</title>
+  <desc id="desc">Hybrid synchronization flow between Agent manifests, generated route proposals, explicit route synchronization, and the Scheduler route table.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 26px Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 15px Arial, sans-serif; fill: #475569; }
+      .label { font: 700 15px Arial, sans-serif; fill: #0f172a; }
+      .text { font: 13px Arial, sans-serif; fill: #334155; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+      .source { fill: #ecfeff; stroke: #0891b2; }
+      .generated { fill: #f0fdf4; stroke: #16a34a; }
+      .gate { fill: #fff7ed; stroke: #ea580c; }
+      .runtime { fill: #eef2ff; stroke: #4f46e5; }
+      .warn { fill: #fef2f2; stroke: #dc2626; }
+      .line { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1120" height="640"/>
+  <text class="title" x="48" y="54">Topic Routing Hybrid Sync</text>
+  <text class="subtitle" x="48" y="82">Production routing stays explicit; tools generate proposals and checks from Agent manifests.</text>
+
+  <rect class="box source" x="48" y="125" width="240" height="116"/>
+  <text class="label" x="68" y="157">Agent manifests</text>
+  <text class="text" x="68" y="184">config/agents/**/agent.yaml</text>
+  <text class="small" x="68" y="209">subscriptions, children, routes</text>
+
+  <rect class="box generated" x="338" y="125" width="230" height="116"/>
+  <text class="label" x="358" y="157">Route proposals</text>
+  <text class="text" x="358" y="184">RouteProposalBuilder</text>
+  <text class="small" x="358" y="209">suggested patterns and targets</text>
+
+  <rect class="box gate" x="618" y="125" width="220" height="116"/>
+  <text class="label" x="638" y="157">Validation gate</text>
+  <text class="text" x="638" y="184">schema + policy + diff</text>
+  <text class="small" x="638" y="209">routes-diff.json</text>
+
+  <rect class="box warn" x="888" y="125" width="184" height="116"/>
+  <text class="label" x="908" y="157">Explicit write</text>
+  <text class="text" x="908" y="184">sync --write</text>
+  <text class="small" x="908" y="209">human/CI approved</text>
+
+  <rect class="box source" x="340" y="334" width="250" height="124"/>
+  <text class="label" x="360" y="366">Production route file</text>
+  <text class="text" x="360" y="393">config/routes/topics.yaml</text>
+  <text class="small" x="360" y="418">source of truth for Scheduler</text>
+
+  <rect class="box runtime" x="682" y="334" width="245" height="124"/>
+  <text class="label" x="702" y="366">Scheduler RouteTable</text>
+  <text class="text" x="702" y="393">validated runtime generation</text>
+  <text class="small" x="702" y="418">match order, delivery, targets</text>
+
+  <rect class="box generated" x="60" y="356" width="218" height="84"/>
+  <text class="label" x="80" y="388">Generated diagnostics</text>
+  <text class="small" x="80" y="414">.eva/generated/ and .eva/reports/</text>
+
+  <path class="line" d="M 288 183 L 338 183"/>
+  <path class="line" d="M 568 183 L 618 183"/>
+  <path class="line" d="M 838 183 L 888 183"/>
+  <path class="line" d="M 980 241 C 980 295 650 284 555 334"/>
+  <path class="line" d="M 590 396 L 682 396"/>
+  <path class="dash" d="M 453 241 C 410 290 290 314 230 356"/>
+  <path class="dash" d="M 728 241 C 705 284 620 300 536 334"/>
+
+  <text class="small" x="315" y="170">scan</text>
+  <text class="small" x="586" y="170">check</text>
+  <text class="small" x="852" y="170">approve</text>
+  <text class="small" x="925" y="286">only explicit commands write</text>
+  <text class="small" x="604" y="384">runtime reads only</text>
+
+  <rect class="box" x="48" y="520" width="1024" height="72"/>
+  <text class="label" x="68" y="550">Rule</text>
+  <text class="text" x="118" y="550">Runtime may validate Agent manifests against routes, but it must not rewrite config/routes/topics.yaml during startup or hot reload.</text>
+  <text class="small" x="118" y="574">Machines find inconsistencies; explicit CLI or IDE actions decide production route changes.</text>
+</svg>

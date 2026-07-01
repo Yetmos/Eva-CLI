@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="640" viewBox="0 0 1120 640" role="img" aria-labelledby="title desc">
+  <title id="title">Topic 路由混合同步方案</title>
+  <desc id="desc">Agent manifest、建议路由、显式同步命令与 Scheduler 路由表之间的混合同步流程。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 26px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .subtitle { font: 15px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
+      .label { font: 700 15px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .text { font: 13px Arial, "Microsoft YaHei", sans-serif; fill: #334155; }
+      .small { font: 12px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+      .source { fill: #ecfeff; stroke: #0891b2; }
+      .generated { fill: #f0fdf4; stroke: #16a34a; }
+      .gate { fill: #fff7ed; stroke: #ea580c; }
+      .runtime { fill: #eef2ff; stroke: #4f46e5; }
+      .warn { fill: #fef2f2; stroke: #dc2626; }
+      .line { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1120" height="640"/>
+  <text class="title" x="48" y="54">Topic 路由混合同步方案</text>
+  <text class="subtitle" x="48" y="82">生产路由保持显式；工具从 Agent manifest 生成建议和校验结果。</text>
+
+  <rect class="box source" x="48" y="125" width="240" height="116"/>
+  <text class="label" x="68" y="157">Agent manifest</text>
+  <text class="text" x="68" y="184">config/agents/**/agent.yaml</text>
+  <text class="small" x="68" y="209">subscriptions、children、routes</text>
+
+  <rect class="box generated" x="338" y="125" width="230" height="116"/>
+  <text class="label" x="358" y="157">建议路由</text>
+  <text class="text" x="358" y="184">RouteProposalBuilder</text>
+  <text class="small" x="358" y="209">建议 pattern 和目标 Agent</text>
+
+  <rect class="box gate" x="618" y="125" width="220" height="116"/>
+  <text class="label" x="638" y="157">校验门禁</text>
+  <text class="text" x="638" y="184">schema + policy + diff</text>
+  <text class="small" x="638" y="209">routes-diff.json</text>
+
+  <rect class="box warn" x="888" y="125" width="184" height="116"/>
+  <text class="label" x="908" y="157">显式写回</text>
+  <text class="text" x="908" y="184">sync --write</text>
+  <text class="small" x="908" y="209">人工或 CI 确认</text>
+
+  <rect class="box source" x="340" y="334" width="250" height="124"/>
+  <text class="label" x="360" y="366">生产路由文件</text>
+  <text class="text" x="360" y="393">config/routes/topics.yaml</text>
+  <text class="small" x="360" y="418">Scheduler 的路由事实源</text>
+
+  <rect class="box runtime" x="682" y="334" width="245" height="124"/>
+  <text class="label" x="702" y="366">Scheduler RouteTable</text>
+  <text class="text" x="702" y="393">已校验的运行时 generation</text>
+  <text class="small" x="702" y="418">匹配顺序、delivery、目标 Agent</text>
+
+  <rect class="box generated" x="60" y="356" width="218" height="84"/>
+  <text class="label" x="80" y="388">生成诊断产物</text>
+  <text class="small" x="80" y="414">.eva/generated/ 和 .eva/reports/</text>
+
+  <path class="line" d="M 288 183 L 338 183"/>
+  <path class="line" d="M 568 183 L 618 183"/>
+  <path class="line" d="M 838 183 L 888 183"/>
+  <path class="line" d="M 980 241 C 980 295 650 284 555 334"/>
+  <path class="line" d="M 590 396 L 682 396"/>
+  <path class="dash" d="M 453 241 C 410 290 290 314 230 356"/>
+  <path class="dash" d="M 728 241 C 705 284 620 300 536 334"/>
+
+  <text class="small" x="315" y="170">扫描</text>
+  <text class="small" x="586" y="170">校验</text>
+  <text class="small" x="852" y="170">确认</text>
+  <text class="small" x="908" y="286">只有显式命令可以写回</text>
+  <text class="small" x="604" y="384">运行时只读取</text>
+
+  <rect class="box" x="48" y="520" width="1024" height="72"/>
+  <text class="label" x="68" y="550">规则</text>
+  <text class="text" x="118" y="550">运行时可以用 Agent manifest 校验路由，但启动或热加载时不得改写 config/routes/topics.yaml。</text>
+  <text class="small" x="118" y="574">机器负责发现不一致；生产路由变更由显式 CLI 或 IDE 操作决定。</text>
+</svg>

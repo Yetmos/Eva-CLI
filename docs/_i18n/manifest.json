@@ -210,6 +210,17 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "topic-routing-hybrid-sync-diagram",
+      "title": "Topic Routing Hybrid Sync Diagram",
+      "source": "docs/assets/topic-routing-hybrid-sync.svg",
+      "translations": {
+        "zh-CN": "docs/assets/topic-routing-hybrid-sync.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -416,6 +427,23 @@
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
+    },
+    {
+      "id": "topic-routing-hybrid-sync",
+      "title": "Topic Routing Hybrid Sync",
+      "source": "docs/en/topic-routing-hybrid-sync.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/Topic路由混合同步方案.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/Topic路由混合同步方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "idea-plugin-toolchain",
