@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="560" viewBox="0 0 1180 560" role="img" aria-labelledby="title desc">
+  <title id="title">eva-config development roadmap</title>
+  <desc id="desc">Diagram showing completed, active, and planned eva-config development stages in Chinese and English.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 28px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 15px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
+      .card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.4; rx: 8; }
+      .done { fill: #ecfdf5; stroke: #059669; }
+      .now { fill: #eff6ff; stroke: #2563eb; }
+      .next { fill: #fff7ed; stroke: #ea580c; }
+      .later { fill: #f5f3ff; stroke: #7c3aed; }
+      .label { font: 700 16px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .small { font: 500 12px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
+      .tag { font: 700 12px Arial, "Microsoft YaHei", sans-serif; fill: #ffffff; }
+      .tagbox { rx: 6; }
+      .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .line { stroke: #cbd5e1; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1180" height="560"/>
+  <text class="title" x="54" y="54">eva-config development roadmap / 开发路线图</text>
+  <text class="subtitle" x="54" y="82">The first milestone is complete. The next milestones wire the typed configuration into CLI validation, schema validation, policy, and runtime composition.</text>
+
+  <line class="line" x1="54" y1="116" x2="1126" y2="116"/>
+
+  <rect class="card done" x="70" y="158" width="238" height="170"/>
+  <rect class="tagbox" x="94" y="178" width="82" height="26" fill="#059669"/>
+  <text class="tag" x="135" y="196" text-anchor="middle">Done / 已完成</text>
+  <text class="label" x="94" y="230">Milestone 1</text>
+  <text class="small" x="94" y="256">YAML loading / YAML 加载</text>
+  <text class="small" x="94" y="278">Manifest validation / manifest 校验</text>
+  <text class="small" x="94" y="300">ProjectConfig aggregation / 聚合</text>
+
+  <rect class="card now" x="350" y="158" width="238" height="170"/>
+  <rect class="tagbox" x="374" y="178" width="88" height="26" fill="#2563eb"/>
+  <text class="tag" x="418" y="196" text-anchor="middle">Now / 当前</text>
+  <text class="label" x="374" y="230">Documentation</text>
+  <text class="small" x="374" y="256">README sync / 文档同步</text>
+  <text class="small" x="374" y="278">Progress tables / 进度表格</text>
+  <text class="small" x="374" y="300">Verification evidence / 验证证据</text>
+
+  <rect class="card next" x="630" y="158" width="238" height="170"/>
+  <rect class="tagbox" x="654" y="178" width="92" height="26" fill="#ea580c"/>
+  <text class="tag" x="700" y="196" text-anchor="middle">Next / 下一步</text>
+  <text class="label" x="654" y="230">CLI validation</text>
+  <text class="small" x="654" y="256">eva validate command / 命令接入</text>
+  <text class="small" x="654" y="278">JSON reports / 结构化报告</text>
+  <text class="small" x="654" y="300">Schema validator / schema 校验器</text>
+
+  <rect class="card later" x="910" y="158" width="238" height="170"/>
+  <rect class="tagbox" x="934" y="178" width="104" height="26" fill="#7c3aed"/>
+  <text class="tag" x="986" y="196" text-anchor="middle">Later / 后续</text>
+  <text class="label" x="934" y="230">Runtime handoff</text>
+  <text class="small" x="934" y="256">Policy merge / 策略合并</text>
+  <text class="small" x="934" y="278">Scheduler routes / 路由展开</text>
+  <text class="small" x="934" y="300">Runtime builder / 运行时装配</text>
+
+  <path class="arrow" d="M308 243 H346"/>
+  <path class="arrow" d="M588 243 H626"/>
+  <path class="arrow" d="M868 243 H906"/>
+
+  <rect class="card" x="70" y="386" width="338" height="104"/>
+  <text class="label" x="94" y="420">Quality gate / 质量门</text>
+  <text class="small" x="94" y="448">cargo fmt, cargo test, cargo check</text>
+  <text class="small" x="94" y="470">Sample config and manifests must load successfully.</text>
+
+  <rect class="card" x="438" y="386" width="338" height="104"/>
+  <text class="label" x="462" y="420">Boundary / 模块边界</text>
+  <text class="small" x="462" y="448">Load and normalize only; no runtime mutation.</text>
+  <text class="small" x="462" y="470">只加载与归一化，不执行 Agent 或 Adapter。</text>
+
+  <rect class="card" x="806" y="386" width="338" height="104"/>
+  <text class="label" x="830" y="420">Decision rule / 决策规则</text>
+  <text class="small" x="830" y="448">Reuse eva-core contracts for ID, Topic, Capability.</text>
+  <text class="small" x="830" y="470">不重复定义底层校验规则。</text>
+</svg>
