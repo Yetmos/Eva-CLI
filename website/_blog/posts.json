@@ -24,6 +24,26 @@
   ],
   "posts": [
     {
+      "id": "topic-routing-hybrid-sync",
+      "locale": "en",
+      "slug": "topic-routing-hybrid-sync",
+      "title": "Keeping Topic Routing Explicit with Hybrid Sync",
+      "description": "Why Eva-CLI should keep config/routes/topics.yaml as the production route source of truth while using agent.yaml to generate route proposals, validation reports, and explicit sync patches.",
+      "date": "2026-07-01",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/topic-routing-hybrid-sync.html"
+    },
+    {
+      "id": "topic-routing-hybrid-sync",
+      "locale": "zh-CN",
+      "slug": "topic-routing-hybrid-sync",
+      "title": "用混合同步保持 Topic 路由显式可审计",
+      "description": "为什么 Eva-CLI 应以 config/routes/topics.yaml 作为生产路由事实源，同时用 agent.yaml 生成建议路由、校验报告和显式同步补丁。",
+      "date": "2026-07-01",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/topic-routing-hybrid-sync.html"
+    },
+    {
       "id": "eva-core-module",
       "locale": "en",
       "slug": "eva-core-module",

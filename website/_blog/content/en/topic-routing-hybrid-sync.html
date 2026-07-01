@@ -1,0 +1,115 @@
+<p>Topic routing is one of the places where an Agent runtime can accidentally become hard to audit. If every Agent manifest can silently reshape the global delivery table, a harmless-looking subscription change can widen the event surface. If every route is handwritten with no tooling, Agent creation becomes repetitive and easy to miss.</p>
+
+<p>Eva-CLI should use a hybrid model: keep <code>config/routes/topics.yaml</code> as the production routing source of truth, but let tools read <code>config/agents/**/agent.yaml</code> to generate route proposals, consistency reports, and explicit write-back patches.</p>
+
+<figure class="blog-figure">
+  <img src="../../docs/assets/topic-routing-hybrid-sync.svg" alt="Topic routing hybrid sync diagram showing Agent manifests, route proposals, validation gate, explicit write step, production topics.yaml, generated diagnostics, and Scheduler RouteTable.">
+  <figcaption>The important boundary is that runtime reads and validates; only explicit tooling writes the production route file.</figcaption>
+</figure>
+
+<h2>Two files, two different jobs</h2>
+<p><code>agent.yaml</code> is still the right place for an Agent to describe itself: identity, parent intent, subscriptions, child route hints, and emitted Topic permissions. But those declarations do not automatically become Scheduler delivery authority. The Scheduler should load a validated route table from <code>config/routes/topics.yaml</code>.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>File</th>
+    <th>Owns</th>
+    <th>Runtime rule</th>
+  </tr>
+  <tr>
+    <td><code>config/agents/**/agent.yaml</code></td>
+    <td>Agent identity, <code>subscriptions</code>, <code>children</code>, local route hints, and <code>permissions.emit</code>.</td>
+    <td>Input to discovery, policy checks, mailbox registration, and route proposal generation.</td>
+  </tr>
+  <tr>
+    <td><code>config/routes/topics.yaml</code></td>
+    <td>Global Topic pattern matching, delivery mode, target Agents, and match order.</td>
+    <td>Production source of truth for Scheduler delivery.</td>
+  </tr>
+  <tr>
+    <td><code>.eva/generated/routes/topics.generated.yaml</code></td>
+    <td>Generated suggestions inferred from Agent manifests.</td>
+    <td>Diagnostic artifact only; not a production route table.</td>
+  </tr>
+  <tr>
+    <td><code>.eva/reports/config/routes-diff.json</code></td>
+    <td>Conflicts, missing routes, orphan targets, and suggested fixes.</td>
+    <td>Evidence for review, CI, and IDE diagnostics.</td>
+  </tr>
+</table>
+
+<h2>The command surface should make writes explicit</h2>
+<p>The safest user experience is to make every write visible. Validation and diff generation can run automatically in CI or an IDE. Updating <code>topics.yaml</code> should require a command or quick-fix that the user intentionally invokes.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Command</th>
+    <th>Behavior</th>
+    <th>Writes files</th>
+  </tr>
+  <tr>
+    <td><code>eva config validate</code></td>
+    <td>Validate schemas, Agent references, Topic patterns, permissions, and route consistency.</td>
+    <td>No</td>
+  </tr>
+  <tr>
+    <td><code>eva config routes sync --check</code></td>
+    <td>Generate proposals from Agent manifests and compare them with <code>topics.yaml</code>.</td>
+    <td>No</td>
+  </tr>
+  <tr>
+    <td><code>eva config routes preview</code></td>
+    <td>Show the merged route table plus conflicts before changing source files.</td>
+    <td>No</td>
+  </tr>
+  <tr>
+    <td><code>eva config routes sync --write</code></td>
+    <td>Write safe, explainable, conflict-free proposals back to <code>topics.yaml</code>.</td>
+    <td>Yes</td>
+  </tr>
+  <tr>
+    <td><code>eva config routes dump-effective</code></td>
+    <td>Show the RouteTable actually used by Scheduler after validation.</td>
+    <td>No</td>
+  </tr>
+</table>
+
+<h2>Why not generate everything dynamically?</h2>
+<p>Automatic generation is attractive for simple fanout subscriptions, but production routing has more semantics than "who subscribed to this string." Delivery mode, priority, wildcard shadowing, fallback behavior, and target override rules are global runtime decisions. Those decisions belong in a reviewed route table.</p>
+
+<table class="blog-table">
+  <tr>
+    <th>Approach</th>
+    <th>Good at</th>
+    <th>Weak spot</th>
+  </tr>
+  <tr>
+    <td>Fully handwritten routes</td>
+    <td>Audit, rollback, complex matching rules, security review.</td>
+    <td>Easy to forget updates when adding or renaming Agents.</td>
+  </tr>
+  <tr>
+    <td>Fully dynamic generation</td>
+    <td>Fast Agent scaffolding and simple subscription coverage.</td>
+    <td>Ambiguous source of truth and unsafe expansion when manifests are wrong.</td>
+  </tr>
+  <tr>
+    <td>Hybrid sync</td>
+    <td>Explicit production routing with machine-generated drift detection.</td>
+    <td>Requires good validation rules and careful write-back behavior.</td>
+  </tr>
+</table>
+
+<h2>Validation is the real product</h2>
+<p>The hybrid model only works if validation is strict enough to catch drift. A useful validator should flag route targets that do not exist, disabled Agents, delivery conflicts, subscriptions that never receive events, global routes that target Agents outside their declared subscriptions, and emitted Topics outside <code>permissions.emit</code>.</p>
+
+<pre class="blog-code"><code>agent.yaml
+  -> scan manifests
+  -> build route proposals
+  -> compare with topics.yaml
+  -> report missing, orphaned, conflicting, or unsafe routes
+  -> write only through explicit sync command</code></pre>
+
+<p>This keeps the runtime startup path small: parse <code>topics.yaml</code>, validate schemas and policy, then build a new Scheduler RouteTable generation. Startup may read Agent manifests for cross-checking, but it must not silently mutate the route file.</p>
+
+<p>The full specification is available in <a href="../../docs/en/topic-routing-hybrid-sync.md">Topic Routing Hybrid Sync</a>, with related configuration context in <a href="../../docs/en/project-configuration.md">Project Configuration</a>.</p>

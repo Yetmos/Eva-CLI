@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>用混合同步保持 Topic 路由显式可审计 | Eva-CLI 博客</title>
+    <meta name="description" content="为什么 Eva-CLI 应以 config/routes/topics.yaml 作为生产路由事实源，同时用 agent.yaml 生成建议路由、校验报告和显式同步补丁。">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="用混合同步保持 Topic 路由显式可审计 | Eva-CLI 博客">
+    <meta property="og:description" content="为什么 Eva-CLI 应以 config/routes/topics.yaml 作为生产路由事实源，同时用 agent.yaml 生成建议路由、校验报告和显式同步补丁。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://www.eva-cli.com/zh-CN/blog/topic-routing-hybrid-sync/">
+    <meta property="article:published_time" content="2026-07-01">
+    <meta property="article:section" content="运行时">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://www.eva-cli.com/zh-CN/blog/topic-routing-hybrid-sync/">
+    <link rel="alternate" hreflang="en" href="https://www.eva-cli.com/blog/topic-routing-hybrid-sync/">
+    <link rel="alternate" hreflang="zh-CN" href="https://www.eva-cli.com/zh-CN/blog/topic-routing-hybrid-sync/">
+    <link rel="alternate" hreflang="x-default" href="https://www.eva-cli.com/blog/topic-routing-hybrid-sync/">
+    <link rel="icon" type="image/svg+xml" href="../../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../../" aria-label="Eva-CLI home">
+        <img src="../../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">多 Agent 运行时</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../../../">首页</a>
+        <a href="../../../docs/zh-CN/README.md">文档</a>
+        <a href="../../../zh-CN/blog/">博客</a>
+        <a href="../../../docs/zh-CN/总体架构方案.md">架构</a>
+        <a href="../../../#discussion">讨论</a>
+        <a href="../../../#feedback">反馈</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../../blog/topic-routing-hybrid-sync/" hreflang="en" lang="en">English</a>
+          <a href="../../../zh-CN/blog/topic-routing-hybrid-sync/" hreflang="zh-CN" lang="zh-CN" aria-current="page">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">博客</p>
+          <h1>用混合同步保持 Topic 路由显式可审计</h1>
+          <p class="blog-lead">为什么 Eva-CLI 应以 config/routes/topics.yaml 作为生产路由事实源，同时用 agent.yaml 生成建议路由、校验报告和显式同步补丁。</p>
+          <div class="blog-meta">
+            <span>发布： <time datetime="2026-07-01">2026-07-01</time></span>
+            <a href="../../../zh-CN/blog/category/runtime/">分类： 运行时</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>Topic 路由是 Agent 运行时里最容易失去审计性的地方之一。如果每个 Agent manifest 都能静默改写全局投递表，一个看似普通的订阅变更就可能扩大事件投递面。反过来，如果所有路由都只能手写，新增 Agent、改名和订阅变更又很容易漏同步。</p>
+
+<p>Eva-CLI 应采用混合方案：生产运行时继续以 <code>config/routes/topics.yaml</code> 作为路由事实源，同时允许工具读取 <code>config/agents/**/agent.yaml</code>，生成建议路由、一致性报告和显式写回补丁。</p>
+
+<figure class="blog-figure">
+  <img src="../../../docs/assets/topic-routing-hybrid-sync.zh-CN.svg" alt="Topic 路由混合同步图，展示 Agent manifest、建议路由、校验门禁、显式写回、生产 topics.yaml、生成诊断产物和 Scheduler RouteTable。">
+  <figcaption>关键边界是：运行时只读取和校验；只有显式工具操作可以写回生产路由文件。</figcaption>
+</figure>
+
+<h2>两个文件承担不同职责</h2>
+<p><code>agent.yaml</code> 仍然适合描述 Agent 自身：身份、父子管理意图、订阅、子路由提示和可发 Topic 权限。但这些声明不应自动变成 Scheduler 投递权力。Scheduler 应从经过校验的 <code>config/routes/topics.yaml</code> 构建 RouteTable。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>文件</th>
+    <th>负责内容</th>
+    <th>运行时规则</th>
+  </tr>
+  <tr>
+    <td><code>config/agents/**/agent.yaml</code></td>
+    <td>Agent 身份、<code>subscriptions</code>、<code>children</code>、局部路由提示和 <code>permissions.emit</code>。</td>
+    <td>作为 discovery、policy 校验、mailbox 注册和路由建议生成的输入。</td>
+  </tr>
+  <tr>
+    <td><code>config/routes/topics.yaml</code></td>
+    <td>全局 Topic pattern 匹配、delivery 模式、目标 Agent 和匹配顺序。</td>
+    <td>Scheduler 投递的生产事实源。</td>
+  </tr>
+  <tr>
+    <td><code>.eva/generated/routes/topics.generated.yaml</code></td>
+    <td>从 Agent manifest 推导出的建议路由。</td>
+    <td>只作为诊断产物，不作为生产路由表。</td>
+  </tr>
+  <tr>
+    <td><code>.eva/reports/config/routes-diff.json</code></td>
+    <td>冲突、缺失路由、孤儿目标和建议修复。</td>
+    <td>作为 review、CI 和 IDE 诊断证据。</td>
+  </tr>
+</table>
+
+<h2>命令入口必须让写入显式化</h2>
+<p>更安全的体验是让每一次写入都可见。校验和 diff 生成可以在 CI 或 IDE 中自动运行；更新 <code>topics.yaml</code> 必须通过用户明确触发的命令或 quick-fix。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>命令</th>
+    <th>行为</th>
+    <th>是否写文件</th>
+  </tr>
+  <tr>
+    <td><code>eva config validate</code></td>
+    <td>校验 schema、Agent 引用、Topic pattern、权限和路由一致性。</td>
+    <td>否</td>
+  </tr>
+  <tr>
+    <td><code>eva config routes sync --check</code></td>
+    <td>从 Agent manifest 生成建议，并与 <code>topics.yaml</code> 对比。</td>
+    <td>否</td>
+  </tr>
+  <tr>
+    <td><code>eva config routes preview</code></td>
+    <td>在改动源文件前展示合并后的路由表和冲突说明。</td>
+    <td>否</td>
+  </tr>
+  <tr>
+    <td><code>eva config routes sync --write</code></td>
+    <td>将安全、可解释、无冲突的建议写回 <code>topics.yaml</code>。</td>
+    <td>是</td>
+  </tr>
+  <tr>
+    <td><code>eva config routes dump-effective</code></td>
+    <td>展示 Scheduler 校验后实际使用的 RouteTable。</td>
+    <td>否</td>
+  </tr>
+</table>
+
+<h2>为什么不完全动态生成？</h2>
+<p>自动生成对简单 fanout 订阅很有吸引力，但生产路由不只是“谁订阅了这个字符串”。delivery 模式、优先级、通配符遮蔽、fallback 行为和 target override 都是全局运行时决策。这些决策应保留在可 review 的路由表中。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>方案</th>
+    <th>擅长</th>
+    <th>薄弱点</th>
+  </tr>
+  <tr>
+    <td>完全手写路由</td>
+    <td>审计、回滚、复杂匹配规则和安全 review。</td>
+    <td>新增或重命名 Agent 时容易漏同步。</td>
+  </tr>
+  <tr>
+    <td>完全动态生成</td>
+    <td>快速 Agent 脚手架和简单订阅覆盖。</td>
+    <td>事实源不清晰，manifest 写错时可能不安全地扩大投递面。</td>
+  </tr>
+  <tr>
+    <td>混合同步</td>
+    <td>保留显式生产路由，同时用机器发现漂移。</td>
+    <td>需要良好的校验规则和谨慎的写回行为。</td>
+  </tr>
+</table>
+
+<h2>真正的产品是校验能力</h2>
+<p>混合方案成立的前提，是校验足够严格。一个有用的 validator 应发现不存在的路由目标、disabled Agent、delivery 冲突、永远收不到事件的订阅、投递给未声明订阅 Agent 的全局路由，以及超出 <code>permissions.emit</code> 的发射 Topic。</p>
+
+<pre class="blog-code"><code>agent.yaml
+  -> 扫描 manifest
+  -> 构建建议路由
+  -> 与 topics.yaml 对比
+  -> 报告缺失、孤儿、冲突或不安全路由
+  -> 只通过显式同步命令写回</code></pre>
+
+<p>这样可以让运行时启动路径保持简单：解析 <code>topics.yaml</code>，校验 schema 和 policy，然后构建新的 Scheduler RouteTable generation。启动时可以读取 Agent manifest 做交叉校验，但不得静默修改路由文件。</p>
+
+<p>完整规格见 <a href="../../../docs/zh-CN/Topic路由混合同步方案.md">Topic 路由混合同步方案</a>，相关配置背景见 <a href="../../../docs/zh-CN/项目配置方案.md">项目配置方案</a>。</p>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../../zh-CN/blog/">返回博客</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>作者： <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../../#feedback">提交反馈</a>
+    </footer>
+  </body>
+</html>
