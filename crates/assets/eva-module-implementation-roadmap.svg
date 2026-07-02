@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="520" viewBox="0 0 1180 520" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI module implementation roadmap</title>
+  <desc id="desc">Versioned implementation roadmap from the completed foundation modules to runtime, extension, memory, hardware, backup, and lifecycle modules.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 700 28px system-ui, -apple-system, Segoe UI, sans-serif; fill: #172033; }
+      .sub { font: 500 14px system-ui, -apple-system, Segoe UI, sans-serif; fill: #4f5d75; }
+      .axis { stroke: #76839a; stroke-width: 2; }
+      .tick { stroke: #a9b2c3; stroke-width: 1.5; }
+      .card { fill: #ffffff; stroke: #c9d2e3; stroke-width: 1.5; rx: 8; }
+      .done { fill: #1d7f5f; }
+      .active { fill: #1c64b7; }
+      .next { fill: #8a5a12; }
+      .future { fill: #5f6472; }
+      .chipText { font: 700 13px system-ui, -apple-system, Segoe UI, sans-serif; fill: #ffffff; }
+      .cardHead { font: 700 16px system-ui, -apple-system, Segoe UI, sans-serif; fill: #172033; }
+      .cardText { font: 500 13px system-ui, -apple-system, Segoe UI, sans-serif; fill: #344055; }
+      .legend { font: 600 12px system-ui, -apple-system, Segoe UI, sans-serif; fill: #344055; }
+    </style>
+  </defs>
+  <rect class="bg" width="1180" height="520"/>
+  <text class="title" x="44" y="52">Eva-CLI 模块实施路线图</text>
+  <text class="sub" x="44" y="78">README 进度表以本路线为基线：已完成契约模块先稳定，下游按版本逐步接入。</text>
+  <line class="axis" x1="80" y1="160" x2="1100" y2="160"/>
+  <line class="tick" x1="140" y1="134" x2="140" y2="438"/>
+  <line class="tick" x1="308" y1="134" x2="308" y2="438"/>
+  <line class="tick" x1="476" y1="134" x2="476" y2="438"/>
+  <line class="tick" x1="644" y1="134" x2="644" y2="438"/>
+  <line class="tick" x1="812" y1="134" x2="812" y2="438"/>
+  <line class="tick" x1="980" y1="134" x2="980" y2="438"/>
+  <rect class="done" x="98" y="116" width="84" height="30" rx="15"/>
+  <text class="chipText" x="121" y="136">V0.1</text>
+  <rect class="done" x="266" y="116" width="84" height="30" rx="15"/>
+  <text class="chipText" x="289" y="136">V0.2</text>
+  <rect class="active" x="434" y="116" width="84" height="30" rx="15"/>
+  <text class="chipText" x="457" y="136">V0.3</text>
+  <rect class="next" x="602" y="116" width="84" height="30" rx="15"/>
+  <text class="chipText" x="625" y="136">V0.4</text>
+  <rect class="future" x="770" y="116" width="84" height="30" rx="15"/>
+  <text class="chipText" x="790" y="136">V1.x</text>
+  <rect class="future" x="938" y="116" width="84" height="30" rx="15"/>
+  <text class="chipText" x="958" y="136">V1.5</text>
+
+  <rect class="card" x="44" y="188" width="190" height="176"/>
+  <text class="cardHead" x="64" y="218">工程基线</text>
+  <text class="cardText" x="64" y="248">workspace 骨架</text>
+  <text class="cardText" x="64" y="274">模块边界文档</text>
+  <text class="cardText" x="64" y="300">eva-core 契约</text>
+  <text class="cardText" x="64" y="326">基础测试与 CI 命令</text>
+
+  <rect class="card" x="248" y="188" width="190" height="176"/>
+  <text class="cardHead" x="268" y="218">契约与配置</text>
+  <text class="cardText" x="268" y="248">eva-config 加载</text>
+  <text class="cardText" x="268" y="274">eva-policy 收紧</text>
+  <text class="cardText" x="268" y="300">eva-observability 字段</text>
+  <text class="cardText" x="268" y="326">跨文件一致性校验</text>
+
+  <rect class="card" x="452" y="188" width="190" height="176"/>
+  <text class="cardHead" x="472" y="218">最小 CLI 闭环</text>
+  <text class="cardText" x="472" y="248">eva doctor</text>
+  <text class="cardText" x="472" y="274">config validate</text>
+  <text class="cardText" x="472" y="300">inspect 输出</text>
+  <text class="cardText" x="472" y="326">no-op runtime builder</text>
+
+  <rect class="card" x="656" y="188" width="190" height="176"/>
+  <text class="cardHead" x="676" y="218">最小 Runtime</text>
+  <text class="cardText" x="676" y="248">storage / eventbus</text>
+  <text class="cardText" x="676" y="274">scheduler / mailbox</text>
+  <text class="cardText" x="676" y="300">agent / lua host</text>
+  <text class="cardText" x="676" y="326">capability host API</text>
+
+  <rect class="card" x="860" y="188" width="190" height="176"/>
+  <text class="cardHead" x="880" y="218">扩展生态</text>
+  <text class="cardText" x="880" y="248">adapter / MCP / discovery</text>
+  <text class="cardText" x="880" y="274">memory / knowledge</text>
+  <text class="cardText" x="880" y="300">hardware adapter</text>
+  <text class="cardText" x="880" y="326">backup / lifecycle</text>
+
+  <rect class="card" x="520" y="398" width="300" height="70"/>
+  <circle cx="548" cy="422" r="7" fill="#1d7f5f"/>
+  <text class="legend" x="564" y="426">已完成：V0.1-V0.2 基础可验证</text>
+  <circle cx="548" cy="448" r="7" fill="#1c64b7"/>
+  <text class="legend" x="564" y="452">当前下一步：V0.3 CLI 与 no-op runtime</text>
+  <circle cx="548" cy="474" r="7" fill="#8a5a12"/>
+  <text class="legend" x="564" y="478">后续重点：V0.4 运行闭环和 V1.x 扩展</text>
+</svg>

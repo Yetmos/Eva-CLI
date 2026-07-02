@@ -2,6 +2,8 @@
 
 更新时间：2026-07-02
 
+![Eva module implementation roadmap](../assets/eva-module-implementation-roadmap.svg)
+
 `eva-policy` 负责把系统策略、manifest 声明、会话策略和 request 级约束合并成最终 effective policy。它只做纯数据计算和权限收紧，不扫描配置、不执行 I/O、不调用 Adapter、不读取密钥，也不替 Runtime 做副作用决策。
 
 ## 中文
@@ -98,6 +100,29 @@ V0.2 已落地最小权限契约：
 | `narrowing_unions_disabled_libs_and_uses_lower_limits` | 沙箱禁用库并集、资源限制取更小值 |
 | `effective_policy_intersects_layers` | 多策略层合并结果正确 |
 | `request_expansion_is_rejected` | 扩权请求返回 `PermissionDenied` |
+
+### 详细开发实施步骤
+
+| 顺序 | 版本 | 步骤 | 依赖 | 完成标准 |
+| --- | --- | --- | --- | --- |
+| 1 | V0.2 | 定义 `PermissionSet` 和默认拒绝/只读上限。 | `eva-core::EvaError` | 权限字段可被测试覆盖。 |
+| 2 | V0.2 | 实现权限收紧、allowlist 交集和扩权 diff。 | 标准库集合类型 | request 扩权可被拒绝。 |
+| 3 | V0.2 | 定义 `SandboxPolicy` 和 Lua 默认安全基线。 | config sample policy | 默认禁用危险 Lua 能力。 |
+| 4 | V0.2 | 实现 `PolicyLayer` 和 `EffectivePolicy::from_layers`。 | 权限/沙箱模型 | 多层策略只会收紧。 |
+| 5 | V0.3 | 将 policy 错误映射到 CLI human/json 诊断。 | `eva-cli` | 用户能看懂被拒绝字段。 |
+| 6 | V0.4 | 在 capability/Agent/Lua 调用前应用 effective policy。 | runtime/capability/lua-host | 未授权调用无法执行。 |
+| 7 | V1.1-V1.4 | 解释 Adapter、MCP、Hardware、Backup policy domain。 | 扩展模块 manifest | 高风险权限有明确策略层。 |
+
+### 详细开发进度表
+
+| 文件/模块 | 具体功能 | 当前进度 | 下一步 |
+| --- | --- | --- | --- |
+| `src/lib.rs` | 公共导出和 crate 入口 | 已完成 | 随新增 policy domain re-export。 |
+| `src/permissions.rs` | `PermissionSet`、收紧、diff、subset | 已完成 | V0.3 增加 CLI 友好的 diff 展示。 |
+| `src/sandbox.rs` | `SandboxPolicy`、Lua 默认沙箱、收紧 | 已完成 | V0.4 接 `eva-lua-host` 限制映射。 |
+| `src/effective.rs` | `PolicyLayer`、`EffectivePolicy`、request 校验 | 已完成 | V0.4 接 runtime/capability gate。 |
+| `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和后续阶段。 |
+| policy domain parser | YAML domain 到策略层 | 未实现 | 由 `eva-config` 加载后交给本模块解释。 |
 
 ### 后续版本移交
 

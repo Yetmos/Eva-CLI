@@ -2,6 +2,8 @@
 
 更新时间：2026-07-02
 
+![Eva module implementation roadmap](../assets/eva-module-implementation-roadmap.svg)
+
 `eva-observability` 定义 Eva-CLI 运行时、CLI、Adapter、Agent 和服务模块共享的 trace、audit 与 metrics 契约。它只保存字段、枚举和 sink trait，不接具体日志后端，不做业务路由，也不做权限判断。
 
 ## 中文
@@ -90,6 +92,29 @@ span_id
 | `in_memory_sink_records_events` | audit sink 行为 |
 | `metric_name_rejects_unstable_values` | metric 名称校验 |
 | `labels_are_deterministically_ordered` | metric labels 顺序稳定 |
+
+### 详细开发实施步骤
+
+| 顺序 | 版本 | 步骤 | 依赖 | 完成标准 |
+| --- | --- | --- | --- | --- |
+| 1 | V0.2 | 定义 `TraceFields` 和 `SpanId`，支持从核心事件提取链路字段。 | `eva-core` | 字段名稳定且不包含 payload。 |
+| 2 | V0.2 | 定义 `AuditAction`、`AuditOutcome`、`AuditEvent` 和 sink trait。 | `eva-core::EvaError` | audit action 字符串稳定。 |
+| 3 | V0.2 | 定义 `MetricName`、`MetricLabels`、`MetricPoint`。 | 标准库 `BTreeMap` | 标签顺序稳定。 |
+| 4 | V0.3 | 接 CLI 输出 envelope 和诊断 trace 字段。 | `eva-cli` | human/json 输出共享同一 trace 字段。 |
+| 5 | V0.4 | 接 runtime、eventbus、scheduler、agent 的 audit/metrics。 | runtime 主链路 | 事件闭环每个阶段有 trace。 |
+| 6 | V1.1+ | 接 adapter、MCP、discovery、hardware、backup、lifecycle 审计动作。 | 扩展模块 | 外部能力和高风险操作可审计。 |
+| 7 | V1.5 | 接具体后端：tracing、OpenTelemetry、文件或数据库。 | 发布阶段选型 | 后端不改变公共字段契约。 |
+
+### 详细开发进度表
+
+| 文件/模块 | 具体功能 | 当前进度 | 下一步 |
+| --- | --- | --- | --- |
+| `src/lib.rs` | 公共导出 | 已完成 | 随新观测动作扩展 re-export。 |
+| `src/trace.rs` | trace 字段、span id、event 提取 | 已完成 | V0.4 接 runtime/eventbus/agent span。 |
+| `src/audit.rs` | audit action/outcome/event/sink | 已完成 | V1.x 增加 Adapter、MCP、backup 等动作。 |
+| `src/metrics.rs` | metric name、labels、point | 已完成 | V0.4 定义 runtime/eventbus 指标命名。 |
+| `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和后续阶段。 |
+| concrete backend | tracing/OpenTelemetry/file/db | 未实现 | V1.5 发布前独立选型。 |
 
 ## English
 

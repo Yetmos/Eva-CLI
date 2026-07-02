@@ -1,9 +1,36 @@
 # eva-adapter/src / Adapter 源码
 
-## 中文
+![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
-这里保存 Adapter manifest、registry、router、runtime 和 transport 边界。Adapter 只能执行已授权的 effective policy，不能自行扩大权限。
+本目录承载 Adapter runtime descriptor、registry、router、transport runtime 和错误映射。当前为骨架，V1.1 先实现 registry/router 和 builtin/stdio/http/MCP/skill transport。
 
-## English
+## 功能说明
 
-This directory contains Adapter manifest, registry, router, runtime, and transport boundaries. Adapters may only enforce authorized effective policy; they must not expand permissions.
+| 文件/目录 | 职责 | 当前进度 | 目标版本 |
+| --- | --- | --- | --- |
+| `lib.rs` | 模块导出 | 骨架 | V1.1 |
+| `manifest.rs` | Adapter manifest 的 runtime 表示 | 骨架 | V1.1 |
+| `registry.rs` | Adapter handle 和 capability index | 骨架 | V1.1 |
+| `router.rs` | explicit provider 和 capability 路由 | 骨架 | V1.1 |
+| `runtime.rs` | 授权后 transport 执行、timeout、audit | 骨架 | V1.1 |
+| `error.rs` | provider/transport 错误映射 | 骨架 | V1.1 |
+| `transports/` | 具体 transport 实现 | 骨架 | V1.1/V1.3 |
+
+## 开发实施步骤
+
+| 顺序 | 步骤 | 输出 |
+| --- | --- | --- |
+| 1 | 定义 runtime descriptor 和 registry。 | Adapter 可注册和查询。 |
+| 2 | 实现 router 和 policy gate。 | provider 选择可解释。 |
+| 3 | 实现 invocation envelope、timeout、audit、error mapping。 | 外部调用错误稳定。 |
+| 4 | 分批实现 builtin、stdio、http、mcp、skill、hardware transport。 | 外部能力受控执行。 |
+
+## 进度表
+
+| 模块 | 具体功能 | 状态 | 下一步 |
+| --- | --- | --- | --- |
+| Manifest | runtime descriptor | 未实现 | 从 AdapterManifest 转换。 |
+| Registry | ID 和 capability index | 未实现 | 处理重复和禁用。 |
+| Router | provider selection | 未实现 | explicit 优先。 |
+| Runtime | execution envelope | 未实现 | 加入 timeout 和 audit。 |
+| Transport | 具体调用 | 未实现 | 先 builtin/stdio/http。 |

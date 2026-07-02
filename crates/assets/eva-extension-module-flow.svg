@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="620" viewBox="0 0 1180 620" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI extension module flow</title>
+  <desc id="desc">Extension module flow for adapter, MCP, discovery, memory, hardware, backup, and lifecycle work planned for V1.x.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fbfbf8; }
+      .title { font: 700 28px system-ui, -apple-system, Segoe UI, sans-serif; fill: #172033; }
+      .sub { font: 500 14px system-ui, -apple-system, Segoe UI, sans-serif; fill: #526178; }
+      .box { fill: #ffffff; stroke: #c8c1ad; stroke-width: 1.5; rx: 8; }
+      .trust { fill: #e8f1fb; stroke: #3a73b7; }
+      .exec { fill: #fff2da; stroke: #9d6a13; }
+      .state { fill: #e8f5ee; stroke: #2b7b5f; }
+      .risk { fill: #fae8e8; stroke: #a33c3c; }
+      .text { font: 700 15px system-ui, -apple-system, Segoe UI, sans-serif; fill: #182238; }
+      .small { font: 500 12px system-ui, -apple-system, Segoe UI, sans-serif; fill: #3e4b61; }
+      .arrow { stroke: #5a6270; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .gate { stroke: #a33c3c; stroke-width: 2.5; fill: none; marker-end: url(#arrowRed); }
+      .label { font: 700 12px system-ui, -apple-system, Segoe UI, sans-serif; fill: #6d3030; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5a6270"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a33c3c"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1180" height="620"/>
+  <text class="title" x="44" y="54">V1.x 扩展生态模块流</text>
+  <text class="sub" x="44" y="82">发现不等于授权；所有外部能力、记忆、硬件、恢复操作都要经过 manifest、policy 和 audit gate。</text>
+
+  <rect class="box trust" x="64" y="128" width="190" height="84"/>
+  <text class="text" x="94" y="160">eva-discovery</text>
+  <text class="small" x="94" y="184">trusted sources / health / cache</text>
+
+  <rect class="box trust" x="304" y="128" width="190" height="84"/>
+  <text class="text" x="334" y="160">candidate list</text>
+  <text class="small" x="334" y="184">可审计候选，不授予执行权</text>
+
+  <rect class="box exec" x="544" y="112" width="190" height="84"/>
+  <text class="text" x="574" y="144">eva-adapter</text>
+  <text class="small" x="574" y="168">registry / router / transports</text>
+
+  <rect class="box exec" x="544" y="220" width="190" height="84"/>
+  <text class="text" x="574" y="252">eva-mcp</text>
+  <text class="small" x="574" y="276">client / server / tool mapping</text>
+
+  <rect class="box state" x="784" y="112" width="190" height="84"/>
+  <text class="text" x="814" y="144">eva-memory</text>
+  <text class="small" x="814" y="168">memory / knowledge / context</text>
+
+  <rect class="box state" x="784" y="220" width="190" height="84"/>
+  <text class="text" x="814" y="252">eva-hardware</text>
+  <text class="small" x="814" y="276">device registry / driver / hotplug</text>
+
+  <rect class="box risk" x="424" y="404" width="190" height="92"/>
+  <text class="text" x="454" y="436">eva-backup</text>
+  <text class="small" x="454" y="460">backup / migration / snapshot</text>
+
+  <rect class="box risk" x="664" y="404" width="190" height="92"/>
+  <text class="text" x="694" y="436">eva-lifecycle</text>
+  <text class="small" x="694" y="460">generation / drain / rollback</text>
+
+  <rect class="box trust" x="904" y="404" width="190" height="92"/>
+  <text class="text" x="934" y="436">observability</text>
+  <text class="small" x="934" y="460">audit record / trace fields</text>
+
+  <path class="arrow" d="M254 170 H304"/>
+  <path class="gate" d="M494 170 H544"/>
+  <text class="label" x="503" y="158">policy gate</text>
+  <path class="gate" d="M494 190 C520 190 520 262 544 262"/>
+  <path class="arrow" d="M734 154 H784"/>
+  <path class="arrow" d="M734 262 H784"/>
+  <path class="gate" d="M879 304 C879 356 519 356 519 404"/>
+  <text class="label" x="660" y="346">plan before mutation</text>
+  <path class="gate" d="M614 450 H664"/>
+  <path class="arrow" d="M854 450 H904"/>
+  <path class="arrow" d="M974 262 C1030 262 1030 404 999 404"/>
+</svg>

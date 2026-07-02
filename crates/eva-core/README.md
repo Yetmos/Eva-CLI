@@ -4,13 +4,15 @@
 
 ![eva-core implementation map](assets/eva-core-implementation-map.svg)
 
+![Eva module implementation roadmap](../assets/eva-module-implementation-roadmap.svg)
+
 `eva-core` 是 Eva-CLI Rust workspace 的基础契约 crate。它只定义跨模块共享、长期稳定、无副作用的数据结构和纯逻辑，不负责启动 runtime、执行 Lua、访问网络、读写文件、连接数据库、调度任务或调用任何 provider。
 
 当前 `src/` 中的 `topic`、`ids`、`capability`、`event`、`invoke`、`error` 已完成第一轮基础契约实现。本 README 同时保留设计目标、实现顺序、修改粒度和验收标准，后续下游接入应继续按这些边界推进。
 
-## 当前实现进度
+## 当前实现进度 / 详细开发进度表
 
-更新时间：2026-07-01
+更新时间：2026-07-02
 
 | 范围 | 状态 | 已完成 | 还差/后续 |
 | --- | --- | --- | --- |

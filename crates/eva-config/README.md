@@ -1,10 +1,12 @@
 # eva-config / 配置加载与归一化
 
-更新时间：2026-07-01
+更新时间：2026-07-02
 
 ![eva-config validation flow](assets/eva-config-validation-flow.svg)
 
 ![eva-config development roadmap](assets/eva-config-development-roadmap.svg)
+
+![Eva module implementation roadmap](../assets/eva-module-implementation-roadmap.svg)
 
 `eva-config` 负责把人工维护的 Eva 项目配置转换成运行时可以信任的结构化输入。它读取 `config/eva.yaml`、Agent/Adapter/Capability manifests、schema 路径和拆分配置根目录，并用 `eva-core` 的稳定契约校验 ID、TopicPattern、CapabilityName 和结构化错误。
 
@@ -135,6 +137,32 @@ project root
 | `project_config_loads_all_config_roots` | 项目级加载能汇总主配置和 manifest |
 | `validate_project_config_rejects_duplicate_agent_id` | 重复 Agent ID 会失败 |
 | `validate_project_config_rejects_unknown_route_agent` | routes 指向未知 Agent 会失败 |
+
+### 详细开发实施步骤
+
+| 顺序 | 版本 | 步骤 | 依赖 | 完成标准 |
+| --- | --- | --- | --- | --- |
+| 1 | V0.2 | 完成主配置、manifest、policy document、routes 的 YAML 加载。 | `serde_yaml`、`eva-core` | 示例配置可以生成 `ProjectConfig`。 |
+| 2 | V0.2 | 完成 ID、TopicPattern、CapabilityName 等 typed validation。 | `eva-core` | 非法字段返回结构化 `EvaError`。 |
+| 3 | V0.2 | 完成跨文件一致性检查。 | 项目示例配置 | 重复 ID、未知 Agent、缺失脚本可被拒绝。 |
+| 4 | V0.3 | 接入 `eva-cli config validate` 和 `doctor`。 | `eva-cli` | human/json 诊断稳定。 |
+| 5 | V0.3 | 补完整 JSON Schema validator。 | `config/schemas` | 错误定位到文件、字段和 schema 规则。 |
+| 6 | V0.4 | 将 routes 注册到 Scheduler。 | `eva-scheduler` | route YAML 变成可执行投递规则。 |
+| 7 | V1.1 | 为 Adapter/MCP/Discovery 扩展 manifest 字段。 | `eva-adapter`、`eva-mcp`、`eva-discovery` | 新字段保持向后兼容。 |
+
+### 详细开发进度表
+
+| 文件/模块 | 具体功能 | 当前进度 | 下一步 |
+| --- | --- | --- | --- |
+| `src/lib.rs` | `ProjectConfig` 聚合、加载入口、跨文件校验 | 已完成 | V0.3 输出 CLI 诊断模型。 |
+| `src/eva_yaml.rs` | `config/eva.yaml` 解析和 `ConfigRoots` | 已完成 | 增加 schema validator 细粒度错误。 |
+| `src/manifest/agent.rs` | Agent manifest 解析和基础校验 | 已完成 | 扩展 permission 字段解释。 |
+| `src/manifest/adapter.rs` | Adapter manifest 解析和基础校验 | 已完成 | V1.1 增加 transport/schema/policy 细化字段。 |
+| `src/manifest/capability.rs` | Capability manifest 解析和 provider 引用校验 | 已完成 | 接 CapabilityRegistry descriptor。 |
+| `src/policy.rs` | policy YAML document 加载 | 已完成 | 与 `eva-policy` 协作解释 policy domain。 |
+| `src/routes.rs` | routes YAML 加载和 delivery 校验 | 已完成 | 接 `eva-scheduler` route registry。 |
+| `src/schema.rs` | schema 路径和枚举辅助 | 已完成 | 增加真实 schema validation。 |
+| `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和后续阶段。 |
 
 ### 下一步开发计划
 
