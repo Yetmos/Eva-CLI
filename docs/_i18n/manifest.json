@@ -581,6 +581,23 @@
       "sourceCoverage": "summary-or-entry"
     },
     {
+      "id": "v0.1-baseline-acceptance",
+      "title": "V0.1 Baseline Acceptance",
+      "source": "docs/en/v0.1-baseline-acceptance.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V0.1项目基线验收记录.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/V0.1项目基线验收记录.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
+    },
+    {
       "id": "command-line-tool-feature-design",
       "title": "Command-Line Tool Feature Design",
       "source": "docs/en/command-line-tool-feature-design.md",
