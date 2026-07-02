@@ -179,6 +179,39 @@
       }
     },
     {
+      "id": "full-implementation-roadmap-diagram",
+      "title": "Eva-CLI Full Implementation Roadmap Diagram",
+      "source": "docs/assets/full-implementation-roadmap.svg",
+      "translations": {
+        "zh-CN": "docs/assets/full-implementation-roadmap.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "full-implementation-module-sequence-diagram",
+      "title": "Eva-CLI Full Implementation Module Sequence Diagram",
+      "source": "docs/assets/full-implementation-module-sequence.svg",
+      "translations": {
+        "zh-CN": "docs/assets/full-implementation-module-sequence.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "full-implementation-runtime-loop-diagram",
+      "title": "Eva-CLI Full Implementation Runtime Loop Diagram",
+      "source": "docs/assets/full-implementation-runtime-loop.svg",
+      "translations": {
+        "zh-CN": "docs/assets/full-implementation-runtime-loop.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
       "id": "idea-plugin-toolchain-feature-map-diagram",
       "title": "IDEA Plugin Toolchain Feature Map",
       "source": "docs/assets/idea-plugin-toolchain-feature-map.svg",
@@ -526,6 +559,23 @@
       "contentAuthority": {
         "locale": "zh-CN",
         "path": "docs/zh-CN/从零到1.0版本路线图.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
+    },
+    {
+      "id": "full-implementation-plan",
+      "title": "Full Implementation Plan",
+      "source": "docs/en/full-implementation-plan.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/当前项目从零到完整实现实施计划.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/当前项目从零到完整实现实施计划.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"

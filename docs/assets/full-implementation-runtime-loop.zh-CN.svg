@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="660" viewBox="0 0 1180 660" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 最小 Runtime 闭环</title>
+  <desc id="desc">展示用户输入经 CLI、EventBus、Scheduler、AgentRuntime、Lua、Tool Layer 和 Adapter 返回结果的最小端到端闭环。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 8; }
+      .rust { fill: #e0f2fe; stroke: #0284c7; }
+      .lua { fill: #fef3c7; stroke: #d97706; }
+      .adapter { fill: #fce7f3; stroke: #db2777; }
+      .store { fill: #dcfce7; stroke: #16a34a; }
+      .obs { fill: #ede9fe; stroke: #7c3aed; }
+      .title { font: 700 24px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 13px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
+      .label { font: 700 14px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
+      .small { font: 400 12px Arial, "Microsoft YaHei", sans-serif; fill: #334155; }
+      .arrow { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .audit { stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 6 5; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1180" height="660"/>
+  <text class="title" x="48" y="48">最小 Runtime 闭环</text>
+  <text class="subtitle" x="48" y="72">V0.4 的验收目标：一条 typed event 能进入 Agent，调用受控 capability，并输出 trace、audit 和结构化结果。</text>
+
+  <rect class="box rust" x="60" y="125" width="135" height="70"/>
+  <text class="label" x="92" y="156">eva-cli</text>
+  <text class="small" x="82" y="176">run / emit</text>
+
+  <rect class="box rust" x="250" y="125" width="145" height="70"/>
+  <text class="label" x="286" y="156">Ingress</text>
+  <text class="small" x="275" y="176">typed Event</text>
+
+  <rect class="box store" x="450" y="125" width="150" height="70"/>
+  <text class="label" x="488" y="156">EventBus</text>
+  <text class="small" x="474" y="176">publish + ack</text>
+
+  <rect class="box rust" x="655" y="125" width="150" height="70"/>
+  <text class="label" x="693" y="156">Scheduler</text>
+  <text class="small" x="681" y="176">TopicPattern</text>
+
+  <rect class="box lua" x="860" y="125" width="165" height="70"/>
+  <text class="label" x="895" y="156">AgentRuntime</text>
+  <text class="small" x="895" y="176">bounded inbox</text>
+
+  <rect class="box lua" x="860" y="295" width="165" height="70"/>
+  <text class="label" x="900" y="326">Lua Agent</text>
+  <text class="small" x="891" y="346">on_event(event, ctx)</text>
+
+  <rect class="box rust" x="655" y="295" width="150" height="70"/>
+  <text class="label" x="692" y="326">Tool Layer</text>
+  <text class="small" x="681" y="346">schema + policy</text>
+
+  <rect class="box adapter" x="450" y="295" width="150" height="70"/>
+  <text class="label" x="485" y="326">Capability</text>
+  <text class="small" x="474" y="346">builtin / adapter</text>
+
+  <rect class="box adapter" x="250" y="295" width="145" height="70"/>
+  <text class="label" x="286" y="326">Provider</text>
+  <text class="small" x="274" y="346">mock / stdio / mcp</text>
+
+  <rect class="box obs" x="450" y="475" width="160" height="70"/>
+  <text class="label" x="486" y="506">Trace / Audit</text>
+  <text class="small" x="474" y="526">correlation chain</text>
+
+  <rect class="box rust" x="655" y="475" width="150" height="70"/>
+  <text class="label" x="696" y="506">Result</text>
+  <text class="small" x="680" y="526">JSON / text / code</text>
+
+  <path class="arrow" d="M195 160 H250"/>
+  <path class="arrow" d="M395 160 H450"/>
+  <path class="arrow" d="M600 160 H655"/>
+  <path class="arrow" d="M805 160 H860"/>
+  <path class="arrow" d="M942 195 V295"/>
+  <path class="arrow" d="M860 330 H805"/>
+  <path class="arrow" d="M655 330 H600"/>
+  <path class="arrow" d="M450 330 H395"/>
+  <path class="arrow" d="M322 365 C322 455 655 455 730 475"/>
+  <path class="arrow" d="M730 475 C820 450 1070 425 1070 160 C1070 104 128 100 128 125"/>
+  <path class="audit" d="M525 365 V475"/>
+  <path class="audit" d="M730 365 V475"/>
+  <text class="small" x="67" y="605">失败路径：任何阶段失败都返回 `EvaError`，写入 audit，必要时进入 dead letter；重试只允许无副作用或显式幂等能力。</text>
+</svg>

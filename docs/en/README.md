@@ -33,8 +33,9 @@ implementation-spec content until the English full-detail migration catches up.
 15. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
 16. [Design Risk Review](design-risk-review.md)
 17. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
-18. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
-19. [Website and Documentation i18n](website-docs-i18n.md)
+18. [Full Implementation Plan](full-implementation-plan.md)
+19. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
+20. [Website and Documentation i18n](website-docs-i18n.md)
 
 ## Core Boundaries
 
