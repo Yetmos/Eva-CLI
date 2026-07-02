@@ -2,12 +2,16 @@
 
 pub mod eva_yaml;
 pub mod manifest;
+pub mod policy;
+pub mod routes;
 pub mod schema;
 
 use crate::eva_yaml::{ConfigRoots, EvaConfig};
 use crate::manifest::adapter::{load_adapter_manifest, AdapterManifest};
 use crate::manifest::agent::{load_agent_manifest, AgentManifest};
 use crate::manifest::capability::{load_capability_manifest, CapabilityManifest};
+use crate::policy::{load_policy_document, PolicyDocument};
+use crate::routes::{load_routes, RouteConfig};
 use eva_core::EvaError;
 use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,6 +22,7 @@ pub use eva_yaml::{load_eva_config, RuntimeConfig};
 pub use manifest::adapter::{AdapterTransport, RawAdapterTransport};
 pub use manifest::agent::AgentManifestPermissions;
 pub use manifest::capability::{CapabilityKind, RawCapabilityKind};
+pub use routes::{RawRouteDelivery, RouteDelivery, RouteRule};
 pub use schema::{schema_paths, SchemaPaths};
 
 /// Project-level configuration assembled from `eva.yaml` and split manifests.
@@ -37,6 +42,10 @@ pub struct ProjectConfig {
     pub adapters: Vec<AdapterManifest>,
     /// Loaded capability manifests.
     pub capabilities: Vec<CapabilityManifest>,
+    /// Loaded policy documents.
+    pub policies: Vec<PolicyDocument>,
+    /// Loaded route table.
+    pub routes: RouteConfig,
 }
 
 /// Loads the minimum project configuration set from a project root directory.
@@ -60,6 +69,11 @@ pub fn load_project_config(project_root: impl AsRef<Path>) -> Result<ProjectConf
         .into_iter()
         .map(load_capability_manifest)
         .collect::<Result<Vec<_>, _>>()?;
+    let policies = find_yaml_files(&roots.policy_dir)?
+        .into_iter()
+        .map(load_policy_document)
+        .collect::<Result<Vec<_>, _>>()?;
+    let routes = load_routes(&roots.route_file)?;
 
     let project = ProjectConfig {
         project_root,
@@ -69,6 +83,8 @@ pub fn load_project_config(project_root: impl AsRef<Path>) -> Result<ProjectConf
         agents,
         adapters,
         capabilities,
+        policies,
+        routes,
     };
     validate_project_config(&project)?;
     Ok(project)
@@ -83,6 +99,7 @@ pub fn validate_project_config(project: &ProjectConfig) -> Result<(), EvaError> 
     validate_agent_references(&project.agents)?;
     validate_agent_scripts(&project.agents)?;
     validate_capability_providers(project)?;
+    validate_route_agents(project)?;
     Ok(())
 }
 
@@ -101,25 +118,25 @@ where
 pub(crate) fn invalid_config(
     config_type: &'static str,
     path: &Path,
-    field: &'static str,
+    field: impl Into<String>,
     message: impl Into<String>,
 ) -> EvaError {
     EvaError::invalid_argument(message)
         .with_context("config_type", config_type)
         .with_context("path", path.display().to_string())
-        .with_context("field", field)
+        .with_context("field", field.into())
 }
 
 pub(crate) fn with_field_context(
     error: EvaError,
     config_type: &'static str,
     path: &Path,
-    field: &'static str,
+    field: impl Into<String>,
 ) -> EvaError {
     error
         .with_context("config_type", config_type)
         .with_context("path", path.display().to_string())
-        .with_context("field", field)
+        .with_context("field", field.into())
 }
 
 pub(crate) fn require_non_empty(
@@ -288,6 +305,27 @@ fn validate_capability_providers(project: &ProjectConfig) -> Result<(), EvaError
     Ok(())
 }
 
+fn validate_route_agents(project: &ProjectConfig) -> Result<(), EvaError> {
+    let agents = project
+        .agents
+        .iter()
+        .map(|agent| agent.id.as_str().to_owned())
+        .collect::<BTreeSet<_>>();
+
+    for route in &project.routes.routes {
+        for agent in &route.agents {
+            if !agents.contains(agent.as_str()) {
+                return Err(EvaError::not_found("Route target Agent does not exist")
+                    .with_context("agent_id", agent.as_str())
+                    .with_context("pattern", route.pattern.as_str())
+                    .with_context("path", project.routes.path.display().to_string()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn find_named_files(root: &Path, filename: &str) -> Result<Vec<PathBuf>, EvaError> {
     let mut files = Vec::new();
     collect_files(root, &mut files, &|path| {
@@ -405,6 +443,8 @@ mod tests {
         assert!(!project.agents.is_empty());
         assert!(!project.adapters.is_empty());
         assert!(!project.capabilities.is_empty());
+        assert!(!project.policies.is_empty());
+        assert!(!project.routes.routes.is_empty());
         assert!(project.roots.route_file.is_file());
         assert!(project.roots.schema_dir.is_dir());
     }
@@ -418,5 +458,17 @@ mod tests {
         let error = validate_project_config(&project).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Conflict);
         assert!(error.message().contains("duplicate Agent"));
+    }
+
+    #[test]
+    fn validate_project_config_rejects_unknown_route_agent() {
+        let mut project = load_project_config(workspace_root()).unwrap();
+        project.routes.routes[0]
+            .agents
+            .push("missing-agent".try_into().unwrap());
+
+        let error = validate_project_config(&project).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert!(error.message().contains("Route target"));
     }
 }

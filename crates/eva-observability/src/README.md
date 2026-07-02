@@ -2,8 +2,21 @@
 
 ## 中文
 
-这里保存 tracing、metrics 和 audit 相关 trait 与字段定义。它只记录和传递观测信息，不做业务路由或授权判断。
+源码按三类观测契约组织：
+
+| 文件 | 职责 |
+| --- | --- |
+| `trace.rs` | `TraceFields`、`SpanId` 和从 `eva-core::Event` 提取链路字段 |
+| `audit.rs` | `AuditAction`、`AuditOutcome`、`AuditEvent`、`AuditSink` |
+| `metrics.rs` | `MetricName`、`MetricLabels`、`MetricKind`、`MetricPoint`、`MetricSink` |
+
+实现约束：
+
+- 字段名必须稳定，后续 CLI JSON、audit 和 metrics 后端复用同一套命名。
+- sink trait 只定义写入边界，不选择后端。
+- `TraceFields::from_event` 不解释 payload。
+- `MetricLabels` 使用有序 map，避免测试、日志和快照输出顺序漂移。
 
 ## English
 
-This directory contains tracing, metrics, and audit traits and field definitions. It records and propagates observability data only; it does not route business logic or authorize requests.
+Trace, audit, and metrics contracts are intentionally backend-free. Runtime and CLI code can depend on the shared fields without pulling in a logging implementation.

@@ -2,8 +2,22 @@
 
 ## 中文
 
-这里保存权限合并、权限收紧和沙箱策略逻辑。任何策略计算只能收紧权限，不能替 Agent、Adapter 或请求放宽权限边界。
+源码按三层组织：
+
+| 文件 | 职责 |
+| --- | --- |
+| `permissions.rs` | `PermissionSet`、allowlist、超时和扩权检测 |
+| `sandbox.rs` | `SandboxPolicy`、Lua 默认沙箱和沙箱收紧规则 |
+| `effective.rs` | `PolicyLayer` 与 `EffectivePolicy` 合并入口 |
+
+实现约束：
+
+- 只使用纯数据结构和 `eva-core::EvaError`。
+- 合并策略只能收紧，不能放宽。
+- `None` allowlist 表示当前层不约束，`Some(empty)` 表示当前层显式允许空集合。
+- request 是否可执行由 `EffectivePolicy::ensure_request_allowed` 判断。
+- 后续新增 policy domain 时，应先保持领域解析和副作用执行在其它 crate 中，`eva-policy` 只接收已归一化的策略层。
 
 ## English
 
-This directory contains permission merging, permission narrowing, and sandbox policy logic. Policy evaluation may only narrow permissions; it must not expand boundaries for Agents, Adapters, or requests.
+The source is split into permission sets, sandbox policy, and effective policy merging. Policy evaluation is pure data work and may only narrow permissions.

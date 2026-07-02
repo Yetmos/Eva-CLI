@@ -45,10 +45,14 @@ pub const ADAPTER_TRANSPORT_VALUES: &[&str] = &[
 pub const CAPABILITY_KIND_VALUES: &[&str] =
     &["adapter_capability", "lua_capability", "mcp_tool", "skill"];
 
+/// Topic route delivery values currently accepted by `eva-config`.
+pub const ROUTE_DELIVERY_VALUES: &[&str] = &["fanout", "compete"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::eva_yaml::load_eva_config;
+    use crate::routes::RouteDelivery;
     use std::path::{Path, PathBuf};
 
     fn workspace_root() -> PathBuf {
@@ -76,5 +80,12 @@ mod tests {
         assert!(ADAPTER_TRANSPORT_VALUES.contains(&"mcp"));
         assert!(CAPABILITY_KIND_VALUES.contains(&"adapter_capability"));
         assert!(CAPABILITY_KIND_VALUES.contains(&"mcp_tool"));
+        assert_eq!(
+            ROUTE_DELIVERY_VALUES
+                .iter()
+                .map(|value| RouteDelivery::parse(value).unwrap().as_str())
+                .collect::<Vec<_>>(),
+            ROUTE_DELIVERY_VALUES
+        );
     }
 }

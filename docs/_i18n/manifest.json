@@ -598,6 +598,23 @@
       "sourceCoverage": "summary-or-entry"
     },
     {
+      "id": "v0.2-contract-config-acceptance",
+      "title": "V0.2 Contract and Configuration Acceptance",
+      "source": "docs/en/v0.2-contract-config-acceptance.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V0.2契约与配置稳定验收记录.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/V0.2契约与配置稳定验收记录.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
+    },
+    {
       "id": "command-line-tool-feature-design",
       "title": "Command-Line Tool Feature Design",
       "source": "docs/en/command-line-tool-feature-design.md",

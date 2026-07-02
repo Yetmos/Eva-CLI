@@ -35,8 +35,9 @@ implementation-spec content until the English full-detail migration catches up.
 17. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
 18. [Full Implementation Plan](full-implementation-plan.md)
 19. [V0.1 Baseline Acceptance](v0.1-baseline-acceptance.md)
-20. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
-21. [Website and Documentation i18n](website-docs-i18n.md)
+20. [V0.2 Contract and Configuration Acceptance](v0.2-contract-config-acceptance.md)
+21. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
+22. [Website and Documentation i18n](website-docs-i18n.md)
 
 ## Core Boundaries
 

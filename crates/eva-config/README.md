@@ -34,9 +34,11 @@ project root
 | Agent manifest | 已完成 | 校验 `AgentId`、`parent`、`children`、`script`、`subscriptions`、部分权限字段 |
 | Adapter manifest | 已完成 | 校验 `AdapterId`、`transport` 和 `capabilities` |
 | Capability manifest | 已完成 | 校验 `CapabilityId`、`kind`、runtime `CapabilityName` 和 provider 引用格式 |
-| 项目级聚合 | 已完成 | `load_project_config` 汇总主配置和三类 manifest |
-| 跨文件一致性 | 已完成 | 检查重复 ID、Agent 父子引用、Agent 脚本文件、Capability provider Adapter |
-| schema 辅助 | 已完成 | 暴露 schema 路径和当前支持的枚举值 |
+| Policy document | 已完成 | 加载 `config/policies/*.yaml` 为 extensible domain map，最终解释留给 `eva-policy` |
+| Routes 配置 | 已完成 | 加载 `config/routes/topics.yaml`，校验 `TopicPattern`、delivery 和目标 Agent ID |
+| 项目级聚合 | 已完成 | `load_project_config` 汇总主配置、三类 manifest、policy 文档和 routes |
+| 跨文件一致性 | 已完成 | 检查重复 ID、Agent 父子引用、Agent 脚本文件、Capability provider Adapter、Route target Agent |
+| schema 辅助 | 已完成 | 暴露 schema 路径和当前支持的枚举值，包括 route delivery |
 | 完整 JSON Schema validator | 未实现 | 后续独立切片 |
 | CLI `eva validate` | 未实现 | 下一阶段接入 `eva-cli` |
 
@@ -48,6 +50,8 @@ project root
 | `load_agent_manifest` | `impl AsRef<Path>` | `Result<AgentManifest, EvaError>` | 读取单个 Agent manifest |
 | `load_adapter_manifest` | `impl AsRef<Path>` | `Result<AdapterManifest, EvaError>` | 读取单个 Adapter manifest |
 | `load_capability_manifest` | `impl AsRef<Path>` | `Result<CapabilityManifest, EvaError>` | 读取单个 Capability manifest |
+| `load_policy_document` | `impl AsRef<Path>` | `Result<PolicyDocument, EvaError>` | 读取单个 policy YAML 文档 |
+| `load_routes` | `impl AsRef<Path>` | `Result<RouteConfig, EvaError>` | 读取 Topic route table |
 | `load_project_config` | `impl AsRef<Path>` | `Result<ProjectConfig, EvaError>` | 从项目根目录加载最小配置集合 |
 | `validate_project_config` | `&ProjectConfig` | `Result<(), EvaError>` | 做跨文件一致性检查 |
 | `schema_paths` | `&ConfigRoots` | `SchemaPaths` | 生成标准 schema 文件路径 |
@@ -62,7 +66,10 @@ project root
 | `AgentManifest` | `src/manifest/agent.rs` | `id`、`enabled`、`parent`、`children`、`script`、`subscriptions`、`permissions` | Agent 注册前配置契约 |
 | `AdapterManifest` | `src/manifest/adapter.rs` | `id`、`name`、`version`、`enabled`、`transport`、`capabilities` | Adapter 注册前配置契约 |
 | `CapabilityManifest` | `src/manifest/capability.rs` | `id`、`name`、`version`、`enabled`、`kind`、`capability`、`provider` | Capability 注册前配置契约 |
-| `ProjectConfig` | `src/lib.rs` | `eva`、`roots`、`agents`、`adapters`、`capabilities` | `eva validate` 和 runtime composition 的最小输入 |
+| `PolicyDocument` | `src/policy.rs` | `path`、`domains` | policy 文件加载结果，领域解释不在 `eva-config` |
+| `RouteConfig` | `src/routes.rs` | `path`、`routes` | Topic route table |
+| `RouteRule` | `src/routes.rs` | `pattern`、`delivery`、`agents` | Scheduler 注册前路由契约 |
+| `ProjectConfig` | `src/lib.rs` | `eva`、`roots`、`agents`、`adapters`、`capabilities`、`policies`、`routes` | `eva validate` 和 runtime composition 的最小输入 |
 | `SchemaPaths` | `src/schema.rs` | `eva`、`agent`、`adapter`、`capability`、`policy`、`routes` | schema 文件位置入口 |
 
 ### eva-core 契约复用
@@ -79,6 +86,8 @@ project root
 | `capability.id` | `eva_core::CapabilityId` | 稳定 ID newtype |
 | `capability.capability` | `eva_core::CapabilityName` | CapabilityName parser |
 | `capability.provider` | `Option<eva_core::AdapterId>` | 稳定 ID newtype |
+| `routes[].pattern` | `eva_core::TopicPattern` | TopicPattern parser |
+| `routes[].agents[]` | `Vec<eva_core::AgentId>` | 稳定 ID newtype |
 | 加载/校验错误 | `eva_core::EvaError` | 结构化错误模型 |
 
 ### 错误语义
@@ -93,13 +102,15 @@ project root
 | Capability kind 不支持 | `Unsupported` | `kind` |
 | 跨文件引用不存在 | `NotFound` | 引用方 ID、被引用 ID、文件路径 |
 | 重复 ID | `Conflict` | 重复 ID、首次文件、冲突文件 |
+| route delivery 不支持 | `Unsupported` | `delivery` |
+| policy document 不是非空 mapping | `InvalidArgument` | `path`、`config_type` |
 
 ### 测试与验证
 
 | 命令 | 当前结果 |
 | --- | --- |
 | `cargo fmt -p eva-config --check` | 通过 |
-| `cargo test -p eva-config` | 通过，19 个测试 |
+| `cargo test -p eva-config` | 通过，27 个测试 |
 | `cargo check -p eva-config` | 通过 |
 | `cargo check --workspace` | 通过 |
 | `cargo test --workspace` | 通过 |
@@ -118,8 +129,12 @@ project root
 | `load_adapter_manifest_rejects_invalid_capability_name` | 非法 capability name 会失败 |
 | `load_capability_manifest_accepts_sample_capability` | 示例 Capability manifest 可加载 |
 | `load_capability_manifest_rejects_invalid_runtime_capability` | 非法 runtime capability 会失败 |
+| `load_policy_document_accepts_sample_policy` | 示例 policy 文件可加载 |
+| `load_routes_accepts_sample_routes` | 示例 routes 文件可加载 |
+| `route_config_rejects_unknown_delivery` | 未知 delivery 会失败 |
 | `project_config_loads_all_config_roots` | 项目级加载能汇总主配置和 manifest |
 | `validate_project_config_rejects_duplicate_agent_id` | 重复 Agent ID 会失败 |
+| `validate_project_config_rejects_unknown_route_agent` | routes 指向未知 Agent 会失败 |
 
 ### 下一步开发计划
 
@@ -127,8 +142,8 @@ project root
 | --- | --- | --- | --- |
 | P0 | 接入 `eva validate` | `eva-cli` + `eva-config` | CLI 可以输出人类可读和机器可读的配置验证结果 |
 | P0 | 补完整 JSON Schema validator | `eva-config` | schema 校验错误能定位到文件、字段和 schema 规则 |
-| P1 | 增加 policy 配置加载结构 | `eva-config` + `eva-policy` | policy YAML 可加载，effective policy 合并仍在 `eva-policy` |
-| P1 | 增加 routes 文件加载入口 | `eva-config` + `eva-scheduler` | route YAML 可加载，Topic 展开仍在 `eva-scheduler` |
+| P1 | 解释 policy domain 到 `PolicyLayer` | `eva-policy` + runtime 调用方 | policy YAML 已可加载，下一步把具体领域字段转成策略层 |
+| P1 | 将 routes 接入 Scheduler registry | `eva-scheduler` | route YAML 已可加载，下一步由 Scheduler 执行路由注册 |
 | P1 | 扩展 manifest 交叉检查 | `eva-config` | Adapter capability、Capability provider、Agent permission 引用能互相校验 |
 | P2 | examples/basic 配置闭环 | `examples/basic` | 能从配置加载走到最小事件投递示例 |
 | P2 | 文档和 schema 生成检查 | `docs` + `config/schemas` | README、Rust 类型、schema required 字段持续对齐 |
@@ -158,9 +173,11 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | Agent manifest | Done | Validates `AgentId`, parent/child ids, scripts, subscriptions, and selected permission fields |
 | Adapter manifest | Done | Validates `AdapterId`, supported transport, and capability names |
 | Capability manifest | Done | Validates `CapabilityId`, kind, runtime capability name, and provider id syntax |
-| Project aggregation | Done | `load_project_config` collects main config and all manifests |
-| Cross-file validation | Done | Checks duplicate IDs, Agent references, Agent scripts, and Capability provider Adapters |
-| Schema helpers | Done | Exposes standard schema paths and supported enum values |
+| Policy documents | Done | Loads extensible policy YAML documents while domain interpretation stays outside `eva-config` |
+| Routes config | Done | Loads topic route tables and validates topic patterns, delivery mode, and target Agent IDs |
+| Project aggregation | Done | `load_project_config` collects main config, manifests, policy documents, and routes |
+| Cross-file validation | Done | Checks duplicate IDs, Agent references, Agent scripts, Capability provider Adapters, and Route target Agents |
+| Schema helpers | Done | Exposes standard schema paths and supported enum values, including route delivery |
 | Full JSON Schema validator | Not started | Planned as a separate slice |
 | CLI `eva validate` | Not started | Planned for the next milestone |
 
@@ -172,6 +189,8 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | `load_agent_manifest` | `impl AsRef<Path>` | `Result<AgentManifest, EvaError>` | Load one Agent manifest |
 | `load_adapter_manifest` | `impl AsRef<Path>` | `Result<AdapterManifest, EvaError>` | Load one Adapter manifest |
 | `load_capability_manifest` | `impl AsRef<Path>` | `Result<CapabilityManifest, EvaError>` | Load one Capability manifest |
+| `load_policy_document` | `impl AsRef<Path>` | `Result<PolicyDocument, EvaError>` | Load one policy YAML document |
+| `load_routes` | `impl AsRef<Path>` | `Result<RouteConfig, EvaError>` | Load the topic route table |
 | `load_project_config` | `impl AsRef<Path>` | `Result<ProjectConfig, EvaError>` | Load the minimum project-level config set |
 | `validate_project_config` | `&ProjectConfig` | `Result<(), EvaError>` | Validate cross-file consistency |
 | `schema_paths` | `&ConfigRoots` | `SchemaPaths` | Build standard schema file paths |
@@ -181,7 +200,7 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | Command | Result |
 | --- | --- |
 | `cargo fmt -p eva-config --check` | Passed |
-| `cargo test -p eva-config` | Passed, 19 tests |
+| `cargo test -p eva-config` | Passed, 27 tests |
 | `cargo check -p eva-config` | Passed |
 | `cargo check --workspace` | Passed |
 | `cargo test --workspace` | Passed |
@@ -192,8 +211,8 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | --- | --- | --- | --- |
 | P0 | Wire `eva validate` | `eva-cli` + `eva-config` | CLI reports config validation results in human-readable and machine-readable forms |
 | P0 | Add full JSON Schema validation | `eva-config` | Schema errors include file, field, and schema rule context |
-| P1 | Add policy config loading structures | `eva-config` + `eva-policy` | Policy YAML can be loaded while final merging stays in `eva-policy` |
-| P1 | Add route file loading entrypoint | `eva-config` + `eva-scheduler` | Route YAML can be loaded while topic expansion stays in `eva-scheduler` |
+| P1 | Interpret policy domains as `PolicyLayer`s | `eva-policy` + runtime caller | Policy YAML is loaded; concrete domains still need mapping into policy layers |
+| P1 | Wire routes into Scheduler registry | `eva-scheduler` | Route YAML is loaded; Scheduler still owns delivery behavior |
 | P1 | Expand manifest cross-checks | `eva-config` | Adapter capabilities, Capability providers, and Agent permissions can be checked together |
 | P2 | Build `examples/basic` config path | `examples/basic` | Sample config reaches a minimal event delivery flow |
 | P2 | Keep docs, Rust types, and schemas aligned | `docs` + `config/schemas` | README tables, type definitions, and schema required fields stay consistent |
