@@ -2,7 +2,7 @@
 
 > 语言：[English](README.md) | 简体中文
 
-Eva-CLI 当前处于架构方案整理阶段，仓库内主要内容是 `docs/` 下的设计文档，还不是可运行实现。官网默认入口和稳定 slug 使用英文，中文文档当前仍是架构详案与实现规格细节的事实主源。
+Eva-CLI 当前已经从纯架构方案整理进入 Rust 实现阶段。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载，以及 V0.3 的 CLI 开发闭环和 no-op runtime 组合根。真实事件处理 runtime 闭环仍属于 V0.4 后续目标。
 
 官网：
 
@@ -13,14 +13,13 @@ Eva-CLI 当前处于架构方案整理阶段，仓库内主要内容是 `docs/` 
 
 ## 当前进度
 
-Eva-CLI 已经完成第一轮实现所需的大部分架构和方案文档工作。下一阶段应从文档进入
-可执行结构：
+Eva-CLI 已经完成第一轮实现所需的大部分架构和方案文档工作，并完成 V0.1 到 V0.3 的基础实现：
 
-1. 创建 Rust 项目和模块结构；
-2. 定义第一批 manifest、event、policy、error 和 Lua host API 契约；
-3. 搭建最小可运行 CLI 骨架；
-4. 实现最小端到端 Runtime 闭环；
-5. 在测试保护下逐个模块扩展。
+1. Rust workspace 和 19 个 crate 边界已创建；
+2. `eva-core`、`eva-config`、`eva-policy`、`eva-observability` 已具备基础契约；
+3. `eva-cli` 已实现 `doctor`、`config validate`、`inspect` 和受保护的 `run` 命令；
+4. `eva-runtime` 已实现 no-op `RuntimeBuilder`、`RuntimeSummary`、service summary 和幂等 shutdown；
+5. 下一阶段进入 V0.4，目标是实现最小端到端 Runtime 闭环。
 
 完整阶段划分见 [从零到 1.0 版本路线图](docs/zh-CN/从零到1.0版本路线图.md)。
 

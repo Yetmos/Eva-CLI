@@ -3,6 +3,7 @@
 pub mod adapter;
 pub mod agent;
 pub mod capability;
+pub mod doctor;
 pub mod emit;
 pub mod inspect;
 pub mod run;

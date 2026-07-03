@@ -62,6 +62,9 @@ dependencies = [
 name = "eva-cli"
 version = "0.1.0"
 dependencies = [
+ "eva-config",
+ "eva-core",
+ "eva-observability",
  "eva-runtime",
 ]
 

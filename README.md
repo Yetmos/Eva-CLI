@@ -21,27 +21,27 @@ maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
 
 ## Current Project Progress
 
-Updated: 2026-07-01
+Updated: 2026-07-03
 
 Eva-CLI has moved past a design-only repository. It now has a compileable Rust
-workspace, module boundary scaffolding, configuration examples and schemas, and
-the first real foundation contract crate (`eva-core`). Most runtime crates are
-still placeholders that define ownership boundaries but do not yet implement
-behavior.
+workspace, configuration examples and schemas, implemented foundation contracts,
+project configuration loading, and the V0.3 developer loop through the CLI and
+no-op runtime composition root. The event-processing runtime loop is still a
+future V0.4 milestone.
 
 | Area | Status | Evidence | Remaining Work |
 | --- | --- | --- | --- |
 | Architecture and docs | Mostly complete for the first implementation cycle | English and Simplified Chinese docs, diagrams, website pages, roadmap, risk review | Keep docs synchronized with implementation; turn remaining design assumptions into executable contracts |
 | Website and docs publishing | Implemented | Static website source, localized content, validation/build scripts | Continue content maintenance and CI verification as product behavior changes |
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 19 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
-| Configuration examples and schemas | Partial | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, and JSON schemas | Wire schema loading and validation into `eva-config` and CLI commands |
-| `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with 47 unit tests and stable re-exports | Downstream crates still need to adopt these public types; serde/JSON support should be reviewed separately |
-| `eva-cli` | Scaffold only | Root binary delegates to `eva-cli`; command modules exist | Implement real `run`, `validate`, `doctor`, `emit`, `inspect`, agent, adapter, and capability commands |
-| Runtime composition | Scaffold only | `eva-runtime` crate and modules exist | Build service wiring, startup/shutdown, config loading, and runtime lifecycle |
+| Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
+| `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
+| `eva-cli` | V0.3 implemented | `doctor`, `config validate`, `inspect`, guarded `run`, text/JSON output, trace fields, and exit-code mapping | V0.4 connects `run` to the minimum event loop |
+| Runtime composition | V0.3 implemented | No-op `RuntimeBuilder`, `RuntimeSummary`, service summaries, and idempotent shutdown | V0.4 wires storage, EventBus, Scheduler, Agent, Lua host, and capability router |
 | EventBus and Scheduler | Scaffold only | `eva-eventbus` and `eva-scheduler` crates exist | Implement publish/recover/dead-letter behavior, topic subscriptions, routing, and mailbox delivery |
 | Agent and Lua host | Scaffold only | `eva-agent` and `eva-lua-host` crates exist | Implement lifecycle, queues, Lua loading, sandboxing, bindings, and hot reload |
 | Capability and Adapter layers | Scaffold only | `eva-capability` and `eva-adapter` crates exist | Implement registries, provider routing, authorized transports, errors, and generation swaps |
-| Policy, observability, storage | Scaffold only | `eva-policy`, `eva-observability`, and `eva-storage` crates exist | Implement effective permission narrowing, trace/audit/metrics contracts, state store, event log, and artifacts |
+| Policy, observability, storage | Mixed | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` is still scaffolded | Wire policy/observability into runtime behavior; implement state store, event log, and artifacts |
 | Discovery, MCP, memory, hardware, backup, lifecycle | Scaffold only | Dedicated crates and module boundaries exist | Implement trusted discovery, MCP mapping, memory/context services, hardware hotplug, backup/release snapshots, and supervisor generation flow |
 | Verification baseline | Passing | `cargo fmt --check`, `cargo test -p eva-core`, `cargo check --workspace`, `cargo doc -p eva-core --no-deps`, `cargo test --workspace` | Add CI coverage for future runtime behavior, schema validation, examples, and integration tests |
 

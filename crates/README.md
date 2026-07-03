@@ -1,6 +1,6 @@
 # Crates / Rust 子模块
 
-更新时间：2026-07-02
+更新时间：2026-07-03
 
 ![Eva module implementation roadmap](assets/eva-module-implementation-roadmap.svg)
 
@@ -23,8 +23,8 @@
 | `eva-config` | 配置加载、manifest、routes、policy document | 已完成 V0.2 | V0.3 接 CLI | [README](eva-config/README.md) |
 | `eva-policy` | 权限集合、沙箱策略、effective policy | 已完成 V0.2 | V0.3/V0.4 接 runtime | [README](eva-policy/README.md) |
 | `eva-observability` | trace、audit、metrics 契约 | 已完成 V0.2 | V0.3/V0.4 接输出 | [README](eva-observability/README.md) |
-| `eva-cli` | 命令行入口和结构化输出 | 骨架 | V0.3 | [README](eva-cli/README.md) |
-| `eva-runtime` | 服务装配、runtime builder、shutdown | 骨架 | V0.3/V0.4 | [README](eva-runtime/README.md) |
+| `eva-cli` | 命令行入口和结构化输出 | 已完成 V0.3 最小开发闭环 | V0.4 接 `run` 事件循环 | [README](eva-cli/README.md) |
+| `eva-runtime` | 服务装配、runtime builder、shutdown | 已完成 V0.3 no-op 组合根 | V0.4 接真实服务 wiring | [README](eva-runtime/README.md) |
 | `eva-storage` | StateStore、EventLog、ArtifactStore | 骨架 | V0.4 | [README](eva-storage/README.md) |
 | `eva-eventbus` | publish/subscribe、replay、dead letter | 骨架 | V0.4 | [README](eva-eventbus/README.md) |
 | `eva-scheduler` | Topic 匹配、订阅表、mailbox 投递 | 骨架 | V0.4 | [README](eva-scheduler/README.md) |
@@ -45,7 +45,7 @@
 | --- | --- | --- | --- | --- | --- |
 | 1 | V0.1 | workspace、`eva-core` | crate 划分、基础契约、文档图谱 | 已完成 | `cargo test --workspace` 通过 |
 | 2 | V0.2 | `eva-config`、`eva-policy`、`eva-observability` | 配置加载、权限收紧、观测字段 | 已完成 | 模块测试和 workspace 测试通过 |
-| 3 | V0.3 | `eva-cli`、`eva-runtime`、`eva-config` | `doctor`、`config validate`、`inspect`、no-op runtime builder | 待实现 | CLI 可输出结构化诊断 |
+| 3 | V0.3 | `eva-cli`、`eva-runtime`、`eva-config` | `doctor`、`config validate`、`inspect`、no-op runtime builder | 已完成 | CLI 可输出结构化诊断，runtime summary 可读取 |
 | 4 | V0.4 | `eva-storage`、`eva-eventbus`、`eva-scheduler`、`eva-agent`、`eva-lua-host`、`eva-capability` | 最小事件运行闭环 | 待实现 | `examples/basic/` 端到端可运行 |
 | 5 | V0.5 | `eva-agent`、`eva-lua-host`、`eva-eventbus`、`eva-cli` | 任务状态、取消、超时、重试、热更新雏形 | 待实现 | 长任务可观察、可取消 |
 | 6 | V1.1 | `eva-adapter`、`eva-mcp`、`eva-discovery` | 外部能力发现、probe、受控调用 | 待实现 | 外部能力只经 policy gate 执行 |

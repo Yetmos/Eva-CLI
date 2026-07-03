@@ -17,16 +17,21 @@ The plan splits implementation into two delivery layers:
   knowledge services, hardware hotplug, backup/snapshot services, supervisor
   lifecycle, release hardening, and cross-platform validation.
 
-Current baseline as of 2026-07-02:
+Current baseline as of 2026-07-03:
 
 - The Rust workspace contains 19 crates.
 - `eva-core` already implements the main data contracts for Topic, Event,
   Invoke, Capability, IDs, and structured errors.
 - `eva-config` already loads `eva.yaml`, Agent manifests, Adapter manifests,
-  Capability manifests, and project-level config.
-- Most other crates are boundary skeletons and still need executable behavior.
-- `cargo test --workspace` passes with 66 unit tests, concentrated in
-  `eva-core` and `eva-config`.
+  Capability manifests, routes, policy documents, and project-level config.
+- V0.3 is implemented: `eva-cli` provides `doctor`, `config validate`,
+  `inspect`, structured text/JSON output, exit-code mapping, and a guarded
+  `run` command that stops before the V0.4 event loop.
+- V0.3 is implemented in `eva-runtime`: no-op `RuntimeBuilder`,
+  `RuntimeSummary`, service summaries, and idempotent shutdown.
+- Runtime execution crates such as EventBus, Scheduler, Agent, Lua host,
+  capability execution, Adapter/MCP/Discovery, memory, hardware, backup, and
+  lifecycle remain future implementation work.
 
 Use the Chinese detailed plan for the module-by-module progress tables,
 versioned iteration plan, implementation order, diagrams, and acceptance

@@ -1,79 +1,80 @@
 # eva-cli / 命令行入口
 
-更新时间：2026-07-02
+更新时间：2026-07-03
 
-![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
+`eva-cli` 是 Eva-CLI 的用户面边界，负责命令解析、参数校验、文本/JSON 输出、trace 字段透传和 exit code 映射。它不持有 runtime 状态，不直接执行 EventBus、Agent、Lua、Adapter、MCP 或硬件 I/O；这些副作用必须等对应 runtime 服务实现后再通过组合根进入。
 
-`eva-cli` 负责 Eva-CLI 的用户入口、命令解析、结构化输出和退出码映射。它可以调用 `eva-config`、`eva-policy`、`eva-observability` 和 `eva-runtime` 暴露的服务，但不拥有核心运行时状态，不直接读写 Agent 内部队列，不绕过 runtime 调用 Adapter、Lua、MCP 或硬件能力。
+## V0.3 已实现范围
 
-## 当前模块功能说明
-
-| 功能域 | 当前状态 | 目标行为 |
+| 命令 | 当前行为 | 副作用边界 |
 | --- | --- | --- |
-| `run` | 骨架 | 作为默认入口调用 runtime composition root，后续承载 `eva run` 和示例启动。 |
-| `doctor` 入口 | 未实现 | 检查 workspace、配置文件、schema、数据目录、权限策略和可选外部工具。 |
-| `config validate` | 未实现 | 调用 `eva-config::load_project_config` 和 `validate_project_config`，输出 human/json 两种诊断。 |
-| `inspect` | 骨架 | 展示 effective config、routes、policy summary、runtime status，默认不输出敏感信息。 |
-| `emit` | 骨架 | 构造受校验的 ingress event，后续通过 runtime/eventbus 发布。 |
-| `agent` | 骨架 | 查询 Agent 列表、状态、mailbox 统计、任务状态和取消请求。 |
-| `adapter` | 骨架 | 查询 Adapter manifest、probe 状态、transport 能力和 policy 限制。 |
-| `capability` | 骨架 | 列出 capability、provider、schema、可调用性和路由结果。 |
-| 输出契约 | 未实现 | 统一 `{ok,data,error,trace}` JSON envelope，错误来自 `EvaError`。 |
-| 退出码 | 未实现 | 成功为 0，配置错误、权限拒绝、运行时错误、内部错误使用稳定枚举映射。 |
+| `eva doctor` | 检查 workspace 根、`Cargo.toml`、`config/eva.yaml`、配置根、schema 文件、Lua host crate 边界和 no-op runtime builder。 | 只读文件系统，不启动 runtime。 |
+| `eva config validate` | 调用 `eva-config::load_project_config`，加载 `eva.yaml`、Agent/Adapter/Capability manifest、policy document 和 routes，并输出配置摘要。 | 只做加载与跨文件校验。 |
+| `eva inspect` | 输出 agents、adapters、capabilities、routes、policy domains 和 no-op runtime service summary。 | 只读 validated config 和 `RuntimeSummary`。 |
+| `eva inspect config/routes/policy/runtime/agents/adapters/capabilities` | 接受常用 inspect 子视图别名；V0.3 仍返回同一个综合摘要，避免过早承诺分裂输出结构。 | 只读。 |
+| `eva run` | 先加载配置并构造 no-op runtime，再返回 `Unsupported`，提示 V0.4 才会接真实事件循环。 | 不启动 EventBus、Agent 或 Lua。 |
 
-## 模块边界
+`emit`、`agent`、`adapter`、`capability` 模块仍保留为后续命令边界，目前不暴露稳定用户命令。
 
-`eva-cli` 做：
+## 全局参数
 
-- 解析命令行参数和环境变量。
-- 把配置、policy、runtime 返回值转成稳定输出。
-- 维护用户可读诊断和机器可读 JSON。
-- 执行前做 dry-run、plan、confirm 的用户交互门面。
-
-`eva-cli` 不做：
-
-- 不保存 runtime generation、mailbox、event log 或 Agent state。
-- 不直接执行 Lua、shell、MCP、HTTP、硬件 I/O。
-- 不重新实现配置解析、Topic 匹配或权限收紧逻辑。
-- 不在输出中泄露 secret、token、payload 大文本或 provider 私有错误。
-
-## 详细开发实施步骤
-
-| 顺序 | 版本 | 步骤 | 依赖 | 完成标准 |
-| --- | --- | --- | --- | --- |
-| 1 | V0.3 | 定义 command tree：`doctor`、`config validate`、`inspect`、`run`。 | 现有 `src/*.rs` 骨架 | `eva --help` 和子命令 help 可用。 |
-| 2 | V0.3 | 增加输出 envelope、错误转 exit code、human/json formatter。 | `eva-core::EvaError`、`eva-observability::TraceFields` | 错误输出可 snapshot 测试。 |
-| 3 | V0.3 | 实现 `config validate`，串联 `load_project_config` 和跨文件一致性检查。 | `eva-config` V0.2 | 示例配置成功，缺失脚本/重复 ID 有明确错误。 |
-| 4 | V0.3 | 实现 `doctor`，检查 Rust workspace、配置目录、数据目录和只读权限。 | `eva-config`、标准库 | 不启动 runtime 也能诊断环境。 |
-| 5 | V0.3 | 实现 `inspect config/routes/policy`，默认脱敏。 | `eva-config`、`eva-policy` | 输出稳定字段，支持 `--output json`。 |
-| 6 | V0.3 | 接入 no-op runtime builder，用于 `inspect runtime`。 | `eva-runtime` V0.3 | 可从 validated config 构造空运行时摘要。 |
-| 7 | V0.4 | 实现 `run --example basic` 和 `emit`，进入最小事件闭环。 | EventBus、Scheduler、Agent、Lua Host | `examples/basic/` 可端到端运行。 |
-| 8 | V0.5 | 增加 `task status/logs/cancel`，统一长任务查询。 | AgentRuntime、EventLog、AuditSink | 长任务可观察、可取消。 |
-| 9 | V1.1+ | 增加 `adapter probe`、`mcp list`、`discovery scan` 等扩展命令。 | Adapter/MCP/Discovery | 外部能力只展示候选和受控 handle。 |
-
-## 详细开发进度表
-
-| 文件/模块 | 具体功能 | 当前进度 | 下一步 |
-| --- | --- | --- | --- |
-| `src/lib.rs` | 公共 CLI 入口和模块导出 | 骨架，`run()` 委派到 `run::run()` | 引入命令解析入口和测试。 |
-| `src/run.rs` | 启动 runtime 或示例 | 仅引用 runtime 边界常量 | 实现 `eva run` 参数、dry-run、runtime builder 调用。 |
-| `src/inspect.rs` | 检查配置和运行时状态 | `RESPONSIBILITY` 占位 | 定义 inspect 子命令和 JSON 输出模型。 |
-| `src/emit.rs` | 发布受校验 ingress event | `RESPONSIBILITY` 占位 | 复用 `eva-core::Event` 构造器，接 runtime eventbus。 |
-| `src/agent.rs` | Agent 相关命令 | `RESPONSIBILITY` 占位 | 实现 `agent list/status/cancel` 命令模型。 |
-| `src/adapter.rs` | Adapter 相关命令 | `RESPONSIBILITY` 占位 | 实现 `adapter list/probe` 输出契约。 |
-| `src/capability.rs` | Capability 相关命令 | `RESPONSIBILITY` 占位 | 实现 `capability list/inspect/invoke --dry-run`。 |
-| `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和版本进度。 |
-| CLI 集成测试 | 命令输出和退出码 | 未开始 | 先覆盖 `config validate --output json`。 |
-
-## 验证计划
-
-| 阶段 | 命令 | 目标 |
+| 参数 | 支持命令 | 说明 |
 | --- | --- | --- |
-| V0.3 单模块 | `cargo test -p eva-cli` | 验证 parser、formatter、exit code。 |
-| V0.3 集成 | `cargo run -- config validate --output json` | 示例配置能输出稳定 JSON。 |
-| V0.4 端到端 | `cargo run -- run --example basic` | CLI 到 runtime 事件闭环可运行。 |
-| 回归 | `cargo test --workspace` | 下游接入不破坏契约模块。 |
+| `--project <path>` / `--project-root <path>` / `-p <path>` | `doctor`、`config validate`、`inspect`、`run` | 指向 Eva workspace 根目录；默认使用当前工作目录。 |
+| `--output text` / `--output human` / `-o text` | `doctor`、`config validate`、`inspect`、`run` | 输出人类可读文本。 |
+| `--output json` / `-o json` | `doctor`、`config validate`、`inspect`、`run` | 输出机器可读 JSON envelope。 |
+| `--help` / `-h` | 顶层 | 输出 V0.3 命令帮助。 |
 
-## English
+## 输出契约
 
-`eva-cli` owns command parsing, user-facing output, and exit-code mapping. It delegates configuration, policy, runtime, and execution work to lower crates and must not own runtime state or bypass policy-controlled service boundaries.
+文本模式先给结论，再列路径、数量、服务状态和建议。错误文本使用 `ERROR <command> [<kind>] <message>`，随后输出错误上下文和建议。
+
+JSON 成功输出使用统一 envelope：`ok`、`command`、`exit_code`、`data`、`trace`。JSON 错误输出使用 `ok`、`command`、`exit_code`、`error`、`trace`，其中 `error` 包含 `kind`、`message`、`retryable`、`provider_code`、`context` 和 `suggestion`。
+
+当前 trace 来源是 `eva-observability::TraceFields`，V0.3 先写入稳定 `span_id`，后续 runtime 事件闭环会继续补 `event_id`、`request_id`、`topic` 和 generation 字段。
+
+## Exit code
+
+| Code | 当前含义 | 来源 |
+| --- | --- | --- |
+| `0` | 成功。 | `doctor` 无 error check、`config validate` 成功、`inspect` 成功。 |
+| `1` | 内部错误。 | 输出失败或未预期内部错误。 |
+| `2` | 配置、路径、manifest、routes 或 schema 相关错误。 | `InvalidArgument`、`NotFound`、`Conflict`。 |
+| `3` | policy 拒绝。 | `PermissionDenied`。 |
+| `4` | runtime 当前不可用或能力尚未实现。 | `Timeout`、`Unavailable`、`Unsupported`，包括 V0.3 的 `eva run`。 |
+| `5` | 预留给外部能力不可用。 | V0.3 暂不返回，V1.1 Adapter/MCP probe 接入后启用。 |
+| `64` | 命令用法错误。 | 未知命令、未知选项、缺少参数值。 |
+
+## 与下层 crate 的关系
+
+- `eva-config` 负责 YAML、manifest、routes、policy document 加载与跨文件校验。
+- `eva-core` 负责 `EvaError`、`ErrorKind` 和基础契约类型。
+- `eva-observability` 提供 `TraceFields` 和 `SpanId`，CLI 只做展示，不自定义观测协议。
+- `eva-runtime` 提供 V0.3 no-op `RuntimeBuilder`、`RuntimeSummary` 和 service summary。
+
+## 已覆盖测试
+
+| 测试 | 覆盖内容 |
+| --- | --- |
+| `config_validate_json_succeeds_for_sample_project` | 样例 workspace 配置可被 CLI 加载并输出 JSON envelope。 |
+| `inspect_text_reports_noop_runtime` | `inspect` 文本输出包含 no-op runtime 和 agent 摘要。 |
+| `unknown_command_is_usage_error` | 未知命令返回 usage exit code。 |
+| `json_string_escapes_control_characters` | 手写 JSON formatter 会转义引号、反斜杠和控制字符。 |
+| `doctor_accepts_sample_project_with_only_v03_warnings` | `doctor` 对样例项目不产生 error，并保留外部 adapter 未 probe 的 V0.3 warning。 |
+
+## 验证命令
+
+| 命令 | 目标 |
+| --- | --- |
+| `cargo test -p eva-cli` | 验证 CLI parser、formatter、exit code 和 doctor/inspect 报告。 |
+| `cargo run -- doctor --output json` | 验证环境诊断 JSON 输出。 |
+| `cargo run -- config validate --output json` | 验证配置加载与诊断 JSON 输出。 |
+| `cargo run -- inspect runtime --output json` | 验证 no-op runtime 摘要可经 CLI 读取。 |
+| `cargo test --workspace` | 验证 CLI 接入不破坏其他 crate。 |
+
+## 剩余限制
+
+- `eva run` 在 V0.3 只验证配置和组合根，真实事件循环留给 V0.4。
+- `inspect` 子视图参数目前只是别名过滤，输出仍是综合摘要。
+- JSON formatter 为标准库手写实现，后续如引入正式序列化依赖，需要保持字段兼容。
+- 外部 adapter、MCP、skill、hardware 只展示声明和 warning，不做 probe 或调用。
