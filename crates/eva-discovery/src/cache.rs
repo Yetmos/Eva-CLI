@@ -1,4 +1,31 @@
-//! Discovery cache placeholders.
+//! In-memory discovery result cache.
+
+use crate::normalizer::DiscoveryCandidate;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "cache discovery results without granting runtime handles";
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiscoveryCache {
+    snapshot: Vec<DiscoveryCandidate>,
+    refresh_reason: Option<String>,
+}
+
+impl DiscoveryCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn replace(&mut self, snapshot: Vec<DiscoveryCandidate>, reason: impl Into<String>) {
+        self.snapshot = snapshot;
+        self.refresh_reason = Some(reason.into());
+    }
+
+    pub fn snapshot(&self) -> &[DiscoveryCandidate] {
+        &self.snapshot
+    }
+
+    pub fn refresh_reason(&self) -> Option<&str> {
+        self.refresh_reason.as_deref()
+    }
+}

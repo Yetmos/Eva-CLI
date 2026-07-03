@@ -79,3 +79,41 @@
 ## English
 
 `eva-discovery` owns trusted source scanning, normalization, health probing, and cache. Discovery returns candidates and rejected reasons only; authorization remains outside this crate.
+
+## V1.1 Status
+
+V1.1 implements the first trusted discovery data path while preserving the central boundary: discovery never grants executable handles.
+
+- `DiscoveryCandidate` records candidate id, kind, source, trust level, optional adapter id, optional capability, and `handle_granted=false`.
+- `ProjectDiscoverySource` reads already-loaded `ProjectConfig` and emits Adapter, capability, MCP tool, and Skill candidates from trusted project manifests.
+- `scan_sources` isolates source errors so a failing source can be reported without granting fallback execution rights.
+- `DiscoveryService` coordinates project scans and stores the latest snapshot in `DiscoveryCache`.
+- `DiscoveryHealth` reports `seen` or `rejected` status with human-readable messages, still without side effects.
+
+Disabled adapters become display-only/rejected candidates. Runtime execution must still go through `eva-adapter::AdapterRuntime` and policy gates.
+
+## V1.1 Verification
+
+```powershell
+cargo test -p eva-discovery
+cargo run -- discovery scan --output json
+```
+
+## V1.1 Status
+
+V1.1 implements the first trusted discovery data path while preserving the central boundary: discovery never grants executable handles.
+
+- `DiscoveryCandidate` records candidate id, kind, source, trust level, optional adapter id, optional capability, and `handle_granted=false`.
+- `ProjectDiscoverySource` reads already-loaded `ProjectConfig` and emits Adapter, capability, MCP tool, and Skill candidates from trusted project manifests.
+- `scan_sources` isolates source errors so a failing source can be reported without granting fallback execution rights.
+- `DiscoveryService` coordinates project scans and stores the latest snapshot in `DiscoveryCache`.
+- `DiscoveryHealth` reports `seen` or `rejected` status with human-readable messages, still without side effects.
+
+Disabled adapters become display-only/rejected candidates. Runtime execution must still go through `eva-adapter::AdapterRuntime` and policy gates.
+
+## V1.1 Verification
+
+```powershell
+cargo test -p eva-discovery
+cargo run -- discovery scan --output json
+```

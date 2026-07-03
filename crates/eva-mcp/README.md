@@ -69,3 +69,45 @@
 ## English
 
 `eva-mcp` owns MCP protocol boundaries, client/server surfaces, tool mapping, policy helpers, and schemas. It must not expose unlimited internal Topic or runtime state proxies.
+
+## V1.1 Status
+
+V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on a real MCP SDK or a running external server:
+
+- `McpAllowlist` validates and stores tool/resource/prompt allowlists, and returns `permission_denied` for unlisted tools.
+- `InMemoryMcpClient` supports side-effect-free `probe_tool` and controlled `call_tool` envelopes. It preserves adapter id, request id, tool name, and input text for diagnostics.
+- `McpToolMapping` and `McpToolRegistry` provide deterministic tool-to-capability mapping and duplicate mapping detection.
+- `EvaMcpServerSurface::v11_minimal()` documents the first server-facing tool surface (`adapter.list`, `adapter.probe`) without opening a socket or stdio server.
+- `McpSchemaFamily` names the stable schema envelope families used by future compatibility tests.
+
+The current MCP implementation is intentionally an in-memory protocol boundary. Real MCP JSON-RPC transport, streaming responses, authentication, and compatibility matrices remain later work.
+
+## V1.1 Verification
+
+```powershell
+cargo test -p eva-mcp
+cargo run -- mcp list --output json
+cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
+cargo run -- mcp probe --adapter github-mcp --tool delete_repo --output json
+```
+
+## V1.1 Status
+
+V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on a real MCP SDK or a running external server:
+
+- `McpAllowlist` validates and stores tool/resource/prompt allowlists, and returns `permission_denied` for unlisted tools.
+- `InMemoryMcpClient` supports side-effect-free `probe_tool` and controlled `call_tool` envelopes. It preserves adapter id, request id, tool name, and input text for diagnostics.
+- `McpToolMapping` and `McpToolRegistry` provide deterministic tool-to-capability mapping and duplicate mapping detection.
+- `EvaMcpServerSurface::v11_minimal()` documents the first server-facing tool surface (`adapter.list`, `adapter.probe`) without opening a socket or stdio server.
+- `McpSchemaFamily` names the stable schema envelope families used by future compatibility tests.
+
+The current MCP implementation is intentionally an in-memory protocol boundary. Real MCP JSON-RPC transport, streaming responses, authentication, and compatibility matrices remain later work.
+
+## V1.1 Verification
+
+```powershell
+cargo test -p eva-mcp
+cargo run -- mcp list --output json
+cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
+cargo run -- mcp probe --adapter github-mcp --tool delete_repo --output json
+```

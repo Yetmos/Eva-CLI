@@ -2,6 +2,16 @@
 
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
+## V1.1 Implemented Surface
+
+- `normalizer.rs`: `DiscoveryCandidate`, candidate kind, trust level, rejected reason, and dedupe rules.
+- `scanner.rs`: `DiscoverySource`, source reports, `scan_sources`, and `ProjectDiscoverySource` over `ProjectConfig`.
+- `service.rs`: `DiscoveryService::scan_project`, cache access, candidate access, and health projection.
+- `cache.rs`: in-memory snapshot replacement with refresh reason.
+- `health.rs`: side-effect-free `seen`/`rejected` health status.
+
+The important invariant is explicit: every V1.1 candidate has `handle_granted=false`. Adapter execution authority is issued only by `eva-adapter::AdapterRuntime` after configuration and routing checks.
+
 本目录承载 discovery service、scanner、normalizer、health、cache 和 trusted sources。当前为骨架，V1.1 先建立“候选发现不等于授权执行”的数据链路。
 
 ## 功能说明

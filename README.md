@@ -2,10 +2,11 @@
 
 > Language: English | [简体中文](README.zh-CN.md)
 
-Eva-CLI has reached the V1.0 core source release surface: a compileable Rust
-workspace, configuration examples, schemas, the in-memory basic runtime loop,
-local task diagnostics, CI gates, quickstart, release notes, and explicit known
-limitations. The website uses English as the default public entry with stable
+Eva-CLI has reached the V1.1 external capability ecosystem checkpoint: a
+compileable Rust workspace, configuration examples, schemas, the in-memory
+basic runtime loop, local task diagnostics, Adapter/MCP/Skill/Discovery control
+surfaces, CI gates, quickstart, release notes, and explicit known limitations.
+The website uses English as the default public entry with stable
 slugs, while the Simplified Chinese documents remain the source of truth for
 some detailed architecture and implementation-spec content.
 
@@ -20,13 +21,14 @@ maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
 
 ## Current Project Progress
 
-Updated: 2026-07-03
+Updated: 2026-07-04
 
-Eva-CLI has moved past a design-only repository and now has a V1.0 core release
+Eva-CLI has moved past a design-only repository and now has a V1.1 release
 surface. It includes a compileable Rust workspace, configuration examples and
 schemas, implemented foundation contracts, project configuration loading, a
 V1.0 CLI quickstart, the `in_memory_v1.0` basic runtime composition root, local
-`.eva/tasks` diagnostics, and CI release gates.
+`.eva/tasks` diagnostics, Adapter/MCP/Skill/Discovery diagnostics, and CI
+release gates.
 
 | Area | Status | Evidence | Remaining Work |
 | --- | --- | --- | --- |
@@ -35,14 +37,14 @@ V1.0 CLI quickstart, the `in_memory_v1.0` basic runtime composition root, local
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 19 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V1.0 core implemented | `version`, `doctor`, `config validate`, `inspect`, `run --example basic`, `task status/logs/cancel`, text/JSON output, trace fields, and exit-code mapping | V1.1+ external capability surfaces |
+| `eva-cli` | V1.1 implemented | `version`, `doctor`, `config validate`, `inspect`, `run --example basic`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, text/JSON output, trace fields, and exit-code mapping | V1.2 memory/context commands |
 | Runtime composition | V1.0 core implemented | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, and idempotent shutdown | Durable/runtime lifecycle work remains later scope |
 | EventBus and Scheduler | V0.4/V0.5 implemented for basic loop | EventBus publish/ack/fail/dead-letter/replay diagnostics; Scheduler topic routing and mailbox delivery | Durable replay/backoff remains later scope |
 | Agent and Lua host | V0.5 implemented for basic loop | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, controlled bindings, generation marker | Real Lua VM and generation swap remain later scope |
-| Capability and Adapter layers | Mixed | `eva-capability` has V0.4 builtins; `eva-adapter` is still scaffolded | External provider routing and authorized transports remain V1.1 scope |
+| Capability and Adapter layers | V1.1 controlled envelopes implemented | `eva-capability` has V0.4 builtins; `eva-adapter` now builds authorized handles, routes capabilities to providers, probes adapters, and invokes MCP/Skill controlled envelopes | Real stdio/http process execution and richer policy evaluation remain later scope |
 | Policy, observability, storage | Mixed | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` has V0.4 in-memory stores/logs | Durable storage, richer audit sinks, and metrics remain later scope |
-| Discovery, MCP, memory, hardware, backup, lifecycle | Scaffold only | Dedicated crates and module boundaries exist | Implement trusted discovery, MCP mapping, memory/context services, hardware hotplug, backup/release snapshots, and supervisor generation flow |
-| Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, V1.0 quickstart smoke commands, and website i18n validation | Add gates as future runtime behavior expands |
+| Discovery, MCP, memory, hardware, backup, lifecycle | Mixed | Discovery and MCP have V1.1 side-effect-free candidates/probes; memory, hardware, backup, and lifecycle remain scaffolded | Implement memory/context services, hardware hotplug, backup/release snapshots, and supervisor generation flow |
+| Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, V1.0 quickstart smoke commands, V1.1 external capability smoke commands, and website i18n validation | Add gates as future runtime behavior expands |
 
 ## Implementation Plan
 
@@ -90,6 +92,26 @@ cargo run -- task logs --task req-readme-v10 --output json
 V1.0 scope and non-goals are explicit in
 [Known Limitations](docs/en/v1.0-known-limitations.md), and the release summary
 is in [V1.0.0 Release Notes](docs/en/release-notes-v1.0.0.md).
+
+## V1.1 External Capability Smoke
+
+V1.1 adds a controlled external capability ecosystem without starting real
+stdio/http/MCP server processes. These commands prove that external capability
+surfaces are visible, probeable, and callable through a safe envelope:
+
+```powershell
+cargo run -- adapter list --output json
+cargo run -- adapter probe --adapter github-mcp --output json
+cargo run -- adapter probe --capability workflow.code_review --provider code-review-skill --output json
+cargo run -- mcp list --output json
+cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
+cargo run -- skill list --output json
+cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
+cargo run -- discovery scan --output json
+```
+
+The key V1.1 boundary is that discovery returns candidates only. Runtime
+authority still comes from validated manifests and `eva-adapter` handles.
 
 ## Repository Layout
 

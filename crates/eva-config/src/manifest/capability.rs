@@ -141,6 +141,22 @@ impl CapabilityManifest {
             .chain(self.provider.iter())
             .chain(self.allowed_adapter_providers.iter())
     }
+
+    /// Returns a top-level string field preserved in the manifest extension map.
+    pub fn extra_string(&self, key: &str) -> Option<&str> {
+        self.extra
+            .get(Value::String(key.to_owned()))
+            .and_then(Value::as_str)
+    }
+
+    /// Returns a nested string field preserved in the manifest extension map.
+    pub fn nested_extra_string(&self, section: &str, key: &str) -> Option<&str> {
+        self.extra
+            .get(Value::String(section.to_owned()))
+            .and_then(Value::as_mapping)
+            .and_then(|mapping| mapping.get(Value::String(key.to_owned())))
+            .and_then(Value::as_str)
+    }
 }
 
 impl CapabilityKind {
@@ -316,5 +332,15 @@ provider: github/mcp
                 .1,
             "provider"
         );
+    }
+
+    #[test]
+    fn capability_manifest_exposes_extension_strings() {
+        let manifest = load_capability_manifest(
+            workspace_root().join("config/capabilities/project-summary-mcp.yaml"),
+        )
+        .unwrap();
+
+        assert_eq!(manifest.extra_string("tool"), Some("list_issues"));
     }
 }

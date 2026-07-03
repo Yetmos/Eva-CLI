@@ -4,6 +4,17 @@
 
 ![Eva module implementation roadmap](assets/eva-module-implementation-roadmap.svg)
 
+## V1.1 Workspace Status
+
+V1.1 completes the first external capability ecosystem checkpoint across `eva-adapter`, `eva-mcp`, `eva-discovery`, and `eva-cli`:
+
+- `eva-adapter`: authorized handles, registry, router, probe, and controlled MCP/Skill invocation envelopes.
+- `eva-mcp`: allowlist policy helper, in-memory client/probe, tool mapping registry, and minimal side-effect-free server surface descriptor.
+- `eva-discovery`: project manifest discovery candidates, cache, health projection, and the invariant that discovery never grants executable handles.
+- `eva-cli`: `adapter list/probe`, `mcp list/probe`, `skill list/run`, and `discovery scan` commands with text/JSON envelopes.
+
+V1.2 starts from this external capability boundary and adds memory, knowledge, and context assembly without bypassing Adapter or policy gates.
+
 本目录承载 Eva-CLI Rust workspace 的模块边界。每个 crate 对应一个稳定职责域；公共契约先在基础 crate 稳定，副作用通过 `eva-runtime` 单向组合进入。
 
 ## 总体规则
@@ -49,7 +60,7 @@
 | V0.4 | storage/eventbus/scheduler/agent/lua-host/capability/runtime/cli | 最小事件运行闭环 | 已完成 | `cargo run -- run --example basic --output json` 成功 |
 | V0.5 | `eva-agent`、`eva-lua-host`、`eva-eventbus`、`eva-runtime`、`eva-cli` | 任务状态、日志、取消、超时、重试、dead-letter replay、generation marker | 已完成 | `task status/logs/cancel` 可读本地 task report；timeout/cancel/replay 可验证 |
 | V1.0 | `eva-cli`、`eva-runtime`、docs、CI | version 命令、`in_memory_v1.0`、quickstart、release notes、已知限制、CI/release gates | 已完成 | 新用户可从源码构建并跑通 V1.0 quickstart |
-| V1.1 | `eva-adapter`、`eva-mcp`、`eva-discovery` | 外部能力发现、probe、受控调用 | 待实现 | 外部能力只经 policy gate 执行 |
+| V1.1 | `eva-adapter`、`eva-mcp`、`eva-discovery`、`eva-cli` | 外部能力发现、probe、受控 envelope 调用 | 已完成 | `adapter list/probe`、`mcp list/probe`、`skill list/run`、`discovery scan` 可验证 |
 | V1.2 | `eva-memory`、`eva-lua-host` | memory、knowledge、context builder | 待实现 | 上下文组装有权限和审计 |
 | V1.3 | `eva-hardware`、`eva-adapter` | 设备发现、绑定、hotplug、hardware transport | 待实现 | Lua 不能 raw I/O |
 | V1.4 | `eva-backup`、`eva-lifecycle` | 备份、迁移、snapshot、generation rollback | 待实现 | 高风险操作先 plan 后 apply |

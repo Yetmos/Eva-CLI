@@ -2,6 +2,18 @@
 
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
+## V1.1 Implemented Surface
+
+- `manifest.rs`: defines `AdapterHandle`, `AdapterHealth`, and `AdapterCapabilityBinding`.
+- `registry.rs`: indexes handles by Adapter id and capability.
+- `router.rs`: supports explicit provider routing and capability-index fallback.
+- `runtime.rs`: exposes `AdapterRuntime::from_project`, `list`, `probe_adapter`, `probe_capability`, and `invoke`.
+- `transports/builtin.rs`: returns local controlled envelopes for builtin-style internal transports.
+- `transports/mcp.rs`: enforces MCP tool allowlists through `eva-mcp` before returning an invocation envelope.
+- `transports/skill.rs`: validates the Skill runtime gate and returns an audit-bearing controlled envelope.
+
+V1.1 does not launch stdio/http/hardware providers. That is deliberate so external execution can be added later with policy, audit, credential, timeout, and platform controls in place.
+
 本目录承载 Adapter runtime descriptor、registry、router、transport runtime 和错误映射。当前为骨架，V1.1 先实现 registry/router 和 builtin/stdio/http/MCP/skill transport。
 
 ## 功能说明

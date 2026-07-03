@@ -28,4 +28,15 @@
 cargo test -p eva-cli
 ```
 
+## V1.1 External Capability Surface
+
+`run.rs` now owns the first external capability command surface:
+
+- Parser branches for `adapter`, `mcp`, `skill`, and `discovery` subcommands.
+- Execution bridges into `eva-adapter`, `eva-mcp`, and `eva-discovery` without adding persistent CLI state.
+- Text and JSON writers for Adapter list/probe, MCP list/probe, Skill list/run, and Discovery scan.
+- Tests covering V1.1 JSON envelopes, blocked MCP tool probes, and V1.1 version identity.
+
+The command implementations remain centralized in `run.rs` for this checkpoint so the output envelope and exit-code behavior stay consistent. Future refactors may move the parser/executor slices into `adapter.rs`, `capability.rs`, or dedicated modules once the command shapes stabilize.
+
 当前测试覆盖 version text/JSON、basic run、task status/logs/cancel、cancelled run、config validate、inspect、doctor 和错误输出。

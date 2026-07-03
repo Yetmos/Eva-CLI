@@ -2,6 +2,20 @@
 
 ![V1.x extension module flow](../../../assets/eva-extension-module-flow.svg)
 
+## V1.1 Implemented Surface
+
+V1.1 implements controlled envelopes for the transports that can be proven without external side effects:
+
+- `builtin.rs`: returns a local JSON envelope for builtin/EventBus/LuaCapability-style transports.
+- `mcp.rs`: selects the mapped MCP tool and enforces `McpAllowlist` before returning an invocation envelope.
+- `skill.rs`: checks `skill.runtime_gate == normal` and returns a Skill run envelope plus audit entries.
+
+The risky transports remain deliberately closed:
+
+- `stdio.rs` does not start commands yet; later work must keep command and args separated.
+- `http.rs` does not issue network requests yet; later work must use URL and credential allowlists.
+- `hardware.rs` remains V1.3 scope and must only accept DeviceRegistry handles, never raw I/O from Lua.
+
 本目录承载 Adapter 的具体 transport 实现。所有 transport 都必须由 manifest、effective policy、schema 和 audit gate 约束，禁止变成任意插件或任意 shell/HTTP 代理。
 
 ## 功能说明

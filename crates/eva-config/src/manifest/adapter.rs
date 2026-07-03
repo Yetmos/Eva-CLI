@@ -81,6 +81,39 @@ impl AdapterManifest {
             extra: raw.extra,
         })
     }
+
+    /// Returns a top-level string field preserved in the manifest extension map.
+    pub fn extra_string(&self, key: &str) -> Option<&str> {
+        self.extra
+            .get(Value::String(key.to_owned()))
+            .and_then(Value::as_str)
+    }
+
+    /// Returns a nested string field preserved in the manifest extension map.
+    pub fn nested_extra_string(&self, section: &str, key: &str) -> Option<&str> {
+        self.extra
+            .get(Value::String(section.to_owned()))
+            .and_then(Value::as_mapping)
+            .and_then(|mapping| mapping.get(Value::String(key.to_owned())))
+            .and_then(Value::as_str)
+    }
+
+    /// Returns a nested string list preserved in the manifest extension map.
+    pub fn nested_extra_string_list(&self, section: &str, key: &str) -> Vec<String> {
+        self.extra
+            .get(Value::String(section.to_owned()))
+            .and_then(Value::as_mapping)
+            .and_then(|mapping| mapping.get(Value::String(key.to_owned())))
+            .and_then(Value::as_sequence)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl AdapterTransport {
@@ -209,5 +242,20 @@ capabilities:
                 .1,
             "capabilities"
         );
+    }
+
+    #[test]
+    fn adapter_manifest_exposes_nested_extension_lists() {
+        let manifest =
+            load_adapter_manifest(workspace_root().join("config/adapters/github-mcp.yaml"))
+                .unwrap();
+
+        assert_eq!(
+            manifest.nested_extra_string("mcp", "command"),
+            Some("github-mcp-server")
+        );
+        assert!(manifest
+            .nested_extra_string_list("mcp", "tool_allowlist")
+            .contains(&"list_issues".to_owned()));
     }
 }

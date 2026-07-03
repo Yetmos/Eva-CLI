@@ -2,6 +2,16 @@
 
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
+## V1.1 Implemented Surface
+
+- `policy.rs`: `McpAllowlist` validates tool/resource/prompt names and blocks unlisted tools.
+- `client.rs`: `InMemoryMcpClient` supports safe probe and controlled call envelopes.
+- `tool_mapping.rs`: `McpToolMapping` and `McpToolRegistry` provide deterministic mapping and duplicate checks.
+- `server.rs`: `EvaMcpServerSurface::v11_minimal()` documents side-effect-free server tool exposure.
+- `schema.rs`: `McpSchemaFamily` names stable envelope families for later compatibility work.
+
+The V1.1 MCP crate is a protocol/control boundary, not a full MCP transport. It is used by `eva-adapter` and `eva-cli` to prove allowlisted, diagnosable MCP tool access before real server processes are introduced.
+
 本目录承载 MCP client/server、tool mapping、policy helper 和 schema 边界。当前为骨架，V1.1 先实现受 allowlist 限制的 client/mapping 和受控 server surface。
 
 ## 功能说明

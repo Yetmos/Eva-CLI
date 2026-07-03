@@ -84,3 +84,47 @@
 ## English
 
 `eva-adapter` owns Adapter runtime descriptors, registry, routing, transport execution, and provider error mapping. Discovery and authorization are separate responsibilities.
+
+## V1.1 Status
+
+V1.1 turns the former placeholder crate into a side-effect-safe external capability control layer. The crate now provides:
+
+- `AdapterHandle`: a runtime handle derived only from validated `AdapterManifest` data, including transport, exposed capabilities, source path, MCP tool allowlist, and Skill binding metadata.
+- `AdapterRegistry`: deterministic lookup by Adapter id and by `CapabilityName`, with duplicate id detection and capability-provider indexing.
+- `AdapterRouter`: explicit provider routing first, then capability index fallback; disabled or mismatched providers fail with structured `EvaError` values.
+- `AdapterRuntime`: list/probe/invoke APIs used by CLI V1.1 commands. Probe is side-effect free. Invoke currently supports controlled envelopes for builtin/Lua/EventBus, MCP, and Skill transports.
+- `transports/mcp.rs`: calls `eva-mcp::InMemoryMcpClient` so only allowlisted tools can be invoked.
+- `transports/skill.rs`: validates `skill.runtime_gate == normal` and returns an auditable controlled envelope instead of launching an arbitrary workflow runner.
+
+V1.1 intentionally does not start real stdio/http/hardware providers. Those transports return structured `unsupported` diagnostics until later versions add process execution, URL allowlists, hardware handles, and richer policy evaluation.
+
+## V1.1 Verification
+
+```powershell
+cargo test -p eva-adapter
+cargo run -- adapter list --output json
+cargo run -- adapter probe --adapter github-mcp --output json
+cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
+```
+
+## V1.1 Status
+
+V1.1 turns the former placeholder crate into a side-effect-safe external capability control layer. The crate now provides:
+
+- `AdapterHandle`: a runtime handle derived only from validated `AdapterManifest` data, including transport, exposed capabilities, source path, MCP tool allowlist, and Skill binding metadata.
+- `AdapterRegistry`: deterministic lookup by Adapter id and by `CapabilityName`, with duplicate id detection and capability-provider indexing.
+- `AdapterRouter`: explicit provider routing first, then capability index fallback; disabled or mismatched providers fail with structured `EvaError` values.
+- `AdapterRuntime`: list/probe/invoke APIs used by CLI V1.1 commands. Probe is side-effect free. Invoke currently supports controlled envelopes for builtin/Lua/EventBus, MCP, and Skill transports.
+- `transports/mcp.rs`: calls `eva-mcp::InMemoryMcpClient` so only allowlisted tools can be invoked.
+- `transports/skill.rs`: validates `skill.runtime_gate == normal` and returns an auditable controlled envelope instead of launching an arbitrary workflow runner.
+
+V1.1 intentionally does not start real stdio/http/hardware providers. Those transports return structured `unsupported` diagnostics until later versions add process execution, URL allowlists, hardware handles, and richer policy evaluation.
+
+## V1.1 Verification
+
+```powershell
+cargo test -p eva-adapter
+cargo run -- adapter list --output json
+cargo run -- adapter probe --adapter github-mcp --output json
+cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
+```

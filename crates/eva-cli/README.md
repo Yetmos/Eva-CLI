@@ -83,6 +83,26 @@ cargo run -- inspect runtime --output json
 cargo run -- run --example basic --output json
 cargo run -- task status --output json
 cargo run -- task logs --output json
+cargo run -- adapter list --output json
+cargo run -- adapter probe --adapter github-mcp --output json
+cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
+cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
+cargo run -- discovery scan --output json
 ```
+
+## V1.1 External Capability Commands
+
+V1.1 adds CLI coverage for the external capability ecosystem while preserving the V1.0 basic runtime path:
+
+- `eva adapter list`: lists authorized Adapter handles derived from project manifests.
+- `eva adapter probe --adapter <id>`: reports side-effect-free health, transport, and capability details for one handle.
+- `eva adapter probe --capability <name> [--provider <id>]`: exercises AdapterRouter selection without invoking an external provider.
+- `eva mcp list`: lists MCP transport adapters and their tool allowlists.
+- `eva mcp probe --adapter <id> --tool <name>`: reports whether the tool is allowlisted; blocked probes still return a diagnostic success envelope because no provider was invoked.
+- `eva skill list`: lists controlled workflow skill adapters and runtime gates.
+- `eva skill run --skill <id> --input <json>`: returns a controlled Skill envelope and audit trail without starting Codex/OMX workflow execution.
+- `eva discovery scan`: returns trusted candidates with `handle_granted=false` to prove discovery is not authorization.
+
+The commands use the same success/error JSON envelopes, trace fields, and exit-code rules as V1.0 commands. V1.1 does not start real stdio/http/MCP server processes; it proves the policy-shaped control surface first.
 
 已覆盖：version text/JSON、config validate JSON、inspect text、unknown command、JSON escaping、basic run JSON、cancelled basic run、task status/logs/cancel、doctor sample project。
