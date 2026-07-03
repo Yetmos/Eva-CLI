@@ -9,6 +9,7 @@ eva-adapter = { path = "../eva-adapter" }
 eva-config = { path = "../eva-config" }
 eva-core = { path = "../eva-core" }
 eva-discovery = { path = "../eva-discovery" }
+eva-memory = { path = "../eva-memory" }
 eva-mcp = { path = "../eva-mcp" }
 eva-observability = { path = "../eva-observability" }
 eva-runtime = { path = "../eva-runtime" }

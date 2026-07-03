@@ -134,9 +134,7 @@ pub fn run_basic(
                 let result = lua_host.run_on_event(
                     &script,
                     event,
-                    &LuaHostContext {
-                        agent_id: agent_id.clone(),
-                    },
+                    &LuaHostContext::new(agent_id.clone()),
                 )?;
                 lua_results.push(result.clone());
                 Ok(AgentHandlerOutput::new(result.status, result.note))

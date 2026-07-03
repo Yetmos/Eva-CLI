@@ -1,31 +1,30 @@
-# eva-memory/src / 记忆源码
+# eva-memory/src
 
-![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
+Updated: 2026-07-04
 
-本目录承载私有记忆、全局记忆、知识库和上下文构建。当前为骨架，V1.2 先实现 policy-aware context assembly。
+This directory contains the V1.2 in-memory implementation of Eva's memory,
+knowledge, and context contracts.
 
-## 功能说明
-
-| 文件 | 职责 | 当前进度 | 目标版本 |
-| --- | --- | --- | --- |
-| `lib.rs` | 模块导出 | 骨架 | V1.2 |
-| `memory_service.rs` | Agent/global memory service | 骨架 | V1.2 |
-| `knowledge_service.rs` | 项目知识存储和检索 | 骨架 | V1.2 |
-| `context_builder.rs` | policy-aware context assembly | 骨架 | V1.2 |
-
-## 开发实施步骤
-
-| 顺序 | 步骤 | 输出 |
+| File | Responsibility | V1.2 Status |
 | --- | --- | --- |
-| 1 | 定义 memory record、scope、owner、retention。 | 私有和全局记忆可区分。 |
-| 2 | 定义 KnowledgeItem、citation、digest。 | 知识来源可追溯。 |
-| 3 | 实现 ContextBuilder policy filter 和 budget。 | 未授权内容不进入上下文。 |
-| 4 | 接 Lua host API。 | `ctx.memory` 等受控可用。 |
+| `lib.rs` | Re-exports the public V1.2 memory, knowledge, and context types. | Implemented |
+| `memory_service.rs` | Defines private/global memory records, writes, reads, retention, visibility, versions, and Agent-private authorization. | Implemented |
+| `knowledge_service.rs` | Defines knowledge ids, source metadata, items, tags, ranked search, duplicate-id checks, and lightweight digests. | Implemented |
+| `context_builder.rs` | Combines memory and knowledge into `BuiltContext` under `ContextBudget`, then projects a `LuaContextSnapshot`. | Implemented |
 
-## 进度表
+## Local Contracts
 
-| 模块 | 具体功能 | 状态 | 下一步 |
-| --- | --- | --- | --- |
-| MemoryService | 读写/list/delete | 未实现 | 定义 scope 和权限。 |
-| KnowledgeService | item/chunk/citation | 未实现 | 定义来源引用。 |
-| ContextBuilder | filter/ranking/budget | 未实现 | 接 `eva-policy`。 |
+- `MemoryVisibility::Private` requires an owner `AgentId` and can only be read by that same Agent.
+- `MemoryVisibility::Global` has no private owner and is available to context assembly for any Agent.
+- `ContextBuilder` is the only V1.2 path that joins memory with knowledge for request execution.
+- `LuaContextSnapshot` deliberately carries counts and audit details, not service handles.
+
+## Tests
+
+```powershell
+cargo test -p eva-memory
+```
+
+Coverage includes privacy isolation, global visibility, version increments,
+knowledge duplicate rejection, tagged search, budget truncation, and context
+construction without cross-Agent private memory leakage.

@@ -2,7 +2,7 @@
 
 更新时间：2026-07-03
 
-`eva-cli` 负责命令解析、文本/JSON 输出、trace 字段和 exit code 映射。V1.0 core 不启动后台 daemon；`run --example basic` 同步执行后，会把最新 task report 写入 `.eva/tasks`，供 `task status/logs/cancel` 跨命令读取。
+`eva-cli` 负责命令解析、文本/JSON 输出、trace 字段和 exit code 映射。V1.2 在 V1.0 basic runtime 和 V1.1 external capability surface 之上新增 `memory context`，用于输出 request-scoped private/global memory、knowledge search 和 Lua context 摘要。CLI 不启动后台 daemon；`run --example basic` 同步执行后，会把最新 task report 写入 `.eva/tasks`，供 `task status/logs/cancel` 跨命令读取。
 
 ## 当前命令
 
@@ -16,6 +16,7 @@
 | `eva task status` | 读取 `.eva/tasks` 中最新或指定 task 的状态、attempts、retry、取消和 dead-letter 摘要。 |
 | `eva task logs` | 读取 task logs。 |
 | `eva task cancel` | 对未终态 task 写入取消标记；对已终态 task 记录 cancel request 但不改变终态。 |
+| `eva memory context` | 为单个 Agent 构造 V1.2 request context，输出 private memory、global memory、knowledge、Lua snapshot 和 audit。 |
 
 ## `eva run --example basic`
 
@@ -88,6 +89,7 @@ cargo run -- adapter probe --adapter github-mcp --output json
 cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
 cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
 cargo run -- discovery scan --output json
+cargo run -- memory context --agent root-agent --query context --private-limit 1 --output json
 ```
 
 ## V1.1 External Capability Commands
@@ -104,5 +106,29 @@ V1.1 adds CLI coverage for the external capability ecosystem while preserving th
 - `eva discovery scan`: returns trusted candidates with `handle_granted=false` to prove discovery is not authorization.
 
 The commands use the same success/error JSON envelopes, trace fields, and exit-code rules as V1.0 commands. V1.1 does not start real stdio/http/MCP server processes; it proves the policy-shaped control surface first.
+
+## V1.2 Memory Context Command
+
+`eva memory context` is the V1.2 CLI smoke for `eva-memory` and `eva-lua-host`:
+
+```powershell
+cargo run -- memory context --agent root-agent --query context --private-limit 1 --output json
+```
+
+Important options:
+
+| Option | Meaning |
+| --- | --- |
+| `--agent <id>` | Agent whose private memory may enter the context. Defaults to `root-agent`. |
+| `--query <text>` | Knowledge search query. Defaults to `memory`. |
+| `--request-id <id>` | Request id attached to seeded context records. Defaults to `req-memory-1`. |
+| `--private-limit <n>` | Maximum private memory records returned. |
+| `--global-limit <n>` | Maximum global memory records returned. |
+| `--knowledge-limit <n>` | Maximum knowledge search results returned. |
+
+JSON output uses the normal success envelope and contains `memory`,
+`global_memory`, `knowledge`, `lua_context`, and `audit`. The command uses an
+in-memory demonstration context derived from the project configuration; durable
+memory storage remains later scope.
 
 已覆盖：version text/JSON、config validate JSON、inspect text、unknown command、JSON escaping、basic run JSON、cancelled basic run、task status/logs/cancel、doctor sample project。

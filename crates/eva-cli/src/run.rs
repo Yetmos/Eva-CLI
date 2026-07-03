@@ -4,9 +4,13 @@ use crate::doctor::{doctor_project, CheckStatus, DoctorReport};
 use crate::inspect::{inspect_project, InspectReport};
 use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};
 use eva_config::{load_project_config, schema_paths, AdapterTransport, ProjectConfig};
-use eva_core::{AdapterId, CapabilityName, ErrorKind, EvaError, InvokeStatus, RequestId};
+use eva_core::{AdapterId, AgentId, CapabilityName, ErrorKind, EvaError, InvokeStatus, RequestId};
 use eva_discovery::{DiscoveryCandidate, DiscoveryService};
 use eva_mcp::{InMemoryMcpClient, McpAllowlist, McpProbeReport};
+use eva_memory::{
+    BuiltContext, ContextBudget, ContextBuilder, ContextRequest, InMemoryKnowledgeService,
+    InMemoryMemoryService, KnowledgeId, KnowledgeItem, KnowledgeSource, MemoryWrite,
+};
 use eva_observability::{SpanId, TraceFields};
 use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder, TaskLogEntry};
 use std::env;
@@ -27,8 +31,8 @@ const EXIT_RUNTIME_UNAVAILABLE: i32 = 4;
 const EXIT_EXTERNAL_UNAVAILABLE: i32 = 5;
 const EXIT_USAGE: i32 = 64;
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
-const RELEASE_LABEL: &str = "V1.1 external capability ecosystem";
-const RELEASE_RUNTIME_MODE: &str = "in_memory_v1.0 + external_capability_v1.1";
+const RELEASE_LABEL: &str = "V1.2 memory and knowledge context";
+const RELEASE_RUNTIME_MODE: &str = "in_memory_v1.0 + external_capability_v1.1 + context_v1.2";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -39,6 +43,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "mcp list/probe",
     "skill list/run",
     "discovery scan",
+    "memory context",
 ];
 
 /// Process entry point for the root binary shim.
@@ -170,6 +175,7 @@ where
         Command::Mcp(command) => execute_mcp(command, stdout, stderr),
         Command::Skill(command) => execute_skill(command, stdout, stderr),
         Command::Discovery(command) => execute_discovery(command, stdout, stderr),
+        Command::Memory(command) => execute_memory(command, stdout, stderr),
     }
 }
 
@@ -186,6 +192,7 @@ enum Command {
     Mcp(McpCommand),
     Skill(SkillCommand),
     Discovery(DiscoveryCommand),
+    Memory(MemoryCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +243,11 @@ enum DiscoveryCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum MemoryCommand {
+    Context(MemoryContextOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TaskOptions {
     common: CommonOptions,
     task_id: Option<String>,
@@ -265,6 +277,17 @@ struct SkillRunOptions {
     capability: Option<String>,
     input: String,
     request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemoryContextOptions {
+    common: CommonOptions,
+    agent_id: String,
+    query: String,
+    request_id: String,
+    private_limit: usize,
+    global_limit: usize,
+    knowledge_limit: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -363,6 +386,7 @@ where
         "mcp" => parse_mcp_command(&args[1..]),
         "skill" => parse_skill_command(&args[1..]),
         "discovery" => parse_discovery_command(&args[1..]),
+        "memory" => parse_memory_command(&args[1..]),
         unknown => Err(EvaError::unsupported("unknown command").with_context("command", unknown)),
     }
 }
@@ -648,6 +672,84 @@ fn parse_discovery_command(args: &[String]) -> Result<Command, EvaError> {
                 .with_context("subcommand", value))
         }
     }
+}
+
+fn parse_memory_command(args: &[String]) -> Result<Command, EvaError> {
+    let (subcommand, rest) = args
+        .split_first()
+        .ok_or_else(|| EvaError::invalid_argument("missing memory subcommand"))?;
+    match subcommand.as_str() {
+        "context" => Ok(Command::Memory(MemoryCommand::Context(
+            parse_memory_context_options(rest)?,
+        ))),
+        value => {
+            Err(EvaError::unsupported("unknown memory subcommand")
+                .with_context("subcommand", value))
+        }
+    }
+}
+
+fn parse_memory_context_options(args: &[String]) -> Result<MemoryContextOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut agent_id = "root-agent".to_owned();
+    let mut query = "memory".to_owned();
+    let mut request_id = "req-memory-1".to_owned();
+    let mut private_limit = 8;
+    let mut global_limit = 8;
+    let mut knowledge_limit = 8;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--agent" | "--agent-id" => {
+                index += 1;
+                agent_id = required_option(args, index, "agent option")?.clone();
+            }
+            "--query" => {
+                index += 1;
+                query = required_option(args, index, "query option")?.clone();
+            }
+            "--request-id" | "--task-id" | "--task" => {
+                index += 1;
+                request_id = required_option(args, index, "request id option")?.clone();
+            }
+            "--private-limit" => {
+                index += 1;
+                private_limit = parse_usize_option(
+                    "private_limit",
+                    required_option(args, index, "private limit option")?,
+                )?;
+            }
+            "--global-limit" => {
+                index += 1;
+                global_limit = parse_usize_option(
+                    "global_limit",
+                    required_option(args, index, "global limit option")?,
+                )?;
+            }
+            "--knowledge-limit" => {
+                index += 1;
+                knowledge_limit = parse_usize_option(
+                    "knowledge_limit",
+                    required_option(args, index, "knowledge limit option")?,
+                )?;
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+
+    AgentId::parse(&agent_id)?;
+    RequestId::parse(&request_id)?;
+    Ok(MemoryContextOptions {
+        common: parse_common_options(&passthrough)?,
+        agent_id,
+        query,
+        request_id,
+        private_limit,
+        global_limit,
+        knowledge_limit,
+    })
 }
 
 fn required_option<'a>(
@@ -991,6 +1093,127 @@ where
             }
         }
     }
+}
+
+fn execute_memory<W, E>(
+    command: MemoryCommand,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match command {
+        MemoryCommand::Context(options) => {
+            let trace = trace_for("cli.memory.context");
+            match load_project_config(&options.common.project_root)
+                .and_then(|project| build_memory_context(&project, &options))
+            {
+                Ok(context) => {
+                    write_memory_context(stdout, options.common.output, &context, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "memory.context",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+    }
+}
+
+fn build_memory_context(
+    project: &ProjectConfig,
+    options: &MemoryContextOptions,
+) -> Result<BuiltContext, EvaError> {
+    let agent_id = AgentId::parse(&options.agent_id)?;
+    if !project.agents.iter().any(|agent| agent.id == agent_id) {
+        return Err(
+            EvaError::not_found("Agent does not exist for memory context")
+                .with_context("agent_id", agent_id.as_str()),
+        );
+    }
+    let request_id = RequestId::parse(&options.request_id)?;
+    let mut memory = InMemoryMemoryService::new();
+    memory.write(
+        MemoryWrite::private(
+            agent_id.clone(),
+            "agent.identity",
+            format!("agent {} owns this private context", agent_id),
+        )
+        .with_request_id(request_id.clone()),
+    )?;
+    memory.write(
+        MemoryWrite::private(
+            agent_id.clone(),
+            "project.agent_count",
+            project.agents.len().to_string(),
+        )
+        .with_request_id(request_id.clone()),
+    )?;
+    memory.write(
+        MemoryWrite::global("release.checkpoint", "V1.2 memory and knowledge context")
+            .with_request_id(request_id.clone()),
+    )?;
+    memory.write(
+        MemoryWrite::global("workspace.root", display_path(&project.project_root))
+            .with_request_id(request_id.clone()),
+    )?;
+
+    let mut knowledge = InMemoryKnowledgeService::new();
+    index_context_knowledge(&mut knowledge, request_id.clone())?;
+    ContextBuilder::new(&memory, &knowledge).build(
+        ContextRequest::new(request_id, agent_id, options.query.clone()).with_budget(
+            ContextBudget {
+                private_memory: options.private_limit,
+                global_memory: options.global_limit,
+                knowledge: options.knowledge_limit,
+            },
+        ),
+    )
+}
+
+fn index_context_knowledge(
+    knowledge: &mut InMemoryKnowledgeService,
+    request_id: RequestId,
+) -> Result<(), EvaError> {
+    let items = [
+        (
+            "memory-service",
+            "MemoryService",
+            "Agent private memory is isolated by agent_id; global memory is shared and audited.",
+            "v1.2 memory private global audit context",
+        ),
+        (
+            "context-builder",
+            "ContextBuilder",
+            "ContextBuilder assembles private memory, global memory, and knowledge under request budgets.",
+            "v1.2 context budget knowledge lua controlled api",
+        ),
+        (
+            "knowledge-service",
+            "KnowledgeService",
+            "KnowledgeService indexes traceable documents and code snippets with lightweight digests.",
+            "v1.2 knowledge index search citation digest",
+        ),
+    ];
+    for (id, title, summary, content) in items {
+        knowledge.index(
+            KnowledgeItem::new(
+                KnowledgeId::parse(id)?,
+                KnowledgeSource::new(format!("docs/{id}.md"), title, content.as_bytes()),
+                summary,
+                content,
+            )?
+            .with_tag("v1.2")
+            .with_request_id(request_id.clone()),
+        )?;
+    }
+    Ok(())
 }
 
 fn write_command_error<W: Write>(
@@ -2026,6 +2249,38 @@ fn write_discovery_scan<W: Write>(
     }
 }
 
+fn write_memory_context<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    context: &BuiltContext,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Eva memory context").map_err(write_error_kind)?;
+            writeln!(writer, "request: {}", context.request_id).map_err(write_error_kind)?;
+            writeln!(writer, "agent: {}", context.agent_id).map_err(write_error_kind)?;
+            writeln!(writer, "query: {}", context.query).map_err(write_error_kind)?;
+            writeln!(writer, "private_memory: {}", context.memory.len())
+                .map_err(write_error_kind)?;
+            writeln!(writer, "global_memory: {}", context.global_memory.len())
+                .map_err(write_error_kind)?;
+            writeln!(writer, "knowledge: {}", context.knowledge.len()).map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "memory.context",
+                EXIT_OK,
+                &memory_context_json(context),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn adapter_list_json(runtime: &AdapterRuntime) -> String {
     let entries = runtime.list().into_iter().map(|handle| {
         format!(
@@ -2143,6 +2398,61 @@ fn discovery_scan_json(candidates: &[DiscoveryCandidate]) -> String {
         "{{\"candidate_count\":{},\"candidates\":{}}}",
         candidates.len(),
         json_array(entries)
+    )
+}
+
+fn memory_context_json(context: &BuiltContext) -> String {
+    format!(
+        "{{\"request_id\":{},\"agent_id\":{},\"query\":{},\"totals\":{{\"items\":{},\"private_memory\":{},\"global_memory\":{},\"knowledge\":{}}},\"memory\":{},\"global_memory\":{},\"knowledge\":{},\"lua_context\":{},\"audit\":{}}}",
+        json_string(context.request_id.as_str()),
+        json_string(context.agent_id.as_str()),
+        json_string(&context.query),
+        context.total_items(),
+        context.memory.len(),
+        context.global_memory.len(),
+        context.knowledge.len(),
+        json_array(context.memory.iter().map(memory_record_json)),
+        json_array(context.global_memory.iter().map(memory_record_json)),
+        json_array(context.knowledge.iter().map(knowledge_result_json)),
+        lua_context_json(context),
+        json_array(context.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn memory_record_json(record: &eva_memory::MemoryRecord) -> String {
+    format!(
+        "{{\"key\":{},\"value\":{},\"visibility\":{},\"owner_agent\":{},\"retention\":{},\"version\":{},\"audit_reason\":{}}}",
+        json_string(&record.key),
+        json_string(&record.value),
+        json_string(record.visibility.as_str()),
+        option_json(record.owner_agent.as_ref().map(|agent| agent.as_str())),
+        json_string(record.retention.as_str()),
+        record.version.0,
+        json_string(&record.audit_reason)
+    )
+}
+
+fn knowledge_result_json(result: &eva_memory::KnowledgeSearchResult) -> String {
+    format!(
+        "{{\"id\":{},\"title\":{},\"source\":{},\"digest\":{},\"summary\":{},\"score\":{},\"matched_by\":{}}}",
+        json_string(result.item.id.as_str()),
+        json_string(&result.item.source.title),
+        json_string(&result.item.source.uri),
+        json_string(&result.item.source.digest),
+        json_string(&result.item.summary),
+        result.score,
+        json_array(result.matched_by.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn lua_context_json(context: &BuiltContext) -> String {
+    let snapshot = context.lua_summary();
+    format!(
+        "{{\"private_memory_count\":{},\"global_memory_count\":{},\"knowledge_count\":{},\"audit\":{}}}",
+        snapshot.private_memory_count,
+        snapshot.global_memory_count,
+        snapshot.knowledge_count,
+        json_array(snapshot.audit.iter().map(|entry| json_string(entry)))
     )
 }
 
@@ -2640,7 +2950,7 @@ fn write_error_kind(error: io::Error) -> EvaError {
 }
 
 fn help_text() -> &'static str {
-    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.1 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
+    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.2 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
 }
 
 #[cfg(test)]
@@ -2813,17 +3123,17 @@ mod tests {
     }
 
     #[test]
-    fn version_text_and_json_report_v10_core() {
+    fn version_text_and_json_report_v12_context() {
         let (text_exit, text_stdout, text_stderr) = run_cli(&["--version"]);
         assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
-        assert!(text_stdout.contains("eva 1.1.0"));
-        assert!(text_stdout.contains("V1.1 external capability ecosystem"));
+        assert!(text_stdout.contains("eva 1.2.0"));
+        assert!(text_stdout.contains("V1.2 memory and knowledge context"));
 
         let (json_exit, json_stdout, json_stderr) = run_cli(&["version", "--output", "json"]);
         assert_eq!(json_exit, EXIT_OK, "{json_stderr}");
         assert!(json_stdout.contains("\"command\":\"version\""));
-        assert!(json_stdout.contains("\"version\":\"1.1.0\""));
-        assert!(json_stdout.contains("external_capability_v1.1"));
+        assert!(json_stdout.contains("\"version\":\"1.2.0\""));
+        assert!(json_stdout.contains("context_v1.2"));
     }
 
     #[test]
@@ -2869,6 +3179,18 @@ mod tests {
                 "json",
             ],
             vec!["discovery", "scan", "--project", root, "--output", "json"],
+            vec![
+                "memory",
+                "context",
+                "--agent",
+                "root-agent",
+                "--query",
+                "memory",
+                "--project",
+                root,
+                "--output",
+                "json",
+            ],
         ];
 
         for command in commands {
@@ -2896,5 +3218,31 @@ mod tests {
 
         assert_eq!(exit_code, EXIT_OK, "{stderr}");
         assert!(stdout.contains("\"status\":\"blocked\""));
+    }
+
+    #[test]
+    fn memory_context_reports_private_global_and_knowledge() {
+        let root = workspace_root();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "memory",
+            "context",
+            "--project",
+            root.to_str().unwrap(),
+            "--agent",
+            "root-agent",
+            "--query",
+            "context",
+            "--private-limit",
+            "1",
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"memory.context\""));
+        assert!(stdout.contains("\"private_memory\":1"));
+        assert!(stdout.contains("\"global_memory\""));
+        assert!(stdout.contains("\"knowledge\""));
+        assert!(stdout.contains("\"lua_context\""));
     }
 }

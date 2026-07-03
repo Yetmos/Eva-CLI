@@ -3,6 +3,7 @@
 use crate::loader::LuaScript;
 use crate::sandbox::LuaSandboxPolicy;
 use eva_core::{AgentId, CapabilityName, EvaError, Event, Topic};
+use eva_memory::LuaContextSnapshot;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "typed host API bindings exposed to Lua";
@@ -11,6 +12,7 @@ pub const RESPONSIBILITY: &str = "typed host API bindings exposed to Lua";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LuaHostContext {
     pub agent_id: AgentId,
+    pub context: LuaContextSnapshot,
 }
 
 /// Controlled result returned by the V0.4 Lua host.
@@ -22,6 +24,7 @@ pub struct LuaEventResult {
     pub note: Option<String>,
     pub capability: Option<CapabilityName>,
     pub capability_input: Option<String>,
+    pub context: LuaContextSnapshot,
 }
 
 /// Synchronous controlled Lua host facade.
@@ -74,7 +77,22 @@ impl LuaHost {
             note,
             capability,
             capability_input,
+            context: ctx.context.clone(),
         })
+    }
+}
+
+impl LuaHostContext {
+    pub fn new(agent_id: AgentId) -> Self {
+        Self {
+            agent_id,
+            context: LuaContextSnapshot::default(),
+        }
+    }
+
+    pub fn with_context(mut self, context: LuaContextSnapshot) -> Self {
+        self.context = context;
+        self
     }
 }
 
@@ -122,9 +140,7 @@ function root.on_event(event, ctx)
 end
 "#,
         );
-        let ctx = LuaHostContext {
-            agent_id: AgentId::parse("root-agent").unwrap(),
-        };
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
 
         let result = LuaHost::new()
             .run_on_event(&script, &event(), &ctx)
@@ -133,5 +149,30 @@ end
         assert_eq!(result.status, "accepted");
         assert_eq!(result.topic.as_str(), "/input/user");
         assert_eq!(result.capability.unwrap().as_str(), "config.lint");
+    }
+
+    #[test]
+    fn on_event_receives_controlled_context_snapshot() {
+        let script = LuaScript::from_source(
+            r#"
+function root.on_event(event, ctx)
+  return { status = "handled" }
+end
+"#,
+        );
+        let snapshot = LuaContextSnapshot {
+            private_memory_count: 1,
+            global_memory_count: 1,
+            knowledge_count: 2,
+            audit: vec!["scope:controlled".to_owned()],
+        };
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap())
+            .with_context(snapshot.clone());
+
+        let result = LuaHost::new()
+            .run_on_event(&script, &event(), &ctx)
+            .unwrap();
+
+        assert_eq!(result.context, snapshot);
     }
 }

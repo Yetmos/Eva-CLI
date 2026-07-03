@@ -37,6 +37,20 @@ cargo test -p eva-cli
 - Text and JSON writers for Adapter list/probe, MCP list/probe, Skill list/run, and Discovery scan.
 - Tests covering V1.1 JSON envelopes, blocked MCP tool probes, and V1.1 version identity.
 
+## V1.2 Memory Context Surface
+
+`run.rs` now also owns `eva memory context`. The command loads project config,
+seeds an in-memory V1.2 context, runs `eva_memory::ContextBuilder`, and emits
+the same JSON envelope shape as the rest of the CLI. It is intentionally a
+diagnostic smoke command, not durable memory persistence.
+
+Current V1.2 tests cover:
+
+- V1.2 version identity and `context_v1.2` runtime marker.
+- `memory.context` JSON output with private memory, global memory, knowledge,
+  Lua context summary, and audit fields.
+- Existing V1.1 external capability commands to prevent regressions.
+
 The command implementations remain centralized in `run.rs` for this checkpoint so the output envelope and exit-code behavior stay consistent. Future refactors may move the parser/executor slices into `adapter.rs`, `capability.rs`, or dedicated modules once the command shapes stabilize.
 
 当前测试覆盖 version text/JSON、basic run、task status/logs/cancel、cancelled run、config validate、inspect、doctor 和错误输出。
