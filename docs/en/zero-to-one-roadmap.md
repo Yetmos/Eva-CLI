@@ -5,10 +5,12 @@ implementation path. The project should not jump directly from documents to a
 large runtime implementation. Each stage must leave behind reviewable artifacts
 that can be tested, versioned, and used by the next stage.
 
-The current repository is mostly at stage 1: the architecture and design
-documents are in place, and the website and documentation structure are already
-publishable. The next work should move into module layout and executable
-contracts.
+As of 2026-07-03, the repository has reached the V0.4 minimum runtime loop:
+architecture documents and the Rust workspace are in place, `eva-cli` exposes
+`doctor`, `config validate`, `inspect`, and `run --example basic`, and
+`examples/basic/` proves the CLI -> EventBus -> Scheduler -> Agent -> Lua host
+-> builtin capability path. The next work should harden that loop for V0.5 and
+prepare the V1.0 release surface.
 
 ## Progress Stages
 
@@ -119,9 +121,10 @@ Expected artifacts:
 
 - `eva` CLI entry point.
 - Basic commands such as:
-  - `eva run`
-  - `eva validate`
+  - `eva run --example basic`
+  - `eva config validate`
   - `eva doctor`
+  - `eva inspect`
 - Config file loading.
 - Runtime initialization.
 - Structured logging.
@@ -132,7 +135,8 @@ Definition of done:
 
 - The CLI can be built from a clean checkout.
 - `eva doctor` can report the local environment and configuration status.
-- `eva validate` can validate the minimum project config and manifests.
+- `eva config validate` can validate the minimum project config and manifests.
+- `eva run --example basic` can execute the minimum in-memory runtime loop.
 - Tests run in CI.
 
 ### 5. Minimum End-to-End Runtime Loop
@@ -149,9 +153,9 @@ Target loop:
 2. Ingress publishes a typed Topic event.
 3. Scheduler routes the event to one Agent queue.
 4. Lua Agent handles the event in isolated state.
-5. Lua Agent calls one controlled Rust tool.
-6. Rust validates schema and policy before execution.
-7. Tool result returns to Lua as a structured value.
+5. Lua Agent calls one controlled Rust capability/tool.
+6. Rust validates the request shape and policy boundary before execution.
+7. Capability/tool result returns to Lua as a structured value.
 8. Runtime emits trace and audit data.
 9. Failure returns a structured, retry-aware error.
 
@@ -240,15 +244,17 @@ Required 1.0 properties:
 
 ## Current Position
 
-The project has completed most of the architecture and design-document stage.
-The next practical milestone is:
+The V0.4 practical milestone is complete:
 
-1. create the Rust project and module layout;
-2. define the first contract set for manifests, events, policies, errors, and
-   Lua host APIs;
-3. build a minimum runnable skeleton;
-4. implement the minimum end-to-end runtime loop;
-5. expand one module at a time with tests.
+1. the Rust project and module layout exist;
+2. core contracts for manifests, events, policies, errors, storage, routing,
+   Agent runtime, Lua host, and capability calls are in place;
+3. the minimum runnable skeleton is available through `doctor`,
+   `config validate`, and `inspect`;
+4. the minimum end-to-end runtime loop runs through `eva run --example basic`;
+5. the loop is covered by runtime and CLI tests.
 
-This keeps the project moving toward a real implementation without turning the
-architecture into a large untested framework.
+The next practical milestone is V0.5 hardening: task status/logs/cancel,
+timeout, retry, dead-letter diagnostics, and the first hot-reload generation
+path. This keeps new module work grounded in a runnable loop instead of turning
+the architecture into a large untested framework.

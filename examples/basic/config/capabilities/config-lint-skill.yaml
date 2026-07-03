@@ -1,0 +1,16 @@
+id: config-lint-skill
+name: Configuration Lint Skill
+version: 1.0.0
+enabled: true
+kind: lua_capability
+capability: config.lint
+handler:
+  script: config/capabilities/config-lint.lua
+  function: lint
+input_schema:
+  type: object
+output_schema:
+  type: object
+permissions:
+  tools:
+    - config.read

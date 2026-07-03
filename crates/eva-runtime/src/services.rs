@@ -110,4 +110,63 @@ impl RuntimeServices {
     pub fn summaries(&self) -> &[ServiceSummary] {
         &self.summaries
     }
+
+    /// Builds the V0.4 in-memory service table.
+    pub fn in_memory_v04(project: &ProjectConfig) -> Self {
+        let summaries = vec![
+            ServiceSummary::new(
+                "config",
+                ServiceState::Ready,
+                format!(
+                    "{} agents, {} routes",
+                    project.agents.len(),
+                    project.routes.routes.len()
+                ),
+            ),
+            ServiceSummary::new(
+                "policy",
+                ServiceState::Ready,
+                format!("{} policy documents loaded", project.policies.len()),
+            ),
+            ServiceSummary::new(
+                "observability",
+                ServiceState::Ready,
+                "trace/audit/metric contracts available",
+            ),
+            ServiceSummary::new("storage", ServiceState::Ready, "V0.4 in-memory event log"),
+            ServiceSummary::new("eventbus", ServiceState::Ready, "V0.4 in-memory bus"),
+            ServiceSummary::new("scheduler", ServiceState::Ready, "V0.4 topic routing"),
+            ServiceSummary::new(
+                "agent_runtime",
+                ServiceState::Ready,
+                "V0.4 bounded Agent queue",
+            ),
+            ServiceSummary::new(
+                "lua_host",
+                ServiceState::Ready,
+                "V0.4 controlled on_event contract",
+            ),
+            ServiceSummary::new(
+                "capability_router",
+                ServiceState::Ready,
+                "V0.4 builtin capability router",
+            ),
+            ServiceSummary::new(
+                "adapter_router",
+                ServiceState::Planned,
+                "V1.1 adapter runtime",
+            ),
+            ServiceSummary::new("mcp", ServiceState::Planned, "V1.1 MCP client/server"),
+            ServiceSummary::new("discovery", ServiceState::Planned, "V1.1 trusted scan"),
+            ServiceSummary::new("memory", ServiceState::Planned, "V1.2 context services"),
+            ServiceSummary::new("hardware", ServiceState::Planned, "V1.3 hardware adapter"),
+            ServiceSummary::new(
+                "backup_lifecycle",
+                ServiceState::Planned,
+                "V1.4 backup, snapshot, supervisor",
+            ),
+        ];
+
+        Self { summaries }
+    }
 }

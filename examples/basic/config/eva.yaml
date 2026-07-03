@@ -1,0 +1,15 @@
+runtime:
+  env: example
+  workspace: .
+  data_dir: .eva/data
+  script_dir: config/agents
+  adapter_dir: config/adapters
+  hot_reload: false
+
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas

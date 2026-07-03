@@ -3,9 +3,9 @@
 use crate::doctor::{doctor_project, CheckStatus, DoctorReport};
 use crate::inspect::{inspect_project, InspectReport};
 use eva_config::{load_project_config, schema_paths, ProjectConfig};
-use eva_core::{ErrorKind, EvaError};
+use eva_core::{ErrorKind, EvaError, InvokeStatus};
 use eva_observability::{SpanId, TraceFields};
-use eva_runtime::RuntimeBuilder;
+use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder};
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, Write};
@@ -132,20 +132,11 @@ where
         }
         Command::Run(options) => {
             let trace = trace_for("cli.run");
-            match load_project_config(&options.project_root)
-                .and_then(|project| RuntimeBuilder::new().build(&project))
-            {
-                Ok(runtime) => {
-                    let error = EvaError::unsupported("eva run requires the V0.4 event loop")
-                        .with_context("runtime_status", runtime.summary().status.as_str())
-                        .with_context("suggestion", "use `eva inspect` in V0.3");
-                    let exit_code = EXIT_RUNTIME_UNAVAILABLE;
-                    write_error(stderr, options.output, "run", exit_code, &error, &trace)?;
-                    Ok(exit_code)
-                }
+            match execute_run(options, stdout, stderr, &trace) {
+                Ok(exit_code) => Ok(exit_code),
                 Err(error) => {
                     let exit_code = exit_code_for_error(&error);
-                    write_error(stderr, options.output, "run", exit_code, &error, &trace)?;
+                    write_error(stderr, OutputFormat::Text, "run", exit_code, &error, &trace)?;
                     Ok(exit_code)
                 }
             }
@@ -159,13 +150,19 @@ enum Command {
     Doctor(CommonOptions),
     ConfigValidate(CommonOptions),
     Inspect(CommonOptions),
-    Run(CommonOptions),
+    Run(RunOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CommonOptions {
     project_root: PathBuf,
     output: OutputFormat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunOptions {
+    common: CommonOptions,
+    example: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,8 +209,102 @@ where
         "doctor" => Ok(Command::Doctor(parse_common_options(&args[1..])?)),
         "config" => parse_config_command(&args[1..]),
         "inspect" => Ok(Command::Inspect(parse_inspect_options(&args[1..])?)),
-        "run" => Ok(Command::Run(parse_common_options(&args[1..])?)),
+        "run" => Ok(Command::Run(parse_run_options(&args[1..])?)),
         unknown => Err(EvaError::unsupported("unknown command").with_context("command", unknown)),
+    }
+}
+
+fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut example = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--example" => {
+                index += 1;
+                let value = args.get(index).ok_or_else(|| {
+                    EvaError::invalid_argument("missing value for example option")
+                })?;
+                example = Some(value.clone());
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+
+    Ok(RunOptions {
+        common: parse_common_options(&passthrough)?,
+        example,
+    })
+}
+
+fn execute_run<W, E>(
+    options: RunOptions,
+    stdout: &mut W,
+    stderr: &mut E,
+    trace: &TraceFields,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match options.example.as_deref() {
+        Some("basic") => {
+            let project_root = options.common.project_root.join("examples").join("basic");
+            match load_project_config(&project_root).and_then(|project| {
+                let runtime = RuntimeBuilder::in_memory_v04().build(&project)?;
+                runtime
+                    .run_basic(&project, BasicRunOptions::default())
+                    .map(|report| (project, runtime, report))
+            }) {
+                Ok((_project, _runtime, report)) => {
+                    write_run(stdout, options.common.output, &report, trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => {
+                    let exit_code = exit_code_for_error(&error);
+                    write_error(
+                        stderr,
+                        options.common.output,
+                        "run",
+                        exit_code,
+                        &error,
+                        trace,
+                    )?;
+                    Ok(exit_code)
+                }
+            }
+        }
+        Some(example) => {
+            let error = EvaError::unsupported("unknown run example")
+                .with_context("example", example)
+                .with_context("supported", "basic");
+            let exit_code = EXIT_USAGE;
+            write_error(
+                stderr,
+                options.common.output,
+                "run",
+                exit_code,
+                &error,
+                trace,
+            )?;
+            Ok(exit_code)
+        }
+        None => {
+            let error = EvaError::unsupported("eva run requires an example in V0.4")
+                .with_context("suggestion", "use `eva run --example basic`");
+            let exit_code = EXIT_RUNTIME_UNAVAILABLE;
+            write_error(
+                stderr,
+                options.common.output,
+                "run",
+                exit_code,
+                &error,
+                trace,
+            )?;
+            Ok(exit_code)
+        }
     }
 }
 
@@ -555,6 +646,167 @@ fn write_inspect<W: Write>(
     }
 }
 
+fn write_run<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    report: &BasicRunReport,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "OK run example=basic").map_err(write_error_kind)?;
+            writeln!(writer, "project_root: {}", report.project_root).map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "runtime: mode={} generation={}",
+                report.runtime_mode, report.generation_id
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "event: {} topic={} sequence={}",
+                report.event_id, report.topic, report.receipt.sequence
+            )
+            .map_err(write_error_kind)?;
+            writeln!(writer, "deliveries:").map_err(write_error_kind)?;
+            for delivery in &report.deliveries {
+                writeln!(
+                    writer,
+                    "  - agent={} delivery={}",
+                    delivery.agent_id,
+                    delivery.delivery.as_str()
+                )
+                .map_err(write_error_kind)?;
+            }
+            writeln!(writer, "agent_runs:").map_err(write_error_kind)?;
+            for run in &report.agent_runs {
+                writeln!(
+                    writer,
+                    "  - agent={} status={} handler_status={}",
+                    run.agent_id,
+                    run.status.as_str(),
+                    run.handler_status.as_deref().unwrap_or("")
+                )
+                .map_err(write_error_kind)?;
+            }
+            if let Some(response) = &report.capability_response {
+                writeln!(
+                    writer,
+                    "capability: status={} output={}",
+                    invoke_status(response.status()),
+                    response
+                        .output()
+                        .and_then(|output| output.as_text())
+                        .unwrap_or("")
+                )
+                .map_err(write_error_kind)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope("run", EXIT_OK, &run_report_json(report), trace)
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn run_report_json(report: &BasicRunReport) -> String {
+    let deliveries = report.deliveries.iter().map(|delivery| {
+        format!(
+            "{{\"agent_id\":{},\"delivery\":{}}}",
+            json_string(delivery.agent_id.as_str()),
+            json_string(delivery.delivery.as_str())
+        )
+    });
+    let agent_runs = report.agent_runs.iter().map(|run| {
+        let error = run
+            .error
+            .as_ref()
+            .map(|error| json_string(error.message()))
+            .unwrap_or_else(|| "null".to_owned());
+        format!(
+            "{{\"agent_id\":{},\"event_id\":{},\"topic\":{},\"status\":{},\"handler_status\":{},\"output\":{},\"error\":{}}}",
+            json_string(run.agent_id.as_str()),
+            json_string(run.event_id.as_str()),
+            json_string(run.topic.as_str()),
+            json_string(run.status.as_str()),
+            option_json(run.handler_status.as_deref()),
+            option_json(run.output.as_deref()),
+            error
+        )
+    });
+    let lua_results = report.lua_results.iter().map(|result| {
+        format!(
+            "{{\"agent_id\":{},\"status\":{},\"topic\":{},\"note\":{},\"capability\":{},\"capability_input\":{}}}",
+            json_string(result.agent_id.as_str()),
+            json_string(&result.status),
+            json_string(result.topic.as_str()),
+            option_json(result.note.as_deref()),
+            result
+                .capability
+                .as_ref()
+                .map(|capability| json_string(capability.as_str()))
+                .unwrap_or_else(|| "null".to_owned()),
+            option_json(result.capability_input.as_deref())
+        )
+    });
+    let capability_response = report
+        .capability_response
+        .as_ref()
+        .map(capability_response_json)
+        .unwrap_or_else(|| "null".to_owned());
+    format!(
+        "{{\"runtime_mode\":{},\"generation_id\":{},\"project_root\":{},\"event_id\":{},\"topic\":{},\"receipt\":{{\"event_id\":{},\"sequence\":{},\"topic\":{},\"target\":{}}},\"deliveries\":{},\"agent_runs\":{},\"lua_results\":{},\"capability_response\":{},\"audit\":{}}}",
+        json_string(&report.runtime_mode),
+        json_string(&report.generation_id),
+        json_string(&report.project_root),
+        json_string(&report.event_id),
+        json_string(&report.topic),
+        json_string(report.receipt.event_id.as_str()),
+        report.receipt.sequence,
+        json_string(report.receipt.topic.as_str()),
+        json_string(&format!("{:?}", report.receipt.target)),
+        json_array(deliveries),
+        json_array(agent_runs),
+        json_array(lua_results),
+        capability_response,
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn capability_response_json(response: &eva_core::InvokeResponse) -> String {
+    format!(
+        "{{\"request_id\":{},\"status\":{},\"output\":{},\"error\":{}}}",
+        json_string(response.request_id().as_str()),
+        json_string(invoke_status(response.status())),
+        response
+            .output()
+            .and_then(|output| output.as_text())
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_owned()),
+        response
+            .error()
+            .map(|error| json_string(error.message()))
+            .unwrap_or_else(|| "null".to_owned())
+    )
+}
+
+fn option_json(value: Option<&str>) -> String {
+    value.map(json_string).unwrap_or_else(|| "null".to_owned())
+}
+
+fn invoke_status(status: InvokeStatus) -> &'static str {
+    match status {
+        InvokeStatus::Accepted => "accepted",
+        InvokeStatus::Completed => "completed",
+        InvokeStatus::Failed => "failed",
+        InvokeStatus::Cancelled => "cancelled",
+        InvokeStatus::Timeout => "timeout",
+    }
+}
+
 fn write_error<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -716,7 +968,7 @@ fn write_error_kind(error: io::Error) -> EvaError {
 }
 
 fn help_text() -> &'static str {
-    "Eva CLI\n\nUSAGE:\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run [--project <path>] [--output text|json]\n\nV0.3 commands:\n  doctor           Check workspace, configuration roots, schema files, and V0.3 runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and no-op runtime status.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
+    "Eva CLI\n\nUSAGE:\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--output text|json]\n\nCommands:\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V0.4 in-memory basic event loop.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
 }
 
 #[cfg(test)]
@@ -775,6 +1027,26 @@ mod tests {
 
         assert_eq!(exit_code, EXIT_USAGE);
         assert!(stderr.contains("unknown command"));
+    }
+
+    #[test]
+    fn run_basic_example_json_succeeds() {
+        let root = workspace_root();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "run",
+            "--example",
+            "basic",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"run\""));
+        assert!(stdout.contains("\"capability_response\""));
+        assert!(stdout.contains("config.lint") || stdout.contains("valid"));
+        assert!(stderr.is_empty());
     }
 
     #[test]

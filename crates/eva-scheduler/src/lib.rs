@@ -5,3 +5,9 @@ pub mod matcher;
 pub mod registry;
 pub mod routing;
 pub mod subscription;
+
+pub use mailbox::AgentMailbox;
+pub use matcher::matching_rules;
+pub use registry::MailboxRegistry;
+pub use routing::{DeliveryMode, RoutingRule};
+pub use subscription::{DeliveryPlan, SubscriptionTable};

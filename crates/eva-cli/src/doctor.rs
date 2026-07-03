@@ -172,8 +172,8 @@ pub fn doctor_project(project_root: &Path) -> DoctorReport {
             .join("eva-lua-host")
             .join("Cargo.toml")
             .is_file(),
-        "Lua host crate boundary exists; script execution is planned for V0.4",
-        "restore crates/eva-lua-host before implementing V0.4 Lua execution",
+        "Lua host crate boundary exists; V0.4 controlled on_event execution is available",
+        "restore crates/eva-lua-host before running V0.4 Lua execution",
     );
 
     let external_count = project

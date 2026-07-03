@@ -1,0 +1,17 @@
+id: root-agent
+enabled: true
+script: main.lua
+script_version: v0.4-basic
+subscriptions:
+  - /input/user
+inbox:
+  capacity: 16
+  overflow: dead_letter
+permissions:
+  emit:
+    - /sys/**
+  tools:
+    - capability.invoke
+  adapters:
+    capabilities: []
+    providers: []

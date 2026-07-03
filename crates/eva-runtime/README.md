@@ -2,48 +2,53 @@
 
 更新时间：2026-07-03
 
-`eva-runtime` 是 Eva-CLI 的 composition root。它把已经通过 `eva-config` 校验的项目配置组装成 runtime 实例、服务摘要和生命周期入口。下层 crate 不反向依赖 `eva-runtime`；真实副作用必须通过 runtime 组合根统一进入。
+`eva-runtime` 是 Eva-CLI 的 composition root。下层 crate 不反向依赖 runtime，真实服务 wiring 和跨模块闭环都由本 crate 统一装配。
 
-## V0.3 已实现范围
+## 当前实现
 
-| 能力 | 当前行为 | 副作用边界 |
+| 版本 | 能力 | 当前行为 |
 | --- | --- | --- |
-| `RuntimeBuilder` | 从 `ProjectConfig` 构造 V0.3 no-op `Runtime`。 | 不启动线程、事件循环、Lua、adapter 或外部进程。 |
-| `RuntimeOptions` | 记录 runtime mode 和 generation id。默认 generation 为 `noop-v0.3`。 | 纯数据。 |
-| `RuntimeSummary` | 汇总环境、project root、Agent/Adapter/Capability/Route/Policy 数量和 service summary。 | 纯数据。 |
-| `RuntimeServices` | 保存 V0.3 服务边界摘要：config、policy、observability 为 ready，其余 runtime 服务为 planned。 | 只保存 summary，不持有真实服务句柄。 |
-| `Runtime::shutdown()` | 标记 runtime 为 shutdown，返回 `ShutdownReport`。重复调用保持幂等。 | 不依赖真实运行循环。 |
+| V0.3 | no-op builder | `RuntimeBuilder::new().build(project)` 构造只读 runtime summary，用于 `doctor` 和 `inspect`。 |
+| V0.3 | shutdown | `Runtime::shutdown()` 幂等更新 summary status。 |
+| V0.4 | in-memory builder | `RuntimeBuilder::in_memory_v04()` 构造 V0.4 service summary，storage/eventbus/scheduler/agent/lua/capability 标记为 ready。 |
+| V0.4 | basic run | `Runtime::run_basic(project, BasicRunOptions)` 执行最小事件运行闭环。 |
 
-## Runtime mode
+## V0.4 Basic 闭环
 
-当前只实现 `RuntimeMode::Noop`。该模式的含义是：配置已通过校验，runtime composition root 可以被构造和检查，但还不会处理事件、调度 Agent、执行 Lua 或调用 capability。
+`run_basic` 的顺序如下：
 
-V0.4 会在这个组合根下继续接入 in-memory storage、EventBus、Scheduler、AgentRuntime、Lua host 和 builtin capability。V0.3 不提前伪造这些服务的行为，只在 `RuntimeServices` 中标记为 `planned`。
+1. 构造 typed `Event`，写入 request id 和 generation id。
+2. `InMemoryEventBus::publish` append 到 `InMemoryEventLog`，返回 `EventReceipt`。
+3. runtime 从 `ProjectConfig.routes` 构造 `SubscriptionTable`。
+4. scheduler 匹配 Topic 并投递到 `MailboxRegistry`。
+5. runtime drain mailbox，把事件交给 `AgentRuntime` 私有 queue。
+6. `AgentRuntime::run_next` 调用注入的 Lua handler。
+7. `LuaHost` 解析受控 `on_event` 返回 table。
+8. 如果 Lua result 请求 capability，runtime 通过 `CapabilityRouter` 调用 builtin。
+9. EventBus ack/fail，并返回 `BasicRunReport`。
 
-## 与 CLI 的关系
+## 公开入口
 
-- `eva inspect` 调用 `RuntimeBuilder::new().build(project)` 读取 runtime summary。
-- `eva doctor` 调用同一条 builder 路径，确认 no-op runtime summary 可构造。
-- `eva run` 在 V0.3 会先构造 no-op runtime，再返回 `Unsupported`，提示真实事件循环属于 V0.4。
+```rust
+use eva_runtime::{BasicRunOptions, RuntimeBuilder};
+```
 
-## 验证命令
+## 报告内容
 
-| 命令 | 目标 |
-| --- | --- |
-| `cargo test -p eva-runtime` | 验证 no-op builder、summary 和幂等 shutdown。 |
-| `cargo run -- inspect runtime --output json` | 通过 CLI 验证 runtime summary 可读。 |
-| `cargo test --workspace` | 验证 runtime 组合根不破坏 workspace。 |
+`BasicRunReport` 包含 runtime mode、generation、project root、event id/topic、publish receipt、delivery plan、Agent run records、Lua results、capability response 和 audit 摘要。CLI 的 `eva run --example basic --output json` 会直接输出这些字段。
 
-## 单元测试
+## 验证
 
-| 测试 | 覆盖内容 |
-| --- | --- |
-| `noop_builder_summarizes_sample_project` | 样例项目可构造 no-op runtime，summary 数量与配置一致。 |
-| `shutdown_is_idempotent` | `Runtime::shutdown()` 第一次记录停机，后续调用返回 already shutdown。 |
+```powershell
+cargo test -p eva-runtime
+cargo run -- run --example basic --output json
+```
 
-## 剩余限制
+已覆盖：V0.3 no-op summary、幂等 shutdown、V0.4 basic 成功路径、missing route 失败路径。
 
-- `RuntimeServices` 当前只保存摘要，不持有真实 storage、eventbus、scheduler 或 agent handles。
-- `RuntimeBuilder::build` 只检查 Agent 和 route 非空；更深层 service wiring 留给 V0.4/V0.5。
-- effective policy 目前仍由下层 `eva-policy` 提供契约，V0.3 runtime summary 只展示 policy document 数量。
-- shutdown 只记录状态切换，不执行 drain、cancel、audit flush 或 generation rollback。
+## 后续限制
+
+- V0.4 只装配 in-memory 服务，不提供 durable crash recovery。
+- `RuntimeServices` 仍是 summary 容器，不长期持有后台线程或外部 provider handle。
+- Adapter/MCP/Discovery/Memory/Hardware/Backup/Lifecycle 仍是 planned 服务。
+- timeout、cancel、retry、task status 留给 V0.5。

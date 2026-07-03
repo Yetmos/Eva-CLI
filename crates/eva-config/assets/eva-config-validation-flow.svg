@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1180" height="640" viewBox="0 0 1180 640" role="img" aria-labelledby="title desc">
   <title id="title">eva-config validation flow</title>
-  <desc id="desc">Diagram showing how eva-config loads project configuration, validates stable fields through eva-core, and produces ProjectConfig for eva validate and runtime composition.</desc>
+  <desc id="desc">Diagram showing how eva-config loads project configuration, validates stable fields through eva-core, and produces ProjectConfig for eva config validate and runtime composition.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto">
       <path d="M2 2 L10 6 L2 10 Z" fill="#334155"/>
@@ -81,7 +81,7 @@
   <text class="small" x="703" y="488" text-anchor="middle">runtime capability names</text>
 
   <rect class="box output" x="884" y="188" width="220" height="82"/>
-  <text class="label" x="994" y="220" text-anchor="middle">eva validate</text>
+  <text class="label" x="994" y="220" text-anchor="middle">eva config validate</text>
   <text class="small" x="994" y="244" text-anchor="middle">structured validation report</text>
 
   <rect class="box output" x="884" y="322" width="220" height="82"/>

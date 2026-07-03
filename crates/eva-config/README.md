@@ -1,6 +1,6 @@
 # eva-config / 配置加载与归一化
 
-更新时间：2026-07-02
+更新时间：2026-07-03
 
 ![eva-config validation flow](assets/eva-config-validation-flow.svg)
 
@@ -16,7 +16,7 @@
 
 ### 当前实现状态
 
-第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。
+第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。V0.3 起 `eva-cli` 已通过 `eva config validate` 暴露文本/JSON 校验报告，V0.4 runtime basic loop 也复用同一份 `ProjectConfig` 作为组合输入。
 
 ```text
 project root
@@ -42,7 +42,7 @@ project root
 | 跨文件一致性 | 已完成 | 检查重复 ID、Agent 父子引用、Agent 脚本文件、Capability provider Adapter、Route target Agent |
 | schema 辅助 | 已完成 | 暴露 schema 路径和当前支持的枚举值，包括 route delivery |
 | 完整 JSON Schema validator | 未实现 | 后续独立切片 |
-| CLI `eva validate` | 未实现 | 下一阶段接入 `eva-cli` |
+| CLI `eva config validate` | 已完成 | `eva-cli` 输出人类可读和机器可读的配置验证结果 |
 
 ### 已实现公开 API
 
@@ -71,7 +71,7 @@ project root
 | `PolicyDocument` | `src/policy.rs` | `path`、`domains` | policy 文件加载结果，领域解释不在 `eva-config` |
 | `RouteConfig` | `src/routes.rs` | `path`、`routes` | Topic route table |
 | `RouteRule` | `src/routes.rs` | `pattern`、`delivery`、`agents` | Scheduler 注册前路由契约 |
-| `ProjectConfig` | `src/lib.rs` | `eva`、`roots`、`agents`、`adapters`、`capabilities`、`policies`、`routes` | `eva validate` 和 runtime composition 的最小输入 |
+| `ProjectConfig` | `src/lib.rs` | `eva`、`roots`、`agents`、`adapters`、`capabilities`、`policies`、`routes` | `eva config validate` 和 runtime composition 的最小输入 |
 | `SchemaPaths` | `src/schema.rs` | `eva`、`agent`、`adapter`、`capability`、`policy`、`routes` | schema 文件位置入口 |
 
 ### eva-core 契约复用
@@ -168,12 +168,12 @@ project root
 
 | 优先级 | 工作项 | 目标模块 | 验收标准 |
 | --- | --- | --- | --- |
-| P0 | 接入 `eva validate` | `eva-cli` + `eva-config` | CLI 可以输出人类可读和机器可读的配置验证结果 |
 | P0 | 补完整 JSON Schema validator | `eva-config` | schema 校验错误能定位到文件、字段和 schema 规则 |
+| P0 | 保持 CLI 校验报告稳定 | `eva-cli` + `eva-config` | `eva config validate` 与 `ProjectConfig`、schema 路径和 exit code 持续对齐 |
 | P1 | 解释 policy domain 到 `PolicyLayer` | `eva-policy` + runtime 调用方 | policy YAML 已可加载，下一步把具体领域字段转成策略层 |
-| P1 | 将 routes 接入 Scheduler registry | `eva-scheduler` | route YAML 已可加载，下一步由 Scheduler 执行路由注册 |
+| P1 | 扩展 Scheduler route 使用场景 | `eva-scheduler` | V0.4 basic loop 已使用 routes；后续补公平竞争、drain 和失败投递 |
 | P1 | 扩展 manifest 交叉检查 | `eva-config` | Adapter capability、Capability provider、Agent permission 引用能互相校验 |
-| P2 | examples/basic 配置闭环 | `examples/basic` | 能从配置加载走到最小事件投递示例 |
+| P2 | examples/basic 配置闭环 | `examples/basic` | 已从配置加载走到最小事件投递示例；后续随 V0.5 扩展失败路径 |
 | P2 | 文档和 schema 生成检查 | `docs` + `config/schemas` | README、Rust 类型、schema required 字段持续对齐 |
 
 ### 仍不属于 eva-config 的工作
@@ -191,7 +191,7 @@ project root
 
 ### Current Status
 
-The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`.
+The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`. Since V0.3, `eva-cli` exposes this path through `eva config validate`; the V0.4 basic runtime loop reuses the same `ProjectConfig` as its composition input.
 
 | Area | Status | Notes |
 | --- | --- | --- |
@@ -207,7 +207,7 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | Cross-file validation | Done | Checks duplicate IDs, Agent references, Agent scripts, Capability provider Adapters, and Route target Agents |
 | Schema helpers | Done | Exposes standard schema paths and supported enum values, including route delivery |
 | Full JSON Schema validator | Not started | Planned as a separate slice |
-| CLI `eva validate` | Not started | Planned for the next milestone |
+| CLI `eva config validate` | Done | `eva-cli` reports validation results in text and JSON formats |
 
 ### Public API
 
@@ -237,12 +237,12 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 
 | Priority | Work item | Target module | Acceptance criteria |
 | --- | --- | --- | --- |
-| P0 | Wire `eva validate` | `eva-cli` + `eva-config` | CLI reports config validation results in human-readable and machine-readable forms |
 | P0 | Add full JSON Schema validation | `eva-config` | Schema errors include file, field, and schema rule context |
+| P0 | Keep CLI validation stable | `eva-cli` + `eva-config` | `eva config validate` stays aligned with `ProjectConfig`, schema paths, and exit codes |
 | P1 | Interpret policy domains as `PolicyLayer`s | `eva-policy` + runtime caller | Policy YAML is loaded; concrete domains still need mapping into policy layers |
-| P1 | Wire routes into Scheduler registry | `eva-scheduler` | Route YAML is loaded; Scheduler still owns delivery behavior |
+| P1 | Expand Scheduler route behavior | `eva-scheduler` | V0.4 uses routes in the basic loop; next slices add fairness, drain, and failed delivery handling |
 | P1 | Expand manifest cross-checks | `eva-config` | Adapter capabilities, Capability providers, and Agent permissions can be checked together |
-| P2 | Build `examples/basic` config path | `examples/basic` | Sample config reaches a minimal event delivery flow |
+| P2 | Maintain `examples/basic` config path | `examples/basic` | Sample config reaches the minimal event delivery flow; V0.5 should add failure-path examples |
 | P2 | Keep docs, Rust types, and schemas aligned | `docs` + `config/schemas` | README tables, type definitions, and schema required fields stay consistent |
 
 ### Boundary

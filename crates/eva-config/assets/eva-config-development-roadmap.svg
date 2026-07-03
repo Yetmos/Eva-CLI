@@ -49,7 +49,7 @@
   <rect class="tagbox" x="654" y="178" width="92" height="26" fill="#ea580c"/>
   <text class="tag" x="700" y="196" text-anchor="middle">Next / 下一步</text>
   <text class="label" x="654" y="230">CLI validation</text>
-  <text class="small" x="654" y="256">eva validate command / 命令接入</text>
+  <text class="small" x="654" y="256">eva config validate / 命令接入</text>
   <text class="small" x="654" y="278">JSON reports / 结构化报告</text>
   <text class="small" x="654" y="300">Schema validator / schema 校验器</text>
 

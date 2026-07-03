@@ -1,9 +1,11 @@
 //! Runtime instance and summary state.
 
+use crate::basic::{BasicRunOptions, BasicRunReport};
 use crate::builder::{RuntimeMode, RuntimeOptions};
 use crate::services::{RuntimeServices, ServiceSummary};
 use crate::shutdown::{ShutdownReport, ShutdownState};
 use eva_config::ProjectConfig;
+use eva_core::EvaError;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "own the assembled Eva runtime instance";
@@ -99,6 +101,15 @@ impl Runtime {
 
     pub fn services(&self) -> &RuntimeServices {
         &self.services
+    }
+
+    /// Runs the V0.4 basic in-memory event loop.
+    pub fn run_basic(
+        &self,
+        project: &ProjectConfig,
+        options: BasicRunOptions,
+    ) -> Result<BasicRunReport, EvaError> {
+        crate::basic::run_basic(&self.summary, project, options)
     }
 
     /// Marks the no-op runtime as shutdown. The operation is idempotent.

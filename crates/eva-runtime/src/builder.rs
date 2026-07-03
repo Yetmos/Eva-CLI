@@ -14,6 +14,8 @@ pub const RESPONSIBILITY: &str = "compose concrete runtime services from validat
 pub enum RuntimeMode {
     /// V0.3 mode: build summaries and boundaries without starting side effects.
     Noop,
+    /// V0.4 mode: wire the in-memory event loop for example execution.
+    InMemoryV04,
 }
 
 /// Runtime builder options that are stable enough for CLI inspection.
@@ -45,6 +47,7 @@ impl RuntimeMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Noop => "noop",
+            Self::InMemoryV04 => "in_memory_v0.4",
         }
     }
 }
@@ -65,6 +68,15 @@ impl RuntimeOptions {
         }
     }
 
+    /// Returns V0.4 in-memory runtime options.
+    pub fn in_memory_v04() -> Self {
+        Self {
+            mode: RuntimeMode::InMemoryV04,
+            generation_id: GenerationId::parse("basic-v0.4")
+                .expect("static V0.4 generation id is valid"),
+        }
+    }
+
     pub fn with_generation_id(mut self, generation_id: GenerationId) -> Self {
         self.generation_id = generation_id;
         self
@@ -75,6 +87,12 @@ impl RuntimeBuilder {
     pub fn new() -> Self {
         Self {
             options: RuntimeOptions::default(),
+        }
+    }
+
+    pub fn in_memory_v04() -> Self {
+        Self {
+            options: RuntimeOptions::in_memory_v04(),
         }
     }
 
@@ -97,7 +115,10 @@ impl RuntimeBuilder {
             );
         }
 
-        let services = RuntimeServices::noop(project);
+        let services = match self.options.mode {
+            RuntimeMode::Noop => RuntimeServices::noop(project),
+            RuntimeMode::InMemoryV04 => RuntimeServices::in_memory_v04(project),
+        };
         let summary = RuntimeSummary::from_project(project, &self.options, &services);
         Ok(Runtime::new(summary, services))
     }
