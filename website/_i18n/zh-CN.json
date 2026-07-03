@@ -242,6 +242,21 @@
         "description": "从架构文档到模块划分、契约定义、最小运行闭环和 1.0 发布准备的阶段路径。"
       },
       {
+        "id": "v1.0-quickstart",
+        "title": "V1.0 快速开始",
+        "description": "从源码安装、验证发布面、运行 basic 闭环，并查看 task 诊断。"
+      },
+      {
+        "id": "v1.0-known-limitations",
+        "title": "V1.0 已知限制",
+        "description": "V1.0 core 的支持范围，以及仍属于后续版本的高级 runtime 能力。"
+      },
+      {
+        "id": "release-notes-v1.0.0",
+        "title": "V1.0.0 发布说明",
+        "description": "核心发布 checkpoint、稳定命令、CI 门禁和明确非目标。"
+      },
+      {
         "id": "website-docs-i18n",
         "title": "网站与文档多语言适配",
         "description": "多语言官网与文档迁移方案。"

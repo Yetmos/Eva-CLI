@@ -1,7 +1,7 @@
 id: root-agent
 enabled: true
 script: main.lua
-script_version: v0.4-basic
+script_version: v1.0-basic
 subscriptions:
   - /input/user
 inbox:

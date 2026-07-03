@@ -1,3 +1,3 @@
 # Adapters
 
-The V0.5 basic example does not start external adapters. The directory exists so the normal Eva configuration loader can validate split configuration roots.
+The V1.0 basic example does not start external adapters. The directory exists so the normal Eva configuration loader can validate split configuration roots.

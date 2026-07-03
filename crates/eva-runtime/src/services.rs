@@ -192,4 +192,22 @@ impl RuntimeServices {
         ]);
         services
     }
+
+    /// Builds the V1.0 core release service table.
+    pub fn in_memory_v10(project: &ProjectConfig) -> Self {
+        let mut services = Self::in_memory_v05(project);
+        services.summaries.extend([
+            ServiceSummary::new(
+                "release_core",
+                ServiceState::Ready,
+                "V1.0 quickstart, CI, release notes, and known limits are documented",
+            ),
+            ServiceSummary::new(
+                "advanced_capabilities",
+                ServiceState::Planned,
+                "Adapter, MCP, discovery, memory, hardware, backup, and lifecycle remain post-1.0 scope",
+            ),
+        ]);
+        services
+    }
 }

@@ -2,11 +2,10 @@
 
 > Language: English | [简体中文](README.zh-CN.md)
 
-Eva-CLI is currently moving from architecture and specification consolidation
-into executable Rust implementation. The repository is not yet a 1.0 release,
-but it now contains a compileable Rust workspace, configuration examples,
-schemas, the V0.5 in-memory runtime loop, and local task diagnostics for the
-basic example. The website uses English as the default public entry with stable
+Eva-CLI has reached the V1.0 core source release surface: a compileable Rust
+workspace, configuration examples, schemas, the in-memory basic runtime loop,
+local task diagnostics, CI gates, quickstart, release notes, and explicit known
+limitations. The website uses English as the default public entry with stable
 slugs, while the Simplified Chinese documents remain the source of truth for
 some detailed architecture and implementation-spec content.
 
@@ -23,11 +22,11 @@ maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
 
 Updated: 2026-07-03
 
-Eva-CLI has moved past a design-only repository. It now has a compileable Rust
-workspace, configuration examples and schemas, implemented foundation contracts,
-project configuration loading, and the V0.5 developer loop through the CLI,
-in-memory runtime composition root, and local `.eva/tasks` diagnostics. The
-next major milestone is V1.0 release hardening.
+Eva-CLI has moved past a design-only repository and now has a V1.0 core release
+surface. It includes a compileable Rust workspace, configuration examples and
+schemas, implemented foundation contracts, project configuration loading, a
+V1.0 CLI quickstart, the `in_memory_v1.0` basic runtime composition root, local
+`.eva/tasks` diagnostics, and CI release gates.
 
 | Area | Status | Evidence | Remaining Work |
 | --- | --- | --- | --- |
@@ -36,14 +35,14 @@ next major milestone is V1.0 release hardening.
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 19 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V0.5 implemented | `doctor`, `config validate`, `inspect`, `run --example basic`, `task status/logs/cancel`, text/JSON output, trace fields, and exit-code mapping | V1.0 quickstart/release hardening |
-| Runtime composition | V0.5 implemented | No-op builder, V0.5 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, and idempotent shutdown | V1.0 release readiness and known-limits docs |
+| `eva-cli` | V1.0 core implemented | `version`, `doctor`, `config validate`, `inspect`, `run --example basic`, `task status/logs/cancel`, text/JSON output, trace fields, and exit-code mapping | V1.1+ external capability surfaces |
+| Runtime composition | V1.0 core implemented | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, and idempotent shutdown | Durable/runtime lifecycle work remains later scope |
 | EventBus and Scheduler | V0.4/V0.5 implemented for basic loop | EventBus publish/ack/fail/dead-letter/replay diagnostics; Scheduler topic routing and mailbox delivery | Durable replay/backoff remains later scope |
 | Agent and Lua host | V0.5 implemented for basic loop | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, controlled bindings, generation marker | Real Lua VM and generation swap remain later scope |
 | Capability and Adapter layers | Mixed | `eva-capability` has V0.4 builtins; `eva-adapter` is still scaffolded | External provider routing and authorized transports remain V1.1 scope |
 | Policy, observability, storage | Mixed | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` has V0.4 in-memory stores/logs | Durable storage, richer audit sinks, and metrics remain later scope |
 | Discovery, MCP, memory, hardware, backup, lifecycle | Scaffold only | Dedicated crates and module boundaries exist | Implement trusted discovery, MCP mapping, memory/context services, hardware hotplug, backup/release snapshots, and supervisor generation flow |
-| Verification baseline | Passing | `cargo fmt --check`, `cargo test -p eva-core`, `cargo check --workspace`, `cargo doc -p eva-core --no-deps`, `cargo test --workspace` | Add CI coverage for future runtime behavior, schema validation, examples, and integration tests |
+| Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, V1.0 quickstart smoke commands, and website i18n validation | Add gates as future runtime behavior expands |
 
 ## Implementation Plan
 
@@ -69,6 +68,28 @@ release path from design documents to a 1.0 release, and see
 [eva-core Module Design](docs/en/eva-core-module.md) plus
 [crates/eva-core/README.md](crates/eva-core/README.md) for the implemented
 foundation contract layer.
+
+## V1.0 Quickstart
+
+The supported V1.0 source-install path is documented in
+[Eva-CLI V1.0 Quickstart](docs/en/v1.0-quickstart.md). The short path is:
+
+```powershell
+git clone https://github.com/Yetmos/Eva-CLI.git
+cd Eva-CLI
+cargo build --release
+cargo run -- --version
+cargo run -- doctor --output json
+cargo run -- config validate --output json
+cargo run -- inspect runtime --output json
+cargo run -- run --example basic --task-id req-readme-v10 --output json
+cargo run -- task status --task req-readme-v10 --output json
+cargo run -- task logs --task req-readme-v10 --output json
+```
+
+V1.0 scope and non-goals are explicit in
+[Known Limitations](docs/en/v1.0-known-limitations.md), and the release summary
+is in [V1.0.0 Release Notes](docs/en/release-notes-v1.0.0.md).
 
 ## Repository Layout
 

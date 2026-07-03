@@ -581,6 +581,57 @@
       "sourceCoverage": "summary-or-entry"
     },
     {
+      "id": "v1.0-quickstart",
+      "title": "Eva-CLI V1.0 Quickstart",
+      "source": "docs/en/v1.0-quickstart.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V1.0快速开始.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/v1.0-quickstart.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
+      "id": "v1.0-known-limitations",
+      "title": "Eva-CLI V1.0 Known Limitations",
+      "source": "docs/en/v1.0-known-limitations.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V1.0已知限制.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/v1.0-known-limitations.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
+      "id": "release-notes-v1.0.0",
+      "title": "Eva-CLI V1.0.0 Release Notes",
+      "source": "docs/en/release-notes-v1.0.0.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V1.0发布说明.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/release-notes-v1.0.0.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "v0.1-baseline-acceptance",
       "title": "V0.1 Baseline Acceptance",
       "source": "docs/en/v0.1-baseline-acceptance.md",

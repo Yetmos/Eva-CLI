@@ -1,4 +1,4 @@
-//! V0.5 basic in-memory event loop with task diagnostics.
+//! V1.0 basic in-memory event loop with task diagnostics.
 
 use crate::runtime::RuntimeSummary;
 use crate::task::{
@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Runtime input for the built-in V0.5 basic example.
+/// Runtime input for the built-in V1.0 basic example.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasicRunOptions {
     pub event_id: EventId,
@@ -79,7 +79,7 @@ pub fn run_basic(
         RetryPolicy::new(options.retry_attempts),
     );
     task.status = TaskStatus::Running;
-    task.push_log(TaskLogLevel::Info, "task accepted by V0.5 basic runtime");
+    task.push_log(TaskLogLevel::Info, "task accepted by V1.0 core runtime");
 
     let event = Event::new(
         options.event_id.clone(),

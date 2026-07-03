@@ -18,6 +18,8 @@ pub enum RuntimeMode {
     InMemoryV04,
     /// V0.5 mode: wire the in-memory loop plus task diagnostics.
     InMemoryV05,
+    /// V1.0 mode: stabilize the core release surface over the V0.5 loop.
+    InMemoryV10,
 }
 
 /// Runtime builder options that are stable enough for CLI inspection.
@@ -51,6 +53,7 @@ impl RuntimeMode {
             Self::Noop => "noop",
             Self::InMemoryV04 => "in_memory_v0.4",
             Self::InMemoryV05 => "in_memory_v0.5",
+            Self::InMemoryV10 => "in_memory_v1.0",
         }
     }
 }
@@ -89,6 +92,15 @@ impl RuntimeOptions {
         }
     }
 
+    /// Returns V1.0 core release runtime options.
+    pub fn in_memory_v10() -> Self {
+        Self {
+            mode: RuntimeMode::InMemoryV10,
+            generation_id: GenerationId::parse("basic-v1.0")
+                .expect("static V1.0 generation id is valid"),
+        }
+    }
+
     pub fn with_generation_id(mut self, generation_id: GenerationId) -> Self {
         self.generation_id = generation_id;
         self
@@ -111,6 +123,12 @@ impl RuntimeBuilder {
     pub fn in_memory_v05() -> Self {
         Self {
             options: RuntimeOptions::in_memory_v05(),
+        }
+    }
+
+    pub fn in_memory_v10() -> Self {
+        Self {
+            options: RuntimeOptions::in_memory_v10(),
         }
     }
 
@@ -137,6 +155,7 @@ impl RuntimeBuilder {
             RuntimeMode::Noop => RuntimeServices::noop(project),
             RuntimeMode::InMemoryV04 => RuntimeServices::in_memory_v04(project),
             RuntimeMode::InMemoryV05 => RuntimeServices::in_memory_v05(project),
+            RuntimeMode::InMemoryV10 => RuntimeServices::in_memory_v10(project),
         };
         let summary = RuntimeSummary::from_project(project, &self.options, &services);
         Ok(Runtime::new(summary, services))
@@ -180,5 +199,19 @@ mod tests {
             .services
             .iter()
             .any(|service| service.name == "task_registry"));
+    }
+
+    #[test]
+    fn v10_builder_marks_release_core_ready() {
+        let project = load_project_config(workspace_root().join("examples/basic")).unwrap();
+        let runtime = RuntimeBuilder::in_memory_v10().build(&project).unwrap();
+        let summary = runtime.summary();
+
+        assert_eq!(summary.mode, RuntimeMode::InMemoryV10);
+        assert_eq!(summary.generation_id, "basic-v1.0");
+        assert!(summary
+            .services
+            .iter()
+            .any(|service| service.name == "release_core"));
     }
 }

@@ -242,6 +242,21 @@
         "description": "The staged implementation path from architecture documents to module layout, contracts, a minimum runtime loop, and 1.0 release readiness."
       },
       {
+        "id": "v1.0-quickstart",
+        "title": "V1.0 Quickstart",
+        "description": "Install from source, verify the release surface, run the basic loop, and inspect task diagnostics."
+      },
+      {
+        "id": "v1.0-known-limitations",
+        "title": "V1.0 Known Limitations",
+        "description": "The supported V1.0 core scope and the advanced runtime capabilities that remain later-version work."
+      },
+      {
+        "id": "release-notes-v1.0.0",
+        "title": "V1.0.0 Release Notes",
+        "description": "The core release checkpoint, stabilized commands, CI gates, and explicit non-goals."
+      },
+      {
         "id": "website-docs-i18n",
         "title": "Website and Documentation i18n",
         "description": "The multilingual website and documentation migration plan."

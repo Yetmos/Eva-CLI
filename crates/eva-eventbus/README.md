@@ -45,5 +45,5 @@ cargo test -p eva-eventbus
 
 | 版本 | 计划 |
 | --- | --- |
-| V1.0 | 将 V0.5 dead-letter 报告纳入 quickstart 故障诊断。 |
+| V1.0 | 已将 dead-letter replay 报告纳入 quickstart 故障诊断和 release notes。 |
 | V1.x | 接入 observability metrics、durable dead-letter 查询、retry delay/backoff。 |

@@ -23,8 +23,8 @@
 | `eva-config` | `eva.yaml`、manifest、routes、policy document 加载 | 已完成 V0.2 | [README](eva-config/README.md) |
 | `eva-policy` | 权限集合、sandbox policy、effective policy | 已完成 V0.2 | [README](eva-policy/README.md) |
 | `eva-observability` | trace、audit、metrics 契约 | 已完成 V0.2 | [README](eva-observability/README.md) |
-| `eva-cli` | CLI parser、formatter、exit code、运行入口、task 命令 | 已完成 V0.5 task diagnostics | [README](eva-cli/README.md) |
-| `eva-runtime` | 组合根、builder、service summary、basic loop、task report | 已完成 V0.5 task diagnostics | [README](eva-runtime/README.md) |
+| `eva-cli` | CLI parser、formatter、exit code、运行入口、version/task 命令 | 已完成 V1.0 core release surface | [README](eva-cli/README.md) |
+| `eva-runtime` | 组合根、builder、service summary、basic loop、task report | 已完成 V1.0 core runtime mode | [README](eva-runtime/README.md) |
 | `eva-storage` | StateStore、EventLog、ArtifactStore | 已完成 V0.4 in-memory | [README](eva-storage/README.md) |
 | `eva-eventbus` | publish、ack/fail、dead letter、replay | 已完成 V0.5 replay diagnostics | [README](eva-eventbus/README.md) |
 | `eva-scheduler` | Topic 匹配、订阅表、mailbox 投递 | 已完成 V0.4 | [README](eva-scheduler/README.md) |
@@ -48,6 +48,7 @@
 | V0.3 | `eva-cli`、`eva-runtime`、`eva-config` | `doctor`、`config validate`、`inspect`、no-op runtime builder | 已完成 | CLI 结构化诊断和 runtime summary 可读 |
 | V0.4 | storage/eventbus/scheduler/agent/lua-host/capability/runtime/cli | 最小事件运行闭环 | 已完成 | `cargo run -- run --example basic --output json` 成功 |
 | V0.5 | `eva-agent`、`eva-lua-host`、`eva-eventbus`、`eva-runtime`、`eva-cli` | 任务状态、日志、取消、超时、重试、dead-letter replay、generation marker | 已完成 | `task status/logs/cancel` 可读本地 task report；timeout/cancel/replay 可验证 |
+| V1.0 | `eva-cli`、`eva-runtime`、docs、CI | version 命令、`in_memory_v1.0`、quickstart、release notes、已知限制、CI/release gates | 已完成 | 新用户可从源码构建并跑通 V1.0 quickstart |
 | V1.1 | `eva-adapter`、`eva-mcp`、`eva-discovery` | 外部能力发现、probe、受控调用 | 待实现 | 外部能力只经 policy gate 执行 |
 | V1.2 | `eva-memory`、`eva-lua-host` | memory、knowledge、context builder | 待实现 | 上下文组装有权限和审计 |
 | V1.3 | `eva-hardware`、`eva-adapter` | 设备发现、绑定、hotplug、hardware transport | 待实现 | Lua 不能 raw I/O |

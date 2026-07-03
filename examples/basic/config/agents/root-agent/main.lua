@@ -7,7 +7,7 @@ function root.on_event(event, ctx)
     topic = event and event.topic or nil,
     capability = "config.lint",
     capability_input = "examples/basic/config",
-    note = "V0.5 basic event accepted by root-agent",
+    note = "V1.0 basic event accepted by root-agent",
   }
 end
 

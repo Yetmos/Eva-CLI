@@ -103,7 +103,7 @@ impl Runtime {
         &self.services
     }
 
-    /// Runs the V0.5 basic in-memory event loop with task diagnostics.
+    /// Runs the V1.0 basic in-memory event loop with task diagnostics.
     pub fn run_basic(
         &self,
         project: &ProjectConfig,

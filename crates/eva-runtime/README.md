@@ -2,7 +2,7 @@
 
 更新时间：2026-07-03
 
-`eva-runtime` 是 Eva-CLI 的 composition root。下层 crate 不反向依赖 runtime；跨模块服务装配、运行闭环和 V0.5 任务诊断都由本 crate 统一组合。
+`eva-runtime` 是 Eva-CLI 的 composition root。下层 crate 不反向依赖 runtime；跨模块服务装配、运行闭环、V0.5 任务诊断和 V1.0 core 发布标识都由本 crate 统一组合。
 
 ## 当前实现
 
@@ -12,8 +12,9 @@
 | V0.3 | shutdown | `Runtime::shutdown()` 幂等更新 summary status。 |
 | V0.4 | in-memory basic loop | `RuntimeBuilder::in_memory_v04()` 保留最小 EventBus -> Scheduler -> Agent -> LuaHost -> Capability 闭环。 |
 | V0.5 | task diagnostics loop | `RuntimeBuilder::in_memory_v05()` 增加 task status/logs/cancel、timeout、retry、dead-letter replay 和 Lua generation marker。 |
+| V1.0 | core release loop | `RuntimeBuilder::in_memory_v10()` 复用 V0.5 diagnostics，并将 runtime mode/generation 固定为 `in_memory_v1.0` / `basic-v1.0`。 |
 
-## V0.5 Basic 闭环
+## V1.0 Basic 闭环
 
 `Runtime::run_basic(project, BasicRunOptions)` 仍使用同步 in-memory 路径，但报告内容升级为可诊断任务记录：
 
@@ -39,11 +40,12 @@ use eva_runtime::{BasicRunOptions, RuntimeBuilder, TaskReport};
 | 类型 | 用途 |
 | --- | --- |
 | `RuntimeBuilder::in_memory_v05()` | 构造 V0.5 summary，标记 task registry、dead-letter replay、hot-reload generation ready。 |
+| `RuntimeBuilder::in_memory_v10()` | 构造 V1.0 core summary，增加 release core 和 advanced capability planned 标记。 |
 | `BasicRunOptions` | 配置 event id、request/task id、topic、payload、timeout、cancel、retry、dead-letter replay。 |
 | `BasicRunReport` | CLI `run` 的完整机器可读报告。 |
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
 
-## V0.5 非目标
+## V1.0 非目标
 
 - 不启动后台 daemon，不承诺长生命周期任务调度。
 - 不提供 durable crash recovery；CLI 只把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
@@ -58,4 +60,4 @@ cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```
 
-已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告。
+已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告。

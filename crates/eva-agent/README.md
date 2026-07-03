@@ -49,5 +49,5 @@ cargo test -p eva-agent
 
 | 版本 | 计划 |
 | --- | --- |
-| V1.0 | 将 V0.5 task status/logs/cancel 经验整理为稳定用户文档。 |
+| V1.0 | 已将 task status/logs/cancel、timeout、cancel 和 retry 诊断整理进 quickstart、known limitations 和 release notes。 |
 | V1.2 | 接入 memory/context API。 |

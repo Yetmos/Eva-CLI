@@ -22,6 +22,16 @@ const EXIT_CONFIG: i32 = 2;
 const EXIT_POLICY: i32 = 3;
 const EXIT_RUNTIME_UNAVAILABLE: i32 = 4;
 const EXIT_USAGE: i32 = 64;
+const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+const RELEASE_LABEL: &str = "V1.0 core";
+const RELEASE_RUNTIME_MODE: &str = "in_memory_v1.0";
+const RELEASE_CONTRACTS: &[&str] = &[
+    "doctor",
+    "config validate",
+    "inspect",
+    "run --example basic",
+    "task status/logs/cancel",
+];
 
 /// Process entry point for the root binary shim.
 pub fn run() {
@@ -82,6 +92,11 @@ where
 {
     match command {
         Command::Help => unreachable!("help is handled before execution"),
+        Command::Version(options) => {
+            let trace = trace_for("cli.version");
+            write_version(stdout, options.output, &trace)?;
+            Ok(EXIT_OK)
+        }
         Command::Doctor(options) => {
             let trace = trace_for("cli.doctor");
             let report = doctor_project(&options.project_root);
@@ -149,6 +164,7 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     Help,
+    Version(CommonOptions),
     Doctor(CommonOptions),
     ConfigValidate(CommonOptions),
     Inspect(CommonOptions),
@@ -265,8 +281,15 @@ where
         return Ok(Command::Help);
     }
 
+    if args.len() == 1 && matches!(args[0].as_str(), "--version" | "-V") {
+        return Ok(Command::Version(default_common_options(
+            OutputFormat::Text,
+        )?));
+    }
+
     match args[0].as_str() {
         "help" => Ok(Command::Help),
+        "version" => Ok(Command::Version(parse_common_options(&args[1..])?)),
         "doctor" => Ok(Command::Doctor(parse_common_options(&args[1..])?)),
         "config" => parse_config_command(&args[1..]),
         "inspect" => Ok(Command::Inspect(parse_inspect_options(&args[1..])?)),
@@ -425,7 +448,7 @@ where
                 run_options.request_id = eva_core::RequestId::parse(task_id)?;
             }
             match load_project_config(&project_root).and_then(|project| {
-                let runtime = RuntimeBuilder::in_memory_v05().build(&project)?;
+                let runtime = RuntimeBuilder::in_memory_v10().build(&project)?;
                 runtime
                     .run_basic(&project, run_options)
                     .map(|report| (project, runtime, report))
@@ -465,7 +488,7 @@ where
             Ok(exit_code)
         }
         None => {
-            let error = EvaError::unsupported("eva run requires an example in V0.5")
+            let error = EvaError::unsupported("eva run requires an example in V1.0 core")
                 .with_context("suggestion", "use `eva run --example basic`");
             let exit_code = EXIT_RUNTIME_UNAVAILABLE;
             write_error(
@@ -595,11 +618,7 @@ fn parse_inspect_options(args: &[String]) -> Result<CommonOptions, EvaError> {
 }
 
 fn parse_common_options(args: &[String]) -> Result<CommonOptions, EvaError> {
-    let mut project_root = env::current_dir().map_err(|error| {
-        EvaError::internal("failed to read current directory")
-            .with_context("io_error", error.to_string())
-    })?;
-    let mut output = OutputFormat::Text;
+    let mut options = default_common_options(OutputFormat::Text)?;
     let mut index = 0;
 
     while index < args.len() {
@@ -609,14 +628,14 @@ fn parse_common_options(args: &[String]) -> Result<CommonOptions, EvaError> {
                 let value = args.get(index).ok_or_else(|| {
                     EvaError::invalid_argument("missing value for project option")
                 })?;
-                project_root = PathBuf::from(value);
+                options.project_root = PathBuf::from(value);
             }
             "--output" | "-o" => {
                 index += 1;
                 let value = args
                     .get(index)
                     .ok_or_else(|| EvaError::invalid_argument("missing value for output option"))?;
-                output = OutputFormat::parse(value)?;
+                options.output = OutputFormat::parse(value)?;
             }
             unknown => {
                 return Err(EvaError::unsupported("unknown option").with_context("option", unknown));
@@ -625,6 +644,14 @@ fn parse_common_options(args: &[String]) -> Result<CommonOptions, EvaError> {
         index += 1;
     }
 
+    Ok(options)
+}
+
+fn default_common_options(output: OutputFormat) -> Result<CommonOptions, EvaError> {
+    let project_root = env::current_dir().map_err(|error| {
+        EvaError::internal("failed to read current directory")
+            .with_context("io_error", error.to_string())
+    })?;
     Ok(CommonOptions {
         project_root,
         output,
@@ -1243,6 +1270,37 @@ fn write_inspect<W: Write>(
     }
 }
 
+fn write_version<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "eva {CLI_VERSION}").map_err(write_error_kind)?;
+            writeln!(writer, "release: {RELEASE_LABEL}").map_err(write_error_kind)?;
+            writeln!(writer, "runtime_mode: {RELEASE_RUNTIME_MODE}").map_err(write_error_kind)?;
+            writeln!(writer, "contracts: {}", RELEASE_CONTRACTS.join(", "))
+                .map_err(write_error_kind)
+        }
+        OutputFormat::Json => {
+            let data = format!(
+                "{{\"version\":{},\"release\":{},\"runtime_mode\":{},\"contracts\":{}}}",
+                json_string(CLI_VERSION),
+                json_string(RELEASE_LABEL),
+                json_string(RELEASE_RUNTIME_MODE),
+                json_array(RELEASE_CONTRACTS.iter().copied().map(json_string))
+            );
+            writeln!(
+                writer,
+                "{}",
+                success_envelope("version", EXIT_OK, &data, trace)
+            )
+            .map_err(write_error_kind)
+        }
+    }
+}
+
 fn write_run<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -1717,7 +1775,7 @@ fn suggestion_for_error(error: &EvaError) -> String {
             "检查 policy 和 manifest 权限声明，确认请求没有扩大 effective policy。".to_owned()
         }
         ErrorKind::Timeout | ErrorKind::Unavailable | ErrorKind::Unsupported => {
-            "该能力在当前版本不可用；先运行 eva doctor、eva inspect 或 eva task logs 查看 V0.5 诊断。"
+            "该能力在 V1.0 core 中不可用；先运行 eva doctor、eva inspect 或 eva task logs 查看诊断。"
                 .to_owned()
         }
         ErrorKind::Internal => "查看上方上下文并保留命令输出作为缺陷报告证据。".to_owned(),
@@ -1729,7 +1787,7 @@ fn write_error_kind(error: io::Error) -> EvaError {
 }
 
 fn help_text() -> &'static str {
-    "Eva CLI\n\nUSAGE:\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n\nCommands:\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V0.5 in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted V0.5 task report.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
+    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n\nCommands:\n  version          Print the V1.0 core release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0 in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted V1.0 task report.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
 }
 
 #[cfg(test)]
@@ -1805,6 +1863,8 @@ mod tests {
 
         assert_eq!(exit_code, EXIT_OK, "{stderr}");
         assert!(stdout.contains("\"command\":\"run\""));
+        assert!(stdout.contains("\"runtime_mode\":\"in_memory_v1.0\""));
+        assert!(stdout.contains("\"generation_id\":\"basic-v1.0\""));
         assert!(stdout.contains("\"task\""));
         assert!(stdout.contains("\"status\":\"completed\""));
         assert!(stdout.contains("\"capability_response\""));
@@ -1897,5 +1957,19 @@ mod tests {
     #[test]
     fn json_string_escapes_control_characters() {
         assert_eq!(json_string("a\"b\\c\n"), "\"a\\\"b\\\\c\\n\"");
+    }
+
+    #[test]
+    fn version_text_and_json_report_v10_core() {
+        let (text_exit, text_stdout, text_stderr) = run_cli(&["--version"]);
+        assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
+        assert!(text_stdout.contains("eva 1.0.0"));
+        assert!(text_stdout.contains("V1.0 core"));
+
+        let (json_exit, json_stdout, json_stderr) = run_cli(&["version", "--output", "json"]);
+        assert_eq!(json_exit, EXIT_OK, "{json_stderr}");
+        assert!(json_stdout.contains("\"command\":\"version\""));
+        assert!(json_stdout.contains("\"version\":\"1.0.0\""));
+        assert!(json_stdout.contains("\"runtime_mode\":\"in_memory_v1.0\""));
     }
 }

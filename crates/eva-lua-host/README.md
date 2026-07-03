@@ -33,7 +33,7 @@ capability_input = "examples/basic/config"
 
 V0.5 的 `LuaGeneration` 是 marker，不是 VM swap：
 
-- runtime 使用 `basic-v0.5` generation id 生成报告。
+- V1.0 runtime 使用 `basic-v1.0` generation id 生成报告，V0.5 builder 仍保留兼容入口。
 - `script_count` 记录当前 basic runtime 加载的启用 Agent 脚本数量。
 - 不迁移 Lua VM 内部状态，不执行 shadow load，不实现 rollback。
 
@@ -55,6 +55,6 @@ cargo test -p eva-lua-host
 
 | 版本 | 计划 |
 | --- | --- |
-| V1.0 | 在 quickstart 中明确 controlled contract 限制。 |
+| V1.0 | 已在 quickstart、known limitations 和 release notes 中明确 controlled contract 限制。 |
 | V1.x | 接入真实 Lua VM、timeout/memory limit、shadow load、generation swap 和 rollback。 |
 | V1.2 | 增加 `ctx.memory`、`ctx.knowledge` 等受控 API。 |
