@@ -5,12 +5,13 @@ implementation path. The project should not jump directly from documents to a
 large runtime implementation. Each stage must leave behind reviewable artifacts
 that can be tested, versioned, and used by the next stage.
 
-As of 2026-07-03, the repository has reached the V0.4 minimum runtime loop:
+As of 2026-07-03, the repository has reached the V0.5 observable runtime loop:
 architecture documents and the Rust workspace are in place, `eva-cli` exposes
-`doctor`, `config validate`, `inspect`, and `run --example basic`, and
+`doctor`, `config validate`, `inspect`, `run --example basic`, and
+`task status/logs/cancel`, and
 `examples/basic/` proves the CLI -> EventBus -> Scheduler -> Agent -> Lua host
--> builtin capability path. The next work should harden that loop for V0.5 and
-prepare the V1.0 release surface.
+-> builtin capability -> task diagnostics path. The next work should prepare
+the V1.0 release surface.
 
 ## Progress Stages
 
@@ -244,7 +245,7 @@ Required 1.0 properties:
 
 ## Current Position
 
-The V0.4 practical milestone is complete:
+The V0.5 practical milestone is complete:
 
 1. the Rust project and module layout exist;
 2. core contracts for manifests, events, policies, errors, storage, routing,
@@ -252,9 +253,11 @@ The V0.4 practical milestone is complete:
 3. the minimum runnable skeleton is available through `doctor`,
    `config validate`, and `inspect`;
 4. the minimum end-to-end runtime loop runs through `eva run --example basic`;
-5. the loop is covered by runtime and CLI tests.
+5. V0.5 task status/logs/cancel, timeout, retry, dead-letter replay diagnostics,
+   and Lua generation markers are implemented;
+6. the loop is covered by runtime and CLI tests.
 
-The next practical milestone is V0.5 hardening: task status/logs/cancel,
-timeout, retry, dead-letter diagnostics, and the first hot-reload generation
-path. This keeps new module work grounded in a runnable loop instead of turning
-the architecture into a large untested framework.
+The next practical milestone is V1.0 release preparation: quickstart,
+installation instructions, CI/release gates, release notes, and explicit known
+limitations. This keeps new module work grounded in a runnable loop instead of
+turning the architecture into a large untested framework.

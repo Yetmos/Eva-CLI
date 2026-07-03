@@ -1,26 +1,34 @@
-//! V0.4 basic in-memory event loop.
+//! V0.5 basic in-memory event loop with task diagnostics.
 
 use crate::runtime::RuntimeSummary;
-use eva_agent::{AgentHandlerOutput, AgentRunRecord, AgentRuntime};
+use crate::task::{
+    DeadLetterSummary, ReplaySummary, RetryPolicy, TaskLogLevel, TaskReport, TaskStatus,
+};
+use eva_agent::{AgentHandlerOutput, AgentRunControl, AgentRunRecord, AgentRuntime};
 use eva_capability::{CapabilityHostApi, CapabilityRouter};
 use eva_config::{ProjectConfig, RouteDelivery};
 use eva_core::{
     AgentId, EvaError, Event, EventId, EventPayload, GenerationId, InvokeInput, InvokeRequest,
     InvokeResponse, InvokeTarget, RequestId, Topic,
 };
-use eva_eventbus::{EventBus, EventReceipt, InMemoryEventBus};
-use eva_lua_host::{LuaEventResult, LuaHost, LuaHostContext, LuaScript};
+use eva_eventbus::{DeadLetterRecord, EventBus, EventReceipt, InMemoryEventBus};
+use eva_lua_host::{LuaEventResult, LuaGeneration, LuaHost, LuaHostContext, LuaScript};
 use eva_scheduler::{DeliveryMode, DeliveryPlan, MailboxRegistry, RoutingRule, SubscriptionTable};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-/// Runtime input for the built-in V0.4 basic example.
+/// Runtime input for the built-in V0.5 basic example.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasicRunOptions {
     pub event_id: EventId,
     pub request_id: RequestId,
     pub topic: Topic,
     pub payload: EventPayload,
+    pub timeout_ms: Option<u64>,
+    pub cancel_requested: bool,
+    pub retry_attempts: usize,
+    pub replay_dead_letters: bool,
 }
 
 /// Machine-readable report emitted by `eva run --example basic`.
@@ -29,12 +37,14 @@ pub struct BasicRunReport {
     pub runtime_mode: String,
     pub generation_id: String,
     pub project_root: String,
+    pub task: TaskReport,
     pub event_id: String,
     pub topic: String,
     pub receipt: EventReceipt,
     pub deliveries: Vec<DeliveryPlan>,
     pub agent_runs: Vec<AgentRunRecord>,
     pub lua_results: Vec<LuaEventResult>,
+    pub lua_generation: LuaGeneration,
     pub capability_response: Option<InvokeResponse>,
     pub audit: Vec<String>,
 }
@@ -46,6 +56,10 @@ impl Default for BasicRunOptions {
             request_id: RequestId::parse("req-basic-1").expect("static request id is valid"),
             topic: Topic::parse("/input/user").expect("static topic is valid"),
             payload: EventPayload::text("basic example"),
+            timeout_ms: Some(30_000),
+            cancel_requested: false,
+            retry_attempts: 1,
+            replay_dead_letters: false,
         }
     }
 }
@@ -56,10 +70,21 @@ pub fn run_basic(
     options: BasicRunOptions,
 ) -> Result<BasicRunReport, EvaError> {
     let generation = GenerationId::parse(&summary.generation_id)?;
+    let lua_generation = LuaGeneration::new(
+        generation.clone(),
+        project.agents.iter().filter(|agent| agent.enabled).count(),
+    );
+    let mut task = TaskReport::new(
+        options.request_id.clone(),
+        RetryPolicy::new(options.retry_attempts),
+    );
+    task.status = TaskStatus::Running;
+    task.push_log(TaskLogLevel::Info, "task accepted by V0.5 basic runtime");
+
     let event = Event::new(
         options.event_id.clone(),
         options.topic.clone(),
-        options.payload,
+        options.payload.clone(),
     )
     .with_request_id(options.request_id.clone())
     .with_generation_id(generation);
@@ -68,6 +93,10 @@ pub fn run_basic(
     let mut event_bus = InMemoryEventBus::new();
     let receipt = event_bus.publish(event.clone())?;
     audit.push(format!("event.accepted:{}", receipt.event_id));
+    task.push_log(
+        TaskLogLevel::Info,
+        format!("event accepted: {}", receipt.event_id),
+    );
 
     let table = subscription_table(project);
     let mut mailboxes = register_mailboxes(project)?;
@@ -79,6 +108,10 @@ pub fn run_basic(
         }
     };
     audit.push(format!("event.delivered:{}", deliveries.len()));
+    task.push_log(
+        TaskLogLevel::Info,
+        format!("event delivered to {} mailbox(es)", deliveries.len()),
+    );
 
     let mut agents = agent_runtimes(project)?;
     let lua_host = LuaHost::new();
@@ -95,8 +128,9 @@ pub fn run_basic(
         })?;
         agent.accept(delivered_event)?;
         let script = load_agent_script(project, &delivery.agent_id)?;
+        let control = agent_control(&options);
         let record = agent
-            .run_next(|agent_id, event| {
+            .run_next_with_control(control, |agent_id, event| {
                 let result = lua_host.run_on_event(
                     &script,
                     event,
@@ -110,9 +144,44 @@ pub fn run_basic(
             .ok_or_else(|| EvaError::internal("agent queue was empty after delivery"))?;
 
         if let Some(error) = record.error.clone() {
+            event_bus.dead_letter(event.clone(), error.clone());
             event_bus.fail(event.event_id(), delivery.agent_id.clone(), error)?;
+            let failure = record
+                .error
+                .clone()
+                .expect("error branch has structured failure");
+            if record.status == eva_agent::AgentRunStatus::Cancelled {
+                task.cancel(failure.message());
+                task.push_log(
+                    TaskLogLevel::Warning,
+                    format!(
+                        "agent {} run cancelled: {}",
+                        delivery.agent_id,
+                        failure.message()
+                    ),
+                );
+            } else {
+                task.fail(record.attempts, failure.clone());
+                task.push_log(
+                    TaskLogLevel::Error,
+                    format!(
+                        "agent {} ended as {}: {}",
+                        delivery.agent_id,
+                        record.status.as_str(),
+                        failure.message()
+                    ),
+                );
+            }
         } else {
             event_bus.ack(event.event_id(), delivery.agent_id.clone())?;
+            task.complete(record.attempts);
+            task.push_log(
+                TaskLogLevel::Info,
+                format!(
+                    "agent {} handled event in {} attempt(s)",
+                    delivery.agent_id, record.attempts
+                ),
+            );
         }
         agent_runs.push(record);
     }
@@ -120,21 +189,83 @@ pub fn run_basic(
     let capability_response = invoke_first_lua_capability(&lua_results, &options.request_id)?;
     if capability_response.is_some() {
         audit.push("capability.invoked:1".to_owned());
+        task.push_log(TaskLogLevel::Info, "capability invoked: config.lint");
     }
+
+    let replay_receipts = if options.replay_dead_letters {
+        event_bus.replay_dead_letters()?
+    } else {
+        Vec::new()
+    };
+    if !event_bus.dead_letters().is_empty() {
+        audit.push(format!(
+            "dead_letter.recorded:{}",
+            event_bus.dead_letters().len()
+        ));
+        task.push_log(
+            TaskLogLevel::Warning,
+            format!("dead letters recorded: {}", event_bus.dead_letters().len()),
+        );
+    }
+    if !replay_receipts.is_empty() {
+        audit.push(format!("dead_letter.replayed:{}", replay_receipts.len()));
+        task.push_log(
+            TaskLogLevel::Info,
+            format!("dead letters replayed: {}", replay_receipts.len()),
+        );
+    }
+    task.dead_letters = dead_letter_summaries(event_bus.dead_letters());
+    task.replayed_events = replay_summaries(&replay_receipts);
 
     Ok(BasicRunReport {
         runtime_mode: summary.mode.to_string(),
         generation_id: summary.generation_id.clone(),
         project_root: project.project_root.display().to_string(),
+        task,
         event_id: event.event_id().to_string(),
         topic: event.topic().to_string(),
         receipt,
         deliveries,
         agent_runs,
         lua_results,
+        lua_generation,
         capability_response,
         audit,
     })
+}
+
+fn agent_control(options: &BasicRunOptions) -> AgentRunControl {
+    let mut control = AgentRunControl::default()
+        .with_max_attempts(options.retry_attempts)
+        .with_cancel_requested(options.cancel_requested);
+    if let Some(timeout_ms) = options.timeout_ms {
+        control = control.with_timeout(Duration::from_millis(timeout_ms));
+    }
+    control
+}
+
+fn dead_letter_summaries(records: &[DeadLetterRecord]) -> Vec<DeadLetterSummary> {
+    records
+        .iter()
+        .map(|record| DeadLetterSummary {
+            event_id: record.event.event_id().to_string(),
+            topic: record.event.topic().to_string(),
+            reason_kind: record.reason.kind().as_str().to_owned(),
+            reason: record.reason.message().to_owned(),
+            replay_count: record.replay_count,
+        })
+        .collect()
+}
+
+fn replay_summaries(receipts: &[EventReceipt]) -> Vec<ReplaySummary> {
+    receipts
+        .iter()
+        .map(|receipt| ReplaySummary {
+            event_id: receipt.event_id.to_string(),
+            sequence: receipt.sequence,
+            topic: receipt.topic.to_string(),
+        })
+        .collect()
 }
 
 fn subscription_table(project: &ProjectConfig) -> SubscriptionTable {
@@ -232,7 +363,7 @@ mod tests {
     #[test]
     fn missing_route_returns_structured_error() {
         let project = load_project_config(workspace_root()).unwrap();
-        let runtime = RuntimeBuilder::in_memory_v04().build(&project).unwrap();
+        let runtime = RuntimeBuilder::in_memory_v05().build(&project).unwrap();
         let options = BasicRunOptions {
             topic: Topic::parse("/missing/topic").unwrap(),
             ..BasicRunOptions::default()
@@ -246,7 +377,7 @@ mod tests {
     #[test]
     fn basic_example_runs_event_to_lua_and_capability() {
         let project = load_project_config(workspace_root().join("examples/basic")).unwrap();
-        let runtime = RuntimeBuilder::in_memory_v04().build(&project).unwrap();
+        let runtime = RuntimeBuilder::in_memory_v05().build(&project).unwrap();
 
         let report = runtime
             .run_basic(&project, BasicRunOptions::default())
@@ -261,6 +392,58 @@ mod tests {
             report.lua_results[0].capability.as_ref().unwrap().as_str(),
             "config.lint"
         );
+        assert_eq!(report.task.status, TaskStatus::Completed);
+        assert_eq!(report.task.attempts, 1);
+        assert_eq!(report.lua_generation.script_count, 1);
         assert!(report.capability_response.unwrap().is_success());
+    }
+
+    #[test]
+    fn cancelled_basic_run_returns_task_record() {
+        let project = load_project_config(workspace_root().join("examples/basic")).unwrap();
+        let runtime = RuntimeBuilder::in_memory_v05().build(&project).unwrap();
+
+        let report = runtime
+            .run_basic(
+                &project,
+                BasicRunOptions {
+                    cancel_requested: true,
+                    ..BasicRunOptions::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.task.status, TaskStatus::Cancelled);
+        assert!(report.task.cancellation.requested);
+        assert_eq!(
+            report.agent_runs[0].status,
+            eva_agent::AgentRunStatus::Cancelled
+        );
+        assert_eq!(report.task.dead_letters.len(), 1);
+    }
+
+    #[test]
+    fn timeout_basic_run_records_dead_letter_and_replay() {
+        let project = load_project_config(workspace_root().join("examples/basic")).unwrap();
+        let runtime = RuntimeBuilder::in_memory_v05().build(&project).unwrap();
+
+        let report = runtime
+            .run_basic(
+                &project,
+                BasicRunOptions {
+                    timeout_ms: Some(0),
+                    replay_dead_letters: true,
+                    ..BasicRunOptions::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.task.status, TaskStatus::TimedOut);
+        assert_eq!(report.task.dead_letters[0].event_id, "evt-basic-1");
+        assert_eq!(report.task.dead_letters[0].replay_count, 1);
+        assert_eq!(
+            report.task.replayed_events[0].event_id,
+            "evt-basic-1:replay-1"
+        );
     }
 }

@@ -16,7 +16,7 @@
 
 ### 当前实现状态
 
-第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。V0.3 起 `eva-cli` 已通过 `eva config validate` 暴露文本/JSON 校验报告，V0.4 runtime basic loop 也复用同一份 `ProjectConfig` 作为组合输入。
+第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。V0.3 起 `eva-cli` 已通过 `eva config validate` 暴露文本/JSON 校验报告，V0.5 task diagnostics basic loop 也复用同一份 `ProjectConfig` 作为组合输入。
 
 ```text
 project root
@@ -191,7 +191,7 @@ project root
 
 ### Current Status
 
-The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`. Since V0.3, `eva-cli` exposes this path through `eva config validate`; the V0.4 basic runtime loop reuses the same `ProjectConfig` as its composition input.
+The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`. Since V0.3, `eva-cli` exposes this path through `eva config validate`; the V0.5 task diagnostics basic loop reuses the same `ProjectConfig` as its composition input.
 
 | Area | Status | Notes |
 | --- | --- | --- |

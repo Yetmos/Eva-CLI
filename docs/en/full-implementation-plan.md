@@ -18,11 +18,12 @@ Current baseline as of 2026-07-03:
 - `eva-config` loads `eva.yaml`, Agent manifests, Adapter manifests, Capability manifests, routes, policy documents, and project-level config.
 - V0.3 is implemented: `eva-cli` provides `doctor`, `config validate`, `inspect`, structured text/JSON output, exit-code mapping, and no-op runtime inspection.
 - V0.4 is implemented: `eva-storage`, `eva-eventbus`, `eva-scheduler`, `eva-agent`, `eva-lua-host`, and `eva-capability` provide the in-memory minimum runtime loop.
-- `eva-runtime` now supports `RuntimeBuilder::in_memory_v04()` and `Runtime::run_basic`.
-- `eva-cli` now supports `eva run --example basic`.
-- `examples/basic/` is a complete minimal Eva workspace and exercises CLI -> EventBus -> Scheduler -> Agent -> controlled Lua host -> builtin capability.
+- V0.5 is implemented: `eva-agent` records timeout/cancel/retry attempts, `eva-eventbus` exposes in-memory dead-letter replay diagnostics, `eva-runtime` emits `TaskReport`, and `eva-cli` supports `task status/logs/cancel` over local `.eva/tasks` reports.
+- `eva-runtime` now supports `RuntimeBuilder::in_memory_v05()` and `Runtime::run_basic`.
+- `eva-cli` now supports `eva run --example basic` plus `eva task status`, `eva task logs`, and `eva task cancel`.
+- `examples/basic/` is a complete minimal Eva workspace and exercises CLI -> EventBus -> Scheduler -> Agent -> controlled Lua host -> builtin capability -> task diagnostics.
 
-Primary V0.4 verification commands:
+Primary V0.5 verification commands:
 
 ```powershell
 cargo test -p eva-storage
@@ -34,9 +35,13 @@ cargo test -p eva-capability
 cargo test -p eva-runtime
 cargo test -p eva-cli
 cargo run -- run --example basic --output json
+cargo run -- task status --output json
+cargo run -- task logs --output json
+cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
+cargo run -- run --example basic --cancel --output json
 cargo test --workspace
 ```
 
-Remaining work starts at V0.5: task status/logs/cancel, timeout, retry, dead-letter/replay query surfaces, real Lua VM sandboxing, and hot-reload generation handling.
+Remaining work starts at V1.0: quickstart, installation instructions, CI/release gates, known limitations, and release notes. Real Lua VM sandboxing, durable task recovery, and external Adapter/MCP/Discovery/Memory/Hardware/Backup/Lifecycle work remain later-version scope.
 
 Use the Chinese detailed plan for the module-by-module progress tables, versioned iteration plan, implementation order, diagrams, and acceptance criteria.

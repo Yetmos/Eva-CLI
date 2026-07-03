@@ -1,6 +1,6 @@
 //! Dead-letter records for events that cannot be delivered.
 
-use eva_core::{EvaError, Event};
+use eva_core::{EvaError, Event, EventId};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "dead-letter routing and retention boundaries";
@@ -10,6 +10,7 @@ pub const RESPONSIBILITY: &str = "dead-letter routing and retention boundaries";
 pub struct DeadLetterRecord {
     pub event: Event,
     pub reason: EvaError,
+    pub replay_count: usize,
 }
 
 /// In-memory dead-letter queue used by the V0.4 loop.
@@ -20,7 +21,15 @@ pub struct DeadLetterQueue {
 
 impl DeadLetterRecord {
     pub fn new(event: Event, reason: EvaError) -> Self {
-        Self { event, reason }
+        Self {
+            event,
+            reason,
+            replay_count: 0,
+        }
+    }
+
+    pub fn event_id(&self) -> &EventId {
+        self.event.event_id()
     }
 }
 
@@ -37,6 +46,51 @@ impl DeadLetterQueue {
 
     pub fn records(&self) -> &[DeadLetterRecord] {
         &self.records
+    }
+
+    pub fn replay_all(&mut self) -> Vec<Event> {
+        self.records
+            .iter_mut()
+            .map(|record| {
+                record.replay_count += 1;
+                record.event.clone()
+            })
+            .collect()
+    }
+
+    pub fn replay_event(&mut self, event_id: &EventId) -> Result<Event, EvaError> {
+        let record = self
+            .records
+            .iter_mut()
+            .find(|record| record.event_id() == event_id)
+            .ok_or_else(|| {
+                EvaError::not_found("dead-letter event does not exist")
+                    .with_context("event_id", event_id.as_str())
+            })?;
+        record.replay_count += 1;
+        Ok(record.event.clone())
+    }
+
+    pub fn replay_all_for_publish(&mut self) -> Result<Vec<Event>, EvaError> {
+        self.records
+            .iter_mut()
+            .map(|record| {
+                record.replay_count += 1;
+                let replay_id = EventId::parse(&format!(
+                    "{}:replay-{}",
+                    record.event.event_id().as_str(),
+                    record.replay_count
+                ))?;
+                Ok(record
+                    .event
+                    .child_event(
+                        replay_id,
+                        record.event.topic().clone(),
+                        record.event.payload().clone(),
+                    )
+                    .with_target(record.event.target().clone()))
+            })
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -65,5 +119,22 @@ mod tests {
             queue.records()[0].reason.kind(),
             eva_core::ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn replay_marks_record_and_returns_event() {
+        let event = Event::new(
+            EventId::parse("evt-1").unwrap(),
+            Topic::parse("/input/user").unwrap(),
+            EventPayload::empty(),
+        );
+        let mut queue = DeadLetterQueue::new();
+        let event_id = event.event_id().clone();
+        queue.push(event, EvaError::not_found("missing route"));
+
+        let replayed = queue.replay_event(&event_id).unwrap();
+
+        assert_eq!(replayed.event_id().as_str(), "evt-1");
+        assert_eq!(queue.records()[0].replay_count, 1);
     }
 }

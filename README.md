@@ -3,12 +3,12 @@
 > Language: English | [简体中文](README.zh-CN.md)
 
 Eva-CLI is currently moving from architecture and specification consolidation
-into executable Rust implementation. The repository is not yet a final runnable
-CLI, but it now contains the Rust workspace scaffold, configuration examples,
-schemas, and the first implemented foundation contract crate. The website uses
-English as the default public entry with stable slugs, while the Simplified
-Chinese documents remain the source of truth for some detailed architecture and
-implementation-spec content.
+into executable Rust implementation. The repository is not yet a 1.0 release,
+but it now contains a compileable Rust workspace, configuration examples,
+schemas, the V0.5 in-memory runtime loop, and local task diagnostics for the
+basic example. The website uses English as the default public entry with stable
+slugs, while the Simplified Chinese documents remain the source of truth for
+some detailed architecture and implementation-spec content.
 
 Website:
 
@@ -25,9 +25,9 @@ Updated: 2026-07-03
 
 Eva-CLI has moved past a design-only repository. It now has a compileable Rust
 workspace, configuration examples and schemas, implemented foundation contracts,
-project configuration loading, and the V0.3 developer loop through the CLI and
-no-op runtime composition root. The event-processing runtime loop is still a
-future V0.4 milestone.
+project configuration loading, and the V0.5 developer loop through the CLI,
+in-memory runtime composition root, and local `.eva/tasks` diagnostics. The
+next major milestone is V1.0 release hardening.
 
 | Area | Status | Evidence | Remaining Work |
 | --- | --- | --- | --- |
@@ -36,12 +36,12 @@ future V0.4 milestone.
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 19 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V0.3 implemented | `doctor`, `config validate`, `inspect`, guarded `run`, text/JSON output, trace fields, and exit-code mapping | V0.4 connects `run` to the minimum event loop |
-| Runtime composition | V0.3 implemented | No-op `RuntimeBuilder`, `RuntimeSummary`, service summaries, and idempotent shutdown | V0.4 wires storage, EventBus, Scheduler, Agent, Lua host, and capability router |
-| EventBus and Scheduler | Scaffold only | `eva-eventbus` and `eva-scheduler` crates exist | Implement publish/recover/dead-letter behavior, topic subscriptions, routing, and mailbox delivery |
-| Agent and Lua host | Scaffold only | `eva-agent` and `eva-lua-host` crates exist | Implement lifecycle, queues, Lua loading, sandboxing, bindings, and hot reload |
-| Capability and Adapter layers | Scaffold only | `eva-capability` and `eva-adapter` crates exist | Implement registries, provider routing, authorized transports, errors, and generation swaps |
-| Policy, observability, storage | Mixed | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` is still scaffolded | Wire policy/observability into runtime behavior; implement state store, event log, and artifacts |
+| `eva-cli` | V0.5 implemented | `doctor`, `config validate`, `inspect`, `run --example basic`, `task status/logs/cancel`, text/JSON output, trace fields, and exit-code mapping | V1.0 quickstart/release hardening |
+| Runtime composition | V0.5 implemented | No-op builder, V0.5 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, and idempotent shutdown | V1.0 release readiness and known-limits docs |
+| EventBus and Scheduler | V0.4/V0.5 implemented for basic loop | EventBus publish/ack/fail/dead-letter/replay diagnostics; Scheduler topic routing and mailbox delivery | Durable replay/backoff remains later scope |
+| Agent and Lua host | V0.5 implemented for basic loop | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, controlled bindings, generation marker | Real Lua VM and generation swap remain later scope |
+| Capability and Adapter layers | Mixed | `eva-capability` has V0.4 builtins; `eva-adapter` is still scaffolded | External provider routing and authorized transports remain V1.1 scope |
+| Policy, observability, storage | Mixed | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` has V0.4 in-memory stores/logs | Durable storage, richer audit sinks, and metrics remain later scope |
 | Discovery, MCP, memory, hardware, backup, lifecycle | Scaffold only | Dedicated crates and module boundaries exist | Implement trusted discovery, MCP mapping, memory/context services, hardware hotplug, backup/release snapshots, and supervisor generation flow |
 | Verification baseline | Passing | `cargo fmt --check`, `cargo test -p eva-core`, `cargo check --workspace`, `cargo doc -p eva-core --no-deps`, `cargo test --workspace` | Add CI coverage for future runtime behavior, schema validation, examples, and integration tests |
 

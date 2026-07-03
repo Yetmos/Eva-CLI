@@ -169,4 +169,27 @@ impl RuntimeServices {
 
         Self { summaries }
     }
+
+    /// Builds the V0.5 in-memory service table.
+    pub fn in_memory_v05(project: &ProjectConfig) -> Self {
+        let mut services = Self::in_memory_v04(project);
+        services.summaries.extend([
+            ServiceSummary::new(
+                "task_registry",
+                ServiceState::Ready,
+                "V0.5 local task status/log/cancel records",
+            ),
+            ServiceSummary::new(
+                "dead_letter_replay",
+                ServiceState::Ready,
+                "V0.5 in-memory dead-letter query and replay report",
+            ),
+            ServiceSummary::new(
+                "hot_reload_generation",
+                ServiceState::Ready,
+                "V0.5 Lua generation marker for basic runtime",
+            ),
+        ]);
+        services
+    }
 }

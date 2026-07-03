@@ -7,5 +7,7 @@ pub mod state;
 
 pub use lifecycle::{AgentLifecycle, AgentLifecycleState};
 pub use queue::AgentQueue;
-pub use runtime::{AgentHandlerOutput, AgentRunRecord, AgentRunStatus, AgentRuntime};
+pub use runtime::{
+    AgentHandlerOutput, AgentRunControl, AgentRunRecord, AgentRunStatus, AgentRuntime,
+};
 pub use state::AgentStateSnapshot;

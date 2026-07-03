@@ -44,6 +44,14 @@ impl InMemoryEventBus {
     pub fn dead_letter(&mut self, event: Event, reason: EvaError) -> DeadLetterRecord {
         self.dead_letters.push(event, reason)
     }
+
+    pub fn replay_dead_letters(&mut self) -> Result<Vec<EventReceipt>, EvaError> {
+        let events = self.dead_letters.replay_all_for_publish()?;
+        events
+            .into_iter()
+            .map(|event| self.publish(event))
+            .collect()
+    }
 }
 
 impl EventBus for InMemoryEventBus {
@@ -112,5 +120,20 @@ mod tests {
         bus.dead_letter(event, EvaError::not_found("no route"));
 
         assert_eq!(bus.dead_letters().len(), 1);
+    }
+
+    #[test]
+    fn dead_letters_can_be_replayed_to_log() {
+        let mut bus = InMemoryEventBus::new();
+        let original = event("evt-1");
+        bus.publish(original.clone()).unwrap();
+        bus.dead_letter(original, EvaError::not_found("no route"));
+
+        let receipts = bus.replay_dead_letters().unwrap();
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].event_id.as_str(), "evt-1:replay-1");
+        assert_eq!(bus.dead_letters()[0].replay_count, 1);
+        assert_eq!(bus.log().records().len(), 2);
     }
 }

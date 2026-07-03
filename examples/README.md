@@ -6,7 +6,7 @@
 
 | 示例 | 状态 | 说明 |
 | --- | --- | --- |
-| `basic/` | V0.4 已实现 | 最小可运行事件闭环：CLI -> EventBus -> Scheduler -> Agent -> LuaHost -> builtin Capability。 |
+| `basic/` | V0.5 已实现 | 最小可运行事件闭环 + task status/logs/cancel + timeout/dead-letter replay 诊断。 |
 | `agent/` | 计划中 | 更复杂的 Lua Agent 示例。 |
 | `adapter/` | 计划中 | 外部 Adapter 示例。 |
 | `mcp/` | 计划中 | MCP 集成示例。 |
@@ -16,4 +16,5 @@
 
 ```powershell
 cargo run -- run --example basic --output json
+cargo run -- task status --output json
 ```
