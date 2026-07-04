@@ -39,6 +39,8 @@ pub struct AdapterHandle {
     pub skill_id: Option<String>,
     pub skill_kind: Option<String>,
     pub skill_runtime_gate: Option<String>,
+    pub hardware_logical_name: Option<String>,
+    pub hardware_device_class: Option<String>,
     pub bindings: Vec<AdapterCapabilityBinding>,
 }
 
@@ -70,6 +72,12 @@ impl AdapterHandle {
                 .map(str::to_owned),
             skill_runtime_gate: manifest
                 .nested_extra_string("skill", "runtime_gate")
+                .map(str::to_owned),
+            hardware_logical_name: manifest
+                .deep_extra_string(&["hardware", "identity", "logical_name"])
+                .map(str::to_owned),
+            hardware_device_class: manifest
+                .deep_extra_string(&["hardware", "identity", "device_class"])
                 .map(str::to_owned),
             bindings: Vec::new(),
         }
@@ -162,5 +170,20 @@ mod tests {
 
         assert!(mcp_handle.mcp_tools.contains(&"list_issues".to_owned()));
         assert_eq!(skill_handle.skill_name(), Some("code-review"));
+    }
+
+    #[test]
+    fn handle_reads_hardware_identity_extensions() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let hardware = project
+            .adapters
+            .iter()
+            .find(|adapter| adapter.id.as_str() == "scale-main")
+            .unwrap();
+
+        let handle = AdapterHandle::from_manifest(hardware);
+
+        assert_eq!(handle.hardware_logical_name.as_deref(), Some("main-scale"));
+        assert_eq!(handle.hardware_device_class.as_deref(), Some("scale"));
     }
 }

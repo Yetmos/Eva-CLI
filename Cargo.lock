@@ -10,18 +10,19 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "eva"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-cli",
 ]
 
 [[package]]
 name = "eva-adapter"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-capability",
  "eva-config",
  "eva-core",
+ "eva-hardware",
  "eva-mcp",
  "eva-observability",
  "eva-policy",
@@ -29,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "eva-agent"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-config",
  "eva-core",
@@ -41,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "eva-backup"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-core",
  "eva-observability",
@@ -51,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "eva-capability"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-config",
  "eva-core",
@@ -61,12 +62,13 @@ dependencies = [
 
 [[package]]
 name = "eva-cli"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-adapter",
  "eva-config",
  "eva-core",
  "eva-discovery",
+ "eva-hardware",
  "eva-mcp",
  "eva-memory",
  "eva-observability",
@@ -75,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "eva-config"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-core",
  "serde",
@@ -84,11 +86,11 @@ dependencies = [
 
 [[package]]
 name = "eva-core"
-version = "1.2.0"
+version = "1.3.0"
 
 [[package]]
 name = "eva-discovery"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-config",
  "eva-core",
@@ -98,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "eva-eventbus"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-core",
  "eva-observability",
@@ -107,8 +109,9 @@ dependencies = [
 
 [[package]]
 name = "eva-hardware"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
+ "eva-config",
  "eva-core",
  "eva-observability",
  "eva-policy",
@@ -116,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "eva-lifecycle"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-core",
  "eva-observability",
@@ -125,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "eva-lua-host"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-config",
  "eva-core",
@@ -136,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "eva-mcp"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-core",
  "eva-observability",
@@ -145,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "eva-memory"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-core",
  "eva-observability",
@@ -155,14 +158,14 @@ dependencies = [
 
 [[package]]
 name = "eva-observability"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-core",
 ]
 
 [[package]]
 name = "eva-policy"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-config",
  "eva-core",
@@ -170,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "eva-runtime"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-adapter",
  "eva-agent",
@@ -193,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "eva-scheduler"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-core",
  "eva-observability",
@@ -202,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "eva-storage"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "eva-core",
  "eva-observability",

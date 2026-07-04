@@ -114,6 +114,18 @@ impl AdapterManifest {
             })
             .unwrap_or_default()
     }
+
+    /// Returns a string field from a nested manifest extension path.
+    pub fn deep_extra_string(&self, path: &[&str]) -> Option<&str> {
+        let (first, rest) = path.split_first()?;
+        let mut value = self.extra.get(Value::String((*first).to_owned()))?;
+        for key in rest {
+            value = value
+                .as_mapping()
+                .and_then(|mapping| mapping.get(Value::String((*key).to_owned())))?;
+        }
+        value.as_str()
+    }
 }
 
 impl AdapterTransport {
@@ -257,5 +269,22 @@ capabilities:
         assert!(manifest
             .nested_extra_string_list("mcp", "tool_allowlist")
             .contains(&"list_issues".to_owned()));
+    }
+
+    #[test]
+    fn adapter_manifest_exposes_deep_extension_strings() {
+        let manifest = load_adapter_manifest(
+            workspace_root().join("config/adapters/hardware/scale-main.yaml"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            manifest.deep_extra_string(&["hardware", "bus"]),
+            Some("usb")
+        );
+        assert_eq!(
+            manifest.deep_extra_string(&["hardware", "identity", "logical_name"]),
+            Some("main-scale")
+        );
     }
 }

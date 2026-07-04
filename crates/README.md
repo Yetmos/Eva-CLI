@@ -1,21 +1,22 @@
 # Crates / Rust 子模块
 
-更新时间：2026-07-03
+更新时间：2026-07-04
 
 ![Eva module implementation roadmap](assets/eva-module-implementation-roadmap.svg)
 
-## V1.2 Workspace Status
+## V1.3 Workspace Status
 
-V1.2 keeps the V1.1 external capability checkpoint and adds request-scoped memory and knowledge context across `eva-memory`, `eva-lua-host`, and `eva-cli`:
+V1.3 keeps the V1.1 external capability checkpoint and V1.2 request-scoped memory/knowledge context, then adds the first controlled hardware boundary across `eva-hardware`, `eva-adapter`, and `eva-cli`:
 
 - `eva-adapter`: authorized handles, registry, router, probe, and controlled MCP/Skill invocation envelopes.
 - `eva-mcp`: allowlist policy helper, in-memory client/probe, tool mapping registry, and minimal side-effect-free server surface descriptor.
 - `eva-discovery`: project manifest discovery candidates, cache, health projection, and the invariant that discovery never grants executable handles.
 - `eva-memory`: private/global memory records, knowledge indexing, budgeted `ContextBuilder`, and `LuaContextSnapshot`.
 - `eva-lua-host`: controlled context snapshot on `LuaHostContext` and `LuaEventResult`.
-- `eva-cli`: `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, and `memory context` commands with text/JSON envelopes.
+- `eva-hardware`: hardware discovery candidates, trusted identities, `DeviceRegistry` claim/release, `HardwareDriver` binding, simulated driver, and hotplug state machine.
+- `eva-cli`: `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, and `hardware list/probe/bind` commands with text/JSON envelopes.
 
-V1.3 starts from this context boundary and adds hardware discovery, registry, binding, hotplug, and Adapter hardware transport without exposing raw I/O to Lua.
+V1.3 proves that hardware can be visible and planned without exposing raw I/O to Lua. The sample `scale-main` adapter remains disabled by default, so CLI hardware binding returns a blocked plan instead of touching physical devices.
 
 本目录承载 Eva-CLI Rust workspace 的模块边界。每个 crate 对应一个稳定职责域；公共契约先在基础 crate 稳定，副作用通过 `eva-runtime` 单向组合进入。
 
@@ -36,7 +37,7 @@ V1.3 starts from this context boundary and adds hardware discovery, registry, bi
 | `eva-config` | `eva.yaml`、manifest、routes、policy document 加载 | 已完成 V0.2 | [README](eva-config/README.md) |
 | `eva-policy` | 权限集合、sandbox policy、effective policy | 已完成 V0.2 | [README](eva-policy/README.md) |
 | `eva-observability` | trace、audit、metrics 契约 | 已完成 V0.2 | [README](eva-observability/README.md) |
-| `eva-cli` | CLI parser、formatter、exit code、运行入口、version/task 命令 | 已完成 V1.0 core release surface | [README](eva-cli/README.md) |
+| `eva-cli` | CLI parser、formatter、exit code、运行入口、version/task/external/memory/hardware 命令 | 已完成 V1.3 hardware command surface | [README](eva-cli/README.md) |
 | `eva-runtime` | 组合根、builder、service summary、basic loop、task report | 已完成 V1.0 core runtime mode | [README](eva-runtime/README.md) |
 | `eva-storage` | StateStore、EventLog、ArtifactStore | 已完成 V0.4 in-memory | [README](eva-storage/README.md) |
 | `eva-eventbus` | publish、ack/fail、dead letter、replay | 已完成 V0.5 replay diagnostics | [README](eva-eventbus/README.md) |
@@ -44,11 +45,11 @@ V1.3 starts from this context boundary and adds hardware discovery, registry, bi
 | `eva-agent` | Agent 生命周期、队列、事件处理、timeout/cancel/retry 控制 | 已完成 V0.5 run control | [README](eva-agent/README.md) |
 | `eva-lua-host` | Lua loader、sandbox gate、受控 `on_event` contract、generation marker | 已完成 V0.5 generation marker | [README](eva-lua-host/README.md) |
 | `eva-capability` | Capability registry、router、host API | 已完成 V0.4 builtins | [README](eva-capability/README.md) |
-| `eva-adapter` | Adapter manifest、registry、router、transport runtime | 骨架 | [README](eva-adapter/README.md) |
-| `eva-mcp` | MCP client/server、tool mapping、schema | 骨架 | [README](eva-mcp/README.md) |
-| `eva-discovery` | 受信发现源、归一化、健康探测、缓存 | 骨架 | [README](eva-discovery/README.md) |
+| `eva-adapter` | Adapter manifest、registry、router、transport runtime | 已完成 V1.3 hardware transport boundary | [README](eva-adapter/README.md) |
+| `eva-mcp` | MCP client/server、tool mapping、schema | 已完成 V1.1 side-effect-free MCP surface | [README](eva-mcp/README.md) |
+| `eva-discovery` | 受信发现源、归一化、健康探测、缓存 | 已完成 V1.1 discovery candidate surface | [README](eva-discovery/README.md) |
 | `eva-memory` | 私有记忆、全局记忆、知识库、上下文构建 | 已完成 V1.2 context layer | [README](eva-memory/README.md) |
-| `eva-hardware` | 设备发现、driver binding、hotplug | 骨架 | [README](eva-hardware/README.md) |
+| `eva-hardware` | 设备发现、driver binding、hotplug | 已完成 V1.3 controlled hardware boundary | [README](eva-hardware/README.md) |
 | `eva-backup` | 备份、迁移包、release snapshot、校验 | 骨架 | [README](eva-backup/README.md) |
 | `eva-lifecycle` | supervisor、generation、drain、rollback | 骨架 | [README](eva-lifecycle/README.md) |
 
@@ -64,7 +65,7 @@ V1.3 starts from this context boundary and adds hardware discovery, registry, bi
 | V1.0 | `eva-cli`、`eva-runtime`、docs、CI | version 命令、`in_memory_v1.0`、quickstart、release notes、已知限制、CI/release gates | 已完成 | 新用户可从源码构建并跑通 V1.0 quickstart |
 | V1.1 | `eva-adapter`、`eva-mcp`、`eva-discovery`、`eva-cli` | 外部能力发现、probe、受控 envelope 调用 | 已完成 | `adapter list/probe`、`mcp list/probe`、`skill list/run`、`discovery scan` 可验证 |
 | V1.2 | `eva-memory`、`eva-lua-host`、`eva-cli` | memory、knowledge、context builder、Lua context snapshot、`memory context` | 已完成 | 上下文组装有权限、预算和审计；Lua 只接收受控快照 |
-| V1.3 | `eva-hardware`、`eva-adapter` | 设备发现、绑定、hotplug、hardware transport | 待实现 | Lua 不能 raw I/O |
+| V1.3 | `eva-hardware`、`eva-adapter`、`eva-cli` | 设备发现、绑定、hotplug、hardware transport、hardware list/probe/bind | 已完成 | Lua 不能 raw I/O；`scale-main` 默认 blocked plan-first |
 | V1.4 | `eva-backup`、`eva-lifecycle` | 备份、迁移、snapshot、generation rollback | 待实现 | 高风险操作先 plan 后 apply |
 | V1.5 | 全模块 | 安全、性能、发布验收 | 待实现 | release checklist 全部通过 |
 

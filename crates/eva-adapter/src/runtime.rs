@@ -128,17 +128,16 @@ impl AdapterRuntime {
             AdapterTransport::Builtin
             | AdapterTransport::LuaCapability
             | AdapterTransport::Eventbus => transports::builtin::invoke(&handle, invocation),
-            AdapterTransport::Stdio | AdapterTransport::Http | AdapterTransport::Hardware => {
-                Err(EvaError::unsupported(
-                    "Adapter transport requires an external executor not started in V1.1",
-                )
-                .with_context("adapter_id", handle.id.as_str())
-                .with_context("transport", handle.transport.as_str())
-                .with_context(
-                    "suggestion",
-                    "use adapter probe/list for diagnostics or a skill/MCP controlled envelope",
-                ))
-            }
+            AdapterTransport::Hardware => transports::hardware::invoke(&handle, invocation),
+            AdapterTransport::Stdio | AdapterTransport::Http => Err(EvaError::unsupported(
+                "Adapter transport requires an external executor not started in this version",
+            )
+            .with_context("adapter_id", handle.id.as_str())
+            .with_context("transport", handle.transport.as_str())
+            .with_context(
+                "suggestion",
+                "use adapter probe/list for diagnostics or a skill/MCP controlled envelope",
+            )),
         }
     }
 }

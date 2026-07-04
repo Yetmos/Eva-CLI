@@ -2,10 +2,11 @@
 
 > Language: English | [简体中文](README.zh-CN.md)
 
-Eva-CLI has reached the V1.2 memory and knowledge context checkpoint: a
+Eva-CLI has reached the V1.3 controlled hardware access checkpoint: a
 compileable Rust workspace, configuration examples, schemas, the in-memory
 basic runtime loop, local task diagnostics, Adapter/MCP/Skill/Discovery control
-surfaces, request-scoped memory/knowledge context assembly, CI gates,
+surfaces, request-scoped memory/knowledge context assembly, hardware discovery
+and plan-first binding diagnostics, CI gates,
 quickstart, release notes, and explicit known limitations.
 The website uses English as the default public entry with stable
 slugs, while the Simplified Chinese documents remain the source of truth for
@@ -24,12 +25,13 @@ maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
 
 Updated: 2026-07-04
 
-Eva-CLI has moved past a design-only repository and now has a V1.2 release
+Eva-CLI has moved past a design-only repository and now has a V1.3 release
 surface. It includes a compileable Rust workspace, configuration examples and
 schemas, implemented foundation contracts, project configuration loading, a
 V1.0 CLI quickstart, the `in_memory_v1.0` basic runtime composition root, local
 `.eva/tasks` diagnostics, Adapter/MCP/Skill/Discovery diagnostics,
-MemoryService/KnowledgeService/ContextBuilder, and CI release gates.
+MemoryService/KnowledgeService/ContextBuilder, controlled hardware discovery
+and binding plans, and CI release gates.
 
 | Area | Status | Evidence | Remaining Work |
 | --- | --- | --- | --- |
@@ -38,14 +40,14 @@ MemoryService/KnowledgeService/ContextBuilder, and CI release gates.
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 19 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V1.2 implemented | `version`, `doctor`, `config validate`, `inspect`, `run --example basic`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, text/JSON output, trace fields, and exit-code mapping | V1.3 hardware commands |
+| `eva-cli` | V1.3 implemented | `version`, `doctor`, `config validate`, `inspect`, `run --example basic`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `hardware list/probe/bind`, text/JSON output, trace fields, and exit-code mapping | V1.4 backup/lifecycle commands |
 | Runtime composition | V1.0 core implemented | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, and idempotent shutdown | Durable/runtime lifecycle work remains later scope |
 | EventBus and Scheduler | V0.4/V0.5 implemented for basic loop | EventBus publish/ack/fail/dead-letter/replay diagnostics; Scheduler topic routing and mailbox delivery | Durable replay/backoff remains later scope |
 | Agent and Lua host | V0.5 implemented for basic loop | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, controlled bindings, generation marker | Real Lua VM and generation swap remain later scope |
 | Capability and Adapter layers | V1.1 controlled envelopes implemented | `eva-capability` has V0.4 builtins; `eva-adapter` now builds authorized handles, routes capabilities to providers, probes adapters, and invokes MCP/Skill controlled envelopes | Real stdio/http process execution and richer policy evaluation remain later scope |
 | Policy, observability, storage | Mixed | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` has V0.4 in-memory stores/logs | Durable storage, richer audit sinks, and metrics remain later scope |
-| Discovery, MCP, memory, hardware, backup, lifecycle | Mixed | Discovery and MCP have V1.1 side-effect-free candidates/probes; memory has V1.2 in-memory private/global records, knowledge search, ContextBuilder, and Lua context snapshots; hardware, backup, and lifecycle remain scaffolded | Implement hardware hotplug, backup/release snapshots, and supervisor generation flow |
-| Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, V1.0 quickstart smoke commands, V1.1 external capability smoke commands, V1.2 memory context smoke, and website i18n validation | Add gates as future runtime behavior expands |
+| Discovery, MCP, memory, hardware, backup, lifecycle | Mixed | Discovery and MCP have V1.1 side-effect-free candidates/probes; memory has V1.2 in-memory private/global records, knowledge search, ContextBuilder, and Lua context snapshots; hardware has V1.3 discovery candidates, registry leases, simulated driver binding, hotplug state machine, Adapter hardware transport, and CLI binding plans; backup and lifecycle remain scaffolded | Implement backup/release snapshots and supervisor generation flow |
+| Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, V1.0 quickstart smoke commands, V1.1 external capability smoke commands, V1.2 memory context smoke, V1.3 hardware smoke, and website i18n validation | Add gates as future runtime behavior expands |
 
 ## Implementation Plan
 
@@ -128,6 +130,24 @@ The output includes `memory`, `global_memory`, `knowledge`, `lua_context`, and
 `audit` fields. Private records are selected only for the requested `agent_id`;
 global memory and knowledge remain explicit context inputs rather than EventBus
 state.
+
+## V1.3 Hardware Access Smoke
+
+V1.3 adds controlled hardware discovery and plan-first binding diagnostics.
+`eva-hardware` owns discovery candidates, stable device identities,
+`DeviceRegistry` leases, simulated driver binding, and hotplug state. The
+Adapter hardware transport uses that boundary and reports `raw_io:false` in
+audit output.
+
+```powershell
+cargo run -- hardware list --output json
+cargo run -- hardware probe --adapter scale-main --output json
+cargo run -- hardware bind --adapter scale-main --output json
+```
+
+The sample `scale-main` adapter is intentionally disabled until real device
+identifiers are configured. Hardware binding therefore returns a blocked plan
+instead of opening USB, serial, BLE, network, or vendor SDK raw I/O.
 
 ## Repository Layout
 

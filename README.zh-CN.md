@@ -2,24 +2,25 @@
 
 > 语言：[English](README.md) | 简体中文
 
-Eva-CLI 当前已经从纯架构方案整理进入 Rust 实现阶段。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载，以及 V0.3 的 CLI 开发闭环和 no-op runtime 组合根。真实事件处理 runtime 闭环仍属于 V0.4 后续目标。
+Eva-CLI 当前已经推进到 V1.3 受控硬件接入检查点。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载、V1.0 in-memory basic runtime、V1.1 外部能力诊断、V1.2 记忆/知识上下文，以及 V1.3 的硬件发现、probe 和 plan-first 绑定命令。
 
 官网：
 
 - https://Eva-CLI.com
 - https://www.Eva-CLI.com
 
-官网源码维护在 [website/](website/)，文档维护在 [docs/](docs/)，后续 Rust 源码维护在 [src/](src/) 和 [crates/](crates/)。
+官网源码维护在 [website/](website/)，文档维护在 [docs/](docs/)，Rust 源码维护在 [src/](src/) 和 [crates/](crates/)。
 
 ## 当前进度
 
-Eva-CLI 已经完成第一轮实现所需的大部分架构和方案文档工作，并完成 V0.1 到 V0.3 的基础实现：
+Eva-CLI 已经完成 V0.1 到 V1.3 的阶段实现：
 
 1. Rust workspace 和 19 个 crate 边界已创建；
 2. `eva-core`、`eva-config`、`eva-policy`、`eva-observability` 已具备基础契约；
-3. `eva-cli` 已实现 `doctor`、`config validate`、`inspect` 和受保护的 `run` 命令；
-4. `eva-runtime` 已实现 no-op `RuntimeBuilder`、`RuntimeSummary`、service summary 和幂等 shutdown；
-5. 下一阶段进入 V0.4，目标是实现最小端到端 Runtime 闭环。
+3. `eva-runtime` 已实现 V1.0 `in_memory_v1.0` basic runtime 和本地 task 诊断；
+4. `eva-cli` 已实现 `version`、`doctor`、`config validate`、`inspect`、`run --example basic`、`task status/logs/cancel`、`adapter`、`mcp`、`skill`、`discovery`、`memory context` 和 `hardware list/probe/bind`；
+5. `eva-hardware` 已实现 V1.3 discovery candidate、DeviceRegistry lease、simulated driver binding 和 hotplug state machine；
+6. 下一阶段进入 V1.4，目标是实现 BackupService、MigrationPackage、ReleaseSnapshot、Supervisor generation、drain 和 rollback。
 
 完整阶段划分见 [从零到 1.0 版本路线图](docs/zh-CN/从零到1.0版本路线图.md)。
 

@@ -40,7 +40,7 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace
 
-      - name: V1.2 quickstart, external capability, and context smoke
+      - name: V1.3 quickstart, external capability, context, and hardware smoke
         shell: pwsh
         run: |
           cargo run -- --version
@@ -61,6 +61,9 @@ jobs:
           cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
           cargo run -- discovery scan --output json
           cargo run -- memory context --agent root-agent --query context --private-limit 1 --output json
+          cargo run -- hardware list --output json
+          cargo run -- hardware probe --adapter scale-main --output json
+          cargo run -- hardware bind --adapter scale-main --output json
 
   website:
     name: Website and docs

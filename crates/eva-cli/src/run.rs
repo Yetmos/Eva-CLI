@@ -6,6 +6,7 @@ use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, Ad
 use eva_config::{load_project_config, schema_paths, AdapterTransport, ProjectConfig};
 use eva_core::{AdapterId, AgentId, CapabilityName, ErrorKind, EvaError, InvokeStatus, RequestId};
 use eva_discovery::{DiscoveryCandidate, DiscoveryService};
+use eva_hardware::{discover_project_devices, DeviceCandidate, HardwareDiscoveryReport};
 use eva_mcp::{InMemoryMcpClient, McpAllowlist, McpProbeReport};
 use eva_memory::{
     BuiltContext, ContextBudget, ContextBuilder, ContextRequest, InMemoryKnowledgeService,
@@ -31,8 +32,9 @@ const EXIT_RUNTIME_UNAVAILABLE: i32 = 4;
 const EXIT_EXTERNAL_UNAVAILABLE: i32 = 5;
 const EXIT_USAGE: i32 = 64;
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
-const RELEASE_LABEL: &str = "V1.2 memory and knowledge context";
-const RELEASE_RUNTIME_MODE: &str = "in_memory_v1.0 + external_capability_v1.1 + context_v1.2";
+const RELEASE_LABEL: &str = "V1.3 hardware access boundary";
+const RELEASE_RUNTIME_MODE: &str =
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -44,6 +46,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "skill list/run",
     "discovery scan",
     "memory context",
+    "hardware list/probe/bind",
 ];
 
 /// Process entry point for the root binary shim.
@@ -176,6 +179,7 @@ where
         Command::Skill(command) => execute_skill(command, stdout, stderr),
         Command::Discovery(command) => execute_discovery(command, stdout, stderr),
         Command::Memory(command) => execute_memory(command, stdout, stderr),
+        Command::Hardware(command) => execute_hardware(command, stdout, stderr),
     }
 }
 
@@ -193,6 +197,7 @@ enum Command {
     Skill(SkillCommand),
     Discovery(DiscoveryCommand),
     Memory(MemoryCommand),
+    Hardware(HardwareCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +253,13 @@ enum MemoryCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum HardwareCommand {
+    List(CommonOptions),
+    Probe(HardwareProbeOptions),
+    Bind(HardwareBindOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TaskOptions {
     common: CommonOptions,
     task_id: Option<String>,
@@ -288,6 +300,20 @@ struct MemoryContextOptions {
     private_limit: usize,
     global_limit: usize,
     knowledge_limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HardwareProbeOptions {
+    common: CommonOptions,
+    adapter_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HardwareBindOptions {
+    common: CommonOptions,
+    adapter_id: String,
+    request_id: String,
+    apply: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,6 +413,7 @@ where
         "skill" => parse_skill_command(&args[1..]),
         "discovery" => parse_discovery_command(&args[1..]),
         "memory" => parse_memory_command(&args[1..]),
+        "hardware" => parse_hardware_command(&args[1..]),
         unknown => Err(EvaError::unsupported("unknown command").with_context("command", unknown)),
     }
 }
@@ -749,6 +776,81 @@ fn parse_memory_context_options(args: &[String]) -> Result<MemoryContextOptions,
         private_limit,
         global_limit,
         knowledge_limit,
+    })
+}
+
+fn parse_hardware_command(args: &[String]) -> Result<Command, EvaError> {
+    let (subcommand, rest) = args
+        .split_first()
+        .ok_or_else(|| EvaError::invalid_argument("missing hardware subcommand"))?;
+    match subcommand.as_str() {
+        "list" => Ok(Command::Hardware(HardwareCommand::List(
+            parse_common_options(rest)?,
+        ))),
+        "probe" => Ok(Command::Hardware(HardwareCommand::Probe(
+            parse_hardware_probe_options(rest)?,
+        ))),
+        "bind" => Ok(Command::Hardware(HardwareCommand::Bind(
+            parse_hardware_bind_options(rest)?,
+        ))),
+        value => {
+            Err(EvaError::unsupported("unknown hardware subcommand")
+                .with_context("subcommand", value))
+        }
+    }
+}
+
+fn parse_hardware_probe_options(args: &[String]) -> Result<HardwareProbeOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut adapter_id = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--adapter" | "--adapter-id" => {
+                index += 1;
+                adapter_id = Some(required_option(args, index, "adapter option")?.clone());
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    if let Some(adapter_id) = &adapter_id {
+        AdapterId::parse(adapter_id)?;
+    }
+    Ok(HardwareProbeOptions {
+        common: parse_common_options(&passthrough)?,
+        adapter_id,
+    })
+}
+
+fn parse_hardware_bind_options(args: &[String]) -> Result<HardwareBindOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut adapter_id = "scale-main".to_owned();
+    let mut request_id = "req-hardware-1".to_owned();
+    let mut apply = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--adapter" | "--adapter-id" => {
+                index += 1;
+                adapter_id = required_option(args, index, "adapter option")?.clone();
+            }
+            "--request-id" | "--task-id" | "--task" => {
+                index += 1;
+                request_id = required_option(args, index, "request id option")?.clone();
+            }
+            "--apply" => apply = true,
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    AdapterId::parse(&adapter_id)?;
+    RequestId::parse(&request_id)?;
+    Ok(HardwareBindOptions {
+        common: parse_common_options(&passthrough)?,
+        adapter_id,
+        request_id,
+        apply,
     })
 }
 
@@ -1124,6 +1226,145 @@ where
             }
         }
     }
+}
+
+fn execute_hardware<W, E>(
+    command: HardwareCommand,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match command {
+        HardwareCommand::List(options) => {
+            let trace = trace_for("cli.hardware.list");
+            match load_project_config(&options.project_root)
+                .and_then(|project| discover_project_devices(&project))
+            {
+                Ok(report) => {
+                    write_hardware_list(stdout, options.output, &report, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => {
+                    write_command_error(stderr, options.output, "hardware.list", &error, &trace)
+                }
+            }
+        }
+        HardwareCommand::Probe(options) => {
+            let trace = trace_for("cli.hardware.probe");
+            match load_project_config(&options.common.project_root)
+                .and_then(|project| discover_project_devices(&project))
+                .and_then(|report| probe_hardware_candidates(report, options.adapter_id.as_deref()))
+            {
+                Ok(candidates) => {
+                    write_hardware_probe(stdout, options.common.output, &candidates, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "hardware.probe",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+        HardwareCommand::Bind(options) => {
+            let trace = trace_for("cli.hardware.bind");
+            match load_project_config(&options.common.project_root)
+                .and_then(|project| hardware_bind_plan(&project, &options))
+            {
+                Ok(plan) => {
+                    write_hardware_bind(stdout, options.common.output, &plan, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "hardware.bind",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HardwareBindPlan {
+    adapter_id: AdapterId,
+    request_id: RequestId,
+    status: String,
+    apply: bool,
+    device: Option<DeviceCandidate>,
+    steps: Vec<String>,
+    risks: Vec<String>,
+}
+
+fn probe_hardware_candidates(
+    report: HardwareDiscoveryReport,
+    adapter_id: Option<&str>,
+) -> Result<Vec<DeviceCandidate>, EvaError> {
+    let mut candidates = report.candidates;
+    if let Some(adapter_id) = adapter_id {
+        candidates.retain(|candidate| candidate.identity.adapter_id.as_str() == adapter_id);
+        if candidates.is_empty() {
+            return Err(
+                EvaError::not_found("hardware adapter candidate does not exist")
+                    .with_context("adapter_id", adapter_id),
+            );
+        }
+    }
+    Ok(candidates)
+}
+
+fn hardware_bind_plan(
+    project: &ProjectConfig,
+    options: &HardwareBindOptions,
+) -> Result<HardwareBindPlan, EvaError> {
+    let adapter_id = AdapterId::parse(&options.adapter_id)?;
+    let request_id = RequestId::parse(&options.request_id)?;
+    let report = discover_project_devices(project)?;
+    let device = report
+        .candidates
+        .into_iter()
+        .find(|candidate| candidate.identity.adapter_id == adapter_id);
+    let status = match &device {
+        Some(candidate) if candidate.rejected_reason.is_none() && options.apply => "ready_to_apply",
+        Some(candidate) if candidate.rejected_reason.is_none() => "planned",
+        Some(_) => "blocked",
+        None => "missing",
+    }
+    .to_owned();
+    let mut risks = vec!["hardware binding is plan-first; no raw I/O is opened by CLI".to_owned()];
+    if options.apply {
+        risks.push(
+            "--apply only validates the logical plan in V1.3; physical claims remain runtime-gated"
+                .to_owned(),
+        );
+    }
+    if let Some(candidate) = &device {
+        if let Some(reason) = &candidate.rejected_reason {
+            risks.push(reason.clone());
+        }
+    }
+    Ok(HardwareBindPlan {
+        adapter_id,
+        request_id,
+        status,
+        apply: options.apply,
+        device,
+        steps: vec![
+            "discover hardware manifest candidate".to_owned(),
+            "verify adapter manifest and policy boundary".to_owned(),
+            "create logical DeviceRegistry lease".to_owned(),
+            "route invocation through AdapterRuntime hardware transport".to_owned(),
+            "release logical lease and emit audit".to_owned(),
+        ],
+        risks,
+    })
 }
 
 fn build_memory_context(
@@ -2281,6 +2522,106 @@ fn write_memory_context<W: Write>(
     }
 }
 
+fn write_hardware_list<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    report: &HardwareDiscoveryReport,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Eva hardware candidates").map_err(write_error_kind)?;
+            for candidate in &report.candidates {
+                writeln!(
+                    writer,
+                    "  - {} adapter={} bus={} health={} trust={} handle_granted={}",
+                    candidate.identity.id.as_str(),
+                    candidate.identity.adapter_id,
+                    candidate.identity.bus.as_str(),
+                    candidate.health.as_str(),
+                    candidate.identity.trust.as_str(),
+                    candidate.handle_granted
+                )
+                .map_err(write_error_kind)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "hardware.list",
+                EXIT_OK,
+                &hardware_candidates_json(&report.candidates),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_hardware_probe<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    candidates: &[DeviceCandidate],
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Eva hardware probe").map_err(write_error_kind)?;
+            for candidate in candidates {
+                writeln!(
+                    writer,
+                    "  - {} status={} reason={}",
+                    candidate.identity.id.as_str(),
+                    candidate.health.as_str(),
+                    candidate.rejected_reason.as_deref().unwrap_or("ok")
+                )
+                .map_err(write_error_kind)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "hardware.probe",
+                EXIT_OK,
+                &hardware_candidates_json(candidates),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_hardware_bind<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    plan: &HardwareBindPlan,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Hardware bind plan").map_err(write_error_kind)?;
+            writeln!(writer, "adapter: {}", plan.adapter_id).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", plan.status).map_err(write_error_kind)?;
+            writeln!(writer, "apply: {}", plan.apply).map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "hardware.bind",
+                EXIT_OK,
+                &hardware_bind_plan_json(plan),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn adapter_list_json(runtime: &AdapterRuntime) -> String {
     let entries = runtime.list().into_iter().map(|handle| {
         format!(
@@ -2453,6 +2794,51 @@ fn lua_context_json(context: &BuiltContext) -> String {
         snapshot.global_memory_count,
         snapshot.knowledge_count,
         json_array(snapshot.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn hardware_candidates_json(candidates: &[DeviceCandidate]) -> String {
+    let entries = candidates.iter().map(hardware_candidate_json);
+    format!(
+        "{{\"candidate_count\":{},\"candidates\":{}}}",
+        candidates.len(),
+        json_array(entries)
+    )
+}
+
+fn hardware_candidate_json(candidate: &DeviceCandidate) -> String {
+    format!(
+        "{{\"device_id\":{},\"adapter_id\":{},\"logical_name\":{},\"device_class\":{},\"bus\":{},\"trust\":{},\"health\":{},\"vendor_id\":{},\"product_id\":{},\"serial\":{},\"protocol\":{},\"handle_granted\":{},\"rejected_reason\":{},\"source_path\":{}}}",
+        json_string(candidate.identity.id.as_str()),
+        json_string(candidate.identity.adapter_id.as_str()),
+        json_string(&candidate.identity.logical_name),
+        json_string(&candidate.identity.device_class),
+        json_string(candidate.identity.bus.as_str()),
+        json_string(candidate.identity.trust.as_str()),
+        json_string(candidate.health.as_str()),
+        option_json(candidate.vendor_id.as_deref()),
+        option_json(candidate.product_id.as_deref()),
+        option_json(candidate.serial.as_deref()),
+        option_json(candidate.protocol.as_deref()),
+        candidate.handle_granted,
+        option_json(candidate.rejected_reason.as_deref()),
+        json_string(&candidate.source_path)
+    )
+}
+
+fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
+    format!(
+        "{{\"adapter_id\":{},\"request_id\":{},\"status\":{},\"apply\":{},\"device\":{},\"steps\":{},\"risks\":{}}}",
+        json_string(plan.adapter_id.as_str()),
+        json_string(plan.request_id.as_str()),
+        json_string(&plan.status),
+        plan.apply,
+        plan.device
+            .as_ref()
+            .map(hardware_candidate_json)
+            .unwrap_or_else(|| "null".to_owned()),
+        json_array(plan.steps.iter().map(|step| json_string(step))),
+        json_array(plan.risks.iter().map(|risk| json_string(risk)))
     )
 }
 
@@ -2950,7 +3336,7 @@ fn write_error_kind(error: io::Error) -> EvaError {
 }
 
 fn help_text() -> &'static str {
-    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.2 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
+    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.3 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
 }
 
 #[cfg(test)]
@@ -3123,17 +3509,17 @@ mod tests {
     }
 
     #[test]
-    fn version_text_and_json_report_v12_context() {
+    fn version_text_and_json_report_v13_hardware() {
         let (text_exit, text_stdout, text_stderr) = run_cli(&["--version"]);
         assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
-        assert!(text_stdout.contains("eva 1.2.0"));
-        assert!(text_stdout.contains("V1.2 memory and knowledge context"));
+        assert!(text_stdout.contains("eva 1.3.0"));
+        assert!(text_stdout.contains("V1.3 hardware access boundary"));
 
         let (json_exit, json_stdout, json_stderr) = run_cli(&["version", "--output", "json"]);
         assert_eq!(json_exit, EXIT_OK, "{json_stderr}");
         assert!(json_stdout.contains("\"command\":\"version\""));
-        assert!(json_stdout.contains("\"version\":\"1.2.0\""));
-        assert!(json_stdout.contains("context_v1.2"));
+        assert!(json_stdout.contains("\"version\":\"1.3.0\""));
+        assert!(json_stdout.contains("hardware_v1.3"));
     }
 
     #[test]
@@ -3186,6 +3572,27 @@ mod tests {
                 "root-agent",
                 "--query",
                 "memory",
+                "--project",
+                root,
+                "--output",
+                "json",
+            ],
+            vec!["hardware", "list", "--project", root, "--output", "json"],
+            vec![
+                "hardware",
+                "probe",
+                "--adapter",
+                "scale-main",
+                "--project",
+                root,
+                "--output",
+                "json",
+            ],
+            vec![
+                "hardware",
+                "bind",
+                "--adapter",
+                "scale-main",
                 "--project",
                 root,
                 "--output",
@@ -3244,5 +3651,32 @@ mod tests {
         assert!(stdout.contains("\"global_memory\""));
         assert!(stdout.contains("\"knowledge\""));
         assert!(stdout.contains("\"lua_context\""));
+    }
+
+    #[test]
+    fn hardware_commands_report_candidates_and_bind_plan() {
+        let root = workspace_root();
+        let root = root.to_str().unwrap();
+        let (list_exit, list_stdout, list_stderr) =
+            run_cli(&["hardware", "list", "--project", root, "--output", "json"]);
+        assert_eq!(list_exit, EXIT_OK, "{list_stderr}");
+        assert!(list_stdout.contains("\"command\":\"hardware.list\""));
+        assert!(list_stdout.contains("scale-main"));
+        assert!(list_stdout.contains("\"handle_granted\":false"));
+
+        let (bind_exit, bind_stdout, bind_stderr) = run_cli(&[
+            "hardware",
+            "bind",
+            "--adapter",
+            "scale-main",
+            "--project",
+            root,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(bind_exit, EXIT_OK, "{bind_stderr}");
+        assert!(bind_stdout.contains("\"command\":\"hardware.bind\""));
+        assert!(bind_stdout.contains("\"status\":\"blocked\""));
+        assert!(bind_stdout.contains("raw I/O"));
     }
 }

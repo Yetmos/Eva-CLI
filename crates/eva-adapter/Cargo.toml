@@ -8,6 +8,7 @@ publish.workspace = true
 eva-capability = { path = "../eva-capability" }
 eva-config = { path = "../eva-config" }
 eva-core = { path = "../eva-core" }
+eva-hardware = { path = "../eva-hardware" }
 eva-mcp = { path = "../eva-mcp" }
 eva-observability = { path = "../eva-observability" }
 eva-policy = { path = "../eva-policy" }

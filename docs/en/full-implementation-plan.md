@@ -21,7 +21,8 @@ Current baseline as of 2026-07-04:
 - V0.5 is implemented: `eva-agent` records timeout/cancel/retry attempts, `eva-eventbus` exposes in-memory dead-letter replay diagnostics, `eva-runtime` emits `TaskReport`, and `eva-cli` supports `task status/logs/cancel` over local `.eva/tasks` reports.
 - V1.0 core is implemented: root/workspace version is `1.0.0`, `eva-cli` supports `eva --version` and `eva version --output json`, `eva-runtime` exposes `RuntimeBuilder::in_memory_v10()`, CI runs the release gates, and V1.0 quickstart/known limitations/release notes are documented.
 - V1.1 external capability ecosystem is implemented: `eva-adapter` provides authorized handles, registry, router, probe, and controlled MCP/Skill envelopes; `eva-mcp` provides allowlist probes and an in-memory client surface; `eva-discovery` emits non-authorizing candidates; `eva-cli` exposes `adapter`, `mcp`, `skill`, and `discovery` commands.
-- V1.2 memory and knowledge context is implemented: root/workspace version is `1.2.0`, `eva-memory` provides in-memory private/global records, knowledge indexing, budgeted `ContextBuilder`, and `LuaContextSnapshot`; `eva-lua-host` accepts the controlled context snapshot; `eva-cli` exposes `memory context`.
+- V1.2 memory and knowledge context is implemented: `eva-memory` provides in-memory private/global records, knowledge indexing, budgeted `ContextBuilder`, and `LuaContextSnapshot`; `eva-lua-host` accepts the controlled context snapshot; `eva-cli` exposes `memory context`.
+- V1.3 controlled hardware access is implemented: root/workspace version is `1.3.0`, `eva-hardware` provides non-authorizing discovery candidates, stable device identities, `DeviceRegistry` leases, simulated driver binding, and hotplug state; `eva-adapter` exposes the hardware transport through that lease boundary; `eva-cli` exposes `hardware list/probe/bind` as plan-first diagnostics.
 - `eva-runtime` now supports `RuntimeBuilder::in_memory_v10()` and `Runtime::run_basic`.
 - `eva-cli` now supports `eva run --example basic` plus `eva task status`, `eva task logs`, and `eva task cancel` as the V1.0 core loop.
 - `examples/basic/` is a complete minimal Eva workspace and exercises CLI -> EventBus -> Scheduler -> Agent -> controlled Lua host -> builtin capability -> task diagnostics.
@@ -47,10 +48,13 @@ cargo run -- skill list --output json
 cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
 cargo run -- discovery scan --output json
 cargo run -- memory context --agent root-agent --query context --private-limit 1 --output json
+cargo run -- hardware list --output json
+cargo run -- hardware probe --adapter scale-main --output json
+cargo run -- hardware bind --adapter scale-main --output json
 ./scripts/build-site-i18n.ps1
 ./scripts/validate-i18n.ps1
 ```
 
-V1.2 is complete as a source release checkpoint for controlled external capability visibility, diagnostics, and request-scoped memory/knowledge context. Real Lua VM sandboxing, durable task recovery, packaged installers, signed release artifacts, real stdio/http/MCP process execution, durable memory storage, hardware hotplug, backup/release snapshots, and supervisor lifecycle remain later-version scope.
+V1.3 is complete as a source release checkpoint for controlled external capability visibility, diagnostics, request-scoped memory/knowledge context, and non-authorizing hardware access planning. Real Lua VM sandboxing, durable task recovery, packaged installers, signed release artifacts, real stdio/http/MCP process execution, durable memory storage, real hardware I/O, backup/release snapshots, and supervisor lifecycle remain later-version scope.
 
 Use the Chinese detailed plan for the module-by-module progress tables, versioned iteration plan, implementation order, diagrams, and acceptance criteria.
