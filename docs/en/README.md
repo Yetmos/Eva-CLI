@@ -16,39 +16,77 @@ entry, stable slugs, and summary coverage. The Simplified Chinese documents
 under `docs/zh-CN/` remain the source of truth for detailed architecture and
 implementation-spec content until the English full-detail migration catches up.
 
-## Recommended Reading Order
+## Document Categories
 
-1. [Architecture Overview](architecture-overview.md)
-2. [Module Partitioning Plan](module-partitioning.md)
-3. [eva-core Module Design](eva-core-module.md)
-4. [Rust, Lua, and EventBus Scheduler](rust-lua-eventbus-scheduler.md)
-5. [Lua External Agent Adapter](lua-external-agent-adapter.md)
-6. [Lua Skill, MCP, and Tool Hot Reload](lua-skill-mcp-tool-hot-reload.md)
-7. [Skill Implementation Plan](skill-implementation.md)
-8. [Agent Memory and Knowledge Base](agent-memory-knowledge-base.md)
-9. [Agent Discovery](agent-discovery.md)
-10. [Hardware Hotplug](hardware-hotplug.md)
-11. [Project Configuration](project-configuration.md)
-12. [Topic Routing Hybrid Sync](topic-routing-hybrid-sync.md)
-13. [IDEA Plugin Toolchain Requirements](idea-plugin-toolchain.md)
-14. [Process-Level Upgrade](process-level-upgrade.md)
-15. [Backup, Migration Package, and Release Snapshot](backup-migration-release-snapshot.md)
-16. [Design Risk Review](design-risk-review.md)
-17. [Zero to 1.0 Roadmap](zero-to-one-roadmap.md)
-18. [Full Implementation Plan](full-implementation-plan.md)
-19. [Eva-CLI V1.0 Quickstart](v1.0-quickstart.md)
-20. [Eva-CLI User Manual](user-manual.md)
-21. [Eva-CLI V1.0 Known Limitations](v1.0-known-limitations.md)
-22. [Eva-CLI V1.0.0 Release Notes](release-notes-v1.0.0.md)
-23. [Eva-CLI V1.5 Release Hardening](v1.5-release-hardening.md)
-24. [Eva-CLI V1.5 Migration Guide](v1.5-migration-guide.md)
-25. [Eva-CLI V1.5 Compatibility Policy](v1.5-compatibility-policy.md)
-26. [Eva-CLI V1.5.0 Release Notes](release-notes-v1.5.0.md)
-27. [Eva-CLI V1.5 GitHub Release Plan](v1.5-github-release-plan.md)
-28. [V0.1 Baseline Acceptance](v0.1-baseline-acceptance.md)
-29. [V0.2 Contract and Configuration Acceptance](v0.2-contract-config-acceptance.md)
-30. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
-31. [Website and Documentation i18n](website-docs-i18n.md)
+### Guide
+
+Start here when you want to run the project.
+
+- [Eva-CLI User Manual](guide/user-manual.md)
+- [Eva-CLI V1.0 Quickstart](guide/v1.0-quickstart.md)
+
+### Architecture
+
+Read these pages to understand the runtime model and module boundaries.
+
+- [Architecture Overview](architecture/architecture-overview.md)
+- [Module Partitioning Plan](architecture/module-partitioning.md)
+- [eva-core Module Design](architecture/eva-core-module.md)
+- [Rust, Lua, and EventBus Scheduler](architecture/rust-lua-eventbus-scheduler.md)
+- [Topic Routing Hybrid Sync](architecture/topic-routing-hybrid-sync.md)
+
+### Capabilities
+
+These documents cover external capability access, memory, discovery, skills, and
+hardware boundaries.
+
+- [Lua External Agent Adapter](capabilities/lua-external-agent-adapter.md)
+- [Lua Skill, MCP, and Tool Hot Reload](capabilities/lua-skill-mcp-tool-hot-reload.md)
+- [Skill Implementation Plan](capabilities/skill-implementation.md)
+- [Agent Memory and Knowledge Base](capabilities/agent-memory-knowledge-base.md)
+- [Agent Discovery](capabilities/agent-discovery.md)
+- [Hardware Hotplug](capabilities/hardware-hotplug.md)
+
+### Operations
+
+Operational documents cover configuration, lifecycle, backup/restore planning,
+and documentation publishing.
+
+- [Project Configuration](operations/project-configuration.md)
+- [Process-Level Upgrade](operations/process-level-upgrade.md)
+- [Backup, Migration Package, and Release Snapshot](operations/backup-migration-release-snapshot.md)
+- [Website and Documentation i18n](operations/website-docs-i18n.md)
+
+### Release
+
+Release documents track shipped checkpoints, known limits, hardening gates, and
+migration policy.
+
+- [Eva-CLI V1.0 Known Limitations](release/v1.0-known-limitations.md)
+- [Eva-CLI V1.0.0 Release Notes](release/release-notes-v1.0.0.md)
+- [Eva-CLI V1.5 Release Hardening](release/v1.5-release-hardening.md)
+- [Eva-CLI V1.5 Migration Guide](release/v1.5-migration-guide.md)
+- [Eva-CLI V1.5 Compatibility Policy](release/v1.5-compatibility-policy.md)
+- [Eva-CLI V1.5.0 Release Notes](release/release-notes-v1.5.0.md)
+- [Eva-CLI V1.5 GitHub Release Plan](release/v1.5-github-release-plan.md)
+
+### Planning
+
+Planning and acceptance documents preserve roadmap decisions and milestone
+evidence.
+
+- [Design Risk Review](planning/design-risk-review.md)
+- [Zero to 1.0 Roadmap](planning/zero-to-one-roadmap.md)
+- [Full Implementation Plan](planning/full-implementation-plan.md)
+- [V0.1 Baseline Acceptance](planning/v0.1-baseline-acceptance.md)
+- [V0.2 Contract and Configuration Acceptance](planning/v0.2-contract-config-acceptance.md)
+
+### Tooling
+
+Tooling documents describe CLI and IDE surfaces.
+
+- [Command-Line Tool Feature Design](tooling/command-line-tool-feature-design.md)
+- [IDEA Plugin Toolchain Requirements](tooling/idea-plugin-toolchain.md)
 
 ## Core Boundaries
 

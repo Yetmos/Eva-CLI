@@ -6,15 +6,17 @@ content authority:
 - The current documentation set tracks the V1.5 source-release checkpoint:
   executable CLI diagnostics, release-hardening gates, compatibility policy,
   migration notes, and the remaining target apply paths.
-- `docs/en/` is the default public documentation entry and owns stable English
-  slugs for the website.
+- `docs/en/` is the default public documentation entry. Documents are grouped
+  into topic directories such as `guide/`, `architecture/`, `capabilities/`,
+  `operations/`, `release/`, `planning/`, and `tooling/`.
 - `docs/zh-CN/` is the current source of truth for detailed architecture and
-  implementation-spec content. Most English pages are summaries until the
-  full-detail English migration is completed.
+  implementation-spec content. It uses the same topic directory layout as the
+  English entry. Most English pages are summaries until the full-detail English
+  migration is completed.
 
 ## Language Entrances
 
-- [English](en/README.md) - default public entry and stable slug set.
+- [English](en/README.md) - default public entry.
 - [简体中文](zh-CN/README.md) - current detailed architecture source.
 
 ## Maintenance Rules
@@ -26,13 +28,15 @@ content authority:
   clearly scoped summary. Do not let an English summary override the Chinese
   detailed specification.
 - Register every document ID, source path, translation path, and translation
-  status in [_i18n/manifest.json](_i18n/manifest.json).
+  status in [_i18n/manifest.json](../docs/_i18n/manifest.json).
 - Keep `contentAuthority.locale` in the manifest aligned with the locale that
   currently contains the most complete implementation-spec detail.
 - Register content assets that contain readable text in the manifest `assets`
   section, with locale-specific image paths and translation status.
-- Keep published document IDs and English slugs stable.
-- Keep old Chinese root-level paths readable during the migration window.
+- Keep published document IDs stable; when moving a document, update
+  `docs/_i18n/manifest.json` and regenerate the website.
+- Keep historical root-level Chinese documents under `docs/zh-CN/legacy/` while
+  the categorized `docs/zh-CN/*/` tree remains the current source.
 - Do not translate code, commands, JSON keys, Topic names, Lua bindings, file
   paths, or error codes.
 

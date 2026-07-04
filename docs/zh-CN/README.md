@@ -12,39 +12,78 @@ V1.5 源码发布检查点：当前仓库包含可编译 Rust workspace、可执
 [../en/README.md](../en/README.md)，当前承担默认公开入口和稳定英文 slug 的职责；
 在英文详案补齐之前，不能用英文摘要覆盖本目录中的详细架构规格。
 
-## 推荐阅读顺序
+## 文档分类
 
-1. [总体架构方案](总体架构方案.md)
-2. [模块划分方案](模块划分方案.md)
-3. [eva-core 模块设计](eva-core模块设计.md)
-4. [Rust 与 Lua 事件总线智能体调度架构方案](Rust与Lua事件总线智能体调度架构方案.md)
-5. [Lua 调用外部 Agent 动态 Adapter 架构方案](Lua调用外部Agent动态Adapter架构方案.md)
-6. [Lua 承载 Skill-MCP-Tool 热更新架构方案](Lua承载Skill-MCP-Tool热更新架构方案.md)
-7. [Skill 实现方案](Skill实现方案.md)
-8. [Agent 记忆与知识库架构方案](Agent记忆与知识库架构方案.md)
-9. [Agent 扫描与发现架构方案](Agent扫描与发现架构方案.md)
-10. [外接硬件接入与热插拔架构方案](外接硬件接入与热插拔架构方案.md)
-11. [项目配置方案](项目配置方案.md)
-12. [Topic 路由混合同步方案](Topic路由混合同步方案.md)
-13. [IDEA Plugin 开发工具链功能方案](IDEA插件开发工具链功能方案.md)
-14. [进程级停机升级架构方案](进程级停机升级架构方案.md)
-15. [备份、迁移包与 Release Snapshot 架构方案](备份迁移包与ReleaseSnapshot架构方案.md)
-16. [方案设计风险评审](方案设计风险评审.md)
-17. [从零到 1.0 版本路线图](从零到1.0版本路线图.md)
-18. [当前项目从零到完整实现实施计划](当前项目从零到完整实现实施计划.md)
-19. [V1.0 快速开始](V1.0快速开始.md)
-20. [Eva-CLI 使用手册](Eva-CLI使用手册.md)
-21. [V1.0 已知限制](V1.0已知限制.md)
-22. [V1.0 发布说明](V1.0发布说明.md)
-23. [V1.5 发布加固](V1.5发布加固.md)
-24. [V1.5 迁移指南](V1.5迁移指南.md)
-25. [V1.5 兼容性策略](V1.5兼容性策略.md)
-26. [V1.5 发布说明](V1.5发布说明.md)
-27. [V1.5 GitHub 发版计划](V1.5-GitHub发版计划.md)
-28. [V0.1 项目基线验收记录](V0.1项目基线验收记录.md)
-29. [V0.2 契约与配置稳定验收记录](V0.2契约与配置稳定验收记录.md)
-30. [Eva-CLI 命令行工具功能设计文档](Eva-CLI命令行工具功能设计文档.md)
-31. [网站与文档多语言适配方案](网站与文档多语言适配方案.md)
+### 使用指南
+
+需要运行项目时先读这里。
+
+- [Eva-CLI 使用手册](guide/Eva-CLI使用手册.md)
+- [V1.0 快速开始](guide/V1.0快速开始.md)
+
+### 架构
+
+理解运行时模型、模块边界和 Topic 路由时阅读这些文档。
+
+- [总体架构方案](architecture/总体架构方案.md)
+- [模块划分方案](architecture/模块划分方案.md)
+- [eva-core 模块设计](architecture/eva-core模块设计.md)
+- [Rust 与 Lua 事件总线智能体调度架构方案](architecture/Rust与Lua事件总线智能体调度架构方案.md)
+- [Topic 路由混合同步方案](architecture/Topic路由混合同步方案.md)
+
+### 能力
+
+这里放外部能力接入、记忆、发现、Skill 和硬件边界。
+
+- [Lua 调用外部 Agent 动态 Adapter 架构方案](capabilities/Lua调用外部Agent动态Adapter架构方案.md)
+- [Lua 承载 Skill-MCP-Tool 热更新架构方案](capabilities/Lua承载Skill-MCP-Tool热更新架构方案.md)
+- [Skill 实现方案](capabilities/Skill实现方案.md)
+- [Agent 记忆与知识库架构方案](capabilities/Agent记忆与知识库架构方案.md)
+- [Agent 扫描与发现架构方案](capabilities/Agent扫描与发现架构方案.md)
+- [外接硬件接入与热插拔架构方案](capabilities/外接硬件接入与热插拔架构方案.md)
+
+### 运维
+
+这里放配置、生命周期、备份恢复计划和文档发布相关内容。
+
+- [项目配置方案](operations/项目配置方案.md)
+- [进程级停机升级架构方案](operations/进程级停机升级架构方案.md)
+- [备份、迁移包与 Release Snapshot 架构方案](operations/备份迁移包与ReleaseSnapshot架构方案.md)
+- [网站与文档多语言适配方案](operations/网站与文档多语言适配方案.md)
+
+### 发布
+
+这里放已发布检查点、已知限制、发布门禁和迁移策略。
+
+- [V1.0 已知限制](release/V1.0已知限制.md)
+- [V1.0 发布说明](release/V1.0发布说明.md)
+- [V1.5 发布加固](release/V1.5发布加固.md)
+- [V1.5 迁移指南](release/V1.5迁移指南.md)
+- [V1.5 兼容性策略](release/V1.5兼容性策略.md)
+- [V1.5 发布说明](release/V1.5发布说明.md)
+- [V1.5 GitHub 发版计划](release/V1.5-GitHub发版计划.md)
+
+### 规划
+
+规划和验收文档保留路线图决策与里程碑证据。
+
+- [方案设计风险评审](planning/方案设计风险评审.md)
+- [从零到 1.0 版本路线图](planning/从零到1.0版本路线图.md)
+- [当前项目从零到完整实现实施计划](planning/当前项目从零到完整实现实施计划.md)
+- [V0.1 项目基线验收记录](planning/V0.1项目基线验收记录.md)
+- [V0.2 契约与配置稳定验收记录](planning/V0.2契约与配置稳定验收记录.md)
+
+### 工具链
+
+工具链文档描述 CLI 和 IDE 相关能力。
+
+- [Eva-CLI 命令行工具功能设计文档](tooling/Eva-CLI命令行工具功能设计文档.md)
+- [IDEA Plugin 开发工具链功能方案](tooling/IDEA插件开发工具链功能方案.md)
+
+### 历史根路径
+
+旧版 `docs/*.md` 中文根路径已经移入 [legacy](legacy/) 分类目录，用于保留迁移期
+参考内容；当前正式入口以上方分类为准。
 
 ## 说明
 

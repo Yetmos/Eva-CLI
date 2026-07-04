@@ -31,7 +31,7 @@
         <a href="./">首页</a>
         <a href="../docs/zh-CN/README.md">文档</a>
         <a href="blog/">博客</a>
-        <a href="../docs/zh-CN/总体架构方案.md">架构</a>
+        <a href="../docs/zh-CN/architecture/总体架构方案.md">架构</a>
         <a href="#discussion">讨论</a>
         <a href="#feedback">反馈</a>
         <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
@@ -59,7 +59,7 @@
           </div>
           <div class="actions" aria-label="项目入口">
             <a class="primary-action" href="../docs/zh-CN/README.md">阅读文档</a>
-            <a class="secondary-action" href="../docs/zh-CN/总体架构方案.md">总体架构</a>
+            <a class="secondary-action" href="../docs/zh-CN/architecture/总体架构方案.md">总体架构</a>
             <a class="secondary-action" href="#development-progress">开发进度</a>
             <a class="secondary-action" href="#discussion">讨论</a>
             <a class="secondary-action" href="#feedback">反馈</a>
@@ -94,7 +94,7 @@
             <p class="eyebrow">开发进度</p>
             <h2 id="development-progress-title">从架构骨架走向 V1.5 源码发布门禁</h2>
           </div>
-          <a class="secondary-action progress-roadmap-link" href="../docs/zh-CN/从零到1.0版本路线图.md">查看路线图</a>
+          <a class="secondary-action progress-roadmap-link" href="../docs/zh-CN/planning/从零到1.0版本路线图.md">查看路线图</a>
         </div>
         <div class="progress-layout">
           <article class="progress-current" aria-label="当前开发阶段">
@@ -199,47 +199,47 @@
           <h2 id="docs-title">按使用和架构主题阅读</h2>
         </div>
         <div class="links-grid">
-          <a class="doc-link" href="../docs/zh-CN/Eva-CLI使用手册.md">
+          <a class="doc-link" href="../docs/zh-CN/guide/Eva-CLI使用手册.md">
             <span>使用手册</span>
             <small>从源码安装、校验配置、运行 basic 闭环、查看 task 诊断、执行发布门禁，并理解当前 plan-first 安全边界。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/总体架构方案.md">
+          <a class="doc-link" href="../docs/zh-CN/architecture/总体架构方案.md">
             <span>总体架构</span>
             <small>系统目标、模块边界、运行链路、安全原则和待补设计契约。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/模块划分方案.md">
+          <a class="doc-link" href="../docs/zh-CN/architecture/模块划分方案.md">
             <span>模块划分</span>
             <small>已落地的 Rust workspace 形态、crate 边界、依赖方向、运行时交接链路和职责归属。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/Rust与Lua事件总线智能体调度架构方案.md">
+          <a class="doc-link" href="../docs/zh-CN/architecture/Rust与Lua事件总线智能体调度架构方案.md">
             <span>Runtime 与 EventBus</span>
             <small>Rust 核心、Lua Agent、Topic 路由、Scheduler 行为与可恢复事件投递。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/Lua调用外部Agent动态Adapter架构方案.md">
+          <a class="doc-link" href="../docs/zh-CN/capabilities/Lua调用外部Agent动态Adapter架构方案.md">
             <span>动态 Adapter 层</span>
             <small>受控接入外部 Agent、CLI、HTTP、MCP、Skill 与硬件能力。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/Lua承载Skill-MCP-Tool热更新架构方案.md">
+          <a class="doc-link" href="../docs/zh-CN/capabilities/Lua承载Skill-MCP-Tool热更新架构方案.md">
             <span>Lua Capability Runtime</span>
             <small>Tool、Skill、MCP handler 的热更新行为、权限边界和回滚语义。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/Skill实现方案.md">
+          <a class="doc-link" href="../docs/zh-CN/capabilities/Skill实现方案.md">
             <span>Skill 实现方案</span>
             <small>workflow Skill、runtime worker 和 Lua Skill 如何进入受控 workflow capability。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/Agent记忆与知识库架构方案.md">
+          <a class="doc-link" href="../docs/zh-CN/capabilities/Agent记忆与知识库架构方案.md">
             <span>记忆与知识库</span>
             <small>Runtime 托管记忆事实源、知识检索、ContextBuilder policy 和 Lua API 边界。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/Agent扫描与发现架构方案.md">
+          <a class="doc-link" href="../docs/zh-CN/capabilities/Agent扫描与发现架构方案.md">
             <span>扫描与发现</span>
             <small>Agent、Adapter、MCP、Skill 与 Lua capability 的发现、校验和注册规则。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/IDEA插件开发工具链功能方案.md">
+          <a class="doc-link" href="../docs/zh-CN/tooling/IDEA插件开发工具链功能方案.md">
             <span>IDEA Plugin 开发工具链</span>
             <small>项目索引、Lua Agent 编辑、Runtime Bridge 校验、dry run、trace 和 policy 诊断的开发工具链需求。</small>
           </a>
-          <a class="doc-link" href="../docs/zh-CN/V1.5发布加固.md">
+          <a class="doc-link" href="../docs/zh-CN/release/V1.5发布加固.md">
             <span>V1.5 发布加固</span>
             <small>源码发布所需的发布准备度、安全、性能、迁移和兼容门禁。</small>
           </a>

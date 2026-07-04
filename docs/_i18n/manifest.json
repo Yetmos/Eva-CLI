@@ -299,16 +299,16 @@
     {
       "id": "architecture-overview",
       "title": "Architecture Overview",
-      "source": "docs/en/architecture-overview.md",
+      "source": "docs/en/architecture/architecture-overview.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/总体架构方案.md"
+        "zh-CN": "docs/zh-CN/architecture/总体架构方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/总体架构方案.md",
+        "path": "docs/zh-CN/architecture/总体架构方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -316,16 +316,16 @@
     {
       "id": "module-partitioning",
       "title": "Module Partitioning Plan",
-      "source": "docs/en/module-partitioning.md",
+      "source": "docs/en/architecture/module-partitioning.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/模块划分方案.md"
+        "zh-CN": "docs/zh-CN/architecture/模块划分方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/模块划分方案.md",
+        "path": "docs/zh-CN/architecture/模块划分方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -333,16 +333,16 @@
     {
       "id": "eva-core-module",
       "title": "eva-core Module Design",
-      "source": "docs/en/eva-core-module.md",
+      "source": "docs/en/architecture/eva-core-module.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/eva-core模块设计.md"
+        "zh-CN": "docs/zh-CN/architecture/eva-core模块设计.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/eva-core模块设计.md",
+        "path": "docs/zh-CN/architecture/eva-core模块设计.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -350,16 +350,16 @@
     {
       "id": "rust-lua-eventbus-scheduler",
       "title": "Rust, Lua, and EventBus Scheduler",
-      "source": "docs/en/rust-lua-eventbus-scheduler.md",
+      "source": "docs/en/architecture/rust-lua-eventbus-scheduler.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/Rust与Lua事件总线智能体调度架构方案.md"
+        "zh-CN": "docs/zh-CN/architecture/Rust与Lua事件总线智能体调度架构方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/Rust与Lua事件总线智能体调度架构方案.md",
+        "path": "docs/zh-CN/architecture/Rust与Lua事件总线智能体调度架构方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -367,16 +367,16 @@
     {
       "id": "lua-external-agent-adapter",
       "title": "Lua External Agent Adapter",
-      "source": "docs/en/lua-external-agent-adapter.md",
+      "source": "docs/en/capabilities/lua-external-agent-adapter.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/Lua调用外部Agent动态Adapter架构方案.md"
+        "zh-CN": "docs/zh-CN/capabilities/Lua调用外部Agent动态Adapter架构方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/Lua调用外部Agent动态Adapter架构方案.md",
+        "path": "docs/zh-CN/capabilities/Lua调用外部Agent动态Adapter架构方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -384,16 +384,16 @@
     {
       "id": "lua-skill-mcp-tool-hot-reload",
       "title": "Lua Skill, MCP, and Tool Hot Reload",
-      "source": "docs/en/lua-skill-mcp-tool-hot-reload.md",
+      "source": "docs/en/capabilities/lua-skill-mcp-tool-hot-reload.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/Lua承载Skill-MCP-Tool热更新架构方案.md"
+        "zh-CN": "docs/zh-CN/capabilities/Lua承载Skill-MCP-Tool热更新架构方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/Lua承载Skill-MCP-Tool热更新架构方案.md",
+        "path": "docs/zh-CN/capabilities/Lua承载Skill-MCP-Tool热更新架构方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -401,16 +401,16 @@
     {
       "id": "skill-implementation",
       "title": "Skill Implementation Plan",
-      "source": "docs/en/skill-implementation.md",
+      "source": "docs/en/capabilities/skill-implementation.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/Skill实现方案.md"
+        "zh-CN": "docs/zh-CN/capabilities/Skill实现方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/Skill实现方案.md",
+        "path": "docs/zh-CN/capabilities/Skill实现方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -418,16 +418,16 @@
     {
       "id": "agent-memory-knowledge-base",
       "title": "Agent Memory and Knowledge Base",
-      "source": "docs/en/agent-memory-knowledge-base.md",
+      "source": "docs/en/capabilities/agent-memory-knowledge-base.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/Agent记忆与知识库架构方案.md"
+        "zh-CN": "docs/zh-CN/capabilities/Agent记忆与知识库架构方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/Agent记忆与知识库架构方案.md",
+        "path": "docs/zh-CN/capabilities/Agent记忆与知识库架构方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -435,16 +435,16 @@
     {
       "id": "agent-discovery",
       "title": "Agent Discovery",
-      "source": "docs/en/agent-discovery.md",
+      "source": "docs/en/capabilities/agent-discovery.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/Agent扫描与发现架构方案.md"
+        "zh-CN": "docs/zh-CN/capabilities/Agent扫描与发现架构方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/Agent扫描与发现架构方案.md",
+        "path": "docs/zh-CN/capabilities/Agent扫描与发现架构方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -452,16 +452,16 @@
     {
       "id": "hardware-hotplug",
       "title": "Hardware Hotplug",
-      "source": "docs/en/hardware-hotplug.md",
+      "source": "docs/en/capabilities/hardware-hotplug.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/外接硬件接入与热插拔架构方案.md"
+        "zh-CN": "docs/zh-CN/capabilities/外接硬件接入与热插拔架构方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/外接硬件接入与热插拔架构方案.md",
+        "path": "docs/zh-CN/capabilities/外接硬件接入与热插拔架构方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -469,16 +469,16 @@
     {
       "id": "project-configuration",
       "title": "Project Configuration",
-      "source": "docs/en/project-configuration.md",
+      "source": "docs/en/operations/project-configuration.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/项目配置方案.md"
+        "zh-CN": "docs/zh-CN/operations/项目配置方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/项目配置方案.md",
+        "path": "docs/zh-CN/operations/项目配置方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -486,16 +486,16 @@
     {
       "id": "topic-routing-hybrid-sync",
       "title": "Topic Routing Hybrid Sync",
-      "source": "docs/en/topic-routing-hybrid-sync.md",
+      "source": "docs/en/architecture/topic-routing-hybrid-sync.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/Topic路由混合同步方案.md"
+        "zh-CN": "docs/zh-CN/architecture/Topic路由混合同步方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/Topic路由混合同步方案.md",
+        "path": "docs/zh-CN/architecture/Topic路由混合同步方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -503,16 +503,16 @@
     {
       "id": "idea-plugin-toolchain",
       "title": "IDEA Plugin Toolchain Requirements",
-      "source": "docs/en/idea-plugin-toolchain.md",
+      "source": "docs/en/tooling/idea-plugin-toolchain.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/IDEA插件开发工具链功能方案.md"
+        "zh-CN": "docs/zh-CN/tooling/IDEA插件开发工具链功能方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/IDEA插件开发工具链功能方案.md",
+        "path": "docs/zh-CN/tooling/IDEA插件开发工具链功能方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -520,16 +520,16 @@
     {
       "id": "process-level-upgrade",
       "title": "Process-Level Upgrade",
-      "source": "docs/en/process-level-upgrade.md",
+      "source": "docs/en/operations/process-level-upgrade.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/进程级停机升级架构方案.md"
+        "zh-CN": "docs/zh-CN/operations/进程级停机升级架构方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/进程级停机升级架构方案.md",
+        "path": "docs/zh-CN/operations/进程级停机升级架构方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -537,16 +537,16 @@
     {
       "id": "backup-migration-release-snapshot",
       "title": "Backup, Migration Package, and Release Snapshot",
-      "source": "docs/en/backup-migration-release-snapshot.md",
+      "source": "docs/en/operations/backup-migration-release-snapshot.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/备份迁移包与ReleaseSnapshot架构方案.md"
+        "zh-CN": "docs/zh-CN/operations/备份迁移包与ReleaseSnapshot架构方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/备份迁移包与ReleaseSnapshot架构方案.md",
+        "path": "docs/zh-CN/operations/备份迁移包与ReleaseSnapshot架构方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -554,16 +554,16 @@
     {
       "id": "design-risk-review",
       "title": "Design Risk Review",
-      "source": "docs/en/design-risk-review.md",
+      "source": "docs/en/planning/design-risk-review.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/方案设计风险评审.md"
+        "zh-CN": "docs/zh-CN/planning/方案设计风险评审.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/方案设计风险评审.md",
+        "path": "docs/zh-CN/planning/方案设计风险评审.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -571,16 +571,16 @@
     {
       "id": "zero-to-one-roadmap",
       "title": "Zero to 1.0 Roadmap",
-      "source": "docs/en/zero-to-one-roadmap.md",
+      "source": "docs/en/planning/zero-to-one-roadmap.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/从零到1.0版本路线图.md"
+        "zh-CN": "docs/zh-CN/planning/从零到1.0版本路线图.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/从零到1.0版本路线图.md",
+        "path": "docs/zh-CN/planning/从零到1.0版本路线图.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -588,16 +588,16 @@
     {
       "id": "full-implementation-plan",
       "title": "Full Implementation Plan",
-      "source": "docs/en/full-implementation-plan.md",
+      "source": "docs/en/planning/full-implementation-plan.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/当前项目从零到完整实现实施计划.md"
+        "zh-CN": "docs/zh-CN/planning/当前项目从零到完整实现实施计划.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/当前项目从零到完整实现实施计划.md",
+        "path": "docs/zh-CN/planning/当前项目从零到完整实现实施计划.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -605,16 +605,16 @@
     {
       "id": "v1.0-quickstart",
       "title": "Eva-CLI V1.0 Quickstart",
-      "source": "docs/en/v1.0-quickstart.md",
+      "source": "docs/en/guide/v1.0-quickstart.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V1.0快速开始.md"
+        "zh-CN": "docs/zh-CN/guide/V1.0快速开始.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "en",
-        "path": "docs/en/v1.0-quickstart.md",
+        "path": "docs/en/guide/v1.0-quickstart.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -622,16 +622,16 @@
     {
       "id": "user-manual",
       "title": "Eva-CLI User Manual",
-      "source": "docs/en/user-manual.md",
+      "source": "docs/en/guide/user-manual.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/Eva-CLI使用手册.md"
+        "zh-CN": "docs/zh-CN/guide/Eva-CLI使用手册.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/Eva-CLI使用手册.md",
+        "path": "docs/zh-CN/guide/Eva-CLI使用手册.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -639,16 +639,16 @@
     {
       "id": "v1.0-known-limitations",
       "title": "Eva-CLI V1.0 Known Limitations",
-      "source": "docs/en/v1.0-known-limitations.md",
+      "source": "docs/en/release/v1.0-known-limitations.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V1.0已知限制.md"
+        "zh-CN": "docs/zh-CN/release/V1.0已知限制.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "en",
-        "path": "docs/en/v1.0-known-limitations.md",
+        "path": "docs/en/release/v1.0-known-limitations.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -656,16 +656,16 @@
     {
       "id": "release-notes-v1.0.0",
       "title": "Eva-CLI V1.0.0 Release Notes",
-      "source": "docs/en/release-notes-v1.0.0.md",
+      "source": "docs/en/release/release-notes-v1.0.0.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V1.0发布说明.md"
+        "zh-CN": "docs/zh-CN/release/V1.0发布说明.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "en",
-        "path": "docs/en/release-notes-v1.0.0.md",
+        "path": "docs/en/release/release-notes-v1.0.0.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -673,16 +673,16 @@
     {
       "id": "v1.5-release-hardening",
       "title": "Eva-CLI V1.5 Release Hardening",
-      "source": "docs/en/v1.5-release-hardening.md",
+      "source": "docs/en/release/v1.5-release-hardening.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V1.5发布加固.md"
+        "zh-CN": "docs/zh-CN/release/V1.5发布加固.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "en",
-        "path": "docs/en/v1.5-release-hardening.md",
+        "path": "docs/en/release/v1.5-release-hardening.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -690,16 +690,16 @@
     {
       "id": "v1.5-migration-guide",
       "title": "Eva-CLI V1.5 Migration Guide",
-      "source": "docs/en/v1.5-migration-guide.md",
+      "source": "docs/en/release/v1.5-migration-guide.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V1.5迁移指南.md"
+        "zh-CN": "docs/zh-CN/release/V1.5迁移指南.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "en",
-        "path": "docs/en/v1.5-migration-guide.md",
+        "path": "docs/en/release/v1.5-migration-guide.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -707,16 +707,16 @@
     {
       "id": "v1.5-compatibility-policy",
       "title": "Eva-CLI V1.5 Compatibility Policy",
-      "source": "docs/en/v1.5-compatibility-policy.md",
+      "source": "docs/en/release/v1.5-compatibility-policy.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V1.5兼容性策略.md"
+        "zh-CN": "docs/zh-CN/release/V1.5兼容性策略.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "en",
-        "path": "docs/en/v1.5-compatibility-policy.md",
+        "path": "docs/en/release/v1.5-compatibility-policy.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -724,16 +724,16 @@
     {
       "id": "release-notes-v1.5.0",
       "title": "Eva-CLI V1.5.0 Release Notes",
-      "source": "docs/en/release-notes-v1.5.0.md",
+      "source": "docs/en/release/release-notes-v1.5.0.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V1.5发布说明.md"
+        "zh-CN": "docs/zh-CN/release/V1.5发布说明.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "en",
-        "path": "docs/en/release-notes-v1.5.0.md",
+        "path": "docs/en/release/release-notes-v1.5.0.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -741,16 +741,16 @@
     {
       "id": "v1.5-github-release-plan",
       "title": "Eva-CLI V1.5 GitHub Release Plan",
-      "source": "docs/en/v1.5-github-release-plan.md",
+      "source": "docs/en/release/v1.5-github-release-plan.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V1.5-GitHub发版计划.md"
+        "zh-CN": "docs/zh-CN/release/V1.5-GitHub发版计划.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "en",
-        "path": "docs/en/v1.5-github-release-plan.md",
+        "path": "docs/en/release/v1.5-github-release-plan.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -758,16 +758,16 @@
     {
       "id": "v0.1-baseline-acceptance",
       "title": "V0.1 Baseline Acceptance",
-      "source": "docs/en/v0.1-baseline-acceptance.md",
+      "source": "docs/en/planning/v0.1-baseline-acceptance.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V0.1项目基线验收记录.md"
+        "zh-CN": "docs/zh-CN/planning/V0.1项目基线验收记录.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/V0.1项目基线验收记录.md",
+        "path": "docs/zh-CN/planning/V0.1项目基线验收记录.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -775,16 +775,16 @@
     {
       "id": "v0.2-contract-config-acceptance",
       "title": "V0.2 Contract and Configuration Acceptance",
-      "source": "docs/en/v0.2-contract-config-acceptance.md",
+      "source": "docs/en/planning/v0.2-contract-config-acceptance.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/V0.2契约与配置稳定验收记录.md"
+        "zh-CN": "docs/zh-CN/planning/V0.2契约与配置稳定验收记录.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/V0.2契约与配置稳定验收记录.md",
+        "path": "docs/zh-CN/planning/V0.2契约与配置稳定验收记录.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -792,16 +792,16 @@
     {
       "id": "command-line-tool-feature-design",
       "title": "Command-Line Tool Feature Design",
-      "source": "docs/en/command-line-tool-feature-design.md",
+      "source": "docs/en/tooling/command-line-tool-feature-design.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/Eva-CLI命令行工具功能设计文档.md"
+        "zh-CN": "docs/zh-CN/tooling/Eva-CLI命令行工具功能设计文档.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/Eva-CLI命令行工具功能设计文档.md",
+        "path": "docs/zh-CN/tooling/Eva-CLI命令行工具功能设计文档.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -809,16 +809,16 @@
     {
       "id": "website-docs-i18n",
       "title": "Website and Documentation i18n",
-      "source": "docs/en/website-docs-i18n.md",
+      "source": "docs/en/operations/website-docs-i18n.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/网站与文档多语言适配方案.md"
+        "zh-CN": "docs/zh-CN/operations/网站与文档多语言适配方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/网站与文档多语言适配方案.md",
+        "path": "docs/zh-CN/operations/网站与文档多语言适配方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"

@@ -1,0 +1,309 @@
+# Eva-CLI 使用手册
+
+更新时间：2026-07-05
+
+适用版本：Eva-CLI `1.5.0`
+
+本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
+V1.5 源码发布检查点：仓库可以编译，CLI 命令面可以执行，但仍以受控诊断、
+in-memory 示例闭环、plan-first 风险路径和发布门禁为主。
+
+## 当前定位
+
+| 项目 | 当前状态 |
+| --- | --- |
+| 发布形态 | 源码发布；从 Git 仓库和 Rust 工具链运行。 |
+| 运行时 | `run --example basic` 提供 V1.0 in-memory basic runtime 闭环。 |
+| 外部能力 | Adapter、MCP、Skill、Discovery 当前提供受控诊断面，不启动真实 provider。 |
+| 风险动作 | 硬件绑定、恢复、升级和生命周期切换保持 plan-first，不执行 destructive apply。 |
+| 发布检查 | V1.5 提供 `release check/security/perf/migration` 可执行门禁。 |
+
+![Eva-CLI 源码使用闭环](../../assets/eva-cli-user-manual-flow.zh-CN.svg)
+
+## 安装准备
+
+| 依赖 | 建议 | 用途 |
+| --- | --- | --- |
+| Git | 可访问 GitHub SSH 或 HTTPS | 克隆仓库、提交和推送。 |
+| Rust toolchain | Stable Rust，包含 `cargo` | 编译 workspace、运行 CLI 和测试。 |
+| PowerShell 或 Bash | 任一常用 shell | 执行示例命令；Windows 下优先使用 PowerShell。 |
+| 网络访问 | 推送时需要 | 将提交推送到 GitHub。 |
+
+从源码获取并构建：
+
+```powershell
+git clone git@github.com:Yetmos/Eva-CLI.git
+cd Eva-CLI
+cargo build
+cargo run -- --version
+```
+
+如果已经在仓库根目录，可以直接运行：
+
+```powershell
+cargo run -- --version
+```
+
+预期版本输出包含：
+
+```text
+eva 1.5.0
+release: V1.5 release hardening
+```
+
+## 快速开始
+
+先用这组命令确认本地环境、配置和 runtime 摘要：
+
+| 步骤 | 命令 | 预期结果 |
+| --- | --- | --- |
+| 查看版本 | `cargo run -- --version` | 输出版本、release label 和 contract 列表。 |
+| 工作区诊断 | `cargo run -- doctor --output json` | 检查仓库根、配置根、schema、Lua host 和 runtime builder。 |
+| 配置校验 | `cargo run -- config validate --output json` | 加载 `config/eva.yaml` 和拆分 manifest，返回配置摘要。 |
+| 查看运行时 | `cargo run -- inspect runtime --output json` | 输出 agents、adapters、capabilities、routes、policy 和 runtime 摘要。 |
+| 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，并写入 `.eva/tasks` task report。 |
+| 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
+| 发布门禁 | `cargo run -- release check --output json` | 输出 V1.5 release readiness。 |
+
+文本输出适合人工查看，JSON 输出适合 CI 或脚本处理。需要稳定字段时加
+`--output json`。
+
+## 命令总览
+
+| 命令组 | 常用命令 | 当前用途 | 是否执行外部副作用 |
+| --- | --- | --- | --- |
+| 版本 | `version`、`--version` | 输出版本、release label 和支持契约。 | 否 |
+| 诊断 | `doctor` | 检查 workspace、配置根、schema 和 runtime 边界。 | 否 |
+| 配置 | `config validate` | 校验 `eva.yaml`、manifest、policy、routes 和 schema。 | 否 |
+| 查看 | `inspect` | 查看项目配置、路由、策略和 runtime 摘要。 | 否 |
+| 运行 | `run --example basic` | 执行 V1.0 in-memory basic loop。 | 只写 `.eva/tasks` |
+| 任务 | `task status/logs/cancel` | 读取或标记本地 task 诊断。 | 只写 task 取消标记 |
+| Adapter | `adapter list/probe` | 列出或探测 manifest 派生的 Adapter handle。 | 否 |
+| MCP | `mcp list/probe` | 列出或探测 allowlist 中的 MCP tool。 | 否 |
+| Skill | `skill list/run` | 返回受控 workflow skill envelope。 | 否 |
+| Discovery | `discovery scan` | 扫描可信配置源并输出候选能力。 | 否 |
+| Memory | `memory context` | 构造 request-scoped memory/knowledge context。 | 否 |
+| Hardware | `hardware list/probe/bind` | 发现硬件 manifest 并生成绑定计划。 | 否 |
+| Backup | `backup create` | 在 in-memory artifact store 中创建并校验备份 artifact。 | 否 |
+| Snapshot | `snapshot create` | 创建绑定 backup manifest 的 release snapshot。 | 否 |
+| Restore | `restore plan` | 生成恢复计划，保持 `apply_allowed:false`。 | 否 |
+| Upgrade | `upgrade check` | 检查 generation、migration、drain 和 rollback readiness。 | 否 |
+| Release | `release check/security/perf/migration` | 执行 V1.5 发布准备、安全、性能和迁移门禁。 | 否 |
+
+## 基本用法
+
+所有命令默认使用当前目录作为项目根。需要指定其他仓库路径时使用
+`--project <path>`：
+
+```powershell
+cargo run -- doctor --project C:\path\to\Eva-CLI --output json
+```
+
+常见全局选项：
+
+| 选项 | 作用 |
+| --- | --- |
+| `--project <path>` | 指定项目根目录。 |
+| `--output text` | 输出适合人读的文本摘要；多数命令默认使用文本。 |
+| `--output json` | 输出稳定 JSON envelope，适合脚本和 CI。 |
+| `--help` 或 `-h` | 显示完整命令帮助。 |
+
+## 运行 basic 示例
+
+`run --example basic` 是当前唯一真正执行 runtime 闭环的命令。它会同步运行
+in-memory basic loop，并把最新 task report 写到 `<project>/.eva/tasks`。
+
+```powershell
+cargo run -- run --example basic --output json
+cargo run -- task status --output json
+cargo run -- task logs --output json
+```
+
+常用选项：
+
+| 选项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--task-id <id>` | `req-basic-1` | 指定 request/task id。 |
+| `--timeout-ms <ms>` | `30000` | 设置 handler timeout budget；`0` 可触发 timeout 诊断路径。 |
+| `--no-timeout` | 未启用 | 取消 timeout budget。 |
+| `--retry-attempts <n>` | `1` | 设置 retry 上限。 |
+| `--cancel` | 未启用 | 在 handler 前模拟取消请求，生成 cancelled task。 |
+| `--replay-dead-letters` | 未启用 | 对 dead-letter 事件生成 replay receipt 摘要。 |
+
+示例：
+
+```powershell
+cargo run -- run --example basic --task-id req-demo-1 --retry-attempts 2 --output json
+cargo run -- task logs --task req-demo-1 --output json
+cargo run -- task cancel --task req-demo-1 --reason "manual stop" --output json
+```
+
+## 外部能力诊断
+
+V1.1 以后命令面可以查看 Adapter、MCP、Skill 和 Discovery，但不会启动真实外部
+server、CLI provider 或 workflow runner。
+
+| 场景 | 命令 |
+| --- | --- |
+| 查看 Adapter | `cargo run -- adapter list --output json` |
+| 探测指定 Adapter | `cargo run -- adapter probe --adapter github-mcp --output json` |
+| 按 capability 验证路由 | `cargo run -- adapter probe --capability repo.issue.list --output json` |
+| 查看 MCP allowlist | `cargo run -- mcp list --output json` |
+| 探测 MCP tool | `cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json` |
+| 查看 Skill | `cargo run -- skill list --output json` |
+| 运行受控 Skill envelope | `cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json` |
+| 扫描发现候选 | `cargo run -- discovery scan --output json` |
+
+MCP probe 遇到不在 allowlist 中的 tool 时，会返回 blocked 诊断，而不是调用外部
+provider。
+
+## 记忆和知识上下文
+
+`memory context` 用于验证 V1.2 `eva-memory`、`ContextBuilder` 和 Lua context
+快照边界：
+
+```powershell
+cargo run -- memory context --agent root-agent --query context --private-limit 1 --output json
+```
+
+| 选项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--agent <id>` | `root-agent` | 指定读取私有记忆上下文的 Agent。 |
+| `--query <text>` | `memory` | 知识检索查询。 |
+| `--request-id <id>` | `req-memory-1` | 写入演示上下文记录的 request id。 |
+| `--private-limit <n>` | `3` | 私有记忆最大返回数量。 |
+| `--global-limit <n>` | `3` | 全局记忆最大返回数量。 |
+| `--knowledge-limit <n>` | `3` | 知识检索最大返回数量。 |
+
+输出会包含 `memory`、`global_memory`、`knowledge`、`lua_context` 和 `audit`。
+当前命令使用 in-memory 演示上下文，不代表 durable memory store 已经落地。
+
+## 硬件、备份、恢复和升级
+
+这些命令用于生成计划和诊断，不执行高风险 apply：
+
+![Eva-CLI 当前安全边界](../../assets/eva-cli-user-manual-safety.zh-CN.svg)
+
+| 场景 | 命令 | 当前边界 |
+| --- | --- | --- |
+| 列出硬件候选 | `cargo run -- hardware list --output json` | 读取 hardware adapter manifest，不打开设备。 |
+| 探测硬件候选 | `cargo run -- hardware probe --adapter scale-main --output json` | 返回候选健康、trust 和 handle 状态。 |
+| 生成绑定计划 | `cargo run -- hardware bind --adapter scale-main --output json` | 输出 plan steps 和风险，不授予 raw I/O handle。 |
+| 创建备份 artifact | `cargo run -- backup create --output json` | 使用 in-memory artifact store。 |
+| 创建 release snapshot | `cargo run -- snapshot create --output json` | 绑定到已验证 backup manifest。 |
+| 生成恢复计划 | `cargo run -- restore plan --output json` | 输出 `apply_allowed:false`。 |
+| 检查升级准备度 | `cargo run -- upgrade check --output json` | 输出 migration、drain、rollback 计划。 |
+
+即使使用 `hardware bind --apply`，V1.3/V1.5 命令面也只保留 plan-first 输出，不打开真实设备。
+
+## 发布门禁
+
+V1.5 新增 `release` 命令组，用于把发布准备检查变成可执行证据：
+
+```powershell
+cargo run -- release check --output json
+cargo run -- release check --target windows --output json
+cargo run -- release security --output json
+cargo run -- release perf --output json
+cargo run -- release migration --output json
+```
+
+| 命令 | 输出重点 |
+| --- | --- |
+| `release check` | 跨平台、稳定性、文档、安全、性能、迁移和兼容门禁汇总。 |
+| `release security` | policy、Lua sandbox、secret redaction、MCP allowlist、hardware 和 lifecycle 风险。 |
+| `release perf` | EventBus、Scheduler、Adapter、memory、backup 和 release check 预算。 |
+| `release migration` | V1.4 到 V1.5 的迁移步骤和兼容性策略。 |
+
+## 项目结构和配置位置
+
+| 路径 | 作用 |
+| --- | --- |
+| `Cargo.toml` | 根 package 和 workspace 成员声明。 |
+| `crates/eva-cli/` | CLI 命令解析、输出 envelope 和 exit code 映射。 |
+| `config/eva.yaml` | 项目根配置、运行时环境和配置目录入口。 |
+| `config/agents/` | Agent manifest 和 Lua 脚本示例。 |
+| `config/adapters/` | Adapter manifest，包括 stdio、MCP、skill 和 hardware 示例。 |
+| `config/capabilities/` | Capability manifest 和 Lua capability 示例。 |
+| `config/policies/` | 沙箱、MCP、硬件和 adapter policy。 |
+| `config/routes/topics.yaml` | Topic route 配置。 |
+| `config/schemas/` | JSON schema 文件。 |
+| `.eva/tasks/` | `run --example basic` 写入的本地 task 诊断目录；不提交到 Git。 |
+
+## JSON 输出和退出码
+
+成功 JSON 使用统一 envelope：
+
+```json
+{
+  "ok": true,
+  "command": "release.check",
+  "exit_code": 0,
+  "data": {},
+  "trace": {}
+}
+```
+
+错误 JSON 使用：
+
+```json
+{
+  "ok": false,
+  "command": "config.validate",
+  "exit_code": 2,
+  "error": {},
+  "trace": {}
+}
+```
+
+退出码：
+
+| Code | 含义 | 常见处理 |
+| --- | --- | --- |
+| `0` | 成功 | 可以继续下一步。 |
+| `1` | 内部错误 | 保留 stdout/stderr，作为缺陷报告证据。 |
+| `2` | 配置、路径、manifest、route、schema 或 task state 问题 | 运行 `doctor` 和 `config validate --output json`。 |
+| `3` | policy 拒绝 | 查看 policy、manifest 权限声明和请求能力。 |
+| `4` | runtime 不可用或能力未实现 | 确认该命令是否属于当前源码发布范围。 |
+| `5` | 外部 capability 不可用预留 | 当前外部 provider 不会真实启动。 |
+| `64` | 命令用法错误 | 运行 `cargo run -- --help` 查看参数。 |
+
+## 常见问题处理
+
+| 问题 | 诊断命令 | 处理方向 |
+| --- | --- | --- |
+| 找不到配置 | `cargo run -- doctor --output json` | 确认从仓库根目录执行，或传入 `--project <path>`。 |
+| JSON 输出不符合预期 | `cargo run -- <command> --output json` | 检查 `command`、`ok`、`exit_code` 和 `error.kind`。 |
+| task 状态为空 | `cargo run -- run --example basic --output json` | 先运行 basic 示例生成 `.eva/tasks`。 |
+| MCP tool 被 blocked | `cargo run -- mcp probe --adapter github-mcp --tool <name> --output json` | 检查 tool 是否在 allowlist 中。 |
+| 硬件绑定 blocked | `cargo run -- hardware probe --adapter scale-main --output json` | 检查 hardware manifest 是否 enabled、trust 是否 accepted。 |
+| 发布检查 blocked | `cargo run -- release check --output json` | 根据 gate group 继续运行 security、perf 或 migration 子命令。 |
+
+## 当前非目标
+
+当前 V1.5 不提供以下能力：
+
+- 打包安装器和签名 release artifact；
+- 真实 MCP server 或外部 provider 进程管理；
+- 真实硬件 raw I/O；
+- destructive restore；
+- 真实 Supervisor 进程切换；
+- durable memory、backup 和 task database。
+
+这些能力需要后续版本在显式 apply gate、持久化存储、签名 artifact 和更强发布证据
+之后逐步接入。
+
+## 推荐验证命令
+
+修改代码或文档后，建议至少运行：
+
+```powershell
+cargo test -p eva-cli
+cargo run -- --version
+cargo run -- doctor --output json
+cargo run -- config validate --output json
+cargo run -- run --example basic --output json
+cargo run -- release check --output json
+.\scripts\build-site-i18n.ps1
+.\scripts\validate-i18n.ps1
+```
