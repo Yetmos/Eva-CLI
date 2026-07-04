@@ -4,10 +4,12 @@
 > Published default: docs/en/README.md
 > Current detail authority: [简体中文](../zh-CN/README.md)
 
-Eva-CLI is currently in the architecture-design stage. The repository documents
-the target runtime, extension model, memory model, discovery model, hardware
-integration, configuration system, and process-level recovery strategy before
-the executable implementation is finalized.
+Eva-CLI has reached the V1.5 source-release checkpoint. The repository now
+contains a compileable Rust workspace, executable CLI surfaces, configuration
+validation, an in-memory basic runtime loop, local task diagnostics, controlled
+Adapter/MCP/Skill/Discovery surfaces, request-scoped memory and knowledge
+context assembly, hardware binding plans, backup/lifecycle diagnostics, and
+release readiness, security, performance, migration, and compatibility checks.
 
 Important source rule: English documents currently provide the default public
 entry, stable slugs, and summary coverage. The Simplified Chinese documents

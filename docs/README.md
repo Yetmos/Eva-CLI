@@ -3,6 +3,9 @@
 The documentation currently separates the published default language from the
 content authority:
 
+- The current documentation set tracks the V1.5 source-release checkpoint:
+  executable CLI diagnostics, release-hardening gates, compatibility policy,
+  migration notes, and the remaining target apply paths.
 - `docs/en/` is the default public documentation entry and owns stable English
   slugs for the website.
 - `docs/zh-CN/` is the current source of truth for detailed architecture and

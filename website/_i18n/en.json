@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source CLI architecture for hot-reloadable multi-Agent runtimes, combining a Rust core, Lua capability layer, Topic EventBus, controlled memory and knowledge services, and dynamic adapters."
+    "description": "Eva-CLI is an open-source V1.5 source-release CLI for controlled multi-Agent runtimes, combining a Rust boundary, Lua capability layer, Topic EventBus, memory and knowledge context, adapters, hardware plans, and release gates."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,24 +38,24 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "Architecture specs are organized for implementation planning and review.",
+    "runtimePanelNote": "V1.5 source-release checks are executable and kept behind controlled runtime boundaries.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
     "progressAction": "Development progress",
     "progressEyebrow": "Development progress",
-    "progressTitle": "From architecture scaffold to runnable Runtime",
+    "progressTitle": "From architecture scaffold to V1.5 source-release gates",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "Workspace, configuration tree, and Agent layout are in place",
-    "progressCurrentBody": "The repository now has a compileable Rust workspace, configuration tree, JSON Schemas, sample Agents, Adapters, policies, routes, and a flat one-Agent-one-directory layout. Next practical work is configuration validation, Agent discovery, and a minimum runtime loop.",
+    "progressCurrentTitle": "V1.5 release hardening is implemented",
+    "progressCurrentBody": "The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, and release documentation.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Implement eva config validate / inspect / dump-effective.",
-      "Wire config/agents/<agent-id>/ into Agent discovery and registration.",
-      "Prove the minimum Ingress -> EventBus -> Scheduler -> Lua Agent -> Rust Tool loop."
+      "Add signed release artifacts, provenance, and cross-platform installers.",
+      "Move destructive restore, release pointer, and supervisor activation paths behind explicit apply gates.",
+      "Replace in-memory provider/runtime diagnostics with durable stores and real provider process management."
     ],
     "featuredBlogEyebrow": "Recommended reading",
     "featuredBlogTitle": "Latest design notes from the blog",
@@ -69,22 +69,22 @@
         "description": "System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, docs, configuration, and module partitioning are in place."
       },
       {
-        "status": "current",
-        "badge": "Now",
-        "label": "Workspace scaffold and configuration samples",
-        "description": "The Rust workspace, crate boundaries, root CLI shim, configuration tree, schemas, sample Agents, and flat Agent layout are now in place."
+        "status": "complete",
+        "badge": "Done",
+        "label": "Runnable V1.0 runtime and task diagnostics",
+        "description": "The in-memory basic loop, CLI quickstart, local task status/log/cancel diagnostics, and core CI checks are implemented."
       },
       {
-        "status": "next",
-        "badge": "Next",
-        "label": "Configuration validation and discovery loop",
-        "description": "Implement configuration loading, schema validation, policy validation, Agent/Adapter discovery, and inspectable effective config."
+        "status": "current",
+        "badge": "Now",
+        "label": "V1.1 to V1.5 controlled capability and release gates",
+        "description": "External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, and release hardening commands are implemented."
       },
       {
         "status": "later",
         "badge": "Later",
-        "label": "Runtime loop and module implementation",
-        "description": "Prove Ingress -> EventBus -> Scheduler -> Lua Agent -> Rust Tool, then fill in modules one slice at a time."
+        "label": "Signed artifacts, installers, and real apply paths",
+        "description": "Future releases add provider process execution, durable stores, destructive apply gates, signed artifacts, and cross-platform installation."
       }
     ],
     "architectureEyebrow": "Architecture",
@@ -137,6 +137,11 @@
         "id": "idea-plugin-toolchain",
         "title": "IDEA Plugin Toolchain",
         "description": "Developer tooling requirements for project indexing, Lua Agent editing, Runtime Bridge validation, dry runs, traces, and policy diagnostics."
+      },
+      {
+        "id": "v1.5-release-hardening",
+        "title": "V1.5 Release Hardening",
+        "description": "Executable release readiness, security, performance, migration, and compatibility gates for the source release."
       }
     ]
   },
@@ -300,7 +305,7 @@
   "feedback": {
     "eyebrow": "Feedback",
     "title": "Feedback and suggestions",
-    "body": "Send documentation, architecture, or use-case feedback by email. The repository is still in the design-spec stage, so clear constraints and missing contracts are especially useful.",
+    "body": "Send documentation, architecture, release-gate, compatibility, or use-case feedback by email. Eva-CLI is at the V1.5 source-release checkpoint, so concrete reports about command output, docs, migration gaps, and future apply-path contracts are especially useful.",
     "contactLabel": "Contact email",
     "categoryLabel": "Feedback type",
     "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],

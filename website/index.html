@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Eva-CLI | Multi-Agent Runtime</title>
-    <meta name="description" content="Eva-CLI is an open-source CLI architecture for hot-reloadable multi-Agent runtimes, combining a Rust core, Lua capability layer, Topic EventBus, controlled memory and knowledge services, and dynamic adapters.">
+    <meta name="description" content="Eva-CLI is an open-source V1.5 source-release CLI for controlled multi-Agent runtimes, combining a Rust boundary, Lua capability layer, Topic EventBus, memory and knowledge context, adapters, hardware plans, and release gates.">
     <meta name="author" content="Yetmos">
     <meta property="og:title" content="Eva-CLI | Multi-Agent Runtime">
-    <meta property="og:description" content="Eva-CLI is an open-source CLI architecture for hot-reloadable multi-Agent runtimes, combining a Rust core, Lua capability layer, Topic EventBus, controlled memory and knowledge services, and dynamic adapters.">
+    <meta property="og:description" content="Eva-CLI is an open-source V1.5 source-release CLI for controlled multi-Agent runtimes, combining a Rust boundary, Lua capability layer, Topic EventBus, memory and knowledge context, adapters, hardware plans, and release gates.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://www.eva-cli.com/">
     <meta name="twitter:card" content="summary">
@@ -84,7 +84,7 @@
               <span>Routes CLI, MCP, HTTP, skills, and hardware through permissions.</span>
             </li>
           </ol>
-          <p class="stage-note">Architecture specs are organized for implementation planning and review.</p>
+          <p class="stage-note">V1.5 source-release checks are executable and kept behind controlled runtime boundaries.</p>
         </aside>
       </section>
 
@@ -92,15 +92,15 @@
         <div class="section-heading progress-heading">
           <div>
             <p class="eyebrow">Development progress</p>
-            <h2 id="development-progress-title">From architecture scaffold to runnable Runtime</h2>
+            <h2 id="development-progress-title">From architecture scaffold to V1.5 source-release gates</h2>
           </div>
           <a class="secondary-action progress-roadmap-link" href="docs/en/zero-to-one-roadmap.md">Open roadmap</a>
         </div>
         <div class="progress-layout">
           <article class="progress-current" aria-label="Current development stage">
             <span class="status-label">Current stage</span>
-            <h3>Workspace, configuration tree, and Agent layout are in place</h3>
-            <p>The repository now has a compileable Rust workspace, configuration tree, JSON Schemas, sample Agents, Adapters, policies, routes, and a flat one-Agent-one-directory layout. Next practical work is configuration validation, Agent discovery, and a minimum runtime loop.</p>
+            <h3>V1.5 release hardening is implemented</h3>
+            <p>The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, and release documentation.</p>
           </article>
           <ol class="progress-timeline" aria-label="Release progress stages">
             <li class="progress-stage progress-stage-complete">
@@ -110,25 +110,25 @@
                 <p>System boundaries, runtime model, adapters, memory, discovery, hardware, recovery, website, docs, configuration, and module partitioning are in place.</p>
               </div>
             </li>
+            <li class="progress-stage progress-stage-complete">
+              <span class="progress-marker">Done</span>
+              <div>
+                <strong>Runnable V1.0 runtime and task diagnostics</strong>
+                <p>The in-memory basic loop, CLI quickstart, local task status/log/cancel diagnostics, and core CI checks are implemented.</p>
+              </div>
+            </li>
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">Now</span>
               <div>
-                <strong>Workspace scaffold and configuration samples</strong>
-                <p>The Rust workspace, crate boundaries, root CLI shim, configuration tree, schemas, sample Agents, and flat Agent layout are now in place.</p>
-              </div>
-            </li>
-            <li class="progress-stage progress-stage-next">
-              <span class="progress-marker">Next</span>
-              <div>
-                <strong>Configuration validation and discovery loop</strong>
-                <p>Implement configuration loading, schema validation, policy validation, Agent/Adapter discovery, and inspectable effective config.</p>
+                <strong>V1.1 to V1.5 controlled capability and release gates</strong>
+                <p>External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, and release hardening commands are implemented.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
               <span class="progress-marker">Later</span>
               <div>
-                <strong>Runtime loop and module implementation</strong>
-                <p>Prove Ingress -&gt; EventBus -&gt; Scheduler -&gt; Lua Agent -&gt; Rust Tool, then fill in modules one slice at a time.</p>
+                <strong>Signed artifacts, installers, and real apply paths</strong>
+                <p>Future releases add provider process execution, durable stores, destructive apply gates, signed artifacts, and cross-platform installation.</p>
               </div>
             </li>
           </ol>
@@ -136,9 +136,9 @@
         <div class="progress-next">
           <strong>Next implementation work</strong>
           <ul>
-            <li>Implement eva config validate / inspect / dump-effective.</li>
-            <li>Wire config/agents/&lt;agent-id&gt;/ into Agent discovery and registration.</li>
-            <li>Prove the minimum Ingress -&gt; EventBus -&gt; Scheduler -&gt; Lua Agent -&gt; Rust Tool loop.</li>
+            <li>Add signed release artifacts, provenance, and cross-platform installers.</li>
+            <li>Move destructive restore, release pointer, and supervisor activation paths behind explicit apply gates.</li>
+            <li>Replace in-memory provider/runtime diagnostics with durable stores and real provider process management.</li>
           </ul>
         </div>
       </section>
@@ -235,6 +235,10 @@
             <span>IDEA Plugin Toolchain</span>
             <small>Developer tooling requirements for project indexing, Lua Agent editing, Runtime Bridge validation, dry runs, traces, and policy diagnostics.</small>
           </a>
+          <a class="doc-link" href="docs/en/v1.5-release-hardening.md">
+            <span>V1.5 Release Hardening</span>
+            <small>Executable release readiness, security, performance, migration, and compatibility gates for the source release.</small>
+          </a>
         </div>
       </section>
 
@@ -270,7 +274,7 @@
         <div class="feedback-copy">
           <p class="eyebrow">Feedback</p>
           <h2 id="feedback-title">Feedback and suggestions</h2>
-          <p class="section-copy">Send documentation, architecture, or use-case feedback by email. The repository is still in the design-spec stage, so clear constraints and missing contracts are especially useful.</p>
+          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, or use-case feedback by email. Eva-CLI is at the V1.5 source-release checkpoint, so concrete reports about command output, docs, migration gaps, and future apply-path contracts are especially useful.</p>
           <p class="contact-line">
             <span>Contact email</span>
             <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>

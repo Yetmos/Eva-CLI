@@ -1,6 +1,6 @@
-<p>Eva-CLI's architecture is intentionally strict about authority: Rust owns validation, permissions, process lifecycle, audit, and side effects, while Lua Agents express hot-reloadable behavior. The command-line tool should expose that architecture without leaking those powers directly to scripts.</p>
+<p>Eva-CLI's architecture is intentionally strict about authority: Rust owns validation, permissions, process lifecycle, audit, and side effects, while Lua Agents express hot-reloadable behavior. The command-line tool exposes that architecture without leaking those powers directly to scripts. At the V1.5 source-release checkpoint, this surface is now executable for diagnostics, release gates, and plan-first operations.</p>
 
-<p>The target <code>eva</code> command should feel small at the entry point and disciplined under automation. A new user needs <code>eva init</code>, <code>eva doctor</code>, and <code>eva run</code>. A CI job needs JSON, deterministic exit codes, dry-run planning, and trace IDs. Operators need recovery commands that produce evidence instead of hidden mutation.</p>
+<p>The target <code>eva</code> command should feel small at the entry point and disciplined under automation. A new user needs version, doctor, validation, inspect, and a first run path. A CI job needs JSON, deterministic exit codes, dry-run planning, and trace IDs. Operators need recovery and release commands that produce evidence instead of hidden mutation.</p>
 
 <figure class="blog-figure">
   <img src="../../docs/assets/eva-cli-command-feature-map.svg" alt="Eva-CLI command feature map showing entry commands, operator controls, safety gates, runtime commands, extension commands, recovery commands, and evidence output.">
@@ -15,38 +15,43 @@
 <p>Global flags such as <code>--workspace</code>, <code>--profile</code>, <code>--output json</code>, <code>--dry-run</code>, <code>--yes</code>, <code>--locale</code>, and <code>--trace</code> should behave consistently across command groups. That consistency matters more than adding many narrow shortcuts early.</p>
 
 <h2>Command groups</h2>
-<p>The first usable version does not need every future capability. It needs the groups that prove the runtime loop, the configuration boundary, and the operator evidence model.</p>
+<p>The first usable version does not need every future capability. V1.5 now proves the runtime loop, configuration boundary, external capability diagnostics, recovery evidence, and release-hardening gates while leaving real provider execution and destructive apply paths for later releases.</p>
 
 <table class="blog-table">
   <tr>
     <th>Group</th>
     <th>Example commands</th>
-    <th>Priority</th>
+    <th>V1.5 status</th>
   </tr>
   <tr>
     <td>Workspace</td>
-    <td><code>init</code>, <code>doctor</code>, <code>config validate</code></td>
-    <td>P0</td>
+    <td><code>version</code>, <code>doctor</code>, <code>config validate</code>, <code>inspect</code>; target <code>init</code></td>
+    <td>Diagnostics implemented; workspace creation remains a target command.</td>
   </tr>
   <tr>
     <td>Task execution</td>
-    <td><code>run</code>, <code>task status</code>, <code>task cancel</code></td>
-    <td>P0</td>
+    <td><code>run --example basic</code>, <code>task status</code>, <code>task logs</code>, <code>task cancel</code></td>
+    <td>Implemented for the in-memory basic loop and local task reports.</td>
   </tr>
   <tr>
     <td>Agent runtime</td>
     <td><code>agent list</code>, <code>agent inspect</code>, <code>agent reload</code></td>
-    <td>P0</td>
+    <td>Target control surface; V1.5 exposes Agent data through config and inspect diagnostics.</td>
   </tr>
   <tr>
     <td>Extensions</td>
-    <td><code>skill list</code>, <code>mcp probe</code>, <code>adapter probe</code></td>
-    <td>P1</td>
+    <td><code>adapter list/probe</code>, <code>mcp list/probe</code>, <code>skill list/run</code>, <code>discovery scan</code></td>
+    <td>Implemented as controlled envelopes and side-effect-free diagnostics.</td>
+  </tr>
+  <tr>
+    <td>Hardware</td>
+    <td><code>hardware list</code>, <code>hardware probe</code>, <code>hardware bind</code></td>
+    <td>Implemented as plan-first diagnostics without raw I/O.</td>
   </tr>
   <tr>
     <td>Operations</td>
-    <td><code>snapshot create</code>, <code>backup create</code>, <code>restore plan</code></td>
-    <td>P1</td>
+    <td><code>backup create</code>, <code>snapshot create</code>, <code>restore plan</code>, <code>upgrade check</code>, <code>release check/security/perf/migration</code></td>
+    <td>Implemented as non-destructive evidence and release gates.</td>
   </tr>
 </table>
 
@@ -87,6 +92,6 @@
 </table>
 
 <h2>Implementation path</h2>
-<p>The lowest-risk path is to ship the CLI in layers. First, create and validate a workspace. Then submit a task into the minimum EventBus and Scheduler loop. After that, expose Agent inspection and safe reload. Extension commands should begin as list and probe surfaces before write-capable invocation becomes available. Recovery commands should start with plans and verification before apply-style commands exist.</p>
+<p>The lowest-risk path is to ship the CLI in layers. Eva-CLI has followed that path through V1.5: validation and inspect came first, then the basic runtime loop, then external capability diagnostics, memory context, hardware plans, backup and lifecycle checks, and finally release-hardening gates. The next layer is not more unchecked command surface; it is signed artifacts, durable state, real provider supervision, and explicit apply gates for high-risk operations.</p>
 
 <p>The full technical design is available in <a href="../../docs/en/command-line-tool-feature-design.md">Command-Line Tool Feature Design</a>.</p>

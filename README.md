@@ -260,8 +260,9 @@ Recommended reading order for the English default documentation:
     understand why trusted backup, migration, release snapshot, restore, and
     rollback execution belongs to the Runtime while Agents only request and
     explain operations.
-12. [Design Risk Review](docs/en/design-risk-review.md): review design-only
-    risks, semantic gaps, and areas that still need stronger specification.
+12. [Design Risk Review](docs/en/design-risk-review.md): review historical
+    design risks, semantic gaps, and areas that still need stronger executable
+    contracts.
 13. [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md): follow the staged
     implementation path from architecture documents to module layout,
     contracts, a minimum runtime loop, and release readiness.
@@ -316,24 +317,26 @@ Core boundaries:
   commands, state backends, and similar boundary changes require runtime rebuild
   or blue-green switching.
 
-## Current Gaps
+## Remaining V1.x Gaps
 
-The current `docs/` directory is an architecture proposal set, not a final
-implementation specification. Before implementation, the following contracts
-still need to become machine-verifiable:
+V1.5 is a source-release and release-hardening checkpoint, not a packaged
+runtime distribution. The main remaining work is now narrower and more
+implementation-focused:
 
-- JSON Schemas for `AgentManifest`, `AdapterManifest`, `CapabilityManifest`,
-  MCP policy, hardware policy, and sandbox policy.
-- Lua binding APIs for `ctx.tools` and `ctx.host`.
-- Capability naming registry and conflict-handling rules.
-- MCP server authentication, session isolation, and per-client rate limits.
-- Audit fields and rollback guidance for adapters, Skills, and Lua capabilities
-  that write into a workspace.
-- Verifiable schemas for external hardware manifests, including device matching,
-  logical binding, generation, and raw IO policy.
+- Real provider execution for stdio/http/MCP processes, including authentication,
+  session isolation, timeout handling, and rate limits.
+- Durable EventBus, Scheduler, task, audit, and artifact stores beyond the
+  current in-memory and local diagnostic surfaces.
+- Real Lua VM execution, generation swaps, and stable `ctx.tools` / `ctx.host`
+  bindings behind the Rust runtime boundary.
+- Destructive apply paths such as `restore apply`, release pointer mutation,
+  supervisor activation, and blue-green runtime process handoff.
+- Signed release artifacts, cross-platform installers, and artifact provenance.
+- Deeper machine-verifiable schemas and policy checks as high-risk apply paths
+  move from plan-only diagnostics to execution.
 
-The design already covers the target architecture, but Bot behavior semantics,
-state consistency, permission merging, capability registration, Lua bindings,
-schemas, error recovery, and verification invariants still need to be hardened
-into executable specifications. See [Design Risk Review](docs/en/design-risk-review.md)
-for details.
+The current documentation now distinguishes implemented diagnostics from target
+apply paths. See [Design Risk Review](docs/en/design-risk-review.md) for the
+original architectural risk inventory, and
+[V1.5 Compatibility Policy](docs/en/v1.5-compatibility-policy.md) for the
+contracts held stable by this source release.

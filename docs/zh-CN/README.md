@@ -4,7 +4,11 @@
 > Content authority: current detailed architecture source
 > English default entry: [../en/README.md](../en/README.md)
 
-这里维护 Eva-CLI 当前最完整的中文架构详案入口。英文文档位于
+这里维护 Eva-CLI 当前最完整的中文架构详案入口。项目已经推进到
+V1.5 源码发布检查点：当前仓库包含可编译 Rust workspace、可执行 CLI
+表面、配置校验、V1.0 in-memory basic runtime、本地 task 诊断、V1.1
+外部能力诊断、V1.2 记忆/知识上下文、V1.3 硬件绑定计划、V1.4
+备份/生命周期诊断，以及 V1.5 发布加固检查。英文文档位于
 [../en/README.md](../en/README.md)，当前承担默认公开入口和稳定英文 slug 的职责；
 在英文详案补齐之前，不能用英文摘要覆盖本目录中的详细架构规格。
 

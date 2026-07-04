@@ -4,18 +4,37 @@
 > Translation: [简体中文](../zh-CN/Eva-CLI命令行工具功能设计文档.md)
 > Current detail authority: Simplified Chinese
 
-Updated: 2026-06-28
+Updated: 2026-07-04
 
 ## Purpose
 
-This document defines the target command-line feature set for Eva-CLI before the
-first runnable implementation is finalized. It describes the command groups,
-operator experience, safety gates, output contracts, and release priorities that
-turn the existing architecture documents into a usable CLI surface.
+This document defines both the target command-line feature set and the current
+V1.5 source-release command surface for Eva-CLI. It describes the command
+groups, operator experience, safety gates, output contracts, release priorities,
+and the implemented diagnostic commands that turn the architecture documents
+into a usable CLI surface.
 
-Eva-CLI is still in the architecture and specification stage. The commands below
-are product and implementation targets, not a claim that the executable already
-implements them.
+Eva-CLI now implements the V1.5 release-hardening CLI checkpoint. Commands that
+mutate external systems, start real providers, perform destructive restore, or
+activate long-lived supervisor processes remain future apply paths unless they
+are explicitly listed as implemented diagnostics below.
+
+## Current V1.5 Implementation Snapshot
+
+The current executable supports:
+
+- `version`, `doctor`, `config validate`, and `inspect`.
+- `run --example basic` plus local `.eva/tasks` diagnostics through
+  `task status`, `task logs`, and `task cancel`.
+- Side-effect-free `adapter list/probe`, `mcp list/probe`, `skill list/run`,
+  and `discovery scan` diagnostics.
+- Request-scoped `memory context` assembly for private memory, global memory,
+  knowledge, and Lua context snapshots.
+- Plan-first `hardware list/probe/bind` diagnostics that do not open raw I/O.
+- `backup create`, `snapshot create`, `restore plan`, and `upgrade check`
+  diagnostics backed by in-memory artifacts and lifecycle plans.
+- `release check`, `release security`, `release perf`, and `release migration`
+  gates for V1.5 release readiness, compatibility, and migration evidence.
 
 ## Product Position
 
@@ -65,16 +84,16 @@ explicitly rejects them:
 
 ## Command Groups
 
-| Group | Commands | 1.0 Priority | Responsibility |
+| Group | Commands | V1.5 Status | Responsibility |
 | --- | --- | --- | --- |
-| Workspace | `init`, `doctor`, `config validate`, `config explain` | P0 | Create and validate the minimum project shape. |
-| Task execution | `run`, `task status`, `task cancel`, `task logs` | P0 | Submit work and inspect runtime progress. |
-| Agent runtime | `agent list`, `agent inspect`, `agent run`, `agent reload` | P0 | Manage internal Lua Agents through Scheduler and Runtime gates. |
-| Extensions | `skill list/run`, `mcp list/probe`, `adapter list/probe` | P1 | Inspect and invoke controlled external capability surfaces. |
-| Memory and events | `memory query/export`, `event tail/replay` | P1 | Inspect controlled context and event evidence. |
-| Operations | `snapshot create/verify`, `backup create`, `restore plan`, `upgrade check` | P1 | Provide auditable recovery and release evidence. |
-| Hardware | `hardware list/probe/bind` | P2 | Manage devices only through HardwareAdapter policy. |
-| Development | `dev harness`, `dev fixture`, `schema export` | P2 | Help contributors test contracts and runtime flows. |
+| Workspace | `version`, `doctor`, `config validate`, `inspect`; target `init`, `config explain` | Implemented diagnostics; `init` and `config explain` remain target commands | Create and validate the minimum project shape. |
+| Task execution | `run --example basic`, `task status`, `task cancel`, `task logs` | Implemented for the in-memory V1.0 basic loop | Submit work and inspect runtime progress. |
+| Agent runtime | Target `agent list`, `agent inspect`, `agent run`, `agent reload` | Later apply/control surface; V1.5 exposes Agent data through config and inspect diagnostics | Manage internal Lua Agents through Scheduler and Runtime gates. |
+| Extensions | `skill list/run`, `mcp list/probe`, `adapter list/probe`, `discovery scan` | Implemented as controlled diagnostics and envelopes | Inspect and invoke controlled external capability surfaces. |
+| Memory and events | `memory context`; target `memory query/export`, `event tail/replay` | Context assembly implemented; general event/memory browsing remains later scope | Inspect controlled context and event evidence. |
+| Operations | `backup create`, `snapshot create`, `restore plan`, `upgrade check`, `release check/security/perf/migration` | Implemented as plan-first and non-destructive release diagnostics | Provide auditable recovery and release evidence. |
+| Hardware | `hardware list/probe/bind` | Implemented as plan-first diagnostics without raw I/O | Manage devices only through HardwareAdapter policy. |
+| Development | Target `dev harness`, `dev fixture`, `schema export` | Later contributor tooling | Help contributors test contracts and runtime flows. |
 
 ## P0 Command Details
 
@@ -200,6 +219,12 @@ website and documentation:
 | Phase 3 | `agent list/inspect/run/reload`. | Lua Agent generation can be validated and swapped safely. |
 | Phase 4 | `skill`, `mcp`, `adapter` inspection and probe commands. | External capability discovery is visible but policy-gated. |
 | Phase 5 | `snapshot`, `backup`, `restore plan`, `event replay`. | Recovery operations produce verifiable artifacts. |
+
+The V1.5 source release extends these phases with controlled external capability
+diagnostics, memory context assembly, hardware binding plans, lifecycle checks,
+and release-hardening gates. Real provider process execution, destructive
+restore apply, durable runtime supervision, signed artifacts, and installers are
+intentionally outside the V1.5 CLI scope.
 
 ## Open Questions
 

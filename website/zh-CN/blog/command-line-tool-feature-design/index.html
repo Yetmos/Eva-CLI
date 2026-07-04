@@ -59,9 +59,9 @@
           </div>
         </header>
         <div class="blog-content">
-<p>Eva-CLI 的架构刻意把权力边界放在 Rust：校验、权限、进程生命周期、审计和副作用都由 Runtime 托管，Lua Agent 只表达可热更新业务行为。命令行工具要把这套架构暴露给用户，但不能让脚本绕过这些边界。</p>
+<p>Eva-CLI 的架构刻意把权力边界放在 Rust：校验、权限、进程生命周期、审计和副作用都由 Runtime 托管，Lua Agent 只表达可热更新业务行为。命令行工具要把这套架构暴露给用户，但不能让脚本绕过这些边界。到了 V1.5 源码发布检查点，这个表面已经可以执行诊断、发布门禁和 plan-first 运维操作。</p>
 
-<p>目标 <code>eva</code> 命令应该入口足够小，自动化语义足够稳定。新用户需要 <code>eva init</code>、<code>eva doctor</code> 和 <code>eva run</code>；CI 需要 JSON、确定性 exit code、dry-run 计划和 trace ID；运维场景需要能产出证据的恢复命令，而不是隐藏变更。</p>
+<p>目标 <code>eva</code> 命令应该入口足够小，自动化语义足够稳定。新用户需要版本、doctor、校验、inspect 和第一条运行路径；CI 需要 JSON、确定性 exit code、dry-run 计划和 trace ID；运维场景需要能产出证据的恢复与发布命令，而不是隐藏变更。</p>
 
 <figure class="blog-figure">
   <img src="../../../docs/assets/eva-cli-command-feature-map.zh-CN.svg" alt="Eva-CLI 命令功能地图，展示入口命令、操作控制、安全闸口、运行时命令、扩展能力命令、恢复运维命令和证据输出。">
@@ -76,38 +76,43 @@
 <p><code>--workspace</code>、<code>--profile</code>、<code>--output json</code>、<code>--dry-run</code>、<code>--yes</code>、<code>--locale</code> 和 <code>--trace</code> 这类全局参数应在命令组之间保持一致。早期实现中，这种一致性比添加大量窄捷径更重要。</p>
 
 <h2>命令分组</h2>
-<p>第一版可用 CLI 不需要覆盖所有未来能力。它需要先证明 Runtime 闭环、配置边界和运维证据模型。</p>
+<p>第一版可用 CLI 不需要覆盖所有未来能力。V1.5 已经证明 Runtime 闭环、配置边界、外部能力诊断、恢复证据和发布加固门禁，同时把真实 provider 执行和破坏性 apply 路径留给后续版本。</p>
 
 <table class="blog-table">
   <tr>
     <th>命令组</th>
     <th>示例命令</th>
-    <th>优先级</th>
+    <th>V1.5 状态</th>
   </tr>
   <tr>
     <td>Workspace</td>
-    <td><code>init</code>、<code>doctor</code>、<code>config validate</code></td>
-    <td>P0</td>
+    <td><code>version</code>、<code>doctor</code>、<code>config validate</code>、<code>inspect</code>；目标命令 <code>init</code></td>
+    <td>诊断面已实现；workspace 创建仍是目标命令。</td>
   </tr>
   <tr>
     <td>任务执行</td>
-    <td><code>run</code>、<code>task status</code>、<code>task cancel</code></td>
-    <td>P0</td>
+    <td><code>run --example basic</code>、<code>task status</code>、<code>task logs</code>、<code>task cancel</code></td>
+    <td>已实现于 in-memory basic loop 和本地 task report。</td>
   </tr>
   <tr>
     <td>Agent Runtime</td>
     <td><code>agent list</code>、<code>agent inspect</code>、<code>agent reload</code></td>
-    <td>P0</td>
+    <td>目标控制面；V1.5 通过 config 与 inspect 诊断暴露 Agent 信息。</td>
   </tr>
   <tr>
     <td>扩展能力</td>
-    <td><code>skill list</code>、<code>mcp probe</code>、<code>adapter probe</code></td>
-    <td>P1</td>
+    <td><code>adapter list/probe</code>、<code>mcp list/probe</code>、<code>skill list/run</code>、<code>discovery scan</code></td>
+    <td>已实现为受控 envelope 和无副作用诊断。</td>
+  </tr>
+  <tr>
+    <td>硬件</td>
+    <td><code>hardware list</code>、<code>hardware probe</code>、<code>hardware bind</code></td>
+    <td>已实现为不打开 raw I/O 的 plan-first 诊断。</td>
   </tr>
   <tr>
     <td>运维恢复</td>
-    <td><code>snapshot create</code>、<code>backup create</code>、<code>restore plan</code></td>
-    <td>P1</td>
+    <td><code>backup create</code>、<code>snapshot create</code>、<code>restore plan</code>、<code>upgrade check</code>、<code>release check/security/perf/migration</code></td>
+    <td>已实现为非破坏性证据和发布门禁。</td>
   </tr>
 </table>
 
@@ -148,7 +153,7 @@
 </table>
 
 <h2>实现路径</h2>
-<p>风险最低的路径是分层交付 CLI。先创建和校验 workspace，再把任务提交到最小 EventBus 与 Scheduler 闭环；之后暴露 Agent 检查和安全 reload。扩展命令应先提供 list 与 probe，再开放具备写能力的调用。恢复命令应先支持 plan 和 verify，再提供 apply 类命令。</p>
+<p>风险最低的路径是分层交付 CLI。Eva-CLI 到 V1.5 已经按这个路径推进：先有校验和 inspect，再有 basic runtime loop，然后是外部能力诊断、记忆上下文、硬件计划、备份与生命周期检查，最后补齐发布加固门禁。下一层不是继续扩大不受控命令面，而是签名 artifact、durable state、真实 provider supervision，以及高风险操作的显式 apply gate。</p>
 
 <p>完整技术方案见 <a href="../../../docs/zh-CN/Eva-CLI命令行工具功能设计文档.md">Eva-CLI 命令行工具功能设计文档</a>。</p>
 

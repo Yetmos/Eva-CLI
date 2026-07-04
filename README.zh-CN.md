@@ -121,15 +121,15 @@ Eva-CLI/
 - 外接硬件通过 `hardware` transport 和 HardwareAdapter 接入；Lua 不直接访问设备句柄、系统设备路径或 raw IO。
 - Hot reload 默认只覆盖脚本、manifest 中可热加载字段、路由和注册表 generation；权限扩大、transport、MCP command、状态 backend 等需要重建 runtime 或 blue-green。
 
-## 当前主要缺口
+## V1.x 剩余缺口
 
-当前 `docs/` 是架构方案集合，还不是最终实现规范。实现前仍需要把以下内容落成机器可校验契约：
+V1.5 是源码发布与发布加固检查点，不是已经带安装包的完整 runtime 发行版。后续工作已经从“是否能落地”收窄为更具体的执行边界：
 
-- `AgentManifest`、`AdapterManifest`、`CapabilityManifest`、MCP policy、hardware policy 和 sandbox policy 的 JSON Schema。
-- `ctx.tools` 与 `ctx.host` 的 Lua binding API。
-- capability 命名注册表和冲突处理规则。
-- MCP server 认证、会话隔离和 per-client rate limit。
-- 写 workspace 的 Adapter、Skill、Lua capability 的审计字段与回滚建议。
-- 外接硬件 manifest 的设备匹配、logical binding、generation 和 raw IO policy 需要落成可校验 schema。
+- stdio/http/MCP 等真实 provider 进程执行，包括认证、会话隔离、超时和限流。
+- Durable EventBus、Scheduler、task、audit 和 artifact store，替代当前 in-memory 与本地诊断表面。
+- 真实 Lua VM 执行、generation swap，以及稳定的 `ctx.tools` / `ctx.host` 绑定。
+- `restore apply`、release pointer mutation、Supervisor 激活、blue-green Runtime 进程切换等破坏性 apply 路径。
+- 签名 release artifact、跨平台安装包和 artifact provenance。
+- 当高风险 apply 路径从 plan-only 诊断进入真实执行时，需要更深的机器可校验 schema 与 policy 检查。
 
-方案已经覆盖目标架构，但仍需把 Bot 行为语义、状态一致性、权限合并、capability 注册、Lua binding、schema、错误恢复和验证不变量继续固化为可执行规格。详细风险见 [方案设计风险评审](docs/zh-CN/方案设计风险评审.md)。
+当前文档已经区分“已实现诊断面”和“目标 apply 路径”。原始架构风险清单见 [方案设计风险评审](docs/zh-CN/方案设计风险评审.md)，V1.5 源码发布保持稳定的契约见 [V1.5 兼容性策略](docs/zh-CN/V1.5兼容性策略.md)。

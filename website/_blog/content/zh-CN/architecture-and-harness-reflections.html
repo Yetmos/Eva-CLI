@@ -1,6 +1,6 @@
-<p>Eva-CLI 目前仍处于架构与规格整理阶段，所以最关键的工程问题不是能列出多少模块，而是这些架构决策如何变成可执行证据。当前设计已经明确：Rust 托管权限边界，Lua 承载可热更新业务行为，Topic event 串联工作，AdapterRegistry 控制外部能力，记忆、知识、Release Snapshot 和恢复能力保留在 Runtime service 内。Harness 架构应该成为这些判断和第一条可运行闭环之间的桥。</p>
+<p>Eva-CLI 已经推进到 V1.5 源码发布检查点，所以最关键的工程问题不再是能列出多少模块，而是这些架构决策如何在项目从诊断面走向真实 apply 路径时持续产生可执行证据。当前实现已经证明：Rust 托管权限边界，面向 Lua 的行为保持在受控边界内，Topic event 串联工作，AdapterRegistry 控制外部能力，记忆、知识、Release Snapshot 和恢复能力保留在 Runtime service 内。Harness 架构应该成为这些判断和后续 durable runtime 闭环之间的桥。</p>
 
-<p class="blog-note">本文把 harness 作为建议中的验证与执行 fixture 层来讨论，并不表示 Eva-CLI 已经交付该模块。它的重点是：在平台面铺得很大之前，先定义项目如何测试自己的架构。</p>
+<p class="blog-note">本文把 harness 作为建议中的验证与执行 fixture 层来讨论，并不表示 Eva-CLI 已经交付该模块。它的重点是：在真实 provider、破坏性 apply 路径和 durable process supervision 让平台面变得更大之前，先定义项目如何持续测试自己的架构。</p>
 
 <figure class="blog-figure">
   <img src="../../../assets/eva-architecture-harness-boundary.zh-CN.svg" alt="Eva-CLI 产品 Runtime 架构与 Harness 架构对比图，Harness 负责驱动场景、替换外部边界、观察证据并验证契约。">
