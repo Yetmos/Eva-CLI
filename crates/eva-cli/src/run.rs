@@ -24,6 +24,11 @@ use eva_memory::{
     InMemoryMemoryService, KnowledgeId, KnowledgeItem, KnowledgeSource, MemoryWrite,
 };
 use eva_observability::{SpanId, TraceFields};
+use eva_release::{
+    CompatibilityPolicy, MigrationGuide, MigrationStep, PerformanceBaselineReport,
+    PerformanceBudget, PlatformReadiness, ReleaseGate, ReleaseHardeningService,
+    ReleaseReadinessReport, SecurityFinding, SecurityReviewReport, StabilityScenario,
+};
 use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder, TaskLogEntry};
 use eva_storage::InMemoryArtifactStore;
 use std::env;
@@ -44,9 +49,9 @@ const EXIT_RUNTIME_UNAVAILABLE: i32 = 4;
 const EXIT_EXTERNAL_UNAVAILABLE: i32 = 5;
 const EXIT_USAGE: i32 = 64;
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
-const RELEASE_LABEL: &str = "V1.4 backup and lifecycle planning";
+const RELEASE_LABEL: &str = "V1.5 release hardening";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -63,6 +68,10 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "snapshot create",
     "restore plan",
     "upgrade check",
+    "release check",
+    "release security",
+    "release perf",
+    "release migration",
 ];
 
 /// Process entry point for the root binary shim.
@@ -200,6 +209,7 @@ where
         Command::Snapshot(command) => execute_snapshot(command, stdout, stderr),
         Command::Restore(command) => execute_restore(command, stdout, stderr),
         Command::Upgrade(command) => execute_upgrade(command, stdout, stderr),
+        Command::Release(command) => execute_release(command, stdout, stderr),
     }
 }
 
@@ -222,6 +232,7 @@ enum Command {
     Snapshot(SnapshotCommand),
     Restore(RestoreCommand),
     Upgrade(UpgradeCommand),
+    Release(ReleaseCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,6 +312,14 @@ enum RestoreCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum UpgradeCommand {
     Check(UpgradeCheckOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReleaseCommand {
+    Check(ReleaseCheckOptions),
+    Security(CommonOptions),
+    Perf(CommonOptions),
+    Migration(ReleaseMigrationOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,6 +413,19 @@ struct UpgradeCheckOptions {
     to_generation: String,
     from_release: String,
     to_release: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleaseCheckOptions {
+    common: CommonOptions,
+    target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleaseMigrationOptions {
+    common: CommonOptions,
+    from_version: String,
+    to_version: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,6 +530,7 @@ where
         "snapshot" => parse_snapshot_command(&args[1..]),
         "restore" => parse_restore_command(&args[1..]),
         "upgrade" => parse_upgrade_command(&args[1..]),
+        "release" => parse_release_command(&args[1..]),
         unknown => Err(EvaError::unsupported("unknown command").with_context("command", unknown)),
     }
 }
@@ -1152,6 +1185,84 @@ fn parse_upgrade_check_options(args: &[String]) -> Result<UpgradeCheckOptions, E
     })
 }
 
+fn parse_release_command(args: &[String]) -> Result<Command, EvaError> {
+    let (subcommand, rest) = args
+        .split_first()
+        .ok_or_else(|| EvaError::invalid_argument("missing release subcommand"))?;
+    match subcommand.as_str() {
+        "check" => Ok(Command::Release(ReleaseCommand::Check(
+            parse_release_check_options(rest)?,
+        ))),
+        "security" => Ok(Command::Release(ReleaseCommand::Security(
+            parse_common_options(rest)?,
+        ))),
+        "perf" | "performance" => Ok(Command::Release(ReleaseCommand::Perf(
+            parse_common_options(rest)?,
+        ))),
+        "migration" => Ok(Command::Release(ReleaseCommand::Migration(
+            parse_release_migration_options(rest)?,
+        ))),
+        value => {
+            Err(EvaError::unsupported("unknown release subcommand")
+                .with_context("subcommand", value))
+        }
+    }
+}
+
+fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut target = "all".to_owned();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--target" | "--platform" => {
+                index += 1;
+                target = required_option(args, index, "release target option")?.clone();
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    if target.trim().is_empty() {
+        return Err(EvaError::invalid_argument("release target cannot be empty"));
+    }
+    Ok(ReleaseCheckOptions {
+        common: parse_common_options(&passthrough)?,
+        target,
+    })
+}
+
+fn parse_release_migration_options(args: &[String]) -> Result<ReleaseMigrationOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut from_version = "1.4.0".to_owned();
+    let mut to_version = "1.5.0".to_owned();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--from" | "--from-version" => {
+                index += 1;
+                from_version = required_option(args, index, "from version option")?.clone();
+            }
+            "--to" | "--to-version" => {
+                index += 1;
+                to_version = required_option(args, index, "to version option")?.clone();
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    if from_version.trim().is_empty() || to_version.trim().is_empty() {
+        return Err(EvaError::invalid_argument(
+            "release migration versions cannot be empty",
+        ));
+    }
+    Ok(ReleaseMigrationOptions {
+        common: parse_common_options(&passthrough)?,
+        from_version,
+        to_version,
+    })
+}
+
 fn parse_snapshot_role(value: &str) -> Result<SnapshotRole, EvaError> {
     match value {
         "pre_release" | "pre-release" | "pre" => Ok(SnapshotRole::PreRelease),
@@ -1712,6 +1823,76 @@ where
                     stderr,
                     options.common.output,
                     "upgrade.check",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+    }
+}
+
+fn execute_release<W, E>(
+    command: ReleaseCommand,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    let service = ReleaseHardeningService::v15();
+    match command {
+        ReleaseCommand::Check(options) => {
+            let trace = trace_for("cli.release.check");
+            match service.readiness(&options.target) {
+                Ok(report) => {
+                    write_release_check(stdout, options.common.output, &report, &trace)?;
+                    Ok(if report.blocking_count() == 0 {
+                        EXIT_OK
+                    } else {
+                        EXIT_CONFIG
+                    })
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "release.check",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+        ReleaseCommand::Security(options) => {
+            let trace = trace_for("cli.release.security");
+            let report = service.security_review();
+            write_release_security(stdout, options.output, &report, &trace)?;
+            Ok(if report.blocking_findings() == 0 {
+                EXIT_OK
+            } else {
+                EXIT_POLICY
+            })
+        }
+        ReleaseCommand::Perf(options) => {
+            let trace = trace_for("cli.release.perf");
+            let report = service.performance_baseline();
+            write_release_perf(stdout, options.output, &report, &trace)?;
+            Ok(if report.over_budget_count() == 0 {
+                EXIT_OK
+            } else {
+                EXIT_RUNTIME_UNAVAILABLE
+            })
+        }
+        ReleaseCommand::Migration(options) => {
+            let trace = trace_for("cli.release.migration");
+            match service.migration_guide(&options.from_version, &options.to_version) {
+                Ok(guide) => {
+                    write_release_migration(stdout, options.common.output, &guide, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "release.migration",
                     &error,
                     &trace,
                 ),
@@ -3278,6 +3459,118 @@ fn write_upgrade_check<W: Write>(
     }
 }
 
+fn write_release_check<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    report: &ReleaseReadinessReport,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Release readiness").map_err(write_error_kind)?;
+            writeln!(writer, "version: {}", report.version).map_err(write_error_kind)?;
+            writeln!(writer, "target: {}", report.target).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
+            writeln!(writer, "blocking_gates: {}", report.blocking_count())
+                .map_err(write_error_kind)?;
+            writeln!(writer, "warning_gates: {}", report.warning_count()).map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope("release.check", EXIT_OK, &release_check_json(report), trace)
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_release_security<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    report: &SecurityReviewReport,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Security review").map_err(write_error_kind)?;
+            writeln!(writer, "version: {}", report.version).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
+            writeln!(writer, "findings: {}", report.findings.len()).map_err(write_error_kind)?;
+            writeln!(writer, "blocking_findings: {}", report.blocking_findings())
+                .map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "release.security",
+                EXIT_OK,
+                &security_review_json(report),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_release_perf<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    report: &PerformanceBaselineReport,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Performance baseline").map_err(write_error_kind)?;
+            writeln!(writer, "version: {}", report.version).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
+            writeln!(writer, "budgets: {}", report.budgets.len()).map_err(write_error_kind)?;
+            writeln!(writer, "over_budget: {}", report.over_budget_count())
+                .map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "release.perf",
+                EXIT_OK,
+                &performance_baseline_json(report),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_release_migration<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    guide: &MigrationGuide,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Migration guide").map_err(write_error_kind)?;
+            writeln!(writer, "{} -> {}", guide.from_version, guide.to_version)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", guide.status).map_err(write_error_kind)?;
+            writeln!(writer, "breaking_changes: {}", guide.breaking_changes.len())
+                .map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "release.migration",
+                EXIT_OK,
+                &migration_guide_json(guide),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn adapter_list_json(runtime: &AdapterRuntime) -> String {
     let entries = runtime.list().into_iter().map(|handle| {
         format!(
@@ -3612,6 +3905,139 @@ fn migration_preflight_json(report: &MigrationPreflight) -> String {
         json_string(&report.status),
         json_array(report.warnings.iter().map(|warning| json_string(warning))),
         json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn release_check_json(report: &ReleaseReadinessReport) -> String {
+    format!(
+        "{{\"version\":{},\"status\":{},\"target\":{},\"blocking_gates\":{},\"warning_gates\":{},\"platforms\":{},\"stability\":{},\"gates\":{},\"audit\":{}}}",
+        json_string(&report.version),
+        json_string(&report.status),
+        json_string(&report.target),
+        report.blocking_count(),
+        report.warning_count(),
+        json_array(report.platforms.iter().map(platform_readiness_json)),
+        json_array(report.stability.iter().map(stability_scenario_json)),
+        json_array(report.gates.iter().map(release_gate_json)),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn platform_readiness_json(platform: &PlatformReadiness) -> String {
+    format!(
+        "{{\"os\":{},\"shell\":{},\"path_model\":{},\"status\":{},\"required_commands\":{},\"notes\":{}}}",
+        json_string(&platform.os),
+        json_string(&platform.shell),
+        json_string(&platform.path_model),
+        json_string(platform.status.as_str()),
+        json_array(platform.required_commands.iter().map(|command| json_string(command))),
+        json_array(platform.notes.iter().map(|note| json_string(note)))
+    )
+}
+
+fn stability_scenario_json(scenario: &StabilityScenario) -> String {
+    format!(
+        "{{\"id\":{},\"status\":{},\"scenario\":{},\"evidence\":{},\"recovery_contract\":{}}}",
+        json_string(&scenario.id),
+        json_string(scenario.status.as_str()),
+        json_string(&scenario.scenario),
+        json_array(scenario.evidence.iter().map(|entry| json_string(entry))),
+        json_string(&scenario.recovery_contract)
+    )
+}
+
+fn release_gate_json(gate: &ReleaseGate) -> String {
+    format!(
+        "{{\"id\":{},\"domain\":{},\"status\":{},\"required\":{},\"summary\":{},\"evidence\":{},\"remediation\":{}}}",
+        json_string(&gate.id),
+        json_string(&gate.domain),
+        json_string(gate.status.as_str()),
+        gate.required,
+        json_string(&gate.summary),
+        json_array(gate.evidence.iter().map(|entry| json_string(entry))),
+        json_array(gate.remediation.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn security_review_json(report: &SecurityReviewReport) -> String {
+    format!(
+        "{{\"version\":{},\"status\":{},\"blocking_findings\":{},\"findings\":{},\"audit\":{}}}",
+        json_string(&report.version),
+        json_string(&report.status),
+        report.blocking_findings(),
+        json_array(report.findings.iter().map(security_finding_json)),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn security_finding_json(finding: &SecurityFinding) -> String {
+    format!(
+        "{{\"id\":{},\"boundary\":{},\"severity\":{},\"status\":{},\"summary\":{},\"evidence\":{},\"remediation\":{}}}",
+        json_string(&finding.id),
+        json_string(&finding.boundary),
+        json_string(finding.severity.as_str()),
+        json_string(finding.status.as_str()),
+        json_string(&finding.summary),
+        json_array(finding.evidence.iter().map(|entry| json_string(entry))),
+        json_array(finding.remediation.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn performance_baseline_json(report: &PerformanceBaselineReport) -> String {
+    format!(
+        "{{\"version\":{},\"status\":{},\"over_budget\":{},\"budgets\":{},\"audit\":{}}}",
+        json_string(&report.version),
+        json_string(&report.status),
+        report.over_budget_count(),
+        json_array(report.budgets.iter().map(performance_budget_json)),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn performance_budget_json(budget: &PerformanceBudget) -> String {
+    format!(
+        "{{\"component\":{},\"metric\":{},\"budget_ms\":{},\"observed_ms\":{},\"status\":{},\"evidence\":{}}}",
+        json_string(&budget.component),
+        json_string(&budget.metric),
+        budget.budget_ms,
+        budget.observed_ms,
+        json_string(budget.status.as_str()),
+        json_string(&budget.evidence)
+    )
+}
+
+fn migration_guide_json(guide: &MigrationGuide) -> String {
+    format!(
+        "{{\"from_version\":{},\"to_version\":{},\"status\":{},\"breaking_changes\":{},\"steps\":{},\"compatibility_policy\":{},\"audit\":{}}}",
+        json_string(&guide.from_version),
+        json_string(&guide.to_version),
+        json_string(&guide.status),
+        json_array(guide.breaking_changes.iter().map(|entry| json_string(entry))),
+        json_array(guide.steps.iter().map(migration_step_json)),
+        compatibility_policy_json(&guide.compatibility_policy),
+        json_array(guide.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn migration_step_json(step: &MigrationStep) -> String {
+    format!(
+        "{{\"id\":{},\"summary\":{},\"command\":{},\"requires_manual_review\":{}}}",
+        json_string(&step.id),
+        json_string(&step.summary),
+        json_string(&step.command),
+        step.requires_manual_review
+    )
+}
+
+fn compatibility_policy_json(policy: &CompatibilityPolicy) -> String {
+    format!(
+        "{{\"cli_json_envelope\":{},\"exit_codes\":{},\"config_schema\":{},\"command_surface\":{},\"deprecation_window\":{},\"public_contracts\":{}}}",
+        json_string(&policy.cli_json_envelope),
+        json_string(&policy.exit_codes),
+        json_string(&policy.config_schema),
+        json_string(&policy.command_surface),
+        json_string(&policy.deprecation_window),
+        json_array(policy.public_contracts.iter().map(|contract| json_string(contract)))
     )
 }
 
@@ -4109,7 +4535,7 @@ fn write_error_kind(error: io::Error) -> EvaError {
 }
 
 fn help_text() -> &'static str {
-    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--dry-run] [--project <path>] [--output text|json]\n  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--project <path>] [--output text|json]\n  eva restore plan [--snapshot-id <id>] [--release <ref>] [--project <path>] [--output text|json]\n  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.4 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n  backup           Create and verify a V1.4 backup artifact in an in-memory ArtifactStore.\n  snapshot         Capture a release snapshot linked to a verified backup artifact.\n  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n  upgrade          Check generation, migration, drain, and rollback readiness without starting processes.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
+    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--dry-run] [--project <path>] [--output text|json]\n  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--project <path>] [--output text|json]\n  eva restore plan [--snapshot-id <id>] [--release <ref>] [--project <path>] [--output text|json]\n  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n  eva release check [--target all|windows|linux|macos] [--project <path>] [--output text|json]\n  eva release security [--project <path>] [--output text|json]\n  eva release perf [--project <path>] [--output text|json]\n  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.5 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n  backup           Create and verify a V1.4 backup artifact in an in-memory ArtifactStore.\n  snapshot         Capture a release snapshot linked to a verified backup artifact.\n  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n  upgrade          Check generation, migration, drain, and rollback readiness without starting processes.\n  release          Run V1.5 cross-platform, security, performance, migration, and compatibility release gates.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
 }
 
 #[cfg(test)]
@@ -4282,17 +4708,18 @@ mod tests {
     }
 
     #[test]
-    fn version_text_and_json_report_v14_lifecycle() {
+    fn version_text_and_json_report_v15_release_hardening() {
         let (text_exit, text_stdout, text_stderr) = run_cli(&["--version"]);
         assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
-        assert!(text_stdout.contains("eva 1.4.0"));
-        assert!(text_stdout.contains("V1.4 backup and lifecycle planning"));
+        assert!(text_stdout.contains("eva 1.5.0"));
+        assert!(text_stdout.contains("V1.5 release hardening"));
 
         let (json_exit, json_stdout, json_stderr) = run_cli(&["version", "--output", "json"]);
         assert_eq!(json_exit, EXIT_OK, "{json_stderr}");
         assert!(json_stdout.contains("\"command\":\"version\""));
-        assert!(json_stdout.contains("\"version\":\"1.4.0\""));
-        assert!(json_stdout.contains("lifecycle_v1.4"));
+        assert!(json_stdout.contains("\"version\":\"1.5.0\""));
+        assert!(json_stdout.contains("release_v1.5"));
+        assert!(json_stdout.contains("release check"));
     }
 
     #[test]
@@ -4478,5 +4905,60 @@ mod tests {
             run_cli(&["upgrade", "check", "--project", root, "--output", "json"]);
         assert!(upgrade_stdout.contains("\"status\":\"ready\""));
         assert!(upgrade_stdout.contains("rollback"));
+    }
+
+    #[test]
+    fn v15_release_hardening_commands_report_json() {
+        let root = workspace_root();
+        let root = root.to_str().unwrap();
+        let commands = [
+            vec!["release", "check", "--project", root, "--output", "json"],
+            vec!["release", "security", "--project", root, "--output", "json"],
+            vec!["release", "perf", "--project", root, "--output", "json"],
+            vec![
+                "release",
+                "migration",
+                "--project",
+                root,
+                "--output",
+                "json",
+            ],
+        ];
+
+        for command in commands {
+            let (exit_code, stdout, stderr) = run_cli(&command);
+            assert_eq!(exit_code, EXIT_OK, "command={command:?} stderr={stderr}");
+            assert!(stdout.contains("\"ok\":true"), "{stdout}");
+        }
+
+        let (_exit_code, check_stdout, _stderr) =
+            run_cli(&["release", "check", "--project", root, "--output", "json"]);
+        assert!(check_stdout.contains("\"command\":\"release.check\""));
+        assert!(check_stdout.contains("\"status\":\"ready\""));
+        assert!(check_stdout.contains("\"cross_platform\""));
+        assert!(check_stdout.contains("\"blocking_gates\":0"));
+
+        let (_exit_code, security_stdout, _stderr) =
+            run_cli(&["release", "security", "--project", root, "--output", "json"]);
+        assert!(security_stdout.contains("\"policy\""));
+        assert!(security_stdout.contains("\"hardware\""));
+        assert!(security_stdout.contains("\"blocking_findings\":0"));
+
+        let (_exit_code, perf_stdout, _stderr) =
+            run_cli(&["release", "perf", "--project", root, "--output", "json"]);
+        assert!(perf_stdout.contains("\"status\":\"within_budget\""));
+        assert!(perf_stdout.contains("\"component\":\"eventbus.publish\""));
+
+        let (_exit_code, migration_stdout, _stderr) = run_cli(&[
+            "release",
+            "migration",
+            "--project",
+            root,
+            "--output",
+            "json",
+        ]);
+        assert!(migration_stdout.contains("\"from_version\":\"1.4.0\""));
+        assert!(migration_stdout.contains("\"to_version\":\"1.5.0\""));
+        assert!(migration_stdout.contains("\"breaking_changes\":[]"));
     }
 }

@@ -1,0 +1,8 @@
+[package]
+name = "eva-release"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+eva-core = { path = "../eva-core" }

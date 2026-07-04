@@ -40,7 +40,7 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace
 
-      - name: V1.4 quickstart, external capability, context, hardware, and lifecycle smoke
+      - name: V1.5 quickstart, external capability, context, hardware, lifecycle, and release smoke
         shell: pwsh
         run: |
           cargo run -- --version
@@ -68,6 +68,10 @@ jobs:
           cargo run -- snapshot create --output json
           cargo run -- restore plan --output json
           cargo run -- upgrade check --output json
+          cargo run -- release check --output json
+          cargo run -- release security --output json
+          cargo run -- release perf --output json
+          cargo run -- release migration --output json
 
   website:
     name: Website and docs

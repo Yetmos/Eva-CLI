@@ -2,14 +2,14 @@
 
 更新时间：2026-07-04
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地诊断文件读写。V1.4 仍把主要命令实现集中在 `run.rs`，这样 version、task、external capability、memory context、hardware、backup 和 lifecycle command 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地诊断文件读写。V1.5 仍把主要命令实现集中在 `run.rs`，这样 version、task、external capability、memory context、hardware、backup、lifecycle 和 release command 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | 已更新到 V1.4 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`。 |
+| `run.rs` | 已更新到 V1.5 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -70,9 +70,20 @@
 
 这些命令是 release/lifecycle readiness smoke，不执行真实文件恢复、release pointer 切换或 OS 进程启动。
 
+## V1.5 Release Hardening Surface
+
+`run.rs` 新增 V1.5 发布加固命令：
+
+- `release check`：调用 `eva_release::ReleaseHardeningService::readiness`，输出跨平台、稳定性、文档、安全、性能和迁移门禁。
+- `release security`：输出 security findings，覆盖 policy、Lua sandbox、secret redaction、MCP allowlist、hardware handle 和 lifecycle apply 风险。
+- `release perf`：输出 release-smoke 性能预算，覆盖 EventBus、Scheduler、Adapter probe、memory context、backup 和 release check。
+- `release migration`：输出 V1.4 -> V1.5 迁移步骤和兼容性策略。
+
+这些命令共享 success/error JSON envelope、trace 字段和 exit code 映射。它们不写 `.eva/tasks`，不执行外部 provider，也不把 plan-first restore/upgrade 变成 apply。
+
 ## 保持集中实现的原因
 
-V1.0 到 V1.3 的 CLI surface 仍处于收敛期。命令 implementations 暂时集中在 `run.rs`，可以让以下行为保持一致：
+V1.0 到 V1.5 的 CLI surface 仍处于收敛期。命令 implementations 暂时集中在 `run.rs`，可以让以下行为保持一致：
 
 - success/error JSON envelope。
 - trace 字段和 command 名称。
@@ -80,7 +91,7 @@ V1.0 到 V1.3 的 CLI surface 仍处于收敛期。命令 implementations 暂时
 - text output 的摘要风格。
 - tests 对一处入口执行完整命令。
 
-后续当命令形态稳定，可以把 adapter、memory、hardware、backup、lifecycle 子命令拆到独立文件，但拆分不能改变公开 JSON envelope。
+后续当命令形态稳定，可以把 adapter、memory、hardware、backup、lifecycle、release 子命令拆到独立文件，但拆分不能改变公开 JSON envelope。
 
 ## 验证
 
@@ -93,4 +104,8 @@ cargo run -- backup create --output json
 cargo run -- snapshot create --output json
 cargo run -- restore plan --output json
 cargo run -- upgrade check --output json
+cargo run -- release check --output json
+cargo run -- release security --output json
+cargo run -- release perf --output json
+cargo run -- release migration --output json
 ```

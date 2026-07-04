@@ -632,6 +632,74 @@
       "sourceCoverage": "full-detail"
     },
     {
+      "id": "v1.5-release-hardening",
+      "title": "Eva-CLI V1.5 Release Hardening",
+      "source": "docs/en/v1.5-release-hardening.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V1.5发布加固.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/v1.5-release-hardening.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
+      "id": "v1.5-migration-guide",
+      "title": "Eva-CLI V1.5 Migration Guide",
+      "source": "docs/en/v1.5-migration-guide.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V1.5迁移指南.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/v1.5-migration-guide.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
+      "id": "v1.5-compatibility-policy",
+      "title": "Eva-CLI V1.5 Compatibility Policy",
+      "source": "docs/en/v1.5-compatibility-policy.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V1.5兼容性策略.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/v1.5-compatibility-policy.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
+      "id": "release-notes-v1.5.0",
+      "title": "Eva-CLI V1.5.0 Release Notes",
+      "source": "docs/en/release-notes-v1.5.0.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V1.5发布说明.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/release-notes-v1.5.0.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "v0.1-baseline-acceptance",
       "title": "V0.1 Baseline Acceptance",
       "source": "docs/en/v0.1-baseline-acceptance.md",

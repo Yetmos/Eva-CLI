@@ -13,7 +13,7 @@ The plan splits implementation into two delivery layers:
 
 Current baseline as of 2026-07-04:
 
-- The Rust workspace contains 19 crates.
+- The Rust workspace contains 20 crates.
 - `eva-core` implements the main data contracts for Topic, Event, Invoke, Capability, IDs, and structured errors.
 - `eva-config` loads `eva.yaml`, Agent manifests, Adapter manifests, Capability manifests, routes, policy documents, and project-level config.
 - V0.3 is implemented: `eva-cli` provides `doctor`, `config validate`, `inspect`, structured text/JSON output, exit-code mapping, and no-op runtime inspection.
@@ -24,6 +24,7 @@ Current baseline as of 2026-07-04:
 - V1.2 memory and knowledge context is implemented: `eva-memory` provides in-memory private/global records, knowledge indexing, budgeted `ContextBuilder`, and `LuaContextSnapshot`; `eva-lua-host` accepts the controlled context snapshot; `eva-cli` exposes `memory context`.
 - V1.3 controlled hardware access is implemented: root/workspace version is `1.3.0`, `eva-hardware` provides non-authorizing discovery candidates, stable device identities, `DeviceRegistry` leases, simulated driver binding, and hotplug state; `eva-adapter` exposes the hardware transport through that lease boundary; `eva-cli` exposes `hardware list/probe/bind` as plan-first diagnostics.
 - V1.4 backup and lifecycle planning is implemented: root/workspace version is `1.4.0`, `eva-backup` provides backup artifact verification, migration preflight, release snapshots, and plan-first restore; `eva-lifecycle` provides generation handoff, drain planning, rollback planning, and in-memory supervisor readiness; `eva-cli` exposes `backup create`, `snapshot create`, `restore plan`, and `upgrade check`.
+- V1.5 release hardening is implemented: root/workspace version is `1.5.0`, `eva-release` provides cross-platform readiness gates, security review findings, performance budgets, migration guide, and compatibility policy; `eva-cli` exposes `release check`, `release security`, `release perf`, and `release migration`.
 - `eva-runtime` now supports `RuntimeBuilder::in_memory_v10()` and `Runtime::run_basic`.
 - `eva-cli` now supports `eva run --example basic` plus `eva task status`, `eva task logs`, and `eva task cancel` as the V1.0 core loop.
 - `examples/basic/` is a complete minimal Eva workspace and exercises CLI -> EventBus -> Scheduler -> Agent -> controlled Lua host -> builtin capability -> task diagnostics.
@@ -56,10 +57,14 @@ cargo run -- backup create --output json
 cargo run -- snapshot create --output json
 cargo run -- restore plan --output json
 cargo run -- upgrade check --output json
+cargo run -- release check --output json
+cargo run -- release security --output json
+cargo run -- release perf --output json
+cargo run -- release migration --output json
 ./scripts/build-site-i18n.ps1
 ./scripts/validate-i18n.ps1
 ```
 
-V1.4 is complete as a source release checkpoint for controlled external capability visibility, diagnostics, request-scoped memory/knowledge context, non-authorizing hardware access planning, and plan-first backup/lifecycle operations. Real Lua VM sandboxing, durable task recovery, packaged installers, signed release artifacts, real stdio/http/MCP process execution, durable memory storage, real hardware I/O, destructive restore, and real supervisor process management remain later-version scope.
+V1.5 is complete as a source release checkpoint for controlled external capability visibility, diagnostics, request-scoped memory/knowledge context, non-authorizing hardware access planning, plan-first backup/lifecycle operations, and executable release-hardening gates. Real Lua VM sandboxing, durable task recovery, packaged installers, signed release artifacts, real stdio/http/MCP process execution, durable memory storage, real hardware I/O, destructive restore, and real supervisor process management remain later-version scope.
 
 Use the Chinese detailed plan for the module-by-module progress tables, versioned iteration plan, implementation order, diagrams, and acceptance criteria.

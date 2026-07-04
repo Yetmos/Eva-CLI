@@ -1,6 +1,6 @@
 [package]
 name = "eva"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 publish = false
 
@@ -26,12 +26,13 @@ members = [
   "crates/eva-hardware",
   "crates/eva-backup",
   "crates/eva-lifecycle",
+  "crates/eva-release",
   "crates/eva-runtime",
   "crates/eva-cli",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 publish = false

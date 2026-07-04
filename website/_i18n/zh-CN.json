@@ -257,6 +257,26 @@
         "description": "核心发布 checkpoint、稳定命令、CI 门禁和明确非目标。"
       },
       {
+        "id": "v1.5-release-hardening",
+        "title": "V1.5 发布加固",
+        "description": "跨平台、安全、性能、迁移和兼容门禁的可执行发布验收检查。"
+      },
+      {
+        "id": "v1.5-migration-guide",
+        "title": "V1.5 迁移指南",
+        "description": "V1.4 到 V1.5 的兼容升级路径和验证命令。"
+      },
+      {
+        "id": "v1.5-compatibility-policy",
+        "title": "V1.5 兼容性策略",
+        "description": "V1.5 源码发布面的 JSON envelope、exit code、命令面和废弃窗口承诺。"
+      },
+      {
+        "id": "release-notes-v1.5.0",
+        "title": "V1.5.0 发布说明",
+        "description": "发布加固 checkpoint、新 release 命令、稳定契约和明确非目标。"
+      },
+      {
         "id": "website-docs-i18n",
         "title": "网站与文档多语言适配",
         "description": "多语言官网与文档迁移方案。"

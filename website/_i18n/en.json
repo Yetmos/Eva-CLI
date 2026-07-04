@@ -257,6 +257,26 @@
         "description": "The core release checkpoint, stabilized commands, CI gates, and explicit non-goals."
       },
       {
+        "id": "v1.5-release-hardening",
+        "title": "V1.5 Release Hardening",
+        "description": "Executable release readiness checks for cross-platform, security, performance, migration, and compatibility gates."
+      },
+      {
+        "id": "v1.5-migration-guide",
+        "title": "V1.5 Migration Guide",
+        "description": "The compatible V1.4 to V1.5 upgrade path and validation commands."
+      },
+      {
+        "id": "v1.5-compatibility-policy",
+        "title": "V1.5 Compatibility Policy",
+        "description": "The JSON envelope, exit-code, command-surface, and deprecation guarantees for the V1.5 source release."
+      },
+      {
+        "id": "release-notes-v1.5.0",
+        "title": "V1.5.0 Release Notes",
+        "description": "The release-hardening checkpoint, new release commands, stabilized contracts, and explicit non-goals."
+      },
+      {
         "id": "website-docs-i18n",
         "title": "Website and Documentation i18n",
         "description": "The multilingual website and documentation migration plan."
