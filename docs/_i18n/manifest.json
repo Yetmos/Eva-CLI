@@ -234,6 +234,28 @@
       }
     },
     {
+      "id": "user-manual-flow-diagram",
+      "title": "Eva-CLI User Manual Workflow",
+      "source": "docs/assets/eva-cli-user-manual-flow.svg",
+      "translations": {
+        "zh-CN": "docs/assets/eva-cli-user-manual-flow.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "user-manual-safety-diagram",
+      "title": "Eva-CLI User Manual Safety Boundary",
+      "source": "docs/assets/eva-cli-user-manual-safety.svg",
+      "translations": {
+        "zh-CN": "docs/assets/eva-cli-user-manual-safety.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
       "id": "eva-core-contract-boundary-diagram",
       "title": "eva-core Contract Boundary Diagram",
       "source": "docs/assets/eva-core-contract-boundary.svg",
@@ -593,6 +615,23 @@
       "contentAuthority": {
         "locale": "en",
         "path": "docs/en/v1.0-quickstart.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
+      "id": "user-manual",
+      "title": "Eva-CLI User Manual",
+      "source": "docs/en/user-manual.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/Eva-CLI使用手册.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/Eva-CLI使用手册.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"

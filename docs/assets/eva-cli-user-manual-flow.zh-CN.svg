@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="520" viewBox="0 0 1120 520" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 使用闭环</title>
+  <desc id="desc">展示安装、校验、查看、运行、诊断和发布检查的使用步骤。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f5d62"/>
+    </marker>
+    <style>
+      .bg { fill: #f8faf7; }
+      .panel { fill: #ffffff; stroke: #9eb8ad; stroke-width: 2; rx: 12; }
+      .step { fill: #e8f3ef; stroke: #2f5d62; stroke-width: 2; rx: 10; }
+      .step-alt { fill: #fff4df; stroke: #a3641a; stroke-width: 2; rx: 10; }
+      .title { font: 700 28px system-ui, -apple-system, Segoe UI, sans-serif; fill: #173b3f; }
+      .label { font: 700 18px system-ui, -apple-system, Segoe UI, sans-serif; fill: #173b3f; }
+      .small { font: 14px system-ui, -apple-system, Segoe UI, sans-serif; fill: #36565a; }
+      .code { font: 13px ui-monospace, SFMono-Regular, Consolas, monospace; fill: #213547; }
+      .line { fill: none; stroke: #2f5d62; stroke-width: 2.5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect class="bg" width="1120" height="520"/>
+  <rect class="panel" x="36" y="42" width="1048" height="430"/>
+  <text class="title" x="70" y="88">Eva-CLI 源码使用闭环</text>
+  <text class="small" x="70" y="118">从仓库根目录执行。当前 V1.5 命令面以诊断和 plan-first 输出为主，风险动作不会直接落地。</text>
+
+  <rect class="step" x="72" y="170" width="170" height="92"/>
+  <text class="label" x="96" y="202">1. 安装</text>
+  <text class="code" x="96" y="229">git clone ...</text>
+  <text class="code" x="96" y="249">cargo build</text>
+
+  <rect class="step" x="292" y="170" width="180" height="92"/>
+  <text class="label" x="318" y="202">2. 校验</text>
+  <text class="code" x="318" y="229">cargo run -- doctor</text>
+  <text class="code" x="318" y="249">config validate</text>
+
+  <rect class="step" x="522" y="170" width="172" height="92"/>
+  <text class="label" x="548" y="202">3. 查看</text>
+  <text class="code" x="548" y="229">inspect runtime</text>
+  <text class="code" x="548" y="249">adapter list</text>
+
+  <rect class="step-alt" x="744" y="170" width="190" height="92"/>
+  <text class="label" x="770" y="202">4. 运行闭环</text>
+  <text class="code" x="770" y="229">run --example basic</text>
+  <text class="code" x="770" y="249">--output json</text>
+
+  <rect class="step" x="840" y="330" width="180" height="88"/>
+  <text class="label" x="866" y="361">5. 诊断任务</text>
+  <text class="code" x="866" y="388">task status</text>
+  <text class="code" x="866" y="408">task logs</text>
+
+  <rect class="step-alt" x="582" y="330" width="206" height="88"/>
+  <text class="label" x="608" y="361">6. 发布门禁</text>
+  <text class="code" x="608" y="388">release check</text>
+  <text class="code" x="608" y="408">security / perf</text>
+
+  <rect class="step" x="300" y="330" width="210" height="88"/>
+  <text class="label" x="326" y="361">7. 计划风险路径</text>
+  <text class="code" x="326" y="388">hardware bind</text>
+  <text class="code" x="326" y="408">restore plan</text>
+
+  <line class="line" x1="242" y1="216" x2="286" y2="216"/>
+  <line class="line" x1="472" y1="216" x2="516" y2="216"/>
+  <line class="line" x1="694" y1="216" x2="738" y2="216"/>
+  <path class="line" d="M934 216 C1000 246 1008 316 944 329"/>
+  <line class="line" x1="840" y1="374" x2="794" y2="374"/>
+  <line class="line" x1="582" y1="374" x2="516" y2="374"/>
+
+  <text class="small" x="74" y="454">提示：脚本或 CI 需要稳定输出时，给命令加 <tspan class="code">--output json</tspan>。</text>
+</svg>

@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="500" viewBox="0 0 1120 500" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 安全边界</title>
+  <desc id="desc">展示 Eva-CLI 当前可执行能力、plan-first 风险路径和后续版本工作。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f8faf7; }
+      .zone { fill: #ffffff; stroke: #8aa79f; stroke-width: 2; rx: 14; }
+      .safe { fill: #e7f4ec; stroke: #2f6d4f; stroke-width: 2; rx: 10; }
+      .plan { fill: #fff3dc; stroke: #a06418; stroke-width: 2; rx: 10; }
+      .future { fill: #f0eef9; stroke: #6651a8; stroke-width: 2; rx: 10; }
+      .title { font: 700 28px system-ui, -apple-system, Segoe UI, sans-serif; fill: #173b3f; }
+      .label { font: 700 18px system-ui, -apple-system, Segoe UI, sans-serif; fill: #173b3f; }
+      .text { font: 15px system-ui, -apple-system, Segoe UI, sans-serif; fill: #36565a; }
+      .code { font: 13px ui-monospace, SFMono-Regular, Consolas, monospace; fill: #213547; }
+    </style>
+  </defs>
+  <rect class="bg" width="1120" height="500"/>
+  <rect class="zone" x="42" y="38" width="1036" height="410"/>
+  <text class="title" x="78" y="84">当前 V1.5 安全边界</text>
+  <text class="text" x="78" y="116">命令用于诊断、校验和发布证据。高风险 apply 路径不会从 CLI 直接执行。</text>
+
+  <rect class="safe" x="78" y="160" width="290" height="210"/>
+  <text class="label" x="104" y="194">当前可执行</text>
+  <text class="code" x="104" y="228">doctor</text>
+  <text class="code" x="104" y="252">config validate</text>
+  <text class="code" x="104" y="276">inspect / run basic</text>
+  <text class="code" x="104" y="300">task status / logs</text>
+  <text class="code" x="104" y="324">release check</text>
+  <text class="text" x="104" y="350">读取配置，只写本地 task 诊断文件。</text>
+
+  <rect class="plan" x="414" y="160" width="290" height="210"/>
+  <text class="label" x="440" y="194">Plan-first 命令面</text>
+  <text class="code" x="440" y="228">hardware bind</text>
+  <text class="code" x="440" y="252">restore plan</text>
+  <text class="code" x="440" y="276">upgrade check</text>
+  <text class="code" x="440" y="300">backup / snapshot demo</text>
+  <text class="text" x="440" y="350">在真实 apply 路径前输出计划、风险和审计上下文。</text>
+
+  <rect class="future" x="750" y="160" width="290" height="210"/>
+  <text class="label" x="776" y="194">后续版本工作</text>
+  <text class="code" x="776" y="228">签名安装包</text>
+  <text class="code" x="776" y="252">真实 provider 进程</text>
+  <text class="code" x="776" y="276">raw hardware I/O</text>
+  <text class="code" x="776" y="300">destructive restore</text>
+  <text class="text" x="776" y="350">需要显式门禁、持久化存储和更强发布证据。</text>
+</svg>
