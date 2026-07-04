@@ -1,0 +1,216 @@
+name: GitHub Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, for example v1.5.0"
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Release tag '$env:RELEASE_TAG' must match vMAJOR.MINOR.PATCH."
+          }
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify Cargo version matches tag
+        shell: pwsh
+        run: |
+          $versionLine = Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1
+          if ($null -eq $versionLine) {
+            throw "Cargo.toml does not contain a package version."
+          }
+          $version = $versionLine.Matches[0].Groups[1].Value
+          if ($env:RELEASE_TAG -ne "v$version") {
+            throw "Release tag '$env:RELEASE_TAG' does not match Cargo.toml version '$version'."
+          }
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Workspace tests
+        run: cargo test --workspace
+
+      - name: V1.5 release smoke
+        shell: pwsh
+        run: |
+          cargo run -- --version
+          cargo run -- version --output json
+          cargo run -- doctor --output json
+          cargo run -- config validate --output json
+          cargo run -- inspect runtime --output json
+          cargo run -- run --example basic --task-id req-release-v10 --output json
+          cargo run -- task status --task req-release-v10 --output json
+          cargo run -- task logs --task req-release-v10 --output json
+          cargo run -- adapter list --output json
+          cargo run -- adapter probe --adapter github-mcp --output json
+          cargo run -- mcp list --output json
+          cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
+          cargo run -- skill list --output json
+          cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
+          cargo run -- discovery scan --output json
+          cargo run -- memory context --agent root-agent --query context --private-limit 1 --output json
+          cargo run -- hardware list --output json
+          cargo run -- hardware probe --adapter scale-main --output json
+          cargo run -- hardware bind --adapter scale-main --output json
+          cargo run -- backup create --output json
+          cargo run -- snapshot create --output json
+          cargo run -- restore plan --output json
+          cargo run -- upgrade check --output json
+          cargo run -- release check --output json
+          cargo run -- release security --output json
+          cargo run -- release perf --output json
+          cargo run -- release migration --output json
+
+  publish:
+    name: Publish GitHub Release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Release tag '$env:RELEASE_TAG' must match vMAJOR.MINOR.PATCH."
+          }
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Build localized website
+        shell: pwsh
+        run: ./scripts/build-site-i18n.ps1
+
+      - name: Validate i18n structure
+        shell: pwsh
+        run: ./scripts/validate-i18n.ps1
+
+      - name: Capture release evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
+          cargo run -- release check --output json | Tee-Object -FilePath release-evidence/release-check.json
+          cargo run -- release security --output json | Tee-Object -FilePath release-evidence/release-security.json
+          cargo run -- release perf --output json | Tee-Object -FilePath release-evidence/release-perf.json
+          cargo run -- release migration --output json | Tee-Object -FilePath release-evidence/release-migration.json
+
+      - name: Upload release evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ env.RELEASE_TAG }}
+          path: release-evidence/
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        with:
+          script: |
+            const fs = require("fs");
+            const core = require("@actions/core");
+            const tag = process.env.RELEASE_TAG;
+            const { owner, repo } = context.repo;
+            const releaseName = `Eva-CLI ${tag}`;
+            const manualNotes = fs.readFileSync("docs/en/release-notes-v1.5.0.md", "utf8");
+            let generatedNotes = "";
+
+            try {
+              const generated = await github.rest.repos.generateReleaseNotes({
+                owner,
+                repo,
+                tag_name: tag,
+                target_commitish: tag,
+              });
+              generatedNotes = generated.data.body || "";
+            } catch (error) {
+              core.warning(`Could not generate GitHub release notes: ${error.message}`);
+            }
+
+            const body = [
+              manualNotes,
+              "## GitHub-managed version record",
+              `- Tag: \`${tag}\``,
+              "- Release workflow: validates Rust workspace, website/docs, and V1.5 release gates before publishing.",
+              "- Artifacts: GitHub source archives plus workflow release-evidence artifact. V1.5 intentionally does not publish signed installers.",
+              generatedNotes ? "## GitHub-generated changes" : "",
+              generatedNotes,
+            ].filter(Boolean).join("\n\n");
+
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: existing.data.id,
+                tag_name: tag,
+                name: releaseName,
+                body,
+                draft: false,
+                prerelease: false,
+                make_latest: "true",
+              });
+              core.info(`Updated GitHub Release for ${tag}.`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+
+              await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                name: releaseName,
+                body,
+                draft: false,
+                prerelease: false,
+                make_latest: "true",
+              });
+              core.info(`Created GitHub Release for ${tag}.`);
+            }

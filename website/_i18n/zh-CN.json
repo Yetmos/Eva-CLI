@@ -282,6 +282,11 @@
         "description": "发布加固 checkpoint、新 release 命令、稳定契约和明确非目标。"
       },
       {
+        "id": "v1.5-github-release-plan",
+        "title": "V1.5 GitHub 发版计划",
+        "description": "V1.5.0 的 tag 驱动 GitHub Release workflow、发布证据、验证步骤和回滚策略。"
+      },
+      {
         "id": "website-docs-i18n",
         "title": "网站与文档多语言适配",
         "description": "多语言官网与文档迁移方案。"

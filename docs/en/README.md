@@ -43,10 +43,11 @@ implementation-spec content until the English full-detail migration catches up.
 23. [Eva-CLI V1.5 Migration Guide](v1.5-migration-guide.md)
 24. [Eva-CLI V1.5 Compatibility Policy](v1.5-compatibility-policy.md)
 25. [Eva-CLI V1.5.0 Release Notes](release-notes-v1.5.0.md)
-26. [V0.1 Baseline Acceptance](v0.1-baseline-acceptance.md)
-27. [V0.2 Contract and Configuration Acceptance](v0.2-contract-config-acceptance.md)
-28. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
-29. [Website and Documentation i18n](website-docs-i18n.md)
+26. [Eva-CLI V1.5 GitHub Release Plan](v1.5-github-release-plan.md)
+27. [V0.1 Baseline Acceptance](v0.1-baseline-acceptance.md)
+28. [V0.2 Contract and Configuration Acceptance](v0.2-contract-config-acceptance.md)
+29. [Command-Line Tool Feature Design](command-line-tool-feature-design.md)
+30. [Website and Documentation i18n](website-docs-i18n.md)
 
 ## Core Boundaries
 

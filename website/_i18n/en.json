@@ -282,6 +282,11 @@
         "description": "The release-hardening checkpoint, new release commands, stabilized contracts, and explicit non-goals."
       },
       {
+        "id": "v1.5-github-release-plan",
+        "title": "V1.5 GitHub Release Plan",
+        "description": "The tag-driven GitHub Release workflow, release evidence, verification steps, and rollback policy for V1.5.0."
+      },
+      {
         "id": "website-docs-i18n",
         "title": "Website and Documentation i18n",
         "description": "The multilingual website and documentation migration plan."

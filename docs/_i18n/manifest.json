@@ -700,6 +700,23 @@
       "sourceCoverage": "full-detail"
     },
     {
+      "id": "v1.5-github-release-plan",
+      "title": "Eva-CLI V1.5 GitHub Release Plan",
+      "source": "docs/en/v1.5-github-release-plan.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/V1.5-GitHub发版计划.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/v1.5-github-release-plan.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "v0.1-baseline-acceptance",
       "title": "V0.1 Baseline Acceptance",
       "source": "docs/en/v0.1-baseline-acceptance.md",

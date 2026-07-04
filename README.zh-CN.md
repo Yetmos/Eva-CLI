@@ -24,6 +24,7 @@ Eva-CLI 已经完成 V0.1 到 V1.5 的阶段实现：
 7. `eva-release` 已实现 V1.5 release readiness、security review、performance baseline、migration guide 和 compatibility policy。
 
 完整阶段划分见 [从零到 1.0 版本路线图](docs/zh-CN/从零到1.0版本路线图.md)。
+V1.5.0 的 GitHub 托管发版流程见 [V1.5 GitHub 发版计划](docs/zh-CN/V1.5-GitHub发版计划.md)。
 
 ## eva-core 模块要实现的功能
 

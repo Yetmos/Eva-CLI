@@ -190,6 +190,7 @@ The release-hardening docs are:
 - [V1.5 Migration Guide](docs/en/v1.5-migration-guide.md)
 - [V1.5 Compatibility Policy](docs/en/v1.5-compatibility-policy.md)
 - [V1.5.0 Release Notes](docs/en/release-notes-v1.5.0.md)
+- [V1.5 GitHub Release Plan](docs/en/v1.5-github-release-plan.md)
 
 ## Repository Layout
 
