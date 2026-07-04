@@ -47,15 +47,15 @@
     "progressTitle": "From architecture scaffold to V1.5 source-release gates",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.5 release hardening is implemented",
-    "progressCurrentBody": "The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, and release documentation.",
+    "progressCurrentTitle": "V1.5 release hardening and the user manual are implemented",
+    "progressCurrentBody": "The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, release documentation, and an SVG-illustrated source user manual.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
       "Add signed release artifacts, provenance, and cross-platform installers.",
       "Move destructive restore, release pointer, and supervisor activation paths behind explicit apply gates.",
-      "Replace in-memory provider/runtime diagnostics with durable stores and real provider process management."
+      "Replace in-memory provider/runtime diagnostics with durable stores and real provider process management, then expand the manual alongside the real apply paths."
     ],
     "featuredBlogEyebrow": "Recommended reading",
     "featuredBlogTitle": "Latest design notes from the blog",
@@ -77,8 +77,8 @@
       {
         "status": "current",
         "badge": "Now",
-        "label": "V1.1 to V1.5 controlled capability and release gates",
-        "description": "External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, and release hardening commands are implemented."
+        "label": "V1.1 to V1.5 controlled capability, release gates, and user manual",
+        "description": "External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, release hardening commands, and the source user manual are implemented."
       },
       {
         "status": "later",
@@ -91,8 +91,13 @@
     "architectureTitle": "From runtime boundary to controlled capabilities",
     "architectureAlt": "Eva-CLI architecture diagram",
     "docsEyebrow": "Docs",
-    "docsTitle": "Read by architecture topic",
+    "docsTitle": "Read by usage and architecture topic",
     "docCards": [
+      {
+        "id": "user-manual",
+        "title": "User Manual",
+        "description": "Install from source, validate config, run the basic loop, inspect task diagnostics, run release gates, and understand the current plan-first safety boundary."
+      },
       {
         "id": "architecture-overview",
         "title": "Architecture Overview",
@@ -250,6 +255,11 @@
         "id": "v1.0-quickstart",
         "title": "V1.0 Quickstart",
         "description": "Install from source, verify the release surface, run the basic loop, and inspect task diagnostics."
+      },
+      {
+        "id": "user-manual",
+        "title": "Eva-CLI User Manual",
+        "description": "An SVG-illustrated source user manual covering installation, command surface, JSON output, exit codes, troubleshooting, and current non-goals."
       },
       {
         "id": "v1.0-known-limitations",

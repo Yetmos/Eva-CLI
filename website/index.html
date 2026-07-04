@@ -99,8 +99,8 @@
         <div class="progress-layout">
           <article class="progress-current" aria-label="Current development stage">
             <span class="status-label">Current stage</span>
-            <h3>V1.5 release hardening is implemented</h3>
-            <p>The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, and release documentation.</p>
+            <h3>V1.5 release hardening and the user manual are implemented</h3>
+            <p>The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, release documentation, and an SVG-illustrated source user manual.</p>
           </article>
           <ol class="progress-timeline" aria-label="Release progress stages">
             <li class="progress-stage progress-stage-complete">
@@ -120,8 +120,8 @@
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">Now</span>
               <div>
-                <strong>V1.1 to V1.5 controlled capability and release gates</strong>
-                <p>External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, and release hardening commands are implemented.</p>
+                <strong>V1.1 to V1.5 controlled capability, release gates, and user manual</strong>
+                <p>External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, release hardening commands, and the source user manual are implemented.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
@@ -138,7 +138,7 @@
           <ul>
             <li>Add signed release artifacts, provenance, and cross-platform installers.</li>
             <li>Move destructive restore, release pointer, and supervisor activation paths behind explicit apply gates.</li>
-            <li>Replace in-memory provider/runtime diagnostics with durable stores and real provider process management.</li>
+            <li>Replace in-memory provider/runtime diagnostics with durable stores and real provider process management, then expand the manual alongside the real apply paths.</li>
           </ul>
         </div>
       </section>
@@ -196,9 +196,13 @@
       <section class="doc-grid" aria-labelledby="docs-title">
         <div class="section-heading">
           <p class="eyebrow">Docs</p>
-          <h2 id="docs-title">Read by architecture topic</h2>
+          <h2 id="docs-title">Read by usage and architecture topic</h2>
         </div>
         <div class="links-grid">
+          <a class="doc-link" href="docs/en/user-manual.md">
+            <span>User Manual</span>
+            <small>Install from source, validate config, run the basic loop, inspect task diagnostics, run release gates, and understand the current plan-first safety boundary.</small>
+          </a>
           <a class="doc-link" href="docs/en/architecture-overview.md">
             <span>Architecture Overview</span>
             <small>System goals, module boundaries, runtime chain, safety principles, and open design contracts.</small>

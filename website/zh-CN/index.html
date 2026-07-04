@@ -99,8 +99,8 @@
         <div class="progress-layout">
           <article class="progress-current" aria-label="当前开发阶段">
             <span class="status-label">当前阶段</span>
-            <h3>V1.5 发布加固已经实现</h3>
-            <p>仓库已经具备可编译 Rust workspace、覆盖 release check/security/perf/migration 的可执行 CLI、配置校验、in-memory basic loop、task 诊断、受控外部能力诊断、记忆上下文、硬件绑定计划、备份与生命周期检查、CI 门禁和发布文档。</p>
+            <h3>V1.5 发布加固与使用手册已经落地</h3>
+            <p>仓库已经具备可编译 Rust workspace、覆盖 release check/security/perf/migration 的可执行 CLI、配置校验、in-memory basic loop、task 诊断、受控外部能力诊断、记忆上下文、硬件绑定计划、备份与生命周期检查、CI 门禁、发布文档，以及带 SVG 插图的源码使用手册。</p>
           </article>
           <ol class="progress-timeline" aria-label="发布进度阶段">
             <li class="progress-stage progress-stage-complete">
@@ -120,8 +120,8 @@
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">当前</span>
               <div>
-                <strong>V1.1 到 V1.5 受控能力与发布门禁</strong>
-                <p>外部能力诊断、记忆上下文、硬件计划、备份/生命周期检查和发布加固命令已经实现。</p>
+                <strong>V1.1 到 V1.5 受控能力、发布门禁与使用手册</strong>
+                <p>外部能力诊断、记忆上下文、硬件计划、备份/生命周期检查、发布加固命令和源码使用手册已经实现。</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
@@ -138,7 +138,7 @@
           <ul>
             <li>补齐签名 release artifact、provenance 和跨平台安装包。</li>
             <li>把破坏性 restore、release pointer 和 Supervisor 激活路径放到显式 apply gate 之后。</li>
-            <li>用 durable store 和真实 provider 进程管理替换当前 in-memory 诊断面。</li>
+            <li>用 durable store 和真实 provider 进程管理替换当前 in-memory 诊断面，并让使用手册随真实 apply 路径同步扩展。</li>
           </ul>
         </div>
       </section>
@@ -196,9 +196,13 @@
       <section class="doc-grid" aria-labelledby="docs-title">
         <div class="section-heading">
           <p class="eyebrow">文档</p>
-          <h2 id="docs-title">按架构主题阅读</h2>
+          <h2 id="docs-title">按使用和架构主题阅读</h2>
         </div>
         <div class="links-grid">
+          <a class="doc-link" href="../docs/zh-CN/Eva-CLI使用手册.md">
+            <span>使用手册</span>
+            <small>从源码安装、校验配置、运行 basic 闭环、查看 task 诊断、执行发布门禁，并理解当前 plan-first 安全边界。</small>
+          </a>
           <a class="doc-link" href="../docs/zh-CN/总体架构方案.md">
             <span>总体架构</span>
             <small>系统目标、模块边界、运行链路、安全原则和待补设计契约。</small>

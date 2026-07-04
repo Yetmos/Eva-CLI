@@ -47,15 +47,15 @@
     "progressTitle": "从架构骨架走向 V1.5 源码发布门禁",
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
-    "progressCurrentTitle": "V1.5 发布加固已经实现",
-    "progressCurrentBody": "仓库已经具备可编译 Rust workspace、覆盖 release check/security/perf/migration 的可执行 CLI、配置校验、in-memory basic loop、task 诊断、受控外部能力诊断、记忆上下文、硬件绑定计划、备份与生命周期检查、CI 门禁和发布文档。",
+    "progressCurrentTitle": "V1.5 发布加固与使用手册已经落地",
+    "progressCurrentBody": "仓库已经具备可编译 Rust workspace、覆盖 release check/security/perf/migration 的可执行 CLI、配置校验、in-memory basic loop、task 诊断、受控外部能力诊断、记忆上下文、硬件绑定计划、备份与生命周期检查、CI 门禁、发布文档，以及带 SVG 插图的源码使用手册。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
       "补齐签名 release artifact、provenance 和跨平台安装包。",
       "把破坏性 restore、release pointer 和 Supervisor 激活路径放到显式 apply gate 之后。",
-      "用 durable store 和真实 provider 进程管理替换当前 in-memory 诊断面。"
+      "用 durable store 和真实 provider 进程管理替换当前 in-memory 诊断面，并让使用手册随真实 apply 路径同步扩展。"
     ],
     "featuredBlogEyebrow": "推荐阅读",
     "featuredBlogTitle": "来自博客的最新设计笔记",
@@ -77,8 +77,8 @@
       {
         "status": "current",
         "badge": "当前",
-        "label": "V1.1 到 V1.5 受控能力与发布门禁",
-        "description": "外部能力诊断、记忆上下文、硬件计划、备份/生命周期检查和发布加固命令已经实现。"
+        "label": "V1.1 到 V1.5 受控能力、发布门禁与使用手册",
+        "description": "外部能力诊断、记忆上下文、硬件计划、备份/生命周期检查、发布加固命令和源码使用手册已经实现。"
       },
       {
         "status": "later",
@@ -91,8 +91,13 @@
     "architectureTitle": "从运行时边界到受控能力接入",
     "architectureAlt": "Eva-CLI 总体架构图",
     "docsEyebrow": "文档",
-    "docsTitle": "按架构主题阅读",
+    "docsTitle": "按使用和架构主题阅读",
     "docCards": [
+      {
+        "id": "user-manual",
+        "title": "使用手册",
+        "description": "从源码安装、校验配置、运行 basic 闭环、查看 task 诊断、执行发布门禁，并理解当前 plan-first 安全边界。"
+      },
       {
         "id": "architecture-overview",
         "title": "总体架构",
@@ -250,6 +255,11 @@
         "id": "v1.0-quickstart",
         "title": "V1.0 快速开始",
         "description": "从源码安装、验证发布面、运行 basic 闭环，并查看 task 诊断。"
+      },
+      {
+        "id": "user-manual",
+        "title": "Eva-CLI 使用手册",
+        "description": "带 SVG 插图和表格的源码使用手册，覆盖安装、命令面、JSON 输出、退出码、排障和当前非目标。"
       },
       {
         "id": "v1.0-known-limitations",
