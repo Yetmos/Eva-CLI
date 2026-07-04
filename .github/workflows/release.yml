@@ -154,7 +154,6 @@ jobs:
         with:
           script: |
             const fs = require("fs");
-            const core = require("@actions/core");
             const tag = process.env.RELEASE_TAG;
             const { owner, repo } = context.repo;
             const releaseName = `Eva-CLI ${tag}`;
