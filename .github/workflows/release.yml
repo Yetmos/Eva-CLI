@@ -159,28 +159,12 @@ jobs:
             const { owner, repo } = context.repo;
             const releaseName = `Eva-CLI ${tag}`;
             const manualNotes = fs.readFileSync("docs/en/release-notes-v1.5.0.md", "utf8");
-            let generatedNotes = "";
-
-            try {
-              const generated = await github.rest.repos.generateReleaseNotes({
-                owner,
-                repo,
-                tag_name: tag,
-                target_commitish: tag,
-              });
-              generatedNotes = generated.data.body || "";
-            } catch (error) {
-              core.warning(`Could not generate GitHub release notes: ${error.message}`);
-            }
-
             const body = [
               manualNotes,
               "## GitHub-managed version record",
               `- Tag: \`${tag}\``,
               "- Release workflow: validates Rust workspace, website/docs, and V1.5 release gates before publishing.",
               "- Artifacts: GitHub source archives plus workflow release-evidence artifact. V1.5 intentionally does not publish signed installers.",
-              generatedNotes ? "## GitHub-generated changes" : "",
-              generatedNotes,
             ].filter(Boolean).join("\n\n");
 
             try {
@@ -194,7 +178,6 @@ jobs:
                 body,
                 draft: false,
                 prerelease: false,
-                make_latest: "true",
               });
               core.info(`Updated GitHub Release for ${tag}.`);
             } catch (error) {
@@ -210,7 +193,6 @@ jobs:
                 body,
                 draft: false,
                 prerelease: false,
-                make_latest: "true",
               });
               core.info(`Created GitHub Release for ${tag}.`);
             }
