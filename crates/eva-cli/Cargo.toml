@@ -6,11 +6,14 @@ publish.workspace = true
 
 [dependencies]
 eva-adapter = { path = "../eva-adapter" }
+eva-backup = { path = "../eva-backup" }
 eva-config = { path = "../eva-config" }
 eva-core = { path = "../eva-core" }
 eva-discovery = { path = "../eva-discovery" }
 eva-hardware = { path = "../eva-hardware" }
+eva-lifecycle = { path = "../eva-lifecycle" }
 eva-memory = { path = "../eva-memory" }
 eva-mcp = { path = "../eva-mcp" }
 eva-observability = { path = "../eva-observability" }
 eva-runtime = { path = "../eva-runtime" }
+eva-storage = { path = "../eva-storage" }

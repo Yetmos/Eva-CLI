@@ -1,33 +1,32 @@
 # eva-lifecycle/src / 生命周期源码
 
+更新时间：2026-07-04
+
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
-本目录承载 supervisor、runtime generation、drain 和 rollback。当前为骨架，V1.4 先实现 generation 状态机和失败回滚协议。
+本目录承载 V1.4 supervisor、runtime generation、drain 和 rollback 源码。实现重点是可测试状态机和 plan-first lifecycle coordination，不启动真实 OS 进程。
 
-## 功能说明
+## 文件职责
 
-| 文件 | 职责 | 当前进度 | 目标版本 |
+| 文件 | 职责 | V1.4 状态 | 关键类型/函数 |
 | --- | --- | --- | --- |
-| `lib.rs` | 模块导出 | 骨架 | V1.4 |
-| `supervisor.rs` | supervisor process/runtime ownership | 骨架 | V1.4 |
-| `generation.rs` | runtime generation state and handoff | 骨架 | V1.4 |
-| `drain.rs` | draining old runtime generations | 骨架 | V1.4 |
-| `rollback.rs` | failed handoff rollback coordination | 骨架 | V1.4 |
+| `lib.rs` | 模块导出 | 已完成 | re-export generation、drain、rollback、supervisor 类型。 |
+| `generation.rs` | runtime generation state and handoff | 已完成 | `GenerationState`、`RuntimeGeneration`、`GenerationController`。 |
+| `drain.rs` | draining old runtime generations | 已完成 | `DrainStatus`、`DrainPlan`、`DrainCoordinator`。 |
+| `rollback.rs` | failed handoff rollback coordination | 已完成 | `RollbackPlan`、`RollbackCoordinator`。 |
+| `supervisor.rs` | supervisor process/runtime ownership | 已完成 | `InMemorySupervisor`、`RuntimeHealth`、`SupervisorReport`。 |
 
-## 开发实施步骤
+## 关键不变量
 
-| 顺序 | 步骤 | 输出 |
-| --- | --- | --- |
-| 1 | 定义 supervisor trait 和 runtime handle。 | mock runtime 可启动停止。 |
-| 2 | 定义 generation 状态机。 | handoff 可验证。 |
-| 3 | 实现 drain token 和 deadline。 | 切换前可停止接收。 |
-| 4 | 实现 rollback plan 和 audit fields。 | 失败切换可恢复。 |
+- 初始 controller 必须以 active generation 创建。
+- 同一时刻只能存在一个 candidate generation。
+- promote candidate 后，新 generation 变 active，旧 active 进入 draining。
+- drain plan 必须 `accepts_new_work:false`。
+- rollback reason 不能为空。
+- supervisor commit candidate 前必须通过 matching generation health check。
 
-## 进度表
+## 验证
 
-| 模块 | 具体功能 | 状态 | 下一步 |
-| --- | --- | --- | --- |
-| Supervisor | start/stop/restart | 未实现 | 定义 health summary。 |
-| Generation | pending/active/draining | 未实现 | 定义合法转换。 |
-| Drain | deadline/result | 未实现 | 接 Agent/EventBus。 |
-| Rollback | plan/reason/audit | 未实现 | 接 Backup snapshot。 |
+```powershell
+cargo test -p eva-lifecycle
+```

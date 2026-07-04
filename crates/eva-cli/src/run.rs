@@ -3,10 +3,21 @@
 use crate::doctor::{doctor_project, CheckStatus, DoctorReport};
 use crate::inspect::{inspect_project, InspectReport};
 use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};
+use eva_backup::{
+    BackupEntry, BackupPlan, BackupResult, BackupScope, BackupService, MigrationPackageManifest,
+    MigrationPackageService, MigrationPreflight, ReleaseSnapshot, ReleaseSnapshotService,
+    RestorePlan, SnapshotRole,
+};
 use eva_config::{load_project_config, schema_paths, AdapterTransport, ProjectConfig};
-use eva_core::{AdapterId, AgentId, CapabilityName, ErrorKind, EvaError, InvokeStatus, RequestId};
+use eva_core::{
+    AdapterId, AgentId, CapabilityName, ErrorKind, EvaError, GenerationId, InvokeStatus, RequestId,
+};
 use eva_discovery::{DiscoveryCandidate, DiscoveryService};
 use eva_hardware::{discover_project_devices, DeviceCandidate, HardwareDiscoveryReport};
+use eva_lifecycle::{
+    DrainCoordinator, DrainPlan, GenerationState, InMemorySupervisor, RollbackCoordinator,
+    RollbackPlan, RuntimeGeneration, SupervisorReport,
+};
 use eva_mcp::{InMemoryMcpClient, McpAllowlist, McpProbeReport};
 use eva_memory::{
     BuiltContext, ContextBudget, ContextBuilder, ContextRequest, InMemoryKnowledgeService,
@@ -14,6 +25,7 @@ use eva_memory::{
 };
 use eva_observability::{SpanId, TraceFields};
 use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder, TaskLogEntry};
+use eva_storage::InMemoryArtifactStore;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -32,9 +44,9 @@ const EXIT_RUNTIME_UNAVAILABLE: i32 = 4;
 const EXIT_EXTERNAL_UNAVAILABLE: i32 = 5;
 const EXIT_USAGE: i32 = 64;
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
-const RELEASE_LABEL: &str = "V1.3 hardware access boundary";
+const RELEASE_LABEL: &str = "V1.4 backup and lifecycle planning";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -47,6 +59,10 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "discovery scan",
     "memory context",
     "hardware list/probe/bind",
+    "backup create",
+    "snapshot create",
+    "restore plan",
+    "upgrade check",
 ];
 
 /// Process entry point for the root binary shim.
@@ -180,6 +196,10 @@ where
         Command::Discovery(command) => execute_discovery(command, stdout, stderr),
         Command::Memory(command) => execute_memory(command, stdout, stderr),
         Command::Hardware(command) => execute_hardware(command, stdout, stderr),
+        Command::Backup(command) => execute_backup(command, stdout, stderr),
+        Command::Snapshot(command) => execute_snapshot(command, stdout, stderr),
+        Command::Restore(command) => execute_restore(command, stdout, stderr),
+        Command::Upgrade(command) => execute_upgrade(command, stdout, stderr),
     }
 }
 
@@ -198,6 +218,10 @@ enum Command {
     Discovery(DiscoveryCommand),
     Memory(MemoryCommand),
     Hardware(HardwareCommand),
+    Backup(BackupCommand),
+    Snapshot(SnapshotCommand),
+    Restore(RestoreCommand),
+    Upgrade(UpgradeCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +284,26 @@ enum HardwareCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum BackupCommand {
+    Create(BackupCreateOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SnapshotCommand {
+    Create(SnapshotCreateOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RestoreCommand {
+    Plan(RestorePlanOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpgradeCommand {
+    Check(UpgradeCheckOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TaskOptions {
     common: CommonOptions,
     task_id: Option<String>,
@@ -314,6 +358,42 @@ struct HardwareBindOptions {
     adapter_id: String,
     request_id: String,
     apply: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BackupCreateOptions {
+    common: CommonOptions,
+    artifact_id: String,
+    request_id: String,
+    project_id: String,
+    reason: String,
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SnapshotCreateOptions {
+    common: CommonOptions,
+    snapshot_id: String,
+    request_id: String,
+    release_ref: String,
+    role: SnapshotRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestorePlanOptions {
+    common: CommonOptions,
+    snapshot_id: String,
+    request_id: String,
+    release_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpgradeCheckOptions {
+    common: CommonOptions,
+    from_generation: String,
+    to_generation: String,
+    from_release: String,
+    to_release: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -414,6 +494,10 @@ where
         "discovery" => parse_discovery_command(&args[1..]),
         "memory" => parse_memory_command(&args[1..]),
         "hardware" => parse_hardware_command(&args[1..]),
+        "backup" => parse_backup_command(&args[1..]),
+        "snapshot" => parse_snapshot_command(&args[1..]),
+        "restore" => parse_restore_command(&args[1..]),
+        "upgrade" => parse_upgrade_command(&args[1..]),
         unknown => Err(EvaError::unsupported("unknown command").with_context("command", unknown)),
     }
 }
@@ -854,6 +938,228 @@ fn parse_hardware_bind_options(args: &[String]) -> Result<HardwareBindOptions, E
     })
 }
 
+fn parse_backup_command(args: &[String]) -> Result<Command, EvaError> {
+    let (subcommand, rest) = args
+        .split_first()
+        .ok_or_else(|| EvaError::invalid_argument("missing backup subcommand"))?;
+    match subcommand.as_str() {
+        "create" => Ok(Command::Backup(BackupCommand::Create(
+            parse_backup_create_options(rest)?,
+        ))),
+        value => {
+            Err(EvaError::unsupported("unknown backup subcommand")
+                .with_context("subcommand", value))
+        }
+    }
+}
+
+fn parse_backup_create_options(args: &[String]) -> Result<BackupCreateOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut artifact_id = "backup-v14".to_owned();
+    let mut request_id = "req-backup-1".to_owned();
+    let mut project_id = "eva-cli".to_owned();
+    let mut reason = "pre-upgrade safety checkpoint".to_owned();
+    let mut dry_run = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--artifact" | "--artifact-id" => {
+                index += 1;
+                artifact_id = required_option(args, index, "artifact option")?.clone();
+            }
+            "--request-id" | "--task-id" | "--task" => {
+                index += 1;
+                request_id = required_option(args, index, "request id option")?.clone();
+            }
+            "--project-id" => {
+                index += 1;
+                project_id = required_option(args, index, "project id option")?.clone();
+            }
+            "--reason" => {
+                index += 1;
+                reason = required_option(args, index, "reason option")?.clone();
+            }
+            "--dry-run" => dry_run = true,
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    RequestId::parse(&request_id)?;
+    Ok(BackupCreateOptions {
+        common: parse_common_options(&passthrough)?,
+        artifact_id,
+        request_id,
+        project_id,
+        reason,
+        dry_run,
+    })
+}
+
+fn parse_snapshot_command(args: &[String]) -> Result<Command, EvaError> {
+    let (subcommand, rest) = args
+        .split_first()
+        .ok_or_else(|| EvaError::invalid_argument("missing snapshot subcommand"))?;
+    match subcommand.as_str() {
+        "create" => Ok(Command::Snapshot(SnapshotCommand::Create(
+            parse_snapshot_create_options(rest)?,
+        ))),
+        value => {
+            Err(EvaError::unsupported("unknown snapshot subcommand")
+                .with_context("subcommand", value))
+        }
+    }
+}
+
+fn parse_snapshot_create_options(args: &[String]) -> Result<SnapshotCreateOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut snapshot_id = "snapshot-v14".to_owned();
+    let mut request_id = "req-snapshot-1".to_owned();
+    let mut release_ref = "1.4.0".to_owned();
+    let mut role = SnapshotRole::PreRelease;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--snapshot" | "--snapshot-id" => {
+                index += 1;
+                snapshot_id = required_option(args, index, "snapshot option")?.clone();
+            }
+            "--request-id" | "--task-id" | "--task" => {
+                index += 1;
+                request_id = required_option(args, index, "request id option")?.clone();
+            }
+            "--release" | "--release-ref" => {
+                index += 1;
+                release_ref = required_option(args, index, "release option")?.clone();
+            }
+            "--role" => {
+                index += 1;
+                role = parse_snapshot_role(required_option(args, index, "role option")?)?;
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    RequestId::parse(&request_id)?;
+    Ok(SnapshotCreateOptions {
+        common: parse_common_options(&passthrough)?,
+        snapshot_id,
+        request_id,
+        release_ref,
+        role,
+    })
+}
+
+fn parse_restore_command(args: &[String]) -> Result<Command, EvaError> {
+    let (subcommand, rest) = args
+        .split_first()
+        .ok_or_else(|| EvaError::invalid_argument("missing restore subcommand"))?;
+    match subcommand.as_str() {
+        "plan" => Ok(Command::Restore(RestoreCommand::Plan(
+            parse_restore_plan_options(rest)?,
+        ))),
+        value => {
+            Err(EvaError::unsupported("unknown restore subcommand")
+                .with_context("subcommand", value))
+        }
+    }
+}
+
+fn parse_restore_plan_options(args: &[String]) -> Result<RestorePlanOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut snapshot_id = "snapshot-v14".to_owned();
+    let mut request_id = "req-restore-1".to_owned();
+    let mut release_ref = "1.4.0".to_owned();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--snapshot" | "--snapshot-id" => {
+                index += 1;
+                snapshot_id = required_option(args, index, "snapshot option")?.clone();
+            }
+            "--request-id" | "--task-id" | "--task" => {
+                index += 1;
+                request_id = required_option(args, index, "request id option")?.clone();
+            }
+            "--release" | "--release-ref" => {
+                index += 1;
+                release_ref = required_option(args, index, "release option")?.clone();
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    RequestId::parse(&request_id)?;
+    Ok(RestorePlanOptions {
+        common: parse_common_options(&passthrough)?,
+        snapshot_id,
+        request_id,
+        release_ref,
+    })
+}
+
+fn parse_upgrade_command(args: &[String]) -> Result<Command, EvaError> {
+    let (subcommand, rest) = args
+        .split_first()
+        .ok_or_else(|| EvaError::invalid_argument("missing upgrade subcommand"))?;
+    match subcommand.as_str() {
+        "check" => Ok(Command::Upgrade(UpgradeCommand::Check(
+            parse_upgrade_check_options(rest)?,
+        ))),
+        value => {
+            Err(EvaError::unsupported("unknown upgrade subcommand")
+                .with_context("subcommand", value))
+        }
+    }
+}
+
+fn parse_upgrade_check_options(args: &[String]) -> Result<UpgradeCheckOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut from_generation = "gen-v13".to_owned();
+    let mut to_generation = "gen-v14".to_owned();
+    let mut from_release = "1.3.0".to_owned();
+    let mut to_release = "1.4.0".to_owned();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--from-generation" => {
+                index += 1;
+                from_generation = required_option(args, index, "from generation option")?.clone();
+            }
+            "--to-generation" => {
+                index += 1;
+                to_generation = required_option(args, index, "to generation option")?.clone();
+            }
+            "--from-release" => {
+                index += 1;
+                from_release = required_option(args, index, "from release option")?.clone();
+            }
+            "--to-release" => {
+                index += 1;
+                to_release = required_option(args, index, "to release option")?.clone();
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    GenerationId::parse(&from_generation)?;
+    GenerationId::parse(&to_generation)?;
+    Ok(UpgradeCheckOptions {
+        common: parse_common_options(&passthrough)?,
+        from_generation,
+        to_generation,
+        from_release,
+        to_release,
+    })
+}
+
+fn parse_snapshot_role(value: &str) -> Result<SnapshotRole, EvaError> {
+    match value {
+        "pre_release" | "pre-release" | "pre" => Ok(SnapshotRole::PreRelease),
+        "post_release" | "post-release" | "post" => Ok(SnapshotRole::PostRelease),
+        _ => Err(EvaError::unsupported("unknown snapshot role").with_context("role", value)),
+    }
+}
+
 fn required_option<'a>(
     args: &'a [String],
     index: usize,
@@ -1292,6 +1598,128 @@ where
     }
 }
 
+fn execute_backup<W, E>(
+    command: BackupCommand,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match command {
+        BackupCommand::Create(options) => {
+            let trace = trace_for("cli.backup.create");
+            match create_backup_result(&options) {
+                Ok(result) => {
+                    write_backup_create(stdout, options.common.output, &result, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "backup.create",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+    }
+}
+
+fn execute_snapshot<W, E>(
+    command: SnapshotCommand,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match command {
+        SnapshotCommand::Create(options) => {
+            let trace = trace_for("cli.snapshot.create");
+            match create_snapshot_result(&options) {
+                Ok((backup, snapshot)) => {
+                    write_snapshot_create(
+                        stdout,
+                        options.common.output,
+                        &backup,
+                        &snapshot,
+                        &trace,
+                    )?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "snapshot.create",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+    }
+}
+
+fn execute_restore<W, E>(
+    command: RestoreCommand,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match command {
+        RestoreCommand::Plan(options) => {
+            let trace = trace_for("cli.restore.plan");
+            match create_restore_plan(&options) {
+                Ok((snapshot, plan)) => {
+                    write_restore_plan(stdout, options.common.output, &snapshot, &plan, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "restore.plan",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+    }
+}
+
+fn execute_upgrade<W, E>(
+    command: UpgradeCommand,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match command {
+        UpgradeCommand::Check(options) => {
+            let trace = trace_for("cli.upgrade.check");
+            match create_upgrade_check(&options) {
+                Ok(report) => {
+                    write_upgrade_check(stdout, options.common.output, &report, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "upgrade.check",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HardwareBindPlan {
     adapter_id: AdapterId,
@@ -1299,6 +1727,17 @@ struct HardwareBindPlan {
     status: String,
     apply: bool,
     device: Option<DeviceCandidate>,
+    steps: Vec<String>,
+    risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpgradeCheckReport {
+    status: String,
+    supervisor: SupervisorReport,
+    drain: DrainPlan,
+    rollback: RollbackPlan,
+    migration: MigrationPreflight,
     steps: Vec<String>,
     risks: Vec<String>,
 }
@@ -1364,6 +1803,120 @@ fn hardware_bind_plan(
             "release logical lease and emit audit".to_owned(),
         ],
         risks,
+    })
+}
+
+fn create_backup_result(options: &BackupCreateOptions) -> Result<BackupResult, EvaError> {
+    let scope = BackupScope::new(
+        options.project_id.clone(),
+        vec![
+            BackupEntry::new("config/eva.yaml", "runtime: in_memory_v1.0")?,
+            BackupEntry::new("config/adapters/hardware/scale-main.yaml", "enabled: false")?,
+            BackupEntry::new("state/release-pointer", options.project_id.as_bytes())?.redacted(),
+        ],
+    )?;
+    let mut plan = BackupPlan::new(
+        options.artifact_id.clone(),
+        RequestId::parse(&options.request_id)?,
+        GenerationId::parse("gen-v14")?,
+        "cli",
+        options.reason.clone(),
+        scope,
+    )?;
+    if options.dry_run {
+        plan = plan.dry_run();
+    }
+    let mut store = InMemoryArtifactStore::new();
+    BackupService.create(plan, &mut store)
+}
+
+fn create_snapshot_result(
+    options: &SnapshotCreateOptions,
+) -> Result<(BackupResult, ReleaseSnapshot), EvaError> {
+    let backup_options = BackupCreateOptions {
+        common: options.common.clone(),
+        artifact_id: format!("backup-for-{}", options.snapshot_id),
+        request_id: options.request_id.clone(),
+        project_id: "eva-cli".to_owned(),
+        reason: "snapshot capture requires verified backup artifact".to_owned(),
+        dry_run: false,
+    };
+    let backup = create_backup_result(&backup_options)?;
+    let snapshot = ReleaseSnapshotService.create(
+        options.snapshot_id.clone(),
+        options.role,
+        options.release_ref.clone(),
+        RequestId::parse(&options.request_id)?,
+        &backup.manifest,
+        "healthy",
+    )?;
+    Ok((backup, snapshot))
+}
+
+fn create_restore_plan(
+    options: &RestorePlanOptions,
+) -> Result<(ReleaseSnapshot, RestorePlan), EvaError> {
+    let snapshot_options = SnapshotCreateOptions {
+        common: options.common.clone(),
+        snapshot_id: options.snapshot_id.clone(),
+        request_id: options.request_id.clone(),
+        release_ref: options.release_ref.clone(),
+        role: SnapshotRole::PreRelease,
+    };
+    let (_backup, snapshot) = create_snapshot_result(&snapshot_options)?;
+    let plan = ReleaseSnapshotService.restore_plan(&snapshot);
+    Ok((snapshot, plan))
+}
+
+fn create_upgrade_check(options: &UpgradeCheckOptions) -> Result<UpgradeCheckReport, EvaError> {
+    let active = RuntimeGeneration::new(
+        GenerationId::parse(&options.from_generation)?,
+        options.from_release.clone(),
+        GenerationState::Active,
+    )?;
+    let mut supervisor = InMemorySupervisor::new(active)?;
+    let candidate_id = GenerationId::parse(&options.to_generation)?;
+    supervisor.start_candidate(candidate_id.clone(), options.to_release.clone())?;
+    let supervisor_report = supervisor.report();
+    let migration_manifest = MigrationPackageManifest::new(
+        "migration-v14",
+        options.from_release.clone(),
+        options.to_release.clone(),
+        vec![
+            "backup_manifest".to_owned(),
+            "runtime_generation".to_owned(),
+        ],
+    )?;
+    let migration =
+        MigrationPackageService.verify_preflight(&migration_manifest, &options.from_release)?;
+    let drain = DrainCoordinator.plan(GenerationId::parse(&options.from_generation)?, 0, 30_000)?;
+    let rollback = RollbackCoordinator.plan_failed_handoff(
+        candidate_id,
+        GenerationId::parse(&options.from_generation)?,
+        "candidate health or migration preflight failure",
+        None,
+    )?;
+    Ok(UpgradeCheckReport {
+        status: if migration.status == "blocked" {
+            "blocked".to_owned()
+        } else {
+            "ready".to_owned()
+        },
+        supervisor: supervisor_report,
+        drain,
+        rollback,
+        migration,
+        steps: vec![
+            "create pre-release backup".to_owned(),
+            "capture release snapshot".to_owned(),
+            "start candidate runtime generation".to_owned(),
+            "verify migration package preflight".to_owned(),
+            "plan drain and rollback before apply".to_owned(),
+        ],
+        risks: vec![
+            "upgrade check is diagnostic; no runtime process is started by CLI".to_owned(),
+            "rollback remains planned until lifecycle apply is explicitly authorized".to_owned(),
+        ],
     })
 }
 
@@ -2622,6 +3175,109 @@ fn write_hardware_bind<W: Write>(
     }
 }
 
+fn write_backup_create<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    result: &BackupResult,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Backup artifact created").map_err(write_error_kind)?;
+            writeln!(writer, "artifact: {}", result.manifest.artifact_id)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "digest: {}", result.manifest.digest).map_err(write_error_kind)?;
+            writeln!(writer, "verified: {}", result.verification.verified).map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope("backup.create", EXIT_OK, &backup_result_json(result), trace)
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_snapshot_create<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    backup: &BackupResult,
+    snapshot: &ReleaseSnapshot,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Release snapshot created").map_err(write_error_kind)?;
+            writeln!(writer, "snapshot: {}", snapshot.snapshot_id).map_err(write_error_kind)?;
+            writeln!(writer, "backup: {}", backup.manifest.artifact_id)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "role: {}", snapshot.role.as_str()).map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "snapshot.create",
+                EXIT_OK,
+                &snapshot_create_json(backup, snapshot),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_restore_plan<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    snapshot: &ReleaseSnapshot,
+    plan: &RestorePlan,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Restore plan").map_err(write_error_kind)?;
+            writeln!(writer, "snapshot: {}", snapshot.snapshot_id).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", plan.status).map_err(write_error_kind)?;
+            writeln!(writer, "apply_allowed: {}", plan.apply_allowed).map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "restore.plan",
+                EXIT_OK,
+                &restore_plan_json(snapshot, plan),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_upgrade_check<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    report: &UpgradeCheckReport,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Upgrade check").map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
+            writeln!(writer, "active: {}", report.supervisor.active_generation)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "migration: {}", report.migration.status).map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope("upgrade.check", EXIT_OK, &upgrade_check_json(report), trace)
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn adapter_list_json(runtime: &AdapterRuntime) -> String {
     let entries = runtime.list().into_iter().map(|handle| {
         format!(
@@ -2839,6 +3495,123 @@ fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
             .unwrap_or_else(|| "null".to_owned()),
         json_array(plan.steps.iter().map(|step| json_string(step))),
         json_array(plan.risks.iter().map(|risk| json_string(risk)))
+    )
+}
+
+fn backup_result_json(result: &BackupResult) -> String {
+    format!(
+        "{{\"artifact_id\":{},\"request_id\":{},\"runtime_generation\":{},\"project_id\":{},\"digest\":{},\"verified\":{},\"entries\":{},\"risks\":{},\"audit\":{}}}",
+        json_string(&result.manifest.artifact_id),
+        json_string(result.manifest.request_id.as_str()),
+        json_string(result.manifest.runtime_generation.as_str()),
+        json_string(&result.manifest.project_id),
+        json_string(&result.manifest.digest),
+        result.verification.verified,
+        json_array(result.manifest.entries.iter().map(|entry| {
+            format!(
+                "{{\"path\":{},\"size_bytes\":{},\"redacted\":{}}}",
+                json_string(&entry.path),
+                entry.size_bytes,
+                entry.redacted
+            )
+        })),
+        json_array(result.plan.risks.iter().map(|risk| json_string(risk))),
+        json_array(result.manifest.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn snapshot_json(snapshot: &ReleaseSnapshot) -> String {
+    format!(
+        "{{\"snapshot_id\":{},\"role\":{},\"release_ref\":{},\"request_id\":{},\"runtime_generation\":{},\"backup_artifact_id\":{},\"backup_digest\":{},\"health_status\":{},\"audit\":{}}}",
+        json_string(&snapshot.snapshot_id),
+        json_string(snapshot.role.as_str()),
+        json_string(&snapshot.release_ref),
+        json_string(snapshot.request_id.as_str()),
+        json_string(snapshot.runtime_generation.as_str()),
+        json_string(&snapshot.backup_artifact_id),
+        json_string(&snapshot.backup_digest),
+        json_string(&snapshot.health_status),
+        json_array(snapshot.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn snapshot_create_json(backup: &BackupResult, snapshot: &ReleaseSnapshot) -> String {
+    format!(
+        "{{\"snapshot\":{},\"backup\":{}}}",
+        snapshot_json(snapshot),
+        backup_result_json(backup)
+    )
+}
+
+fn restore_plan_json(snapshot: &ReleaseSnapshot, plan: &RestorePlan) -> String {
+    format!(
+        "{{\"snapshot\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
+        snapshot_json(snapshot),
+        json_string(&plan.snapshot_id),
+        json_string(&plan.status),
+        plan.apply_allowed,
+        json_array(plan.steps.iter().map(|step| json_string(step))),
+        json_array(plan.risks.iter().map(|risk| json_string(risk))),
+        json_array(plan.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn upgrade_check_json(report: &UpgradeCheckReport) -> String {
+    format!(
+        "{{\"status\":{},\"supervisor\":{},\"drain\":{},\"rollback\":{},\"migration\":{},\"steps\":{},\"risks\":{}}}",
+        json_string(&report.status),
+        supervisor_report_json(&report.supervisor),
+        drain_plan_json(&report.drain),
+        rollback_plan_json(&report.rollback),
+        migration_preflight_json(&report.migration),
+        json_array(report.steps.iter().map(|step| json_string(step))),
+        json_array(report.risks.iter().map(|risk| json_string(risk)))
+    )
+}
+
+fn supervisor_report_json(report: &SupervisorReport) -> String {
+    format!(
+        "{{\"active_generation\":{},\"candidate_generation\":{},\"healthy\":{},\"audit\":{}}}",
+        json_string(report.active_generation.as_str()),
+        option_json(report.candidate_generation.as_ref().map(|id| id.as_str())),
+        report.healthy,
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn drain_plan_json(plan: &DrainPlan) -> String {
+    format!(
+        "{{\"generation_id\":{},\"inflight_tasks\":{},\"timeout_ms\":{},\"accepts_new_work\":{},\"status\":{},\"audit\":{}}}",
+        json_string(plan.generation_id.as_str()),
+        plan.inflight_tasks,
+        plan.timeout_ms,
+        plan.accepts_new_work,
+        json_string(plan.status.as_str()),
+        json_array(plan.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn rollback_plan_json(plan: &RollbackPlan) -> String {
+    format!(
+        "{{\"from_generation\":{},\"to_generation\":{},\"snapshot_id\":{},\"reason\":{},\"status\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
+        json_string(plan.from_generation.as_str()),
+        json_string(plan.to_generation.as_str()),
+        option_json(plan.snapshot_id.as_deref()),
+        json_string(&plan.reason),
+        json_string(&plan.status),
+        json_array(plan.steps.iter().map(|step| json_string(step))),
+        json_array(plan.risks.iter().map(|risk| json_string(risk))),
+        json_array(plan.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn migration_preflight_json(report: &MigrationPreflight) -> String {
+    format!(
+        "{{\"package_id\":{},\"status\":{},\"warnings\":{},\"audit\":{}}}",
+        json_string(&report.package_id),
+        json_string(&report.status),
+        json_array(report.warnings.iter().map(|warning| json_string(warning))),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
 }
 
@@ -3336,7 +4109,7 @@ fn write_error_kind(error: io::Error) -> EvaError {
 }
 
 fn help_text() -> &'static str {
-    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.3 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
+    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--dry-run] [--project <path>] [--output text|json]\n  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--project <path>] [--output text|json]\n  eva restore plan [--snapshot-id <id>] [--release <ref>] [--project <path>] [--output text|json]\n  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.4 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n  backup           Create and verify a V1.4 backup artifact in an in-memory ArtifactStore.\n  snapshot         Capture a release snapshot linked to a verified backup artifact.\n  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n  upgrade          Check generation, migration, drain, and rollback readiness without starting processes.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
 }
 
 #[cfg(test)]
@@ -3509,17 +4282,17 @@ mod tests {
     }
 
     #[test]
-    fn version_text_and_json_report_v13_hardware() {
+    fn version_text_and_json_report_v14_lifecycle() {
         let (text_exit, text_stdout, text_stderr) = run_cli(&["--version"]);
         assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
-        assert!(text_stdout.contains("eva 1.3.0"));
-        assert!(text_stdout.contains("V1.3 hardware access boundary"));
+        assert!(text_stdout.contains("eva 1.4.0"));
+        assert!(text_stdout.contains("V1.4 backup and lifecycle planning"));
 
         let (json_exit, json_stdout, json_stderr) = run_cli(&["version", "--output", "json"]);
         assert_eq!(json_exit, EXIT_OK, "{json_stderr}");
         assert!(json_stdout.contains("\"command\":\"version\""));
-        assert!(json_stdout.contains("\"version\":\"1.3.0\""));
-        assert!(json_stdout.contains("hardware_v1.3"));
+        assert!(json_stdout.contains("\"version\":\"1.4.0\""));
+        assert!(json_stdout.contains("lifecycle_v1.4"));
     }
 
     #[test]
@@ -3678,5 +4451,32 @@ mod tests {
         assert!(bind_stdout.contains("\"command\":\"hardware.bind\""));
         assert!(bind_stdout.contains("\"status\":\"blocked\""));
         assert!(bind_stdout.contains("raw I/O"));
+    }
+
+    #[test]
+    fn v14_backup_lifecycle_commands_report_json() {
+        let root = workspace_root();
+        let root = root.to_str().unwrap();
+        let commands = [
+            vec!["backup", "create", "--project", root, "--output", "json"],
+            vec!["snapshot", "create", "--project", root, "--output", "json"],
+            vec!["restore", "plan", "--project", root, "--output", "json"],
+            vec!["upgrade", "check", "--project", root, "--output", "json"],
+        ];
+
+        for command in commands {
+            let (exit_code, stdout, stderr) = run_cli(&command);
+            assert_eq!(exit_code, EXIT_OK, "command={command:?} stderr={stderr}");
+            assert!(stdout.contains("\"ok\":true"), "{stdout}");
+        }
+
+        let (_exit_code, restore_stdout, _stderr) =
+            run_cli(&["restore", "plan", "--project", root, "--output", "json"]);
+        assert!(restore_stdout.contains("\"apply_allowed\":false"));
+
+        let (_exit_code, upgrade_stdout, _stderr) =
+            run_cli(&["upgrade", "check", "--project", root, "--output", "json"]);
+        assert!(upgrade_stdout.contains("\"status\":\"ready\""));
+        assert!(upgrade_stdout.contains("rollback"));
     }
 }

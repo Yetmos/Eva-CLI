@@ -2,14 +2,14 @@
 
 更新时间：2026-07-04
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地诊断文件读写。V1.3 仍把主要命令实现集中在 `run.rs`，这样 version、task、external capability、memory context 和 hardware command 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地诊断文件读写。V1.4 仍把主要命令实现集中在 `run.rs`，这样 version、task、external capability、memory context、hardware、backup 和 lifecycle command 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | 已更新到 V1.3 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`。 |
+| `run.rs` | 已更新到 V1.4 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -59,6 +59,17 @@
 
 `scale-main` 默认 disabled，因此 `hardware bind` 返回 `status: blocked`。这是有意设计：V1.3 要证明 hardware Adapter 边界和 plan-first 体验，而不是在开发机上触发真实设备 I/O。
 
+## V1.4 Backup And Lifecycle Surface
+
+`run.rs` 新增 V1.4 plan-first 命令：
+
+- `backup create`：调用 `eva_backup::BackupService` 写入 in-memory `ArtifactStore`，生成 manifest 并校验 digest。
+- `snapshot create`：调用 `ReleaseSnapshotService` 生成 pre/post release snapshot。
+- `restore plan`：调用 `ReleaseSnapshotService::restore_plan`，输出 `apply_allowed:false`。
+- `upgrade check`：调用 `eva_lifecycle` 的 in-memory supervisor、generation、drain、rollback 状态机，并结合 migration preflight。
+
+这些命令是 release/lifecycle readiness smoke，不执行真实文件恢复、release pointer 切换或 OS 进程启动。
+
 ## 保持集中实现的原因
 
 V1.0 到 V1.3 的 CLI surface 仍处于收敛期。命令 implementations 暂时集中在 `run.rs`，可以让以下行为保持一致：
@@ -78,4 +89,8 @@ cargo test -p eva-cli
 cargo run -- hardware list --output json
 cargo run -- hardware probe --adapter scale-main --output json
 cargo run -- hardware bind --adapter scale-main --output json
+cargo run -- backup create --output json
+cargo run -- snapshot create --output json
+cargo run -- restore plan --output json
+cargo run -- upgrade check --output json
 ```

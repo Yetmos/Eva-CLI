@@ -1,28 +1,58 @@
 # eva-lifecycle / 生命周期管理
 
-更新时间：2026-07-02
+更新时间：2026-07-04
 
 ![V1.x extension module flow](../assets/eva-extension-module-flow.svg)
 
-`eva-lifecycle` 负责 Supervisor、runtime generation、drain 和 rollback。它管理运行时代际切换和失败恢复，不承载 Lua 业务决策，不替代 backup 的 artifact 校验。
+`eva-lifecycle` 是 V1.4 的 Supervisor、runtime generation、drain 和 rollback 边界。它管理运行时代际切换和失败恢复，不承载 Lua 业务决策，不生成 backup artifact，也不绕过 `eva-backup` 的 snapshot/restore plan 校验。
 
-## 当前模块功能说明
+V1.4 的实现是 in-memory lifecycle planning：可以表达 active/candidate generation、drain plan、rollback plan 和 mock supervisor health check，但不会启动真实进程、移动 release pointer 或执行真实升级。
 
-| 功能域 | 当前状态 | 目标行为 |
+## V1.4 已实现能力
+
+| 功能域 | 当前状态 | 已实现行为 |
 | --- | --- | --- |
-| Supervisor | 骨架 | 拥有 runtime process/service 的启动、监控和停止边界。 |
-| Generation | 骨架 | 管理 runtime generation id、active/pending/draining 状态。 |
-| Drain | 骨架 | 在切换或 shutdown 前停止接收新任务并等待安全退出。 |
-| Rollback | 骨架 | 切换失败后回滚到上一代 runtime 或 snapshot。 |
-| Backup integration | 未实现 | V1.4 使用 `eva-backup` 的 restore plan 和 snapshot 校验。 |
-| Audit | 未实现 | generation handoff、drain、rollback 全部记录审计。 |
+| Generation | 已完成 V1.4 | `RuntimeGeneration` 和 `GenerationController` 支持 active/candidate、promote、failed candidate、old generation draining。 |
+| Drain | 已完成 V1.4 | `DrainCoordinator` 输出 plan/completed/timed_out，并显式 `accepts_new_work:false`。 |
+| Rollback | 已完成 V1.4 | `RollbackCoordinator` 根据 failed handoff 和可选 `RestorePlan` 生成 rollback steps、risks、audit。 |
+| Supervisor | 已完成 V1.4 | `InMemorySupervisor` 支持 start candidate、commit healthy candidate 和 structured report。 |
+| Backup integration | 已完成 V1.4 | rollback 可携带 `eva-backup::RestorePlan` 的 snapshot/risk 信息。 |
+| CLI | 已完成 V1.4 | `eva upgrade check` 输出 supervisor、migration preflight、drain 和 rollback readiness。 |
+
+## Public API
+
+| 类型/函数 | 说明 |
+| --- | --- |
+| `GenerationState` | `pending`、`active`、`draining`、`retired`、`failed`。 |
+| `RuntimeGeneration` | generation id、release ref 和 state。 |
+| `GenerationController` | active/candidate 状态机，支持 start/promote/fail candidate。 |
+| `DrainCoordinator` | 创建 drain plan，完成或标记 timeout。 |
+| `RollbackCoordinator` | 为 failed handoff 生成 rollback plan，可纳入 backup restore plan 风险。 |
+| `InMemorySupervisor` | V1.4 mock supervisor，用于验证 generation handoff 语义。 |
+| `RuntimeHealth` | candidate runtime health input。 |
+| `SupervisorReport` | active/candidate generation、health、audit 摘要。 |
+
+## CLI 验证入口
+
+```powershell
+cargo run -- upgrade check --output json
+```
+
+输出会包含：
+
+- `supervisor.active_generation`
+- `supervisor.candidate_generation`
+- `migration.status`
+- `drain.status`
+- `rollback.status`
+- `risks`，明确 CLI 不启动真实 runtime 进程。
 
 ## 模块边界
 
 `eva-lifecycle` 做：
 
-- 管理 runtime generation 的创建、激活、drain、回滚。
-- 协调高风险 apply/restore 的执行阶段。
+- 管理 runtime generation 的创建、激活、drain、回滚计划。
+- 协调高风险 apply/restore 的执行前状态。
 - 记录 lifecycle audit、trace 和失败原因。
 
 `eva-lifecycle` 不做：
@@ -31,38 +61,22 @@
 - 不执行 Lua 业务逻辑。
 - 不决定 Adapter 或 capability 的业务路由。
 - 不静默执行不可逆 mutation，所有高风险路径必须先有 plan。
-
-## 详细开发实施步骤
-
-| 顺序 | 版本 | 步骤 | 依赖 | 完成标准 |
-| --- | --- | --- | --- | --- |
-| 1 | V1.4 | 定义 supervisor trait、runtime handle、health summary。 | `eva-runtime` | supervisor 可启动/停止 mock runtime。 |
-| 2 | V1.4 | 定义 generation state：pending、active、draining、retired、failed。 | `eva-core::GenerationId` | 状态转换可测。 |
-| 3 | V1.4 | 实现 drain protocol：停止接收、等待任务、超时强制失败。 | `eva-agent`、`eva-eventbus` | drain 超时返回结构化错误。 |
-| 4 | V1.4 | 实现 rollback protocol：保留上一代 handle，失败后恢复。 | `eva-backup` | 切换失败时上一代仍可用。 |
-| 5 | V1.4 | 接 release snapshot restore plan。 | `eva-backup` | restore apply 前必须 verify plan。 |
-| 6 | V1.5 | 增加 supervisor restart policy、崩溃恢复和健康检查。 | observability | runtime 失败可审计、可恢复。 |
-
-## 详细开发进度表
-
-| 文件/模块 | 具体功能 | 当前进度 | 下一步 |
-| --- | --- | --- | --- |
-| `src/lib.rs` | 模块导出 | 骨架 | re-export supervisor、generation、drain、rollback。 |
-| `src/supervisor.rs` | runtime supervisor | `RESPONSIBILITY` 占位 | 定义 start/stop/restart/health API。 |
-| `src/generation.rs` | generation 状态 | `RESPONSIBILITY` 占位 | 定义状态枚举、handoff、active handle。 |
-| `src/drain.rs` | drain 旧 generation | `RESPONSIBILITY` 占位 | 定义 drain token、deadline、result。 |
-| `src/rollback.rs` | 失败后回滚 | `RESPONSIBILITY` 占位 | 定义 rollback plan、reason、audit fields。 |
-| `src/README.md` | 源码目录说明 | 简略 | 补充文件职责和进度。 |
-| 单元测试 | generation/drain/rollback | 未开始 | 覆盖非法切换、drain 超时、rollback 成功/失败。 |
+- 不在 V1.4 启动真实 OS 进程、service manager、Supervisor binary 或 runtime binary。
 
 ## 验证计划
 
-| 阶段 | 命令 | 目标 |
-| --- | --- | --- |
-| V1.4 | `cargo test -p eva-lifecycle` | generation、drain、rollback 可测。 |
-| V1.4 | backup integration tests | restore/apply 必须先 verify plan。 |
-| V1.5 | supervisor fault tests | runtime 失败可重启或回滚。 |
+```powershell
+cargo test -p eva-lifecycle
+cargo run -- upgrade check --output json
+```
+
+当前测试覆盖：
+
+- candidate promote 后新 generation 变 active，旧 generation 进入 draining。
+- drain plan 停止接收新工作并可完成。
+- rollback plan 保留 previous generation 并记录风险。
+- in-memory supervisor 只提交 healthy candidate。
 
 ## English
 
-`eva-lifecycle` owns supervisor boundaries, runtime generations, drain, and rollback. High-risk mutations must be planned and audited before execution.
+`eva-lifecycle` owns V1.4 supervisor boundaries, runtime generations, drain planning, and rollback planning. It models lifecycle safety without starting real processes in V1.4.

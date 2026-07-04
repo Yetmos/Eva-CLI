@@ -1,33 +1,32 @@
 # eva-backup/src / 备份源码
 
+更新时间：2026-07-04
+
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
-本目录承载备份服务、迁移包、release snapshot 和 manifest 完整性校验。当前为骨架，V1.4 先实现 plan、manifest、digest 和 dry-run restore。
+本目录承载 V1.4 备份、迁移包、release snapshot 和 manifest 完整性校验源码。实现重点是把高风险恢复路径表达成可测试的 plan、manifest、digest 和 audit，而不是直接执行 destructive restore。
 
-## 功能说明
+## 文件职责
 
-| 文件 | 职责 | 当前进度 | 目标版本 |
+| 文件 | 职责 | V1.4 状态 | 关键类型/函数 |
 | --- | --- | --- | --- |
-| `lib.rs` | 模块导出 | 骨架 | V1.4 |
-| `backup_service.rs` | backup plan 和 artifact 生成 | 骨架 | V1.4 |
-| `migration_package.rs` | 迁移包 manifest 和兼容性 | 骨架 | V1.4 |
-| `release_snapshot.rs` | release snapshot 和 restore plan | 骨架 | V1.4 |
-| `manifest_verifier.rs` | artifact/manifest integrity verification | 骨架 | V1.4 |
+| `lib.rs` | 模块导出 | 已完成 | re-export backup、manifest verifier、migration、snapshot 类型。 |
+| `backup_service.rs` | backup plan 和 artifact 生成 | 已完成 | `BackupEntry`、`BackupScope`、`BackupPlan`、`BackupManifest`、`BackupService::create`。 |
+| `manifest_verifier.rs` | artifact/manifest integrity verification | 已完成 | `ManifestVerifier::verify_artifact`、`VerificationReport`。 |
+| `migration_package.rs` | 迁移包 manifest 和兼容性 | 已完成 | `MigrationPackageManifest`、`MigrationPackageService::verify_preflight`。 |
+| `release_snapshot.rs` | release snapshot 和 restore plan | 已完成 | `ReleaseSnapshot`、`SnapshotRole`、`RestorePlan`、`ReleaseSnapshotService`。 |
 
-## 开发实施步骤
+## 关键不变量
 
-| 顺序 | 步骤 | 输出 |
-| --- | --- | --- |
-| 1 | 定义 backup plan、scope、manifest、digest。 | 备份可 dry-run。 |
-| 2 | 实现 artifact 写入和 verify。 | digest mismatch 可失败。 |
-| 3 | 定义 migration package 和 release snapshot。 | 版本兼容可诊断。 |
-| 4 | 接 lifecycle rollback。 | restore/apply 可回滚。 |
+- Backup scope 必须至少包含一条 entry。
+- Backup entry path 必须是稳定相对路径，不能包含 `..` 或反斜杠。
+- Backup create 后立即通过 `ManifestVerifier` 校验 artifact digest。
+- Digest mismatch 必须返回 `Conflict`，不能降级成 warning。
+- Migration package preflight 不执行迁移逻辑，只输出 ready/planned/blocked。
+- Restore plan 在 V1.4 永远 `apply_allowed:false`。
 
-## 进度表
+## 验证
 
-| 模块 | 具体功能 | 状态 | 下一步 |
-| --- | --- | --- | --- |
-| BackupService | plan/execute/result | 未实现 | 定义 artifact ref。 |
-| MigrationPackage | manifest/precheck | 未实现 | 定义兼容规则。 |
-| ReleaseSnapshot | snapshot/restore plan | 未实现 | 禁止直接 restore。 |
-| ManifestVerifier | digest/schema/version | 未实现 | 实现校验结果。 |
+```powershell
+cargo test -p eva-backup
+```
