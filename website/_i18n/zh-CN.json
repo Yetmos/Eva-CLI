@@ -264,12 +264,12 @@
       {
         "id": "project-release-plan",
         "title": "项目发布方案",
-        "description": "可复用的 CI/DI 流程、平台矩阵、发布证据、制品路线图和修复策略。"
+        "description": "可复用的 CI/DI 流程、GitHub Packages 门禁、平台矩阵、发布证据、制品路线图和修复策略。"
       },
       {
         "id": "version-management-plan",
         "title": "版本管理方案",
-        "description": "版本格式、状态映射、递增规则、GitHub tag 与 release 规则，以及 milestone 工作流。"
+        "description": "版本格式、状态映射、递增规则、GitHub tag、Release、Packages 和 milestone 工作流。"
       },
       {
         "id": "v1.0-known-limitations",

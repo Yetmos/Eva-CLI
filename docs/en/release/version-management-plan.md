@@ -49,8 +49,36 @@ Different systems need different version forms:
 | Git tag, stable release | `v<major>.<minor>.<patch>` | `v1.0.15` |
 | Cargo package version, alpha/beta | `<major>.<minor>.<patch>-<status>` or `<major>.<minor>.<patch>-<status>.<n>` | `1.0.15-alpha` |
 | Cargo package version, stable release | `<major>.<minor>.<patch>` | `1.0.15` |
+| GitHub Packages container tag, prerelease | `<major>.<minor>.<patch>-<status>` and `sha-<short>` | `1.0.15-alpha`, `sha-abc1234` |
+| GitHub Packages container tag, stable release | `<major>.<minor>.<patch>`, `<major>.<minor>`, and `latest` | `1.0.15`, `1.0`, `latest` |
 
 Human-facing text may say `V1.0.15-release` to make the status explicit. Git tags and stable Cargo versions omit `-release` so the final version remains a normal stable SemVer version. Git tags use a lowercase `v` prefix, matching the existing release plan.
+
+GitHub Packages package versions and tags must be derived from the same release
+tag. Stable packages may update `latest`; alpha and beta packages must not.
+
+## Automated Validation
+
+The repository uses `scripts/validate-version-management.ps1` to enforce this policy in CI and the GitHub Release workflow. The script checks that:
+
+- root `Cargo.toml` package version and `[workspace.package].version` match;
+- Cargo versions are either stable SemVer or `alpha`/`beta` prerelease SemVer;
+- the current human-facing version, such as `V1.5.0-release`, appears in the root README files, docs README files, and CLI version output;
+- `docs/_i18n/manifest.json` registers the English entry and Chinese detailed source for this plan;
+- CI and release workflows run version-management validation;
+- when a release tag is provided, it exactly matches the Cargo version.
+
+CI runs without a tag:
+
+```powershell
+./scripts/validate-version-management.ps1
+```
+
+The GitHub Release workflow runs with the tag:
+
+```powershell
+./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
+```
 
 ## Increment Decisions
 
@@ -88,6 +116,30 @@ GitHub Releases must bind to immutable tags:
 - Release titles use the human-facing version, such as `Eva-CLI V1.0.15-alpha` or `Eva-CLI V1.0.15-release`.
 - Release bodies include change summary, compatibility notes, migration notes, verification evidence, known issues, and documentation links.
 
+## GitHub Packages Rules
+
+GitHub Packages is an optional distribution channel layered after the GitHub
+Release gate. It is not the source of version truth; the Git tag and GitHub
+Release remain authoritative.
+
+Required package rules:
+
+- Use `GITHUB_TOKEN` with `packages: write` for packages linked to this
+  repository.
+- Use a least-privilege PAT only when cross-repository private package access
+  requires it.
+- Publish container images to `ghcr.io/yetmos/eva-cli` when the project has a
+  reproducible container build.
+- Publish ecosystem packages only for registries supported by GitHub Packages
+  and only after install smoke tests exist.
+- Record package digest, package URL, package version, and source tag in release
+  evidence.
+- Never publish a package from a dirty tree or from a commit different from the
+  release tag.
+
+Current Rust crate publication is out of scope for GitHub Packages because
+GitHub Packages does not replace crates.io as a public Cargo crate registry.
+
 ## Milestones, Issues, and PRs
 
 GitHub milestones use human-facing names such as `V1.0.15-alpha`, `V1.0.15-beta`, and `V1.0.15-release`.
@@ -120,8 +172,11 @@ git push origin v1.0.15
 ```
 
 7. Wait for the GitHub Release workflow to finish.
-8. Check prerelease/latest settings, release body, source archives, and release evidence.
-9. Close the milestone and create the next milestone.
+8. If package publication is enabled, publish GitHub Packages only after release
+   verification succeeds and record package digest evidence.
+9. Check prerelease/latest settings, release body, source archives, package
+   metadata, and release evidence.
+10. Close the milestone and create the next milestone.
 
 ## Repair and Rollback
 

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag, for example v1.5.0"
+        description: "Existing release tag, for example v1.5.0 or v1.5.1-beta.1"
         required: true
         type: string
 
@@ -33,30 +33,15 @@ jobs:
           - windows-latest
           - macos-latest
     steps:
-      - name: Validate release tag
-        shell: pwsh
-        run: |
-          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "Release tag '$env:RELEASE_TAG' must match vMAJOR.MINOR.PATCH."
-          }
-
       - name: Checkout tag
         uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
-      - name: Verify Cargo version matches tag
+      - name: Validate version management
         shell: pwsh
-        run: |
-          $versionLine = Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1
-          if ($null -eq $versionLine) {
-            throw "Cargo.toml does not contain a package version."
-          }
-          $version = $versionLine.Matches[0].Groups[1].Value
-          if ($env:RELEASE_TAG -ne "v$version") {
-            throw "Release tag '$env:RELEASE_TAG' does not match Cargo.toml version '$version'."
-          }
+        run: ./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
 
       - name: Show toolchain
         run: |
@@ -110,18 +95,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Validate release tag
-        shell: pwsh
-        run: |
-          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "Release tag '$env:RELEASE_TAG' must match vMAJOR.MINOR.PATCH."
-          }
-
       - name: Checkout tag
         uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+
+      - name: Validate version management
+        shell: pwsh
+        run: ./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
 
       - name: Build localized website
         shell: pwsh
@@ -155,15 +137,25 @@ jobs:
           script: |
             const fs = require("fs");
             const tag = process.env.RELEASE_TAG;
+            const version = tag.replace(/^v/, "");
+            const baseVersion = version.split("-")[0];
+            const prerelease = /-(alpha|beta)(?:\.\d+)?$/.test(version);
+            const status = prerelease ? version.match(/-(alpha|beta)/)[1] : "release";
+            const humanVersion = prerelease ? `V${version}` : `V${version}-release`;
             const { owner, repo } = context.repo;
-            const releaseName = `Eva-CLI ${tag}`;
-            const manualNotes = fs.readFileSync("docs/en/release-notes-v1.5.0.md", "utf8");
+            const releaseName = `Eva-CLI ${humanVersion}`;
+            const releaseNotesPath = `docs/en/release/release-notes-v${baseVersion}.md`;
+            const manualNotes = fs.existsSync(releaseNotesPath)
+              ? fs.readFileSync(releaseNotesPath, "utf8")
+              : `# Eva-CLI ${humanVersion}\n\nNo dedicated release notes file exists for ${humanVersion}.`;
             const body = [
               manualNotes,
               "## GitHub-managed version record",
               `- Tag: \`${tag}\``,
-              "- Release workflow: validates Rust workspace, website/docs, and V1.5 release gates before publishing.",
-              "- Artifacts: GitHub source archives plus workflow release-evidence artifact. V1.5 intentionally does not publish signed installers.",
+              `- Human version: \`${humanVersion}\``,
+              `- Status: \`${status}\``,
+              "- Release workflow: validates Rust workspace, website/docs, version-management rules, and V1.5 release gates before publishing.",
+              "- Artifacts: GitHub source archives plus workflow release-evidence artifact. V1.5.0-release intentionally does not publish signed installers.",
             ].filter(Boolean).join("\n\n");
 
             try {
@@ -176,7 +168,7 @@ jobs:
                 name: releaseName,
                 body,
                 draft: false,
-                prerelease: false,
+                prerelease,
               });
               core.info(`Updated GitHub Release for ${tag}.`);
             } catch (error) {
@@ -191,7 +183,7 @@ jobs:
                 name: releaseName,
                 body,
                 draft: false,
-                prerelease: false,
+                prerelease,
               });
               core.info(`Created GitHub Release for ${tag}.`);
             }

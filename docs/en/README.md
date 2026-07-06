@@ -11,6 +11,10 @@ Adapter/MCP/Skill/Discovery surfaces, request-scoped memory and knowledge
 context assembly, hardware binding plans, backup/lifecycle diagnostics, and
 release readiness, security, performance, migration, and compatibility checks.
 
+Current managed project version: `V1.5.0-release` (`Cargo.toml` version
+`1.5.0`, stable Git tag form `v1.5.0`). See
+[Eva-CLI Version Management Plan](release/version-management-plan.md).
+
 Important source rule: English documents currently provide the default public
 entry, stable slugs, and summary coverage. The Simplified Chinese documents
 under `docs/zh-CN/` remain the source of truth for detailed architecture and

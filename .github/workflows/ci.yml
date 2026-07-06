@@ -40,6 +40,10 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace
 
+      - name: Version management check
+        shell: pwsh
+        run: ./scripts/validate-version-management.ps1
+
       - name: V1.5 quickstart, external capability, context, hardware, lifecycle, and release smoke
         shell: pwsh
         run: |
@@ -87,3 +91,7 @@ jobs:
       - name: Validate i18n structure
         shell: pwsh
         run: ./scripts/validate-i18n.ps1
+
+      - name: Validate version management
+        shell: pwsh
+        run: ./scripts/validate-version-management.ps1

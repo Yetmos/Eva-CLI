@@ -1,4 +1,4 @@
-# Eva-CLI
+﻿# Eva-CLI
 
 > Language: English | [简体中文](README.zh-CN.md)
 
@@ -9,6 +9,11 @@ surfaces, request-scoped memory/knowledge context assembly, hardware discovery
 and plan-first binding diagnostics, backup/snapshot/restore/upgrade planning,
 release readiness/security/performance/migration checks, CI gates, quickstart,
 release notes, and explicit known limitations.
+
+Current managed project version: `V1.5.0-release` (`Cargo.toml` version
+`1.5.0`, stable Git tag form `v1.5.0`). Version policy is defined in
+[Version Management Plan](docs/en/release/version-management-plan.md).
+
 The website uses English as the default public entry with stable
 slugs, while the Simplified Chinese documents remain the source of truth for
 some detailed architecture and implementation-spec content.
@@ -71,16 +76,16 @@ leave behind compileable artifacts, focused tests, and updated documentation.
 | 9. Hot reload, recovery, and lifecycle | Make runtime changes and failures controlled | Generation swaps, drain, rollback, durable event log, backup/release snapshot integration | Runtime can reject unsafe changes, drain old generations, and recover from known failures |
 | 10. Hardening and 1.0 readiness | Turn working internals into a release-quality CLI | CI, cross-platform checks, security review, quickstart, install docs, release notes, migration guidance | New users can install, run quickstart, diagnose failures, and rely on stable documented contracts |
 
-See [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md) for the staged
+See [Zero to 1.0 Roadmap](docs/en/planning/zero-to-one-roadmap.md) for the staged
 release path from design documents to a 1.0 release, and see
-[eva-core Module Design](docs/en/eva-core-module.md) plus
+[eva-core Module Design](docs/en/architecture/eva-core-module.md) plus
 [crates/eva-core/README.md](crates/eva-core/README.md) for the implemented
 foundation contract layer.
 
 ## V1.0 Quickstart
 
 The supported V1.0 source-install path is documented in
-[Eva-CLI V1.0 Quickstart](docs/en/v1.0-quickstart.md). The short path is:
+[Eva-CLI V1.0 Quickstart](docs/en/guide/v1.0-quickstart.md). The short path is:
 
 ```powershell
 git clone https://github.com/Yetmos/Eva-CLI.git
@@ -96,8 +101,8 @@ cargo run -- task logs --task req-readme-v10 --output json
 ```
 
 V1.0 scope and non-goals are explicit in
-[Known Limitations](docs/en/v1.0-known-limitations.md), and the release summary
-is in [V1.0.0 Release Notes](docs/en/release-notes-v1.0.0.md).
+[Known Limitations](docs/en/release/v1.0-known-limitations.md), and the release summary
+is in [V1.0.0 Release Notes](docs/en/release/release-notes-v1.0.0.md).
 
 ## V1.1 External Capability Smoke
 
@@ -186,11 +191,12 @@ cargo run -- release migration --output json
 
 The release-hardening docs are:
 
-- [V1.5 Release Hardening](docs/en/v1.5-release-hardening.md)
-- [V1.5 Migration Guide](docs/en/v1.5-migration-guide.md)
-- [V1.5 Compatibility Policy](docs/en/v1.5-compatibility-policy.md)
-- [V1.5.0 Release Notes](docs/en/release-notes-v1.5.0.md)
-- [V1.5 GitHub Release Plan](docs/en/v1.5-github-release-plan.md)
+- [V1.5 Release Hardening](docs/en/release/v1.5-release-hardening.md)
+- [V1.5 Migration Guide](docs/en/release/v1.5-migration-guide.md)
+- [V1.5 Compatibility Policy](docs/en/release/v1.5-compatibility-policy.md)
+- [V1.5.0 Release Notes](docs/en/release/release-notes-v1.5.0.md)
+- [V1.5 GitHub Release Plan](docs/en/release/v1.5-github-release-plan.md)
+- [Version Management Plan](docs/en/release/version-management-plan.md)
 
 ## Repository Layout
 
@@ -230,44 +236,44 @@ Default documentation entrances:
 
 Recommended reading order for the English default documentation:
 
-1. [Architecture Overview](docs/en/architecture-overview.md): start with system
+1. [Architecture Overview](docs/en/architecture/architecture-overview.md): start with system
    boundaries, core modules, and the overall conclusion.
-2. [Rust, Lua, and EventBus Scheduler](docs/en/rust-lua-eventbus-scheduler.md):
+2. [Rust, Lua, and EventBus Scheduler](docs/en/architecture/rust-lua-eventbus-scheduler.md):
    understand the Runtime, EventBus, Scheduler, Lua Agents, and Topic routing.
-3. [Lua External Agent Adapter](docs/en/lua-external-agent-adapter.md):
+3. [Lua External Agent Adapter](docs/en/capabilities/lua-external-agent-adapter.md):
    understand how external Agents, CLI tools, HTTP APIs, MCP servers, and
    Skills are connected through adapters.
-4. [Lua Skill, MCP, and Tool Hot Reload](docs/en/lua-skill-mcp-tool-hot-reload.md):
+4. [Lua Skill, MCP, and Tool Hot Reload](docs/en/capabilities/lua-skill-mcp-tool-hot-reload.md):
    understand how tools, Lua Skills, and MCP tool handlers are pushed down into
    Lua and updated through hot reload.
-5. [Skill Implementation Plan](docs/en/skill-implementation.md): understand
+5. [Skill Implementation Plan](docs/en/capabilities/skill-implementation.md): understand
    how workflow Skills, runtime workers, and Lua Skills become controlled
    `workflow.*` capabilities.
-6. [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md):
+6. [Agent Memory and Knowledge Base](docs/en/capabilities/agent-memory-knowledge-base.md):
    understand Agent-private memory, system-wide memory, knowledge bases, and
    context-building boundaries.
-7. [Agent Discovery](docs/en/agent-discovery.md): understand how project
+7. [Agent Discovery](docs/en/capabilities/agent-discovery.md): understand how project
    configuration, user environments, MCP, Skills, and Lua capabilities are
    discovered and registered.
-8. [Hardware Hotplug](docs/en/hardware-hotplug.md): understand how USB, serial,
+8. [Hardware Hotplug](docs/en/capabilities/hardware-hotplug.md): understand how USB, serial,
    BLE, network, and vendor SDK devices are connected through HardwareAdapter
    with hotplug support.
-9. [Project Configuration](docs/en/project-configuration.md): understand YAML
+9. [Project Configuration](docs/en/operations/project-configuration.md): understand YAML
    configuration, schemas, policies, manifests, and hot-reload boundaries.
-10. [Process-Level Upgrade](docs/en/process-level-upgrade.md): understand the
+10. [Process-Level Upgrade](docs/en/operations/process-level-upgrade.md): understand the
    Supervisor, runtime generations, blue-green switching, draining, recovery,
    and rollback.
-11. [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md):
+11. [Backup, Migration Package, and Release Snapshot](docs/en/operations/backup-migration-release-snapshot.md):
     understand why trusted backup, migration, release snapshot, restore, and
     rollback execution belongs to the Runtime while Agents only request and
     explain operations.
-12. [Design Risk Review](docs/en/design-risk-review.md): review historical
+12. [Design Risk Review](docs/en/planning/design-risk-review.md): review historical
     design risks, semantic gaps, and areas that still need stronger executable
     contracts.
-13. [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md): follow the staged
+13. [Zero to 1.0 Roadmap](docs/en/planning/zero-to-one-roadmap.md): follow the staged
     implementation path from architecture documents to module layout,
     contracts, a minimum runtime loop, and release readiness.
-14. [Command-Line Tool Feature Design](docs/en/command-line-tool-feature-design.md):
+14. [Command-Line Tool Feature Design](docs/en/tooling/command-line-tool-feature-design.md):
     turn the runtime architecture into the target `eva` command surface,
     including command groups, output contracts, safety gates, and release
     priorities.
@@ -276,20 +282,20 @@ Recommended reading order for the English default documentation:
 
 | Document | Responsibility |
 | --- | --- |
-| [Architecture Overview](docs/en/architecture-overview.md) | Main entry point for system goals, non-goals, module boundaries, runtime flow, security principles, and pending design work. |
-| [Rust, Lua, and EventBus Scheduler](docs/en/rust-lua-eventbus-scheduler.md) | Defines the Rust Runtime, Lua Agents, EventBus, Topics, Scheduler, state, consistency, and hot reload. |
-| [Lua External Agent Adapter](docs/en/lua-external-agent-adapter.md) | Defines AdapterRegistry, AdapterRouter, McpAdapter, SkillAdapter, HardwareAdapter, and external capability transports such as stdio, HTTP, EventBus, and hardware. |
-| [Lua Skill, MCP, and Tool Hot Reload](docs/en/lua-skill-mcp-tool-hot-reload.md) | Defines `lua_tool`, `lua_skill`, `lua_mcp_handler`, the Lua Capability Runtime, host APIs, security sandboxing, and generation swaps. |
-| [Skill Implementation Plan](docs/en/skill-implementation.md) | Defines Skill classification, manifests, runtime gates, invocation routing, security boundaries, hot reload, and verification rules. |
-| [Agent Memory and Knowledge Base](docs/en/agent-memory-knowledge-base.md) | Defines Agent-private memory, system-wide memory, knowledge bases, ContextBuilder, permissions, audit, and consistency boundaries. |
-| [Agent Discovery](docs/en/agent-discovery.md) | Defines how AgentDiscoveryService scans, identifies, validates, caches, and registers Agents, adapters, MCP, Skills, and Lua capabilities. |
-| [Hardware Hotplug](docs/en/hardware-hotplug.md) | Defines HardwareDiscoveryService, DeviceRegistry, DriverBinding, HardwareAdapterRuntime, device hotplug, hardware Topics, and security boundaries. |
-| [Project Configuration](docs/en/project-configuration.md) | Defines the `config/` directory, `eva.yaml`, Agent/Adapter/Capability manifests, policies, schemas, and hot-reload strategy. |
-| [Process-Level Upgrade](docs/en/process-level-upgrade.md) | Defines the OS service manager, Supervisor, Runtime, Ingress Gate, Durable Event Log, State Store, and blue-green traffic switching. |
-| [Backup, Migration Package, and Release Snapshot](docs/en/backup-migration-release-snapshot.md) | Defines why backup, migration package, release snapshot, restore, rollback, manifest verification, and artifact audit belong to Runtime services. |
-| [Design Risk Review](docs/en/design-risk-review.md) | Reviews design risks around Bot behavior, event consistency, state ownership, permission closure, capability semantics, and error recovery. |
-| [Zero to 1.0 Roadmap](docs/en/zero-to-one-roadmap.md) | Defines the staged path from architecture documents to module layout, contracts, a minimum runnable skeleton, a minimum Runtime loop, module implementation, and 1.0 release readiness. |
-| [Command-Line Tool Feature Design](docs/en/command-line-tool-feature-design.md) | Defines the target `eva` command groups, global flags, safety gates, output contract, exit codes, and staged CLI implementation priorities. |
+| [Architecture Overview](docs/en/architecture/architecture-overview.md) | Main entry point for system goals, non-goals, module boundaries, runtime flow, security principles, and pending design work. |
+| [Rust, Lua, and EventBus Scheduler](docs/en/architecture/rust-lua-eventbus-scheduler.md) | Defines the Rust Runtime, Lua Agents, EventBus, Topics, Scheduler, state, consistency, and hot reload. |
+| [Lua External Agent Adapter](docs/en/capabilities/lua-external-agent-adapter.md) | Defines AdapterRegistry, AdapterRouter, McpAdapter, SkillAdapter, HardwareAdapter, and external capability transports such as stdio, HTTP, EventBus, and hardware. |
+| [Lua Skill, MCP, and Tool Hot Reload](docs/en/capabilities/lua-skill-mcp-tool-hot-reload.md) | Defines `lua_tool`, `lua_skill`, `lua_mcp_handler`, the Lua Capability Runtime, host APIs, security sandboxing, and generation swaps. |
+| [Skill Implementation Plan](docs/en/capabilities/skill-implementation.md) | Defines Skill classification, manifests, runtime gates, invocation routing, security boundaries, hot reload, and verification rules. |
+| [Agent Memory and Knowledge Base](docs/en/capabilities/agent-memory-knowledge-base.md) | Defines Agent-private memory, system-wide memory, knowledge bases, ContextBuilder, permissions, audit, and consistency boundaries. |
+| [Agent Discovery](docs/en/capabilities/agent-discovery.md) | Defines how AgentDiscoveryService scans, identifies, validates, caches, and registers Agents, adapters, MCP, Skills, and Lua capabilities. |
+| [Hardware Hotplug](docs/en/capabilities/hardware-hotplug.md) | Defines HardwareDiscoveryService, DeviceRegistry, DriverBinding, HardwareAdapterRuntime, device hotplug, hardware Topics, and security boundaries. |
+| [Project Configuration](docs/en/operations/project-configuration.md) | Defines the `config/` directory, `eva.yaml`, Agent/Adapter/Capability manifests, policies, schemas, and hot-reload strategy. |
+| [Process-Level Upgrade](docs/en/operations/process-level-upgrade.md) | Defines the OS service manager, Supervisor, Runtime, Ingress Gate, Durable Event Log, State Store, and blue-green traffic switching. |
+| [Backup, Migration Package, and Release Snapshot](docs/en/operations/backup-migration-release-snapshot.md) | Defines why backup, migration package, release snapshot, restore, rollback, manifest verification, and artifact audit belong to Runtime services. |
+| [Design Risk Review](docs/en/planning/design-risk-review.md) | Reviews design risks around Bot behavior, event consistency, state ownership, permission closure, capability semantics, and error recovery. |
+| [Zero to 1.0 Roadmap](docs/en/planning/zero-to-one-roadmap.md) | Defines the staged path from architecture documents to module layout, contracts, a minimum runnable skeleton, a minimum Runtime loop, module implementation, and 1.0 release readiness. |
+| [Command-Line Tool Feature Design](docs/en/tooling/command-line-tool-feature-design.md) | Defines the target `eva` command groups, global flags, safety gates, output contract, exit codes, and staged CLI implementation priorities. |
 
 ## Current Design Position
 
@@ -337,7 +343,7 @@ implementation-focused:
   move from plan-only diagnostics to execution.
 
 The current documentation now distinguishes implemented diagnostics from target
-apply paths. See [Design Risk Review](docs/en/design-risk-review.md) for the
+apply paths. See [Design Risk Review](docs/en/planning/design-risk-review.md) for the
 original architectural risk inventory, and
-[V1.5 Compatibility Policy](docs/en/v1.5-compatibility-policy.md) for the
+[V1.5 Compatibility Policy](docs/en/release/v1.5-compatibility-policy.md) for the
 contracts held stable by this source release.

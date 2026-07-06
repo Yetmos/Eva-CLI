@@ -1,7 +1,7 @@
 # Eva-CLI Project Release Plan
 
 Date: 2026-07-06
-Scope: project release process, CI/DI gates, and Windows/macOS/Linux support
+Scope: project release process, CI/DI gates, GitHub Packages, and Windows/macOS/Linux support
 
 This document defines the project-level release plan for Eva-CLI. It sits above
 version-specific notes such as the V1.5 GitHub Release Plan and describes the
@@ -12,7 +12,8 @@ In this document, CI/DI means:
 
 - CI: continuous integration for pull requests and branch pushes.
 - DI: delivery/deployment integration, including GitHub Release publication,
-  release evidence capture, and documentation site deployment.
+  GitHub Packages publication, release evidence capture, and documentation site
+  deployment.
 
 ## Release Objectives
 
@@ -22,18 +23,21 @@ The release process must provide:
 - cross-platform validation on Windows, macOS, and Linux before publication;
 - release evidence that can be reviewed after the release;
 - documentation and website validation before public delivery;
+- controlled GitHub Packages publication when package distribution is enabled;
 - a repair path that avoids rewriting public history after a release is visible.
 
 The current V1.5 release remains a source release. Packaged installers, signed
 binary artifacts, provenance bundles, and package-manager publishing are future
-release scope.
+release scope. A GitHub Packages channel must satisfy the package gates in this
+document before it is enabled.
 
 ## Release Channels
 
 | Channel | Owner | Trigger | Output |
 | --- | --- | --- | --- |
 | CI | `.github/workflows/ci.yml` | Pull request, push to `main`/`master`, manual dispatch | Rust, CLI smoke, website, and i18n validation logs |
-| GitHub Release DI | `.github/workflows/release.yml` | Push tag `vMAJOR.MINOR.PATCH`, manual dispatch against an existing tag | GitHub Release, source archives, `release-evidence-*` artifact |
+| GitHub Release DI | `.github/workflows/release.yml` | Push a tag that follows the version management plan, or manually dispatch against an existing tag | GitHub Release, source archives, `release-evidence-*` artifact |
+| GitHub Packages DI | `.github/workflows/release.yml` or `.github/workflows/packages.yml` | After release tag verification, or manual dispatch against an existing tag | GHCR/package registry entry, package digest, package metadata, package evidence |
 | Website DI | `.github/workflows/pages.yml` | Push changes under website, docs, assets, scripts, or the pages workflow | GitHub Pages deployment |
 
 ## Platform Matrix
@@ -54,7 +58,8 @@ the failing check is explicitly documented as non-goal or experimental.
 - Release commits land on `main` unless the repository default branch changes.
 - The root `Cargo.toml` package version and `[workspace.package].version` must
   match the release tag without the leading `v`.
-- Release tags use `vMAJOR.MINOR.PATCH`, for example `v1.5.0`.
+- Stable release tags use `vMAJOR.MINOR.PATCH`, for example `v1.5.0`.
+- Alpha and beta tag forms follow the [Version Management Plan](version-management-plan.md), for example `v1.5.1-alpha` or `v1.5.1-beta.1`.
 - Annotated tags are preferred for public releases.
 - Once a GitHub Release has been published, repair through a patch release such
   as `v1.5.1` instead of rewriting the public tag.
@@ -71,6 +76,7 @@ Required CI checks:
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+./scripts/validate-version-management.ps1
 ./scripts/build-site-i18n.ps1
 ./scripts/validate-i18n.ps1
 ```
@@ -92,11 +98,26 @@ cargo run -- release check --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
 cargo run -- release migration --output json
+./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
 ```
 
 The publish job captures each command output into `release-evidence/` and
 uploads it as `release-evidence-${RELEASE_TAG}`. This artifact is the durable
 machine-readable release evidence for the tag.
+
+If the release enables GitHub Packages publication, the package job must run
+after release verification and satisfy these requirements:
+
+- workflow permissions include `contents: read` and `packages: write`;
+- use `GITHUB_TOKEN` by default for packages linked to this repository;
+- use a least-privilege PAT only when reading or writing packages across private
+  repositories requires it;
+- record package name, version, tag, digest, and registry URL in release
+  evidence;
+- update `latest` only for stable releases; alpha and beta releases publish only
+  prerelease tags;
+- package publication failure blocks the package channel for that version, but
+  must not move or rewrite an already public release tag.
 
 ## Documentation And Website Gate
 
@@ -105,6 +126,8 @@ source releases with documented command contracts. Before release publication:
 
 - update release notes, migration guidance, compatibility policy, and any
   version-specific release plan;
+- keep the version management plan and current human-facing version label
+  aligned with `Cargo.toml`;
 - register new documentation in `docs/_i18n/manifest.json`;
 - keep Chinese and English document paths aligned with the existing docs tree;
 - run the localized website build and i18n validation scripts;
@@ -126,13 +149,19 @@ release automation should use this initial target map:
 
 | Platform | Initial target | Future output |
 | --- | --- | --- |
-| Windows | `x86_64-pc-windows-msvc` | `.zip` archive and installer after signing is available |
-| macOS Intel | `x86_64-apple-darwin` | `.tar.gz` archive or universal bundle after signing/notarization is available |
-| macOS Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` archive or universal bundle after signing/notarization is available |
-| Linux | `x86_64-unknown-linux-gnu` | `.tar.gz` archive, package-manager integration later |
+| Windows | `x86_64-pc-windows-msvc` | GitHub Release `.zip`; installer after signing is available |
+| macOS Intel | `x86_64-apple-darwin` | GitHub Release `.tar.gz`; bundle after signing/notarization is available |
+| macOS Apple Silicon | `aarch64-apple-darwin` | GitHub Release `.tar.gz`; bundle after signing/notarization is available |
+| Linux | `x86_64-unknown-linux-gnu` | GitHub Release `.tar.gz`; Linux package-manager integration later |
+| Container | `linux/amd64`, `linux/arm64` | GitHub Packages Container Registry: `ghcr.io/yetmos/eva-cli:<version>` |
+| Ecosystem packages | npm, NuGet, Maven/Gradle, RubyGems, and other GitHub Packages supported registries | Enable only after package metadata, install validation, and compatibility policy are ready |
 
 Do not add unsigned installers to the public release path without updating the
 security review, compatibility policy, and rollback procedure.
+
+GitHub Packages is not a Cargo crate registry replacement. Public Rust crate
+publication should be evaluated separately for crates.io; GitHub Packages is
+for container images or package ecosystems supported by GitHub Packages.
 
 ## Failure And Repair Policy
 
@@ -155,4 +184,6 @@ A release is complete only when all of the following evidence exists:
 - The GitHub Release exists for the tag.
 - GitHub source archives are available.
 - `release-evidence-${RELEASE_TAG}` is uploaded.
+- If GitHub Packages is enabled: the package registry page is reachable, the
+  digest matches release evidence, and install/pull smoke tests pass.
 - Documentation and website validation completed successfully.
