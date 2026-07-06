@@ -190,7 +190,7 @@ Status values:
 | P1-004 | Update website/docs to expose provenance status after the workflow change | `website/_i18n/*.json`, generated website pages, docs index | `scripts/build-site-i18n.ps1`; `scripts/validate-i18n.ps1` | Done | `4699b55` |
 | P2-001 | Add release archive naming and manifest schema for native binaries | release docs, `.github/workflows/release.yml` | Workflow review; release evidence field review | Done | `6159169` |
 | P2-002 | Build and smoke-test Windows release archive | `.github/workflows/release.yml` | `eva --version` inside packaged Windows artifact | Done | `9f4c37d` |
-| P2-003 | Build and smoke-test Linux release archive | `.github/workflows/release.yml` | `eva --version` inside packaged Linux artifact | In Progress | pending |
+| P2-003 | Build and smoke-test Linux release archive | `.github/workflows/release.yml` | `eva --version` inside packaged Linux artifact | Done | `5533612` |
 | P2-004 | Build and smoke-test macOS x86_64 and aarch64 release archives | `.github/workflows/release.yml` | `eva --version` inside packaged macOS artifacts | Planned | pending |
 | P2-005 | Generate `SHA256SUMS` and `native-artifacts.json` release evidence | `.github/workflows/release.yml` | Checksum verification command in workflow | Planned | pending |
 | P3-001 | Define signing provider configuration and failure policy | release docs, repository secrets documentation | Documented secret names and fallback behavior | Planned | pending |
