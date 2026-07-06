@@ -603,6 +603,23 @@
       "sourceCoverage": "summary-or-entry"
     },
     {
+      "id": "v1.x-incomplete-feature-inventory",
+      "title": "V1.x Incomplete Feature Inventory",
+      "source": "docs/zh-CN/planning/V1.x未完整实现功能清单.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/planning/V1.x未完整实现功能清单.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/planning/V1.x未完整实现功能清单.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "v1.0-quickstart",
       "title": "Eva-CLI V1.0 Quickstart",
       "source": "docs/en/guide/v1.0-quickstart.md",
