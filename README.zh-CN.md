@@ -2,14 +2,16 @@
 
 > 语言：[English](README.md) | 简体中文
 
+Eva-CLI 是一个基于 Rust 的 CLI runtime，用于受控多 Agent 工作流、发布加固、诊断、配置校验、请求级记忆/知识上下文组装、硬件绑定计划、备份/生命周期检查和源码发布运维。
+
 Eva-CLI 当前已经推进到 V1.5 发布加固检查点。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载、V1.0 in-memory basic runtime、V1.1 外部能力诊断、V1.2 记忆/知识上下文、V1.3 硬件发现/probe/plan-first 绑定、V1.4 的 backup、snapshot、restore plan 和 upgrade check，以及 V1.5 的 release check/security/perf/migration。
 
 当前受管理项目版本：`V1.5.1-release`（`Cargo.toml` 版本 `1.5.1`，稳定 Git tag 形式 `v1.5.1`）。版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。
 
-官网：
+Canonical 官网：
 
-- https://Eva-CLI.com
-- https://www.Eva-CLI.com
+- https://www.eva-cli.com/
+- https://www.eva-cli.com/zh-CN/
 
 官网源码维护在 [website/](website/)，文档维护在 [docs/](docs/)，Rust 源码维护在 [src/](src/) 和 [crates/](crates/)。
 

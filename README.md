@@ -2,11 +2,16 @@
 
 > Language: English | [简体中文](README.zh-CN.md)
 
-Eva-CLI has reached the V1.5 release-hardening checkpoint: a
-compileable Rust workspace, configuration examples, schemas, the in-memory
-basic runtime loop, local task diagnostics, Adapter/MCP/Skill/Discovery control
-surfaces, request-scoped memory/knowledge context assembly, hardware discovery
-and plan-first binding diagnostics, backup/snapshot/restore/upgrade planning,
+Eva-CLI is a Rust-based CLI runtime for controlled multi-agent workflows,
+release hardening, diagnostics, configuration validation, request-scoped
+memory/knowledge context assembly, hardware binding plans, backup/lifecycle
+checks, and source-release operations.
+
+The repository has reached the V1.5 release-hardening checkpoint: a compileable
+Rust workspace, configuration examples, schemas, the in-memory basic runtime
+loop, local task diagnostics, Adapter/MCP/Skill/Discovery control surfaces,
+request-scoped memory/knowledge context assembly, hardware discovery and
+plan-first binding diagnostics, backup/snapshot/restore/upgrade planning,
 release readiness/security/performance/migration checks, CI gates, quickstart,
 release notes, and explicit known limitations.
 
@@ -18,10 +23,10 @@ The website uses English as the default public entry with stable
 slugs, while the Simplified Chinese documents remain the source of truth for
 some detailed architecture and implementation-spec content.
 
-Website:
+Canonical website:
 
-- https://Eva-CLI.com
-- https://www.Eva-CLI.com
+- https://www.eva-cli.com/
+- https://www.eva-cli.com/zh-CN/
 
 The website source is maintained in [website/](website/), documentation is
 maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
@@ -29,7 +34,7 @@ maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
 
 ## Current Project Progress
 
-Updated: 2026-07-04
+Updated: 2026-07-06
 
 Eva-CLI has moved past a design-only repository and now has a V1.5 release
 surface. It includes a compileable Rust workspace, configuration examples and
