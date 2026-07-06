@@ -200,7 +200,7 @@ Status values:
 | P4-001 | Replace lightweight artifact digest contract with SHA-256 while preserving old test intent | `crates/eva-storage` | `cargo test -p eva-storage` | Done | `528e9f4` |
 | P4-002 | Add filesystem artifact store implementation | `crates/eva-storage` | artifact round trip, digest mismatch, missing artifact tests | Done | `ab9fa98` |
 | P4-003 | Wire durable artifact store into backup/snapshot/restore commands behind explicit flags | `crates/eva-cli`, `crates/eva-backup` | CLI smoke commands with project-local artifact directory | Done | `d3745bf` |
-| P4-004 | Add durable event/task state interface | `crates/eva-storage`, `crates/eva-runtime`, `crates/eva-cli` | task status/logs survive process boundary in tests | In Progress | local |
+| P4-004 | Add durable event/task state interface | `crates/eva-storage`, `crates/eva-runtime`, `crates/eva-cli` | task status/logs survive process boundary in tests | Done | `a27b2b0` |
 | P5-001 | Add stdio provider runner contract and tests | `crates/eva-adapter` | denied command, timeout, output limit tests | Planned | pending |
 | P5-002 | Add HTTP provider runner contract and tests | `crates/eva-adapter` | URL allowlist, method denial, timeout tests | Planned | pending |
 | P5-003 | Add MCP process/session startup boundary | `crates/eva-mcp`, `crates/eva-adapter` | startup failure and shutdown tests | Planned | pending |
