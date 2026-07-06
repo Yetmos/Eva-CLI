@@ -782,6 +782,35 @@ jobs:
           $nativeEvidence | Add-Member -NotePropertyName checksum_file -NotePropertyValue "SHA256SUMS" -Force
           $nativeEvidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $nativeEvidencePath -Encoding utf8
 
+      - name: Generate provenance bundle
+        shell: pwsh
+        run: |
+          $nativeEvidence = Get-Content -Raw -LiteralPath release-evidence/native-artifacts.json | ConvertFrom-Json
+          $packageEvidence = Get-Content -Raw -LiteralPath release-evidence/package-ghcr.json | ConvertFrom-Json
+          $checksums = Get-Content -LiteralPath release-evidence/SHA256SUMS
+          $signatureStatus = if ([string]::IsNullOrWhiteSpace($env:RELEASE_SIGNING_KEY)) {
+            [ordered]@{
+              status = "skipped"
+              reason = "RELEASE_SIGNING_KEY is not configured."
+            }
+          } else {
+            [ordered]@{
+              status = "blocked"
+              reason = "Signing key handling is not implemented yet; do not provide RELEASE_SIGNING_KEY until P3 signing workflow is added."
+            }
+          }
+          $bundle = [ordered]@{
+            schema = "eva.release.provenance-bundle.v1"
+            source_tag = $env:RELEASE_TAG
+            source_sha = git rev-parse HEAD
+            generated_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            native_artifacts = $nativeEvidence
+            package = $packageEvidence
+            checksums = @($checksums)
+            checksum_signature = $signatureStatus
+          }
+          $bundle | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath release-evidence/provenance-bundle.json -Encoding utf8
+
       - name: Upload release evidence artifact
         uses: actions/upload-artifact@v4
         with:

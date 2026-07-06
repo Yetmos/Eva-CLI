@@ -175,7 +175,7 @@ Eva-CLI V1.5.1 还没有：
 | P3-001 | 定义 signing provider 配置和失败策略 | release docs、repository secrets documentation | 记录 secret names 和 fallback behavior | Done | `76b7866` |
 | P3-002 | 增加 Windows signing 路径 | `.github/workflows/release.yml` | signed artifact verification command | Blocked：需要 signing credential | Blocked：尚未配置 `WINDOWS_SIGNING_PROVIDER` 和 provider credentials |
 | P3-003 | 增加 macOS signing 与 notarization 路径 | `.github/workflows/release.yml` | notarization verification command | Blocked：需要 Apple Developer credential | Blocked：尚未配置 Apple Developer ID 和 notarization credentials |
-| P3-004 | 为 Linux archives 增加 signed checksum/provenance bundle | `.github/workflows/release.yml` | signature verification command | Planned | pending |
+| P3-004 | 为 Linux archives 增加 signed checksum/provenance bundle | `.github/workflows/release.yml` | signature verification command | In Progress | pending |
 | P4-001 | 用 SHA-256 替换 lightweight artifact digest contract，同时保留旧测试意图 | `crates/eva-storage` | `cargo test -p eva-storage` | Planned | pending |
 | P4-002 | 增加 filesystem artifact store 实现 | `crates/eva-storage` | artifact round trip、digest mismatch、missing artifact tests | Planned | pending |
 | P4-003 | 通过显式 flag 把 durable artifact store 接入 backup/snapshot/restore 命令 | `crates/eva-cli`、`crates/eva-backup` | 使用 project-local artifact directory 的 CLI smoke | Planned | pending |

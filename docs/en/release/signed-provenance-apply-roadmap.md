@@ -196,7 +196,7 @@ Status values:
 | P3-001 | Define signing provider configuration and failure policy | release docs, repository secrets documentation | Documented secret names and fallback behavior | Done | `76b7866` |
 | P3-002 | Add Windows signing path | `.github/workflows/release.yml` | Signed artifact verification command | Blocked: signing credential required | Blocked: `WINDOWS_SIGNING_PROVIDER` and provider credentials are not configured |
 | P3-003 | Add macOS signing and notarization path | `.github/workflows/release.yml` | Notarization verification command | Blocked: Apple Developer credential required | Blocked: Apple Developer ID and notarization credentials are not configured |
-| P3-004 | Add signed checksum/provenance bundle for Linux archives | `.github/workflows/release.yml` | Signature verification command | Planned | pending |
+| P3-004 | Add signed checksum/provenance bundle for Linux archives | `.github/workflows/release.yml` | Signature verification command | In Progress | pending |
 | P4-001 | Replace lightweight artifact digest contract with SHA-256 while preserving old test intent | `crates/eva-storage` | `cargo test -p eva-storage` | Planned | pending |
 | P4-002 | Add filesystem artifact store implementation | `crates/eva-storage` | artifact round trip, digest mismatch, missing artifact tests | Planned | pending |
 | P4-003 | Wire durable artifact store into backup/snapshot/restore commands behind explicit flags | `crates/eva-cli`, `crates/eva-backup` | CLI smoke commands with project-local artifact directory | Planned | pending |
