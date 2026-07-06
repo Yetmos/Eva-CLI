@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source V1.5 source-release CLI for controlled multi-Agent runtimes, combining a Rust boundary, Lua capability layer, Topic EventBus, memory and knowledge context, adapters, hardware plans, and release gates."
+    "description": "Eva-CLI is an open-source V1.5.1 CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, and GHCR package delivery."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,22 +38,22 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "V1.5 source-release checks are executable and kept behind controlled runtime boundaries.",
+    "runtimePanelNote": "V1.5.1 keeps release checks executable and adds GHCR package delivery behind the same controlled release path.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
     "progressAction": "Development progress",
     "progressEyebrow": "Development progress",
-    "progressTitle": "From architecture scaffold to V1.5 source-release gates",
+    "progressTitle": "From architecture scaffold to V1.5.1 release and GHCR delivery",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.5 release hardening and the user manual are implemented",
-    "progressCurrentBody": "The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, release documentation, and an SVG-illustrated source user manual.",
+    "progressCurrentTitle": "V1.5.1 release hardening and GHCR package delivery are implemented",
+    "progressCurrentBody": "The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, release documentation, an SVG-illustrated source user manual, and a GitHub Packages container channel at ghcr.io/yetmos/eva-cli:1.5.1.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Add signed release artifacts, provenance, and cross-platform installers.",
+      "Add signed installers, OS package-manager packages, and provenance bundles after the GHCR channel remains stable.",
       "Move destructive restore, release pointer, and supervisor activation paths behind explicit apply gates.",
       "Replace in-memory provider/runtime diagnostics with durable stores and real provider process management, then expand the manual alongside the real apply paths."
     ],
@@ -77,14 +77,14 @@
       {
         "status": "current",
         "badge": "Now",
-        "label": "V1.1 to V1.5 controlled capability, release gates, and user manual",
-        "description": "External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, release hardening commands, and the source user manual are implemented."
+        "label": "V1.1 to V1.5.1 controlled capability, release gates, and GHCR delivery",
+        "description": "External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, release hardening commands, the source user manual, and GitHub Packages container delivery are implemented."
       },
       {
         "status": "later",
         "badge": "Later",
-        "label": "Signed artifacts, installers, and real apply paths",
-        "description": "Future releases add provider process execution, durable stores, destructive apply gates, signed artifacts, and cross-platform installation."
+        "label": "Signed installers, provenance, and real apply paths",
+        "description": "Future releases add provider process execution, durable stores, destructive apply gates, signed installers, OS packages, and provenance bundles."
       }
     ],
     "architectureEyebrow": "Architecture",
@@ -147,6 +147,16 @@
         "id": "v1.5-release-hardening",
         "title": "V1.5 Release Hardening",
         "description": "Executable release readiness, security, performance, migration, and compatibility gates for the source release."
+      },
+      {
+        "id": "github-packages-publishing",
+        "title": "GitHub Packages Publishing",
+        "description": "The GHCR delivery contract, package tags, release evidence, permissions, and pull verification for ghcr.io/yetmos/eva-cli."
+      },
+      {
+        "id": "release-notes-v1.5.1",
+        "title": "V1.5.1 Release Notes",
+        "description": "The patch release that keeps V1.5 contracts stable while enabling GitHub Packages delivery through GHCR."
       }
     ]
   },
@@ -272,6 +282,11 @@
         "description": "The version format, status mapping, increment rules, GitHub tag, Release, Packages, and milestone workflow."
       },
       {
+        "id": "github-packages-publishing",
+        "title": "GitHub Packages Publishing",
+        "description": "The GHCR package channel, tag rules, release evidence, permissions, and pull verification contract."
+      },
+      {
         "id": "v1.0-known-limitations",
         "title": "V1.0 Known Limitations",
         "description": "The supported V1.0 core scope and the advanced runtime capabilities that remain later-version work."
@@ -295,6 +310,11 @@
         "id": "v1.5-compatibility-policy",
         "title": "V1.5 Compatibility Policy",
         "description": "The JSON envelope, exit-code, command-surface, and deprecation guarantees for the V1.5 source release."
+      },
+      {
+        "id": "release-notes-v1.5.1",
+        "title": "V1.5.1 Release Notes",
+        "description": "The patch release that enables GHCR package publication without breaking V1.5 CLI, config, JSON, or documentation path contracts."
       },
       {
         "id": "release-notes-v1.5.0",
@@ -335,7 +355,7 @@
   "feedback": {
     "eyebrow": "Feedback",
     "title": "Feedback and suggestions",
-    "body": "Send documentation, architecture, release-gate, compatibility, or use-case feedback by email. Eva-CLI is at the V1.5 source-release checkpoint, so concrete reports about command output, docs, migration gaps, and future apply-path contracts are especially useful.",
+    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.5.1 release checkpoint with GHCR package delivery, so concrete reports about command output, docs, package pulls, migration gaps, and future apply-path contracts are especially useful.",
     "contactLabel": "Contact email",
     "categoryLabel": "Feedback type",
     "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],

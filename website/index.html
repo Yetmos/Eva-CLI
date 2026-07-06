@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Eva-CLI | Multi-Agent Runtime</title>
-    <meta name="description" content="Eva-CLI is an open-source V1.5 source-release CLI for controlled multi-Agent runtimes, combining a Rust boundary, Lua capability layer, Topic EventBus, memory and knowledge context, adapters, hardware plans, and release gates.">
+    <meta name="description" content="Eva-CLI is an open-source V1.5.1 CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, and GHCR package delivery.">
     <meta name="author" content="Yetmos">
     <meta property="og:title" content="Eva-CLI | Multi-Agent Runtime">
-    <meta property="og:description" content="Eva-CLI is an open-source V1.5 source-release CLI for controlled multi-Agent runtimes, combining a Rust boundary, Lua capability layer, Topic EventBus, memory and knowledge context, adapters, hardware plans, and release gates.">
+    <meta property="og:description" content="Eva-CLI is an open-source V1.5.1 CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, and GHCR package delivery.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://www.eva-cli.com/">
     <meta name="twitter:card" content="summary">
@@ -84,7 +84,7 @@
               <span>Routes CLI, MCP, HTTP, skills, and hardware through permissions.</span>
             </li>
           </ol>
-          <p class="stage-note">V1.5 source-release checks are executable and kept behind controlled runtime boundaries.</p>
+          <p class="stage-note">V1.5.1 keeps release checks executable and adds GHCR package delivery behind the same controlled release path.</p>
         </aside>
       </section>
 
@@ -92,15 +92,15 @@
         <div class="section-heading progress-heading">
           <div>
             <p class="eyebrow">Development progress</p>
-            <h2 id="development-progress-title">From architecture scaffold to V1.5 source-release gates</h2>
+            <h2 id="development-progress-title">From architecture scaffold to V1.5.1 release and GHCR delivery</h2>
           </div>
           <a class="secondary-action progress-roadmap-link" href="docs/en/planning/zero-to-one-roadmap.md">Open roadmap</a>
         </div>
         <div class="progress-layout">
           <article class="progress-current" aria-label="Current development stage">
             <span class="status-label">Current stage</span>
-            <h3>V1.5 release hardening and the user manual are implemented</h3>
-            <p>The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, release documentation, and an SVG-illustrated source user manual.</p>
+            <h3>V1.5.1 release hardening and GHCR package delivery are implemented</h3>
+            <p>The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, release documentation, an SVG-illustrated source user manual, and a GitHub Packages container channel at ghcr.io/yetmos/eva-cli:1.5.1.</p>
           </article>
           <ol class="progress-timeline" aria-label="Release progress stages">
             <li class="progress-stage progress-stage-complete">
@@ -120,15 +120,15 @@
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">Now</span>
               <div>
-                <strong>V1.1 to V1.5 controlled capability, release gates, and user manual</strong>
-                <p>External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, release hardening commands, and the source user manual are implemented.</p>
+                <strong>V1.1 to V1.5.1 controlled capability, release gates, and GHCR delivery</strong>
+                <p>External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, release hardening commands, the source user manual, and GitHub Packages container delivery are implemented.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
               <span class="progress-marker">Later</span>
               <div>
-                <strong>Signed artifacts, installers, and real apply paths</strong>
-                <p>Future releases add provider process execution, durable stores, destructive apply gates, signed artifacts, and cross-platform installation.</p>
+                <strong>Signed installers, provenance, and real apply paths</strong>
+                <p>Future releases add provider process execution, durable stores, destructive apply gates, signed installers, OS packages, and provenance bundles.</p>
               </div>
             </li>
           </ol>
@@ -136,7 +136,7 @@
         <div class="progress-next">
           <strong>Next implementation work</strong>
           <ul>
-            <li>Add signed release artifacts, provenance, and cross-platform installers.</li>
+            <li>Add signed installers, OS package-manager packages, and provenance bundles after the GHCR channel remains stable.</li>
             <li>Move destructive restore, release pointer, and supervisor activation paths behind explicit apply gates.</li>
             <li>Replace in-memory provider/runtime diagnostics with durable stores and real provider process management, then expand the manual alongside the real apply paths.</li>
           </ul>
@@ -243,6 +243,14 @@
             <span>V1.5 Release Hardening</span>
             <small>Executable release readiness, security, performance, migration, and compatibility gates for the source release.</small>
           </a>
+          <a class="doc-link" href="docs/en/release/github-packages-publishing.md">
+            <span>GitHub Packages Publishing</span>
+            <small>The GHCR delivery contract, package tags, release evidence, permissions, and pull verification for ghcr.io/yetmos/eva-cli.</small>
+          </a>
+          <a class="doc-link" href="docs/en/release/release-notes-v1.5.1.md">
+            <span>V1.5.1 Release Notes</span>
+            <small>The patch release that keeps V1.5 contracts stable while enabling GitHub Packages delivery through GHCR.</small>
+          </a>
         </div>
       </section>
 
@@ -278,7 +286,7 @@
         <div class="feedback-copy">
           <p class="eyebrow">Feedback</p>
           <h2 id="feedback-title">Feedback and suggestions</h2>
-          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, or use-case feedback by email. Eva-CLI is at the V1.5 source-release checkpoint, so concrete reports about command output, docs, migration gaps, and future apply-path contracts are especially useful.</p>
+          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.5.1 release checkpoint with GHCR package delivery, so concrete reports about command output, docs, package pulls, migration gaps, and future apply-path contracts are especially useful.</p>
           <p class="contact-line">
             <span>Contact email</span>
             <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>
