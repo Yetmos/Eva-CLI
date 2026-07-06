@@ -188,7 +188,7 @@ Status values:
 | P1-002 | Extend `package-ghcr.json` with provenance and SBOM fields while preserving existing fields | `.github/workflows/release.yml`, release docs | `scripts/validate-version-management.ps1`; JSON field review | Done | `66416f7` |
 | P1-003 | Update release body text to report GHCR provenance/SBOM availability | `.github/workflows/release.yml`, release docs | Release body generation review | Done | `cd55bf1` |
 | P1-004 | Update website/docs to expose provenance status after the workflow change | `website/_i18n/*.json`, generated website pages, docs index | `scripts/build-site-i18n.ps1`; `scripts/validate-i18n.ps1` | Done | `4699b55` |
-| P2-001 | Add release archive naming and manifest schema for native binaries | release docs, `.github/workflows/release.yml` | Workflow review; release evidence field review | Planned | pending |
+| P2-001 | Add release archive naming and manifest schema for native binaries | release docs, `.github/workflows/release.yml` | Workflow review; release evidence field review | In Progress | pending |
 | P2-002 | Build and smoke-test Windows release archive | `.github/workflows/release.yml` | `eva --version` inside packaged Windows artifact | Planned | pending |
 | P2-003 | Build and smoke-test Linux release archive | `.github/workflows/release.yml` | `eva --version` inside packaged Linux artifact | Planned | pending |
 | P2-004 | Build and smoke-test macOS x86_64 and aarch64 release archives | `.github/workflows/release.yml` | `eva --version` inside packaged macOS artifacts | Planned | pending |

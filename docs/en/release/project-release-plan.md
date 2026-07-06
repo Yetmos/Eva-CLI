@@ -124,6 +124,33 @@ release verification and satisfy these requirements:
 - package publication failure blocks the package channel for that version, but
   must not move or rewrite an already public release tag.
 
+Native release archives use the following evidence schema before installers are
+signed or uploaded:
+
+```json
+{
+  "status": "planned|published|skipped",
+  "version": "1.5.1",
+  "source_tag": "v1.5.1",
+  "source_sha": "<commit-sha>",
+  "artifacts": [
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "archive": "eva-cli-1.5.1-x86_64-pc-windows-msvc.zip",
+      "format": "zip",
+      "binary": "eva.exe",
+      "checksum": null,
+      "signed": false
+    }
+  ]
+}
+```
+
+Until native archive jobs are implemented, the release workflow writes this
+schema with `status: "planned"` to `release-evidence/native-artifacts.json`.
+That keeps release evidence forward-compatible without claiming that signed or
+native artifacts are already published.
+
 ## Documentation And Website Gate
 
 Documentation changes are release-relevant because the project currently ships

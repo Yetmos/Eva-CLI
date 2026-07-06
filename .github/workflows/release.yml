@@ -327,6 +327,56 @@ jobs:
           cargo run -- release perf --output json | Tee-Object -FilePath release-evidence/release-perf.json
           cargo run -- release migration --output json | Tee-Object -FilePath release-evidence/release-migration.json
 
+      - name: Capture native artifact plan evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
+          $version = $env:RELEASE_TAG.TrimStart("v")
+          $sourceSha = git rev-parse HEAD
+          $targets = @(
+            [ordered]@{
+              target = "x86_64-pc-windows-msvc"
+              archive = "eva-cli-$version-x86_64-pc-windows-msvc.zip"
+              format = "zip"
+              binary = "eva.exe"
+              checksum = $null
+              signed = $false
+            },
+            [ordered]@{
+              target = "x86_64-unknown-linux-gnu"
+              archive = "eva-cli-$version-x86_64-unknown-linux-gnu.tar.gz"
+              format = "tar.gz"
+              binary = "eva"
+              checksum = $null
+              signed = $false
+            },
+            [ordered]@{
+              target = "x86_64-apple-darwin"
+              archive = "eva-cli-$version-x86_64-apple-darwin.tar.gz"
+              format = "tar.gz"
+              binary = "eva"
+              checksum = $null
+              signed = $false
+            },
+            [ordered]@{
+              target = "aarch64-apple-darwin"
+              archive = "eva-cli-$version-aarch64-apple-darwin.tar.gz"
+              format = "tar.gz"
+              binary = "eva"
+              checksum = $null
+              signed = $false
+            }
+          )
+          $evidence = [ordered]@{
+            status = "planned"
+            version = $version
+            source_tag = $env:RELEASE_TAG
+            source_sha = $sourceSha
+            artifacts = @($targets)
+            reason = "Native archive build jobs are planned but not yet implemented."
+          }
+          $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath release-evidence/native-artifacts.json -Encoding utf8
+
       - name: Download package evidence artifact
         uses: actions/download-artifact@v4
         with:
