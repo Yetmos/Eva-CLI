@@ -620,6 +620,23 @@
       "sourceCoverage": "full-detail"
     },
     {
+      "id": "v1.x-real-runtime-implementation-plan",
+      "title": "V1.x Real Runtime Implementation Plan",
+      "source": "docs/en/planning/v1.x-real-runtime-implementation-plan.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "summary-or-entry"
+    },
+    {
       "id": "v1.0-quickstart",
       "title": "Eva-CLI V1.0 Quickstart",
       "source": "docs/en/guide/v1.0-quickstart.md",

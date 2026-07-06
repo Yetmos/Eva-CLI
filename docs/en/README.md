@@ -89,6 +89,7 @@ evidence.
 - [Zero to 1.0 Roadmap](planning/zero-to-one-roadmap.md)
 - [Full Implementation Plan](planning/full-implementation-plan.md)
 - [V1.x Incomplete Feature Inventory](planning/v1.x-incomplete-feature-inventory.md)
+- [V1.x Real Runtime Implementation Plan](planning/v1.x-real-runtime-implementation-plan.md)
 - [V0.1 Baseline Acceptance](planning/v0.1-baseline-acceptance.md)
 - [V0.2 Contract and Configuration Acceptance](planning/v0.2-contract-config-acceptance.md)
 
