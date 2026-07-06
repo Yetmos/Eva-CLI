@@ -63,9 +63,9 @@
 
 `run.rs` 新增 V1.4 plan-first 命令：
 
-- `backup create`：调用 `eva_backup::BackupService` 写入 in-memory `ArtifactStore`，生成 manifest 并校验 digest。
-- `snapshot create`：调用 `ReleaseSnapshotService` 生成 pre/post release snapshot。
-- `restore plan`：调用 `ReleaseSnapshotService::restore_plan`，输出 `apply_allowed:false`。
+- `backup create`：调用 `eva_backup::BackupService`，默认写入 in-memory `ArtifactStore`；传入 `--artifact-store <path>` 时写入 filesystem artifact store，生成 manifest 并校验 digest。
+- `snapshot create`：调用 `ReleaseSnapshotService` 生成 pre/post release snapshot，并可通过 `--artifact-store <path>` 落盘其依赖的 backup artifact。
+- `restore plan`：调用 `ReleaseSnapshotService::restore_plan`，输出 `apply_allowed:false`，并可通过 `--artifact-store <path>` 生成 filesystem backup evidence。
 - `upgrade check`：调用 `eva_lifecycle` 的 in-memory supervisor、generation、drain、rollback 状态机，并结合 migration preflight。
 
 这些命令是 release/lifecycle readiness smoke，不执行真实文件恢复、release pointer 切换或 OS 进程启动。

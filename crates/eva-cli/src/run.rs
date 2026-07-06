@@ -30,7 +30,7 @@ use eva_release::{
     ReleaseReadinessReport, SecurityFinding, SecurityReviewReport, StabilityScenario,
 };
 use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder, TaskLogEntry};
-use eva_storage::InMemoryArtifactStore;
+use eva_storage::{FileSystemArtifactStore, InMemoryArtifactStore};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -388,6 +388,7 @@ struct BackupCreateOptions {
     project_id: String,
     reason: String,
     dry_run: bool,
+    artifact_store: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -397,6 +398,7 @@ struct SnapshotCreateOptions {
     request_id: String,
     release_ref: String,
     role: SnapshotRole,
+    artifact_store: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -405,6 +407,7 @@ struct RestorePlanOptions {
     snapshot_id: String,
     request_id: String,
     release_ref: String,
+    artifact_store: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -489,6 +492,25 @@ struct TaskReplaySnapshot {
     event_id: String,
     sequence: u64,
     topic: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArtifactStoreRef {
+    kind: String,
+    path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BackupCreateResult {
+    backup: BackupResult,
+    artifact_store: ArtifactStoreRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestorePlanResult {
+    backup: BackupCreateResult,
+    snapshot: ReleaseSnapshot,
+    plan: RestorePlan,
 }
 
 fn parse_command<I>(args: I) -> Result<Command, EvaError>
@@ -994,6 +1016,7 @@ fn parse_backup_create_options(args: &[String]) -> Result<BackupCreateOptions, E
     let mut project_id = "eva-cli".to_owned();
     let mut reason = "pre-upgrade safety checkpoint".to_owned();
     let mut dry_run = false;
+    let mut artifact_store = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1013,6 +1036,14 @@ fn parse_backup_create_options(args: &[String]) -> Result<BackupCreateOptions, E
                 index += 1;
                 reason = required_option(args, index, "reason option")?.clone();
             }
+            "--artifact-store" | "--artifact-store-dir" => {
+                index += 1;
+                artifact_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "artifact store option",
+                )?));
+            }
             "--dry-run" => dry_run = true,
             _ => passthrough.push(args[index].clone()),
         }
@@ -1026,6 +1057,7 @@ fn parse_backup_create_options(args: &[String]) -> Result<BackupCreateOptions, E
         project_id,
         reason,
         dry_run,
+        artifact_store,
     })
 }
 
@@ -1050,6 +1082,7 @@ fn parse_snapshot_create_options(args: &[String]) -> Result<SnapshotCreateOption
     let mut request_id = "req-snapshot-1".to_owned();
     let mut release_ref = "1.4.0".to_owned();
     let mut role = SnapshotRole::PreRelease;
+    let mut artifact_store = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1069,6 +1102,14 @@ fn parse_snapshot_create_options(args: &[String]) -> Result<SnapshotCreateOption
                 index += 1;
                 role = parse_snapshot_role(required_option(args, index, "role option")?)?;
             }
+            "--artifact-store" | "--artifact-store-dir" => {
+                index += 1;
+                artifact_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "artifact store option",
+                )?));
+            }
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -1080,6 +1121,7 @@ fn parse_snapshot_create_options(args: &[String]) -> Result<SnapshotCreateOption
         request_id,
         release_ref,
         role,
+        artifact_store,
     })
 }
 
@@ -1103,6 +1145,7 @@ fn parse_restore_plan_options(args: &[String]) -> Result<RestorePlanOptions, Eva
     let mut snapshot_id = "snapshot-v14".to_owned();
     let mut request_id = "req-restore-1".to_owned();
     let mut release_ref = "1.4.0".to_owned();
+    let mut artifact_store = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1118,6 +1161,14 @@ fn parse_restore_plan_options(args: &[String]) -> Result<RestorePlanOptions, Eva
                 index += 1;
                 release_ref = required_option(args, index, "release option")?.clone();
             }
+            "--artifact-store" | "--artifact-store-dir" => {
+                index += 1;
+                artifact_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "artifact store option",
+                )?));
+            }
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -1128,6 +1179,7 @@ fn parse_restore_plan_options(args: &[String]) -> Result<RestorePlanOptions, Eva
         snapshot_id,
         request_id,
         release_ref,
+        artifact_store,
     })
 }
 
@@ -1787,8 +1839,8 @@ where
         RestoreCommand::Plan(options) => {
             let trace = trace_for("cli.restore.plan");
             match create_restore_plan(&options) {
-                Ok((snapshot, plan)) => {
-                    write_restore_plan(stdout, options.common.output, &snapshot, &plan, &trace)?;
+                Ok(result) => {
+                    write_restore_plan(stdout, options.common.output, &result, &trace)?;
                     Ok(EXIT_OK)
                 }
                 Err(error) => write_command_error(
@@ -1988,7 +2040,7 @@ fn hardware_bind_plan(
     })
 }
 
-fn create_backup_result(options: &BackupCreateOptions) -> Result<BackupResult, EvaError> {
+fn create_backup_result(options: &BackupCreateOptions) -> Result<BackupCreateResult, EvaError> {
     let scope = BackupScope::new(
         options.project_id.clone(),
         vec![
@@ -2008,13 +2060,26 @@ fn create_backup_result(options: &BackupCreateOptions) -> Result<BackupResult, E
     if options.dry_run {
         plan = plan.dry_run();
     }
-    let mut store = InMemoryArtifactStore::new();
-    BackupService.create(plan, &mut store)
+    let artifact_store = artifact_store_ref(options.artifact_store.as_deref());
+    let backup = match &options.artifact_store {
+        Some(path) => {
+            let mut store = FileSystemArtifactStore::new(path);
+            BackupService.create(plan, &mut store)?
+        }
+        None => {
+            let mut store = InMemoryArtifactStore::new();
+            BackupService.create(plan, &mut store)?
+        }
+    };
+    Ok(BackupCreateResult {
+        backup,
+        artifact_store,
+    })
 }
 
 fn create_snapshot_result(
     options: &SnapshotCreateOptions,
-) -> Result<(BackupResult, ReleaseSnapshot), EvaError> {
+) -> Result<(BackupCreateResult, ReleaseSnapshot), EvaError> {
     let backup_options = BackupCreateOptions {
         common: options.common.clone(),
         artifact_id: format!("backup-for-{}", options.snapshot_id),
@@ -2022,6 +2087,7 @@ fn create_snapshot_result(
         project_id: "eva-cli".to_owned(),
         reason: "snapshot capture requires verified backup artifact".to_owned(),
         dry_run: false,
+        artifact_store: options.artifact_store.clone(),
     };
     let backup = create_backup_result(&backup_options)?;
     let snapshot = ReleaseSnapshotService.create(
@@ -2029,25 +2095,41 @@ fn create_snapshot_result(
         options.role,
         options.release_ref.clone(),
         RequestId::parse(&options.request_id)?,
-        &backup.manifest,
+        &backup.backup.manifest,
         "healthy",
     )?;
     Ok((backup, snapshot))
 }
 
-fn create_restore_plan(
-    options: &RestorePlanOptions,
-) -> Result<(ReleaseSnapshot, RestorePlan), EvaError> {
+fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult, EvaError> {
     let snapshot_options = SnapshotCreateOptions {
         common: options.common.clone(),
         snapshot_id: options.snapshot_id.clone(),
         request_id: options.request_id.clone(),
         release_ref: options.release_ref.clone(),
         role: SnapshotRole::PreRelease,
+        artifact_store: options.artifact_store.clone(),
     };
-    let (_backup, snapshot) = create_snapshot_result(&snapshot_options)?;
+    let (backup, snapshot) = create_snapshot_result(&snapshot_options)?;
     let plan = ReleaseSnapshotService.restore_plan(&snapshot);
-    Ok((snapshot, plan))
+    Ok(RestorePlanResult {
+        backup,
+        snapshot,
+        plan,
+    })
+}
+
+fn artifact_store_ref(path: Option<&Path>) -> ArtifactStoreRef {
+    match path {
+        Some(path) => ArtifactStoreRef {
+            kind: "filesystem".to_owned(),
+            path: Some(path.display().to_string()),
+        },
+        None => ArtifactStoreRef {
+            kind: "in_memory".to_owned(),
+            path: None,
+        },
+    }
 }
 
 fn create_upgrade_check(options: &UpgradeCheckOptions) -> Result<UpgradeCheckReport, EvaError> {
@@ -3362,16 +3444,19 @@ fn write_hardware_bind<W: Write>(
 fn write_backup_create<W: Write>(
     writer: &mut W,
     output: OutputFormat,
-    result: &BackupResult,
+    result: &BackupCreateResult,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
     match output {
         OutputFormat::Text => {
             writeln!(writer, "Backup artifact created").map_err(write_error_kind)?;
-            writeln!(writer, "artifact: {}", result.manifest.artifact_id)
+            writeln!(writer, "artifact: {}", result.backup.manifest.artifact_id)
                 .map_err(write_error_kind)?;
-            writeln!(writer, "digest: {}", result.manifest.digest).map_err(write_error_kind)?;
-            writeln!(writer, "verified: {}", result.verification.verified).map_err(write_error_kind)
+            writeln!(writer, "digest: {}", result.backup.manifest.digest)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "verified: {}", result.backup.verification.verified)
+                .map_err(write_error_kind)?;
+            write_artifact_store_ref(writer, &result.artifact_store)
         }
         OutputFormat::Json => writeln!(
             writer,
@@ -3385,7 +3470,7 @@ fn write_backup_create<W: Write>(
 fn write_snapshot_create<W: Write>(
     writer: &mut W,
     output: OutputFormat,
-    backup: &BackupResult,
+    backup: &BackupCreateResult,
     snapshot: &ReleaseSnapshot,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
@@ -3393,9 +3478,10 @@ fn write_snapshot_create<W: Write>(
         OutputFormat::Text => {
             writeln!(writer, "Release snapshot created").map_err(write_error_kind)?;
             writeln!(writer, "snapshot: {}", snapshot.snapshot_id).map_err(write_error_kind)?;
-            writeln!(writer, "backup: {}", backup.manifest.artifact_id)
+            writeln!(writer, "backup: {}", backup.backup.manifest.artifact_id)
                 .map_err(write_error_kind)?;
-            writeln!(writer, "role: {}", snapshot.role.as_str()).map_err(write_error_kind)
+            writeln!(writer, "role: {}", snapshot.role.as_str()).map_err(write_error_kind)?;
+            write_artifact_store_ref(writer, &backup.artifact_store)
         }
         OutputFormat::Json => writeln!(
             writer,
@@ -3414,29 +3500,37 @@ fn write_snapshot_create<W: Write>(
 fn write_restore_plan<W: Write>(
     writer: &mut W,
     output: OutputFormat,
-    snapshot: &ReleaseSnapshot,
-    plan: &RestorePlan,
+    result: &RestorePlanResult,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
     match output {
         OutputFormat::Text => {
             writeln!(writer, "Restore plan").map_err(write_error_kind)?;
-            writeln!(writer, "snapshot: {}", snapshot.snapshot_id).map_err(write_error_kind)?;
-            writeln!(writer, "status: {}", plan.status).map_err(write_error_kind)?;
-            writeln!(writer, "apply_allowed: {}", plan.apply_allowed).map_err(write_error_kind)
+            writeln!(writer, "snapshot: {}", result.snapshot.snapshot_id)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", result.plan.status).map_err(write_error_kind)?;
+            writeln!(writer, "apply_allowed: {}", result.plan.apply_allowed)
+                .map_err(write_error_kind)?;
+            write_artifact_store_ref(writer, &result.backup.artifact_store)
         }
         OutputFormat::Json => writeln!(
             writer,
             "{}",
-            success_envelope(
-                "restore.plan",
-                EXIT_OK,
-                &restore_plan_json(snapshot, plan),
-                trace
-            )
+            success_envelope("restore.plan", EXIT_OK, &restore_plan_json(result), trace)
         )
         .map_err(write_error_kind),
     }
+}
+
+fn write_artifact_store_ref<W: Write>(
+    writer: &mut W,
+    artifact_store: &ArtifactStoreRef,
+) -> Result<(), EvaError> {
+    writeln!(writer, "artifact_store: {}", artifact_store.kind).map_err(write_error_kind)?;
+    if let Some(path) = &artifact_store.path {
+        writeln!(writer, "artifact_store_path: {path}").map_err(write_error_kind)?;
+    }
+    Ok(())
 }
 
 fn write_upgrade_check<W: Write>(
@@ -3794,16 +3888,17 @@ fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
     )
 }
 
-fn backup_result_json(result: &BackupResult) -> String {
+fn backup_result_json(result: &BackupCreateResult) -> String {
     format!(
-        "{{\"artifact_id\":{},\"request_id\":{},\"runtime_generation\":{},\"project_id\":{},\"digest\":{},\"verified\":{},\"entries\":{},\"risks\":{},\"audit\":{}}}",
-        json_string(&result.manifest.artifact_id),
-        json_string(result.manifest.request_id.as_str()),
-        json_string(result.manifest.runtime_generation.as_str()),
-        json_string(&result.manifest.project_id),
-        json_string(&result.manifest.digest),
-        result.verification.verified,
-        json_array(result.manifest.entries.iter().map(|entry| {
+        "{{\"artifact_id\":{},\"request_id\":{},\"runtime_generation\":{},\"project_id\":{},\"digest\":{},\"verified\":{},\"artifact_store\":{},\"entries\":{},\"risks\":{},\"audit\":{}}}",
+        json_string(&result.backup.manifest.artifact_id),
+        json_string(result.backup.manifest.request_id.as_str()),
+        json_string(result.backup.manifest.runtime_generation.as_str()),
+        json_string(&result.backup.manifest.project_id),
+        json_string(&result.backup.manifest.digest),
+        result.backup.verification.verified,
+        artifact_store_ref_json(&result.artifact_store),
+        json_array(result.backup.manifest.entries.iter().map(|entry| {
             format!(
                 "{{\"path\":{},\"size_bytes\":{},\"redacted\":{}}}",
                 json_string(&entry.path),
@@ -3811,8 +3906,8 @@ fn backup_result_json(result: &BackupResult) -> String {
                 entry.redacted
             )
         })),
-        json_array(result.plan.risks.iter().map(|risk| json_string(risk))),
-        json_array(result.manifest.audit.iter().map(|entry| json_string(entry)))
+        json_array(result.backup.plan.risks.iter().map(|risk| json_string(risk))),
+        json_array(result.backup.manifest.audit.iter().map(|entry| json_string(entry)))
     )
 }
 
@@ -3831,7 +3926,7 @@ fn snapshot_json(snapshot: &ReleaseSnapshot) -> String {
     )
 }
 
-fn snapshot_create_json(backup: &BackupResult, snapshot: &ReleaseSnapshot) -> String {
+fn snapshot_create_json(backup: &BackupCreateResult, snapshot: &ReleaseSnapshot) -> String {
     format!(
         "{{\"snapshot\":{},\"backup\":{}}}",
         snapshot_json(snapshot),
@@ -3839,16 +3934,25 @@ fn snapshot_create_json(backup: &BackupResult, snapshot: &ReleaseSnapshot) -> St
     )
 }
 
-fn restore_plan_json(snapshot: &ReleaseSnapshot, plan: &RestorePlan) -> String {
+fn artifact_store_ref_json(artifact_store: &ArtifactStoreRef) -> String {
     format!(
-        "{{\"snapshot\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
-        snapshot_json(snapshot),
-        json_string(&plan.snapshot_id),
-        json_string(&plan.status),
-        plan.apply_allowed,
-        json_array(plan.steps.iter().map(|step| json_string(step))),
-        json_array(plan.risks.iter().map(|risk| json_string(risk))),
-        json_array(plan.audit.iter().map(|entry| json_string(entry)))
+        "{{\"kind\":{},\"path\":{}}}",
+        json_string(&artifact_store.kind),
+        option_json(artifact_store.path.as_deref())
+    )
+}
+
+fn restore_plan_json(result: &RestorePlanResult) -> String {
+    format!(
+        "{{\"snapshot\":{},\"backup\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
+        snapshot_json(&result.snapshot),
+        backup_result_json(&result.backup),
+        json_string(&result.plan.snapshot_id),
+        json_string(&result.plan.status),
+        result.plan.apply_allowed,
+        json_array(result.plan.steps.iter().map(|step| json_string(step))),
+        json_array(result.plan.risks.iter().map(|risk| json_string(risk))),
+        json_array(result.plan.audit.iter().map(|entry| json_string(entry)))
     )
 }
 
@@ -4538,12 +4642,13 @@ fn write_error_kind(error: io::Error) -> EvaError {
 }
 
 fn help_text() -> &'static str {
-    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--dry-run] [--project <path>] [--output text|json]\n  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--project <path>] [--output text|json]\n  eva restore plan [--snapshot-id <id>] [--release <ref>] [--project <path>] [--output text|json]\n  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n  eva release check [--target all|windows|linux|macos] [--project <path>] [--output text|json]\n  eva release security [--project <path>] [--output text|json]\n  eva release perf [--project <path>] [--output text|json]\n  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.5 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n  backup           Create and verify a V1.4 backup artifact in an in-memory ArtifactStore.\n  snapshot         Capture a release snapshot linked to a verified backup artifact.\n  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n  upgrade          Check generation, migration, drain, and rollback readiness without starting processes.\n  release          Run V1.5 cross-platform, security, performance, migration, and compatibility release gates.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
+    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--artifact-store <path>] [--dry-run] [--project <path>] [--output text|json]\n  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--artifact-store <path>] [--project <path>] [--output text|json]\n  eva restore plan [--snapshot-id <id>] [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n  eva release check [--target all|windows|linux|macos] [--project <path>] [--output text|json]\n  eva release security [--project <path>] [--output text|json]\n  eva release perf [--project <path>] [--output text|json]\n  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.5 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n  backup           Create and verify a V1.4 backup artifact, optionally in a filesystem ArtifactStore.\n  snapshot         Capture a release snapshot linked to a verified backup artifact.\n  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n  upgrade          Check generation, migration, drain, and rollback readiness without starting processes.\n  release          Run V1.5 cross-platform, security, performance, migration, and compatibility release gates.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -4558,6 +4663,17 @@ mod tests {
             String::from_utf8(stdout).unwrap(),
             String::from_utf8(stderr).unwrap(),
         )
+    }
+
+    fn test_temp_dir(name: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("eva-cli-{name}-{}-{now}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        path
     }
 
     #[test]
@@ -4911,6 +5027,73 @@ mod tests {
             run_cli(&["upgrade", "check", "--project", root, "--output", "json"]);
         assert!(upgrade_stdout.contains("\"status\":\"ready\""));
         assert!(upgrade_stdout.contains("rollback"));
+    }
+
+    #[test]
+    fn v14_backup_lifecycle_can_use_filesystem_artifact_store() {
+        let root = workspace_root();
+        let root = root.to_str().unwrap();
+        let artifact_root = test_temp_dir("artifacts");
+        let artifact_root_str = artifact_root.to_str().unwrap();
+
+        let (backup_exit, backup_stdout, backup_stderr) = run_cli(&[
+            "backup",
+            "create",
+            "--project",
+            root,
+            "--artifact-id",
+            "durable-cli",
+            "--artifact-store",
+            artifact_root_str,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(backup_exit, EXIT_OK, "{backup_stderr}");
+        assert!(backup_stdout.contains("\"artifact_store\":{\"kind\":\"filesystem\""));
+        assert!(artifact_root
+            .join("objects")
+            .join("backup")
+            .join("durable-cli.artifact")
+            .is_file());
+        assert!(artifact_root
+            .join("metadata")
+            .join("backup")
+            .join("durable-cli.metadata")
+            .is_file());
+
+        let (snapshot_exit, snapshot_stdout, snapshot_stderr) = run_cli(&[
+            "snapshot",
+            "create",
+            "--project",
+            root,
+            "--snapshot-id",
+            "durable-snap",
+            "--artifact-store",
+            artifact_root_str,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(snapshot_exit, EXIT_OK, "{snapshot_stderr}");
+        assert!(snapshot_stdout.contains("\"artifact_store\":{\"kind\":\"filesystem\""));
+
+        let (restore_exit, restore_stdout, restore_stderr) = run_cli(&[
+            "restore",
+            "plan",
+            "--project",
+            root,
+            "--snapshot-id",
+            "durable-restore",
+            "--artifact-store",
+            artifact_root_str,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(restore_exit, EXIT_OK, "{restore_stderr}");
+        assert!(restore_stdout.contains("\"command\":\"restore.plan\""));
+        assert!(restore_stdout.contains("\"artifact_store\":{\"kind\":\"filesystem\""));
+        assert!(restore_stdout.contains("\"apply_allowed\":false"));
+
+        fs::remove_dir_all(artifact_root).unwrap();
     }
 
     #[test]

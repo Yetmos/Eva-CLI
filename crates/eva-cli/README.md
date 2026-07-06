@@ -149,14 +149,15 @@ V1.4 新增备份、snapshot、restore plan 和 upgrade check：
 cargo run -- backup create --output json
 cargo run -- snapshot create --output json
 cargo run -- restore plan --output json
+cargo run -- backup create --artifact-store .eva/artifacts --output json
 cargo run -- upgrade check --output json
 ```
 
 | 命令 | 行为 |
 | --- | --- |
-| `backup create` | 构造 `BackupPlan`，写入 in-memory `ArtifactStore`，生成 `BackupManifest`，并立即校验 digest。 |
-| `snapshot create` | 创建 pre/post release snapshot，并关联已验证 backup artifact。 |
-| `restore plan` | 输出 restore steps、risks、audit，且 `apply_allowed:false`。 |
+| `backup create` | 构造 `BackupPlan`，默认写入 in-memory `ArtifactStore`；传入 `--artifact-store <path>` 时写入 filesystem artifact store，生成 `BackupManifest`，并立即校验 digest。 |
+| `snapshot create` | 创建 pre/post release snapshot，并关联已验证 backup artifact；传入 `--artifact-store <path>` 时同步落盘 snapshot 依赖的 backup artifact。 |
+| `restore plan` | 输出 restore steps、risks、audit，且 `apply_allowed:false`；传入 `--artifact-store <path>` 时使用同一 filesystem artifact store 生成可追溯 backup evidence。 |
 | `upgrade check` | 输出 supervisor candidate、migration preflight、drain plan 和 rollback plan。 |
 
 V1.4 不执行 destructive restore，不移动 release pointer，不启动真实 Supervisor/Runtime 进程。
