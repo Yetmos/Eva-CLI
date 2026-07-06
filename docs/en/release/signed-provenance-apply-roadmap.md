@@ -194,8 +194,8 @@ Status values:
 | P2-004 | Build and smoke-test macOS x86_64 and aarch64 release archives | `.github/workflows/release.yml` | `eva --version` inside packaged macOS artifacts | Done | `2d5d566` |
 | P2-005 | Generate `SHA256SUMS` and `native-artifacts.json` release evidence | `.github/workflows/release.yml` | Checksum verification command in workflow | Done | `834b180` |
 | P3-001 | Define signing provider configuration and failure policy | release docs, repository secrets documentation | Documented secret names and fallback behavior | Done | `76b7866` |
-| P3-002 | Add Windows signing path | `.github/workflows/release.yml` | Signed artifact verification command | Blocked: signing credential required | pending |
-| P3-003 | Add macOS signing and notarization path | `.github/workflows/release.yml` | Notarization verification command | Blocked: Apple Developer credential required | pending |
+| P3-002 | Add Windows signing path | `.github/workflows/release.yml` | Signed artifact verification command | Blocked: signing credential required | Blocked: `WINDOWS_SIGNING_PROVIDER` and provider credentials are not configured |
+| P3-003 | Add macOS signing and notarization path | `.github/workflows/release.yml` | Notarization verification command | Blocked: Apple Developer credential required | Blocked: Apple Developer ID and notarization credentials are not configured |
 | P3-004 | Add signed checksum/provenance bundle for Linux archives | `.github/workflows/release.yml` | Signature verification command | Planned | pending |
 | P4-001 | Replace lightweight artifact digest contract with SHA-256 while preserving old test intent | `crates/eva-storage` | `cargo test -p eva-storage` | Planned | pending |
 | P4-002 | Add filesystem artifact store implementation | `crates/eva-storage` | artifact round trip, digest mismatch, missing artifact tests | Planned | pending |

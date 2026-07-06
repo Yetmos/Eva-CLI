@@ -173,8 +173,8 @@ Eva-CLI V1.5.1 还没有：
 | P2-004 | 构建并 smoke-test macOS x86_64 与 aarch64 release archives | `.github/workflows/release.yml` | packaged macOS artifacts 内运行 `eva --version` | Done | `2d5d566` |
 | P2-005 | 生成 `SHA256SUMS` 和 `native-artifacts.json` release evidence | `.github/workflows/release.yml` | workflow 内执行 checksum verification command | Done | `834b180` |
 | P3-001 | 定义 signing provider 配置和失败策略 | release docs、repository secrets documentation | 记录 secret names 和 fallback behavior | Done | `76b7866` |
-| P3-002 | 增加 Windows signing 路径 | `.github/workflows/release.yml` | signed artifact verification command | Blocked：需要 signing credential | pending |
-| P3-003 | 增加 macOS signing 与 notarization 路径 | `.github/workflows/release.yml` | notarization verification command | Blocked：需要 Apple Developer credential | pending |
+| P3-002 | 增加 Windows signing 路径 | `.github/workflows/release.yml` | signed artifact verification command | Blocked：需要 signing credential | Blocked：尚未配置 `WINDOWS_SIGNING_PROVIDER` 和 provider credentials |
+| P3-003 | 增加 macOS signing 与 notarization 路径 | `.github/workflows/release.yml` | notarization verification command | Blocked：需要 Apple Developer credential | Blocked：尚未配置 Apple Developer ID 和 notarization credentials |
 | P3-004 | 为 Linux archives 增加 signed checksum/provenance bundle | `.github/workflows/release.yml` | signature verification command | Planned | pending |
 | P4-001 | 用 SHA-256 替换 lightweight artifact digest contract，同时保留旧测试意图 | `crates/eva-storage` | `cargo test -p eva-storage` | Planned | pending |
 | P4-002 | 增加 filesystem artifact store 实现 | `crates/eva-storage` | artifact round trip、digest mismatch、missing artifact tests | Planned | pending |
