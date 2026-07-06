@@ -184,7 +184,7 @@ Eva-CLI V1.5.1 还没有：
 | P5-002 | 增加 HTTP provider runner contract 和测试 | `crates/eva-adapter` | URL allowlist、method denial、timeout tests | Done | `93dbfa7` |
 | P5-003 | 增加 MCP process/session startup boundary | `crates/eva-mcp`、`crates/eva-adapter` | startup failure 和 shutdown tests | Done | `030f663` |
 | P5-004 | 将 provider invocation audit 关联 trace fields | `crates/eva-adapter`、`crates/eva-observability`、`crates/eva-cli` | CLI JSON 包含 trace/audit fields | Done | `943cd7f` |
-| P6-001 | 增加 restore apply 命令解析，durable stores 不可用时拒绝执行 | `crates/eva-cli` | 命令返回 policy/runtime unavailable，并保持稳定 JSON | In Progress | local |
+| P6-001 | 增加 restore apply 命令解析，durable stores 不可用时拒绝执行 | `crates/eva-cli` | 命令返回 policy/runtime unavailable，并保持稳定 JSON | Done | `5c6d26f` |
 | P6-002 | 基于 durable artifacts 实现 restore apply dry-run validation | `crates/eva-backup`、`crates/eva-cli` | digest mismatch 和 missing backup tests | Planned | pending |
 | P6-003 | 增加 upgrade apply 命令解析和 lock model | `crates/eva-lifecycle`、`crates/eva-cli` | lock acquisition 和 conflict tests | Planned | pending |
 | P6-004 | 增加 snapshot promote 命令解析和 release pointer plan | `crates/eva-backup`、`crates/eva-lifecycle`、`crates/eva-cli` | confirmation 和 audit tests | Planned | pending |
