@@ -287,6 +287,11 @@
         "description": "GHCR package 通道、tag 规则、发布证据、权限和拉取验证契约。"
       },
       {
+        "id": "signed-provenance-apply-roadmap",
+        "title": "签名、Provenance 与 Apply 路线图",
+        "description": "签名安装器、provenance、原生 release artifacts、durable stores、provider 执行和真实 apply gate 的实施台账。"
+      },
+      {
         "id": "v1.0-known-limitations",
         "title": "V1.0 已知限制",
         "description": "V1.0 core 的支持范围，以及仍属于后续版本的高级 runtime 能力。"

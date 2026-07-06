@@ -287,6 +287,11 @@
         "description": "The GHCR package channel, tag rules, release evidence, permissions, and pull verification contract."
       },
       {
+        "id": "signed-provenance-apply-roadmap",
+        "title": "Signed Provenance and Apply Roadmap",
+        "description": "The implementation ledger for signed installers, provenance, native release artifacts, durable stores, provider execution, and real apply gates."
+      },
+      {
         "id": "v1.0-known-limitations",
         "title": "V1.0 Known Limitations",
         "description": "The supported V1.0 core scope and the advanced runtime capabilities that remain later-version work."
