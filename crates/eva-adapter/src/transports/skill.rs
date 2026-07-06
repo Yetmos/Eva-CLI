@@ -25,6 +25,7 @@ pub fn invoke(
                 ),
         );
     }
+    let trace = invocation.trace_for_adapter(&handle.id);
     Ok(AdapterInvokeReport {
         request_id: invocation.request_id,
         adapter_id: handle.id.clone(),
@@ -41,6 +42,7 @@ pub fn invoke(
             format!("adapter.invoked:{}", handle.id.as_str()),
             format!("skill.run:{skill}"),
         ],
+        trace,
     })
 }
 

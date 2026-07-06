@@ -14,7 +14,7 @@
 | `manifest.rs` | Adapter manifest 的 runtime 表示 | 已完成 V1.3 | `AdapterHandle` 保留 MCP、Skill 和 hardware identity 扩展。 |
 | `registry.rs` | Adapter handle 和 capability index | 已完成 V1.1 | 支持按 id/capability 查询和重复检测。 |
 | `router.rs` | explicit provider 和 capability 路由 | 已完成 V1.1 | provider 优先，fallback 到 capability index。 |
-| `runtime.rs` | 授权后 transport 执行、probe、audit | 已完成 V1.3 | hardware transport 已接入；stdio/http 仍返回 unsupported。 |
+| `runtime.rs` | 授权后 transport 执行、probe、audit | 已完成 P5 | provider invocation report 包含 request-level `TraceFields`；hardware transport 已接入；stdio/http 仍返回 unsupported。 |
 | `error.rs` | provider/transport 错误映射 | 已完成 V1.1 | 稳定输出 permission/unavailable/unsupported/conflict 等错误。 |
 | `transports/` | 具体 transport 实现 | 已完成 V1.1/V1.3/P5-001/P5-002 部分 | builtin/MCP/Skill/hardware 有受控实现；stdio/http 已有 runner contract；runtime 仍未启动 stdio/http provider。 |
 
@@ -27,6 +27,11 @@
 - `transports/builtin.rs`：返回本地受控 envelope。
 - `transports/mcp.rs`：通过 `eva-mcp` 强制 MCP tool allowlist。
 - `transports/skill.rs`：校验 Skill runtime gate 并返回可审计 envelope。
+
+P5 provider invocation reports attach `TraceFields` with request id, adapter id,
+capability, provider, and the stable `adapter.invoke` span. CLI JSON can
+therefore show transport audit entries and invocation trace in the same data
+object.
 
 V1.1 不启动 stdio/http/hardware provider。这保证外部执行先有 manifest、policy、audit、credential、timeout 和平台边界。
 

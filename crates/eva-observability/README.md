@@ -12,7 +12,7 @@
 
 | 范围 | 状态 | 说明 |
 | --- | --- | --- |
-| `TraceFields` | 已完成 | 聚合 event、request、topic、agent、adapter、capability、provider、correlation、causation、generation、span |
+| `TraceFields` | 已完成 | 聚合 event、request、topic、agent、adapter、capability、provider、correlation、causation、generation、span；支持 provider invocation trace builder 链式补充 request id |
 | `SpanId` | 已完成 | 稳定 span identifier，限制为跨平台 ASCII 字符 |
 | `TraceFields::from_event` | 已完成 | 从 `eva-core::Event` 提取不含 payload 的链路字段 |
 | `AuditAction` | 已完成 | 定义配置、policy、runtime、event、capability、adapter、安全拒绝等稳定动作 |
@@ -30,6 +30,7 @@
 | API | 输入 | 输出 | 用途 |
 | --- | --- | --- | --- |
 | `TraceFields::from_event` | `&eva_core::Event` | `TraceFields` | 从核心事件构造观测字段 |
+| `TraceFields::with_request_id` | `RequestId` | `TraceFields` | 为 CLI/Adapter 调用补充 request-level trace |
 | `TraceFields::entries` | `&self` | `Vec<(&'static str, String)>` | 输出当前存在的字段 |
 | `SpanId::parse` | `&str` | `Result<SpanId, EvaError>` | 校验 span id |
 | `AuditEvent::new` | action、outcome、trace | `AuditEvent` | 构造审计记录 |
@@ -57,6 +58,9 @@ causation_id
 generation_id
 span_id
 ```
+
+Provider invocation records should carry the same field names in their local
+data payload as the top-level CLI envelope uses for command-level trace.
 
 ### 边界
 

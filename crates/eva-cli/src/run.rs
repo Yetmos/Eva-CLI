@@ -3413,14 +3413,15 @@ fn skill_list_json(runtime: &AdapterRuntime) -> String {
 
 fn adapter_invoke_json(report: &AdapterInvokeReport) -> String {
     format!(
-        "{{\"request_id\":{},\"adapter_id\":{},\"transport\":{},\"capability\":{},\"status\":{},\"output\":{},\"audit\":{}}}",
+        "{{\"request_id\":{},\"adapter_id\":{},\"transport\":{},\"capability\":{},\"status\":{},\"output\":{},\"audit\":{},\"trace\":{}}}",
         json_string(report.request_id.as_str()),
         json_string(report.adapter_id.as_str()),
         json_string(report.transport.as_str()),
         json_string(report.capability.as_str()),
         json_string(&report.status),
         json_string(&report.output),
-        json_array(report.audit.iter().map(|entry| json_string(entry)))
+        json_array(report.audit.iter().map(|entry| json_string(entry))),
+        trace_json(&report.trace)
     )
 }
 
@@ -4605,6 +4606,32 @@ mod tests {
 
         assert_eq!(exit_code, EXIT_OK, "{stderr}");
         assert!(stdout.contains("\"status\":\"blocked\""));
+    }
+
+    #[test]
+    fn skill_run_json_links_adapter_audit_to_invocation_trace() {
+        let root = workspace_root();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "skill",
+            "run",
+            "--skill",
+            "code-review",
+            "--request-id",
+            "req-trace-skill",
+            "--input",
+            "{\"scope\":\"current_diff\"}",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"audit\":[\"adapter.invoked:code-review-skill\""));
+        assert!(stdout.contains("\"trace\":{\"request_id\":\"req-trace-skill\""));
+        assert!(stdout.contains("\"adapter_id\":\"code-review-skill\""));
+        assert!(stdout.contains("\"capability\":\"workflow.code_review\""));
+        assert!(stdout.contains("\"provider\":\"code-review-skill\""));
     }
 
     #[test]

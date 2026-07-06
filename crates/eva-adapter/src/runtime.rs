@@ -5,6 +5,7 @@ use crate::router::{AdapterRouteRequest, AdapterRouter};
 use crate::transports;
 use eva_config::{AdapterTransport, ProjectConfig};
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
+use eva_observability::{SpanId, TraceFields};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "authorized transport execution with timeout and audit";
@@ -35,6 +36,7 @@ pub struct AdapterInvokeReport {
     pub status: String,
     pub output: String,
     pub audit: Vec<String>,
+    pub trace: TraceFields,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +63,18 @@ impl AdapterInvocation {
     pub fn with_input(mut self, input: impl Into<String>) -> Self {
         self.input = input.into();
         self
+    }
+
+    pub fn trace_for_adapter(&self, adapter_id: &AdapterId) -> TraceFields {
+        TraceFields::default()
+            .with_request_id(self.request_id.clone())
+            .with_adapter_id(adapter_id.clone())
+            .with_capability(self.capability.clone())
+            .with_provider(adapter_id.as_str())
+            .with_span_id(
+                SpanId::parse("adapter.invoke")
+                    .expect("static adapter span identifiers use the observability character set"),
+            )
     }
 }
 
@@ -167,5 +181,21 @@ mod tests {
 
         assert_eq!(report.status, "completed");
         assert!(report.output.contains("code-review"));
+        assert_eq!(
+            report.trace.request_id.as_ref().map(|id| id.as_str()),
+            Some("req-skill-1")
+        );
+        assert_eq!(
+            report.trace.adapter_id.as_ref().map(|id| id.as_str()),
+            Some("code-review-skill")
+        );
+        assert_eq!(
+            report
+                .trace
+                .capability
+                .as_ref()
+                .map(|capability| capability.as_str()),
+            Some("workflow.code_review")
+        );
     }
 }

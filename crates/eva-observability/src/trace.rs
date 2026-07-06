@@ -82,6 +82,11 @@ impl TraceFields {
         self
     }
 
+    pub fn with_request_id(mut self, value: RequestId) -> Self {
+        self.request_id = Some(value);
+        self
+    }
+
     pub fn with_adapter_id(mut self, value: AdapterId) -> Self {
         self.adapter_id = Some(value);
         self
@@ -166,12 +171,14 @@ mod tests {
     #[test]
     fn entries_include_only_present_values() {
         let fields = TraceFields::default()
+            .with_request_id(RequestId::parse("req-1").unwrap())
             .with_provider("codex-cli")
             .with_span_id(SpanId::parse("span-1").unwrap());
 
         assert_eq!(
             fields.entries(),
             vec![
+                ("request_id", "req-1".to_owned()),
                 ("provider", "codex-cli".to_owned()),
                 ("span_id", "span-1".to_owned())
             ]

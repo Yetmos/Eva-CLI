@@ -24,6 +24,7 @@ pub fn invoke(
     let session_config = handle.mcp_session_config()?;
     let request_id = invocation.request_id.clone();
     let capability = invocation.capability.clone();
+    let trace = invocation.trace_for_adapter(&handle.id);
     let call = client.call_tool(invocation.request_id, tool, &invocation.input)?;
     Ok(AdapterInvokeReport {
         request_id,
@@ -42,5 +43,6 @@ pub fn invoke(
             format!("mcp.command:{}", session_config.process.command),
             "mcp.session_boundary:not_started".to_owned(),
         ],
+        trace,
     })
 }

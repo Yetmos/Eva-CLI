@@ -11,6 +11,7 @@ pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
+    let trace = invocation.trace_for_adapter(&handle.id);
     Ok(AdapterInvokeReport {
         request_id: invocation.request_id,
         adapter_id: handle.id.clone(),
@@ -23,5 +24,6 @@ pub fn invoke(
             handle.id.as_str()
         ),
         audit: vec![format!("adapter.invoked:{}", handle.id.as_str())],
+        trace,
     })
 }

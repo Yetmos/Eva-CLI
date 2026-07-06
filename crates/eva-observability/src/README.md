@@ -9,7 +9,7 @@
 | 文件 | 职责 | 当前进度 | 目标版本 |
 | --- | --- | --- | --- |
 | `lib.rs` | 公共导出 | 已完成 | V0.2 |
-| `trace.rs` | `TraceFields`、`SpanId`、event 字段提取 | 已完成 | V0.2/V0.4 |
+| `trace.rs` | `TraceFields`、`SpanId`、event 字段提取、request-level builder | 已完成 | V0.2/V0.4/P5 |
 | `audit.rs` | `AuditAction`、`AuditOutcome`、`AuditEvent`、`AuditSink` | 已完成 | V0.2/V1.x |
 | `metrics.rs` | `MetricName`、`MetricLabels`、`MetricPoint` | 已完成 | V0.2/V0.4 |
 

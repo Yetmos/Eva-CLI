@@ -16,6 +16,7 @@ pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
+    let trace = invocation.trace_for_adapter(&handle.id);
     let logical_name = handle
         .hardware_logical_name
         .as_deref()
@@ -55,6 +56,7 @@ pub fn invoke(
         status: output.status,
         output: output.output,
         audit,
+        trace,
     })
 }
 

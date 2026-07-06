@@ -33,6 +33,9 @@
 - Parser branches for `adapter`, `mcp`, `skill`, and `discovery` subcommands.
 - Execution bridges into `eva-adapter`, `eva-mcp`, and `eva-discovery` without adding persistent CLI state.
 - Text and JSON writers for Adapter list/probe, MCP list/probe, Skill list/run, and Discovery scan.
+- Provider invocation JSON, such as `skill run`, includes both `audit` and
+  request-level `trace` inside `data`, while the top-level envelope keeps the
+  CLI command span trace.
 - Tests covering V1.1 JSON envelopes, blocked MCP tool probes, and V1.1 version identity.
 
 ## V1.2 Memory Context Surface

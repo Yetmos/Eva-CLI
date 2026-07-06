@@ -204,7 +204,7 @@ Status values:
 | P5-001 | Add stdio provider runner contract and tests | `crates/eva-adapter` | denied command, timeout, output limit tests | Done | `0fce9eb` |
 | P5-002 | Add HTTP provider runner contract and tests | `crates/eva-adapter` | URL allowlist, method denial, timeout tests | Done | `93dbfa7` |
 | P5-003 | Add MCP process/session startup boundary | `crates/eva-mcp`, `crates/eva-adapter` | startup failure and shutdown tests | Done | `030f663` |
-| P5-004 | Link provider invocation audit to trace fields | `crates/eva-adapter`, `crates/eva-observability`, `crates/eva-cli` | CLI JSON includes trace/audit fields | Planned | pending |
+| P5-004 | Link provider invocation audit to trace fields | `crates/eva-adapter`, `crates/eva-observability`, `crates/eva-cli` | CLI JSON includes trace/audit fields | In Progress | local |
 | P6-001 | Add restore apply command parser that refuses execution without durable stores | `crates/eva-cli` | command returns policy/runtime unavailable with stable JSON | Planned | pending |
 | P6-002 | Implement restore apply dry-run validation over durable artifacts | `crates/eva-backup`, `crates/eva-cli` | digest mismatch and missing backup tests | Planned | pending |
 | P6-003 | Add upgrade apply command parser and lock model | `crates/eva-lifecycle`, `crates/eva-cli` | lock acquisition and conflict tests | Planned | pending |
