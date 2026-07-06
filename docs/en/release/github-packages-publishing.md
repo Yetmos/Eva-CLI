@@ -30,6 +30,10 @@ The package job:
 - publishes a multi-platform image to GHCR for `linux/amd64` and `linux/arm64`;
 - records package name, registry URL, source tag, source SHA, digest, tags, and
   platforms in `release-evidence/package-ghcr.json`;
+- enables Docker Buildx provenance and SBOM attestations for the pushed GHCR
+  image;
+- records provenance and SBOM evidence fields, including verification commands,
+  in `release-evidence/package-ghcr.json`;
 - uploads `package-evidence-${RELEASE_TAG}` and lets the publish job merge that
   file into `release-evidence-${RELEASE_TAG}`.
 
@@ -77,6 +81,11 @@ docker pull ghcr.io/yetmos/eva-cli:latest
 ```
 
 The digest returned by Docker or the GHCR package page must match
+`release-evidence/package-ghcr.json`.
+
+The same evidence file records Buildx provenance and SBOM availability. For a
+published package, verify those records with the commands stored under the
+`provenance.verification` and `sbom.verification` fields in
 `release-evidence/package-ghcr.json`.
 
 ## Scope Limits

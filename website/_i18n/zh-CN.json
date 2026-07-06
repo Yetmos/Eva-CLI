@@ -48,7 +48,7 @@
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
     "progressCurrentTitle": "V1.5.1 发布加固与 GHCR package 交付已经落地",
-    "progressCurrentBody": "仓库已经具备可编译 Rust workspace、覆盖 release check/security/perf/migration 的可执行 CLI、配置校验、in-memory basic loop、task 诊断、受控外部能力诊断、记忆上下文、硬件绑定计划、备份与生命周期检查、CI 门禁、发布文档、带 SVG 插图的源码使用手册，以及 ghcr.io/yetmos/eva-cli:1.5.1 GitHub Packages 容器交付通道。",
+    "progressCurrentBody": "仓库已经具备可编译 Rust workspace、覆盖 release check/security/perf/migration 的可执行 CLI、配置校验、in-memory basic loop、task 诊断、受控外部能力诊断、记忆上下文、硬件绑定计划、备份与生命周期检查、CI 门禁、发布文档、带 SVG 插图的源码使用手册，以及带 Buildx provenance 和 SBOM evidence 的 ghcr.io/yetmos/eva-cli:1.5.1 GitHub Packages 容器交付通道。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
@@ -151,7 +151,7 @@
       {
         "id": "github-packages-publishing",
         "title": "GitHub Packages 发布",
-        "description": "ghcr.io/yetmos/eva-cli 的 GHCR 交付契约、package tag、发布证据、权限和拉取验证。"
+        "description": "ghcr.io/yetmos/eva-cli 的 GHCR 交付契约、package tag、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证。"
       },
       {
         "id": "release-notes-v1.5.1",
@@ -284,7 +284,7 @@
       {
         "id": "github-packages-publishing",
         "title": "GitHub Packages 发布方案",
-        "description": "GHCR package 通道、tag 规则、发布证据、权限和拉取验证契约。"
+        "description": "GHCR package 通道、tag 规则、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证契约。"
       },
       {
         "id": "signed-provenance-apply-roadmap",

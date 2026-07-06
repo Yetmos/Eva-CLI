@@ -48,7 +48,7 @@
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
     "progressCurrentTitle": "V1.5.1 release hardening and GHCR package delivery are implemented",
-    "progressCurrentBody": "The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, release documentation, an SVG-illustrated source user manual, and a GitHub Packages container channel at ghcr.io/yetmos/eva-cli:1.5.1.",
+    "progressCurrentBody": "The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, release documentation, an SVG-illustrated source user manual, and a GitHub Packages container channel at ghcr.io/yetmos/eva-cli:1.5.1 with Buildx provenance and SBOM evidence.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
@@ -151,7 +151,7 @@
       {
         "id": "github-packages-publishing",
         "title": "GitHub Packages Publishing",
-        "description": "The GHCR delivery contract, package tags, release evidence, permissions, and pull verification for ghcr.io/yetmos/eva-cli."
+        "description": "The GHCR delivery contract, package tags, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification for ghcr.io/yetmos/eva-cli."
       },
       {
         "id": "release-notes-v1.5.1",
@@ -284,7 +284,7 @@
       {
         "id": "github-packages-publishing",
         "title": "GitHub Packages Publishing",
-        "description": "The GHCR package channel, tag rules, release evidence, permissions, and pull verification contract."
+        "description": "The GHCR package channel, tag rules, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification contract."
       },
       {
         "id": "signed-provenance-apply-roadmap",

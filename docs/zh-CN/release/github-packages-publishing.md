@@ -27,6 +27,8 @@ package job 会：
 - 构建本地容器镜像，并用 `eva --version` 做 package smoke test；
 - 向 GHCR 发布 `linux/amd64` 和 `linux/arm64` 多平台镜像；
 - 在 `release-evidence/package-ghcr.json` 中记录 package 名称、registry URL、source tag、source SHA、digest、tags 和 platforms；
+- 为推送到 GHCR 的 image 启用 Docker Buildx provenance 和 SBOM attestations；
+- 在 `release-evidence/package-ghcr.json` 中记录 provenance 和 SBOM evidence 字段，包括验证命令；
 - 上传 `package-evidence-${RELEASE_TAG}`，再由 publish job 合并进 `release-evidence-${RELEASE_TAG}`。
 
 ## Tag 规则
@@ -71,6 +73,10 @@ docker pull ghcr.io/yetmos/eva-cli:latest
 
 Docker 或 GHCR package 页面返回的 digest 必须与
 `release-evidence/package-ghcr.json` 一致。
+
+同一个 evidence 文件会记录 Buildx provenance 和 SBOM 可用性。对于已发布 package，
+使用 `release-evidence/package-ghcr.json` 中 `provenance.verification` 和
+`sbom.verification` 字段保存的命令进行验证。
 
 ## 范围限制
 
