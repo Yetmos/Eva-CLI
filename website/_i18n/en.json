@@ -274,7 +274,7 @@
       {
         "id": "project-release-plan",
         "title": "Project Release Plan",
-        "description": "The reusable CI/DI process, GitHub Packages gates, platform matrix, release evidence, artifact roadmap, and repair policy."
+        "description": "The reusable CI/DI process, GitHub Packages gates, platform matrix, release evidence, artifact roadmap, signing provider policy, and repair policy."
       },
       {
         "id": "version-management-plan",

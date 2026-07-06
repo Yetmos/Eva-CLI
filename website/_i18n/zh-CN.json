@@ -274,7 +274,7 @@
       {
         "id": "project-release-plan",
         "title": "项目发布方案",
-        "description": "可复用的 CI/DI 流程、GitHub Packages 门禁、平台矩阵、发布证据、制品路线图和修复策略。"
+        "description": "可复用的 CI/DI 流程、GitHub Packages 门禁、平台矩阵、发布证据、制品路线图、签名 provider 策略和修复策略。"
       },
       {
         "id": "version-management-plan",

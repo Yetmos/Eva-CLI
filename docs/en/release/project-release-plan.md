@@ -200,6 +200,50 @@ GitHub Packages is not a Cargo crate registry replacement. Public Rust crate
 publication should be evaluated separately for crates.io; GitHub Packages is
 for container images or package ecosystems supported by GitHub Packages.
 
+## Signing Provider Policy
+
+Native archives are unsigned until the repository has platform signing
+credentials. Unsigned archives may be attached only when their Release body,
+artifact evidence, and archive README clearly say `signed: false`. They must not
+be described as installers.
+
+Windows signing requirements:
+
+- preferred provider: Microsoft Trusted Signing or another CI-compatible
+  hardware-backed signing service;
+- required secrets: `WINDOWS_SIGNING_PROVIDER`, provider-specific credential
+  secrets, and a timestamp service URL if the provider does not supply one;
+- verification: `signtool verify /pa /tw eva.exe` or provider-equivalent
+  verification before packaging signed installer artifacts.
+
+macOS signing requirements:
+
+- provider: Apple Developer ID Application certificate plus notarization;
+- required secrets: `APPLE_DEVELOPER_ID_CERTIFICATE_P12`,
+  `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `APPLE_ID`,
+  `APPLE_TEAM_ID`, and an app-specific password or App Store Connect API key;
+- verification: `codesign --verify --deep --strict`, `spctl --assess`, and
+  notarization status before publishing signed macOS artifacts.
+
+Linux signing requirements:
+
+- first milestone: sign `SHA256SUMS` or a provenance bundle rather than
+  individual `.tar.gz` files;
+- required secrets: `RELEASE_SIGNING_KEY` and `RELEASE_SIGNING_KEY_PASSPHRASE`
+  when a GPG/minisign-style key is selected;
+- verification: signature verification over `SHA256SUMS` before publishing the
+  signed checksum artifact.
+
+Failure policy:
+
+- signed artifact jobs must fail closed when credentials exist but signing or
+  verification fails;
+- missing signing credentials must leave the relevant signing rows blocked and
+  keep archive evidence marked `signed: false`;
+- never silently fall back from a failed signing attempt to a signed-looking
+  unsigned artifact;
+- a public tag must not be moved to repair signing. Publish a patch release.
+
 ## Failure And Repair Policy
 
 If CI fails before tagging, fix the release branch and rerun CI. Do not create a
