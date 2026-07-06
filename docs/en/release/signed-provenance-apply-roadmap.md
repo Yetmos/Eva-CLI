@@ -198,7 +198,7 @@ Status values:
 | P3-003 | Add macOS signing and notarization path | `.github/workflows/release.yml` | Notarization verification command | Blocked: Apple Developer credential required | Blocked: Apple Developer ID and notarization credentials are not configured |
 | P3-004 | Add signed checksum/provenance bundle for Linux archives | `.github/workflows/release.yml` | Signature verification command | Done | `d9e0498` |
 | P4-001 | Replace lightweight artifact digest contract with SHA-256 while preserving old test intent | `crates/eva-storage` | `cargo test -p eva-storage` | Done | `528e9f4` |
-| P4-002 | Add filesystem artifact store implementation | `crates/eva-storage` | artifact round trip, digest mismatch, missing artifact tests | Planned | pending |
+| P4-002 | Add filesystem artifact store implementation | `crates/eva-storage` | artifact round trip, digest mismatch, missing artifact tests | In Progress | local |
 | P4-003 | Wire durable artifact store into backup/snapshot/restore commands behind explicit flags | `crates/eva-cli`, `crates/eva-backup` | CLI smoke commands with project-local artifact directory | Planned | pending |
 | P4-004 | Add durable event/task state interface | `crates/eva-storage`, `crates/eva-runtime`, `crates/eva-cli` | task status/logs survive process boundary in tests | Planned | pending |
 | P5-001 | Add stdio provider runner contract and tests | `crates/eva-adapter` | denied command, timeout, output limit tests | Planned | pending |
