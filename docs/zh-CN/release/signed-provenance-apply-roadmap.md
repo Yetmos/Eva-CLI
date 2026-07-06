@@ -182,7 +182,7 @@ Eva-CLI V1.5.1 还没有：
 | P4-004 | 增加 durable event/task state interface | `crates/eva-storage`、`crates/eva-runtime`、`crates/eva-cli` | task status/logs 在测试中跨进程边界保留 | Done | `a27b2b0` |
 | P5-001 | 增加 stdio provider runner contract 和测试 | `crates/eva-adapter` | denied command、timeout、output limit tests | Done | `0fce9eb` |
 | P5-002 | 增加 HTTP provider runner contract 和测试 | `crates/eva-adapter` | URL allowlist、method denial、timeout tests | Done | `93dbfa7` |
-| P5-003 | 增加 MCP process/session startup boundary | `crates/eva-mcp`、`crates/eva-adapter` | startup failure 和 shutdown tests | In Progress | local |
+| P5-003 | 增加 MCP process/session startup boundary | `crates/eva-mcp`、`crates/eva-adapter` | startup failure 和 shutdown tests | Done | `030f663` |
 | P5-004 | 将 provider invocation audit 关联 trace fields | `crates/eva-adapter`、`crates/eva-observability`、`crates/eva-cli` | CLI JSON 包含 trace/audit fields | Planned | pending |
 | P6-001 | 增加 restore apply 命令解析，durable stores 不可用时拒绝执行 | `crates/eva-cli` | 命令返回 policy/runtime unavailable，并保持稳定 JSON | Planned | pending |
 | P6-002 | 基于 durable artifacts 实现 restore apply dry-run validation | `crates/eva-backup`、`crates/eva-cli` | digest mismatch 和 missing backup tests | Planned | pending |
