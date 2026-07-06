@@ -471,6 +471,110 @@ jobs:
           path: release-evidence/native-linux.json
           if-no-files-found: error
 
+  native-macos:
+    name: Build macOS release archive (${{ matrix.target }})
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            runner: macos-26-intel
+          - target: aarch64-apple-darwin
+            runner: macos-26
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Validate version management
+        shell: pwsh
+        run: ./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
+
+      - name: Resolve native artifact metadata
+        id: native_vars
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "archive=eva-cli-${version}-${{ matrix.target }}.tar.gz" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build macOS binary
+        run: cargo build --release --locked --bin eva --target ${{ matrix.target }}
+
+      - name: Smoke test macOS binary
+        run: ./target/${{ matrix.target }}/release/eva --version
+
+      - name: Package macOS archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/eva" "dist/${{ matrix.target }}/eva"
+          cat > "dist/${{ matrix.target }}/README.txt" <<EOF
+          Eva-CLI ${RELEASE_TAG} macOS archive (${{ matrix.target }})
+
+          Contents:
+          - eva
+
+          Verify:
+          - ./eva --version
+
+          Signing:
+          - This archive is not signed or notarized yet. Signed installers are tracked by the signed-provenance-apply roadmap.
+          EOF
+          tar -C "dist/${{ matrix.target }}" -czf "dist/${{ steps.native_vars.outputs.archive }}" eva README.txt
+
+      - name: Capture macOS native artifact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-evidence
+          archive="dist/${{ steps.native_vars.outputs.archive }}"
+          hash="$(shasum -a 256 "${archive}" | awk '{print $1}')"
+          source_sha="$(git rev-parse HEAD)"
+          smoke_status="passed"
+          cat > "release-evidence/native-macos-${{ matrix.target }}.json" <<EOF
+          {
+            "status": "published",
+            "version": "${{ steps.native_vars.outputs.version }}",
+            "source_tag": "${RELEASE_TAG}",
+            "source_sha": "${source_sha}",
+            "artifact": {
+              "target": "${{ matrix.target }}",
+              "archive": "${{ steps.native_vars.outputs.archive }}",
+              "format": "tar.gz",
+              "binary": "eva",
+              "checksum": "sha256:${hash}",
+              "signed": false,
+              "notarized": false,
+              "smoke_test": "${smoke_status}"
+            }
+          }
+          EOF
+
+      - name: Upload macOS release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-macos-${{ matrix.target }}-${{ env.RELEASE_TAG }}
+          path: dist/${{ steps.native_vars.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Upload macOS native evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-evidence-macos-${{ matrix.target }}-${{ env.RELEASE_TAG }}
+          path: release-evidence/native-macos-${{ matrix.target }}.json
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
     needs:
@@ -478,6 +582,7 @@ jobs:
       - packages
       - native-windows
       - native-linux
+      - native-macos
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -575,6 +680,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: native-evidence-linux-${{ env.RELEASE_TAG }}
+          path: release-evidence/native
+
+      - name: Download macOS x86_64 native evidence artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: native-evidence-macos-x86_64-apple-darwin-${{ env.RELEASE_TAG }}
+          path: release-evidence/native
+
+      - name: Download macOS aarch64 native evidence artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: native-evidence-macos-aarch64-apple-darwin-${{ env.RELEASE_TAG }}
           path: release-evidence/native
 
       - name: Merge native artifact evidence
