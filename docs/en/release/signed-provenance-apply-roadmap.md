@@ -192,7 +192,7 @@ Status values:
 | P2-002 | Build and smoke-test Windows release archive | `.github/workflows/release.yml` | `eva --version` inside packaged Windows artifact | Done | `9f4c37d` |
 | P2-003 | Build and smoke-test Linux release archive | `.github/workflows/release.yml` | `eva --version` inside packaged Linux artifact | Done | `5533612` |
 | P2-004 | Build and smoke-test macOS x86_64 and aarch64 release archives | `.github/workflows/release.yml` | `eva --version` inside packaged macOS artifacts | Done | `2d5d566` |
-| P2-005 | Generate `SHA256SUMS` and `native-artifacts.json` release evidence | `.github/workflows/release.yml` | Checksum verification command in workflow | In Progress | pending |
+| P2-005 | Generate `SHA256SUMS` and `native-artifacts.json` release evidence | `.github/workflows/release.yml` | Checksum verification command in workflow | Done | `834b180` |
 | P3-001 | Define signing provider configuration and failure policy | release docs, repository secrets documentation | Documented secret names and fallback behavior | Planned | pending |
 | P3-002 | Add Windows signing path | `.github/workflows/release.yml` | Signed artifact verification command | Blocked: signing credential required | pending |
 | P3-003 | Add macOS signing and notarization path | `.github/workflows/release.yml` | Notarization verification command | Blocked: Apple Developer credential required | pending |
