@@ -369,10 +369,28 @@ jobs:
                 packageLines.push(`- Image digest: \`${packageEvidence.digest}\``);
                 packageLines.push(`- Tags: ${packageEvidence.tags.map((tag) => `\`${tag}\``).join(", ")}`);
                 packageLines.push(`- Package URL: ${packageEvidence.package_url}`);
+                if (packageEvidence.provenance?.enabled) {
+                  packageLines.push(`- Provenance: enabled (\`${packageEvidence.provenance.mode || "unknown"}\`) for \`${packageEvidence.provenance.subject || packageEvidence.image}\``);
+                  if (packageEvidence.provenance.verification) {
+                    packageLines.push(`- Provenance verification: \`${packageEvidence.provenance.verification}\``);
+                  }
+                } else {
+                  packageLines.push("- Provenance: not available for this package evidence.");
+                }
+                if (packageEvidence.sbom?.enabled) {
+                  packageLines.push(`- SBOM: enabled (\`${packageEvidence.sbom.type || "unknown"}\`) for \`${packageEvidence.sbom.subject || packageEvidence.image}\``);
+                  if (packageEvidence.sbom.verification) {
+                    packageLines.push(`- SBOM verification: \`${packageEvidence.sbom.verification}\``);
+                  }
+                } else {
+                  packageLines.push("- SBOM: not available for this package evidence.");
+                }
               } else {
                 packageLines.push("## GitHub Packages");
                 packageLines.push(`- Status: \`${packageEvidence.status}\``);
                 packageLines.push(`- Reason: ${packageEvidence.reason}`);
+                packageLines.push("- Provenance: disabled because package publication was skipped.");
+                packageLines.push("- SBOM: disabled because package publication was skipped.");
               }
             }
             const body = [
@@ -383,6 +401,7 @@ jobs:
               `- Status: \`${status}\``,
               "- Release workflow: validates Rust workspace, website/docs, version-management rules, V1.5 release gates, and GHCR package publication before publishing.",
               "- Artifacts: GitHub source archives, workflow release-evidence artifact, and GHCR container package when package evidence status is `published`. Stable V1.5 releases intentionally do not publish signed installers.",
+              "- Supply-chain evidence: GHCR packages include Buildx provenance and SBOM attestations when package evidence status is `published`.",
               ...packageLines,
             ].filter(Boolean).join("\n\n");
 

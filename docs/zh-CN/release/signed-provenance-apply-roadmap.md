@@ -165,7 +165,7 @@ Eva-CLI V1.5.1 还没有：
 | P0-001 | 创建本实施台账，并注册到 docs/site 索引 | `docs/en/release/signed-provenance-apply-roadmap.md`、`docs/zh-CN/release/signed-provenance-apply-roadmap.md`、`docs/_i18n/manifest.json`、docs/site indexes | `scripts/build-site-i18n.ps1`；`scripts/validate-i18n.ps1`；`scripts/validate-version-management.ps1` | Done | `0a3f6a6` |
 | P1-001 | 为 GHCR release job 增加 OIDC/attestation 权限和 Buildx SBOM/provenance 设置 | `.github/workflows/release.yml` | workflow diff review；`scripts/validate-version-management.ps1` | Done | `1be7c44` |
 | P1-002 | 扩展 `package-ghcr.json`，记录 provenance 和 SBOM 字段，同时保留旧字段 | `.github/workflows/release.yml`、release docs | `scripts/validate-version-management.ps1`；JSON 字段审查 | Done | `66416f7` |
-| P1-003 | 更新 GitHub Release 正文，展示 GHCR provenance/SBOM 可用性 | `.github/workflows/release.yml`、release docs | Release body generation review | Planned | pending |
+| P1-003 | 更新 GitHub Release 正文，展示 GHCR provenance/SBOM 可用性 | `.github/workflows/release.yml`、release docs | Release body generation review | In Progress | pending |
 | P1-004 | workflow 变更后同步官网/文档中的 provenance 状态 | `website/_i18n/*.json`、生成后的官网页面、docs index | `scripts/build-site-i18n.ps1`；`scripts/validate-i18n.ps1` | Planned | pending |
 | P2-001 | 增加 native binary 的 release archive 命名和 manifest schema | release docs、`.github/workflows/release.yml` | workflow review；release evidence 字段审查 | Planned | pending |
 | P2-002 | 构建并 smoke-test Windows release archive | `.github/workflows/release.yml` | packaged Windows artifact 内运行 `eva --version` | Planned | pending |
