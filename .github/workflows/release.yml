@@ -243,6 +243,20 @@ jobs:
             tags = @($tags)
             platforms = @("linux/amd64", "linux/arm64")
             prerelease = [System.Convert]::ToBoolean($env:PRERELEASE)
+            provenance = [ordered]@{
+              enabled = $true
+              generator = "docker/build-push-action@v6"
+              mode = "max"
+              subject = "$($env:IMAGE_NAME)@$($env:DIGEST)"
+              verification = "docker buildx imagetools inspect $($env:IMAGE_NAME)@$($env:DIGEST) --format '{{ json .Provenance }}'"
+            }
+            sbom = [ordered]@{
+              enabled = $true
+              generator = "docker/build-push-action@v6"
+              type = "spdx"
+              subject = "$($env:IMAGE_NAME)@$($env:DIGEST)"
+              verification = "docker buildx imagetools inspect $($env:IMAGE_NAME)@$($env:DIGEST) --format '{{ json .SBOM }}'"
+            }
           }
           $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath release-evidence/package-ghcr.json -Encoding utf8
 
@@ -259,6 +273,14 @@ jobs:
             source_tag = $env:RELEASE_TAG
             source_sha = "${{ steps.release_vars.outputs.source_sha }}"
             reason = "The checked-out release tag does not contain Dockerfile and .dockerignore package support."
+            provenance = [ordered]@{
+              enabled = $false
+              reason = "Package publication was skipped."
+            }
+            sbom = [ordered]@{
+              enabled = $false
+              reason = "Package publication was skipped."
+            }
           }
           $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath release-evidence/package-ghcr.json -Encoding utf8
 
