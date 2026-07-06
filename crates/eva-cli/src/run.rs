@@ -311,6 +311,7 @@ enum SnapshotCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RestoreCommand {
     Plan(RestorePlanOptions),
+    Apply(RestoreApplyOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,6 +411,14 @@ struct RestorePlanOptions {
     snapshot_id: String,
     request_id: String,
     release_ref: String,
+    artifact_store: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreApplyOptions {
+    common: CommonOptions,
+    plan: Option<PathBuf>,
+    confirm: Option<String>,
     artifact_store: Option<PathBuf>,
 }
 
@@ -1097,6 +1106,9 @@ fn parse_restore_command(args: &[String]) -> Result<Command, EvaError> {
         "plan" => Ok(Command::Restore(RestoreCommand::Plan(
             parse_restore_plan_options(rest)?,
         ))),
+        "apply" => Ok(Command::Restore(RestoreCommand::Apply(
+            parse_restore_apply_options(rest)?,
+        ))),
         value => {
             Err(EvaError::unsupported("unknown restore subcommand")
                 .with_context("subcommand", value))
@@ -1143,6 +1155,42 @@ fn parse_restore_plan_options(args: &[String]) -> Result<RestorePlanOptions, Eva
         snapshot_id,
         request_id,
         release_ref,
+        artifact_store,
+    })
+}
+
+fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut plan = None;
+    let mut confirm = None;
+    let mut artifact_store = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--plan" => {
+                index += 1;
+                plan = Some(PathBuf::from(required_option(args, index, "plan option")?));
+            }
+            "--confirm" => {
+                index += 1;
+                confirm = Some(required_option(args, index, "confirm option")?.clone());
+            }
+            "--artifact-store" | "--artifact-store-dir" => {
+                index += 1;
+                artifact_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "artifact store option",
+                )?));
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    Ok(RestoreApplyOptions {
+        common: parse_common_options(&passthrough)?,
+        plan,
+        confirm,
         artifact_store,
     })
 }
@@ -1816,6 +1864,19 @@ where
                 ),
             }
         }
+        RestoreCommand::Apply(options) => {
+            let trace = trace_for("cli.restore.apply");
+            match create_restore_apply_denial(&options) {
+                Ok(()) => unreachable!("restore apply is intentionally denied in P6-001"),
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "restore.apply",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
     }
 }
 
@@ -2081,6 +2142,34 @@ fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult
         snapshot,
         plan,
     })
+}
+
+fn create_restore_apply_denial(options: &RestoreApplyOptions) -> Result<(), EvaError> {
+    let plan = options
+        .plan
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<missing>".to_owned());
+    let confirm = options.confirm.as_deref().unwrap_or("<missing>");
+    let artifact_store = options
+        .artifact_store
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<missing>".to_owned());
+    Err(EvaError::unsupported(
+        "restore apply is not enabled until durable apply gates are implemented",
+    )
+    .with_context("plan", plan)
+    .with_context("confirm", confirm)
+    .with_context("artifact_store", artifact_store)
+    .with_context("required_gate", "matching plan id")
+    .with_context("required_gate", "verified artifact digest")
+    .with_context("required_gate", "backup evidence")
+    .with_context("required_gate", "policy approval")
+    .with_context(
+        "suggestion",
+        "run restore plan and keep restore apply disabled until P6 apply gates are complete",
+    ))
 }
 
 fn artifact_store_ref(path: Option<&Path>) -> ArtifactStoreRef {
@@ -4712,6 +4801,34 @@ mod tests {
             run_cli(&["upgrade", "check", "--project", root, "--output", "json"]);
         assert!(upgrade_stdout.contains("\"status\":\"ready\""));
         assert!(upgrade_stdout.contains("rollback"));
+    }
+
+    #[test]
+    fn restore_apply_json_is_parsed_but_blocked() {
+        let root = workspace_root();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--plan",
+            "restore-plan.json",
+            "--confirm",
+            "plan-123",
+            "--artifact-store",
+            ".eva/artifacts",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_RUNTIME_UNAVAILABLE);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"command\":\"restore.apply\""));
+        assert!(stderr.contains("\"kind\":\"unsupported\""));
+        assert!(stderr.contains("\"key\":\"plan\",\"value\":\"restore-plan.json\""));
+        assert!(stderr.contains("\"key\":\"confirm\",\"value\":\"plan-123\""));
+        assert!(stderr.contains("\"key\":\"artifact_store\",\"value\":\".eva/artifacts\""));
+        assert!(stderr.contains("\"span_id\":\"cli.restore.apply\""));
     }
 
     #[test]
