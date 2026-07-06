@@ -21,6 +21,7 @@ pub fn invoke(
         handle.id.clone(),
         McpAllowlist::from_tools(handle.mcp_tools.iter().cloned())?,
     );
+    let session_config = handle.mcp_session_config()?;
     let request_id = invocation.request_id.clone();
     let capability = invocation.capability.clone();
     let call = client.call_tool(invocation.request_id, tool, &invocation.input)?;
@@ -34,6 +35,12 @@ pub fn invoke(
         audit: vec![
             format!("adapter.invoked:{}", handle.id.as_str()),
             format!("mcp.tool.call:{tool}"),
+            format!(
+                "mcp.server_transport:{}",
+                session_config.server_transport.as_str()
+            ),
+            format!("mcp.command:{}", session_config.process.command),
+            "mcp.session_boundary:not_started".to_owned(),
         ],
     })
 }

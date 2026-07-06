@@ -3,7 +3,8 @@
 use eva_config::manifest::adapter::AdapterManifest;
 use eva_config::manifest::capability::CapabilityManifest;
 use eva_config::{AdapterTransport, CapabilityKind};
-use eva_core::{AdapterId, CapabilityId, CapabilityName};
+use eva_core::{AdapterId, CapabilityId, CapabilityName, EvaError};
+use eva_mcp::{McpProcessSpec, McpServerTransport, McpSessionConfig};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "Adapter manifest runtime representation";
@@ -35,6 +36,9 @@ pub struct AdapterHandle {
     pub transport: AdapterTransport,
     pub capabilities: Vec<CapabilityName>,
     pub source_path: String,
+    pub mcp_server_transport: Option<String>,
+    pub mcp_command: Option<String>,
+    pub mcp_args: Vec<String>,
     pub mcp_tools: Vec<String>,
     pub skill_id: Option<String>,
     pub skill_kind: Option<String>,
@@ -63,6 +67,13 @@ impl AdapterHandle {
             transport: manifest.transport,
             capabilities: manifest.capabilities.clone(),
             source_path: manifest.path.display().to_string(),
+            mcp_server_transport: manifest
+                .nested_extra_string("mcp", "server_transport")
+                .map(str::to_owned),
+            mcp_command: manifest
+                .nested_extra_string("mcp", "command")
+                .map(str::to_owned),
+            mcp_args: manifest.nested_extra_string_list("mcp", "args"),
             mcp_tools: manifest.nested_extra_string_list("mcp", "tool_allowlist"),
             skill_id: manifest
                 .nested_extra_string("skill", "id")
@@ -124,6 +135,17 @@ impl AdapterHandle {
             .or_else(|| self.mcp_tools.first().map(String::as_str))
     }
 
+    pub fn mcp_session_config(&self) -> Result<McpSessionConfig, EvaError> {
+        let command = self.mcp_command.as_deref().ok_or_else(|| {
+            EvaError::invalid_argument("MCP adapter is missing a process command")
+                .with_context("adapter_id", self.id.as_str())
+        })?;
+        let server_transport =
+            McpServerTransport::parse(self.mcp_server_transport.as_deref().unwrap_or("stdio"))?;
+        let process = McpProcessSpec::new(command.to_owned()).with_args(self.mcp_args.clone());
+        McpSessionConfig::new(self.id.clone(), server_transport, process)
+    }
+
     pub fn skill_name(&self) -> Option<&str> {
         self.skill_id.as_deref()
     }
@@ -169,6 +191,9 @@ mod tests {
         let skill_handle = AdapterHandle::from_manifest(skill);
 
         assert!(mcp_handle.mcp_tools.contains(&"list_issues".to_owned()));
+        let session_config = mcp_handle.mcp_session_config().unwrap();
+        assert_eq!(session_config.server_transport, McpServerTransport::Stdio);
+        assert_eq!(session_config.process.command, "github-mcp-server");
         assert_eq!(skill_handle.skill_name(), Some("code-review"));
     }
 

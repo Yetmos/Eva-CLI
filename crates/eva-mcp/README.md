@@ -82,6 +82,20 @@ V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on
 
 The current MCP implementation is intentionally an in-memory protocol boundary. Real MCP JSON-RPC transport, streaming responses, authentication, and compatibility matrices remain later work.
 
+## P5 Session Boundary
+
+P5 adds a real process/session lifecycle contract without enabling default
+runtime process execution:
+
+- `McpSessionConfig` separates `server_transport`, command, args, startup
+  timeout, shutdown timeout, and command allowlist.
+- `McpSessionManager` builds explicit start/shutdown requests for a
+  `McpSessionSupervisor`.
+- Tests use a fake supervisor to cover startup failure and shutdown behavior
+  without launching an external MCP server.
+- `eva-adapter` can derive this typed session config from MCP adapter
+  manifests, while current invocation still returns a controlled envelope.
+
 ## V1.1 Verification
 
 ```powershell
