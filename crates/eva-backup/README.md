@@ -86,3 +86,8 @@ cargo run -- restore plan --output json
 ## English
 
 `eva-backup` owns V1.4 backup artifacts, migration package preflight, release snapshots, manifest verification, and plan-first restore boundaries. It verifies artifacts but does not execute destructive restore in V1.4.
+
+P6-004 adds `ReleasePointerPlan` through
+`ReleaseSnapshotService::release_pointer_plan`. The plan validates snapshot
+confirmation and records pointer-change steps, risks, and audit while keeping
+`apply_allowed:false`.

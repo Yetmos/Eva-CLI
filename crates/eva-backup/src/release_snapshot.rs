@@ -35,6 +35,19 @@ pub struct RestorePlan {
     pub audit: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleasePointerPlan {
+    pub snapshot_id: String,
+    pub release_ref: String,
+    pub runtime_generation: GenerationId,
+    pub pointer_path: String,
+    pub status: String,
+    pub apply_allowed: bool,
+    pub steps: Vec<String>,
+    pub risks: Vec<String>,
+    pub audit: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ReleaseSnapshotService;
 
@@ -103,6 +116,44 @@ impl ReleaseSnapshotService {
             audit: vec!["restore:planned".to_owned()],
         }
     }
+
+    pub fn release_pointer_plan(
+        &self,
+        snapshot: &ReleaseSnapshot,
+        confirm_snapshot_id: &str,
+    ) -> Result<ReleasePointerPlan, EvaError> {
+        if confirm_snapshot_id != snapshot.snapshot_id {
+            return Err(EvaError::permission_denied(
+                "snapshot promote confirmation does not match snapshot id",
+            )
+            .with_context("confirm", confirm_snapshot_id)
+            .with_context("snapshot_id", &snapshot.snapshot_id));
+        }
+        Ok(ReleasePointerPlan {
+            snapshot_id: snapshot.snapshot_id.clone(),
+            release_ref: snapshot.release_ref.clone(),
+            runtime_generation: snapshot.runtime_generation.clone(),
+            pointer_path: "state/release-pointer".to_owned(),
+            status: "planned".to_owned(),
+            apply_allowed: false,
+            steps: vec![
+                "verify snapshot backup digest before pointer move".to_owned(),
+                "acquire lifecycle release pointer lease".to_owned(),
+                "stage release pointer update".to_owned(),
+                "emit pointer change audit before apply".to_owned(),
+            ],
+            risks: vec![
+                "snapshot promote is plan-first; release pointer is not moved".to_owned(),
+                format!("backup_digest:{}", snapshot.backup_digest),
+            ],
+            audit: vec![
+                "snapshot.promote:planned".to_owned(),
+                format!("snapshot:{}", snapshot.snapshot_id),
+                format!("release:{}", snapshot.release_ref),
+                "apply_allowed:false".to_owned(),
+            ],
+        })
+    }
 }
 
 #[cfg(test)]
@@ -144,5 +195,79 @@ mod tests {
 
         assert_eq!(restore.status, "planned");
         assert!(!restore.apply_allowed);
+    }
+
+    #[test]
+    fn snapshot_promote_builds_release_pointer_plan() {
+        let scope = BackupScope::new(
+            "eva-cli",
+            vec![BackupEntry::new("config/eva.yaml", "runtime: basic").unwrap()],
+        )
+        .unwrap();
+        let plan = BackupPlan::new(
+            "backup-v14",
+            RequestId::parse("req-backup-1").unwrap(),
+            GenerationId::parse("gen-v14").unwrap(),
+            "cli",
+            "pre-release",
+            scope,
+        )
+        .unwrap();
+        let mut store = InMemoryArtifactStore::new();
+        let backup = BackupService.create(plan, &mut store).unwrap();
+
+        let snapshot = ReleaseSnapshotService
+            .create(
+                "snap-v14",
+                SnapshotRole::PostRelease,
+                "1.4.0",
+                RequestId::parse("req-snapshot-1").unwrap(),
+                &backup.manifest,
+                "healthy",
+            )
+            .unwrap();
+        let pointer_plan = ReleaseSnapshotService
+            .release_pointer_plan(&snapshot, "snap-v14")
+            .unwrap();
+
+        assert_eq!(pointer_plan.status, "planned");
+        assert!(!pointer_plan.apply_allowed);
+        assert_eq!(pointer_plan.pointer_path, "state/release-pointer");
+    }
+
+    #[test]
+    fn snapshot_promote_requires_matching_confirmation() {
+        let scope = BackupScope::new(
+            "eva-cli",
+            vec![BackupEntry::new("config/eva.yaml", "runtime: basic").unwrap()],
+        )
+        .unwrap();
+        let plan = BackupPlan::new(
+            "backup-v14",
+            RequestId::parse("req-backup-1").unwrap(),
+            GenerationId::parse("gen-v14").unwrap(),
+            "cli",
+            "pre-release",
+            scope,
+        )
+        .unwrap();
+        let mut store = InMemoryArtifactStore::new();
+        let backup = BackupService.create(plan, &mut store).unwrap();
+        let snapshot = ReleaseSnapshotService
+            .create(
+                "snap-v14",
+                SnapshotRole::PostRelease,
+                "1.4.0",
+                RequestId::parse("req-snapshot-1").unwrap(),
+                &backup.manifest,
+                "healthy",
+            )
+            .unwrap();
+
+        let error = ReleaseSnapshotService
+            .release_pointer_plan(&snapshot, "wrong")
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
     }
 }

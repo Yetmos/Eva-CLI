@@ -5,8 +5,9 @@ use crate::inspect::{inspect_project, InspectReport};
 use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};
 use eva_backup::{
     BackupEntry, BackupPlan, BackupResult, BackupScope, BackupService, MigrationPackageManifest,
-    MigrationPackageService, MigrationPreflight, ReleaseSnapshot, ReleaseSnapshotService,
-    RestoreApplyDryRunReport, RestoreApplyPlan, RestoreApplyValidator, RestorePlan, SnapshotRole,
+    MigrationPackageService, MigrationPreflight, ReleasePointerPlan, ReleaseSnapshot,
+    ReleaseSnapshotService, RestoreApplyDryRunReport, RestoreApplyPlan, RestoreApplyValidator,
+    RestorePlan, SnapshotRole,
 };
 use eva_config::{load_project_config, schema_paths, AdapterTransport, ProjectConfig};
 use eva_core::{
@@ -72,6 +73,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "hardware list/probe/bind",
     "backup create",
     "snapshot create",
+    "snapshot promote",
     "restore plan",
     "upgrade check",
     "upgrade apply",
@@ -309,6 +311,7 @@ enum BackupCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SnapshotCommand {
     Create(SnapshotCreateOptions),
+    Promote(SnapshotPromoteOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,6 +413,16 @@ struct SnapshotCreateOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct SnapshotPromoteOptions {
+    common: CommonOptions,
+    snapshot_id: String,
+    confirm: Option<String>,
+    request_id: String,
+    release_ref: String,
+    artifact_store: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct RestorePlanOptions {
     common: CommonOptions,
     snapshot_id: String,
@@ -498,6 +511,13 @@ struct RestorePlanResult {
     backup: BackupCreateResult,
     snapshot: ReleaseSnapshot,
     plan: RestorePlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SnapshotPromoteResult {
+    backup: BackupCreateResult,
+    snapshot: ReleaseSnapshot,
+    pointer_plan: ReleasePointerPlan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1062,6 +1082,9 @@ fn parse_snapshot_command(args: &[String]) -> Result<Command, EvaError> {
         "create" => Ok(Command::Snapshot(SnapshotCommand::Create(
             parse_snapshot_create_options(rest)?,
         ))),
+        "promote" => Ok(Command::Snapshot(SnapshotCommand::Promote(
+            parse_snapshot_promote_options(rest)?,
+        ))),
         value => {
             Err(EvaError::unsupported("unknown snapshot subcommand")
                 .with_context("subcommand", value))
@@ -1114,6 +1137,56 @@ fn parse_snapshot_create_options(args: &[String]) -> Result<SnapshotCreateOption
         request_id,
         release_ref,
         role,
+        artifact_store,
+    })
+}
+
+fn parse_snapshot_promote_options(args: &[String]) -> Result<SnapshotPromoteOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut snapshot_id = "snapshot-v14".to_owned();
+    let mut confirm = None;
+    let mut request_id = "req-snapshot-promote-1".to_owned();
+    let mut release_ref = "1.4.0".to_owned();
+    let mut artifact_store = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--snapshot-id" | "--snapshot" => {
+                index += 1;
+                snapshot_id = required_option(args, index, "snapshot option")?.clone();
+            }
+            "--confirm" => {
+                index += 1;
+                confirm =
+                    Some(required_option(args, index, "snapshot promote confirm option")?.clone());
+            }
+            "--request-id" | "--task-id" | "--task" => {
+                index += 1;
+                request_id = required_option(args, index, "request id option")?.clone();
+            }
+            "--release" | "--release-ref" => {
+                index += 1;
+                release_ref = required_option(args, index, "release option")?.clone();
+            }
+            "--artifact-store" | "--artifact-store-dir" => {
+                index += 1;
+                artifact_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "artifact store option",
+                )?));
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    RequestId::parse(&request_id)?;
+    Ok(SnapshotPromoteOptions {
+        common: parse_common_options(&passthrough)?,
+        snapshot_id,
+        confirm,
+        request_id,
+        release_ref,
         artifact_store,
     })
 }
@@ -1910,6 +1983,22 @@ where
                 ),
             }
         }
+        SnapshotCommand::Promote(options) => {
+            let trace = trace_for("cli.snapshot.promote");
+            match create_snapshot_promote(&options) {
+                Ok(result) => {
+                    write_snapshot_promote(stdout, options.common.output, &result, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "snapshot.promote",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
     }
 }
 
@@ -2248,6 +2337,38 @@ fn create_snapshot_result(
         "healthy",
     )?;
     Ok((backup, snapshot))
+}
+
+fn create_snapshot_promote(
+    options: &SnapshotPromoteOptions,
+) -> Result<SnapshotPromoteResult, EvaError> {
+    let confirm = options.confirm.as_deref().ok_or_else(|| {
+        EvaError::invalid_argument("snapshot promote requires --confirm")
+            .with_context("required_option", "--confirm")
+    })?;
+    let backup = create_backup_result(&BackupCreateOptions {
+        common: options.common.clone(),
+        artifact_id: format!("backup-for-{}", options.snapshot_id),
+        request_id: options.request_id.clone(),
+        project_id: "eva-cli".to_owned(),
+        reason: format!("snapshot promote {}", options.snapshot_id),
+        dry_run: false,
+        artifact_store: options.artifact_store.clone(),
+    })?;
+    let snapshot = ReleaseSnapshotService.create(
+        options.snapshot_id.clone(),
+        SnapshotRole::PostRelease,
+        options.release_ref.clone(),
+        RequestId::parse(&options.request_id)?,
+        &backup.backup.manifest,
+        "healthy",
+    )?;
+    let pointer_plan = ReleaseSnapshotService.release_pointer_plan(&snapshot, confirm)?;
+    Ok(SnapshotPromoteResult {
+        backup,
+        snapshot,
+        pointer_plan,
+    })
 }
 
 fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult, EvaError> {
@@ -3565,6 +3686,40 @@ fn write_snapshot_create<W: Write>(
     }
 }
 
+fn write_snapshot_promote<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    result: &SnapshotPromoteResult,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Snapshot promote plan").map_err(write_error_kind)?;
+            writeln!(writer, "snapshot: {}", result.snapshot.snapshot_id)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", result.pointer_plan.status).map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "apply_allowed: {}",
+                result.pointer_plan.apply_allowed
+            )
+            .map_err(write_error_kind)?;
+            write_artifact_store_ref(writer, &result.backup.artifact_store)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "snapshot.promote",
+                EXIT_OK,
+                &snapshot_promote_json(result),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn write_restore_plan<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -4064,6 +4219,30 @@ fn snapshot_create_json(backup: &BackupCreateResult, snapshot: &ReleaseSnapshot)
         "{{\"snapshot\":{},\"backup\":{}}}",
         snapshot_json(snapshot),
         backup_result_json(backup)
+    )
+}
+
+fn snapshot_promote_json(result: &SnapshotPromoteResult) -> String {
+    format!(
+        "{{\"snapshot\":{},\"backup\":{},\"release_pointer_plan\":{}}}",
+        snapshot_json(&result.snapshot),
+        backup_result_json(&result.backup),
+        release_pointer_plan_json(&result.pointer_plan)
+    )
+}
+
+fn release_pointer_plan_json(plan: &ReleasePointerPlan) -> String {
+    format!(
+        "{{\"snapshot_id\":{},\"release_ref\":{},\"runtime_generation\":{},\"pointer_path\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
+        json_string(&plan.snapshot_id),
+        json_string(&plan.release_ref),
+        json_string(plan.runtime_generation.as_str()),
+        json_string(&plan.pointer_path),
+        json_string(&plan.status),
+        plan.apply_allowed,
+        json_array(plan.steps.iter().map(|step| json_string(step))),
+        json_array(plan.risks.iter().map(|risk| json_string(risk))),
+        json_array(plan.audit.iter().map(|entry| json_string(entry)))
     )
 }
 
@@ -4824,7 +5003,65 @@ fn write_error_kind(error: io::Error) -> EvaError {
 }
 
 fn help_text() -> &'static str {
-    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--artifact-store <path>] [--dry-run] [--project <path>] [--output text|json]\n  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--artifact-store <path>] [--project <path>] [--output text|json]\n  eva restore plan [--snapshot-id <id>] [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--owner <id>] [--project <path>] [--output text|json]\n  eva release check [--target all|windows|linux|macos] [--project <path>] [--output text|json]\n  eva release security [--project <path>] [--output text|json]\n  eva release perf [--project <path>] [--output text|json]\n  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.5 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n  backup           Create and verify a V1.4 backup artifact, optionally in a filesystem ArtifactStore.\n  snapshot         Capture a release snapshot linked to a verified backup artifact.\n  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n  upgrade          Check or lock generation upgrade readiness without starting processes.\n  release          Run V1.5 cross-platform, security, performance, migration, and compatibility release gates.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
+    concat!(
+        "Eva CLI\n\n",
+        "USAGE:\n",
+        "  eva --version\n",
+        "  eva version [--output text|json]\n",
+        "  eva doctor [--project <path>] [--output text|json]\n",
+        "  eva config validate [--project <path>] [--output text|json]\n",
+        "  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n",
+        "  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n",
+        "  eva task status [--project <path>] [--task <id>] [--output text|json]\n",
+        "  eva task logs [--project <path>] [--task <id>] [--output text|json]\n",
+        "  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n",
+        "  eva adapter list [--project <path>] [--output text|json]\n",
+        "  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n",
+        "  eva mcp list [--project <path>] [--output text|json]\n",
+        "  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n",
+        "  eva skill list [--project <path>] [--output text|json]\n",
+        "  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n",
+        "  eva discovery scan [--project <path>] [--output text|json]\n",
+        "  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n",
+        "  eva hardware list [--project <path>] [--output text|json]\n",
+        "  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n",
+        "  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n",
+        "  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--artifact-store <path>] [--dry-run] [--project <path>] [--output text|json]\n",
+        "  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
+        "  eva snapshot promote --snapshot-id <id> --confirm <snapshot_id> [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
+        "  eva restore plan [--snapshot-id <id>] [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
+        "  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n",
+        "  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--owner <id>] [--project <path>] [--output text|json]\n",
+        "  eva release check [--target all|windows|linux|macos] [--project <path>] [--output text|json]\n",
+        "  eva release security [--project <path>] [--output text|json]\n",
+        "  eva release perf [--project <path>] [--output text|json]\n",
+        "  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\n",
+        "Commands:\n",
+        "  version          Print the V1.5 release version and supported contracts.\n",
+        "  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n",
+        "  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n",
+        "  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n",
+        "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n",
+        "  task             Inspect or cancel the latest persisted basic task report.\n",
+        "  adapter          List and probe authorized Adapter handles derived from manifests.\n",
+        "  mcp              List and probe allowlisted MCP tools without starting external servers.\n",
+        "  skill            List and run controlled workflow skill envelopes.\n",
+        "  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n",
+        "  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n",
+        "  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n",
+        "  backup           Create and verify a V1.4 backup artifact, optionally in a filesystem ArtifactStore.\n",
+        "  snapshot         Capture or plan promotion for a release snapshot without moving release pointer.\n",
+        "  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n",
+        "  upgrade          Check or lock generation upgrade readiness without starting processes.\n",
+        "  release          Run V1.5 cross-platform, security, performance, migration, and compatibility release gates.\n\n",
+        "Exit codes:\n",
+        "  0 success\n",
+        "  2 configuration or validation error\n",
+        "  3 policy denied\n",
+        "  4 runtime unavailable or unsupported in this version\n",
+        "  5 external capability unavailable\n",
+        "  64 command usage error\n",
+    )
 }
 
 #[cfg(test)]
@@ -5237,6 +5474,89 @@ mod tests {
             run_cli(&["upgrade", "check", "--project", root, "--output", "json"]);
         assert!(upgrade_stdout.contains("\"status\":\"ready\""));
         assert!(upgrade_stdout.contains("rollback"));
+    }
+
+    #[test]
+    fn snapshot_promote_plans_release_pointer_without_apply() {
+        let root = workspace_root();
+        let artifact_root = test_temp_dir("snapshot-promote-ok");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "snapshot",
+            "promote",
+            "--snapshot-id",
+            "snapshot-promote",
+            "--confirm",
+            "snapshot-promote",
+            "--release",
+            "1.5.1",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"snapshot.promote\""));
+        assert!(stdout.contains("\"release_pointer_plan\""));
+        assert!(stdout.contains("\"pointer_path\":\"state/release-pointer\""));
+        assert!(stdout.contains("\"apply_allowed\":false"));
+        assert!(stdout.contains("\"snapshot.promote:planned\""));
+        assert!(stdout.contains("\"span_id\":\"cli.snapshot.promote\""));
+
+        fs::remove_dir_all(artifact_root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_promote_rejects_mismatched_confirmation() {
+        let root = workspace_root();
+        let artifact_root = test_temp_dir("snapshot-promote-confirm");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "snapshot",
+            "promote",
+            "--snapshot-id",
+            "snapshot-confirm",
+            "--confirm",
+            "wrong-snapshot",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_POLICY);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"command\":\"snapshot.promote\""));
+        assert!(stderr.contains("\"kind\":\"permission_denied\""));
+        assert!(stderr.contains("\"span_id\":\"cli.snapshot.promote\""));
+
+        fs::remove_dir_all(artifact_root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_promote_requires_confirmation() {
+        let root = workspace_root();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "snapshot",
+            "promote",
+            "--snapshot-id",
+            "snapshot-missing-confirm",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"command\":\"snapshot.promote\""));
+        assert!(stderr.contains("\"required_option\",\"value\":\"--confirm\""));
     }
 
     #[test]

@@ -32,3 +32,10 @@
 ```powershell
 cargo test -p eva-backup
 ```
+
+## P6-004 Release Pointer Plan
+
+`release_snapshot.rs` now also exposes `ReleasePointerPlan` via
+`ReleaseSnapshotService::release_pointer_plan`. It validates the requested
+snapshot promotion confirmation and keeps release pointer movement plan-first
+with `apply_allowed:false`.

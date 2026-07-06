@@ -14,5 +14,7 @@ pub use manifest_verifier::{ManifestVerifier, VerificationReport};
 pub use migration_package::{
     MigrationPackageManifest, MigrationPackageService, MigrationPreflight,
 };
-pub use release_snapshot::{ReleaseSnapshot, ReleaseSnapshotService, RestorePlan, SnapshotRole};
+pub use release_snapshot::{
+    ReleasePointerPlan, ReleaseSnapshot, ReleaseSnapshotService, RestorePlan, SnapshotRole,
+};
 pub use restore_apply::{RestoreApplyDryRunReport, RestoreApplyPlan, RestoreApplyValidator};

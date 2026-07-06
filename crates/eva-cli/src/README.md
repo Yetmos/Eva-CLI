@@ -78,6 +78,10 @@ P6-003 adds `upgrade apply --plan <path> --confirm <plan_id> --lock-store <path>
 It reads a key/value upgrade plan, creates a filesystem lock, returns
 `apply_allowed:false`, and does not start runtime handoff.
 
+P6-004 adds `snapshot promote --snapshot-id <id> --confirm <snapshot_id>`.
+It creates a release pointer plan with audit evidence, returns
+`apply_allowed:false`, and does not move `state/release-pointer`.
+
 ## V1.5 Release Hardening Surface
 
 `run.rs` 新增 V1.5 发布加固命令：

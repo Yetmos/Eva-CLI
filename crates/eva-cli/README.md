@@ -152,6 +152,7 @@ cargo run -- snapshot create --output json
 cargo run -- restore plan --output json
 cargo run -- restore apply --plan restore-plan.json --confirm plan-123 --artifact-store .eva/artifacts --output json
 cargo run -- backup create --artifact-store .eva/artifacts --output json
+cargo run -- snapshot promote --snapshot-id snapshot-v15 --confirm snapshot-v15 --artifact-store .eva/artifacts --output json
 cargo run -- upgrade check --output json
 cargo run -- upgrade apply --plan upgrade-plan.txt --confirm plan-upgrade --lock-store .eva/locks --output json
 ```
@@ -176,6 +177,9 @@ V1.4/P6 dry-run 不执行 destructive restore，不移动 release pointer，不�
 
 `upgrade apply` creates a filesystem lock and still returns `apply_allowed:false`.
 It does not perform runtime handoff.
+
+`snapshot promote` creates a release pointer plan and still returns
+`apply_allowed:false`. It does not move `state/release-pointer`.
 
 ```text
 plan_id=plan-upgrade
