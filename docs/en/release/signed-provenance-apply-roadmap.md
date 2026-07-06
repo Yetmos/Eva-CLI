@@ -207,7 +207,7 @@ Status values:
 | P5-004 | Link provider invocation audit to trace fields | `crates/eva-adapter`, `crates/eva-observability`, `crates/eva-cli` | CLI JSON includes trace/audit fields | Done | `943cd7f` |
 | P6-001 | Add restore apply command parser that refuses execution without durable stores | `crates/eva-cli` | command returns policy/runtime unavailable with stable JSON | Done | `5c6d26f` |
 | P6-002 | Implement restore apply dry-run validation over durable artifacts | `crates/eva-backup`, `crates/eva-cli` | digest mismatch and missing backup tests | Done | `3382c41` |
-| P6-003 | Add upgrade apply command parser and lock model | `crates/eva-lifecycle`, `crates/eva-cli` | lock acquisition and conflict tests | In Progress | local |
+| P6-003 | Add upgrade apply command parser and lock model | `crates/eva-lifecycle`, `crates/eva-cli` | lock acquisition and conflict tests | Done | `b653a10` |
 | P6-004 | Add snapshot promote command parser and release pointer plan | `crates/eva-backup`, `crates/eva-lifecycle`, `crates/eva-cli` | confirmation and audit tests | Planned | pending |
 
 ## Per-Change Update Rule
