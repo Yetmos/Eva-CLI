@@ -291,11 +291,102 @@ jobs:
           path: release-evidence/package-ghcr.json
           if-no-files-found: error
 
+  native-windows:
+    name: Build Windows release archive
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Validate version management
+        shell: pwsh
+        run: ./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
+
+      - name: Resolve native artifact metadata
+        id: native_vars
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.TrimStart("v")
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "archive=eva-cli-$version-x86_64-pc-windows-msvc.zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Build Windows binary
+        shell: pwsh
+        run: cargo build --release --locked --bin eva
+
+      - name: Smoke test Windows binary
+        shell: pwsh
+        run: .\target\release\eva.exe --version
+
+      - name: Package Windows archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
+          Copy-Item -LiteralPath target\release\eva.exe -Destination dist\windows\eva.exe
+          $readme = @"
+          Eva-CLI $env:RELEASE_TAG Windows archive
+
+          Contents:
+          - eva.exe
+
+          Verify:
+          - eva.exe --version
+
+          Signing:
+          - This archive is not signed yet. Signed installers are tracked by the signed-provenance-apply roadmap.
+          "@
+          $readme | Set-Content -LiteralPath dist\windows\README.txt -Encoding utf8
+          Compress-Archive -LiteralPath dist\windows\eva.exe, dist\windows\README.txt -DestinationPath "dist\${{ steps.native_vars.outputs.archive }}" -Force
+
+      - name: Capture Windows native artifact evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
+          $archive = "dist\${{ steps.native_vars.outputs.archive }}"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          $sourceSha = git rev-parse HEAD
+          $evidence = [ordered]@{
+            status = "published"
+            version = "${{ steps.native_vars.outputs.version }}"
+            source_tag = $env:RELEASE_TAG
+            source_sha = $sourceSha
+            artifact = [ordered]@{
+              target = "x86_64-pc-windows-msvc"
+              archive = "${{ steps.native_vars.outputs.archive }}"
+              format = "zip"
+              binary = "eva.exe"
+              checksum = "sha256:$hash"
+              signed = $false
+            }
+          }
+          $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath release-evidence/native-windows.json -Encoding utf8
+
+      - name: Upload Windows release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-${{ env.RELEASE_TAG }}
+          path: dist/${{ steps.native_vars.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Upload Windows native evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-evidence-windows-${{ env.RELEASE_TAG }}
+          path: release-evidence/native-windows.json
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
     needs:
       - verify
       - packages
+      - native-windows
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -382,6 +473,43 @@ jobs:
         with:
           name: package-evidence-${{ env.RELEASE_TAG }}
           path: release-evidence
+
+      - name: Download Windows native evidence artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: native-evidence-windows-${{ env.RELEASE_TAG }}
+          path: release-evidence/native
+
+      - name: Merge native artifact evidence
+        shell: pwsh
+        run: |
+          $nativePlanPath = "release-evidence/native-artifacts.json"
+          $nativePlan = Get-Content -Raw -LiteralPath $nativePlanPath | ConvertFrom-Json
+          $published = @()
+          $published += Get-ChildItem -LiteralPath release-evidence/native -Filter "native-*.json" |
+            ForEach-Object {
+              (Get-Content -Raw -LiteralPath $_.FullName | ConvertFrom-Json).artifact
+            }
+          $remaining = @($nativePlan.artifacts | Where-Object {
+            $target = $_.target
+            -not (@($published) | Where-Object { $_.target -eq $target })
+          })
+          $status = if ($published.Count -gt 0 -and $remaining.Count -gt 0) {
+            "partial"
+          } elseif ($published.Count -gt 0) {
+            "published"
+          } else {
+            $nativePlan.status
+          }
+          $merged = [ordered]@{
+            status = $status
+            version = $nativePlan.version
+            source_tag = $nativePlan.source_tag
+            source_sha = $nativePlan.source_sha
+            artifacts = @($published + $remaining)
+            reason = if ($remaining.Count -gt 0) { "Some native archive build jobs are still planned but not yet implemented." } else { $null }
+          }
+          $merged | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $nativePlanPath -Encoding utf8
 
       - name: Upload release evidence artifact
         uses: actions/upload-artifact@v4

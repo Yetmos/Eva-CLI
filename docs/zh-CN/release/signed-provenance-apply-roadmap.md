@@ -168,7 +168,7 @@ Eva-CLI V1.5.1 还没有：
 | P1-003 | 更新 GitHub Release 正文，展示 GHCR provenance/SBOM 可用性 | `.github/workflows/release.yml`、release docs | Release body generation review | Done | `cd55bf1` |
 | P1-004 | workflow 变更后同步官网/文档中的 provenance 状态 | `website/_i18n/*.json`、生成后的官网页面、docs index | `scripts/build-site-i18n.ps1`；`scripts/validate-i18n.ps1` | Done | `4699b55` |
 | P2-001 | 增加 native binary 的 release archive 命名和 manifest schema | release docs、`.github/workflows/release.yml` | workflow review；release evidence 字段审查 | Done | `6159169` |
-| P2-002 | 构建并 smoke-test Windows release archive | `.github/workflows/release.yml` | packaged Windows artifact 内运行 `eva --version` | Planned | pending |
+| P2-002 | 构建并 smoke-test Windows release archive | `.github/workflows/release.yml` | packaged Windows artifact 内运行 `eva --version` | In Progress | pending |
 | P2-003 | 构建并 smoke-test Linux release archive | `.github/workflows/release.yml` | packaged Linux artifact 内运行 `eva --version` | Planned | pending |
 | P2-004 | 构建并 smoke-test macOS x86_64 与 aarch64 release archives | `.github/workflows/release.yml` | packaged macOS artifacts 内运行 `eva --version` | Planned | pending |
 | P2-005 | 生成 `SHA256SUMS` 和 `native-artifacts.json` release evidence | `.github/workflows/release.yml` | workflow 内执行 checksum verification command | Planned | pending |
