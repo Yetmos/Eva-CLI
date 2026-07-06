@@ -381,12 +381,103 @@ jobs:
           path: release-evidence/native-windows.json
           if-no-files-found: error
 
+  native-linux:
+    name: Build Linux release archive
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Validate version management
+        shell: pwsh
+        run: ./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
+
+      - name: Resolve native artifact metadata
+        id: native_vars
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "archive=eva-cli-${version}-x86_64-unknown-linux-gnu.tar.gz" >> "${GITHUB_OUTPUT}"
+
+      - name: Build Linux binary
+        run: cargo build --release --locked --bin eva
+
+      - name: Smoke test Linux binary
+        run: ./target/release/eva --version
+
+      - name: Package Linux archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/linux
+          cp target/release/eva dist/linux/eva
+          cat > dist/linux/README.txt <<EOF
+          Eva-CLI ${RELEASE_TAG} Linux archive
+
+          Contents:
+          - eva
+
+          Verify:
+          - ./eva --version
+
+          Signing:
+          - This archive is not signed yet. Signed installers are tracked by the signed-provenance-apply roadmap.
+          EOF
+          tar -C dist/linux -czf "dist/${{ steps.native_vars.outputs.archive }}" eva README.txt
+
+      - name: Capture Linux native artifact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-evidence
+          archive="dist/${{ steps.native_vars.outputs.archive }}"
+          hash="$(sha256sum "${archive}" | awk '{print $1}')"
+          source_sha="$(git rev-parse HEAD)"
+          cat > release-evidence/native-linux.json <<EOF
+          {
+            "status": "published",
+            "version": "${{ steps.native_vars.outputs.version }}",
+            "source_tag": "${RELEASE_TAG}",
+            "source_sha": "${source_sha}",
+            "artifact": {
+              "target": "x86_64-unknown-linux-gnu",
+              "archive": "${{ steps.native_vars.outputs.archive }}",
+              "format": "tar.gz",
+              "binary": "eva",
+              "checksum": "sha256:${hash}",
+              "signed": false
+            }
+          }
+          EOF
+
+      - name: Upload Linux release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-${{ env.RELEASE_TAG }}
+          path: dist/${{ steps.native_vars.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Upload Linux native evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-evidence-linux-${{ env.RELEASE_TAG }}
+          path: release-evidence/native-linux.json
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
     needs:
       - verify
       - packages
       - native-windows
+      - native-linux
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -478,6 +569,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: native-evidence-windows-${{ env.RELEASE_TAG }}
+          path: release-evidence/native
+
+      - name: Download Linux native evidence artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: native-evidence-linux-${{ env.RELEASE_TAG }}
           path: release-evidence/native
 
       - name: Merge native artifact evidence
