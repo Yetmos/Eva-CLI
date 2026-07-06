@@ -694,6 +694,30 @@ jobs:
           name: native-evidence-macos-aarch64-apple-darwin-${{ env.RELEASE_TAG }}
           path: release-evidence/native
 
+      - name: Download Windows release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: native-windows-${{ env.RELEASE_TAG }}
+          path: release-native
+
+      - name: Download Linux release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux-${{ env.RELEASE_TAG }}
+          path: release-native
+
+      - name: Download macOS x86_64 release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: native-macos-x86_64-apple-darwin-${{ env.RELEASE_TAG }}
+          path: release-native
+
+      - name: Download macOS aarch64 release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: native-macos-aarch64-apple-darwin-${{ env.RELEASE_TAG }}
+          path: release-native
+
       - name: Merge native artifact evidence
         shell: pwsh
         run: |
@@ -724,6 +748,39 @@ jobs:
             reason = if ($remaining.Count -gt 0) { "Some native archive build jobs are still planned but not yet implemented." } else { $null }
           }
           $merged | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $nativePlanPath -Encoding utf8
+
+      - name: Generate native archive checksums
+        shell: pwsh
+        run: |
+          $nativeEvidencePath = "release-evidence/native-artifacts.json"
+          $nativeEvidence = Get-Content -Raw -LiteralPath $nativeEvidencePath | ConvertFrom-Json
+          $checksumLines = New-Object System.Collections.Generic.List[string]
+          foreach ($artifact in @($nativeEvidence.artifacts)) {
+            if ([string]::IsNullOrWhiteSpace($artifact.checksum)) {
+              continue
+            }
+
+            $archivePath = Join-Path "release-native" $artifact.archive
+            if (-not (Test-Path -LiteralPath $archivePath)) {
+              throw "Native archive '$($artifact.archive)' was recorded in evidence but was not downloaded."
+            }
+
+            $expected = $artifact.checksum -replace "^sha256:", ""
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+            if ($actual -ne $expected) {
+              throw "Checksum mismatch for '$($artifact.archive)': expected $expected but got $actual."
+            }
+
+            $checksumLines.Add("$actual  $($artifact.archive)")
+          }
+
+          if ($checksumLines.Count -eq 0) {
+            throw "No native archive checksums were generated."
+          }
+
+          $checksumLines | Set-Content -LiteralPath release-evidence/SHA256SUMS -Encoding utf8
+          $nativeEvidence | Add-Member -NotePropertyName checksum_file -NotePropertyValue "SHA256SUMS" -Force
+          $nativeEvidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $nativeEvidencePath -Encoding utf8
 
       - name: Upload release evidence artifact
         uses: actions/upload-artifact@v4
