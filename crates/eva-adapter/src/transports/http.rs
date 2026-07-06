@@ -222,7 +222,7 @@ mod tests {
         let config = config();
         let invocation = HttpInvocation::new(HttpMethod::Post, "https://evil.example/v1/messages");
 
-        let error = HttpRunner::default()
+        let error = HttpRunner
             .run(&config, &client_with_body("ok"), invocation)
             .unwrap_err();
 
@@ -235,7 +235,7 @@ mod tests {
         let invocation =
             HttpInvocation::new(HttpMethod::Delete, "https://api.example.test/v1/messages");
 
-        let error = HttpRunner::default()
+        let error = HttpRunner
             .run(&config, &client_with_body("ok"), invocation)
             .unwrap_err();
 
@@ -251,9 +251,7 @@ mod tests {
         let invocation =
             HttpInvocation::new(HttpMethod::Post, "https://api.example.test/v1/messages");
 
-        let error = HttpRunner::default()
-            .run(&config, &client, invocation)
-            .unwrap_err();
+        let error = HttpRunner.run(&config, &client, invocation).unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::Timeout);
     }
@@ -265,7 +263,7 @@ mod tests {
         let invocation =
             HttpInvocation::new(HttpMethod::Post, "https://api.example.test/v1/messages");
 
-        let error = HttpRunner::default()
+        let error = HttpRunner
             .run(&config, &client_with_body("too-large"), invocation)
             .unwrap_err();
 
@@ -280,7 +278,7 @@ mod tests {
                 .with_header("content-type", "application/json")
                 .with_body("{}");
 
-        let report = HttpRunner::default()
+        let report = HttpRunner
             .run(&config, &client_with_body("{\"ok\":true}"), invocation)
             .unwrap();
 

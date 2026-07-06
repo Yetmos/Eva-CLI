@@ -333,7 +333,7 @@ mod tests {
         let config = StdioRunnerConfig::new(["definitely-denied"], 1_000, 1024);
         let invocation = StdioInvocation::new("not-allowed");
 
-        let error = StdioRunner::default().run(&config, invocation).unwrap_err();
+        let error = StdioRunner.run(&config, invocation).unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     }
@@ -343,7 +343,7 @@ mod tests {
         let config = StdioRunnerConfig::new([test_command()], 1, 4096);
         let invocation = StdioInvocation::new(test_command()).with_args(sleep_args());
 
-        let error = StdioRunner::default().run(&config, invocation).unwrap_err();
+        let error = StdioRunner.run(&config, invocation).unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::Timeout);
     }
@@ -353,7 +353,7 @@ mod tests {
         let config = StdioRunnerConfig::new([test_command()], 5_000, 4);
         let invocation = StdioInvocation::new(test_command()).with_args(output_args("abcdef"));
 
-        let report = StdioRunner::default().run(&config, invocation).unwrap();
+        let report = StdioRunner.run(&config, invocation).unwrap();
 
         assert_eq!(report.status, StdioRunStatus::OutputLimitExceeded);
         assert_eq!(report.stdout, b"abcd");
@@ -364,7 +364,7 @@ mod tests {
         let config = StdioRunnerConfig::new([test_command()], 5_000, 4096);
         let invocation = StdioInvocation::new(test_command()).with_args(output_args("ok"));
 
-        let report = StdioRunner::default().run(&config, invocation).unwrap();
+        let report = StdioRunner.run(&config, invocation).unwrap();
 
         assert_eq!(report.status, StdioRunStatus::Completed);
         assert_eq!(report.exit_code, Some(0));
