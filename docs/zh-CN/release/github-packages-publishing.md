@@ -59,8 +59,8 @@ permissions:
 release workflow 成功后，用以下命令验证 package：
 
 ```powershell
-docker pull ghcr.io/yetmos/eva-cli:<version>
-docker run --rm ghcr.io/yetmos/eva-cli:<version> --version
+docker pull ghcr.io/yetmos/eva-cli:1.5.1
+docker run --rm ghcr.io/yetmos/eva-cli:1.5.1 --version
 ```
 
 正式 release 还需要验证：

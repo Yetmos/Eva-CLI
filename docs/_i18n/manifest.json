@@ -811,14 +811,14 @@
       "title": "Eva-CLI GitHub Packages Publishing",
       "source": "docs/en/release/github-packages-publishing.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/release/GitHub-Packages发布方案.md"
+        "zh-CN": "docs/zh-CN/release/github-packages-publishing.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/release/GitHub-Packages发布方案.md",
+        "path": "docs/zh-CN/release/github-packages-publishing.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"

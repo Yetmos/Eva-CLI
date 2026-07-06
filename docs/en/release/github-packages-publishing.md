@@ -66,8 +66,8 @@ access that `GITHUB_TOKEN` cannot provide.
 After a successful release workflow, verify the package with:
 
 ```powershell
-docker pull ghcr.io/yetmos/eva-cli:<version>
-docker run --rm ghcr.io/yetmos/eva-cli:<version> --version
+docker pull ghcr.io/yetmos/eva-cli:1.5.1
+docker run --rm ghcr.io/yetmos/eva-cli:1.5.1 --version
 ```
 
 For a stable release, also verify:

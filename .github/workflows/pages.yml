@@ -70,6 +70,13 @@ jobs:
             echo "GitHub Pages artifact must not contain symbolic links."
             exit 1
           fi
+          if find public -type f -links +1 | grep .; then
+            echo "GitHub Pages artifact must not contain hard links."
+            exit 1
+          fi
+          find public -type f | sed 's#^public/##' | sort > public/pages-artifact-manifest.txt
+          test -s public/pages-artifact-manifest.txt
+          grep 'github-packages-publishing.md' public/pages-artifact-manifest.txt
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
