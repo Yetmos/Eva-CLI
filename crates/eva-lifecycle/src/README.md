@@ -30,3 +30,10 @@
 ```powershell
 cargo test -p eva-lifecycle
 ```
+
+## P6-003 Upgrade Apply Lock Model
+
+`apply_lock.rs` owns `UpgradeApplyPlan`, `UpgradeApplyCoordinator`,
+`InMemoryUpgradeApplyLockStore`, and `FileSystemUpgradeApplyLockStore`.
+The model proves lock acquisition and conflict behavior for `upgrade apply`
+without starting a runtime process or promoting a generation.

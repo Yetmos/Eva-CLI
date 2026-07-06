@@ -15,8 +15,9 @@ use eva_core::{
 use eva_discovery::{DiscoveryCandidate, DiscoveryService};
 use eva_hardware::{discover_project_devices, DeviceCandidate, HardwareDiscoveryReport};
 use eva_lifecycle::{
-    DrainCoordinator, DrainPlan, GenerationState, InMemorySupervisor, RollbackCoordinator,
-    RollbackPlan, RuntimeGeneration, SupervisorReport,
+    DrainCoordinator, DrainPlan, FileSystemUpgradeApplyLockStore, GenerationState,
+    InMemorySupervisor, RollbackCoordinator, RollbackPlan, RuntimeGeneration, SupervisorReport,
+    UpgradeApplyCoordinator, UpgradeApplyLock, UpgradeApplyPlan, UpgradeApplyReport,
 };
 use eva_mcp::{InMemoryMcpClient, McpAllowlist, McpProbeReport};
 use eva_memory::{
@@ -73,6 +74,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "snapshot create",
     "restore plan",
     "upgrade check",
+    "upgrade apply",
     "release check",
     "release security",
     "release perf",
@@ -318,6 +320,7 @@ enum RestoreCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum UpgradeCommand {
     Check(UpgradeCheckOptions),
+    Apply(UpgradeApplyOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,6 +434,15 @@ struct UpgradeCheckOptions {
     to_generation: String,
     from_release: String,
     to_release: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpgradeApplyOptions {
+    common: CommonOptions,
+    plan: Option<PathBuf>,
+    confirm: Option<String>,
+    lock_store: Option<PathBuf>,
+    owner: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1216,6 +1228,9 @@ fn parse_upgrade_command(args: &[String]) -> Result<Command, EvaError> {
         "check" => Ok(Command::Upgrade(UpgradeCommand::Check(
             parse_upgrade_check_options(rest)?,
         ))),
+        "apply" => Ok(Command::Upgrade(UpgradeCommand::Apply(
+            parse_upgrade_apply_options(rest)?,
+        ))),
         value => {
             Err(EvaError::unsupported("unknown upgrade subcommand")
                 .with_context("subcommand", value))
@@ -1260,6 +1275,53 @@ fn parse_upgrade_check_options(args: &[String]) -> Result<UpgradeCheckOptions, E
         to_generation,
         from_release,
         to_release,
+    })
+}
+
+fn parse_upgrade_apply_options(args: &[String]) -> Result<UpgradeApplyOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut plan = None;
+    let mut confirm = None;
+    let mut lock_store = None;
+    let mut owner = "cli".to_owned();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--plan" => {
+                index += 1;
+                plan = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "upgrade apply plan option",
+                )?));
+            }
+            "--confirm" => {
+                index += 1;
+                confirm =
+                    Some(required_option(args, index, "upgrade apply confirm option")?.clone());
+            }
+            "--lock-store" | "--lock-store-dir" => {
+                index += 1;
+                lock_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "upgrade apply lock store option",
+                )?));
+            }
+            "--owner" => {
+                index += 1;
+                owner = required_option(args, index, "upgrade apply owner option")?.clone();
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    Ok(UpgradeApplyOptions {
+        common: parse_common_options(&passthrough)?,
+        plan,
+        confirm,
+        lock_store,
+        owner,
     })
 }
 
@@ -1940,6 +2002,22 @@ where
                 ),
             }
         }
+        UpgradeCommand::Apply(options) => {
+            let trace = trace_for("cli.upgrade.apply");
+            match create_upgrade_apply(&options) {
+                Ok(result) => {
+                    write_upgrade_apply(stdout, options.common.output, &result, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "upgrade.apply",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
     }
 }
 
@@ -2033,6 +2111,18 @@ struct UpgradeCheckReport {
     migration: MigrationPreflight,
     steps: Vec<String>,
     risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpgradeApplyResult {
+    report: UpgradeApplyReport,
+    lock_store: LockStoreRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockStoreRef {
+    kind: String,
+    path: Option<String>,
 }
 
 fn probe_hardware_candidates(
@@ -2312,6 +2402,19 @@ fn artifact_store_ref(path: Option<&Path>) -> ArtifactStoreRef {
     }
 }
 
+fn lock_store_ref(path: Option<&Path>) -> LockStoreRef {
+    match path {
+        Some(path) => LockStoreRef {
+            kind: "filesystem".to_owned(),
+            path: Some(path.display().to_string()),
+        },
+        None => LockStoreRef {
+            kind: "in_memory".to_owned(),
+            path: None,
+        },
+    }
+}
+
 fn create_upgrade_check(options: &UpgradeCheckOptions) -> Result<UpgradeCheckReport, EvaError> {
     let active = RuntimeGeneration::new(
         GenerationId::parse(&options.from_generation)?,
@@ -2362,6 +2465,98 @@ fn create_upgrade_check(options: &UpgradeCheckOptions) -> Result<UpgradeCheckRep
             "rollback remains planned until lifecycle apply is explicitly authorized".to_owned(),
         ],
     })
+}
+
+fn create_upgrade_apply(options: &UpgradeApplyOptions) -> Result<UpgradeApplyResult, EvaError> {
+    let plan_path = options.plan.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("upgrade apply requires --plan")
+            .with_context("required_option", "--plan")
+    })?;
+    let confirm = options.confirm.as_deref().ok_or_else(|| {
+        EvaError::invalid_argument("upgrade apply requires --confirm")
+            .with_context("required_option", "--confirm")
+    })?;
+    let lock_store_path = options.lock_store.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("upgrade apply requires --lock-store")
+            .with_context("required_option", "--lock-store")
+    })?;
+
+    let plan = read_upgrade_apply_plan(plan_path)?;
+    if confirm != plan.plan_id {
+        return Err(EvaError::permission_denied(
+            "upgrade apply confirmation does not match plan id",
+        )
+        .with_context("confirm", confirm)
+        .with_context("plan_id", &plan.plan_id));
+    }
+
+    let mut store = FileSystemUpgradeApplyLockStore::new(lock_store_path);
+    let report = UpgradeApplyCoordinator.acquire_lock(&mut store, &plan, &options.owner)?;
+    Ok(UpgradeApplyResult {
+        report,
+        lock_store: lock_store_ref(Some(lock_store_path)),
+    })
+}
+
+fn read_upgrade_apply_plan(path: &Path) -> Result<UpgradeApplyPlan, EvaError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            "upgrade apply plan is missing"
+        } else {
+            "failed to read upgrade apply plan"
+        };
+        EvaError::not_found(message)
+            .with_context("plan", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    parse_upgrade_apply_plan(&data)
+        .map_err(|error| error.with_context("plan", path.display().to_string()))
+}
+
+fn parse_upgrade_apply_plan(data: &str) -> Result<UpgradeApplyPlan, EvaError> {
+    let mut plan_id = None;
+    let mut from_generation = None;
+    let mut to_generation = None;
+    let mut from_release = None;
+    let mut to_release = None;
+    for line in data.lines() {
+        let line = line.trim_start_matches('\u{feff}');
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            return Err(EvaError::invalid_argument(
+                "upgrade apply plan line must use key=value format",
+            ));
+        };
+        match key {
+            "plan_id" => plan_id = Some(value.to_owned()),
+            "from_generation" => from_generation = Some(value.to_owned()),
+            "to_generation" => to_generation = Some(value.to_owned()),
+            "from_release" => from_release = Some(value.to_owned()),
+            "to_release" => to_release = Some(value.to_owned()),
+            _ => {
+                return Err(EvaError::invalid_argument(
+                    "upgrade apply plan contains unsupported field",
+                )
+                .with_context("field", key));
+            }
+        }
+    }
+    UpgradeApplyPlan::new(
+        plan_id.ok_or_else(|| EvaError::invalid_argument("upgrade apply plan missing plan_id"))?,
+        GenerationId::parse(&from_generation.ok_or_else(|| {
+            EvaError::invalid_argument("upgrade apply plan missing from_generation")
+        })?)?,
+        GenerationId::parse(&to_generation.ok_or_else(|| {
+            EvaError::invalid_argument("upgrade apply plan missing to_generation")
+        })?)?,
+        from_release
+            .ok_or_else(|| EvaError::invalid_argument("upgrade apply plan missing from_release"))?,
+        to_release
+            .ok_or_else(|| EvaError::invalid_argument("upgrade apply plan missing to_release"))?,
+    )
 }
 
 fn build_memory_context(
@@ -3435,6 +3630,17 @@ fn write_artifact_store_ref<W: Write>(
     Ok(())
 }
 
+fn write_lock_store_ref<W: Write>(
+    writer: &mut W,
+    lock_store: &LockStoreRef,
+) -> Result<(), EvaError> {
+    writeln!(writer, "lock_store: {}", lock_store.kind).map_err(write_error_kind)?;
+    if let Some(path) = &lock_store.path {
+        writeln!(writer, "lock_store_path: {path}").map_err(write_error_kind)?;
+    }
+    Ok(())
+}
+
 fn write_upgrade_check<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -3453,6 +3659,30 @@ fn write_upgrade_check<W: Write>(
             writer,
             "{}",
             success_envelope("upgrade.check", EXIT_OK, &upgrade_check_json(report), trace)
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_upgrade_apply<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    result: &UpgradeApplyResult,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Upgrade apply lock acquired").map_err(write_error_kind)?;
+            writeln!(writer, "plan: {}", result.report.plan_id).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", result.report.status).map_err(write_error_kind)?;
+            writeln!(writer, "apply_allowed: {}", result.report.apply_allowed)
+                .map_err(write_error_kind)?;
+            write_lock_store_ref(writer, &result.lock_store)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope("upgrade.apply", EXIT_OK, &upgrade_apply_json(result), trace)
         )
         .map_err(write_error_kind),
     }
@@ -3845,6 +4075,14 @@ fn artifact_store_ref_json(artifact_store: &ArtifactStoreRef) -> String {
     )
 }
 
+fn lock_store_ref_json(lock_store: &LockStoreRef) -> String {
+    format!(
+        "{{\"kind\":{},\"path\":{}}}",
+        json_string(&lock_store.kind),
+        option_json(lock_store.path.as_deref())
+    )
+}
+
 fn restore_plan_json(result: &RestorePlanResult) -> String {
     format!(
         "{{\"snapshot\":{},\"backup\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
@@ -3870,6 +4108,33 @@ fn restore_apply_dry_run_json(result: &RestoreApplyDryRunResult) -> String {
         json_string(&result.report.actual_digest),
         artifact_store_ref_json(&result.artifact_store),
         json_array(result.report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn upgrade_apply_json(result: &UpgradeApplyResult) -> String {
+    format!(
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"lock_store\":{},\"lock\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
+        json_string(&result.report.plan_id),
+        json_string(&result.report.status),
+        result.report.apply_allowed,
+        lock_store_ref_json(&result.lock_store),
+        upgrade_apply_lock_json(&result.report.lock),
+        json_array(result.report.steps.iter().map(|step| json_string(step))),
+        json_array(result.report.risks.iter().map(|risk| json_string(risk))),
+        json_array(result.report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn upgrade_apply_lock_json(lock: &UpgradeApplyLock) -> String {
+    format!(
+        "{{\"lock_id\":{},\"plan_id\":{},\"owner\":{},\"from_generation\":{},\"to_generation\":{},\"status\":{},\"audit\":{}}}",
+        json_string(&lock.lock_id),
+        json_string(&lock.plan_id),
+        json_string(&lock.owner),
+        json_string(lock.from_generation.as_str()),
+        json_string(lock.to_generation.as_str()),
+        json_string(&lock.status),
+        json_array(lock.audit.iter().map(|entry| json_string(entry)))
     )
 }
 
@@ -4559,7 +4824,7 @@ fn write_error_kind(error: io::Error) -> EvaError {
 }
 
 fn help_text() -> &'static str {
-    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--artifact-store <path>] [--dry-run] [--project <path>] [--output text|json]\n  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--artifact-store <path>] [--project <path>] [--output text|json]\n  eva restore plan [--snapshot-id <id>] [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n  eva release check [--target all|windows|linux|macos] [--project <path>] [--output text|json]\n  eva release security [--project <path>] [--output text|json]\n  eva release perf [--project <path>] [--output text|json]\n  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.5 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n  backup           Create and verify a V1.4 backup artifact, optionally in a filesystem ArtifactStore.\n  snapshot         Capture a release snapshot linked to a verified backup artifact.\n  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n  upgrade          Check generation, migration, drain, and rollback readiness without starting processes.\n  release          Run V1.5 cross-platform, security, performance, migration, and compatibility release gates.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
+    "Eva CLI\n\nUSAGE:\n  eva --version\n  eva version [--output text|json]\n  eva doctor [--project <path>] [--output text|json]\n  eva config validate [--project <path>] [--output text|json]\n  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n  eva task status [--project <path>] [--task <id>] [--output text|json]\n  eva task logs [--project <path>] [--task <id>] [--output text|json]\n  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n  eva adapter list [--project <path>] [--output text|json]\n  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n  eva mcp list [--project <path>] [--output text|json]\n  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n  eva skill list [--project <path>] [--output text|json]\n  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n  eva discovery scan [--project <path>] [--output text|json]\n  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n  eva hardware list [--project <path>] [--output text|json]\n  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--artifact-store <path>] [--dry-run] [--project <path>] [--output text|json]\n  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--artifact-store <path>] [--project <path>] [--output text|json]\n  eva restore plan [--snapshot-id <id>] [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--owner <id>] [--project <path>] [--output text|json]\n  eva release check [--target all|windows|linux|macos] [--project <path>] [--output text|json]\n  eva release security [--project <path>] [--output text|json]\n  eva release perf [--project <path>] [--output text|json]\n  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\nCommands:\n  version          Print the V1.5 release version and supported contracts.\n  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n  task             Inspect or cancel the latest persisted basic task report.\n  adapter          List and probe authorized Adapter handles derived from manifests.\n  mcp              List and probe allowlisted MCP tools without starting external servers.\n  skill            List and run controlled workflow skill envelopes.\n  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n  backup           Create and verify a V1.4 backup artifact, optionally in a filesystem ArtifactStore.\n  snapshot         Capture a release snapshot linked to a verified backup artifact.\n  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n  upgrade          Check or lock generation upgrade readiness without starting processes.\n  release          Run V1.5 cross-platform, security, performance, migration, and compatibility release gates.\n\nExit codes:\n  0 success\n  2 configuration or validation error\n  3 policy denied\n  4 runtime unavailable or unsupported in this version\n  5 external capability unavailable\n  64 command usage error\n"
 }
 
 #[cfg(test)]
@@ -5000,6 +5265,141 @@ mod tests {
         assert!(stderr.contains("\"key\":\"confirm\",\"value\":\"plan-123\""));
         assert!(stderr.contains("\"key\":\"artifact_store\",\"value\":\".eva/artifacts\""));
         assert!(stderr.contains("\"span_id\":\"cli.restore.apply\""));
+    }
+
+    #[test]
+    fn upgrade_apply_acquires_filesystem_lock() {
+        let root = workspace_root();
+        let lock_root = test_temp_dir("upgrade-apply-lock");
+        let plan_path = lock_root.join("upgrade.plan");
+        fs::create_dir_all(&lock_root).unwrap();
+        fs::write(
+            &plan_path,
+            "plan_id=plan-upgrade\nfrom_generation=gen-v14\nto_generation=gen-v15\nfrom_release=1.4.0\nto_release=1.5.1\n",
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-upgrade",
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"upgrade.apply\""));
+        assert!(stdout.contains("\"status\":\"locked\""));
+        assert!(stdout.contains("\"apply_allowed\":false"));
+        assert!(stdout.contains("\"lock_id\":\"upgrade-apply-plan-upgrade\""));
+        assert!(lock_root.join("plan-upgrade.lock").exists());
+
+        fs::remove_dir_all(lock_root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_apply_reports_lock_conflict() {
+        let root = workspace_root();
+        let lock_root = test_temp_dir("upgrade-apply-conflict");
+        let plan_path = lock_root.join("upgrade.plan");
+        fs::create_dir_all(&lock_root).unwrap();
+        fs::write(
+            &plan_path,
+            "plan_id=plan-conflict\nfrom_generation=gen-v14\nto_generation=gen-v15\nfrom_release=1.4.0\nto_release=1.5.1\n",
+        )
+        .unwrap();
+
+        let first = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-conflict",
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(first.0, EXIT_OK, "{}", first.2);
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-conflict",
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"kind\":\"conflict\""));
+        assert!(stderr.contains("\"command\":\"upgrade.apply\""));
+        assert!(stderr.contains("\"span_id\":\"cli.upgrade.apply\""));
+
+        fs::remove_dir_all(lock_root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_apply_rejects_mismatched_confirmation() {
+        let root = workspace_root();
+        let lock_root = test_temp_dir("upgrade-apply-confirm");
+        let plan_path = lock_root.join("upgrade.plan");
+        fs::create_dir_all(&lock_root).unwrap();
+        fs::write(
+            &plan_path,
+            "plan_id=plan-confirm\nfrom_generation=gen-v14\nto_generation=gen-v15\nfrom_release=1.4.0\nto_release=1.5.1\n",
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "wrong-plan",
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_POLICY);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"kind\":\"permission_denied\""));
+        assert!(!lock_root.join("plan-confirm.lock").exists());
+
+        fs::remove_dir_all(lock_root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_apply_plan_allows_utf8_bom() {
+        let plan = parse_upgrade_apply_plan(
+            "\u{feff}plan_id=plan-bom\nfrom_generation=gen-v14\nto_generation=gen-v15\nfrom_release=1.4.0\nto_release=1.5.1\n",
+        )
+        .unwrap();
+
+        assert_eq!(plan.plan_id, "plan-bom");
+        assert_eq!(plan.lock_id(), "upgrade-apply-plan-bom");
     }
 
     #[test]

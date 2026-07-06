@@ -153,6 +153,7 @@ cargo run -- restore plan --output json
 cargo run -- restore apply --plan restore-plan.json --confirm plan-123 --artifact-store .eva/artifacts --output json
 cargo run -- backup create --artifact-store .eva/artifacts --output json
 cargo run -- upgrade check --output json
+cargo run -- upgrade apply --plan upgrade-plan.txt --confirm plan-upgrade --lock-store .eva/locks --output json
 ```
 
 | 命令 | 行为 |
@@ -172,6 +173,19 @@ backup_digest=sha256:<hex>
 ```
 
 V1.4/P6 dry-run 不执行 destructive restore，不移动 release pointer，不启动真实 Supervisor/Runtime 进程。
+
+`upgrade apply` creates a filesystem lock and still returns `apply_allowed:false`.
+It does not perform runtime handoff.
+
+```text
+plan_id=plan-upgrade
+from_generation=gen-v14
+to_generation=gen-v15
+from_release=1.4.0
+to_release=1.5.1
+```
+
+V1.4/P6 dry-run and lock paths do not execute destructive restore, move release pointer, or start real Supervisor/Runtime processes.
 
 ## V1.5 Release Hardening Commands
 

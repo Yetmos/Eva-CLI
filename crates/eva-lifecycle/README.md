@@ -80,3 +80,7 @@ cargo run -- upgrade check --output json
 ## English
 
 `eva-lifecycle` owns V1.4 supervisor boundaries, runtime generations, drain planning, and rollback planning. It models lifecycle safety without starting real processes in V1.4.
+
+P6-003 adds the upgrade apply lock model. `upgrade apply` can acquire a
+filesystem-backed lock for a confirmed plan and report `apply_allowed:false`;
+real generation promotion remains behind later destructive apply gates.
