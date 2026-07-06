@@ -11,3 +11,6 @@ pub use manifest::{AdapterCapabilityBinding, AdapterHandle, AdapterHealth};
 pub use registry::AdapterRegistry;
 pub use router::{AdapterRoute, AdapterRouteRequest, AdapterRouter};
 pub use runtime::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};
+pub use transports::stdio::{
+    StdioInvocation, StdioRunReport, StdioRunStatus, StdioRunner, StdioRunnerConfig,
+};

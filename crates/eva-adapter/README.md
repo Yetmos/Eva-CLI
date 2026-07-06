@@ -20,7 +20,7 @@ V1.1 已实现外部能力的受控 envelope；V1.3 在此基础上实现 hardwa
 | MCP transport | 已完成 V1.1 | 通过 `eva-mcp::InMemoryMcpClient` 校验 tool allowlist 后返回调用 envelope。 |
 | Skill transport | 已完成 V1.1 | 校验 `skill.runtime_gate == normal`，返回带 audit 的 workflow skill envelope。 |
 | Hardware transport | 已完成 V1.3 | 通过 `DeviceRegistry` claim/release、`SimulatedDriver` 和 `HardwareDriver` trait 完成模拟硬件调用，audit 包含 `raw_io:false` 和 `lease:released`。 |
-| Stdio / HTTP transport | 仍关闭 | 返回结构化 unsupported 诊断；真实进程和网络执行留到后续版本。 |
+| Stdio / HTTP transport | Stdio runner contract 已完成，runtime 仍关闭；HTTP 仍关闭 | Stdio 已具备 command allowlist、timeout、output limit 的底层 runner；真实 manifest 接入留到后续步骤。 |
 
 ## V1.3 Hardware Transport
 
@@ -62,13 +62,13 @@ V1.3 的 hardware transport 只证明边界：它不会打开真实 USB、串口
 | `src/manifest.rs` | Adapter runtime 表示 | 已完成 V1.3 | 后续加入更多 transport-specific typed config。 |
 | `src/registry.rs` | Adapter 注册和索引 | 已完成 V1.1 | 后续接健康 probe、并发限制和熔断状态。 |
 | `src/router.rs` | provider 选择 | 已完成 V1.1 | 后续加入优先级和健康降级策略。 |
-| `src/runtime.rs` | transport 执行 | 已完成 V1.3 | 后续真实 stdio/http provider 执行和 timeout budget。 |
+| `src/runtime.rs` | transport 执行 | 已完成 V1.3 | 后续把 stdio runner 接入 manifest typed config，并继续实现 HTTP provider。 |
 | `src/error.rs` | 错误映射 | 已完成 V1.1 | 后续扩展 provider-specific safe context。 |
 | `src/transports/builtin.rs` | 内置 transport | 已完成 V1.1 | 后续迁移更多内部受控能力。 |
 | `src/transports/mcp.rs` | MCP transport | 已完成 V1.1 | 后续接真实 MCP process/session 边界。 |
 | `src/transports/skill.rs` | workflow skill transport | 已完成 V1.1 | 后续接 runtime worker，但保持 gate 和 audit。 |
 | `src/transports/hardware.rs` | hardware transport | 已完成 V1.3 | 后续接真实 driver registry 和硬件模拟器测试。 |
-| `src/transports/stdio.rs` | stdio 命令 transport | 仍关闭 | 后续分离 command/args 并强制 allowlist。 |
+| `src/transports/stdio.rs` | stdio 命令 transport | runner contract 已完成 | 已分离 command/args，并覆盖 allowlist、timeout、output limit；后续接入 AdapterRuntime。 |
 | `src/transports/http.rs` | HTTP transport | 仍关闭 | 后续 URL/env credential allowlist。 |
 
 ## 验证计划

@@ -16,7 +16,7 @@
 | `router.rs` | explicit provider 和 capability 路由 | 已完成 V1.1 | provider 优先，fallback 到 capability index。 |
 | `runtime.rs` | 授权后 transport 执行、probe、audit | 已完成 V1.3 | hardware transport 已接入；stdio/http 仍返回 unsupported。 |
 | `error.rs` | provider/transport 错误映射 | 已完成 V1.1 | 稳定输出 permission/unavailable/unsupported/conflict 等错误。 |
-| `transports/` | 具体 transport 实现 | 已完成 V1.1/V1.3 部分 | builtin/MCP/Skill/hardware 有受控实现；stdio/http 关闭。 |
+| `transports/` | 具体 transport 实现 | 已完成 V1.1/V1.3/P5-001 部分 | builtin/MCP/Skill/hardware 有受控实现；stdio 已有 runner contract；runtime 仍未启动 stdio/http provider。 |
 
 ## V1.1 已实现 surface
 
@@ -47,7 +47,7 @@ V1.1 不启动 stdio/http/hardware provider。这保证外部执行先有 manife
 | mcp | 已完成 V1.1 | tool allowlist 先于 envelope。 |
 | skill | 已完成 V1.1 | runtime gate 必须为 `normal`。 |
 | hardware | 已完成 V1.3 | 只接受 registry lease 和 driver binding，不暴露 raw I/O。 |
-| stdio | 仍关闭 | 后续必须 command/args 分离并强制 allowlist。 |
+| stdio | runner contract 已完成 | command/args 分离，强制 allowlist，覆盖 timeout 和 output limit；runtime 接入留到后续步骤。 |
 | http | 仍关闭 | 后续必须 URL、method、credential allowlist。 |
 
 ## 验证
@@ -59,4 +59,4 @@ cargo run -- adapter probe --adapter github-mcp --output json
 cargo run -- hardware bind --adapter scale-main --output json
 ```
 
-当前测试覆盖 registry/router/runtime、MCP allowlist、Skill gate、hardware identity 读取和 hardware transport simulated audit。
+当前测试覆盖 registry/router/runtime、MCP allowlist、Skill gate、hardware identity 读取、hardware transport simulated audit，以及 stdio runner denied command、timeout、output limit。
