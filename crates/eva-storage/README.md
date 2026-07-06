@@ -14,7 +14,7 @@
 | EventLogRecord | `EventLogRecord`、`EventLogStatus` | 记录 sequence、原始 `Event`、消费 Agent、失败原因。 |
 | StateStore | `StateStore`、`InMemoryStateStore` | 支持 get、put、compare-and-set；版本从 1 单调递增。 |
 | StateRecord | `StateRecord`、`StateVersion` | 保存 key、value 和 CAS version。 |
-| ArtifactStore | `ArtifactStore`、`InMemoryArtifactStore` | 保存 bytes，并生成轻量可重复 digest，供测试和 V1.4 前置边界使用。 |
+| ArtifactStore | `ArtifactStore`、`InMemoryArtifactStore` | 保存 bytes，并生成可重复 SHA-256 digest，供测试和 V1.4 前置边界使用。 |
 | SQLite | `sqlite.rs` | 仍是 durable backend 边界占位，V0.4 不引入 SQLite 依赖。 |
 
 ## 模块边界

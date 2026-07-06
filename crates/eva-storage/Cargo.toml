@@ -7,3 +7,4 @@ publish.workspace = true
 [dependencies]
 eva-core = { path = "../eva-core" }
 eva-observability = { path = "../eva-observability" }
+sha2 = "0.10"

@@ -1,12 +1,14 @@
 //! Artifact store contracts and the V0.4 in-memory implementation.
 
 use eva_core::EvaError;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "artifact store interfaces and integrity boundaries";
 
-/// Stored artifact bytes and deterministic lightweight digest metadata.
+/// Stored artifact bytes and deterministic SHA-256 digest metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactRecord {
     pub key: String,
@@ -49,7 +51,7 @@ impl ArtifactStore for InMemoryArtifactStore {
         let bytes = bytes.into();
         let record = ArtifactRecord {
             key: key.clone(),
-            digest: lightweight_digest(&bytes),
+            digest: sha256_digest(&bytes),
             bytes,
         };
         self.records.insert(key, record.clone());
@@ -61,11 +63,17 @@ impl ArtifactStore for InMemoryArtifactStore {
     }
 }
 
-fn lightweight_digest(bytes: &[u8]) -> String {
-    let sum = bytes
-        .iter()
-        .fold(0u64, |accumulator, byte| accumulator + u64::from(*byte));
-    format!("len:{}:sum:{}", bytes.len(), sum)
+fn sha256_digest(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+
+    let mut encoded = String::with_capacity("sha256:".len() + digest.len() * 2);
+    encoded.push_str("sha256:");
+    for byte in digest {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    encoded
 }
 
 #[cfg(test)]
@@ -79,7 +87,10 @@ mod tests {
         let record = store.put_bytes("trace/basic", b"ok".as_slice()).unwrap();
         let loaded = store.get_bytes("trace/basic").unwrap();
 
-        assert_eq!(record.digest, "len:2:sum:218");
+        assert_eq!(
+            record.digest,
+            "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df"
+        );
         assert_eq!(loaded.bytes, b"ok");
     }
 }

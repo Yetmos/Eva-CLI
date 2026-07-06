@@ -57,10 +57,11 @@ mod tests {
         let record = ArtifactRecord {
             key: "backup/test".to_owned(),
             bytes: b"ok".to_vec(),
-            digest: "len:2:sum:218".to_owned(),
+            digest: "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df"
+                .to_owned(),
         };
 
-        let error = ManifestVerifier::verify_artifact(&record, "len:1:sum:1").unwrap_err();
+        let error = ManifestVerifier::verify_artifact(&record, "sha256:wrong").unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
     }
