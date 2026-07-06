@@ -170,7 +170,7 @@ Eva-CLI V1.5.1 还没有：
 | P2-001 | 增加 native binary 的 release archive 命名和 manifest schema | release docs、`.github/workflows/release.yml` | workflow review；release evidence 字段审查 | Done | `6159169` |
 | P2-002 | 构建并 smoke-test Windows release archive | `.github/workflows/release.yml` | packaged Windows artifact 内运行 `eva --version` | Done | `9f4c37d` |
 | P2-003 | 构建并 smoke-test Linux release archive | `.github/workflows/release.yml` | packaged Linux artifact 内运行 `eva --version` | Done | `5533612` |
-| P2-004 | 构建并 smoke-test macOS x86_64 与 aarch64 release archives | `.github/workflows/release.yml` | packaged macOS artifacts 内运行 `eva --version` | In Progress | pending |
+| P2-004 | 构建并 smoke-test macOS x86_64 与 aarch64 release archives | `.github/workflows/release.yml` | packaged macOS artifacts 内运行 `eva --version` | Done | `2d5d566` |
 | P2-005 | 生成 `SHA256SUMS` 和 `native-artifacts.json` release evidence | `.github/workflows/release.yml` | workflow 内执行 checksum verification command | Planned | pending |
 | P3-001 | 定义 signing provider 配置和失败策略 | release docs、repository secrets documentation | 记录 secret names 和 fallback behavior | Planned | pending |
 | P3-002 | 增加 Windows signing 路径 | `.github/workflows/release.yml` | signed artifact verification command | Blocked：需要 signing credential | pending |
