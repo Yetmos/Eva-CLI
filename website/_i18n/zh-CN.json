@@ -297,6 +297,11 @@
         "description": "V1.5.0 的 tag 驱动 GitHub Release workflow、发布证据、验证步骤和回滚策略。"
       },
       {
+        "id": "v1.5-release-acceptance",
+        "title": "V1.5 发布验收记录",
+        "description": "V1.5.0 tag、GitHub Release、本地门禁结果、Pages 状态和不可变 tag 决策记录。"
+      },
+      {
         "id": "website-docs-i18n",
         "title": "网站与文档多语言适配",
         "description": "多语言官网与文档迁移方案。"

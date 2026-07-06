@@ -297,6 +297,11 @@
         "description": "The tag-driven GitHub Release workflow, release evidence, verification steps, and rollback policy for V1.5.0."
       },
       {
+        "id": "v1.5-release-acceptance",
+        "title": "V1.5 Release Acceptance",
+        "description": "The V1.5.0 tag, GitHub Release, local gate results, Pages status, and immutable-tag decision record."
+      },
+      {
         "id": "website-docs-i18n",
         "title": "Website and Documentation i18n",
         "description": "The multilingual website and documentation migration plan."

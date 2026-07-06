@@ -773,6 +773,23 @@
       "sourceCoverage": "full-detail"
     },
     {
+      "id": "v1.5-release-acceptance",
+      "title": "Eva-CLI V1.5 Release Acceptance",
+      "source": "docs/en/release/v1.5-release-acceptance.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/release/V1.5发布验收记录.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/release/V1.5发布验收记录.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "v0.1-baseline-acceptance",
       "title": "V0.1 Baseline Acceptance",
       "source": "docs/en/planning/v0.1-baseline-acceptance.md",

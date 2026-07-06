@@ -70,6 +70,7 @@ migration policy.
 - [Eva-CLI V1.5 Compatibility Policy](release/v1.5-compatibility-policy.md)
 - [Eva-CLI V1.5.0 Release Notes](release/release-notes-v1.5.0.md)
 - [Eva-CLI V1.5 GitHub Release Plan](release/v1.5-github-release-plan.md)
+- [Eva-CLI V1.5 Release Acceptance](release/v1.5-release-acceptance.md)
 
 ### Planning
 

@@ -63,6 +63,7 @@ V1.5 源码发布检查点：当前仓库包含可编译 Rust workspace、可执
 - [V1.5 兼容性策略](release/V1.5兼容性策略.md)
 - [V1.5 发布说明](release/V1.5发布说明.md)
 - [V1.5 GitHub 发版计划](release/V1.5-GitHub发版计划.md)
+- [V1.5 发布验收记录](release/V1.5发布验收记录.md)
 
 ### 规划
 
