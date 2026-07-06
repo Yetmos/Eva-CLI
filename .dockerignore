@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.eva
+.omx
+.site
+target
+website
+wiki
+docs
+assets
+examples
+workspace
+*.log
+*.tmp

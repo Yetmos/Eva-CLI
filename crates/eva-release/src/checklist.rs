@@ -448,11 +448,12 @@ impl ReleaseHardeningService {
                 domain: "docs".to_owned(),
                 status: ReleaseGateStatus::Pass,
                 required: true,
-                summary: "V1.5.0-release README, version management, migration, compatibility, and release notes are part of the release surface"
+                summary: "V1.5.0-release README, version management, GitHub Packages, migration, compatibility, and release notes are part of the release surface"
                     .to_owned(),
                 evidence: vec![
                     "crates/eva-release/README.md".to_owned(),
                     "docs/en/release/version-management-plan.md".to_owned(),
+                    "docs/en/release/github-packages-publishing.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
                     "docs/en/release/release-notes-v1.5.0.md".to_owned(),
@@ -576,6 +577,13 @@ mod tests {
             .iter()
             .any(|gate| gate.domain == "cross_platform"));
         assert!(report.gates.iter().any(|gate| gate.domain == "migration"));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DOCS-001"
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "docs/en/release/github-packages-publishing.md")
+        }));
     }
 
     #[test]

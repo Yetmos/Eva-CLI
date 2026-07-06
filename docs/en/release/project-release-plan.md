@@ -23,13 +23,16 @@ The release process must provide:
 - cross-platform validation on Windows, macOS, and Linux before publication;
 - release evidence that can be reviewed after the release;
 - documentation and website validation before public delivery;
-- controlled GitHub Packages publication when package distribution is enabled;
+- controlled GitHub Packages publication through GHCR for release tags that
+  contain package support;
 - a repair path that avoids rewriting public history after a release is visible.
 
-The current V1.5 release remains a source release. Packaged installers, signed
-binary artifacts, provenance bundles, and package-manager publishing are future
-release scope. A GitHub Packages channel must satisfy the package gates in this
-document before it is enabled.
+The existing `v1.5.0` release remains a source release because the public tag
+predates the GHCR package channel and must not be moved. For later release tags
+that contain the release workflow and Dockerfile support, Eva-CLI publishes a
+GHCR container image through GitHub Packages. Packaged installers, signed binary
+artifacts, provenance bundles, and package-manager publishing remain future
+release scope.
 
 ## Release Channels
 
@@ -37,7 +40,7 @@ document before it is enabled.
 | --- | --- | --- | --- |
 | CI | `.github/workflows/ci.yml` | Pull request, push to `main`/`master`, manual dispatch | Rust, CLI smoke, website, and i18n validation logs |
 | GitHub Release DI | `.github/workflows/release.yml` | Push a tag that follows the version management plan, or manually dispatch against an existing tag | GitHub Release, source archives, `release-evidence-*` artifact |
-| GitHub Packages DI | `.github/workflows/release.yml` or `.github/workflows/packages.yml` | After release tag verification, or manual dispatch against an existing tag | GHCR/package registry entry, package digest, package metadata, package evidence |
+| GitHub Packages DI | `.github/workflows/release.yml` | After release tag verification, or manual dispatch against an existing tag that contains package support | `ghcr.io/yetmos/eva-cli`, package digest, package metadata, package evidence |
 | Website DI | `.github/workflows/pages.yml` | Push changes under website, docs, assets, scripts, or the pages workflow | GitHub Pages deployment |
 
 ## Platform Matrix
@@ -105,8 +108,8 @@ The publish job captures each command output into `release-evidence/` and
 uploads it as `release-evidence-${RELEASE_TAG}`. This artifact is the durable
 machine-readable release evidence for the tag.
 
-If the release enables GitHub Packages publication, the package job must run
-after release verification and satisfy these requirements:
+For release tags that contain package support, the `packages` job must run after
+release verification and satisfy these requirements:
 
 - workflow permissions include `contents: read` and `packages: write`;
 - use `GITHUB_TOKEN` by default for packages linked to this repository;
@@ -116,6 +119,8 @@ after release verification and satisfy these requirements:
   evidence;
 - update `latest` only for stable releases; alpha and beta releases publish only
   prerelease tags;
+- run `eva --version` against the built container image before pushing the
+  multi-platform package;
 - package publication failure blocks the package channel for that version, but
   must not move or rewrite an already public release tag.
 
@@ -140,12 +145,17 @@ source releases with documented command contracts. Before release publication:
 3. Push the release commit and verify CI is green on Windows, macOS, and Linux.
 4. Create an annotated release tag and push it to GitHub.
 5. Verify that the GitHub Release workflow completes and uploads release evidence.
-6. Verify that the GitHub Release body, source archives, and documentation links match the release tag.
+6. Verify that `release-evidence/package-ghcr.json` records the GHCR package
+   digest for tags with package support.
+7. Verify that the GitHub Release body, source archives, package links, and
+   documentation links match the release tag.
 
 ## Binary Artifact Roadmap
 
-Binary packaging is not part of the current V1.5 source release, but future
-release automation should use this initial target map:
+Signed binary packaging is not part of the current V1.5 source release. GHCR
+container publication is the implemented GitHub Packages channel for release
+tags that contain package support, and future release automation should use
+this target map:
 
 | Platform | Initial target | Future output |
 | --- | --- | --- |
@@ -184,6 +194,6 @@ A release is complete only when all of the following evidence exists:
 - The GitHub Release exists for the tag.
 - GitHub source archives are available.
 - `release-evidence-${RELEASE_TAG}` is uploaded.
-- If GitHub Packages is enabled: the package registry page is reachable, the
-  digest matches release evidence, and install/pull smoke tests pass.
+- For tags with package support: the package registry page is reachable, the
+  digest matches release evidence, and pull smoke tests pass.
 - Documentation and website validation completed successfully.

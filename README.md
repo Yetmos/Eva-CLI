@@ -327,7 +327,9 @@ Core boundaries:
 ## Remaining V1.x Gaps
 
 V1.5 is a source-release and release-hardening checkpoint, not a packaged
-runtime distribution. The main remaining work is now narrower and more
+installer distribution. Later release tags that contain package support publish
+the GHCR container image `ghcr.io/yetmos/eva-cli`; the existing `v1.5.0` tag is
+not republished retroactively. The main remaining work is now narrower and more
 implementation-focused:
 
 - Real provider execution for stdio/http/MCP processes, including authentication,
@@ -338,7 +340,8 @@ implementation-focused:
   bindings behind the Rust runtime boundary.
 - Destructive apply paths such as `restore apply`, release pointer mutation,
   supervisor activation, and blue-green runtime process handoff.
-- Signed release artifacts, cross-platform installers, and artifact provenance.
+- Signed release artifacts, cross-platform installers, package-manager packages,
+  and artifact provenance.
 - Deeper machine-verifiable schemas and policy checks as high-risk apply paths
   move from plan-only diagnostics to execution.
 

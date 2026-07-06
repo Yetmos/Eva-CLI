@@ -88,9 +88,186 @@ jobs:
           cargo run -- release perf --output json
           cargo run -- release migration --output json
 
+  packages:
+    name: Publish GitHub Packages
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Validate version management
+        shell: pwsh
+        run: ./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
+
+      - name: Detect package support
+        id: package_support
+        shell: pwsh
+        run: |
+          if ((Test-Path -LiteralPath Dockerfile) -and (Test-Path -LiteralPath .dockerignore)) {
+            "enabled=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "enabled=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - name: Resolve release package metadata
+        id: release_vars
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          base="${version%%-*}"
+          IFS='.' read -r major minor patch <<< "${base}"
+          prerelease=false
+          if [[ "${version}" == *-* ]]; then
+            prerelease=true
+          fi
+
+          {
+            echo "version=${version}"
+            echo "major_minor=${major}.${minor}"
+            echo "prerelease=${prerelease}"
+            echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "source_sha=$(git rev-parse HEAD)"
+            echo "short_sha=$(git rev-parse --short=7 HEAD)"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU
+        if: steps.package_support.outputs.enabled == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.package_support.outputs.enabled == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: steps.package_support.outputs.enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract container metadata
+        id: meta
+        if: steps.package_support.outputs.enabled == 'true'
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/yetmos/eva-cli
+          tags: |
+            type=raw,value=${{ steps.release_vars.outputs.version }}
+            type=raw,value=${{ steps.release_vars.outputs.major_minor }},enable=${{ steps.release_vars.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ steps.release_vars.outputs.prerelease == 'false' }}
+            type=raw,value=sha-${{ steps.release_vars.outputs.short_sha }}
+          labels: |
+            org.opencontainers.image.title=Eva-CLI
+            org.opencontainers.image.description=Eva-CLI command-line runtime
+            org.opencontainers.image.source=https://github.com/Yetmos/Eva-CLI
+            org.opencontainers.image.version=${{ steps.release_vars.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.release_vars.outputs.source_sha }}
+            org.opencontainers.image.ref.name=${{ env.RELEASE_TAG }}
+
+      - name: Build local package smoke image
+        if: steps.package_support.outputs.enabled == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: eva-cli:release-smoke
+          build-args: |
+            EVA_VERSION=${{ steps.release_vars.outputs.version }}
+            VCS_REF=${{ steps.release_vars.outputs.source_sha }}
+            BUILD_DATE=${{ steps.release_vars.outputs.created }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run package smoke test
+        if: steps.package_support.outputs.enabled == 'true'
+        run: docker run --rm eva-cli:release-smoke --version
+
+      - name: Build and push GHCR image
+        id: build
+        if: steps.package_support.outputs.enabled == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            EVA_VERSION=${{ steps.release_vars.outputs.version }}
+            VCS_REF=${{ steps.release_vars.outputs.source_sha }}
+            BUILD_DATE=${{ steps.release_vars.outputs.created }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Capture package evidence
+        if: steps.package_support.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          IMAGE_NAME: ghcr.io/yetmos/eva-cli
+          IMAGE_URL: https://github.com/Yetmos/Eva-CLI/pkgs/container/eva-cli
+          VERSION: ${{ steps.release_vars.outputs.version }}
+          PRERELEASE: ${{ steps.release_vars.outputs.prerelease }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          SOURCE_SHA: ${{ steps.release_vars.outputs.source_sha }}
+        run: |
+          New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
+          $tags = $env:TAGS -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          $evidence = [ordered]@{
+            status = "published"
+            registry = "ghcr.io"
+            package = $env:IMAGE_NAME
+            package_url = $env:IMAGE_URL
+            image = "$($env:IMAGE_NAME)@$($env:DIGEST)"
+            version = $env:VERSION
+            source_tag = $env:RELEASE_TAG
+            source_sha = $env:SOURCE_SHA
+            digest = $env:DIGEST
+            tags = @($tags)
+            platforms = @("linux/amd64", "linux/arm64")
+            prerelease = [System.Convert]::ToBoolean($env:PRERELEASE)
+          }
+          $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath release-evidence/package-ghcr.json -Encoding utf8
+
+      - name: Capture skipped package evidence
+        if: steps.package_support.outputs.enabled != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
+          $evidence = [ordered]@{
+            status = "skipped"
+            registry = "ghcr.io"
+            package = "ghcr.io/yetmos/eva-cli"
+            package_url = "https://github.com/Yetmos/Eva-CLI/pkgs/container/eva-cli"
+            source_tag = $env:RELEASE_TAG
+            source_sha = "${{ steps.release_vars.outputs.source_sha }}"
+            reason = "The checked-out release tag does not contain Dockerfile and .dockerignore package support."
+          }
+          $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath release-evidence/package-ghcr.json -Encoding utf8
+
+      - name: Upload package evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-evidence-${{ env.RELEASE_TAG }}
+          path: release-evidence/package-ghcr.json
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
-    needs: verify
+    needs:
+      - verify
+      - packages
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -122,6 +299,12 @@ jobs:
           cargo run -- release perf --output json | Tee-Object -FilePath release-evidence/release-perf.json
           cargo run -- release migration --output json | Tee-Object -FilePath release-evidence/release-migration.json
 
+      - name: Download package evidence artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package-evidence-${{ env.RELEASE_TAG }}
+          path: release-evidence
+
       - name: Upload release evidence artifact
         uses: actions/upload-artifact@v4
         with:
@@ -148,14 +331,31 @@ jobs:
             const manualNotes = fs.existsSync(releaseNotesPath)
               ? fs.readFileSync(releaseNotesPath, "utf8")
               : `# Eva-CLI ${humanVersion}\n\nNo dedicated release notes file exists for ${humanVersion}.`;
+            const packageEvidencePath = "release-evidence/package-ghcr.json";
+            const packageLines = [];
+            if (fs.existsSync(packageEvidencePath)) {
+              const packageEvidence = JSON.parse(fs.readFileSync(packageEvidencePath, "utf8"));
+              if (packageEvidence.status === "published") {
+                packageLines.push("## GitHub Packages");
+                packageLines.push(`- Package: \`${packageEvidence.package}\``);
+                packageLines.push(`- Image digest: \`${packageEvidence.digest}\``);
+                packageLines.push(`- Tags: ${packageEvidence.tags.map((tag) => `\`${tag}\``).join(", ")}`);
+                packageLines.push(`- Package URL: ${packageEvidence.package_url}`);
+              } else {
+                packageLines.push("## GitHub Packages");
+                packageLines.push(`- Status: \`${packageEvidence.status}\``);
+                packageLines.push(`- Reason: ${packageEvidence.reason}`);
+              }
+            }
             const body = [
               manualNotes,
               "## GitHub-managed version record",
               `- Tag: \`${tag}\``,
               `- Human version: \`${humanVersion}\``,
               `- Status: \`${status}\``,
-              "- Release workflow: validates Rust workspace, website/docs, version-management rules, and V1.5 release gates before publishing.",
-              "- Artifacts: GitHub source archives plus workflow release-evidence artifact. V1.5.0-release intentionally does not publish signed installers.",
+              "- Release workflow: validates Rust workspace, website/docs, version-management rules, V1.5 release gates, and GHCR package publication before publishing.",
+              "- Artifacts: GitHub source archives, workflow release-evidence artifact, and GHCR container package when package evidence status is `published`. V1.5.0-release intentionally does not publish signed installers.",
+              ...packageLines,
             ].filter(Boolean).join("\n\n");
 
             try {

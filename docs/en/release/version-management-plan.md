@@ -66,6 +66,8 @@ The repository uses `scripts/validate-version-management.ps1` to enforce this po
 - the current human-facing version, such as `V1.5.0-release`, appears in the root README files, docs README files, and CLI version output;
 - `docs/_i18n/manifest.json` registers the English entry and Chinese detailed source for this plan;
 - CI and release workflows run version-management validation;
+- the GHCR package channel has a Dockerfile, `.dockerignore`, workflow
+  permissions, and release evidence wiring;
 - when a release tag is provided, it exactly matches the Cargo version.
 
 CI runs without a tag:
@@ -118,9 +120,9 @@ GitHub Releases must bind to immutable tags:
 
 ## GitHub Packages Rules
 
-GitHub Packages is an optional distribution channel layered after the GitHub
-Release gate. It is not the source of version truth; the Git tag and GitHub
-Release remain authoritative.
+GitHub Packages is the GHCR container distribution channel layered after the
+GitHub Release gate. It is not the source of version truth; the Git tag and
+GitHub Release remain authoritative.
 
 Required package rules:
 
@@ -128,17 +130,20 @@ Required package rules:
   repository.
 - Use a least-privilege PAT only when cross-repository private package access
   requires it.
-- Publish container images to `ghcr.io/yetmos/eva-cli` when the project has a
-  reproducible container build.
+- Publish container images to `ghcr.io/yetmos/eva-cli` from release tags that
+  contain the Dockerfile and release workflow package support.
 - Publish ecosystem packages only for registries supported by GitHub Packages
   and only after install smoke tests exist.
 - Record package digest, package URL, package version, and source tag in release
   evidence.
+- Run a container smoke test before pushing the multi-platform image.
 - Never publish a package from a dirty tree or from a commit different from the
   release tag.
 
 Current Rust crate publication is out of scope for GitHub Packages because
 GitHub Packages does not replace crates.io as a public Cargo crate registry.
+The existing `v1.5.0` tag predates this GHCR channel and is not republished
+retroactively.
 
 ## Milestones, Issues, and PRs
 
@@ -172,8 +177,8 @@ git push origin v1.0.15
 ```
 
 7. Wait for the GitHub Release workflow to finish.
-8. If package publication is enabled, publish GitHub Packages only after release
-   verification succeeds and record package digest evidence.
+8. Publish GitHub Packages only after release verification succeeds and record
+   package digest evidence for tags that contain package support.
 9. Check prerelease/latest settings, release body, source archives, package
    metadata, and release evidence.
 10. Close the milestone and create the next milestone.

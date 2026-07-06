@@ -807,6 +807,23 @@
       "sourceCoverage": "full-detail"
     },
     {
+      "id": "github-packages-publishing",
+      "title": "Eva-CLI GitHub Packages Publishing",
+      "source": "docs/en/release/github-packages-publishing.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/release/GitHub-Packages发布方案.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/release/GitHub-Packages发布方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "v0.1-baseline-acceptance",
       "title": "V0.1 Baseline Acceptance",
       "source": "docs/en/planning/v0.1-baseline-acceptance.md",

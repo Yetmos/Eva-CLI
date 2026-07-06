@@ -92,10 +92,40 @@ if ($versionDoc.contentAuthority.locale -ne "zh-CN") {
   Fail "version-management-plan content authority must remain zh-CN while Chinese is the detailed source."
 }
 
+$packageDoc = @($manifest.documents | Where-Object { $_.id -eq "github-packages-publishing" }) | Select-Object -First 1
+if ($null -eq $packageDoc) {
+  Fail "docs/_i18n/manifest.json must register document id 'github-packages-publishing'."
+}
+if ($packageDoc.source -ne "docs/en/release/github-packages-publishing.md") {
+  Fail "github-packages-publishing source path must be docs/en/release/github-packages-publishing.md."
+}
+$packagePlanZhPath = $packageDoc.translations.'zh-CN'
+if ([string]::IsNullOrWhiteSpace($packagePlanZhPath) -or -not $packagePlanZhPath.StartsWith("docs/zh-CN/release/")) {
+  Fail "github-packages-publishing zh-CN path must live under docs/zh-CN/release/."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $Root $packagePlanZhPath))) {
+  Fail "github-packages-publishing zh-CN file does not exist: $packagePlanZhPath"
+}
+if ($packageDoc.contentAuthority.locale -ne "zh-CN") {
+  Fail "github-packages-publishing content authority must remain zh-CN while Chinese is the detailed source."
+}
+
 Assert-Contains $versionPlanZhPath "scripts/validate-version-management.ps1"
 Assert-Contains "docs/en/release/version-management-plan.md" "scripts/validate-version-management.ps1"
 Assert-Contains ".github/workflows/ci.yml" "validate-version-management.ps1"
 Assert-Contains ".github/workflows/release.yml" "validate-version-management.ps1"
+Assert-Contains ".github/workflows/release.yml" "packages: write"
+Assert-Contains ".github/workflows/release.yml" "ghcr.io/yetmos/eva-cli"
+Assert-Contains ".github/workflows/release.yml" "docker/build-push-action@v6"
+Assert-Contains ".github/workflows/release.yml" "package-ghcr.json"
+Assert-Contains "Dockerfile" "cargo build --release --locked --bin eva"
+Assert-Contains "Dockerfile" 'ENTRYPOINT ["eva"]'
+Assert-Contains ".dockerignore" "target"
+Assert-Contains $packagePlanZhPath "ghcr.io/yetmos/eva-cli"
+Assert-Contains "docs/en/release/github-packages-publishing.md" "ghcr.io/yetmos/eva-cli"
+Assert-Contains "docs/en/README.md" "release/github-packages-publishing.md"
+$packageReadmeLink = $packagePlanZhPath.Substring("docs/zh-CN/".Length)
+Assert-Contains "docs/zh-CN/README.md" $packageReadmeLink
 
 $humanVersionFiles = @(
   "README.md",

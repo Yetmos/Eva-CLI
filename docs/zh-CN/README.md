@@ -59,6 +59,7 @@ V1.5 源码发布检查点：当前仓库包含可编译 Rust workspace、可执
 
 - [项目发布方案](release/项目发布方案.md)
 - [版本管理方案](release/版本管理方案.md)
+- [GitHub Packages 发布方案](release/GitHub-Packages发布方案.md)
 - [V1.0 已知限制](release/V1.0已知限制.md)
 - [V1.0 发布说明](release/V1.0发布说明.md)
 - [V1.5 发布加固](release/V1.5发布加固.md)
