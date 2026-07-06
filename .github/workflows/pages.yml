@@ -27,7 +27,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
 
       - name: Build localized website
         shell: pwsh
@@ -39,15 +42,23 @@ jobs:
 
       - name: Build static site
         run: |
+          rm -rf public
           mkdir -p public/docs
           cp -R website/. public/
-          cp -R docs/. public/docs/
+
+          mkdir -p public/docs/en public/docs/zh-CN public/docs/assets
+          cp docs/README.md public/docs/README.md
+          cp -R docs/en/. public/docs/en/
+          cp -R docs/zh-CN/. public/docs/zh-CN/
+          cp -R docs/assets/. public/docs/assets/
           cp -R website/docs/. public/docs/
           cp -R assets public/assets
-          rm -rf public/_templates public/_i18n public/_blog
+          rm -rf public/_templates public/_i18n public/_blog public/docs/zh-CN/legacy
+          touch public/.nojekyll
+          printf '%s\n' 'www.eva-cli.com' > public/CNAME
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: public
 
@@ -60,4 +71,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

@@ -756,6 +756,23 @@
       "sourceCoverage": "full-detail"
     },
     {
+      "id": "project-release-plan",
+      "title": "Eva-CLI Project Release Plan",
+      "source": "docs/en/release/project-release-plan.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/release/项目发布方案.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/release/项目发布方案.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "v0.1-baseline-acceptance",
       "title": "V0.1 Baseline Acceptance",
       "source": "docs/en/planning/v0.1-baseline-acceptance.md",

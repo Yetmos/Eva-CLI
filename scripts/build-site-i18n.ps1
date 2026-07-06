@@ -1022,14 +1022,14 @@ $docsIndexTokens = @{
   homeUrl = "../"
   brandTagline = Html $defaultLocaleData.brand.tagline
   navLabel = Html $defaultLocaleData.nav.label
-  navLinks = New-NavLinks -LocaleData $defaultLocaleData -HomeHref "../" -DocsHref "./" -BlogHref "../blog/" -ArchitectureHref "en/architecture-overview.md" -DiscussionHref "../#discussion" -FeedbackHref "../#feedback"
+  navLinks = New-NavLinks -LocaleData $defaultLocaleData -HomeHref "../" -DocsHref "./" -BlogHref "../blog/" -ArchitectureHref "en/architecture/architecture-overview.md" -DiscussionHref "../#discussion" -FeedbackHref "../#feedback"
   languageSwitch = New-LanguageSwitch -Locales $locales -HrefByLocale $docsHrefByLocale -CurrentLocale $defaultLocaleCode
   heroEyebrow = Html $defaultLocaleData.docsIndex.heroEyebrow
   heroTitle = Html $defaultLocaleData.docsIndex.heroTitle
   heroLead = Html $defaultLocaleData.docsIndex.heroLead
   actionsLabel = Html $defaultLocaleData.docsIndex.actionsLabel
   heroActions = @"
-            <a class="primary-action" href="en/architecture-overview.md">$(Html $defaultLocaleData.docsIndex.primaryAction)</a>
+            <a class="primary-action" href="en/architecture/architecture-overview.md">$(Html $defaultLocaleData.docsIndex.primaryAction)</a>
             <a class="secondary-action" href="https://github.com/Yetmos/Eva-CLI">$(Html $defaultLocaleData.docsIndex.secondaryAction)</a>
 "@
   languagePanelLabel = Html $defaultLocaleData.docsIndex.languagePanelLabel
