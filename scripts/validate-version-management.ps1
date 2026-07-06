@@ -125,13 +125,13 @@ Assert-Contains $packagePlanZhPath "ghcr.io/yetmos/eva-cli"
 Assert-Contains "docs/en/release/github-packages-publishing.md" "ghcr.io/yetmos/eva-cli"
 Assert-Contains "docs/en/README.md" "release/github-packages-publishing.md"
 $packageReadmeLink = $packagePlanZhPath.Substring("docs/zh-CN/".Length)
-Assert-Contains "docs/zh-CN/README.md" $packageReadmeLink
+Assert-Contains "docs/zh-CN/中文文档入口.md" $packageReadmeLink
 
 $humanVersionFiles = @(
   "README.md",
   "README.zh-CN.md",
   "docs/en/README.md",
-  "docs/zh-CN/README.md",
+  "docs/zh-CN/中文文档入口.md",
   "crates/eva-cli/src/run.rs"
 )
 
@@ -142,6 +142,6 @@ foreach ($relativePath in $humanVersionFiles) {
 Assert-Contains "crates/eva-cli/src/run.rs" "const RELEASE_STATUS: &str = `"$status`";"
 Assert-Contains "docs/en/README.md" "release/version-management-plan.md"
 $zhReadmeLink = $versionPlanZhPath.Substring("docs/zh-CN/".Length)
-Assert-Contains "docs/zh-CN/README.md" $zhReadmeLink
+Assert-Contains "docs/zh-CN/中文文档入口.md" $zhReadmeLink
 
 Write-Host "Version management validated: cargo=$packageVersion human=$humanVersion status=$status tag=$expectedTag"

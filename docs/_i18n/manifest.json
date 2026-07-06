@@ -284,14 +284,14 @@
       "title": "Documentation Home",
       "source": "docs/en/README.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/README.md"
+        "zh-CN": "docs/zh-CN/中文文档入口.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/README.md",
+        "path": "docs/zh-CN/中文文档入口.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "summary-or-entry"
@@ -828,14 +828,14 @@
       "title": "Eva-CLI GitHub Packages Publishing",
       "source": "docs/en/release/github-packages-publishing.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/release/github-packages-publishing.md"
+        "zh-CN": "docs/zh-CN/release/软件包发布方案.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/release/github-packages-publishing.md",
+        "path": "docs/zh-CN/release/软件包发布方案.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"
@@ -845,14 +845,14 @@
       "title": "Signed Installers, Provenance, and Real Apply Paths Roadmap",
       "source": "docs/en/release/signed-provenance-apply-roadmap.md",
       "translations": {
-        "zh-CN": "docs/zh-CN/release/signed-provenance-apply-roadmap.md"
+        "zh-CN": "docs/zh-CN/release/签名安装器来源证明与真实应用路径路线图.md"
       },
       "status": {
         "zh-CN": "current"
       },
       "contentAuthority": {
         "locale": "zh-CN",
-        "path": "docs/zh-CN/release/signed-provenance-apply-roadmap.md",
+        "path": "docs/zh-CN/release/签名安装器来源证明与真实应用路径路线图.md",
         "coverage": "full-detail"
       },
       "sourceCoverage": "full-detail"

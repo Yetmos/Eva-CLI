@@ -183,7 +183,7 @@ Status values:
 
 | ID | Feature Modification | Files / Areas | Acceptance Checks | Status | Commit |
 | --- | --- | --- | --- | --- | --- |
-| P0-001 | Create this implementation ledger and register it in docs/site indexes | `docs/en/release/signed-provenance-apply-roadmap.md`, `docs/zh-CN/release/signed-provenance-apply-roadmap.md`, `docs/_i18n/manifest.json`, docs/site indexes | `scripts/build-site-i18n.ps1`; `scripts/validate-i18n.ps1`; `scripts/validate-version-management.ps1` | Done | `0a3f6a6` |
+| P0-001 | Create this implementation ledger and register it in docs/site indexes | `docs/en/release/signed-provenance-apply-roadmap.md`, `docs/zh-CN/release/签名安装器来源证明与真实应用路径路线图.md`, `docs/_i18n/manifest.json`, docs/site indexes | `scripts/build-site-i18n.ps1`; `scripts/validate-i18n.ps1`; `scripts/validate-version-management.ps1` | Done | `0a3f6a6` |
 | P1-001 | Add OIDC/attestation permissions and Buildx SBOM/provenance settings to GHCR release job | `.github/workflows/release.yml` | Workflow diff review; `scripts/validate-version-management.ps1` | Done | `1be7c44` |
 | P1-002 | Extend `package-ghcr.json` with provenance and SBOM fields while preserving existing fields | `.github/workflows/release.yml`, release docs | `scripts/validate-version-management.ps1`; JSON field review | Done | `66416f7` |
 | P1-003 | Update release body text to report GHCR provenance/SBOM availability | `.github/workflows/release.yml`, release docs | Release body generation review | Done | `cd55bf1` |

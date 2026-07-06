@@ -76,7 +76,9 @@ jobs:
           fi
           find public -type f | sed 's#^public/##' | sort > public/pages-artifact-manifest.txt
           test -s public/pages-artifact-manifest.txt
-          grep 'github-packages-publishing.md' public/pages-artifact-manifest.txt
+          grep 'docs/zh-CN/中文文档入口.md' public/pages-artifact-manifest.txt
+          grep 'docs/zh-CN/release/软件包发布方案.md' public/pages-artifact-manifest.txt
+          grep 'docs/zh-CN/release/签名安装器来源证明与真实应用路径路线图.md' public/pages-artifact-manifest.txt
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5

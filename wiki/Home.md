@@ -51,7 +51,7 @@ Eva-CLI separates authority from hot-reloadable behavior:
 For full source-of-truth detail, read the canonical repository docs:
 
 - [English documentation](https://github.com/Yetmos/Eva-CLI/blob/main/docs/en/README.md)
-- [Simplified Chinese documentation](https://github.com/Yetmos/Eva-CLI/blob/main/docs/zh-CN/README.md)
+- [Simplified Chinese documentation](https://github.com/Yetmos/Eva-CLI/blob/main/docs/zh-CN/中文文档入口.md)
 - [Website source](https://github.com/Yetmos/Eva-CLI/blob/main/website/README.md)
 
 ## Current Delivery Focus

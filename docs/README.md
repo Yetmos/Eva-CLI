@@ -17,7 +17,7 @@ content authority:
 ## Language Entrances
 
 - [English](en/README.md) - default public entry.
-- [简体中文](zh-CN/README.md) - current detailed architecture source.
+- [简体中文](zh-CN/中文文档入口.md) - current detailed architecture source.
 
 ## Maintenance Rules
 

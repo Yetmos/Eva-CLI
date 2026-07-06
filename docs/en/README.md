@@ -2,7 +2,7 @@
 
 > Language: English
 > Published default: docs/en/README.md
-> Current detail authority: [简体中文](../zh-CN/README.md)
+> Current detail authority: [简体中文](../zh-CN/中文文档入口.md)
 
 Eva-CLI has reached the V1.5 source-release checkpoint. The repository now
 contains a compileable Rust workspace, executable CLI surfaces, configuration

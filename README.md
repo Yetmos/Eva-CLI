@@ -237,7 +237,7 @@ Layer, AdapterRegistry, MemoryService, KnowledgeService, and HardwareAdapter.
 Default documentation entrances:
 
 - [English docs](docs/en/README.md) - default public entry and stable slug set.
-- [Simplified Chinese docs](docs/zh-CN/README.md) - current detailed source of truth.
+- [Simplified Chinese docs](docs/zh-CN/中文文档入口.md) - current detailed source of truth.
 - [Documentation maintenance guide](docs/README.md)
 
 Recommended reading order for the English default documentation:

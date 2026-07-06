@@ -74,7 +74,7 @@ Eva-CLI/
 默认文档入口：
 
 - [English docs](docs/en/README.md)：默认公开入口和稳定 slug。
-- [简体中文文档](docs/zh-CN/README.md)：当前详案事实主源。
+- [简体中文文档](docs/zh-CN/中文文档入口.md)：当前详案事实主源。
 - [文档维护入口](docs/README.md)
 
 建议先按以下顺序阅读英文默认入口；需要实现级细节时，以对应中文详案为准：
