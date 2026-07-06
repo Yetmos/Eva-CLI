@@ -6,7 +6,7 @@ use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, Ad
 use eva_backup::{
     BackupEntry, BackupPlan, BackupResult, BackupScope, BackupService, MigrationPackageManifest,
     MigrationPackageService, MigrationPreflight, ReleaseSnapshot, ReleaseSnapshotService,
-    RestorePlan, SnapshotRole,
+    RestoreApplyDryRunReport, RestoreApplyPlan, RestoreApplyValidator, RestorePlan, SnapshotRole,
 };
 use eva_config::{load_project_config, schema_paths, AdapterTransport, ProjectConfig};
 use eva_core::{
@@ -37,6 +37,7 @@ use eva_storage::{
 };
 use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -420,6 +421,7 @@ struct RestoreApplyOptions {
     plan: Option<PathBuf>,
     confirm: Option<String>,
     artifact_store: Option<PathBuf>,
+    dry_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -484,6 +486,12 @@ struct RestorePlanResult {
     backup: BackupCreateResult,
     snapshot: ReleaseSnapshot,
     plan: RestorePlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreApplyDryRunResult {
+    report: RestoreApplyDryRunReport,
+    artifact_store: ArtifactStoreRef,
 }
 
 fn parse_command<I>(args: I) -> Result<Command, EvaError>
@@ -1164,6 +1172,7 @@ fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, E
     let mut plan = None;
     let mut confirm = None;
     let mut artifact_store = None;
+    let mut dry_run = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1183,6 +1192,9 @@ fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, E
                     "artifact store option",
                 )?));
             }
+            "--dry-run" => {
+                dry_run = true;
+            }
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -1192,6 +1204,7 @@ fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, E
         plan,
         confirm,
         artifact_store,
+        dry_run,
     })
 }
 
@@ -1866,15 +1879,36 @@ where
         }
         RestoreCommand::Apply(options) => {
             let trace = trace_for("cli.restore.apply");
-            match create_restore_apply_denial(&options) {
-                Ok(()) => unreachable!("restore apply is intentionally denied in P6-001"),
-                Err(error) => write_command_error(
-                    stderr,
-                    options.common.output,
-                    "restore.apply",
-                    &error,
-                    &trace,
-                ),
+            if options.dry_run {
+                match create_restore_apply_dry_run(&options) {
+                    Ok(result) => {
+                        write_restore_apply_dry_run(
+                            stdout,
+                            options.common.output,
+                            &result,
+                            &trace,
+                        )?;
+                        Ok(EXIT_OK)
+                    }
+                    Err(error) => write_command_error(
+                        stderr,
+                        options.common.output,
+                        "restore.apply",
+                        &error,
+                        &trace,
+                    ),
+                }
+            } else {
+                match create_restore_apply_denial(&options) {
+                    Ok(()) => unreachable!("restore apply is intentionally denied in P6-001"),
+                    Err(error) => write_command_error(
+                        stderr,
+                        options.common.output,
+                        "restore.apply",
+                        &error,
+                        &trace,
+                    ),
+                }
             }
         }
     }
@@ -2170,6 +2204,99 @@ fn create_restore_apply_denial(options: &RestoreApplyOptions) -> Result<(), EvaE
         "suggestion",
         "run restore plan and keep restore apply disabled until P6 apply gates are complete",
     ))
+}
+
+fn create_restore_apply_dry_run(
+    options: &RestoreApplyOptions,
+) -> Result<RestoreApplyDryRunResult, EvaError> {
+    let plan_path = options.plan.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply dry-run requires --plan")
+            .with_context("required_option", "--plan")
+    })?;
+    let confirm = options.confirm.as_deref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply dry-run requires --confirm")
+            .with_context("required_option", "--confirm")
+    })?;
+    let artifact_store_path = options.artifact_store.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply dry-run requires --artifact-store")
+            .with_context("required_option", "--artifact-store")
+    })?;
+
+    let plan = read_restore_apply_plan(plan_path)?;
+    if confirm != plan.plan_id {
+        return Err(EvaError::permission_denied(
+            "restore apply confirmation does not match plan id",
+        )
+        .with_context("confirm", confirm)
+        .with_context("plan_id", &plan.plan_id));
+    }
+
+    let store = FileSystemArtifactStore::new(artifact_store_path);
+    let artifact_key = plan.backup_artifact_key();
+    let artifact = store.try_get_bytes(&artifact_key)?.ok_or_else(|| {
+        EvaError::not_found("restore apply backup artifact is missing")
+            .with_context("artifact_key", &artifact_key)
+            .with_context("artifact_store", artifact_store_path.display().to_string())
+    })?;
+    let report = RestoreApplyValidator.dry_run(&plan, &artifact)?;
+
+    Ok(RestoreApplyDryRunResult {
+        report,
+        artifact_store: artifact_store_ref(Some(artifact_store_path)),
+    })
+}
+
+fn read_restore_apply_plan(path: &Path) -> Result<RestoreApplyPlan, EvaError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            "restore apply plan is missing"
+        } else {
+            "failed to read restore apply plan"
+        };
+        EvaError::not_found(message)
+            .with_context("plan", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    parse_restore_apply_plan(&data)
+        .map_err(|error| error.with_context("plan", path.display().to_string()))
+}
+
+fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, EvaError> {
+    let mut plan_id = None;
+    let mut backup_artifact_id = None;
+    let mut backup_digest = None;
+    for line in data.lines() {
+        let line = line.trim_start_matches('\u{feff}');
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            return Err(EvaError::invalid_argument(
+                "restore apply plan line must use key=value format",
+            ));
+        };
+        match key {
+            "plan_id" => plan_id = Some(value.to_owned()),
+            "backup_artifact_id" => backup_artifact_id = Some(value.to_owned()),
+            "backup_digest" => backup_digest = Some(value.to_owned()),
+            _ => {
+                return Err(EvaError::invalid_argument(
+                    "restore apply plan contains unsupported field",
+                )
+                .with_context("field", key));
+            }
+        }
+    }
+    RestoreApplyPlan::new(
+        plan_id.ok_or_else(|| EvaError::invalid_argument("restore apply plan missing plan_id"))?,
+        backup_artifact_id.ok_or_else(|| {
+            EvaError::invalid_argument("restore apply plan missing backup_artifact_id")
+        })?,
+        backup_digest.ok_or_else(|| {
+            EvaError::invalid_argument("restore apply plan missing backup_digest")
+        })?,
+    )
 }
 
 fn artifact_store_ref(path: Option<&Path>) -> ArtifactStoreRef {
@@ -3268,6 +3395,35 @@ fn write_restore_plan<W: Write>(
     }
 }
 
+fn write_restore_apply_dry_run<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    result: &RestoreApplyDryRunResult,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Restore apply dry-run").map_err(write_error_kind)?;
+            writeln!(writer, "plan: {}", result.report.plan_id).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", result.report.status).map_err(write_error_kind)?;
+            writeln!(writer, "apply_allowed: {}", result.report.apply_allowed)
+                .map_err(write_error_kind)?;
+            write_artifact_store_ref(writer, &result.artifact_store)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "restore.apply",
+                EXIT_OK,
+                &restore_apply_dry_run_json(result),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn write_artifact_store_ref<W: Write>(
     writer: &mut W,
     artifact_store: &ArtifactStoreRef,
@@ -3700,6 +3856,20 @@ fn restore_plan_json(result: &RestorePlanResult) -> String {
         json_array(result.plan.steps.iter().map(|step| json_string(step))),
         json_array(result.plan.risks.iter().map(|risk| json_string(risk))),
         json_array(result.plan.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn restore_apply_dry_run_json(result: &RestoreApplyDryRunResult) -> String {
+    format!(
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"artifact_store\":{},\"audit\":{}}}",
+        json_string(&result.report.plan_id),
+        json_string(&result.report.status),
+        result.report.apply_allowed,
+        json_string(&result.report.backup_artifact_key),
+        json_string(&result.report.expected_digest),
+        json_string(&result.report.actual_digest),
+        artifact_store_ref_json(&result.artifact_store),
+        json_array(result.report.audit.iter().map(|entry| json_string(entry)))
     )
 }
 
@@ -4395,6 +4565,7 @@ fn help_text() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eva_storage::ArtifactStore;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -4829,6 +5000,147 @@ mod tests {
         assert!(stderr.contains("\"key\":\"confirm\",\"value\":\"plan-123\""));
         assert!(stderr.contains("\"key\":\"artifact_store\",\"value\":\".eva/artifacts\""));
         assert!(stderr.contains("\"span_id\":\"cli.restore.apply\""));
+    }
+
+    #[test]
+    fn restore_apply_dry_run_validates_durable_backup() {
+        let root = workspace_root();
+        let artifact_root = test_temp_dir("restore-apply-ok");
+        let plan_path = artifact_root.join("restore.plan");
+        let mut store = FileSystemArtifactStore::new(&artifact_root);
+        let artifact = store
+            .put_bytes("backup/apply-ok", b"ok".as_slice())
+            .unwrap();
+        fs::write(
+            &plan_path,
+            format!(
+                "plan_id=plan-ok\nbackup_artifact_id=apply-ok\nbackup_digest={}\n",
+                artifact.digest
+            ),
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--dry-run",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-ok",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"restore.apply\""));
+        assert!(stdout.contains("\"status\":\"dry_run_validated\""));
+        assert!(stdout.contains("\"apply_allowed\":false"));
+        assert!(stdout.contains("\"backup_artifact_key\":\"backup/apply-ok\""));
+
+        fs::remove_dir_all(artifact_root).unwrap();
+    }
+
+    #[test]
+    fn restore_apply_plan_allows_utf8_bom() {
+        let plan = parse_restore_apply_plan(
+            "\u{feff}plan_id=plan-bom\nbackup_artifact_id=apply-bom\nbackup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\n",
+        )
+        .unwrap();
+
+        assert_eq!(plan.plan_id, "plan-bom");
+        assert_eq!(plan.backup_artifact_key(), "backup/apply-bom");
+    }
+
+    #[test]
+    fn restore_apply_dry_run_reports_missing_backup() {
+        let root = workspace_root();
+        let artifact_root = test_temp_dir("restore-apply-missing");
+        let plan_path = artifact_root.join("restore.plan");
+        fs::create_dir_all(&artifact_root).unwrap();
+        fs::write(
+            &plan_path,
+            "plan_id=plan-missing\nbackup_artifact_id=missing\nbackup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\n",
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--dry-run",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-missing",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"kind\":\"not_found\""));
+        assert!(stderr.contains("\"artifact_key\",\"value\":\"backup/missing\""));
+
+        fs::remove_dir_all(artifact_root).unwrap();
+    }
+
+    #[test]
+    fn restore_apply_dry_run_reports_digest_mismatch() {
+        let root = workspace_root();
+        let artifact_root = test_temp_dir("restore-apply-mismatch");
+        let plan_path = artifact_root.join("restore.plan");
+        let mut store = FileSystemArtifactStore::new(&artifact_root);
+        let artifact = store
+            .put_bytes("backup/apply-mismatch", b"ok".as_slice())
+            .unwrap();
+        fs::write(
+            &plan_path,
+            format!(
+                "plan_id=plan-mismatch\nbackup_artifact_id=apply-mismatch\nbackup_digest={}\n",
+                artifact.digest
+            ),
+        )
+        .unwrap();
+        fs::write(
+            artifact_root
+                .join("objects")
+                .join("backup")
+                .join("apply-mismatch.artifact"),
+            b"no",
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--dry-run",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-mismatch",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"kind\":\"conflict\""));
+        assert!(stderr.contains("\"expected_digest\""));
+        assert!(stderr.contains("\"actual_digest\""));
+
+        fs::remove_dir_all(artifact_root).unwrap();
     }
 
     #[test]

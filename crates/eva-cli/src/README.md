@@ -69,7 +69,7 @@
 - `backup create`：调用 `eva_backup::BackupService`，默认写入 in-memory `ArtifactStore`；传入 `--artifact-store <path>` 时写入 filesystem artifact store，生成 manifest 并校验 digest。
 - `snapshot create`：调用 `ReleaseSnapshotService` 生成 pre/post release snapshot，并可通过 `--artifact-store <path>` 落盘其依赖的 backup artifact。
 - `restore plan`：调用 `ReleaseSnapshotService::restore_plan`，输出 `apply_allowed:false`，并可通过 `--artifact-store <path>` 生成 filesystem backup evidence。
-- `restore apply`：P6-001 只解析 `--plan`、`--confirm` 和 `--artifact-store`，然后返回稳定 `unsupported` JSON；不执行破坏性恢复。
+- `restore apply`：默认仍返回稳定 `unsupported` JSON；带 `--dry-run` 时读取 plan 文件并验证 filesystem artifact store 中的 backup artifact key 和 digest，不执行破坏性恢复。
 - `upgrade check`：调用 `eva_lifecycle` 的 in-memory supervisor、generation、drain、rollback 状态机，并结合 migration preflight。
 
 这些命令是 release/lifecycle readiness smoke，不执行真实文件恢复、release pointer 切换或 OS 进程启动。

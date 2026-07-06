@@ -160,10 +160,18 @@ cargo run -- upgrade check --output json
 | `backup create` | 构造 `BackupPlan`，默认写入 in-memory `ArtifactStore`；传入 `--artifact-store <path>` 时写入 filesystem artifact store，生成 `BackupManifest`，并立即校验 digest。 |
 | `snapshot create` | 创建 pre/post release snapshot，并关联已验证 backup artifact；传入 `--artifact-store <path>` 时同步落盘 snapshot 依赖的 backup artifact。 |
 | `restore plan` | 输出 restore steps、risks、audit，且 `apply_allowed:false`；传入 `--artifact-store <path>` 时使用同一 filesystem artifact store 生成可追溯 backup evidence。 |
-| `restore apply` | P6-001 只开放 parser 和稳定 JSON 拒绝路径；缺少完整 apply gate 时返回 `unsupported` 和 exit code `4`。 |
+| `restore apply` | P6-001 默认拒绝执行；P6-002 在 `--dry-run` 下读取 plan 文件并验证 filesystem artifact store 中的 backup digest，仍保持 `apply_allowed:false`。 |
 | `upgrade check` | 输出 supervisor candidate、migration preflight、drain plan 和 rollback plan。 |
 
-V1.4 不执行 destructive restore，不移动 release pointer，不启动真实 Supervisor/Runtime 进程。
+`restore apply --dry-run` 的 plan 文件使用稳定 key/value 格式：
+
+```text
+plan_id=plan-123
+backup_artifact_id=backup-for-snapshot-v14
+backup_digest=sha256:<hex>
+```
+
+V1.4/P6 dry-run 不执行 destructive restore，不移动 release pointer，不启动真实 Supervisor/Runtime 进程。
 
 ## V1.5 Release Hardening Commands
 

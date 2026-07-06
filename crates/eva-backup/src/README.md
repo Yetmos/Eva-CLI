@@ -13,6 +13,7 @@
 | `lib.rs` | 模块导出 | 已完成 | re-export backup、manifest verifier、migration、snapshot 类型。 |
 | `backup_service.rs` | backup plan 和 artifact 生成 | 已完成 | `BackupEntry`、`BackupScope`、`BackupPlan`、`BackupManifest`、`BackupService::create`。 |
 | `manifest_verifier.rs` | artifact/manifest integrity verification | 已完成 | `ManifestVerifier::verify_artifact`、`VerificationReport`。 |
+| `restore_apply.rs` | restore apply dry-run validation | 已完成 | `RestoreApplyPlan`、`RestoreApplyValidator`，只验证 durable artifact，不执行恢复。 |
 | `migration_package.rs` | 迁移包 manifest 和兼容性 | 已完成 | `MigrationPackageManifest`、`MigrationPackageService::verify_preflight`。 |
 | `release_snapshot.rs` | release snapshot 和 restore plan | 已完成 | `ReleaseSnapshot`、`SnapshotRole`、`RestorePlan`、`ReleaseSnapshotService`。 |
 
@@ -22,6 +23,7 @@
 - Backup entry path 必须是稳定相对路径，不能包含 `..` 或反斜杠。
 - Backup create 后立即通过 `ManifestVerifier` 校验 artifact digest。
 - Digest mismatch 必须返回 `Conflict`，不能降级成 warning。
+- Restore apply dry-run 只能验证 durable artifact key/digest，不能执行恢复。
 - Migration package preflight 不执行迁移逻辑，只输出 ready/planned/blocked。
 - Restore plan 在 V1.4 永远 `apply_allowed:false`。
 
