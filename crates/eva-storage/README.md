@@ -4,7 +4,7 @@
 
 ![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
 
-`eva-storage` 负责 Eva-CLI 的状态、事件日志和 artifact 存储契约。事件和状态仍使用标准库 in-memory 版本；artifact 已提供 in-memory 与 local filesystem backend，用于备份、发布和后续 apply evidence 的持久化边界。
+`eva-storage` 负责 Eva-CLI 的状态、事件日志、task snapshot 和 artifact 存储契约。事件和通用状态仍提供标准库 in-memory 版本；task snapshot 与 artifact 已提供 local filesystem backend，用于跨进程 CLI 查询、备份、发布和后续 apply evidence 的持久化边界。
 
 ## V0.4 当前实现
 
@@ -14,6 +14,7 @@
 | EventLogRecord | `EventLogRecord`、`EventLogStatus` | 记录 sequence、原始 `Event`、消费 Agent、失败原因。 |
 | StateStore | `StateStore`、`InMemoryStateStore` | 支持 get、put、compare-and-set；版本从 1 单调递增。 |
 | StateRecord | `StateRecord`、`StateVersion` | 保存 key、value 和 CAS version。 |
+| TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 保存 `.eva/tasks` task snapshot，支持按 task id 或 latest 跨进程读取。 |
 | ArtifactStore | `ArtifactStore`、`InMemoryArtifactStore`、`FileSystemArtifactStore` | 保存 bytes，并生成可重复 SHA-256 digest；filesystem backend 会落盘 bytes 和 metadata，并在读取时重新校验 digest。 |
 | SQLite | `sqlite.rs` | 仍是 durable backend 边界占位，V0.4 不引入 SQLite 依赖。 |
 
@@ -26,10 +27,12 @@
 ## 公开入口
 
 ```rust
-use eva_storage::{EventLog, InMemoryEventLog, StateStore, InMemoryStateStore};
+use eva_storage::{
+    EventLog, FileSystemTaskStateStore, InMemoryEventLog, InMemoryStateStore, StateStore,
+};
 ```
 
-主要 re-export 位于 `src/lib.rs`，下游 crate 不需要直接引用子模块路径。需要 durable artifact evidence 时使用 `FileSystemArtifactStore::new(path)`。
+主要 re-export 位于 `src/lib.rs`，下游 crate 不需要直接引用子模块路径。需要 durable task state 时使用 `FileSystemTaskStateStore::new(project_root)`；需要 durable artifact evidence 时使用 `FileSystemArtifactStore::new(path)`。
 
 ## 验证
 
@@ -39,7 +42,7 @@ use eva_storage::{EventLog, InMemoryEventLog, StateStore, InMemoryStateStore};
 cargo test -p eva-storage
 ```
 
-V0.4 已覆盖：事件 append/watermark、ack consumer、fail structured error、replay cursor、StateStore 版本冲突、ArtifactStore digest round trip、filesystem artifact missing/tamper checks。
+V0.4 已覆盖：事件 append/watermark、ack consumer、fail structured error、replay cursor、StateStore 版本冲突、TaskStateStore 跨 store 读写、ArtifactStore digest round trip、filesystem artifact missing/tamper checks。
 
 ## 后续计划
 

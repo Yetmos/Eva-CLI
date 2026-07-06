@@ -29,11 +29,14 @@ use eva_release::{
     PerformanceBudget, PlatformReadiness, ReleaseGate, ReleaseHardeningService,
     ReleaseReadinessReport, SecurityFinding, SecurityReviewReport, StabilityScenario,
 };
-use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder, TaskLogEntry};
-use eva_storage::{FileSystemArtifactStore, InMemoryArtifactStore};
+use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder};
+use eva_storage::{
+    FileSystemArtifactStore, FileSystemTaskStateStore, InMemoryArtifactStore,
+    TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot,
+    TaskStateStore,
+};
 use std::env;
 use std::ffi::OsString;
-use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -453,45 +456,6 @@ struct ValidationReport {
     policies_total: usize,
     routes_total: usize,
     schema_files: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TaskSnapshot {
-    task_id: String,
-    status: String,
-    attempts: usize,
-    retry_max_attempts: usize,
-    cancel_requested: bool,
-    cancel_accepted: bool,
-    cancel_reason: Option<String>,
-    error_kind: Option<String>,
-    error_message: Option<String>,
-    logs: Vec<TaskLogSnapshot>,
-    dead_letters: Vec<TaskDeadLetterSnapshot>,
-    replayed_events: Vec<TaskReplaySnapshot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TaskLogSnapshot {
-    sequence: u64,
-    level: String,
-    message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TaskDeadLetterSnapshot {
-    event_id: String,
-    topic: String,
-    reason_kind: String,
-    reason: String,
-    replay_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TaskReplaySnapshot {
-    event_id: String,
-    sequence: u64,
-    topic: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2495,349 +2459,42 @@ impl ValidationReport {
     }
 }
 
-impl TaskSnapshot {
-    fn from_report(report: &BasicRunReport) -> Self {
-        Self {
-            task_id: report.task.task_id.as_str().to_owned(),
-            status: report.task.status.as_str().to_owned(),
-            attempts: report.task.attempts,
-            retry_max_attempts: report.task.retry_policy.max_attempts,
-            cancel_requested: report.task.cancellation.requested,
-            cancel_accepted: report.task.cancellation.accepted,
-            cancel_reason: report.task.cancellation.reason.clone(),
-            error_kind: report
-                .task
-                .error
-                .as_ref()
-                .map(|error| error.kind().as_str().to_owned()),
-            error_message: report
-                .task
-                .error
-                .as_ref()
-                .map(|error| error.message().to_owned()),
-            logs: report.task.logs.iter().map(TaskLogSnapshot::from).collect(),
-            dead_letters: report
-                .task
-                .dead_letters
-                .iter()
-                .map(|entry| TaskDeadLetterSnapshot {
-                    event_id: entry.event_id.clone(),
-                    topic: entry.topic.clone(),
-                    reason_kind: entry.reason_kind.clone(),
-                    reason: entry.reason.clone(),
-                    replay_count: entry.replay_count,
-                })
-                .collect(),
-            replayed_events: report
-                .task
-                .replayed_events
-                .iter()
-                .map(|entry| TaskReplaySnapshot {
-                    event_id: entry.event_id.clone(),
-                    sequence: entry.sequence,
-                    topic: entry.topic.clone(),
-                })
-                .collect(),
-        }
-    }
-
-    fn to_storage(&self) -> String {
-        let mut lines = vec![
-            format!("task_id={}", encode_field(&self.task_id)),
-            format!("status={}", encode_field(&self.status)),
-            format!("attempts={}", self.attempts),
-            format!("retry_max_attempts={}", self.retry_max_attempts),
-            format!("cancel_requested={}", self.cancel_requested),
-            format!("cancel_accepted={}", self.cancel_accepted),
-            format!(
-                "cancel_reason={}",
-                self.cancel_reason
-                    .as_ref()
-                    .map(|value| encode_field(value))
-                    .unwrap_or_default()
-            ),
-            format!(
-                "error_kind={}",
-                self.error_kind
-                    .as_ref()
-                    .map(|value| encode_field(value))
-                    .unwrap_or_default()
-            ),
-            format!(
-                "error_message={}",
-                self.error_message
-                    .as_ref()
-                    .map(|value| encode_field(value))
-                    .unwrap_or_default()
-            ),
-        ];
-        lines.extend(self.logs.iter().map(|entry| {
-            format!(
-                "log={}|{}|{}",
-                entry.sequence,
-                encode_field(&entry.level),
-                encode_field(&entry.message)
-            )
-        }));
-        lines.extend(self.dead_letters.iter().map(|entry| {
-            format!(
-                "dead_letter={}|{}|{}|{}|{}",
-                encode_field(&entry.event_id),
-                encode_field(&entry.topic),
-                encode_field(&entry.reason_kind),
-                encode_field(&entry.reason),
-                entry.replay_count
-            )
-        }));
-        lines.extend(self.replayed_events.iter().map(|entry| {
-            format!(
-                "replay={}|{}|{}",
-                encode_field(&entry.event_id),
-                entry.sequence,
-                encode_field(&entry.topic)
-            )
-        }));
-        lines.push(String::new());
-        lines.join("\n")
-    }
-}
-
-impl From<&TaskLogEntry> for TaskLogSnapshot {
-    fn from(entry: &TaskLogEntry) -> Self {
-        Self {
-            sequence: entry.sequence,
-            level: entry.level.as_str().to_owned(),
-            message: entry.message.clone(),
-        }
-    }
-}
-
 fn write_task_snapshot(project_root: &Path, report: &BasicRunReport) -> Result<(), EvaError> {
-    let snapshot = TaskSnapshot::from_report(report);
-    let dir = task_dir(project_root);
-    fs::create_dir_all(&dir).map_err(|error| {
-        EvaError::internal("failed to create task state directory")
-            .with_context("path", dir.display().to_string())
-            .with_context("io_error", error.to_string())
-    })?;
-    let data = snapshot.to_storage();
-    fs::write(task_path(project_root, &snapshot.task_id)?, data.as_bytes()).map_err(|error| {
-        EvaError::internal("failed to write task state")
-            .with_context("task_id", snapshot.task_id.as_str())
-            .with_context("io_error", error.to_string())
-    })?;
-    fs::write(latest_task_path(project_root), data.as_bytes()).map_err(|error| {
-        EvaError::internal("failed to write latest task state")
-            .with_context("task_id", snapshot.task_id.as_str())
-            .with_context("io_error", error.to_string())
-    })
+    let snapshot = TaskStateSnapshot::from(&report.task);
+    let mut store = FileSystemTaskStateStore::new(project_root);
+    store.write(&snapshot)
 }
 
 fn read_task_snapshot(
     project_root: &Path,
     task_id: Option<&str>,
-) -> Result<TaskSnapshot, EvaError> {
-    let path = match task_id {
-        Some(task_id) => task_path(project_root, task_id)?,
-        None => latest_task_path(project_root),
-    };
-    let data = fs::read_to_string(&path).map_err(|error| {
-        EvaError::not_found("task state does not exist")
-            .with_context("path", path.display().to_string())
-            .with_context("io_error", error.to_string())
-            .with_context("suggestion", "run `eva run --example basic` first")
-    })?;
-    parse_task_snapshot(&data)
+) -> Result<TaskStateSnapshot, EvaError> {
+    FileSystemTaskStateStore::new(project_root).read(task_id)
 }
 
 fn cancel_task_snapshot(
     project_root: &Path,
     task_id: Option<&str>,
     reason: &str,
-) -> Result<TaskSnapshot, EvaError> {
+) -> Result<TaskStateSnapshot, EvaError> {
     let mut snapshot = read_task_snapshot(project_root, task_id)?;
     snapshot.cancel_requested = true;
     snapshot.cancel_reason = Some(reason.to_owned());
-    if is_terminal_task_status(&snapshot.status) {
+    if snapshot.is_terminal() {
         snapshot.cancel_accepted = false;
-        snapshot.logs.push(TaskLogSnapshot {
-            sequence: snapshot.logs.len() as u64 + 1,
-            level: "warning".to_owned(),
-            message: "cancel requested after task reached a terminal state".to_owned(),
-        });
+        snapshot.push_log(
+            "warning",
+            "cancel requested after task reached a terminal state",
+        );
     } else {
         snapshot.cancel_accepted = true;
         snapshot.status = "cancelled".to_owned();
-        snapshot.logs.push(TaskLogSnapshot {
-            sequence: snapshot.logs.len() as u64 + 1,
-            level: "warning".to_owned(),
-            message: format!("cancel accepted: {reason}"),
-        });
+        snapshot.push_log("warning", format!("cancel accepted: {reason}"));
     }
 
-    let dir = task_dir(project_root);
-    fs::create_dir_all(&dir).map_err(|error| {
-        EvaError::internal("failed to create task state directory")
-            .with_context("path", dir.display().to_string())
-            .with_context("io_error", error.to_string())
-    })?;
-    let data = snapshot.to_storage();
-    fs::write(task_path(project_root, &snapshot.task_id)?, data.as_bytes()).map_err(|error| {
-        EvaError::internal("failed to write task state")
-            .with_context("task_id", snapshot.task_id.as_str())
-            .with_context("io_error", error.to_string())
-    })?;
-    fs::write(latest_task_path(project_root), data.as_bytes()).map_err(|error| {
-        EvaError::internal("failed to write latest task state")
-            .with_context("task_id", snapshot.task_id.as_str())
-            .with_context("io_error", error.to_string())
-    })?;
+    let mut store = FileSystemTaskStateStore::new(project_root);
+    store.write(&snapshot)?;
     Ok(snapshot)
-}
-
-fn task_dir(project_root: &Path) -> PathBuf {
-    project_root.join(".eva").join("tasks")
-}
-
-fn latest_task_path(project_root: &Path) -> PathBuf {
-    task_dir(project_root).join("latest-basic.task")
-}
-
-fn task_path(project_root: &Path, task_id: &str) -> Result<PathBuf, EvaError> {
-    eva_core::RequestId::parse(task_id)?;
-    Ok(task_dir(project_root).join(format!("{task_id}.task")))
-}
-
-fn is_terminal_task_status(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "cancelled" | "timed_out")
-}
-
-fn parse_task_snapshot(data: &str) -> Result<TaskSnapshot, EvaError> {
-    let mut snapshot = TaskSnapshot {
-        task_id: String::new(),
-        status: String::new(),
-        attempts: 0,
-        retry_max_attempts: 1,
-        cancel_requested: false,
-        cancel_accepted: false,
-        cancel_reason: None,
-        error_kind: None,
-        error_message: None,
-        logs: Vec::new(),
-        dead_letters: Vec::new(),
-        replayed_events: Vec::new(),
-    };
-
-    for line in data.lines().filter(|line| !line.trim().is_empty()) {
-        if let Some(value) = line.strip_prefix("task_id=") {
-            snapshot.task_id = decode_field(value);
-        } else if let Some(value) = line.strip_prefix("status=") {
-            snapshot.status = decode_field(value);
-        } else if let Some(value) = line.strip_prefix("attempts=") {
-            snapshot.attempts = parse_stored_usize("attempts", value)?;
-        } else if let Some(value) = line.strip_prefix("retry_max_attempts=") {
-            snapshot.retry_max_attempts = parse_stored_usize("retry_max_attempts", value)?;
-        } else if let Some(value) = line.strip_prefix("cancel_requested=") {
-            snapshot.cancel_requested = value == "true";
-        } else if let Some(value) = line.strip_prefix("cancel_accepted=") {
-            snapshot.cancel_accepted = value == "true";
-        } else if let Some(value) = line.strip_prefix("cancel_reason=") {
-            snapshot.cancel_reason = decode_optional_field(value);
-        } else if let Some(value) = line.strip_prefix("error_kind=") {
-            snapshot.error_kind = decode_optional_field(value);
-        } else if let Some(value) = line.strip_prefix("error_message=") {
-            snapshot.error_message = decode_optional_field(value);
-        } else if let Some(value) = line.strip_prefix("log=") {
-            let parts = split_stored_fields(value, 3, "log")?;
-            snapshot.logs.push(TaskLogSnapshot {
-                sequence: parse_stored_u64("log.sequence", &parts[0])?,
-                level: decode_field(&parts[1]),
-                message: decode_field(&parts[2]),
-            });
-        } else if let Some(value) = line.strip_prefix("dead_letter=") {
-            let parts = split_stored_fields(value, 5, "dead_letter")?;
-            snapshot.dead_letters.push(TaskDeadLetterSnapshot {
-                event_id: decode_field(&parts[0]),
-                topic: decode_field(&parts[1]),
-                reason_kind: decode_field(&parts[2]),
-                reason: decode_field(&parts[3]),
-                replay_count: parse_stored_usize("dead_letter.replay_count", &parts[4])?,
-            });
-        } else if let Some(value) = line.strip_prefix("replay=") {
-            let parts = split_stored_fields(value, 3, "replay")?;
-            snapshot.replayed_events.push(TaskReplaySnapshot {
-                event_id: decode_field(&parts[0]),
-                sequence: parse_stored_u64("replay.sequence", &parts[1])?,
-                topic: decode_field(&parts[2]),
-            });
-        }
-    }
-
-    if snapshot.task_id.is_empty() || snapshot.status.is_empty() {
-        return Err(EvaError::invalid_argument("task state file is incomplete"));
-    }
-    Ok(snapshot)
-}
-
-fn split_stored_fields(
-    value: &str,
-    expected: usize,
-    field: &'static str,
-) -> Result<Vec<String>, EvaError> {
-    let parts = value.split('|').map(str::to_owned).collect::<Vec<_>>();
-    if parts.len() != expected {
-        return Err(
-            EvaError::invalid_argument("task state field has invalid arity")
-                .with_context("field", field)
-                .with_context("expected", expected.to_string())
-                .with_context("actual", parts.len().to_string()),
-        );
-    }
-    Ok(parts)
-}
-
-fn parse_stored_usize(name: &'static str, value: &str) -> Result<usize, EvaError> {
-    value.parse::<usize>().map_err(|_| {
-        EvaError::invalid_argument("stored task field is not an unsigned integer")
-            .with_context("field", name)
-            .with_context("value", value)
-    })
-}
-
-fn parse_stored_u64(name: &'static str, value: &str) -> Result<u64, EvaError> {
-    value.parse::<u64>().map_err(|_| {
-        EvaError::invalid_argument("stored task field is not an unsigned integer")
-            .with_context("field", name)
-            .with_context("value", value)
-    })
-}
-
-fn decode_optional_field(value: &str) -> Option<String> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(decode_field(value))
-    }
-}
-
-fn encode_field(value: &str) -> String {
-    value
-        .replace('%', "%25")
-        .replace('\n', "%0A")
-        .replace('\r', "%0D")
-        .replace('\t', "%09")
-        .replace('|', "%7C")
-        .replace('=', "%3D")
-}
-
-fn decode_field(value: &str) -> String {
-    value
-        .replace("%0A", "\n")
-        .replace("%0D", "\r")
-        .replace("%09", "\t")
-        .replace("%7C", "|")
-        .replace("%3D", "=")
-        .replace("%25", "%")
 }
 
 fn write_validation<W: Write>(
@@ -4282,7 +3939,7 @@ fn run_report_json(report: &BasicRunReport) -> String {
         json_string(&report.runtime_mode),
         json_string(&report.generation_id),
         json_string(&report.project_root),
-        task_snapshot_json(&TaskSnapshot::from_report(report)),
+        task_snapshot_json(&TaskStateSnapshot::from(&report.task)),
         json_string(&report.event_id),
         json_string(&report.topic),
         json_string(report.receipt.event_id.as_str()),
@@ -4302,7 +3959,7 @@ fn run_report_json(report: &BasicRunReport) -> String {
 fn write_task_status<W: Write>(
     writer: &mut W,
     output: OutputFormat,
-    snapshot: &TaskSnapshot,
+    snapshot: &TaskStateSnapshot,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
     match output {
@@ -4337,7 +3994,7 @@ fn write_task_status<W: Write>(
 fn write_task_logs<W: Write>(
     writer: &mut W,
     output: OutputFormat,
-    snapshot: &TaskSnapshot,
+    snapshot: &TaskStateSnapshot,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
     match output {
@@ -4365,7 +4022,7 @@ fn write_task_logs<W: Write>(
 fn write_task_cancel<W: Write>(
     writer: &mut W,
     output: OutputFormat,
-    snapshot: &TaskSnapshot,
+    snapshot: &TaskStateSnapshot,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
     match output {
@@ -4384,7 +4041,7 @@ fn write_task_cancel<W: Write>(
     }
 }
 
-fn task_logs_json(snapshot: &TaskSnapshot) -> String {
+fn task_logs_json(snapshot: &TaskStateSnapshot) -> String {
     format!(
         "{{\"task_id\":{},\"status\":{},\"logs\":{}}}",
         json_string(&snapshot.task_id),
@@ -4393,7 +4050,7 @@ fn task_logs_json(snapshot: &TaskSnapshot) -> String {
     )
 }
 
-fn task_snapshot_json(snapshot: &TaskSnapshot) -> String {
+fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
     format!(
         "{{\"task_id\":{},\"status\":{},\"attempts\":{},\"retry_policy\":{{\"max_attempts\":{}}},\"cancellation\":{{\"requested\":{},\"accepted\":{},\"reason\":{}}},\"error\":{},\"logs\":{},\"dead_letters\":{},\"replayed_events\":{}}}",
         json_string(&snapshot.task_id),
@@ -4410,7 +4067,7 @@ fn task_snapshot_json(snapshot: &TaskSnapshot) -> String {
     )
 }
 
-fn task_error_json(snapshot: &TaskSnapshot) -> String {
+fn task_error_json(snapshot: &TaskStateSnapshot) -> String {
     match (&snapshot.error_kind, &snapshot.error_message) {
         (Some(kind), Some(message)) => format!(
             "{{\"kind\":{},\"message\":{}}}",
@@ -4421,7 +4078,7 @@ fn task_error_json(snapshot: &TaskSnapshot) -> String {
     }
 }
 
-fn task_log_json(entry: &TaskLogSnapshot) -> String {
+fn task_log_json(entry: &TaskStateLogSnapshot) -> String {
     format!(
         "{{\"sequence\":{},\"level\":{},\"message\":{}}}",
         entry.sequence,
@@ -4430,7 +4087,7 @@ fn task_log_json(entry: &TaskLogSnapshot) -> String {
     )
 }
 
-fn dead_letter_json(entry: &TaskDeadLetterSnapshot) -> String {
+fn dead_letter_json(entry: &TaskStateDeadLetterSnapshot) -> String {
     format!(
         "{{\"event_id\":{},\"topic\":{},\"reason_kind\":{},\"reason\":{},\"replay_count\":{}}}",
         json_string(&entry.event_id),
@@ -4441,7 +4098,7 @@ fn dead_letter_json(entry: &TaskDeadLetterSnapshot) -> String {
     )
 }
 
-fn replay_json(entry: &TaskReplaySnapshot) -> String {
+fn replay_json(entry: &TaskStateReplaySnapshot) -> String {
     format!(
         "{{\"event_id\":{},\"sequence\":{},\"topic\":{}}}",
         json_string(&entry.event_id),
@@ -4648,6 +4305,7 @@ fn help_text() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace_root() -> PathBuf {

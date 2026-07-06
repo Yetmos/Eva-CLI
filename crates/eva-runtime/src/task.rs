@@ -1,6 +1,9 @@
 //! V0.5 task status, log, cancellation, and replay report types.
 
 use eva_core::{EvaError, RequestId};
+use eva_storage::{
+    TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot,
+};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "task status, logs, cancellation, retry, and replay reporting";
@@ -196,6 +199,57 @@ impl TaskReport {
     pub fn cancel(&mut self, reason: impl Into<String>) {
         self.status = TaskStatus::Cancelled;
         self.cancellation = CancellationRecord::requested(reason);
+    }
+}
+
+impl From<&TaskReport> for TaskStateSnapshot {
+    fn from(report: &TaskReport) -> Self {
+        Self {
+            task_id: report.task_id.as_str().to_owned(),
+            status: report.status.as_str().to_owned(),
+            attempts: report.attempts,
+            retry_max_attempts: report.retry_policy.max_attempts,
+            cancel_requested: report.cancellation.requested,
+            cancel_accepted: report.cancellation.accepted,
+            cancel_reason: report.cancellation.reason.clone(),
+            error_kind: report
+                .error
+                .as_ref()
+                .map(|error| error.kind().as_str().to_owned()),
+            error_message: report
+                .error
+                .as_ref()
+                .map(|error| error.message().to_owned()),
+            logs: report
+                .logs
+                .iter()
+                .map(|entry| TaskStateLogSnapshot {
+                    sequence: entry.sequence,
+                    level: entry.level.as_str().to_owned(),
+                    message: entry.message.clone(),
+                })
+                .collect(),
+            dead_letters: report
+                .dead_letters
+                .iter()
+                .map(|entry| TaskStateDeadLetterSnapshot {
+                    event_id: entry.event_id.clone(),
+                    topic: entry.topic.clone(),
+                    reason_kind: entry.reason_kind.clone(),
+                    reason: entry.reason.clone(),
+                    replay_count: entry.replay_count,
+                })
+                .collect(),
+            replayed_events: report
+                .replayed_events
+                .iter()
+                .map(|entry| TaskStateReplaySnapshot {
+                    event_id: entry.event_id.clone(),
+                    sequence: entry.sequence,
+                    topic: entry.topic.clone(),
+                })
+                .collect(),
+        }
     }
 }
 

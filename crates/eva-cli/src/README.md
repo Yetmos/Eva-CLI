@@ -24,7 +24,7 @@
 - `.eva/tasks/<task-id>.task`
 - `.eva/tasks/latest-basic.task`
 
-文件内容是稳定的行式 key/value 诊断格式，只服务 CLI 本地读取；它不是公开持久化数据库格式。`task status/logs/cancel` 会读取这些文件并重新输出标准 text/JSON envelope。
+文件内容是稳定的行式 key/value 诊断格式，由 `eva-storage::FileSystemTaskStateStore` 读写；它不是公开持久化数据库格式。`task status/logs/cancel` 会读取这些文件并重新输出标准 text/JSON envelope。
 
 ## V1.1 External Capability Surface
 
