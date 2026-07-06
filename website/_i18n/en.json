@@ -262,6 +262,16 @@
         "description": "An SVG-illustrated source user manual covering installation, command surface, JSON output, exit codes, troubleshooting, and current non-goals."
       },
       {
+        "id": "project-release-plan",
+        "title": "Project Release Plan",
+        "description": "The reusable CI/DI process, platform matrix, release evidence, artifact roadmap, and repair policy."
+      },
+      {
+        "id": "version-management-plan",
+        "title": "Version Management Plan",
+        "description": "The version format, status mapping, increment rules, GitHub tag and release rules, and milestone workflow."
+      },
+      {
         "id": "v1.0-known-limitations",
         "title": "V1.0 Known Limitations",
         "description": "The supported V1.0 core scope and the advanced runtime capabilities that remain later-version work."

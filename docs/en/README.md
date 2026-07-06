@@ -63,6 +63,7 @@ Release documents track shipped checkpoints, known limits, hardening gates, and
 migration policy.
 
 - [Eva-CLI Project Release Plan](release/project-release-plan.md)
+- [Eva-CLI Version Management Plan](release/version-management-plan.md)
 - [Eva-CLI V1.0 Known Limitations](release/v1.0-known-limitations.md)
 - [Eva-CLI V1.0.0 Release Notes](release/release-notes-v1.0.0.md)
 - [Eva-CLI V1.5 Release Hardening](release/v1.5-release-hardening.md)
