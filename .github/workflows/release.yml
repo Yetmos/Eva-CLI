@@ -94,7 +94,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
       packages: write
+      attestations: write
     steps:
       - name: Checkout tag
         uses: actions/checkout@v4
@@ -185,6 +187,8 @@ jobs:
             EVA_VERSION=${{ steps.release_vars.outputs.version }}
             VCS_REF=${{ steps.release_vars.outputs.source_sha }}
             BUILD_DATE=${{ steps.release_vars.outputs.created }}
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -207,6 +211,8 @@ jobs:
             EVA_VERSION=${{ steps.release_vars.outputs.version }}
             VCS_REF=${{ steps.release_vars.outputs.source_sha }}
             BUILD_DATE=${{ steps.release_vars.outputs.created }}
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
