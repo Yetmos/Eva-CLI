@@ -11,8 +11,8 @@ Adapter/MCP/Skill/Discovery surfaces, request-scoped memory and knowledge
 context assembly, hardware binding plans, backup/lifecycle diagnostics, and
 release readiness, security, performance, migration, and compatibility checks.
 
-Current managed project version: `V1.5.0-release` (`Cargo.toml` version
-`1.5.0`, stable Git tag form `v1.5.0`). See
+Current managed project version: `V1.5.1-release` (`Cargo.toml` version
+`1.5.1`, stable Git tag form `v1.5.1`). See
 [Eva-CLI Version Management Plan](release/version-management-plan.md).
 
 Important source rule: English documents currently provide the default public
@@ -74,6 +74,7 @@ migration policy.
 - [Eva-CLI V1.5 Release Hardening](release/v1.5-release-hardening.md)
 - [Eva-CLI V1.5 Migration Guide](release/v1.5-migration-guide.md)
 - [Eva-CLI V1.5 Compatibility Policy](release/v1.5-compatibility-policy.md)
+- [Eva-CLI V1.5.1 Release Notes](release/release-notes-v1.5.1.md)
 - [Eva-CLI V1.5.0 Release Notes](release/release-notes-v1.5.0.md)
 - [Eva-CLI V1.5 GitHub Release Plan](release/v1.5-github-release-plan.md)
 - [Eva-CLI V1.5 Release Acceptance](release/v1.5-release-acceptance.md)

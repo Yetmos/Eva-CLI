@@ -739,6 +739,23 @@
       "sourceCoverage": "full-detail"
     },
     {
+      "id": "release-notes-v1.5.1",
+      "title": "Eva-CLI V1.5.1 Release Notes",
+      "source": "docs/en/release/release-notes-v1.5.1.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/release/V1.5.1发布说明.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/release/release-notes-v1.5.1.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "v1.5-github-release-plan",
       "title": "Eva-CLI V1.5 GitHub Release Plan",
       "source": "docs/en/release/v1.5-github-release-plan.md",

@@ -4,7 +4,7 @@
 
 Eva-CLI 当前已经推进到 V1.5 发布加固检查点。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载、V1.0 in-memory basic runtime、V1.1 外部能力诊断、V1.2 记忆/知识上下文、V1.3 硬件发现/probe/plan-first 绑定、V1.4 的 backup、snapshot、restore plan 和 upgrade check，以及 V1.5 的 release check/security/perf/migration。
 
-当前受管理项目版本：`V1.5.0-release`（`Cargo.toml` 版本 `1.5.0`，稳定 Git tag 形式 `v1.5.0`）。版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。
+当前受管理项目版本：`V1.5.1-release`（`Cargo.toml` 版本 `1.5.1`，稳定 Git tag 形式 `v1.5.1`）。版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。
 
 官网：
 

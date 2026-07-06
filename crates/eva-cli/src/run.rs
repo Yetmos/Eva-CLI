@@ -50,7 +50,7 @@ const EXIT_EXTERNAL_UNAVAILABLE: i32 = 5;
 const EXIT_USAGE: i32 = 64;
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "release";
-const RELEASE_LABEL: &str = "V1.5.0-release";
+const RELEASE_LABEL: &str = "V1.5.1-release";
 const RELEASE_RUNTIME_MODE: &str =
     "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5";
 const RELEASE_CONTRACTS: &[&str] = &[
@@ -1235,8 +1235,8 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
 
 fn parse_release_migration_options(args: &[String]) -> Result<ReleaseMigrationOptions, EvaError> {
     let mut passthrough = Vec::new();
-    let mut from_version = "1.4.0".to_owned();
-    let mut to_version = "1.5.0".to_owned();
+    let mut from_version = "1.5.0".to_owned();
+    let mut to_version = "1.5.1".to_owned();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -4714,15 +4714,15 @@ mod tests {
     fn version_text_and_json_report_v15_release_hardening() {
         let (text_exit, text_stdout, text_stderr) = run_cli(&["--version"]);
         assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
-        assert!(text_stdout.contains("eva 1.5.0"));
-        assert!(text_stdout.contains("V1.5.0-release"));
+        assert!(text_stdout.contains("eva 1.5.1"));
+        assert!(text_stdout.contains("V1.5.1-release"));
         assert!(text_stdout.contains("status: release"));
 
         let (json_exit, json_stdout, json_stderr) = run_cli(&["version", "--output", "json"]);
         assert_eq!(json_exit, EXIT_OK, "{json_stderr}");
         assert!(json_stdout.contains("\"command\":\"version\""));
-        assert!(json_stdout.contains("\"version\":\"1.5.0\""));
-        assert!(json_stdout.contains("\"release\":\"V1.5.0-release\""));
+        assert!(json_stdout.contains("\"version\":\"1.5.1\""));
+        assert!(json_stdout.contains("\"release\":\"V1.5.1-release\""));
         assert!(json_stdout.contains("\"status\":\"release\""));
         assert!(json_stdout.contains("release_v1.5"));
         assert!(json_stdout.contains("release check"));
@@ -4963,8 +4963,8 @@ mod tests {
             "--output",
             "json",
         ]);
-        assert!(migration_stdout.contains("\"from_version\":\"1.4.0\""));
-        assert!(migration_stdout.contains("\"to_version\":\"1.5.0\""));
+        assert!(migration_stdout.contains("\"from_version\":\"1.5.0\""));
+        assert!(migration_stdout.contains("\"to_version\":\"1.5.1\""));
         assert!(migration_stdout.contains("\"breaking_changes\":[]"));
     }
 }

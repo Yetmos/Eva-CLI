@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn migration_has_no_breaking_changes_for_v15() {
         let guide = ReleaseHardeningService::v15()
-            .migration_guide("1.4.0", "1.5.0")
+            .migration_guide("1.5.0", "1.5.1")
             .unwrap();
 
         assert_eq!(guide.status, "compatible");

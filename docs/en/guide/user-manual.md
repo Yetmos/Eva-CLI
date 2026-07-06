@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-05
 
-Applies to: Eva-CLI `1.5.0`
+Applies to: Eva-CLI `1.5.1`
 
 This manual is for developers, testers, and documentation maintainers using
 Eva-CLI from source. V1.5 is a source-release checkpoint: the repository builds,
@@ -41,7 +41,7 @@ cargo run -- --version
 Expected version output includes:
 
 ```text
-eva 1.5.0
+eva 1.5.1
 release: V1.5 release hardening
 ```
 

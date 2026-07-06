@@ -96,7 +96,7 @@ impl ReleaseHardeningService {
         let platforms = self.platforms(&target);
         let security = self.security_review();
         let performance = self.performance_baseline();
-        let migration = self.migration_guide("1.4.0", "1.5.0")?;
+        let migration = self.migration_guide("1.5.0", "1.5.1")?;
         let stability = self.stability_scenarios();
         let mut gates = self.core_gates(&platforms, &stability);
         gates.extend(security.findings.iter().map(security_gate));
@@ -114,7 +114,7 @@ impl ReleaseHardeningService {
         .to_owned();
 
         Ok(ReleaseReadinessReport {
-            version: "1.5.0".to_owned(),
+            version: "1.5.1".to_owned(),
             status,
             target,
             platforms,
@@ -130,7 +130,7 @@ impl ReleaseHardeningService {
 
     pub fn security_review(&self) -> SecurityReviewReport {
         SecurityReviewReport {
-            version: "1.5.0".to_owned(),
+            version: "1.5.1".to_owned(),
             status: "reviewed".to_owned(),
             findings: vec![
                 SecurityFinding::passed(
@@ -259,7 +259,7 @@ impl ReleaseHardeningService {
         .to_owned();
 
         PerformanceBaselineReport {
-            version: "1.5.0".to_owned(),
+            version: "1.5.1".to_owned(),
             status,
             budgets,
             audit: vec![
@@ -289,13 +289,13 @@ impl ReleaseHardeningService {
             steps: vec![
                 MigrationStep::new(
                     "build",
-                    "rebuild the workspace with version 1.5.0",
+                    "rebuild the workspace with version 1.5.1",
                     "cargo build --release",
                     false,
                 ),
                 MigrationStep::new(
                     "smoke",
-                    "run the V1.0 to V1.4 smoke commands before release hardening checks",
+                    "run the V1.0 to V1.5 smoke commands before release hardening checks",
                     "cargo run -- upgrade check --output json",
                     false,
                 ),
@@ -320,7 +320,7 @@ impl ReleaseHardeningService {
             ],
             compatibility_policy: CompatibilityPolicy::v15(),
             audit: vec![
-                "migration:v1.4_to_v1.5:no_breaking_changes".to_owned(),
+                "migration:v1.5.0_to_v1.5.1:no_breaking_changes".to_owned(),
                 "json_envelope_and_exit_codes_remain_stable".to_owned(),
             ],
         })
@@ -448,7 +448,7 @@ impl ReleaseHardeningService {
                 domain: "docs".to_owned(),
                 status: ReleaseGateStatus::Pass,
                 required: true,
-                summary: "V1.5.0-release README, version management, GitHub Packages, migration, compatibility, and release notes are part of the release surface"
+                summary: "V1.5.1-release README, version management, GitHub Packages, migration, compatibility, and release notes are part of the release surface"
                     .to_owned(),
                 evidence: vec![
                     "crates/eva-release/README.md".to_owned(),
@@ -456,7 +456,7 @@ impl ReleaseHardeningService {
                     "docs/en/release/github-packages-publishing.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
-                    "docs/en/release/release-notes-v1.5.0.md".to_owned(),
+                    "docs/en/release/release-notes-v1.5.1.md".to_owned(),
                 ],
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },

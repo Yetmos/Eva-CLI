@@ -354,7 +354,7 @@ jobs:
               `- Human version: \`${humanVersion}\``,
               `- Status: \`${status}\``,
               "- Release workflow: validates Rust workspace, website/docs, version-management rules, V1.5 release gates, and GHCR package publication before publishing.",
-              "- Artifacts: GitHub source archives, workflow release-evidence artifact, and GHCR container package when package evidence status is `published`. V1.5.0-release intentionally does not publish signed installers.",
+              "- Artifacts: GitHub source archives, workflow release-evidence artifact, and GHCR container package when package evidence status is `published`. Stable V1.5 releases intentionally do not publish signed installers.",
               ...packageLines,
             ].filter(Boolean).join("\n\n");
 

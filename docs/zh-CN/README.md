@@ -12,7 +12,7 @@ V1.5 源码发布检查点：当前仓库包含可编译 Rust workspace、可执
 [../en/README.md](../en/README.md)，当前承担默认公开入口和稳定英文 slug 的职责；
 在英文详案补齐之前，不能用英文摘要覆盖本目录中的详细架构规格。
 
-当前受管理项目版本：`V1.5.0-release`（`Cargo.toml` 版本 `1.5.0`，稳定 Git tag 形式 `v1.5.0`）。版本规则见 [版本管理方案](release/版本管理方案.md)。
+当前受管理项目版本：`V1.5.1-release`（`Cargo.toml` 版本 `1.5.1`，稳定 Git tag 形式 `v1.5.1`）。版本规则见 [版本管理方案](release/版本管理方案.md)。
 
 ## 文档分类
 
@@ -65,6 +65,7 @@ V1.5 源码发布检查点：当前仓库包含可编译 Rust workspace、可执
 - [V1.5 发布加固](release/V1.5发布加固.md)
 - [V1.5 迁移指南](release/V1.5迁移指南.md)
 - [V1.5 兼容性策略](release/V1.5兼容性策略.md)
+- [V1.5.1 发布说明](release/V1.5.1发布说明.md)
 - [V1.5 发布说明](release/V1.5发布说明.md)
 - [V1.5 GitHub 发版计划](release/V1.5-GitHub发版计划.md)
 - [V1.5 发布验收记录](release/V1.5发布验收记录.md)
