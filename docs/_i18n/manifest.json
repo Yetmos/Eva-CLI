@@ -605,7 +605,7 @@
     {
       "id": "v1.x-incomplete-feature-inventory",
       "title": "V1.x Incomplete Feature Inventory",
-      "source": "docs/zh-CN/planning/V1.x未完整实现功能清单.md",
+      "source": "docs/en/planning/v1.x-incomplete-feature-inventory.md",
       "translations": {
         "zh-CN": "docs/zh-CN/planning/V1.x未完整实现功能清单.md"
       },

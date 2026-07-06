@@ -88,6 +88,7 @@ evidence.
 - [Design Risk Review](planning/design-risk-review.md)
 - [Zero to 1.0 Roadmap](planning/zero-to-one-roadmap.md)
 - [Full Implementation Plan](planning/full-implementation-plan.md)
+- [V1.x Incomplete Feature Inventory](planning/v1.x-incomplete-feature-inventory.md)
 - [V0.1 Baseline Acceptance](planning/v0.1-baseline-acceptance.md)
 - [V0.2 Contract and Configuration Acceptance](planning/v0.2-contract-config-acceptance.md)
 
