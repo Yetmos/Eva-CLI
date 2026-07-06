@@ -178,7 +178,7 @@ Eva-CLI V1.5.1 还没有：
 | P3-004 | 为 Linux archives 增加 signed checksum/provenance bundle | `.github/workflows/release.yml` | signature verification command | Done | `d9e0498` |
 | P4-001 | 用 SHA-256 替换 lightweight artifact digest contract，同时保留旧测试意图 | `crates/eva-storage` | `cargo test -p eva-storage` | Done | `528e9f4` |
 | P4-002 | 增加 filesystem artifact store 实现 | `crates/eva-storage` | artifact round trip、digest mismatch、missing artifact tests | Done | `ab9fa98` |
-| P4-003 | 通过显式 flag 把 durable artifact store 接入 backup/snapshot/restore 命令 | `crates/eva-cli`、`crates/eva-backup` | 使用 project-local artifact directory 的 CLI smoke | In Progress | local |
+| P4-003 | 通过显式 flag 把 durable artifact store 接入 backup/snapshot/restore 命令 | `crates/eva-cli`、`crates/eva-backup` | 使用 project-local artifact directory 的 CLI smoke | Done | `d3745bf` |
 | P4-004 | 增加 durable event/task state interface | `crates/eva-storage`、`crates/eva-runtime`、`crates/eva-cli` | task status/logs 在测试中跨进程边界保留 | Planned | pending |
 | P5-001 | 增加 stdio provider runner contract 和测试 | `crates/eva-adapter` | denied command、timeout、output limit tests | Planned | pending |
 | P5-002 | 增加 HTTP provider runner contract 和测试 | `crates/eva-adapter` | URL allowlist、method denial、timeout tests | Planned | pending |
