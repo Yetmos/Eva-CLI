@@ -202,7 +202,7 @@ Status values:
 | P4-003 | Wire durable artifact store into backup/snapshot/restore commands behind explicit flags | `crates/eva-cli`, `crates/eva-backup` | CLI smoke commands with project-local artifact directory | Done | `d3745bf` |
 | P4-004 | Add durable event/task state interface | `crates/eva-storage`, `crates/eva-runtime`, `crates/eva-cli` | task status/logs survive process boundary in tests | Done | `a27b2b0` |
 | P5-001 | Add stdio provider runner contract and tests | `crates/eva-adapter` | denied command, timeout, output limit tests | Done | `0fce9eb` |
-| P5-002 | Add HTTP provider runner contract and tests | `crates/eva-adapter` | URL allowlist, method denial, timeout tests | Planned | pending |
+| P5-002 | Add HTTP provider runner contract and tests | `crates/eva-adapter` | URL allowlist, method denial, timeout tests | In Progress | local |
 | P5-003 | Add MCP process/session startup boundary | `crates/eva-mcp`, `crates/eva-adapter` | startup failure and shutdown tests | Planned | pending |
 | P5-004 | Link provider invocation audit to trace fields | `crates/eva-adapter`, `crates/eva-observability`, `crates/eva-cli` | CLI JSON includes trace/audit fields | Planned | pending |
 | P6-001 | Add restore apply command parser that refuses execution without durable stores | `crates/eva-cli` | command returns policy/runtime unavailable with stable JSON | Planned | pending |
