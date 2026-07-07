@@ -264,9 +264,19 @@ mod tests {
         let server_secret = secret.to_owned();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buffer = [0_u8; 4096];
-            let read = stream.read(&mut buffer).unwrap();
-            let request = String::from_utf8_lossy(&buffer[..read]);
+            let mut request_bytes = Vec::new();
+            let mut buffer = [0_u8; 512];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buffer[..read]);
+                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request_bytes);
             assert!(request.contains("Authorization: http-runtime-secret"));
             let body = format!("provider echoed {server_secret}");
             let response = format!(

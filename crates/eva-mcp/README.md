@@ -1,6 +1,6 @@
 # eva-mcp / MCP 协议边界
 
-更新时间：2026-07-02
+更新时间：2026-07-07
 
 ![V1.x extension module flow](../assets/eva-extension-module-flow.svg)
 
@@ -10,7 +10,7 @@
 
 | 功能域 | 当前状态 | 目标行为 |
 | --- | --- | --- |
-| Client | 骨架 | 连接已配置 MCP server，执行受 allowlist 限制的 tool/resource/prompt。 |
+| Client | 已完成 V1.8.2 | 通过受控 JSON-RPC stdio transport 连接已配置 MCP server，执行受 allowlist、timeout 和 output limit 限制的 tool 调用。 |
 | Server | 骨架 | 对外暴露 Eva 的受控工具，例如 agent invoke、adapter list。 |
 | Tool mapping | 骨架 | 将 MCP tool/resource/prompt 转成 Eva capability 或 adapter invocation。 |
 | Policy helper | 骨架 | 根据 client/server、tool name、schema、scope 生成 policy 检查输入。 |
@@ -43,20 +43,22 @@
 | 4 | V1.1 | 实现 policy helper，生成 request-level PermissionSet 或 gate 输入。 | `eva-policy` | 未授权 tool 返回 PermissionDenied。 |
 | 5 | V1.1 | 实现 server surface 初版：`agent.invoke`、`adapter.list`。 | `eva-runtime` 调用方 | server 不暴露无限 Topic 代理。 |
 | 6 | V1.1 | 接 Adapter MCP transport。 | `eva-adapter` | Adapter 调用 MCP tool 时可 audit。 |
-| 7 | V1.5 | 增加兼容性测试、schema 版本迁移、流式响应边界。 | 协议稳定后 | 不同 MCP server 版本有明确错误。 |
+| 7 | V1.8.2 | 实现 JSON-RPC client transport。 | V1.8.1 provider runner 边界 | fake MCP server tool call、blocked tool、timeout、协议错误和过大响应测试通过。 |
+| 8 | V1.8.3 | 增加 server lifecycle 和 session supervisor。 | JSON-RPC client transport | session stop 后无悬挂进程，streaming 可中止。 |
 
 ## 详细开发进度表
 
 | 文件/模块 | 具体功能 | 当前进度 | 下一步 |
 | --- | --- | --- | --- |
-| `src/lib.rs` | 模块导出 | 骨架 | re-export client、server、mapping、policy、schema。 |
-| `src/client.rs` | MCP client integration | `RESPONSIBILITY` 占位 | 定义 client trait、request/response、timeout。 |
+| `src/lib.rs` | 模块导出 | 已完成 V1.8.2 | re-export client、JSON-RPC transport、server、mapping、policy、schema。 |
+| `src/client.rs` | in-memory MCP client | 已完成 V1.1 | 保留 CLI probe 和无副作用 envelope 测试。 |
+| `src/json_rpc.rs` | MCP JSON-RPC client transport | 已完成 V1.8.2 | 后续接 session registry、streaming、auth 和兼容性矩阵。 |
 | `src/server.rs` | 受控 MCP server | `RESPONSIBILITY` 占位 | 定义 server tool surface 和 authorization hook。 |
 | `src/tool_mapping.rs` | tool/resource/prompt 映射 | `RESPONSIBILITY` 占位 | 定义 mapping table 和冲突处理。 |
 | `src/policy.rs` | MCP policy helper | `RESPONSIBILITY` 占位 | 定义 allowlist、scope、request gate 输入。 |
 | `src/schema.rs` | MCP schema 边界 | `RESPONSIBILITY` 占位 | 定义输入输出 schema 和错误 envelope。 |
 | `src/README.md` | 源码目录说明 | 简略 | 补充文件职责和进度。 |
-| 单元测试 | mapping/policy/schema | 未开始 | 覆盖未授权 tool、schema mismatch、server surface。 |
+| 单元测试 | mapping/policy/schema/JSON-RPC | 已完成 V1.8.2 | 后续增加真实 server lifecycle 和 streaming 边界。 |
 
 ## 验证计划
 
@@ -64,7 +66,8 @@
 | --- | --- | --- |
 | V1.1 | `cargo test -p eva-mcp` | schema、mapping、policy helper 可测。 |
 | V1.1 | `cargo test -p eva-adapter` | MCP transport 只调用 allowlist tool。 |
-| V1.5 | MCP compatibility tests | server/client 版本差异有稳定错误。 |
+| V1.8.2 | `cargo test -p eva-mcp -p eva-adapter` | JSON-RPC fake server、blocked tool、timeout、协议错误和 output limit 可测。 |
+| V1.8.3 | MCP lifecycle tests | server/client 版本差异、streaming 中止和 session shutdown 有稳定错误。 |
 
 ## English
 
@@ -80,7 +83,7 @@ V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on
 - `EvaMcpServerSurface::v11_minimal()` documents the first server-facing tool surface (`adapter.list`, `adapter.probe`) without opening a socket or stdio server.
 - `McpSchemaFamily` names the stable schema envelope families used by future compatibility tests.
 
-The current MCP implementation is intentionally an in-memory protocol boundary. Real MCP JSON-RPC transport, streaming responses, authentication, and compatibility matrices remain later work.
+V1.8.2 adds a controlled JSON-RPC stdio client transport. It sends `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` requests with generated request ids, blocks non-allowlisted tools before writing RPC, and maps timeout, protocol, JSON-RPC error object, and oversized-response failures into stable `EvaError`s. Streaming responses, authentication, compatibility matrices, and long-lived session supervision remain later work.
 
 ## P5 Session Boundary
 
@@ -94,7 +97,7 @@ runtime process execution:
 - Tests use a fake supervisor to cover startup failure and shutdown behavior
   without launching an external MCP server.
 - `eva-adapter` can derive this typed session config from MCP adapter
-  manifests, while current invocation still returns a controlled envelope.
+  manifests, and V1.8.2 uses it to launch stdio JSON-RPC tool calls.
 
 ## V1.1 Verification
 
@@ -115,7 +118,7 @@ V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on
 - `EvaMcpServerSurface::v11_minimal()` documents the first server-facing tool surface (`adapter.list`, `adapter.probe`) without opening a socket or stdio server.
 - `McpSchemaFamily` names the stable schema envelope families used by future compatibility tests.
 
-The current MCP implementation is intentionally an in-memory protocol boundary. Real MCP JSON-RPC transport, streaming responses, authentication, and compatibility matrices remain later work.
+V1.8.2 adds a controlled JSON-RPC stdio client transport. Streaming responses, authentication, compatibility matrices, and long-lived session supervision remain later work.
 
 ## V1.1 Verification
 

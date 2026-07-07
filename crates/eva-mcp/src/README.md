@@ -6,12 +6,13 @@
 
 - `policy.rs`: `McpAllowlist` validates tool/resource/prompt names and blocks unlisted tools.
 - `client.rs`: `InMemoryMcpClient` supports safe probe and controlled call envelopes.
+- `json_rpc.rs`: `McpJsonRpcClient` drives stdio JSON-RPC `initialize`, `tools/list`, and `tools/call` with allowlist, timeout, output-limit, and protocol-error gates.
 - `tool_mapping.rs`: `McpToolMapping` and `McpToolRegistry` provide deterministic mapping and duplicate checks.
 - `server.rs`: `EvaMcpServerSurface::v11_minimal()` documents side-effect-free server tool exposure.
 - `schema.rs`: `McpSchemaFamily` names stable envelope families for later compatibility work.
 - `session.rs`: `McpSessionConfig`, `McpSessionManager`, and `McpSessionSupervisor` define explicit MCP process startup and shutdown requests.
 
-The V1.1/P5 MCP crate is a protocol/control boundary, not a full MCP transport. It is used by `eva-adapter` and `eva-cli` to prove allowlisted, diagnosable MCP tool access and typed process lifecycle handling before real server processes are wired into default runtime invocation.
+The V1.1/P5 MCP crate started as a protocol/control boundary. V1.8.2 adds a real stdio JSON-RPC client path for adapter invocation while keeping CLI probe side-effect-free and leaving long-lived session supervision to V1.8.3.
 
 本目录承载 MCP client/server、tool mapping、policy helper 和 schema 边界。当前为骨架，V1.1 先实现受 allowlist 限制的 client/mapping 和受控 server surface。
 
@@ -21,6 +22,7 @@ The V1.1/P5 MCP crate is a protocol/control boundary, not a full MCP transport. 
 | --- | --- | --- | --- |
 | `lib.rs` | 模块导出 | 骨架 | V1.1 |
 | `client.rs` | MCP client protocol integration | 骨架 | V1.1 |
+| `json_rpc.rs` | MCP JSON-RPC stdio client transport | 已完成 | V1.8.2 |
 | `server.rs` | 受控 MCP server exposure | 骨架 | V1.1 |
 | `tool_mapping.rs` | tool/resource/prompt 到 capability 的映射 | 骨架 | V1.1 |
 | `policy.rs` | MCP policy helper | 骨架 | V1.1 |
@@ -39,7 +41,7 @@ The V1.1/P5 MCP crate is a protocol/control boundary, not a full MCP transport. 
 
 | 模块 | 具体功能 | 状态 | 下一步 |
 | --- | --- | --- | --- |
-| Client | tool/resource/prompt 调用 | 未实现 | 定义 trait 和 timeout。 |
+| Client | tool/resource/prompt 调用 | 已完成 V1.8.2 | 后续补 streaming/auth/session registry。 |
 | Server | Eva tools 暴露 | 未实现 | 先 `agent.invoke`、`adapter.list`。 |
 | Mapping | MCP 到 capability | 未实现 | 处理 schema mismatch。 |
 | Policy | allowlist 和 scope | 未实现 | 输出 request gate 输入。 |
