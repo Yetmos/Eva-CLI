@@ -54,12 +54,7 @@ mod tests {
 
     #[test]
     fn verifier_rejects_digest_mismatch() {
-        let record = ArtifactRecord {
-            key: "backup/test".to_owned(),
-            bytes: b"ok".to_vec(),
-            digest: "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df"
-                .to_owned(),
-        };
+        let record = ArtifactRecord::new("backup/test", b"ok".as_slice());
 
         let error = ManifestVerifier::verify_artifact(&record, "sha256:wrong").unwrap_err();
 

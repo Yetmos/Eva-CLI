@@ -113,12 +113,7 @@ mod tests {
     #[test]
     fn dry_run_rejects_digest_mismatch() {
         let plan = RestoreApplyPlan::new("plan-1", "backup-1", "sha256:wrong").unwrap();
-        let artifact = ArtifactRecord {
-            key: "backup/backup-1".to_owned(),
-            bytes: b"ok".to_vec(),
-            digest: "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df"
-                .to_owned(),
-        };
+        let artifact = ArtifactRecord::new("backup/backup-1", b"ok".as_slice());
 
         let error = RestoreApplyValidator.dry_run(&plan, &artifact).unwrap_err();
 
@@ -129,11 +124,7 @@ mod tests {
     fn dry_run_validates_matching_backup_artifact() {
         let digest = "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df";
         let plan = RestoreApplyPlan::new("plan-1", "backup-1", digest).unwrap();
-        let artifact = ArtifactRecord {
-            key: "backup/backup-1".to_owned(),
-            bytes: b"ok".to_vec(),
-            digest: digest.to_owned(),
-        };
+        let artifact = ArtifactRecord::new("backup/backup-1", b"ok".as_slice());
 
         let report = RestoreApplyValidator.dry_run(&plan, &artifact).unwrap();
 

@@ -16,6 +16,10 @@ pub struct ArtifactRecord {
     pub key: String,
     pub bytes: Vec<u8>,
     pub digest: String,
+    pub size_bytes: usize,
+    pub content_type: String,
+    pub retention_policy: String,
+    pub retain_until_ms: Option<u128>,
 }
 
 /// Minimal artifact store behavior retained for V0.4 module completeness.
@@ -55,6 +59,23 @@ impl FileSystemArtifactStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn put_bytes_with_metadata(
+        &mut self,
+        key: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+        content_type: impl Into<String>,
+        retention_policy: impl Into<String>,
+        retain_until_ms: Option<u128>,
+    ) -> Result<ArtifactRecord, EvaError> {
+        self.put_bytes_inner(
+            key.into(),
+            bytes.into(),
+            content_type.into(),
+            retention_policy.into(),
+            retain_until_ms,
+        )
     }
 
     pub fn try_get_bytes(&self, key: &str) -> Result<Option<ArtifactRecord>, EvaError> {
@@ -99,44 +120,26 @@ impl FileSystemArtifactStore {
             key,
             bytes,
             digest: actual_digest,
+            size_bytes: metadata.size_bytes,
+            content_type: metadata.content_type,
+            retention_policy: metadata.retention_policy,
+            retain_until_ms: metadata.retain_until_ms,
         }))
     }
-}
 
-impl ArtifactStore for InMemoryArtifactStore {
-    fn put_bytes(
+    fn put_bytes_inner(
         &mut self,
-        key: impl Into<String>,
-        bytes: impl Into<Vec<u8>>,
+        key: String,
+        bytes: Vec<u8>,
+        content_type: String,
+        retention_policy: String,
+        retain_until_ms: Option<u128>,
     ) -> Result<ArtifactRecord, EvaError> {
-        let key = key.into();
-        if key.trim().is_empty() {
-            return Err(EvaError::invalid_argument("artifact key cannot be empty"));
-        }
-        let bytes = bytes.into();
-        let record = ArtifactRecord {
-            key: key.clone(),
-            digest: sha256_digest(&bytes),
-            bytes,
-        };
-        self.records.insert(key, record.clone());
-        Ok(record)
-    }
-
-    fn get_bytes(&self, key: &str) -> Option<ArtifactRecord> {
-        self.records.get(key).cloned()
-    }
-}
-
-impl ArtifactStore for FileSystemArtifactStore {
-    fn put_bytes(
-        &mut self,
-        key: impl Into<String>,
-        bytes: impl Into<Vec<u8>>,
-    ) -> Result<ArtifactRecord, EvaError> {
-        let key = validate_filesystem_artifact_key(key.into())?;
-        let bytes = bytes.into();
+        let key = validate_filesystem_artifact_key(key)?;
+        let content_type = validate_content_type(content_type)?;
+        let retention_policy = validate_retention_policy(retention_policy)?;
         let digest = sha256_digest(&bytes);
+        let size_bytes = bytes.len();
         let artifact_path = keyed_path(&self.root.join("objects"), &key, "artifact");
         let metadata_path = keyed_path(&self.root.join("metadata"), &key, "metadata");
 
@@ -164,18 +167,87 @@ impl ArtifactStore for FileSystemArtifactStore {
                 error,
             )
         })?;
-        fs::write(&metadata_path, metadata_payload(&key, &digest, bytes.len())).map_err(
-            |error| {
-                filesystem_error(
-                    "failed to write artifact metadata",
-                    &key,
-                    &metadata_path,
-                    error,
-                )
-            },
-        )?;
+        let metadata = ArtifactMetadata {
+            key: key.clone(),
+            digest: digest.clone(),
+            size_bytes,
+            content_type: content_type.clone(),
+            retention_policy: retention_policy.clone(),
+            retain_until_ms,
+        };
+        fs::write(&metadata_path, metadata.to_storage()).map_err(|error| {
+            filesystem_error(
+                "failed to write artifact metadata",
+                &key,
+                &metadata_path,
+                error,
+            )
+        })?;
 
-        Ok(ArtifactRecord { key, bytes, digest })
+        Ok(ArtifactRecord {
+            key,
+            bytes,
+            digest,
+            size_bytes,
+            content_type,
+            retention_policy,
+            retain_until_ms,
+        })
+    }
+}
+
+impl ArtifactRecord {
+    pub fn new(key: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
+        let key = key.into();
+        let bytes = bytes.into();
+        let digest = sha256_digest(&bytes);
+        let size_bytes = bytes.len();
+        Self {
+            key,
+            bytes,
+            digest,
+            size_bytes,
+            content_type: default_content_type(),
+            retention_policy: default_retention_policy(),
+            retain_until_ms: None,
+        }
+    }
+}
+
+impl ArtifactStore for InMemoryArtifactStore {
+    fn put_bytes(
+        &mut self,
+        key: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Result<ArtifactRecord, EvaError> {
+        let key = key.into();
+        if key.trim().is_empty() {
+            return Err(EvaError::invalid_argument("artifact key cannot be empty"));
+        }
+        let bytes = bytes.into();
+        let record = ArtifactRecord::new(key.clone(), bytes);
+        self.records.insert(key, record.clone());
+        Ok(record)
+    }
+
+    fn get_bytes(&self, key: &str) -> Option<ArtifactRecord> {
+        self.records.get(key).cloned()
+    }
+}
+
+impl ArtifactStore for FileSystemArtifactStore {
+    fn put_bytes(
+        &mut self,
+        key: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Result<ArtifactRecord, EvaError> {
+        self.put_bytes_inner(
+            key.into(),
+            bytes.into(),
+            default_content_type(),
+            default_retention_policy(),
+            None,
+        )
     }
 
     fn get_bytes(&self, key: &str) -> Option<ArtifactRecord> {
@@ -188,6 +260,9 @@ struct ArtifactMetadata {
     key: String,
     digest: String,
     size_bytes: usize,
+    content_type: String,
+    retention_policy: String,
+    retain_until_ms: Option<u128>,
 }
 
 fn sha256_digest(bytes: &[u8]) -> String {
@@ -243,8 +318,41 @@ fn keyed_path(root: &Path, key: &str, extension: &str) -> PathBuf {
     path
 }
 
-fn metadata_payload(key: &str, digest: &str, size_bytes: usize) -> String {
-    format!("key={key}\ndigest={digest}\nsize_bytes={size_bytes}\n")
+fn default_content_type() -> String {
+    "application/octet-stream".to_owned()
+}
+
+fn default_retention_policy() -> String {
+    "retain".to_owned()
+}
+
+fn validate_content_type(value: String) -> Result<String, EvaError> {
+    if value.trim().is_empty()
+        || value.trim() != value
+        || !value.contains('/')
+        || value.chars().any(char::is_control)
+    {
+        return Err(
+            EvaError::invalid_argument("artifact content type is invalid")
+                .with_context("content_type", value),
+        );
+    }
+    Ok(value)
+}
+
+fn validate_retention_policy(value: String) -> Result<String, EvaError> {
+    if value.trim().is_empty()
+        || value.trim() != value
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(
+            EvaError::invalid_argument("artifact retention policy is invalid")
+                .with_context("retention_policy", value),
+        );
+    }
+    Ok(value)
 }
 
 fn read_metadata(path: &Path, key: &str) -> Result<ArtifactMetadata, EvaError> {
@@ -264,14 +372,19 @@ fn read_metadata(path: &Path, key: &str) -> Result<ArtifactMetadata, EvaError> {
 }
 
 fn parse_metadata(data: &str) -> Result<ArtifactMetadata, EvaError> {
+    let mut version = None;
     let mut key = None;
     let mut digest = None;
     let mut size_bytes = None;
+    let mut content_type = None;
+    let mut retention_policy = None;
+    let mut retain_until_ms = None;
     for line in data.lines() {
         let Some((name, value)) = line.split_once('=') else {
             return Err(EvaError::conflict("artifact metadata is invalid"));
         };
         match name {
+            "version" => version = Some(value.to_owned()),
             "key" => key = Some(value.to_owned()),
             "digest" => digest = Some(value.to_owned()),
             "size_bytes" => {
@@ -281,14 +394,61 @@ fn parse_metadata(data: &str) -> Result<ArtifactMetadata, EvaError> {
                         .map_err(|_| EvaError::conflict("artifact metadata is invalid"))?,
                 );
             }
+            "content_type" => content_type = Some(value.to_owned()),
+            "retention_policy" => retention_policy = Some(value.to_owned()),
+            "retain_until_ms" => {
+                retain_until_ms = if value.is_empty() {
+                    None
+                } else {
+                    Some(
+                        value
+                            .parse::<u128>()
+                            .map_err(|_| EvaError::conflict("artifact metadata is invalid"))?,
+                    )
+                };
+            }
             _ => return Err(EvaError::conflict("artifact metadata is invalid")),
         }
     }
+    if !matches!(version.as_deref(), None | Some("1") | Some("2")) {
+        return Err(EvaError::conflict(
+            "artifact metadata version is unsupported",
+        ));
+    }
+    let content_type = validate_content_type(content_type.unwrap_or_else(default_content_type))
+        .map_err(|_| {
+            EvaError::conflict("artifact metadata is invalid").with_context("field", "content_type")
+        })?;
+    let retention_policy =
+        validate_retention_policy(retention_policy.unwrap_or_else(default_retention_policy))
+            .map_err(|_| {
+                EvaError::conflict("artifact metadata is invalid")
+                    .with_context("field", "retention_policy")
+            })?;
     Ok(ArtifactMetadata {
         key: key.ok_or_else(|| EvaError::conflict("artifact metadata is invalid"))?,
         digest: digest.ok_or_else(|| EvaError::conflict("artifact metadata is invalid"))?,
         size_bytes: size_bytes.ok_or_else(|| EvaError::conflict("artifact metadata is invalid"))?,
+        content_type,
+        retention_policy,
+        retain_until_ms,
     })
+}
+
+impl ArtifactMetadata {
+    fn to_storage(&self) -> String {
+        format!(
+            "version=2\nkey={}\ndigest={}\nsize_bytes={}\ncontent_type={}\nretention_policy={}\nretain_until_ms={}\n",
+            self.key,
+            self.digest,
+            self.size_bytes,
+            self.content_type,
+            self.retention_policy,
+            self.retain_until_ms
+                .map(|value| value.to_string())
+                .unwrap_or_default()
+        )
+    }
 }
 
 fn filesystem_error(message: &str, key: &str, path: &Path, error: std::io::Error) -> EvaError {
@@ -332,6 +492,58 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_artifact_store_round_trips_metadata() {
+        let root = test_root("metadata-round-trip");
+        let mut store = FileSystemArtifactStore::new(root.path());
+
+        let record = store
+            .put_bytes_with_metadata(
+                "backup/metadata",
+                b"ok".as_slice(),
+                "application/json",
+                "retain-until",
+                Some(1_789_000_000_000),
+            )
+            .unwrap();
+        let loaded = store.try_get_bytes("backup/metadata").unwrap().unwrap();
+        let metadata_path =
+            keyed_path(&root.path().join("metadata"), "backup/metadata", "metadata");
+        let metadata = fs::read_to_string(metadata_path).unwrap();
+
+        assert_eq!(loaded, record);
+        assert_eq!(loaded.size_bytes, 2);
+        assert_eq!(loaded.content_type, "application/json");
+        assert_eq!(loaded.retention_policy, "retain-until");
+        assert_eq!(loaded.retain_until_ms, Some(1_789_000_000_000));
+        assert!(metadata.contains("version=2\n"));
+        assert!(metadata.contains("content_type=application/json\n"));
+        assert!(metadata.contains("retention_policy=retain-until\n"));
+        assert!(metadata.contains("retain_until_ms=1789000000000\n"));
+    }
+
+    #[test]
+    fn filesystem_artifact_store_reads_legacy_metadata_defaults() {
+        let root = test_root("legacy-metadata");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        let record = store.put_bytes("backup/legacy", b"ok".as_slice()).unwrap();
+        let metadata_path = keyed_path(&root.path().join("metadata"), "backup/legacy", "metadata");
+        fs::write(
+            metadata_path,
+            format!(
+                "key={}\ndigest={}\nsize_bytes={}\n",
+                record.key, record.digest, record.size_bytes
+            ),
+        )
+        .unwrap();
+
+        let loaded = store.try_get_bytes("backup/legacy").unwrap().unwrap();
+
+        assert_eq!(loaded.content_type, default_content_type());
+        assert_eq!(loaded.retention_policy, default_retention_policy());
+        assert_eq!(loaded.retain_until_ms, None);
+    }
+
+    #[test]
     fn filesystem_artifact_store_reports_digest_mismatch() {
         let root = test_root("digest-mismatch");
         let mut store = FileSystemArtifactStore::new(root.path());
@@ -340,6 +552,58 @@ mod tests {
         fs::write(artifact_path, b"changed").unwrap();
 
         let error = store.try_get_bytes("backup/tamper").unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn filesystem_artifact_store_reports_corrupt_metadata_content_type() {
+        let root = test_root("corrupt-content-type");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        let record = store
+            .put_bytes("backup/content-type", b"ok".as_slice())
+            .unwrap();
+        let metadata_path = keyed_path(
+            &root.path().join("metadata"),
+            "backup/content-type",
+            "metadata",
+        );
+        fs::write(
+            metadata_path,
+            format!(
+                "version=2\nkey={}\ndigest={}\nsize_bytes={}\ncontent_type=plain\nretention_policy=retain\nretain_until_ms=\n",
+                record.key, record.digest, record.size_bytes
+            ),
+        )
+        .unwrap();
+
+        let error = store.try_get_bytes("backup/content-type").unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn filesystem_artifact_store_reports_corrupt_metadata_retention_policy() {
+        let root = test_root("corrupt-retention-policy");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        let record = store
+            .put_bytes("backup/retention-policy", b"ok".as_slice())
+            .unwrap();
+        let metadata_path = keyed_path(
+            &root.path().join("metadata"),
+            "backup/retention-policy",
+            "metadata",
+        );
+        fs::write(
+            metadata_path,
+            format!(
+                "version=2\nkey={}\ndigest={}\nsize_bytes={}\ncontent_type=application/octet-stream\nretention_policy=retain/now\nretain_until_ms=\n",
+                record.key, record.digest, record.size_bytes
+            ),
+        )
+        .unwrap();
+
+        let error = store.try_get_bytes("backup/retention-policy").unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
     }
