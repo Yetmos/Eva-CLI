@@ -1,11 +1,11 @@
-# Eva-CLI 使用手册
+﻿# Eva-CLI 使用手册
 
 更新时间：2026-07-07
 
-适用版本：Eva-CLI `1.6.4-alpha`
+适用版本：Eva-CLI `1.6.5-alpha`
 
 本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
-V1.6.4-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
+V1.6.5-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
 EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint 和 recovery audit smoke 已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、
 plan-first 和发布门禁为主。
 
@@ -17,7 +17,7 @@ plan-first 和发布门禁为主。
 | 运行时 | `run --example basic` 提供 V1.0 in-memory basic runtime 闭环。 |
 | 外部能力 | Adapter、MCP、Skill、Discovery 当前提供受控诊断面，不启动真实 provider。 |
 | 风险动作 | 硬件绑定、恢复、升级和生命周期切换保持 plan-first，不执行 destructive apply。 |
-| 发布检查 | V1.6.4-alpha 提供 `release check/security/perf/migration` 可执行门禁。 |
+| 发布检查 | V1.6.5-alpha 提供 `release check/security/perf/migration` 可执行门禁。 |
 
 ![Eva-CLI 源码使用闭环](../../assets/eva-cli-user-manual-flow.zh-CN.svg)
 
@@ -48,8 +48,8 @@ cargo run -- --version
 预期版本输出包含：
 
 ```text
-eva 1.6.4-alpha
-release: V1.6.4-alpha
+eva 1.6.5-alpha
+release: V1.6.5-alpha
 ```
 
 ## 快速开始
@@ -62,9 +62,10 @@ release: V1.6.4-alpha
 | 工作区诊断 | `cargo run -- doctor --output json` | 检查仓库根、配置根、schema、Lua host 和 runtime builder。 |
 | 配置校验 | `cargo run -- config validate --output json` | 加载 `config/eva.yaml` 和拆分 manifest，返回配置摘要。 |
 | 查看运行时 | `cargo run -- inspect runtime --output json` | 输出 agents、adapters、capabilities、routes、policy 和 runtime 摘要。 |
+| 查看 durable backend | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | 输出 backend schema、migration status 和 pending redrive count。 |
 | 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
-| 发布门禁 | `cargo run -- release check --output json` | 输出 V1.6.4 release readiness。 |
+| 发布门禁 | `cargo run -- release check --output json` | 输出 V1.6.5 release readiness。 |
 
 文本输出适合人工查看，JSON 输出适合 CI 或脚本处理。需要稳定字段时加
 `--output json`。
@@ -76,7 +77,7 @@ release: V1.6.4-alpha
 | 版本 | `version`、`--version` | 输出版本、release label 和支持契约。 | 否 |
 | 诊断 | `doctor` | 检查 workspace、配置根、schema 和 runtime 边界。 | 否 |
 | 配置 | `config validate` | 校验 `eva.yaml`、manifest、policy、routes 和 schema。 | 否 |
-| 查看 | `inspect` | 查看项目配置、路由、策略和 runtime 摘要。 | 否 |
+| 查看 | `inspect`、`inspect durable` | 查看项目配置、路由、策略、runtime 摘要或 durable backend 诊断。 | 否 |
 | 运行 | `run --example basic` | 执行 V1.0 in-memory basic loop。 | 写 `.eva/tasks` 或 durable backend `tasks/` |
 | 任务 | `task status/logs/cancel` | 读取或标记 task 诊断。 | 只写 task 取消标记 |
 | Adapter | `adapter list/probe` | 列出或探测 manifest 派生的 Adapter handle。 | 否 |
@@ -89,7 +90,7 @@ release: V1.6.4-alpha
 | Snapshot | `snapshot create` | 创建绑定 backup manifest 的 release snapshot。 | 否 |
 | Restore | `restore plan` | 生成恢复计划，保持 `apply_allowed:false`。 | 否 |
 | Upgrade | `upgrade check` | 检查 generation、migration、drain 和 rollback readiness。 | 否 |
-| Release | `release check/security/perf/migration` | 执行 V1.6.4 发布准备、安全、性能和迁移门禁。 | 否 |
+| Release | `release check/security/perf/migration` | 执行 V1.6.5 发布准备、安全、性能和迁移门禁。 | 否 |
 
 ## 基本用法
 
@@ -219,7 +220,7 @@ cargo run -- release migration --output json
 | `release check` | 跨平台、稳定性、文档、安全、性能、迁移和兼容门禁汇总。 |
 | `release security` | policy、Lua sandbox、secret redaction、MCP allowlist、hardware 和 lifecycle 风险。 |
 | `release perf` | EventBus、Scheduler、Adapter、memory、backup 和 release check 预算。 |
-| `release migration` | V1.5.1 到 V1.6.4-alpha 的迁移步骤和兼容性策略。 |
+| `release migration` | V1.5.1 到 V1.6.5-alpha 的迁移步骤和兼容性策略。 |
 
 ## 项目结构和配置位置
 
@@ -288,7 +289,7 @@ cargo run -- release migration --output json
 
 ## 当前非目标
 
-当前 V1.6.4-alpha 不提供以下能力：
+当前 V1.6.5-alpha 不提供以下能力：
 
 - 打包安装器和签名 release artifact；
 - 真实 MCP server 或外部 provider 进程管理；

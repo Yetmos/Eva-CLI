@@ -13,7 +13,7 @@ run in local development and CI.
 | File | Responsibility |
 | --- | --- |
 | `lib.rs` | Re-exports the public release-hardening API and declares the module responsibility. |
-| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including the V1.6.4 durable recovery gate. |
+| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including the V1.6.4 durable recovery gate and V1.6.5 durable diagnostics gate. |
 | `security.rs` | Defines security severity and findings for policy, sandbox, secret, MCP, hardware, and lifecycle boundaries. |
 | `performance.rs` | Defines source-release performance budgets and the baseline report. |
 | `migration.rs` | Defines migration steps and the V1.5 compatibility policy. |

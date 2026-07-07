@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source V1.6.4-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, and recovery checkpoints."
+    "description": "Eva-CLI is an open-source V1.6.5-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, and backend diagnostics."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,7 +38,7 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "V1.6.4-alpha adds runtime recovery scanning, ack-safe event redrive checkpoints, and durable recovery audit smoke while keeping release checks executable.",
+    "runtimePanelNote": "V1.6.5-alpha adds read-only durable backend diagnostics and inspect.durable smoke while keeping recovery checks executable.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
@@ -47,14 +47,14 @@
     "progressTitle": "From architecture scaffold to the V1.6 durable runtime baseline",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.6.4-alpha durable runtime recovery checkpoint is implemented",
-    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface plus the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, restart-readable task snapshots, durable audit records, hardened artifact metadata, runtime recovery scanning, ack-safe redrive, and recovery audit smoke.",
+    "progressCurrentTitle": "V1.6.5-alpha durable diagnostics checkpoint is implemented",
+    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface plus the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, and inspect.durable diagnostics.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Add durable diagnostic commands that report backend path, schema version, migration status, and pending redrive counts.",
       "Wire scheduler backoff dispatch to durable redrive policy instead of checkpoint-only readiness.",
+      "Continue into the real Lua VM execution boundary with durable task and audit evidence available.",
       "Keep signed installers, OS packages, provenance bundles, and destructive apply gates behind later V1.10/V1.11 milestones."
     ],
     "featuredBlogEyebrow": "Recommended reading",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "Now",
-        "label": "V1.6.4-alpha durable runtime recovery checkpoint",
-        "description": "Schema-versioned durable backend layout, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanner, ack-safe redrive checkpoint, and recovery audit smoke are implemented."
+        "label": "V1.6.5-alpha durable diagnostics checkpoint",
+        "description": "Schema-versioned durable backend layout, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanner, ack-safe redrive checkpoint, recovery audit smoke, and inspect.durable diagnostics are implemented."
       },
       {
         "status": "later",
@@ -158,6 +158,11 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages Publishing",
         "description": "The GHCR delivery contract, package tags, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification for ghcr.io/yetmos/eva-cli."
+      },
+      {
+        "id": "release-notes-v1.6.5",
+        "title": "V1.6.5 Alpha Release Notes",
+        "description": "The alpha prerelease that adds durable backend diagnostics, inspect.durable JSON output, pending redrive counts, and CI/release smoke coverage."
       },
       {
         "id": "release-notes-v1.6.4",
@@ -343,6 +348,11 @@
         "description": "The JSON envelope, exit-code, command-surface, and deprecation guarantees for the V1.5 source release."
       },
       {
+        "id": "release-notes-v1.6.5",
+        "title": "V1.6.5 Alpha Release Notes",
+        "description": "The alpha prerelease that adds durable backend diagnostics, inspect.durable JSON output, pending redrive counts, and CI/release smoke coverage."
+      },
+      {
         "id": "release-notes-v1.6.4",
         "title": "V1.6.4 Alpha Release Notes",
         "description": "The alpha prerelease that adds runtime recovery scanning, ack-safe event redrive, durable recovery audit records, and the recovery release gate."
@@ -406,7 +416,7 @@
   "feedback": {
     "eyebrow": "Feedback",
     "title": "Feedback and suggestions",
-    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.6.4-alpha durable runtime recovery checkpoint, so concrete reports about command output, docs, package pulls, recovery audit evidence, and future apply-path contracts are especially useful.",
+    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.6.5-alpha durable diagnostics checkpoint, so concrete reports about command output, docs, package pulls, backend diagnostics, and future apply-path contracts are especially useful.",
     "contactLabel": "Contact email",
     "categoryLabel": "Feedback type",
     "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],

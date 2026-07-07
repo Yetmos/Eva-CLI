@@ -824,6 +824,23 @@
       "sourceCoverage": "full-detail"
     },
     {
+      "id": "release-notes-v1.6.5",
+      "title": "Eva-CLI V1.6.5 Alpha Release Notes",
+      "source": "docs/en/release/release-notes-v1.6.5.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/release/V1.6.5-alpha发布说明.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "en",
+        "path": "docs/en/release/release-notes-v1.6.5.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "release-notes-v1.6.4",
       "title": "Eva-CLI V1.6.4 Alpha Release Notes",
       "source": "docs/en/release/release-notes-v1.6.4.md",
