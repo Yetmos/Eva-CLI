@@ -12,6 +12,10 @@ use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 /// Architectural responsibility for this module.
@@ -19,13 +23,35 @@ pub const RESPONSIBILITY: &str = "execute Lua on_event handlers behind a VM adap
 
 const LUA_TIMEOUT_MARKER: &str = "eva_lua_timeout";
 const LUA_INSTRUCTION_BUDGET_MARKER: &str = "eva_lua_instruction_budget_exceeded";
+const LUA_CANCELLED_MARKER: &str = "eva_lua_cancelled";
 const DEFAULT_HOOK_INSTRUCTION_INTERVAL: u32 = 1_000;
 
+/// Shared cancellation token checked by the Lua VM hook.
+#[derive(Debug, Clone, Default)]
+pub struct LuaCancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl LuaCancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
 /// Execution limits applied inside the Lua VM boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct LuaExecutionLimits {
     pub timeout: Option<Duration>,
     pub instruction_budget: Option<u64>,
+    pub cancellation_token: Option<LuaCancellationToken>,
     pub hook_instruction_interval: u32,
 }
 
@@ -34,6 +60,7 @@ impl LuaExecutionLimits {
         Self {
             timeout: None,
             instruction_budget: None,
+            cancellation_token: None,
             hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
         }
     }
@@ -42,6 +69,7 @@ impl LuaExecutionLimits {
         Self {
             timeout: Some(timeout),
             instruction_budget: None,
+            cancellation_token: None,
             hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
         }
     }
@@ -50,12 +78,18 @@ impl LuaExecutionLimits {
         Self {
             timeout: None,
             instruction_budget: Some(instruction_budget),
+            cancellation_token: None,
             hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
         }
     }
 
     pub const fn with_instruction_budget_limit(mut self, instruction_budget: u64) -> Self {
         self.instruction_budget = Some(instruction_budget);
+        self
+    }
+
+    pub fn with_cancellation_token(mut self, cancellation_token: LuaCancellationToken) -> Self {
+        self.cancellation_token = Some(cancellation_token);
         self
     }
 
@@ -156,7 +190,7 @@ impl MluaVmAdapter {
         limits: LuaExecutionLimits,
     ) -> Result<LuaEventResult, EvaError> {
         let lua = controlled_lua()?;
-        install_execution_limits(&lua, limits)?;
+        install_execution_limits(&lua, &limits)?;
         let root = lua.create_table().map_err(map_host_setup_error)?;
         lua.globals()
             .set("root", root)
@@ -165,14 +199,14 @@ impl MluaVmAdapter {
         let chunk = lua.load(script.source()).set_name("eva-agent-script");
         let loaded = chunk
             .eval::<Value>()
-            .map_err(|error| map_load_error(error, limits))?;
+            .map_err(|error| map_load_error(error, &limits))?;
         let handler = on_event_handler(&lua, loaded)?;
         let observations = Rc::new(RefCell::new(Vec::new()));
         let event_table = event_table(&lua, event)?;
         let ctx_table = ctx_table(&lua, event, ctx, Rc::clone(&observations), tool_host)?;
         let result = handler
             .call::<_, Value>((event_table, ctx_table))
-            .map_err(|error| map_handler_error(error, limits))?;
+            .map_err(|error| map_handler_error(error, &limits))?;
 
         let mut event_result =
             result_table(result).and_then(|table| lua_result(table, event, ctx))?;
@@ -193,17 +227,27 @@ fn controlled_lua() -> Result<Lua, EvaError> {
     Ok(lua)
 }
 
-fn install_execution_limits(lua: &Lua, limits: LuaExecutionLimits) -> Result<(), EvaError> {
-    if limits.timeout.is_none() && limits.instruction_budget.is_none() {
+fn install_execution_limits(lua: &Lua, limits: &LuaExecutionLimits) -> Result<(), EvaError> {
+    if limits.timeout.is_none()
+        && limits.instruction_budget.is_none()
+        && limits.cancellation_token.is_none()
+    {
         return Ok(());
     }
     let deadline = limits.timeout.map(|timeout| Instant::now() + timeout);
     let instruction_budget = limits.instruction_budget;
+    let cancellation_token = limits.cancellation_token.clone();
     let interval = limits.hook_instruction_interval.max(1);
     let observed_instructions = Rc::new(Cell::new(0_u64));
     lua.set_hook(
         HookTriggers::new().every_nth_instruction(interval),
         move |_, _| {
+            if cancellation_token
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled())
+            {
+                return Err(mlua::Error::RuntimeError(LUA_CANCELLED_MARKER.to_owned()));
+            }
             let next_instructions = observed_instructions
                 .get()
                 .saturating_add(u64::from(interval));
@@ -222,7 +266,7 @@ fn install_execution_limits(lua: &Lua, limits: LuaExecutionLimits) -> Result<(),
     Ok(())
 }
 
-fn lua_timeout_error(limits: LuaExecutionLimits) -> EvaError {
+fn lua_timeout_error(limits: &LuaExecutionLimits) -> EvaError {
     let timeout_ms = if let Some(timeout) = limits.timeout {
         timeout.as_millis().to_string()
     } else {
@@ -234,7 +278,7 @@ fn lua_timeout_error(limits: LuaExecutionLimits) -> EvaError {
         .with_context("timeout_ms", timeout_ms)
 }
 
-fn lua_instruction_budget_error(limits: LuaExecutionLimits) -> EvaError {
+fn lua_instruction_budget_error(limits: &LuaExecutionLimits) -> EvaError {
     let instruction_budget = limits
         .instruction_budget
         .map(|budget| budget.to_string())
@@ -243,6 +287,13 @@ fn lua_instruction_budget_error(limits: LuaExecutionLimits) -> EvaError {
         .with_provider_code("lua_instruction_budget_exceeded")
         .with_context("lua_phase", "handler")
         .with_context("instruction_budget", instruction_budget)
+}
+
+fn lua_cancelled_error() -> EvaError {
+    EvaError::conflict("Lua on_event was cancelled")
+        .with_provider_code("lua_cancelled")
+        .with_retryable(false)
+        .with_context("lua_phase", "handler")
 }
 
 fn is_lua_timeout_error(error: &mlua::Error) -> bool {
@@ -257,6 +308,14 @@ fn is_lua_instruction_budget_error(error: &mlua::Error) -> bool {
     match error {
         mlua::Error::RuntimeError(message) => message == LUA_INSTRUCTION_BUDGET_MARKER,
         mlua::Error::CallbackError { cause, .. } => is_lua_instruction_budget_error(cause),
+        _ => false,
+    }
+}
+
+fn is_lua_cancelled_error(error: &mlua::Error) -> bool {
+    match error {
+        mlua::Error::RuntimeError(message) => message == LUA_CANCELLED_MARKER,
+        mlua::Error::CallbackError { cause, .. } => is_lua_cancelled_error(cause),
         _ => false,
     }
 }
@@ -762,7 +821,10 @@ fn map_host_setup_error(_: mlua::Error) -> EvaError {
         .with_context("lua_phase", "host_setup")
 }
 
-fn map_load_error(error: mlua::Error, limits: LuaExecutionLimits) -> EvaError {
+fn map_load_error(error: mlua::Error, limits: &LuaExecutionLimits) -> EvaError {
+    if is_lua_cancelled_error(&error) {
+        return lua_cancelled_error().with_context("lua_phase", "load");
+    }
     if is_lua_instruction_budget_error(&error) {
         return lua_instruction_budget_error(limits).with_context("lua_phase", "load");
     }
@@ -781,7 +843,10 @@ fn map_load_error(error: mlua::Error, limits: LuaExecutionLimits) -> EvaError {
     }
 }
 
-fn map_handler_error(error: mlua::Error, limits: LuaExecutionLimits) -> EvaError {
+fn map_handler_error(error: mlua::Error, limits: &LuaExecutionLimits) -> EvaError {
+    if is_lua_cancelled_error(&error) {
+        return lua_cancelled_error();
+    }
     if is_lua_instruction_budget_error(&error) {
         return lua_instruction_budget_error(limits);
     }

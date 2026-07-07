@@ -13,8 +13,8 @@ use eva_core::{
 };
 use eva_eventbus::{DeadLetterRecord, EventBus, EventReceipt, InMemoryEventBus};
 use eva_lua_host::{
-    LuaEventResult, LuaExecutionLimits, LuaGeneration, LuaHost, LuaHostContext, LuaHostObservation,
-    LuaScript,
+    LuaCancellationToken, LuaEventResult, LuaExecutionLimits, LuaGeneration, LuaHost,
+    LuaHostContext, LuaHostObservation, LuaScript,
 };
 use eva_observability::{AuditAction, AuditSink, InMemoryAuditSink};
 use eva_scheduler::{DeliveryMode, DeliveryPlan, MailboxRegistry, RoutingRule, SubscriptionTable};
@@ -146,7 +146,7 @@ pub fn run_basic(
                     event,
                     &LuaHostContext::new(agent_id.clone()),
                     Rc::clone(&lua_tool_host),
-                    lua_limits,
+                    lua_limits.clone(),
                 )?;
                 record_lua_observability(
                     &mut lua_audit_sink,
@@ -299,10 +299,16 @@ fn agent_control(options: &BasicRunOptions) -> AgentRunControl {
 }
 
 fn lua_execution_limits(options: &BasicRunOptions) -> LuaExecutionLimits {
-    options
+    let mut limits = options
         .timeout_ms
         .map(|timeout_ms| LuaExecutionLimits::with_timeout(Duration::from_millis(timeout_ms)))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if options.cancel_requested {
+        let token = LuaCancellationToken::new();
+        token.cancel();
+        limits = limits.with_cancellation_token(token);
+    }
+    limits
 }
 
 fn dead_letter_summaries(records: &[DeadLetterRecord]) -> Vec<DeadLetterSummary> {

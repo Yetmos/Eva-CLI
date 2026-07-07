@@ -249,13 +249,16 @@ fn extract_string(source: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LuaCancellationToken;
     use eva_capability::{
         CapabilityDescriptor, CapabilityHostApi, CapabilityRegistry, CapabilityRouter,
     };
     use eva_core::{
-        CapabilityId, CapabilityName, EventId, EventPayload, GenerationId, RequestId, TraceContext,
+        CapabilityId, CapabilityName, EventId, EventPayload, GenerationId, InvokeRequest,
+        InvokeResponse, RequestId, TraceContext,
     };
     use eva_observability::AuditAction;
+    use std::cell::Cell;
     use std::rc::Rc;
 
     fn event() -> Event {
@@ -264,6 +267,35 @@ mod tests {
             Topic::parse("/input/user").unwrap(),
             EventPayload::text("hello"),
         )
+    }
+
+    struct CancellingToolHost {
+        token: LuaCancellationToken,
+        calls: Cell<u64>,
+    }
+
+    impl CancellingToolHost {
+        fn new(token: LuaCancellationToken) -> Self {
+            Self {
+                token,
+                calls: Cell::new(0),
+            }
+        }
+
+        fn calls(&self) -> u64 {
+            self.calls.get()
+        }
+    }
+
+    impl CapabilityHostApi for CancellingToolHost {
+        fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
+            self.calls.set(self.calls.get() + 1);
+            self.token.cancel();
+            Ok(InvokeResponse::completed(
+                request.request_id().clone(),
+                eva_core::InvokeOutput::text("cancelled after first call"),
+            ))
+        }
     }
 
     #[test]
@@ -667,6 +699,39 @@ return root
             .entries()
             .iter()
             .any(|(key, value)| key == "instruction_budget" && value == "10"));
+    }
+
+    #[test]
+    fn on_event_cancellation_token_stops_before_second_tool_call() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  ctx.tools.call("runtime.echo", "first")
+  while true do
+  end
+  ctx.tools.call("runtime.echo", "second")
+  return { status = "unreachable" }
+end
+
+return root
+"#,
+        );
+        let token = LuaCancellationToken::new();
+        let tool_host = Rc::new(CancellingToolHost::new(token.clone()));
+        let limits = LuaExecutionLimits::none()
+            .with_cancellation_token(token)
+            .with_hook_instruction_interval(1);
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+
+        let error = LuaHost::new()
+            .run_on_event_with_tools_and_limits(&script, &event(), &ctx, tool_host.clone(), limits)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(error.provider_code().unwrap().as_str(), "lua_cancelled");
+        assert_eq!(tool_host.calls(), 1);
     }
 
     #[test]
