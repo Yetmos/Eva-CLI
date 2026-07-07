@@ -233,6 +233,7 @@ dependencies = [
 name = "eva-lua-host"
 version = "1.7.1-alpha"
 dependencies = [
+ "eva-capability",
  "eva-config",
  "eva-core",
  "eva-memory",

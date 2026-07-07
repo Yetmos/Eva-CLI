@@ -19,6 +19,7 @@ use eva_observability::{AuditAction, AuditSink, InMemoryAuditSink};
 use eva_scheduler::{DeliveryMode, DeliveryPlan, MailboxRegistry, RoutingRule, SubscriptionTable};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 /// Runtime input for the built-in V1.0 basic example.
@@ -123,6 +124,7 @@ pub fn run_basic(
     let mut lua_results = Vec::new();
     let mut lua_observability = Vec::new();
     let mut lua_audit_sink = InMemoryAuditSink::default();
+    let lua_tool_host: Rc<dyn CapabilityHostApi> = Rc::new(CapabilityRouter::with_v04_builtins());
 
     for delivery in &deliveries {
         let delivered_event = mailboxes
@@ -137,10 +139,11 @@ pub fn run_basic(
         let control = agent_control(&options);
         let record = agent
             .run_next_with_control(control, |agent_id, event| {
-                let result = lua_host.run_on_event(
+                let result = lua_host.run_on_event_with_tools(
                     &script,
                     event,
                     &LuaHostContext::new(agent_id.clone()),
+                    Rc::clone(&lua_tool_host),
                 )?;
                 record_lua_observability(
                     &mut lua_audit_sink,
@@ -436,10 +439,11 @@ mod tests {
             report.agent_runs[0].handler_status.as_deref(),
             Some("accepted")
         );
-        assert_eq!(
-            report.lua_results[0].capability.as_ref().unwrap().as_str(),
-            "config.lint"
-        );
+        assert!(report.lua_results[0].capability.is_none());
+        assert!(report.lua_results[0]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("tool=completed") && note.contains("valid")));
         assert_eq!(report.task.status, TaskStatus::Completed);
         assert_eq!(report.task.attempts, 1);
         assert_eq!(report.lua_generation.script_count, 1);
@@ -464,7 +468,7 @@ mod tests {
             .logs
             .iter()
             .any(|entry| entry.message.contains("lua host log")));
-        assert!(report.capability_response.unwrap().is_success());
+        assert!(report.capability_response.is_none());
     }
 
     #[test]

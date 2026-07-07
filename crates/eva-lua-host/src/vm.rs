@@ -2,10 +2,15 @@
 
 use crate::bindings::{LuaEventResult, LuaHostContext, LuaHostObservation};
 use crate::loader::LuaScript;
-use eva_core::{AgentId, CapabilityName, EvaError, Event, Topic};
+use eva_capability::CapabilityHostApi;
+use eva_core::{
+    AgentId, CapabilityName, EvaError, Event, InvokeInput, InvokeRequest, InvokeStatus,
+    InvokeTarget, RequestId, Topic, TraceContext,
+};
 use eva_observability::{AuditAction, TraceFields};
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 /// Architectural responsibility for this module.
@@ -19,6 +24,17 @@ pub trait LuaVmAdapter {
         event: &Event,
         ctx: &LuaHostContext,
     ) -> Result<LuaEventResult, EvaError>;
+
+    fn run_on_event_with_tools(
+        &self,
+        script: &LuaScript,
+        event: &Event,
+        ctx: &LuaHostContext,
+        tool_host: Rc<dyn CapabilityHostApi>,
+    ) -> Result<LuaEventResult, EvaError> {
+        let _ = tool_host;
+        self.run_on_event(script, event, ctx)
+    }
 }
 
 /// `mlua`-backed VM adapter used by the V1.7.1 execution boundary.
@@ -32,6 +48,28 @@ impl LuaVmAdapter for MluaVmAdapter {
         event: &Event,
         ctx: &LuaHostContext,
     ) -> Result<LuaEventResult, EvaError> {
+        self.run_on_event_inner(script, event, ctx, None)
+    }
+
+    fn run_on_event_with_tools(
+        &self,
+        script: &LuaScript,
+        event: &Event,
+        ctx: &LuaHostContext,
+        tool_host: Rc<dyn CapabilityHostApi>,
+    ) -> Result<LuaEventResult, EvaError> {
+        self.run_on_event_inner(script, event, ctx, Some(tool_host))
+    }
+}
+
+impl MluaVmAdapter {
+    fn run_on_event_inner(
+        &self,
+        script: &LuaScript,
+        event: &Event,
+        ctx: &LuaHostContext,
+        tool_host: Option<Rc<dyn CapabilityHostApi>>,
+    ) -> Result<LuaEventResult, EvaError> {
         let lua = controlled_lua()?;
         let root = lua.create_table().map_err(map_host_setup_error)?;
         lua.globals()
@@ -43,7 +81,7 @@ impl LuaVmAdapter for MluaVmAdapter {
         let handler = on_event_handler(&lua, loaded)?;
         let observations = Rc::new(RefCell::new(Vec::new()));
         let event_table = event_table(&lua, event)?;
-        let ctx_table = ctx_table(&lua, event, ctx, Rc::clone(&observations))?;
+        let ctx_table = ctx_table(&lua, event, ctx, Rc::clone(&observations), tool_host)?;
         let result = handler
             .call::<_, Value>((event_table, ctx_table))
             .map_err(map_handler_error)?;
@@ -131,6 +169,7 @@ fn ctx_table<'lua>(
     event: &Event,
     ctx: &LuaHostContext,
     observations: Rc<RefCell<Vec<LuaHostObservation>>>,
+    tool_host: Option<Rc<dyn CapabilityHostApi>>,
 ) -> Result<Table<'lua>, EvaError> {
     readonly_table(lua, |table| {
         table
@@ -138,6 +177,9 @@ fn ctx_table<'lua>(
             .map_err(map_host_setup_error)?;
         table
             .set("host", host_table(lua, event, ctx, observations)?)
+            .map_err(map_host_setup_error)?;
+        table
+            .set("tools", tools_table(lua, event, ctx, tool_host)?)
             .map_err(map_host_setup_error)?;
         table
             .set("request", request_table(lua, event)?)
@@ -163,6 +205,202 @@ fn ctx_table<'lua>(
             .map_err(map_host_setup_error)?;
         Ok(())
     })
+}
+
+fn tools_table<'lua>(
+    lua: &'lua Lua,
+    event: &Event,
+    ctx: &LuaHostContext,
+    tool_host: Option<Rc<dyn CapabilityHostApi>>,
+) -> Result<Table<'lua>, EvaError> {
+    readonly_table(lua, |table| {
+        let Some(tool_host) = tool_host.clone() else {
+            let call_fn = lua
+                .create_function(|_, (_capability, _input): (String, Value<'_>)| {
+                    Err::<Value<'_>, _>(mlua::Error::RuntimeError(
+                        "ctx.tools.call requires a configured CapabilityHostApi".to_owned(),
+                    ))
+                })
+                .map_err(map_host_setup_error)?;
+            table.set("call", call_fn).map_err(map_host_setup_error)?;
+            return Ok(());
+        };
+
+        let request_prefix = event
+            .metadata()
+            .request_id()
+            .map(|request_id| request_id.as_str().to_owned())
+            .unwrap_or_else(|| event.event_id().as_str().to_owned());
+        let trace = trace_fields(event, ctx);
+        let caller = ctx.agent_id.clone();
+        let call_index = Rc::new(RefCell::new(0_u64));
+        let call_fn = lua
+            .create_function(move |lua, (capability, input): (String, Value<'_>)| {
+                let capability = CapabilityName::parse(&capability).map_err(map_tool_error)?;
+                let request_suffix = {
+                    let mut call_index = call_index.borrow_mut();
+                    *call_index += 1;
+                    *call_index
+                };
+                let request = InvokeRequest::new(
+                    RequestId::parse(&format!(
+                        "{}:lua-tool:{}:{}",
+                        request_prefix,
+                        request_suffix,
+                        capability.as_str()
+                    ))
+                    .map_err(map_tool_error)?,
+                    InvokeTarget::Capability(capability),
+                    InvokeInput::text(lua_value_to_json(input).map_err(map_tool_error)?),
+                )
+                .with_metadata(
+                    eva_core::InvokeMetadata::new()
+                        .with_trace(trace_to_core_trace(&trace))
+                        .with_caller(caller.clone()),
+                );
+                let response = tool_host.invoke(request).map_err(map_tool_error)?;
+                tool_response_table(lua, &response)
+            })
+            .map_err(map_host_setup_error)?;
+        table.set("call", call_fn).map_err(map_host_setup_error)?;
+        Ok(())
+    })
+}
+
+fn trace_to_core_trace(trace: &TraceFields) -> TraceContext {
+    TraceContext::new(trace.correlation_id.clone(), trace.causation_id.clone())
+}
+
+fn lua_value_to_json(value: Value<'_>) -> Result<String, EvaError> {
+    match value {
+        Value::Nil => Ok("null".to_owned()),
+        Value::Boolean(value) => Ok(value.to_string()),
+        Value::Integer(value) => Ok(value.to_string()),
+        Value::Number(value) if value.is_finite() => Ok(value.to_string()),
+        Value::Number(_) => Err(json_value_error("number must be finite")),
+        Value::String(value) => Ok(value
+            .to_str()
+            .map(json_string)
+            .map_err(map_lua_value_error)?),
+        Value::Table(table) => lua_table_to_json(table),
+        _ => Err(json_value_error(
+            "value must be nil, boolean, number, string, array, or object",
+        )),
+    }
+}
+
+fn lua_table_to_json(table: Table<'_>) -> Result<String, EvaError> {
+    let mut array_entries = BTreeMap::new();
+    let mut object_entries = Vec::new();
+
+    for pair in table.pairs::<Value<'_>, Value<'_>>() {
+        let (key, value) = pair.map_err(map_lua_value_error)?;
+        let value = lua_value_to_json(value)?;
+        match key {
+            Value::Integer(index) if index > 0 => {
+                if array_entries.insert(index, value).is_some() {
+                    return Err(json_value_error("array indexes must be unique"));
+                }
+            }
+            Value::String(key) => object_entries.push((
+                key.to_str()
+                    .map(|value| value.to_string())
+                    .map_err(map_lua_value_error)?,
+                value,
+            )),
+            _ => {
+                return Err(json_value_error(
+                    "object keys must be strings and array keys must be positive integers",
+                ))
+            }
+        }
+    }
+
+    if !array_entries.is_empty() && !object_entries.is_empty() {
+        return Err(json_value_error("table cannot mix array and object keys"));
+    }
+
+    if !array_entries.is_empty() {
+        let expected_len = array_entries.len() as i64;
+        if array_entries.keys().copied().ne(1..=expected_len) {
+            return Err(json_value_error("array indexes must be contiguous from 1"));
+        }
+        return Ok(format!(
+            "[{}]",
+            array_entries.into_values().collect::<Vec<_>>().join(",")
+        ));
+    }
+
+    object_entries.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(format!(
+        "{{{}}}",
+        object_entries
+            .into_iter()
+            .map(|(key, value)| format!("{}:{}", json_string(&key), value))
+            .collect::<Vec<_>>()
+            .join(",")
+    ))
+}
+
+fn tool_response_table<'lua>(
+    lua: &'lua Lua,
+    response: &eva_core::InvokeResponse,
+) -> mlua::Result<Table<'lua>> {
+    let table = lua.create_table()?;
+    table.set("request_id", response.request_id().as_str())?;
+    table.set("status", invoke_status(response.status()))?;
+    table.set("ok", response.is_success())?;
+    if let Some(output) = response.output().and_then(|output| output.as_text()) {
+        table.set("output", output)?;
+    } else {
+        table.set("output", Value::Nil)?;
+    }
+    if let Some(error) = response.error() {
+        table.set("error", error.message())?;
+        table.set("error_kind", error.kind().as_str())?;
+    } else {
+        table.set("error", Value::Nil)?;
+        table.set("error_kind", Value::Nil)?;
+    }
+    Ok(table)
+}
+
+fn invoke_status(status: InvokeStatus) -> &'static str {
+    match status {
+        InvokeStatus::Accepted => "accepted",
+        InvokeStatus::Completed => "completed",
+        InvokeStatus::Failed => "failed",
+        InvokeStatus::Cancelled => "cancelled",
+        InvokeStatus::Timeout => "timeout",
+    }
+}
+
+fn json_string(value: &str) -> String {
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            value if value.is_control() => output.push_str(&format!("\\u{:04x}", value as u32)),
+            value => output.push(value),
+        }
+    }
+    output.push('"');
+    output
+}
+
+fn json_value_error(message: impl Into<String>) -> EvaError {
+    EvaError::invalid_argument(message)
+        .with_provider_code("lua_tool_json_error")
+        .with_context("lua_phase", "tool_call")
+}
+
+fn map_lua_value_error(_: mlua::Error) -> EvaError {
+    json_value_error("Lua value could not be converted to JSON")
 }
 
 fn host_table<'lua>(
@@ -385,6 +623,10 @@ fn map_handler_error(_: mlua::Error) -> EvaError {
     EvaError::internal("Lua on_event runtime error")
         .with_provider_code("lua_runtime_error")
         .with_context("lua_phase", "handler")
+}
+
+fn map_tool_error(error: EvaError) -> mlua::Error {
+    mlua::Error::RuntimeError(format!("Eva tool call failed: {}", error.message()))
 }
 
 fn map_result_error(_: mlua::Error) -> EvaError {

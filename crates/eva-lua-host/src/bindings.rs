@@ -3,9 +3,11 @@
 use crate::loader::LuaScript;
 use crate::sandbox::LuaSandboxPolicy;
 use crate::vm::{LuaVmAdapter, MluaVmAdapter};
+use eva_capability::CapabilityHostApi;
 use eva_core::{AgentId, CapabilityName, EvaError, Event, Topic};
 use eva_memory::LuaContextSnapshot;
 use eva_observability::{AuditAction, AuditEvent, AuditOutcome, TraceFields};
+use std::rc::Rc;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "typed host API bindings exposed to Lua";
@@ -71,6 +73,26 @@ impl<A: LuaVmAdapter> LuaHost<A> {
     ) -> Result<LuaEventResult, EvaError> {
         self.sandbox.validate(script)?;
         match self.vm.run_on_event(script, event, ctx) {
+            Ok(result) => Ok(result),
+            Err(error) if should_attempt_static_fallback(script.source(), &error) => {
+                parse_static_on_event(script, event, ctx)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn run_on_event_with_tools(
+        &self,
+        script: &LuaScript,
+        event: &Event,
+        ctx: &LuaHostContext,
+        tool_host: Rc<dyn CapabilityHostApi>,
+    ) -> Result<LuaEventResult, EvaError> {
+        self.sandbox.validate(script)?;
+        match self
+            .vm
+            .run_on_event_with_tools(script, event, ctx, tool_host)
+        {
             Ok(result) => Ok(result),
             Err(error) if should_attempt_static_fallback(script.source(), &error) => {
                 parse_static_on_event(script, event, ctx)
@@ -200,8 +222,14 @@ fn extract_string(source: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eva_core::{EventId, EventPayload, GenerationId, RequestId, TraceContext};
+    use eva_capability::{
+        CapabilityDescriptor, CapabilityHostApi, CapabilityRegistry, CapabilityRouter,
+    };
+    use eva_core::{
+        CapabilityId, CapabilityName, EventId, EventPayload, GenerationId, RequestId, TraceContext,
+    };
     use eva_observability::AuditAction;
+    use std::rc::Rc;
 
     fn event() -> Event {
         Event::new(
@@ -424,6 +452,155 @@ return root
                 .as_str(),
             "root-agent"
         );
+    }
+
+    #[test]
+    fn on_event_can_call_capability_through_ctx_tools() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  local tool = ctx.tools.call("runtime.echo", { message = event.payload, nested = { 1, true } })
+  return {
+    status = tool.status,
+    note = tool.output,
+  }
+end
+
+return root
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+        let tool_host: Rc<dyn CapabilityHostApi> = Rc::new(CapabilityRouter::with_v04_builtins());
+
+        let result = LuaHost::new()
+            .run_on_event_with_tools(&script, &event(), &ctx, tool_host)
+            .unwrap();
+
+        assert_eq!(result.status, "completed");
+        let output = result.note.unwrap();
+        assert!(output.contains("echo"));
+        assert!(output.contains("message"));
+        assert!(output.contains("hello"));
+    }
+
+    #[test]
+    fn on_event_tool_calls_use_distinct_request_ids() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  local first = ctx.tools.call("runtime.echo", "one")
+  local second = ctx.tools.call("runtime.echo", "two")
+  return {
+    status = first.request_id ~= second.request_id and "distinct" or "duplicate",
+    note = first.request_id .. ":" .. second.request_id,
+  }
+end
+
+return root
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+        let tool_host: Rc<dyn CapabilityHostApi> = Rc::new(CapabilityRouter::with_v04_builtins());
+
+        let result = LuaHost::new()
+            .run_on_event_with_tools(&script, &event(), &ctx, tool_host)
+            .unwrap();
+
+        assert_eq!(result.status, "distinct");
+        let note = result.note.unwrap();
+        assert!(note.contains(":lua-tool:1:runtime.echo"));
+        assert!(note.contains(":lua-tool:2:runtime.echo"));
+    }
+
+    #[test]
+    fn on_event_rejects_unknown_ctx_tool_capability() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  ctx.tools.call("runtime.missing", event.payload)
+  return { status = "unreachable" }
+end
+
+return root
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+        let tool_host: Rc<dyn CapabilityHostApi> = Rc::new(CapabilityRouter::with_v04_builtins());
+
+        let error = LuaHost::new()
+            .run_on_event_with_tools(&script, &event(), &ctx, tool_host)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Internal);
+        assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
+    }
+
+    #[test]
+    fn on_event_rejects_disabled_ctx_tool_capability() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  ctx.tools.call("runtime.echo", event.payload)
+  return { status = "unreachable" }
+end
+
+return root
+"#,
+        );
+        let mut registry = CapabilityRegistry::new();
+        registry
+            .register(CapabilityDescriptor {
+                id: CapabilityId::parse("runtime-echo-disabled").unwrap(),
+                name: CapabilityName::parse("runtime.echo").unwrap(),
+                enabled: false,
+                provider: "builtin".to_owned(),
+            })
+            .unwrap();
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+        let tool_host: Rc<dyn CapabilityHostApi> = Rc::new(CapabilityRouter::new(registry));
+
+        let error = LuaHost::new()
+            .run_on_event_with_tools(&script, &event(), &ctx, tool_host)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Internal);
+        assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
+    }
+
+    #[test]
+    fn ctx_tools_exposes_only_call_function() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  local sealed = ctx.tools.call ~= nil
+    and ctx.tools.provider == nil
+    and ctx.tools.file == nil
+    and ctx.tools.socket == nil
+    and ctx.tools.process == nil
+  return { status = sealed and "sealed" or "leaked" }
+end
+
+return root
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+        let tool_host: Rc<dyn CapabilityHostApi> = Rc::new(CapabilityRouter::with_v04_builtins());
+
+        let result = LuaHost::new()
+            .run_on_event_with_tools(&script, &event(), &ctx, tool_host)
+            .unwrap();
+
+        assert_eq!(result.status, "sealed");
     }
 
     #[test]

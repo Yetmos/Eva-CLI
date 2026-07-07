@@ -5399,7 +5399,8 @@ mod tests {
         assert!(stdout.contains("lua.host.log"));
         assert!(stdout.contains("lua.host.audit"));
         assert!(stdout.contains("\"capability_response\""));
-        assert!(stdout.contains("config.lint") || stdout.contains("valid"));
+        assert!(stdout.contains("tool=completed"));
+        assert!(stdout.contains("valid"));
         assert!(stderr.is_empty());
     }
 
