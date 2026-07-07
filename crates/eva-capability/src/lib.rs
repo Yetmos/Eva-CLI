@@ -1,11 +1,13 @@
 //! Capability registry and host API boundary.
 
+pub mod gate;
 pub mod generation;
 pub mod host_api;
 pub mod registry;
 pub mod router;
 pub mod selection;
 
+pub use gate::CapabilityPermissionGate;
 pub use generation::CapabilityGeneration;
 pub use host_api::CapabilityHostApi;
 pub use registry::{CapabilityDescriptor, CapabilityRegistry};

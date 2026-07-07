@@ -3,7 +3,9 @@
 use crate::host_api::CapabilityHostApi;
 use crate::registry::{CapabilityDescriptor, CapabilityRegistry};
 use crate::selection::CapabilityProviderPlan;
+use crate::CapabilityPermissionGate;
 use eva_core::{AdapterId, EvaError, InvokeOutput, InvokeRequest, InvokeResponse, InvokeTarget};
+use eva_policy::PermissionSet;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "capability routing before provider execution";
@@ -35,6 +37,17 @@ impl CapabilityRouter {
         let descriptor = self.descriptor_for_request(request)?;
         self.ensure_enabled(descriptor)?;
         Ok(descriptor.provider_plan(explicit_provider))
+    }
+
+    pub fn authorized_provider_plan(
+        &self,
+        request: &InvokeRequest,
+        explicit_provider: Option<AdapterId>,
+        permissions: &PermissionSet,
+    ) -> Result<CapabilityProviderPlan, EvaError> {
+        let plan = self.provider_plan(request, explicit_provider)?;
+        CapabilityPermissionGate::new(permissions.clone()).ensure_plan_allowed(&plan)?;
+        Ok(plan)
     }
 
     fn invoke_descriptor(
@@ -115,8 +128,9 @@ fn escape_json(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::CapabilityRegistry;
+    use crate::{CapabilityProviderSelection, CapabilityProviderSource, CapabilityRegistry};
     use eva_core::{CapabilityId, CapabilityName, ErrorKind, InvokeInput, RequestId};
+    use eva_policy::PermissionSet;
 
     #[test]
     fn builtin_config_lint_returns_completed_response() {
@@ -160,5 +174,86 @@ mod tests {
         let error = router.provider_plan(&request, None).unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn authorized_provider_plan_rejects_denied_provider() {
+        let mut registry = CapabilityRegistry::new();
+        registry
+            .register(CapabilityDescriptor {
+                id: CapabilityId::parse("repo-summary").unwrap(),
+                name: CapabilityName::parse("repo.summary").unwrap(),
+                enabled: true,
+                provider: "codex-cli".to_owned(),
+                provider_selection: CapabilityProviderSelection::new(
+                    None,
+                    Some(AdapterId::parse("codex-cli").unwrap()),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            })
+            .unwrap();
+        let router = CapabilityRouter::new(registry);
+        let request = InvokeRequest::new(
+            RequestId::parse("req-auth-plan-denied").unwrap(),
+            InvokeTarget::Capability(CapabilityName::parse("repo.summary").unwrap()),
+            InvokeInput::text("repo"),
+        );
+        let permissions = PermissionSet::deny_all()
+            .allow_capability(CapabilityName::parse("repo.summary").unwrap());
+
+        let error = router
+            .authorized_provider_plan(&request, None, &permissions)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "gate" && value == "adapter"));
+    }
+
+    #[test]
+    fn authorized_provider_plan_preserves_explicit_provider_source() {
+        let mut registry = CapabilityRegistry::new();
+        registry
+            .register(CapabilityDescriptor {
+                id: CapabilityId::parse("repo-summary").unwrap(),
+                name: CapabilityName::parse("repo.summary").unwrap(),
+                enabled: true,
+                provider: "codex-cli".to_owned(),
+                provider_selection: CapabilityProviderSelection::new(
+                    None,
+                    Some(AdapterId::parse("codex-cli").unwrap()),
+                    vec![AdapterId::parse("fallback-cli").unwrap()],
+                    Vec::new(),
+                ),
+            })
+            .unwrap();
+        let router = CapabilityRouter::new(registry);
+        let request = InvokeRequest::new(
+            RequestId::parse("req-auth-plan-ok").unwrap(),
+            InvokeTarget::Capability(CapabilityName::parse("repo.summary").unwrap()),
+            InvokeInput::text("repo"),
+        );
+        let permissions = PermissionSet::deny_all()
+            .allow_capability(CapabilityName::parse("repo.summary").unwrap())
+            .allow_adapter(AdapterId::parse("fallback-cli").unwrap())
+            .allow_adapter(AdapterId::parse("codex-cli").unwrap());
+
+        let plan = router
+            .authorized_provider_plan(
+                &request,
+                Some(AdapterId::parse("fallback-cli").unwrap()),
+                &permissions,
+            )
+            .unwrap();
+
+        assert_eq!(plan.providers[0].provider.as_str(), "fallback-cli");
+        assert_eq!(
+            plan.providers[0].source,
+            CapabilityProviderSource::ExplicitRequest
+        );
     }
 }

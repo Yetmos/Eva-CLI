@@ -9,7 +9,7 @@
 | 文件 | 职责 | 当前进度 | 目标版本 |
 | --- | --- | --- | --- |
 | `lib.rs` | 公共导出 | 已完成 | V0.2 |
-| `permissions.rs` | `PermissionSet`、收紧、diff、subset | 已完成 | V0.2/V0.3 |
+| `permissions.rs` | `PermissionSet`、收紧、diff、subset、显式 capability/adapter allow 查询 | 已完成 | V0.2/V0.3/V1.8.5.2 |
 | `sandbox.rs` | `SandboxPolicy`、Lua 默认安全基线、收紧 | 已完成 | V0.2/V0.4 |
 | `effective.rs` | `PolicyLayer`、`EffectivePolicy`、request gate | 已完成 | V0.2/V0.4 |
 
@@ -26,7 +26,7 @@
 
 | 模块 | 具体功能 | 状态 | 下一步 |
 | --- | --- | --- | --- |
-| Permissions | 权限集合和扩权检测 | 已完成 | CLI 展示 diff。 |
+| Permissions | 权限集合、扩权检测和显式 allow 查询 | 已完成 | CLI 展示 diff；runtime/capability gate 复用。 |
 | Sandbox | 沙箱限制 | 已完成 | Lua host 接入。 |
 | Effective | 多层合并和 request gate | 已完成 | Runtime/capability gate 接入。 |
 | Domain parser | YAML policy domain 解释 | 未实现 | V0.4/V1.x 分模块扩展。 |

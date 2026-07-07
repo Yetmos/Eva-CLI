@@ -1,6 +1,6 @@
 # eva-policy / 权限策略
 
-更新时间：2026-07-02
+更新时间：2026-07-07
 
 ![Eva module implementation roadmap](../assets/eva-module-implementation-roadmap.svg)
 
@@ -15,6 +15,7 @@ V0.2 已落地最小权限契约：
 | 范围 | 状态 | 说明 |
 | --- | --- | --- |
 | `PermissionSet` | 已完成 | 表示网络、shell、workspace 读写、超时、capability allowlist、adapter allowlist |
+| 显式身份授权查询 | 已完成 V1.8.5.2 | `explicitly_allows_capability` / `explicitly_allows_adapter` 供 runtime gate 采用默认拒绝语义 |
 | 权限收紧 | 已完成 | `narrowed_by` 对布尔权限取交集，对超时取更小值，对 allowlist 取交集 |
 | 扩权检测 | 已完成 | `diff_against` 和 `is_subset_of` 可以判断 request 是否超过上限 |
 | `SandboxPolicy` | 已完成 | 表示 Lua 禁用库、内存、超时、文件/网络/env 权限和 schema/topic 校验开关 |
@@ -33,6 +34,8 @@ V0.2 已落地最小权限契约：
 | `PermissionSet::narrowed_by` | `&PermissionSet` | `PermissionSet` | 计算两个权限集合的交集 |
 | `PermissionSet::diff_against` | `&PermissionSet` | `PermissionSetDiff` | 列出相对上限发生扩权的字段 |
 | `PermissionSet::is_subset_of` | `&PermissionSet` | `bool` | 判断 request 是否未超过上限 |
+| `PermissionSet::explicitly_allows_capability` | `&CapabilityName` | `bool` | runtime gate 检查 capability 是否被显式 allow |
+| `PermissionSet::explicitly_allows_adapter` | `&AdapterId` | `bool` | runtime gate 检查 adapter provider 是否被显式 allow |
 | `SandboxPolicy::lua_default` | 无 | `SandboxPolicy` | 构建与 `config/policies/sandbox.yaml` 对齐的 Lua 安全基线 |
 | `SandboxPolicy::narrowed_by` | `&SandboxPolicy` | `SandboxPolicy` | 合并沙箱策略并保持更严格结果 |
 | `PolicyLayer::new` | 名称、权限、沙箱 | `PolicyLayer` | 构造一个策略层 |
@@ -85,7 +88,7 @@ V0.2 已落地最小权限契约：
 
 | 命令 | 当前结果 |
 | --- | --- |
-| `cargo test -p eva-policy` | 通过，10 个测试 |
+| `cargo test -p eva-policy` | 通过，11 个测试 |
 | `cargo test --workspace` | 通过 |
 
 关键测试覆盖：
@@ -96,6 +99,7 @@ V0.2 已落地最小权限契约：
 | `narrowing_uses_lowest_timeout` | 超时取更小值 |
 | `narrowing_intersects_capabilities_and_adapters` | capability/adapter allowlist 取交集 |
 | `diff_reports_expansion` | 能检测 shell/capability 扩权 |
+| `explicit_identity_allows_default_to_deny_for_runtime_gates` | runtime gate 可用显式 allow 查询实现默认拒绝 |
 | `default_sandbox_matches_safe_lua_floor` | Lua 默认沙箱与配置样例一致 |
 | `narrowing_unions_disabled_libs_and_uses_lower_limits` | 沙箱禁用库并集、资源限制取更小值 |
 | `effective_policy_intersects_layers` | 多策略层合并结果正确 |

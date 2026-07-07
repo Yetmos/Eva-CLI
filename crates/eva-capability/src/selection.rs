@@ -35,6 +35,7 @@ pub struct CapabilityProviderCandidate {
 pub struct CapabilityProviderPlan {
     pub capability: CapabilityName,
     pub providers: Vec<CapabilityProviderCandidate>,
+    pub manifest_allowed_providers: Vec<AdapterId>,
     pub required_adapter_capabilities: Vec<CapabilityName>,
 }
 
@@ -59,6 +60,7 @@ impl CapabilityProviderSelection {
         explicit_provider: Option<AdapterId>,
     ) -> CapabilityProviderPlan {
         let mut providers = Vec::new();
+        let mut manifest_allowed_providers = Vec::new();
         if let Some(provider) = explicit_provider {
             push_unique(
                 &mut providers,
@@ -67,6 +69,7 @@ impl CapabilityProviderSelection {
             );
         }
         if let Some(provider) = &self.manifest_provider {
+            push_allowed(&mut manifest_allowed_providers, provider.clone());
             push_unique(
                 &mut providers,
                 provider.clone(),
@@ -74,6 +77,7 @@ impl CapabilityProviderSelection {
             );
         }
         if let Some(provider) = &self.default_provider {
+            push_allowed(&mut manifest_allowed_providers, provider.clone());
             push_unique(
                 &mut providers,
                 provider.clone(),
@@ -81,6 +85,7 @@ impl CapabilityProviderSelection {
             );
         }
         for provider in &self.fallback_providers {
+            push_allowed(&mut manifest_allowed_providers, provider.clone());
             push_unique(
                 &mut providers,
                 provider.clone(),
@@ -91,6 +96,7 @@ impl CapabilityProviderSelection {
         CapabilityProviderPlan {
             capability,
             providers,
+            manifest_allowed_providers,
             required_adapter_capabilities: self.required_adapter_capabilities.clone(),
         }
     }
@@ -114,6 +120,16 @@ impl CapabilityProviderPlan {
 
     pub fn is_empty(&self) -> bool {
         self.providers.is_empty()
+    }
+
+    pub fn allows_manifest_provider(&self, provider: &AdapterId) -> bool {
+        self.manifest_allowed_providers.contains(provider)
+    }
+}
+
+fn push_allowed(providers: &mut Vec<AdapterId>, provider: AdapterId) {
+    if !providers.contains(&provider) {
+        providers.push(provider);
     }
 }
 
@@ -185,5 +201,9 @@ mod tests {
             plan.required_adapter_capabilities,
             [capability("repo.analyze")]
         );
+        assert!(plan.allows_manifest_provider(&adapter("manifest-provider")));
+        assert!(plan.allows_manifest_provider(&adapter("default-provider")));
+        assert!(plan.allows_manifest_provider(&adapter("fallback-a")));
+        assert!(!plan.allows_manifest_provider(&adapter("explicit-only")));
     }
 }

@@ -149,11 +149,25 @@ impl PermissionSet {
             .unwrap_or(true)
     }
 
+    pub fn explicitly_allows_capability(&self, capability: &CapabilityName) -> bool {
+        self.capabilities
+            .as_ref()
+            .map(|capabilities| capabilities.contains(capability))
+            .unwrap_or(false)
+    }
+
     pub fn allows_adapter(&self, adapter: &AdapterId) -> bool {
         self.adapters
             .as_ref()
             .map(|adapters| adapters.contains(adapter))
             .unwrap_or(true)
+    }
+
+    pub fn explicitly_allows_adapter(&self, adapter: &AdapterId) -> bool {
+        self.adapters
+            .as_ref()
+            .map(|adapters| adapters.contains(adapter))
+            .unwrap_or(false)
     }
 }
 
@@ -270,5 +284,22 @@ mod tests {
 
         assert_eq!(diff.expanded, vec!["shell", "capabilities"]);
         assert!(!request.is_subset_of(&upper));
+    }
+
+    #[test]
+    fn explicit_identity_allows_default_to_deny_for_runtime_gates() {
+        let permissions = PermissionSet::deny_all();
+
+        assert!(permissions.allows_capability(&capability("repo.analyze")));
+        assert!(permissions.allows_adapter(&adapter("codex-cli")));
+        assert!(!permissions.explicitly_allows_capability(&capability("repo.analyze")));
+        assert!(!permissions.explicitly_allows_adapter(&adapter("codex-cli")));
+
+        let permissions = permissions
+            .allow_capability(capability("repo.analyze"))
+            .allow_adapter(adapter("codex-cli"));
+
+        assert!(permissions.explicitly_allows_capability(&capability("repo.analyze")));
+        assert!(permissions.explicitly_allows_adapter(&adapter("codex-cli")));
     }
 }
