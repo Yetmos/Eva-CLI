@@ -6,6 +6,7 @@
 
 | 文件 | 状态 | 说明 |
 | --- | --- | --- |
+| `audit_store.rs` | V1.6.3 in progress | `FileSystemAuditSink`、`AuditRecord`。把 `AuditSink` 记录保存到 durable backend 的 `audit/` 目录，并支持按 trace id 查询。 |
 | `event_log.rs` | V1.6.2 已更新 | `EventLog`、`EventLogRecord`、`EventLogStatus`、`InMemoryEventLog`、`FileSystemEventLog`。支持 append、ack、fail、watermark、replay 和跨 reopen 查询。 |
 | `state_store.rs` | 已实现 | `StateStore`、`StateRecord`、`StateVersion`、`InMemoryStateStore`。支持 get、put、CAS。 |
 | `task_state.rs` | V1.6.3 in progress | `TaskStateStore`、`TaskStateSnapshot`、`FileSystemTaskStateStore`。默认保存 `.eva/tasks` task snapshot，也可通过 `DurableBackendLayout` 使用 durable backend 的 `tasks/` 目录，支持跨进程读取 latest 或指定 task。 |
@@ -39,3 +40,8 @@ compatibility path. `FileSystemTaskStateStore::from_durable_layout(layout)` uses
 the schema-versioned durable backend `tasks/` directory. The file format remains
 the same line-oriented task snapshot format so `eva task status/logs/cancel`
 can read either location without changing JSON output.
+
+`FileSystemAuditSink::open(layout)` writes line-oriented audit records under the
+same durable backend `audit/` directory. Each record stores action, outcome,
+trace entries, message, fields, and a millisecond timestamp; `query_by_trace_id`
+can retrieve records by span, request, event, correlation, or causation id.

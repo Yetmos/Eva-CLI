@@ -4,7 +4,7 @@
 
 ![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
 
-`eva-storage` 负责 Eva-CLI 的状态、事件日志、task snapshot 和 artifact 存储契约。事件日志同时提供 in-memory 和 V1.6.2 filesystem durable 版本；task snapshot 已可使用 `.eva/tasks` 或 V1.6 durable backend 的 `tasks/` 布局；artifact 已提供 local filesystem backend，用于跨进程 CLI 查询、备份、发布和后续 apply evidence 的持久化边界。
+`eva-storage` 负责 Eva-CLI 的状态、事件日志、task snapshot、audit record 和 artifact 存储契约。事件日志同时提供 in-memory 和 V1.6.2 filesystem durable 版本；task snapshot 已可使用 `.eva/tasks` 或 V1.6 durable backend 的 `tasks/` 布局；audit record 可写入 durable backend 的 `audit/` 目录；artifact 已提供 local filesystem backend，用于跨进程 CLI 查询、备份、发布和后续 apply evidence 的持久化边界。
 
 ## V0.4 当前实现
 
@@ -15,6 +15,7 @@
 | StateStore | `StateStore`、`InMemoryStateStore` | 支持 get、put、compare-and-set；版本从 1 单调递增。 |
 | StateRecord | `StateRecord`、`StateVersion` | 保存 key、value 和 CAS version。 |
 | TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 默认保存 `.eva/tasks` task snapshot，也可通过 `DurableBackendLayout` 使用 durable backend 的 `tasks/` 目录；支持按 task id 或 latest 跨进程读取。 |
+| AuditSink | `FileSystemAuditSink`、`AuditRecord` | 将 `AuditEvent` 写入 durable backend `audit/` 目录，保存 action/outcome/trace/message/fields，并支持按 trace id 查询。 |
 | ArtifactStore | `ArtifactStore`、`InMemoryArtifactStore`、`FileSystemArtifactStore` | 保存 bytes，并生成可重复 SHA-256 digest；filesystem backend 会落盘 bytes 和 metadata，并在读取时重新校验 digest。 |
 | SQLite | `sqlite.rs` | 仍是 durable backend 边界占位，V0.4 不引入 SQLite 依赖。 |
 
@@ -73,12 +74,16 @@ replay records by sequence and keeps the next sequence watermark monotonic.
 The CLI exposes this through `--durable-backend <path>` on `run --example basic`
 and `task status/logs/cancel`.
 
+`FileSystemAuditSink::open(layout)` writes audit records under the same backend
+`audit/` directory. `query_by_trace_id` can retrieve records by span, request,
+event, correlation, or causation id.
+
 ## 后续计划
 
 | 版本 | 计划 |
 | --- | --- |
 | V0.5 | 为 dead-letter 和任务日志增加查询索引。 |
-| V1.6.3 | 已开始将 task snapshot 接入 durable backend `tasks/` 布局。 |
+| V1.6.3 | 已开始将 task snapshot 和 audit record 接入 durable backend `tasks/` / `audit/` 布局。 |
 | V1.6.2 | 已新增 filesystem durable event log，供 `eva-eventbus::DurableEventBus` 使用。 |
 | V1.2 | 接入 memory/knowledge 的持久化状态模型。 |
 | V1.4 | 将 migration、snapshot、release artifact 命令接入 filesystem durable backend。 |

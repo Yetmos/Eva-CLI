@@ -1,10 +1,10 @@
 # eva-observability / 可观测性
 
-更新时间：2026-07-02
+更新时间：2026-07-07
 
 ![Eva module implementation roadmap](../assets/eva-module-implementation-roadmap.svg)
 
-`eva-observability` 定义 Eva-CLI 运行时、CLI、Adapter、Agent 和服务模块共享的 trace、audit 与 metrics 契约。它只保存字段、枚举和 sink trait，不接具体日志后端，不做业务路由，也不做权限判断。
+`eva-observability` 定义 Eva-CLI 运行时、CLI、Adapter、Agent 和服务模块共享的 trace、audit 与 metrics 契约。它只保存字段、枚举和 sink trait，不接具体日志后端，不做业务路由，也不做权限判断。V1.6.3 的 filesystem durable audit sink 位于 `eva-storage`，以避免本 crate 反向依赖存储层。
 
 ## 中文
 
@@ -23,7 +23,7 @@
 | `MetricName` | 已完成 | 稳定 metric 名称校验 |
 | `MetricLabels` | 已完成 | 使用 `BTreeMap` 保证标签顺序稳定 |
 | `MetricPoint` | 已完成 | 表示一个 counter/gauge/histogram 数据点 |
-| 具体后端 | 未实现 | 后续版本可接 tracing、OpenTelemetry、文件或数据库 |
+| 具体后端 | 部分实现 | `eva-storage::FileSystemAuditSink` 可写 durable backend `audit/`；tracing、OpenTelemetry 和 runtime wiring 仍是后续范围 |
 
 ### 公开 API
 
@@ -74,7 +74,7 @@ data payload as the top-level CLI envelope uses for command-level trace.
 `eva-observability` 不做：
 
 - 不启动 tracing subscriber。
-- 不写文件或数据库。
+- 不直接写文件或数据库；filesystem durable sink 由 `eva-storage` 实现。
 - 不调用 OpenTelemetry。
 - 不根据观测结果做 policy 或 routing 决策。
 - 不解释 event payload。

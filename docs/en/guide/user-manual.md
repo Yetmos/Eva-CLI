@@ -191,8 +191,8 @@ Error JSON output uses `ok`, `command`, `exit_code`, `error`, and `trace`.
 V1.6.2-alpha does not provide packaged installers, signed release artifacts,
 real MCP process execution, real provider process management, raw hardware I/O,
 destructive restore, real Supervisor handoff, full durable task query/recovery
-indexes, durable audit stores, runtime crash recovery, or durable memory/backup
-databases.
+indexes, runtime audit wiring/export, runtime crash recovery, or durable
+memory/backup databases.
 
 ## Recommended Verification
 

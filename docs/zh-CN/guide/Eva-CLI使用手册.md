@@ -295,7 +295,7 @@ cargo run -- release migration --output json
 - 真实硬件 raw I/O；
 - destructive restore；
 - 真实 Supervisor 进程切换；
-- 完整 durable task 查询/恢复索引、durable audit store、runtime crash recovery、durable memory 和 backup database。
+- 完整 durable task 查询/恢复索引、runtime audit wiring/export、runtime crash recovery、durable memory 和 backup database。
 
 这些能力需要后续版本在显式 apply gate、持久化存储、签名 artifact 和更强发布证据
 之后逐步接入。

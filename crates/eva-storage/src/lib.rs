@@ -1,6 +1,7 @@
 //! Storage boundary for state, event logs, and artifacts.
 
 pub mod artifact_store;
+pub mod audit_store;
 pub mod durable_backend;
 pub mod event_log;
 pub mod sqlite;
@@ -10,6 +11,7 @@ pub mod task_state;
 pub use artifact_store::{
     ArtifactRecord, ArtifactStore, FileSystemArtifactStore, InMemoryArtifactStore,
 };
+pub use audit_store::{AuditRecord, FileSystemAuditSink};
 pub use durable_backend::{
     DurableBackend, DurableBackendLayout, DurableBackendManifest, DurableBackendMode,
     DurableBackendOptions, DurableBackendReport, FileSystemDurableBackend, InMemoryDurableBackend,
