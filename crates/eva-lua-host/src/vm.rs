@@ -9,7 +9,7 @@ use eva_core::{
 };
 use eva_observability::{AuditAction, TraceFields};
 use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -18,12 +18,14 @@ use std::time::{Duration, Instant};
 pub const RESPONSIBILITY: &str = "execute Lua on_event handlers behind a VM adapter boundary";
 
 const LUA_TIMEOUT_MARKER: &str = "eva_lua_timeout";
+const LUA_INSTRUCTION_BUDGET_MARKER: &str = "eva_lua_instruction_budget_exceeded";
 const DEFAULT_HOOK_INSTRUCTION_INTERVAL: u32 = 1_000;
 
 /// Execution limits applied inside the Lua VM boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LuaExecutionLimits {
     pub timeout: Option<Duration>,
+    pub instruction_budget: Option<u64>,
     pub hook_instruction_interval: u32,
 }
 
@@ -31,6 +33,7 @@ impl LuaExecutionLimits {
     pub const fn none() -> Self {
         Self {
             timeout: None,
+            instruction_budget: None,
             hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
         }
     }
@@ -38,8 +41,22 @@ impl LuaExecutionLimits {
     pub const fn with_timeout(timeout: Duration) -> Self {
         Self {
             timeout: Some(timeout),
+            instruction_budget: None,
             hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
         }
+    }
+
+    pub const fn with_instruction_budget(instruction_budget: u64) -> Self {
+        Self {
+            timeout: None,
+            instruction_budget: Some(instruction_budget),
+            hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
+        }
+    }
+
+    pub const fn with_instruction_budget_limit(mut self, instruction_budget: u64) -> Self {
+        self.instruction_budget = Some(instruction_budget);
+        self
     }
 
     pub const fn with_hook_instruction_interval(mut self, interval: u32) -> Self {
@@ -177,15 +194,26 @@ fn controlled_lua() -> Result<Lua, EvaError> {
 }
 
 fn install_execution_limits(lua: &Lua, limits: LuaExecutionLimits) -> Result<(), EvaError> {
-    let Some(timeout) = limits.timeout else {
+    if limits.timeout.is_none() && limits.instruction_budget.is_none() {
         return Ok(());
-    };
-    let deadline = Instant::now() + timeout;
+    }
+    let deadline = limits.timeout.map(|timeout| Instant::now() + timeout);
+    let instruction_budget = limits.instruction_budget;
     let interval = limits.hook_instruction_interval.max(1);
+    let observed_instructions = Rc::new(Cell::new(0_u64));
     lua.set_hook(
         HookTriggers::new().every_nth_instruction(interval),
         move |_, _| {
-            if Instant::now() >= deadline {
+            let next_instructions = observed_instructions
+                .get()
+                .saturating_add(u64::from(interval));
+            observed_instructions.set(next_instructions);
+            if instruction_budget.is_some_and(|budget| next_instructions > budget) {
+                return Err(mlua::Error::RuntimeError(
+                    LUA_INSTRUCTION_BUDGET_MARKER.to_owned(),
+                ));
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Err(mlua::Error::RuntimeError(LUA_TIMEOUT_MARKER.to_owned()));
             }
             Ok(())
@@ -206,10 +234,29 @@ fn lua_timeout_error(limits: LuaExecutionLimits) -> EvaError {
         .with_context("timeout_ms", timeout_ms)
 }
 
+fn lua_instruction_budget_error(limits: LuaExecutionLimits) -> EvaError {
+    let instruction_budget = limits
+        .instruction_budget
+        .map(|budget| budget.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    EvaError::timeout("Lua on_event exceeded instruction budget")
+        .with_provider_code("lua_instruction_budget_exceeded")
+        .with_context("lua_phase", "handler")
+        .with_context("instruction_budget", instruction_budget)
+}
+
 fn is_lua_timeout_error(error: &mlua::Error) -> bool {
     match error {
         mlua::Error::RuntimeError(message) => message == LUA_TIMEOUT_MARKER,
         mlua::Error::CallbackError { cause, .. } => is_lua_timeout_error(cause),
+        _ => false,
+    }
+}
+
+fn is_lua_instruction_budget_error(error: &mlua::Error) -> bool {
+    match error {
+        mlua::Error::RuntimeError(message) => message == LUA_INSTRUCTION_BUDGET_MARKER,
+        mlua::Error::CallbackError { cause, .. } => is_lua_instruction_budget_error(cause),
         _ => false,
     }
 }
@@ -716,6 +763,9 @@ fn map_host_setup_error(_: mlua::Error) -> EvaError {
 }
 
 fn map_load_error(error: mlua::Error, limits: LuaExecutionLimits) -> EvaError {
+    if is_lua_instruction_budget_error(&error) {
+        return lua_instruction_budget_error(limits).with_context("lua_phase", "load");
+    }
     if is_lua_timeout_error(&error) {
         return lua_timeout_error(limits).with_context("lua_phase", "load");
     }
@@ -732,6 +782,9 @@ fn map_load_error(error: mlua::Error, limits: LuaExecutionLimits) -> EvaError {
 }
 
 fn map_handler_error(error: mlua::Error, limits: LuaExecutionLimits) -> EvaError {
+    if is_lua_instruction_budget_error(&error) {
+        return lua_instruction_budget_error(limits);
+    }
     if is_lua_timeout_error(&error) {
         return lua_timeout_error(limits);
     }

@@ -635,6 +635,41 @@ return root
     }
 
     #[test]
+    fn on_event_infinite_loop_is_interrupted_by_instruction_budget() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  while true do
+  end
+  return { status = "unreachable" }
+end
+
+return root
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+        let limits =
+            LuaExecutionLimits::with_instruction_budget(10).with_hook_instruction_interval(1);
+
+        let error = LuaHost::new()
+            .run_on_event_with_limits(&script, &event(), &ctx, limits)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Timeout);
+        assert_eq!(
+            error.provider_code().unwrap().as_str(),
+            "lua_instruction_budget_exceeded"
+        );
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "instruction_budget" && value == "10"));
+    }
+
+    #[test]
     fn ctx_tools_exposes_only_call_function() {
         let script = LuaScript::from_source(
             r#"
