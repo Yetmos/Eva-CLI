@@ -61,7 +61,7 @@ CI release gates.
 | EventBus and Scheduler | V1.6.2 durable EventBus baseline implemented | EventBus publish/ack/fail/dead-letter/replay diagnostics; durable EventLog records; queryable dead-letter store; redrive replay attempts; Scheduler topic routing and mailbox delivery | Scheduler-driven delayed backoff and crash recovery remain later scope |
 | Agent and Lua host | V0.5 implemented for basic loop | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, controlled bindings, generation marker | Real Lua VM and generation swap remain later scope |
 | Capability and Adapter layers | V1.1 controlled envelopes implemented | `eva-capability` has V0.4 builtins; `eva-adapter` now builds authorized handles, routes capabilities to providers, probes adapters, and invokes MCP/Skill controlled envelopes | Real stdio/http process execution and richer policy evaluation remain later scope |
-| Policy, observability, storage | Mixed with V1.6.1 durable backend baseline | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` has in-memory stores/logs plus schema-versioned durable backend layout, migration lock, filesystem EventLog, and read-only verification | Durable task/audit/artifact stores, richer audit sinks, and metrics remain later scope |
+| Policy, observability, storage | Mixed with V1.6 durable backend baseline | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` has in-memory stores/logs plus schema-versioned durable backend layout, migration lock, filesystem EventLog, durable task snapshot adapter, and read-only verification | Durable audit/artifact metadata hardening, task query indexes, richer audit sinks, and metrics remain later scope |
 | Discovery, MCP, memory, hardware, backup, lifecycle, release | Mixed | Discovery and MCP have V1.1 side-effect-free candidates/probes; memory has V1.2 in-memory private/global records, knowledge search, ContextBuilder, and Lua context snapshots; hardware has V1.3 discovery candidates, registry leases, simulated driver binding, hotplug state machine, Adapter hardware transport, and CLI binding plans; backup and lifecycle have V1.4 backup artifact verification, migration preflight, release snapshot restore plans, generation handoff, drain, rollback, and upgrade checks; release has V1.6.2 readiness/security/performance/migration gates | Real apply paths, signed artifacts, and packaged installers remain later scope |
 | Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, V1.0 quickstart smoke commands, V1.1 external capability smoke commands, V1.2 memory context smoke, V1.3 hardware smoke, V1.4 backup/lifecycle smoke, V1.5 release hardening smoke, V1.6 durable backend/EventBus smoke, and website i18n validation | Add gates as future runtime behavior expands |
 
@@ -345,8 +345,9 @@ implementation-focused:
 
 - Real provider execution for stdio/http/MCP processes, including authentication,
   session isolation, timeout handling, and rate limits.
-- Durable Scheduler, task, audit, artifact, memory, and backup stores beyond the
-  current durable EventBus baseline and local diagnostic surfaces.
+- Durable Scheduler, audit, artifact metadata, memory, and backup stores beyond
+  the current durable EventBus/task snapshot baseline and local diagnostic
+  surfaces.
 - Real Lua VM execution, generation swaps, and stable `ctx.tools` / `ctx.host`
   bindings behind the Rust runtime boundary.
 - Destructive apply paths such as `restore apply`, release pointer mutation,

@@ -56,7 +56,7 @@ Run this sequence from the repository root:
 | Doctor | `cargo run -- doctor --output json` | Checks workspace roots, schema files, Lua host boundary, and runtime builder. |
 | Config validation | `cargo run -- config validate --output json` | Loads `config/eva.yaml` and split manifests. |
 | Inspect runtime | `cargo run -- inspect runtime --output json` | Prints agents, adapters, capabilities, routes, policy, and runtime summary. |
-| Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks`. |
+| Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
 | Task status | `cargo run -- task status --output json` | Reads the latest task report. |
 | Release gate | `cargo run -- release check --output json` | Prints V1.6.2 release readiness. |
 
@@ -70,8 +70,8 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Diagnostics | `doctor` | Check workspace, config roots, schema files, and runtime boundary. | No |
 | Config | `config validate` | Validate `eva.yaml`, manifests, policies, routes, and schemas. | No |
 | Inspect | `inspect` | Show project configuration and runtime summary. | No |
-| Runtime | `run --example basic` | Execute the V1.0 in-memory basic loop. | Writes `.eva/tasks` |
-| Task | `task status/logs/cancel` | Read or mark local task diagnostics. | Writes task cancel marker |
+| Runtime | `run --example basic` | Execute the V1.0 in-memory basic loop. | Writes `.eva/tasks` or durable backend `tasks/` |
+| Task | `task status/logs/cancel` | Read or mark task diagnostics. | Writes task cancel marker |
 | Adapter | `adapter list/probe` | List or probe manifest-derived adapter handles. | No |
 | MCP | `mcp list/probe` | List or probe allowlisted MCP tools. | No |
 | Skill | `skill list/run` | Return controlled workflow skill envelopes. | No |
@@ -87,17 +87,22 @@ Use text output for human inspection and `--output json` for scripts or CI.
 ## Basic Runtime Loop
 
 `run --example basic` is the executable runtime loop in the current release. It
-runs synchronously and writes the latest task report under `<project>/.eva/tasks`.
+runs synchronously and writes the latest task report under `<project>/.eva/tasks`
+by default. Passing `--durable-backend <path>` opens a V1.6 durable backend and
+uses its `tasks/` directory instead, while preserving the same JSON envelope.
 
 ```powershell
 cargo run -- run --example basic --output json
 cargo run -- task status --output json
 cargo run -- task logs --output json
+cargo run -- run --example basic --task-id req-durable-1 --durable-backend .eva/durable --output json
+cargo run -- task status --task req-durable-1 --durable-backend .eva/durable --output json
 ```
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--task-id <id>` | `req-basic-1` | Request/task id. |
+| `--durable-backend <path>` | unset | Use the durable backend `tasks/` layout instead of `<project>/.eva/tasks`. |
 | `--timeout-ms <ms>` | `30000` | Handler timeout budget; `0` exercises timeout diagnostics. |
 | `--no-timeout` | Off | Removes the timeout budget. |
 | `--retry-attempts <n>` | `1` | Retry limit. |
@@ -163,7 +168,8 @@ cargo run -- release migration --output json
 | `config/policies/` | Sandbox, MCP, hardware, and adapter policies. |
 | `config/routes/topics.yaml` | Topic routes. |
 | `config/schemas/` | JSON schemas. |
-| `.eva/tasks/` | Local task diagnostics written by `run --example basic`; not committed. |
+| `.eva/tasks/` | Default local task diagnostics written by `run --example basic`; not committed. |
+| Durable backend `tasks/` | Optional task snapshot store used when `--durable-backend <path>` is provided. |
 
 ## JSON Envelope and Exit Codes
 
@@ -184,8 +190,9 @@ Error JSON output uses `ok`, `command`, `exit_code`, `error`, and `trace`.
 
 V1.6.2-alpha does not provide packaged installers, signed release artifacts,
 real MCP process execution, real provider process management, raw hardware I/O,
-destructive restore, real Supervisor handoff, durable task/audit stores, runtime
-crash recovery, or durable memory/backup databases.
+destructive restore, real Supervisor handoff, full durable task query/recovery
+indexes, durable audit stores, runtime crash recovery, or durable memory/backup
+databases.
 
 ## Recommended Verification
 

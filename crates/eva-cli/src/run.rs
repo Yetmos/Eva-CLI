@@ -33,9 +33,9 @@ use eva_release::{
 };
 use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder};
 use eva_storage::{
-    FileSystemArtifactStore, FileSystemTaskStateStore, InMemoryArtifactStore,
-    TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot,
-    TaskStateStore,
+    DurableBackendOptions, FileSystemArtifactStore, FileSystemDurableBackend,
+    FileSystemTaskStateStore, InMemoryArtifactStore, TaskStateDeadLetterSnapshot,
+    TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
 };
 use std::env;
 use std::ffi::OsString;
@@ -255,6 +255,7 @@ struct RunOptions {
     common: CommonOptions,
     example: Option<String>,
     task_id: Option<String>,
+    durable_backend: Option<PathBuf>,
     timeout_ms: Option<u64>,
     cancel_requested: bool,
     retry_attempts: usize,
@@ -339,6 +340,7 @@ struct TaskOptions {
     common: CommonOptions,
     task_id: Option<String>,
     reason: Option<String>,
+    durable_backend: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -575,6 +577,7 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut example = None;
     let mut task_id = None;
+    let mut durable_backend = None;
     let mut timeout_ms = Some(30_000);
     let mut cancel_requested = false;
     let mut retry_attempts = 1;
@@ -597,6 +600,14 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
                 })?;
                 eva_core::RequestId::parse(value)?;
                 task_id = Some(value.clone());
+            }
+            "--durable-backend" | "--durable-backend-root" => {
+                index += 1;
+                durable_backend = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "durable backend option",
+                )?));
             }
             "--timeout-ms" => {
                 index += 1;
@@ -624,6 +635,7 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
         common: parse_common_options(&passthrough)?,
         example,
         task_id,
+        durable_backend,
         timeout_ms,
         cancel_requested,
         retry_attempts,
@@ -650,6 +662,7 @@ fn parse_task_options(args: &[String]) -> Result<TaskOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut task_id = None;
     let mut reason = None;
+    let mut durable_backend = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -668,6 +681,14 @@ fn parse_task_options(args: &[String]) -> Result<TaskOptions, EvaError> {
                     .ok_or_else(|| EvaError::invalid_argument("missing value for reason option"))?;
                 reason = Some(value.clone());
             }
+            "--durable-backend" | "--durable-backend-root" => {
+                index += 1;
+                durable_backend = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "durable backend option",
+                )?));
+            }
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -677,6 +698,7 @@ fn parse_task_options(args: &[String]) -> Result<TaskOptions, EvaError> {
         common: parse_common_options(&passthrough)?,
         task_id,
         reason,
+        durable_backend,
     })
 }
 
@@ -1539,7 +1561,11 @@ where
                     .map(|report| (project, runtime, report))
             }) {
                 Ok((_project, _runtime, report)) => {
-                    write_task_snapshot(&options.common.project_root, &report)?;
+                    write_task_snapshot(
+                        &options.common.project_root,
+                        options.durable_backend.as_deref(),
+                        &report,
+                    )?;
                     write_run(stdout, options.common.output, &report, trace)?;
                     Ok(EXIT_OK)
                 }
@@ -1597,7 +1623,11 @@ where
     match command {
         TaskCommand::Status(options) => {
             let trace = trace_for("cli.task.status");
-            match read_task_snapshot(&options.common.project_root, options.task_id.as_deref()) {
+            match read_task_snapshot(
+                &options.common.project_root,
+                options.durable_backend.as_deref(),
+                options.task_id.as_deref(),
+            ) {
                 Ok(snapshot) => {
                     write_task_status(stdout, options.common.output, &snapshot, &trace)?;
                     Ok(EXIT_OK)
@@ -1618,7 +1648,11 @@ where
         }
         TaskCommand::Logs(options) => {
             let trace = trace_for("cli.task.logs");
-            match read_task_snapshot(&options.common.project_root, options.task_id.as_deref()) {
+            match read_task_snapshot(
+                &options.common.project_root,
+                options.durable_backend.as_deref(),
+                options.task_id.as_deref(),
+            ) {
                 Ok(snapshot) => {
                     write_task_logs(stdout, options.common.output, &snapshot, &trace)?;
                     Ok(EXIT_OK)
@@ -1641,6 +1675,7 @@ where
             let trace = trace_for("cli.task.cancel");
             match cancel_task_snapshot(
                 &options.common.project_root,
+                options.durable_backend.as_deref(),
                 options.task_id.as_deref(),
                 options
                     .reason
@@ -2991,25 +3026,31 @@ impl ValidationReport {
     }
 }
 
-fn write_task_snapshot(project_root: &Path, report: &BasicRunReport) -> Result<(), EvaError> {
+fn write_task_snapshot(
+    project_root: &Path,
+    durable_backend: Option<&Path>,
+    report: &BasicRunReport,
+) -> Result<(), EvaError> {
     let snapshot = TaskStateSnapshot::from(&report.task);
-    let mut store = FileSystemTaskStateStore::new(project_root);
+    let mut store = open_task_state_store(project_root, durable_backend, TaskStoreAccess::Write)?;
     store.write(&snapshot)
 }
 
 fn read_task_snapshot(
     project_root: &Path,
+    durable_backend: Option<&Path>,
     task_id: Option<&str>,
 ) -> Result<TaskStateSnapshot, EvaError> {
-    FileSystemTaskStateStore::new(project_root).read(task_id)
+    open_task_state_store(project_root, durable_backend, TaskStoreAccess::Read)?.read(task_id)
 }
 
 fn cancel_task_snapshot(
     project_root: &Path,
+    durable_backend: Option<&Path>,
     task_id: Option<&str>,
     reason: &str,
 ) -> Result<TaskStateSnapshot, EvaError> {
-    let mut snapshot = read_task_snapshot(project_root, task_id)?;
+    let mut snapshot = read_task_snapshot(project_root, durable_backend, task_id)?;
     snapshot.cancel_requested = true;
     snapshot.cancel_reason = Some(reason.to_owned());
     if snapshot.is_terminal() {
@@ -3024,9 +3065,34 @@ fn cancel_task_snapshot(
         snapshot.push_log("warning", format!("cancel accepted: {reason}"));
     }
 
-    let mut store = FileSystemTaskStateStore::new(project_root);
+    let mut store = open_task_state_store(project_root, durable_backend, TaskStoreAccess::Write)?;
     store.write(&snapshot)?;
     Ok(snapshot)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskStoreAccess {
+    Read,
+    Write,
+}
+
+fn open_task_state_store(
+    project_root: &Path,
+    durable_backend: Option<&Path>,
+    access: TaskStoreAccess,
+) -> Result<FileSystemTaskStateStore, EvaError> {
+    let Some(root) = durable_backend else {
+        return Ok(FileSystemTaskStateStore::new(project_root));
+    };
+
+    let options = match access {
+        TaskStoreAccess::Read => DurableBackendOptions::read_only(root),
+        TaskStoreAccess::Write => DurableBackendOptions::read_write(root),
+    };
+    let backend = FileSystemDurableBackend::open(options)?;
+    Ok(FileSystemTaskStateStore::from_durable_layout(
+        backend.layout(),
+    ))
 }
 
 fn write_validation<W: Write>(
@@ -5011,10 +5077,10 @@ fn help_text() -> &'static str {
         "  eva doctor [--project <path>] [--output text|json]\n",
         "  eva config validate [--project <path>] [--output text|json]\n",
         "  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n",
-        "  eva run --example basic [--project <path>] [--task-id <id>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n",
-        "  eva task status [--project <path>] [--task <id>] [--output text|json]\n",
-        "  eva task logs [--project <path>] [--task <id>] [--output text|json]\n",
-        "  eva task cancel [--project <path>] [--task <id>] [--reason <text>] [--output text|json]\n",
+        "  eva run --example basic [--project <path>] [--task-id <id>] [--durable-backend <path>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n",
+        "  eva task status [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
+        "  eva task logs [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
+        "  eva task cancel [--project <path>] [--task <id>] [--durable-backend <path>] [--reason <text>] [--output text|json]\n",
         "  eva adapter list [--project <path>] [--output text|json]\n",
         "  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n",
         "  eva mcp list [--project <path>] [--output text|json]\n",
@@ -5041,8 +5107,8 @@ fn help_text() -> &'static str {
         "  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n",
         "  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n",
         "  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n",
-        "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks.\n",
-        "  task             Inspect or cancel the latest persisted basic task report.\n",
+        "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks or a durable backend task store.\n",
+        "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
         "  adapter          List and probe authorized Adapter handles derived from manifests.\n",
         "  mcp              List and probe allowlisted MCP tools without starting external servers.\n",
         "  skill            List and run controlled workflow skill envelopes.\n",
@@ -5219,6 +5285,84 @@ mod tests {
         assert_eq!(cancel_exit, EXIT_OK, "{cancel_stderr}");
         assert!(cancel_stdout.contains("\"requested\":true"));
         assert!(cancel_stdout.contains("\"accepted\":false"));
+    }
+
+    #[test]
+    fn task_commands_can_use_durable_backend_task_store() {
+        let root = workspace_root();
+        let durable_root = test_temp_dir("durable-task-store");
+        let task_id = "req-test-durable-task-store";
+        let (run_exit, _run_stdout, run_stderr) = run_cli(&[
+            "run",
+            "--example",
+            "basic",
+            "--project",
+            root.to_str().unwrap(),
+            "--task-id",
+            task_id,
+            "--durable-backend",
+            durable_root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(run_exit, EXIT_OK, "{run_stderr}");
+        assert!(durable_root.join("backend.manifest").is_file());
+        assert!(durable_root
+            .join("tasks")
+            .join(format!("{task_id}.task"))
+            .is_file());
+
+        let (status_exit, status_stdout, status_stderr) = run_cli(&[
+            "task",
+            "status",
+            "--project",
+            root.to_str().unwrap(),
+            "--task",
+            task_id,
+            "--durable-backend",
+            durable_root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(status_exit, EXIT_OK, "{status_stderr}");
+        assert!(status_stdout.contains("\"command\":\"task.status\""));
+        assert!(status_stdout.contains("\"status\":\"completed\""));
+
+        let (logs_exit, logs_stdout, logs_stderr) = run_cli(&[
+            "task",
+            "logs",
+            "--project",
+            root.to_str().unwrap(),
+            "--task",
+            task_id,
+            "--durable-backend",
+            durable_root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(logs_exit, EXIT_OK, "{logs_stderr}");
+        assert!(logs_stdout.contains("event accepted"));
+
+        let (cancel_exit, cancel_stdout, cancel_stderr) = run_cli(&[
+            "task",
+            "cancel",
+            "--project",
+            root.to_str().unwrap(),
+            "--task",
+            task_id,
+            "--durable-backend",
+            durable_root.to_str().unwrap(),
+            "--reason",
+            "durable cleanup",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(cancel_exit, EXIT_OK, "{cancel_stderr}");
+        assert!(cancel_stdout.contains("\"requested\":true"));
+        assert!(cancel_stdout.contains("\"accepted\":false"));
+        assert!(cancel_stdout.contains("cancel requested after task reached a terminal state"));
+
+        let _ = fs::remove_dir_all(&durable_root);
     }
 
     #[test]

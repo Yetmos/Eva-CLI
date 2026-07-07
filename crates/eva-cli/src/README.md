@@ -1,15 +1,15 @@
 # eva-cli/src
 
-更新时间：2026-07-04
+更新时间：2026-07-07
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地诊断文件读写。V1.5 仍把主要命令实现集中在 `run.rs`，这样 version、task、external capability、memory context、hardware、backup、lifecycle 和 release command 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.6.3 仍把主要命令实现集中在 `run.rs`，这样 version、task、external capability、memory context、hardware、backup、lifecycle 和 release command 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | 已更新到 V1.5 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`。 |
+| `run.rs` | V1.6.3 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`，以及 V1.6.3 `--durable-backend` task store 入口。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -17,14 +17,14 @@
 | `adapter.rs` | 边界保留 | 后续可从 `run.rs` 拆出 adapter 子命令。 |
 | `capability.rs` | 边界保留 | 后续 capability list/inspect/dry-run invoke。 |
 
-## V1.0 本地任务状态
+## V1.0/V1.6.3 任务状态
 
-`run.rs` 在 `eva run --example basic` 成功返回报告后，写入两类文件：
+`run.rs` 在 `eva run --example basic` 成功返回报告后，默认写入两类文件：
 
 - `.eva/tasks/<task-id>.task`
 - `.eva/tasks/latest-basic.task`
 
-文件内容是稳定的行式 key/value 诊断格式，由 `eva-storage::FileSystemTaskStateStore` 读写；它不是公开持久化数据库格式。`task status/logs/cancel` 会读取这些文件并重新输出标准 text/JSON envelope。
+文件内容是稳定的行式 key/value 诊断格式，由 `eva-storage::FileSystemTaskStateStore` 读写。传入 `--durable-backend <path>` 时，CLI 会打开 V1.6 durable backend 并改用其 `tasks/` 目录；`task status/logs/cancel` 会读取同一位置并重新输出标准 text/JSON envelope。未传 `--durable-backend` 时，`.eva/tasks` 仍只是兼容本地诊断路径。
 
 ## V1.1 External Capability Surface
 

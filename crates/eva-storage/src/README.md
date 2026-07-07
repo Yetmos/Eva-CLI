@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `event_log.rs` | V1.6.2 已更新 | `EventLog`、`EventLogRecord`、`EventLogStatus`、`InMemoryEventLog`、`FileSystemEventLog`。支持 append、ack、fail、watermark、replay 和跨 reopen 查询。 |
 | `state_store.rs` | 已实现 | `StateStore`、`StateRecord`、`StateVersion`、`InMemoryStateStore`。支持 get、put、CAS。 |
-| `task_state.rs` | 已实现 | `TaskStateStore`、`TaskStateSnapshot`、`FileSystemTaskStateStore`。保存 `.eva/tasks` task snapshot，支持跨进程读取 latest 或指定 task。 |
+| `task_state.rs` | V1.6.3 in progress | `TaskStateStore`、`TaskStateSnapshot`、`FileSystemTaskStateStore`。默认保存 `.eva/tasks` task snapshot，也可通过 `DurableBackendLayout` 使用 durable backend 的 `tasks/` 目录，支持跨进程读取 latest 或指定 task。 |
 | `artifact_store.rs` | 已实现 | `ArtifactStore`、`ArtifactRecord`、`InMemoryArtifactStore`、`FileSystemArtifactStore`。保存 bytes 并生成 SHA-256 digest；filesystem backend 会校验 metadata 与 bytes 是否一致。 |
 | `sqlite.rs` | 边界保留 | 未来 SQLite/local durable backend。V0.4 不引入 SQLite 依赖。 |
 | `lib.rs` | 已实现 | re-export 公开类型，供 eventbus/runtime 直接使用。 |
@@ -31,3 +31,11 @@ backend creates and verifies `events/`, `state/`, `tasks/`, `audit/`, and
 keeps the original event, delivery status, consumer, error, and sequence. This
 is the storage layer used by `eva-eventbus::DurableEventBus`; runtime crash
 recovery and scheduler retry policy remain separate layers.
+
+## V1.6.3 Durable Task Store Adapter
+
+`FileSystemTaskStateStore::new(project_root)` keeps the legacy `.eva/tasks`
+compatibility path. `FileSystemTaskStateStore::from_durable_layout(layout)` uses
+the schema-versioned durable backend `tasks/` directory. The file format remains
+the same line-oriented task snapshot format so `eva task status/logs/cancel`
+can read either location without changing JSON output.

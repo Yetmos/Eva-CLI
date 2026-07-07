@@ -1,5 +1,6 @@
 //! Durable task state contracts and filesystem implementation.
 
+use crate::DurableBackendLayout;
 use eva_core::{EvaError, RequestId};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,6 +61,7 @@ pub trait TaskStateStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSystemTaskStateStore {
     project_root: PathBuf,
+    task_dir: PathBuf,
 }
 
 impl TaskStateSnapshot {
@@ -208,8 +210,18 @@ impl TaskStateSnapshot {
 
 impl FileSystemTaskStateStore {
     pub fn new(project_root: impl AsRef<Path>) -> Self {
+        let project_root = project_root.as_ref().to_path_buf();
+        let task_dir = project_root.join(".eva").join("tasks");
         Self {
-            project_root: project_root.as_ref().to_path_buf(),
+            project_root,
+            task_dir,
+        }
+    }
+
+    pub fn from_durable_layout(layout: &DurableBackendLayout) -> Self {
+        Self {
+            project_root: layout.root.clone(),
+            task_dir: layout.task_dir.clone(),
         }
     }
 
@@ -218,7 +230,7 @@ impl FileSystemTaskStateStore {
     }
 
     pub fn task_dir(&self) -> PathBuf {
-        self.project_root.join(".eva").join("tasks")
+        self.task_dir.clone()
     }
 
     fn latest_task_path(&self) -> PathBuf {
@@ -370,6 +382,29 @@ mod tests {
         assert!(updated.cancel_requested);
         assert_eq!(updated.cancel_reason.as_deref(), Some("too late"));
         assert_eq!(updated.logs.last().unwrap().level, "warning");
+    }
+
+    #[test]
+    fn filesystem_task_state_can_use_durable_backend_layout() {
+        let root = test_root("durable-layout");
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut writer = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let snapshot = sample_snapshot("req-task-state-durable-1");
+
+        writer.write(&snapshot).unwrap();
+        let reader = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let by_id = reader.read(Some("req-task-state-durable-1")).unwrap();
+
+        assert_eq!(by_id, snapshot);
+        assert_eq!(reader.task_dir(), backend.layout().task_dir);
+        assert!(backend
+            .layout()
+            .task_dir
+            .join("req-task-state-durable-1.task")
+            .is_file());
     }
 
     #[test]

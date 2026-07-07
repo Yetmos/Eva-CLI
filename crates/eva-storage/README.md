@@ -4,7 +4,7 @@
 
 ![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
 
-`eva-storage` 负责 Eva-CLI 的状态、事件日志、task snapshot 和 artifact 存储契约。事件日志同时提供 in-memory 和 V1.6.2 filesystem durable 版本；task snapshot 与 artifact 已提供 local filesystem backend，用于跨进程 CLI 查询、备份、发布和后续 apply evidence 的持久化边界。
+`eva-storage` 负责 Eva-CLI 的状态、事件日志、task snapshot 和 artifact 存储契约。事件日志同时提供 in-memory 和 V1.6.2 filesystem durable 版本；task snapshot 已可使用 `.eva/tasks` 或 V1.6 durable backend 的 `tasks/` 布局；artifact 已提供 local filesystem backend，用于跨进程 CLI 查询、备份、发布和后续 apply evidence 的持久化边界。
 
 ## V0.4 当前实现
 
@@ -14,7 +14,7 @@
 | EventLogRecord | `EventLogRecord`、`EventLogStatus` | 记录 sequence、原始 `Event`、消费 Agent、失败原因。 |
 | StateStore | `StateStore`、`InMemoryStateStore` | 支持 get、put、compare-and-set；版本从 1 单调递增。 |
 | StateRecord | `StateRecord`、`StateVersion` | 保存 key、value 和 CAS version。 |
-| TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 保存 `.eva/tasks` task snapshot，支持按 task id 或 latest 跨进程读取。 |
+| TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 默认保存 `.eva/tasks` task snapshot，也可通过 `DurableBackendLayout` 使用 durable backend 的 `tasks/` 目录；支持按 task id 或 latest 跨进程读取。 |
 | ArtifactStore | `ArtifactStore`、`InMemoryArtifactStore`、`FileSystemArtifactStore` | 保存 bytes，并生成可重复 SHA-256 digest；filesystem backend 会落盘 bytes 和 metadata，并在读取时重新校验 digest。 |
 | SQLite | `sqlite.rs` | 仍是 durable backend 边界占位，V0.4 不引入 SQLite 依赖。 |
 
@@ -33,7 +33,7 @@ use eva_storage::{
 };
 ```
 
-主要 re-export 位于 `src/lib.rs`，下游 crate 不需要直接引用子模块路径。需要 durable event log 时使用 `FileSystemEventLog::open(backend.layout())`；需要 durable task state 时使用 `FileSystemTaskStateStore::new(project_root)`；需要 durable artifact evidence 时使用 `FileSystemArtifactStore::new(path)`。
+主要 re-export 位于 `src/lib.rs`，下游 crate 不需要直接引用子模块路径。需要 durable event log 时使用 `FileSystemEventLog::open(backend.layout())`；需要兼容本地 task state 时使用 `FileSystemTaskStateStore::new(project_root)`；需要 durable backend task state 时使用 `FileSystemTaskStateStore::from_durable_layout(backend.layout())`；需要 durable artifact evidence 时使用 `FileSystemArtifactStore::new(path)`。
 
 ## 验证
 
@@ -62,11 +62,23 @@ It persists event id, topic, target, payload, metadata, delivery status,
 consumer, and structured error fields. Reopening the same durable backend can
 replay records by sequence and keeps the next sequence watermark monotonic.
 
+## V1.6.3 Durable Task Store Adapter
+
+`FileSystemTaskStateStore` now has two entry points:
+
+- `new(project_root)` keeps the compatible `.eva/tasks` diagnostic path.
+- `from_durable_layout(layout)` uses the V1.6 durable backend `tasks/`
+  directory for restart-readable task snapshots.
+
+The CLI exposes this through `--durable-backend <path>` on `run --example basic`
+and `task status/logs/cancel`.
+
 ## 后续计划
 
 | 版本 | 计划 |
 | --- | --- |
 | V0.5 | 为 dead-letter 和任务日志增加查询索引。 |
+| V1.6.3 | 已开始将 task snapshot 接入 durable backend `tasks/` 布局。 |
 | V1.6.2 | 已新增 filesystem durable event log，供 `eva-eventbus::DurableEventBus` 使用。 |
 | V1.2 | 接入 memory/knowledge 的持久化状态模型。 |
 | V1.4 | 将 migration、snapshot、release artifact 命令接入 filesystem durable backend。 |

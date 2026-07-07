@@ -62,7 +62,7 @@ release: V1.6.2-alpha
 | 工作区诊断 | `cargo run -- doctor --output json` | 检查仓库根、配置根、schema、Lua host 和 runtime builder。 |
 | 配置校验 | `cargo run -- config validate --output json` | 加载 `config/eva.yaml` 和拆分 manifest，返回配置摘要。 |
 | 查看运行时 | `cargo run -- inspect runtime --output json` | 输出 agents、adapters、capabilities、routes、policy 和 runtime 摘要。 |
-| 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，并写入 `.eva/tasks` task report。 |
+| 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
 | 发布门禁 | `cargo run -- release check --output json` | 输出 V1.6.2 release readiness。 |
 
@@ -77,8 +77,8 @@ release: V1.6.2-alpha
 | 诊断 | `doctor` | 检查 workspace、配置根、schema 和 runtime 边界。 | 否 |
 | 配置 | `config validate` | 校验 `eva.yaml`、manifest、policy、routes 和 schema。 | 否 |
 | 查看 | `inspect` | 查看项目配置、路由、策略和 runtime 摘要。 | 否 |
-| 运行 | `run --example basic` | 执行 V1.0 in-memory basic loop。 | 只写 `.eva/tasks` |
-| 任务 | `task status/logs/cancel` | 读取或标记本地 task 诊断。 | 只写 task 取消标记 |
+| 运行 | `run --example basic` | 执行 V1.0 in-memory basic loop。 | 写 `.eva/tasks` 或 durable backend `tasks/` |
+| 任务 | `task status/logs/cancel` | 读取或标记 task 诊断。 | 只写 task 取消标记 |
 | Adapter | `adapter list/probe` | 列出或探测 manifest 派生的 Adapter handle。 | 否 |
 | MCP | `mcp list/probe` | 列出或探测 allowlist 中的 MCP tool。 | 否 |
 | Skill | `skill list/run` | 返回受控 workflow skill envelope。 | 否 |
@@ -112,12 +112,16 @@ cargo run -- doctor --project C:\path\to\Eva-CLI --output json
 ## 运行 basic 示例
 
 `run --example basic` 是当前唯一真正执行 runtime 闭环的命令。它会同步运行
-in-memory basic loop，并把最新 task report 写到 `<project>/.eva/tasks`。
+in-memory basic loop，并默认把最新 task report 写到 `<project>/.eva/tasks`。
+传入 `--durable-backend <path>` 时，CLI 会打开 V1.6 durable backend，并改用
+该 backend 的 `tasks/` 目录，JSON envelope 保持不变。
 
 ```powershell
 cargo run -- run --example basic --output json
 cargo run -- task status --output json
 cargo run -- task logs --output json
+cargo run -- run --example basic --task-id req-durable-1 --durable-backend .eva/durable --output json
+cargo run -- task status --task req-durable-1 --durable-backend .eva/durable --output json
 ```
 
 常用选项：
@@ -125,6 +129,7 @@ cargo run -- task logs --output json
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--task-id <id>` | `req-basic-1` | 指定 request/task id。 |
+| `--durable-backend <path>` | 未启用 | 使用 durable backend 的 `tasks/` 布局，而不是 `<project>/.eva/tasks`。 |
 | `--timeout-ms <ms>` | `30000` | 设置 handler timeout budget；`0` 可触发 timeout 诊断路径。 |
 | `--no-timeout` | 未启用 | 取消 timeout budget。 |
 | `--retry-attempts <n>` | `1` | 设置 retry 上限。 |
@@ -229,7 +234,8 @@ cargo run -- release migration --output json
 | `config/policies/` | 沙箱、MCP、硬件和 adapter policy。 |
 | `config/routes/topics.yaml` | Topic route 配置。 |
 | `config/schemas/` | JSON schema 文件。 |
-| `.eva/tasks/` | `run --example basic` 写入的本地 task 诊断目录；不提交到 Git。 |
+| `.eva/tasks/` | `run --example basic` 默认写入的本地 task 诊断目录；不提交到 Git。 |
+| durable backend `tasks/` | 传入 `--durable-backend <path>` 后使用的 task snapshot store。 |
 
 ## JSON 输出和退出码
 
@@ -289,7 +295,7 @@ cargo run -- release migration --output json
 - 真实硬件 raw I/O；
 - destructive restore；
 - 真实 Supervisor 进程切换；
-- durable task/audit store、runtime crash recovery、durable memory 和 backup database。
+- 完整 durable task 查询/恢复索引、durable audit store、runtime crash recovery、durable memory 和 backup database。
 
 这些能力需要后续版本在显式 apply gate、持久化存储、签名 artifact 和更强发布证据
 之后逐步接入。

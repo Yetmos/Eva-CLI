@@ -133,7 +133,7 @@ Eva-CLI/
 V1.6.2-alpha 是源码 alpha 与 durable EventBus 检查点，不是已经带安装包的完整 runtime 发行版。后续包含 package 支持的 release tag 会发布 GHCR 容器镜像 `ghcr.io/yetmos/eva-cli`；旧 tag 不追溯重新发布。后续工作已经从“是否能落地”收窄为更具体的执行边界：
 
 - stdio/http/MCP 等真实 provider 进程执行，包括认证、会话隔离、超时和限流。
-- Durable Scheduler、task、audit、artifact、memory 和 backup store，衔接当前 durable EventBus 基线与本地诊断表面。
+- Durable Scheduler、audit、artifact metadata、memory 和 backup store，衔接当前 durable EventBus/task snapshot 基线与本地诊断表面。
 - 真实 Lua VM 执行、generation swap，以及稳定的 `ctx.tools` / `ctx.host` 绑定。
 - `restore apply`、release pointer mutation、Supervisor 激活、blue-green Runtime 进程切换等破坏性 apply 路径。
 - 签名 release artifact、跨平台安装包、包管理器 package 和 artifact provenance。
