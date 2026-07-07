@@ -38,10 +38,11 @@ cargo run -- run --example basic --task-id req-cancel --cancel --output json
 
 | Path | Purpose |
 | --- | --- |
-| `config/eva.yaml` | Minimal project root configuration and split config pointers. |
+| `config/eva.yaml` | Minimal project root configuration, required runtime sections, and split config pointers. |
 | `config/agents/root-agent/agent.yaml` | Root Agent manifest. |
 | `config/agents/root-agent/main.lua` | Controlled V1.0 `on_event` script. |
 | `config/routes/topics.yaml` | Routes `/input/user` to `root-agent`. |
+| `config/schemas/README.md` | Notes that this example reuses the canonical schemas from `../../config/schemas`. |
 | `config/capabilities/config-lint-skill.yaml` | Declares the `config.lint` capability used by the Lua result. |
 | `config/capabilities/config-lint.lua` | Lua-shaped capability source kept as future handler reference. |
 

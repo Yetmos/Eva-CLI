@@ -5337,6 +5337,20 @@ mod tests {
         path
     }
 
+    fn copy_dir(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let source = entry.path();
+            let destination = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&source, &destination);
+            } else {
+                fs::copy(&source, &destination).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn config_validate_json_succeeds_for_sample_project() {
         let root = workspace_root();
@@ -5354,6 +5368,42 @@ mod tests {
         assert!(stdout.contains("\"command\":\"config.validate\""));
         assert!(stdout.contains("\"agents_total\""));
         assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn config_validate_json_reports_schema_rule_context() {
+        let root = workspace_root();
+        let fixture = test_temp_dir("config-schema-json");
+        copy_dir(&root.join("config"), &fixture.join("config"));
+        fs::write(
+            fixture.join("config/routes/topics.yaml"),
+            r#"routes:
+  - pattern: /sys
+    delivery: fanout
+    agents:
+      - root-agent
+    extra: denied
+"#,
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "config",
+            "validate",
+            "--project",
+            fixture.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"command\":\"config.validate\""));
+        assert!(stderr.contains("\"kind\":\"invalid_argument\""));
+        assert!(stderr.contains("\"key\":\"schema_rule\",\"value\":\"additionalProperties\""));
+        assert!(stderr.contains("\"key\":\"field\",\"value\":\"routes[0].extra\""));
+
+        fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]

@@ -12,6 +12,7 @@ use crate::manifest::agent::{load_agent_manifest, AgentManifest};
 use crate::manifest::capability::{load_capability_manifest, CapabilityManifest};
 use crate::policy::{load_policy_document, PolicyDocument};
 use crate::routes::{load_routes, RouteConfig};
+use crate::schema::validate_config_files_with_schemas;
 use eva_core::EvaError;
 use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,21 +56,36 @@ pub fn load_project_config(project_root: impl AsRef<Path>) -> Result<ProjectConf
     let eva = load_eva_config(&eva_config_path)?;
     let roots = eva.config.resolve_against(&project_root);
 
-    let agents = find_named_files(&roots.agent_dir, "agent.yaml")?
+    let agent_paths = find_named_files(&roots.agent_dir, "agent.yaml")?;
+    let adapter_paths = find_yaml_files(&roots.adapter_dir)?;
+    let capability_paths = find_yaml_files(&roots.capability_dir)?;
+    let policy_paths = find_yaml_files(&roots.policy_dir)?;
+
+    validate_config_files_with_schemas(
+        &roots,
+        &eva_config_path,
+        &agent_paths,
+        &adapter_paths,
+        &capability_paths,
+        &policy_paths,
+        &roots.route_file,
+    )?;
+
+    let agents = agent_paths
         .into_iter()
         .map(load_agent_manifest)
         .collect::<Result<Vec<_>, _>>()?;
 
-    let adapters = find_yaml_files(&roots.adapter_dir)?
+    let adapters = adapter_paths
         .into_iter()
         .map(load_adapter_manifest)
         .collect::<Result<Vec<_>, _>>()?;
 
-    let capabilities = find_yaml_files(&roots.capability_dir)?
+    let capabilities = capability_paths
         .into_iter()
         .map(load_capability_manifest)
         .collect::<Result<Vec<_>, _>>()?;
-    let policies = find_yaml_files(&roots.policy_dir)?
+    let policies = policy_paths
         .into_iter()
         .map(load_policy_document)
         .collect::<Result<Vec<_>, _>>()?;
@@ -97,6 +113,7 @@ pub fn validate_project_config(project: &ProjectConfig) -> Result<(), EvaError> 
     validate_unique_adapters(&project.adapters)?;
     validate_unique_capabilities(&project.capabilities)?;
     validate_agent_references(&project.agents)?;
+    validate_agent_permission_references(project)?;
     validate_agent_scripts(&project.agents)?;
     validate_capability_providers(project)?;
     validate_route_agents(project)?;
@@ -282,6 +299,64 @@ fn validate_agent_scripts(agents: &[AgentManifest]) -> Result<(), EvaError> {
     Ok(())
 }
 
+fn validate_agent_permission_references(project: &ProjectConfig) -> Result<(), EvaError> {
+    let adapters = project
+        .adapters
+        .iter()
+        .map(|adapter| adapter.id.as_str().to_owned())
+        .collect::<BTreeSet<_>>();
+    let adapter_capabilities = project
+        .adapters
+        .iter()
+        .flat_map(|adapter| adapter.capabilities.iter())
+        .map(|capability| capability.as_str().to_owned())
+        .collect::<BTreeSet<_>>();
+    let declared_capabilities = project
+        .capabilities
+        .iter()
+        .map(|capability| capability.capability.as_str().to_owned())
+        .collect::<BTreeSet<_>>();
+
+    for agent in &project.agents {
+        for provider in &agent.permissions.adapter_providers {
+            if !adapters.contains(provider) {
+                return Err(EvaError::not_found(
+                    "Agent permission references unknown Adapter provider",
+                )
+                .with_context("agent_id", agent.id.as_str())
+                .with_context("provider", provider)
+                .with_context("path", agent.path.display().to_string())
+                .with_context("field", "permissions.adapters.providers")
+                .with_context(
+                    "suggestion",
+                    "add the Adapter manifest or remove the provider permission",
+                ));
+            }
+        }
+
+        for capability in &agent.permissions.adapter_capabilities {
+            let capability = capability.as_str();
+            if !adapter_capabilities.contains(capability)
+                && !declared_capabilities.contains(capability)
+            {
+                return Err(EvaError::not_found(
+                    "Agent permission references unknown adapter capability",
+                )
+                .with_context("agent_id", agent.id.as_str())
+                .with_context("capability", capability)
+                .with_context("path", agent.path.display().to_string())
+                .with_context("field", "permissions.adapters.capabilities")
+                .with_context(
+                    "suggestion",
+                    "add the Adapter/Capability manifest or remove the capability permission",
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_capability_providers(project: &ProjectConfig) -> Result<(), EvaError> {
     let adapters = project
         .adapters
@@ -431,6 +506,7 @@ fn yaml_error(error: serde_yaml::Error, path: &Path, config_type: &'static str) 
 mod tests {
     use super::*;
     use eva_core::ErrorKind;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -470,5 +546,188 @@ mod tests {
         let error = validate_project_config(&project).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::NotFound);
         assert!(error.message().contains("Route target"));
+    }
+
+    #[test]
+    fn load_project_config_rejects_schema_additional_property() {
+        let root = minimal_project("schema-additional", "codex-cli");
+        fs::write(
+            root.join("config/routes/topics.yaml"),
+            r#"routes:
+  - pattern: /sys
+    delivery: fanout
+    agents:
+      - root-agent
+    extra: denied
+"#,
+        )
+        .unwrap();
+
+        let error = load_project_config(&root).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+        assert_context(&error, "field", "routes[0].extra");
+        assert_context(&error, "schema_rule", "additionalProperties");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_project_config_rejects_unknown_agent_permission_provider() {
+        let root = minimal_project("missing-provider", "missing-adapter");
+
+        let error = load_project_config(&root).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_context(&error, "field", "permissions.adapters.providers");
+        assert_context(&error, "provider", "missing-adapter");
+        assert_context(
+            &error,
+            "suggestion",
+            "add the Adapter manifest or remove the provider permission",
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn assert_context(error: &EvaError, key: &str, value: &str) {
+        assert!(
+            error
+                .context()
+                .entries()
+                .iter()
+                .any(|(entry_key, entry_value)| entry_key == key && entry_value == value),
+            "missing context {key}={value:?}: {:?}",
+            error.context().entries()
+        );
+    }
+
+    fn minimal_project(name: &str, agent_provider: &str) -> PathBuf {
+        let root = test_temp_dir(name);
+        let config = root.join("config");
+        for directory in [
+            "agents/root-agent",
+            "adapters",
+            "capabilities",
+            "policies",
+            "routes",
+            "schemas",
+        ] {
+            fs::create_dir_all(config.join(directory)).unwrap();
+        }
+
+        fs::write(
+            config.join("eva.yaml"),
+            r#"runtime:
+  env: dev
+  workspace: .
+  hot_reload: true
+eventbus: {}
+scheduler: {}
+observability: {}
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas
+"#,
+        )
+        .unwrap();
+        fs::write(config.join("agents/root-agent/main.lua"), "return {}\n").unwrap();
+        fs::write(
+            config.join("agents/root-agent/agent.yaml"),
+            format!(
+                r#"id: root-agent
+enabled: true
+script: main.lua
+subscriptions:
+  - /sys
+permissions:
+  emit:
+    - /sys/**
+  adapters:
+    capabilities:
+      - repo.analyze
+    providers:
+      - {agent_provider}
+"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            config.join("adapters/codex-cli.yaml"),
+            r#"id: codex-cli
+name: Codex CLI
+version: 1.0.0
+enabled: true
+transport: builtin
+capabilities:
+  - repo.analyze
+permissions: {}
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            config.join("routes/topics.yaml"),
+            r#"routes:
+  - pattern: /sys
+    delivery: fanout
+    agents:
+      - root-agent
+"#,
+        )
+        .unwrap();
+        write_minimal_schemas(&config.join("schemas"));
+        root
+    }
+
+    fn write_minimal_schemas(schema_dir: &Path) {
+        fs::write(
+            schema_dir.join("eva.schema.json"),
+            r#"{"type":"object","required":["runtime","eventbus","scheduler","observability","config"],"properties":{"runtime":{"type":"object","required":["env","workspace","hot_reload"],"properties":{"env":{"type":"string"},"workspace":{"type":"string"},"hot_reload":{"type":"boolean"}},"additionalProperties":true},"eventbus":{"type":"object"},"scheduler":{"type":"object"},"observability":{"type":"object"},"config":{"type":"object"}},"additionalProperties":true}"#,
+        )
+        .unwrap();
+        fs::write(
+            schema_dir.join("agent.schema.json"),
+            r#"{"type":"object","required":["id","enabled","script","subscriptions","permissions"],"properties":{"id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"},"enabled":{"type":"boolean"},"script":{"type":"string"},"subscriptions":{"type":"array","items":{"type":"string","pattern":"^/.+"}},"permissions":{"type":"object"}},"additionalProperties":true}"#,
+        )
+        .unwrap();
+        fs::write(
+            schema_dir.join("adapter.schema.json"),
+            r#"{"type":"object","required":["id","name","version","enabled","transport","capabilities","permissions","limits","routing"],"properties":{"id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"},"name":{"type":"string"},"version":{"type":"string"},"enabled":{"type":"boolean"},"transport":{"type":"string","enum":["builtin","stdio","http","eventbus","mcp","skill","hardware","lua_capability"]},"capabilities":{"type":"array","items":{"type":"string"}},"permissions":{"type":"object"},"limits":{"type":"object"},"routing":{"type":"object"}},"additionalProperties":true}"#,
+        )
+        .unwrap();
+        fs::write(
+            schema_dir.join("capability.schema.json"),
+            r#"{"type":"object","required":["id","name","version","enabled","kind","capability"],"properties":{"id":{"type":"string"},"name":{"type":"string"},"version":{"type":"string"},"enabled":{"type":"boolean"},"kind":{"type":"string","enum":["adapter_capability","lua_capability","mcp_tool","skill"]},"capability":{"type":"string"}},"additionalProperties":true}"#,
+        )
+        .unwrap();
+        fs::write(
+            schema_dir.join("policy.schema.json"),
+            r#"{"type":"object","minProperties":1,"additionalProperties":true}"#,
+        )
+        .unwrap();
+        fs::write(
+            schema_dir.join("routes.schema.json"),
+            r#"{"type":"object","required":["routes"],"properties":{"routes":{"type":"array","items":{"type":"object","required":["pattern","delivery","agents"],"properties":{"pattern":{"type":"string","pattern":"^/.+"},"delivery":{"type":"string","enum":["fanout","compete"]},"agents":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}},"additionalProperties":false}"#,
+        )
+        .unwrap();
+    }
+
+    fn test_temp_dir(name: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "eva-config-project-{name}-{}-{now}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        path
     }
 }

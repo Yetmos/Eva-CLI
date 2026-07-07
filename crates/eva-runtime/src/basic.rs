@@ -493,6 +493,21 @@ mod tests {
     fn lua_vm_timeout_limit_interrupts_non_returning_script() {
         let root = test_root("lua-timeout-limit");
         copy_dir_all(workspace_root().join("examples/basic"), root.path()).unwrap();
+        copy_dir_all(
+            workspace_root().join("config/schemas"),
+            root.path().join("config/schemas"),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("config/eva.yaml"),
+            fs::read_to_string(root.path().join("config/eva.yaml"))
+                .unwrap()
+                .replace(
+                    "schema_dir: ../../config/schemas",
+                    "schema_dir: config/schemas",
+                ),
+        )
+        .unwrap();
         fs::write(
             root.path().join("config/agents/root-agent/main.lua"),
             r#"

@@ -2,14 +2,14 @@
 
 更新时间：2026-07-07
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.6.5 仍把主要命令实现集中在 `run.rs`，这样 version、inspect、task、external capability、memory context、hardware、backup、lifecycle、release 和 durable diagnostics gate 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.9.1 仍把主要命令实现集中在 `run.rs`，这样 version、config validate、inspect、task、external capability、memory context、hardware、backup、lifecycle、release、durable diagnostics gate 和 schema validation error 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | V1.6.5 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate，以及 V1.6.5 durable diagnostics CLI。 |
+| `run.rs` | V1.9.1 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate、V1.6.5 durable diagnostics CLI，以及 V1.9.1 schema validation error context。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -18,6 +18,12 @@
 | `capability.rs` | 边界保留 | 后续 capability list/inspect/dry-run invoke。 |
 
 ## V1.0/V1.6.4 任务状态
+
+## V1.9.1 Config Validation
+
+`eva config validate` 继续保持相同 text/JSON envelope。V1.9.1 后，`load_project_config` 会先用 `config/schemas/*.schema.json` 校验主配置、manifest、policy 和 routes，再进入 typed loader；schema 错误在 JSON error context 中包含 `path`、`schema_path`、`field`、`schema_rule` 和 `suggestion`。
+
+当前 CLI 回归覆盖合法项目 JSON 成功，以及 routes schema `additionalProperties` 失败时的 `config.validate` JSON error context。
 
 `run.rs` 在 `eva run --example basic` 成功返回报告后，默认写入两类文件：
 
