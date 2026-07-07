@@ -10,4 +10,4 @@ pub use bindings::{LuaEventResult, LuaHost, LuaHostContext, LuaHostObservation};
 pub use hot_reload::LuaGeneration;
 pub use loader::LuaScript;
 pub use sandbox::LuaSandboxPolicy;
-pub use vm::{LuaVmAdapter, MluaVmAdapter};
+pub use vm::{LuaExecutionLimits, LuaVmAdapter, MluaVmAdapter};

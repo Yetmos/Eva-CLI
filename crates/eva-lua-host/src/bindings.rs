@@ -2,7 +2,7 @@
 
 use crate::loader::LuaScript;
 use crate::sandbox::LuaSandboxPolicy;
-use crate::vm::{LuaVmAdapter, MluaVmAdapter};
+use crate::vm::{LuaExecutionLimits, LuaVmAdapter, MluaVmAdapter};
 use eva_capability::CapabilityHostApi;
 use eva_core::{AgentId, CapabilityName, EvaError, Event, Topic};
 use eva_memory::LuaContextSnapshot;
@@ -71,8 +71,18 @@ impl<A: LuaVmAdapter> LuaHost<A> {
         event: &Event,
         ctx: &LuaHostContext,
     ) -> Result<LuaEventResult, EvaError> {
+        self.run_on_event_with_limits(script, event, ctx, LuaExecutionLimits::default())
+    }
+
+    pub fn run_on_event_with_limits(
+        &self,
+        script: &LuaScript,
+        event: &Event,
+        ctx: &LuaHostContext,
+        limits: LuaExecutionLimits,
+    ) -> Result<LuaEventResult, EvaError> {
         self.sandbox.validate(script)?;
-        match self.vm.run_on_event(script, event, ctx) {
+        match self.vm.run_on_event_with_limits(script, event, ctx, limits) {
             Ok(result) => Ok(result),
             Err(error) if should_attempt_static_fallback(script.source(), &error) => {
                 parse_static_on_event(script, event, ctx)
@@ -88,10 +98,27 @@ impl<A: LuaVmAdapter> LuaHost<A> {
         ctx: &LuaHostContext,
         tool_host: Rc<dyn CapabilityHostApi>,
     ) -> Result<LuaEventResult, EvaError> {
+        self.run_on_event_with_tools_and_limits(
+            script,
+            event,
+            ctx,
+            tool_host,
+            LuaExecutionLimits::default(),
+        )
+    }
+
+    pub fn run_on_event_with_tools_and_limits(
+        &self,
+        script: &LuaScript,
+        event: &Event,
+        ctx: &LuaHostContext,
+        tool_host: Rc<dyn CapabilityHostApi>,
+        limits: LuaExecutionLimits,
+    ) -> Result<LuaEventResult, EvaError> {
         self.sandbox.validate(script)?;
         match self
             .vm
-            .run_on_event_with_tools(script, event, ctx, tool_host)
+            .run_on_event_with_tools_and_limits(script, event, ctx, tool_host, limits)
         {
             Ok(result) => Ok(result),
             Err(error) if should_attempt_static_fallback(script.source(), &error) => {
@@ -573,6 +600,38 @@ return root
 
         assert_eq!(error.kind(), eva_core::ErrorKind::Internal);
         assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
+    }
+
+    #[test]
+    fn on_event_infinite_loop_is_interrupted_by_timeout_limit() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  while true do
+  end
+  return { status = "unreachable" }
+end
+
+return root
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+        let limits = LuaExecutionLimits::with_timeout(std::time::Duration::from_millis(1))
+            .with_hook_instruction_interval(1);
+
+        let error = LuaHost::new()
+            .run_on_event_with_limits(&script, &event(), &ctx, limits)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Timeout);
+        assert_eq!(error.provider_code().unwrap().as_str(), "lua_timeout");
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "timeout_ms" && value == "1"));
     }
 
     #[test]

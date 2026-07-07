@@ -13,7 +13,8 @@ use eva_core::{
 };
 use eva_eventbus::{DeadLetterRecord, EventBus, EventReceipt, InMemoryEventBus};
 use eva_lua_host::{
-    LuaEventResult, LuaGeneration, LuaHost, LuaHostContext, LuaHostObservation, LuaScript,
+    LuaEventResult, LuaExecutionLimits, LuaGeneration, LuaHost, LuaHostContext, LuaHostObservation,
+    LuaScript,
 };
 use eva_observability::{AuditAction, AuditSink, InMemoryAuditSink};
 use eva_scheduler::{DeliveryMode, DeliveryPlan, MailboxRegistry, RoutingRule, SubscriptionTable};
@@ -137,13 +138,15 @@ pub fn run_basic(
         agent.accept(delivered_event)?;
         let script = load_agent_script(project, &delivery.agent_id)?;
         let control = agent_control(&options);
+        let lua_limits = lua_execution_limits(&options);
         let record = agent
             .run_next_with_control(control, |agent_id, event| {
-                let result = lua_host.run_on_event_with_tools(
+                let result = lua_host.run_on_event_with_tools_and_limits(
                     &script,
                     event,
                     &LuaHostContext::new(agent_id.clone()),
                     Rc::clone(&lua_tool_host),
+                    lua_limits,
                 )?;
                 record_lua_observability(
                     &mut lua_audit_sink,
@@ -295,6 +298,13 @@ fn agent_control(options: &BasicRunOptions) -> AgentRunControl {
     control
 }
 
+fn lua_execution_limits(options: &BasicRunOptions) -> LuaExecutionLimits {
+    options
+        .timeout_ms
+        .map(|timeout_ms| LuaExecutionLimits::with_timeout(Duration::from_millis(timeout_ms)))
+        .unwrap_or_default()
+}
+
 fn dead_letter_summaries(records: &[DeadLetterRecord]) -> Vec<DeadLetterSummary> {
     records
         .iter()
@@ -406,6 +416,8 @@ mod tests {
     use super::*;
     use crate::RuntimeBuilder;
     use eva_config::load_project_config;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -472,6 +484,57 @@ mod tests {
     }
 
     #[test]
+    fn lua_vm_timeout_limit_interrupts_non_returning_script() {
+        let root = test_root("lua-timeout-limit");
+        copy_dir_all(workspace_root().join("examples/basic"), root.path()).unwrap();
+        fs::write(
+            root.path().join("config/agents/root-agent/main.lua"),
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  while true do
+  end
+  return { status = "unreachable" }
+end
+
+return root
+"#,
+        )
+        .unwrap();
+        let project = load_project_config(root.path()).unwrap();
+        let runtime = RuntimeBuilder::in_memory_v05().build(&project).unwrap();
+
+        let report = runtime
+            .run_basic(
+                &project,
+                BasicRunOptions {
+                    timeout_ms: Some(1),
+                    ..BasicRunOptions::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.task.status, TaskStatus::TimedOut);
+        assert_eq!(
+            report.agent_runs[0].status,
+            eva_agent::AgentRunStatus::TimedOut
+        );
+        assert_eq!(
+            report.agent_runs[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .provider_code()
+                .unwrap()
+                .as_str(),
+            "lua_timeout"
+        );
+        assert!(report.lua_results.is_empty());
+        assert!(report.capability_response.is_none());
+    }
+
+    #[test]
     fn cancelled_basic_run_returns_task_record() {
         let project = load_project_config(workspace_root().join("examples/basic")).unwrap();
         let runtime = RuntimeBuilder::in_memory_v05().build(&project).unwrap();
@@ -518,5 +581,49 @@ mod tests {
             report.task.replayed_events[0].event_id,
             "evt-basic-1:replay-1"
         );
+    }
+
+    fn copy_dir_all(source: impl AsRef<Path>, target: impl AsRef<Path>) -> std::io::Result<()> {
+        fs::create_dir_all(target.as_ref())?;
+        for entry in fs::read_dir(source.as_ref())? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let target_path = target.as_ref().join(entry.file_name());
+            if file_type.is_dir() {
+                copy_dir_all(entry.path(), target_path)?;
+            } else {
+                fs::copy(entry.path(), target_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn test_root(name: &str) -> TestRoot {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "eva-runtime-basic-{name}-{}-{now}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        TestRoot { path }
+    }
+
+    struct TestRoot {
+        path: PathBuf,
+    }
+
+    impl TestRoot {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }

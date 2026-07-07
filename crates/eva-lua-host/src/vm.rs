@@ -8,22 +8,82 @@ use eva_core::{
     InvokeTarget, RequestId, Topic, TraceContext,
 };
 use eva_observability::{AuditAction, TraceFields};
-use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value};
+use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "execute Lua on_event handlers behind a VM adapter boundary";
 
+const LUA_TIMEOUT_MARKER: &str = "eva_lua_timeout";
+const DEFAULT_HOOK_INSTRUCTION_INTERVAL: u32 = 1_000;
+
+/// Execution limits applied inside the Lua VM boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LuaExecutionLimits {
+    pub timeout: Option<Duration>,
+    pub hook_instruction_interval: u32,
+}
+
+impl LuaExecutionLimits {
+    pub const fn none() -> Self {
+        Self {
+            timeout: None,
+            hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
+        }
+    }
+
+    pub const fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            timeout: Some(timeout),
+            hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
+        }
+    }
+
+    pub const fn with_hook_instruction_interval(mut self, interval: u32) -> Self {
+        self.hook_instruction_interval = interval;
+        self
+    }
+}
+
+impl Default for LuaExecutionLimits {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
 /// Adapter trait for Lua VM implementations.
 pub trait LuaVmAdapter {
+    fn run_on_event_with_limits(
+        &self,
+        script: &LuaScript,
+        event: &Event,
+        ctx: &LuaHostContext,
+        limits: LuaExecutionLimits,
+    ) -> Result<LuaEventResult, EvaError>;
+
     fn run_on_event(
         &self,
         script: &LuaScript,
         event: &Event,
         ctx: &LuaHostContext,
-    ) -> Result<LuaEventResult, EvaError>;
+    ) -> Result<LuaEventResult, EvaError> {
+        self.run_on_event_with_limits(script, event, ctx, LuaExecutionLimits::default())
+    }
+
+    fn run_on_event_with_tools_and_limits(
+        &self,
+        script: &LuaScript,
+        event: &Event,
+        ctx: &LuaHostContext,
+        tool_host: Rc<dyn CapabilityHostApi>,
+        limits: LuaExecutionLimits,
+    ) -> Result<LuaEventResult, EvaError> {
+        let _ = tool_host;
+        self.run_on_event_with_limits(script, event, ctx, limits)
+    }
 
     fn run_on_event_with_tools(
         &self,
@@ -32,8 +92,13 @@ pub trait LuaVmAdapter {
         ctx: &LuaHostContext,
         tool_host: Rc<dyn CapabilityHostApi>,
     ) -> Result<LuaEventResult, EvaError> {
-        let _ = tool_host;
-        self.run_on_event(script, event, ctx)
+        self.run_on_event_with_tools_and_limits(
+            script,
+            event,
+            ctx,
+            tool_host,
+            LuaExecutionLimits::default(),
+        )
     }
 }
 
@@ -42,23 +107,25 @@ pub trait LuaVmAdapter {
 pub struct MluaVmAdapter;
 
 impl LuaVmAdapter for MluaVmAdapter {
-    fn run_on_event(
+    fn run_on_event_with_limits(
         &self,
         script: &LuaScript,
         event: &Event,
         ctx: &LuaHostContext,
+        limits: LuaExecutionLimits,
     ) -> Result<LuaEventResult, EvaError> {
-        self.run_on_event_inner(script, event, ctx, None)
+        self.run_on_event_inner(script, event, ctx, None, limits)
     }
 
-    fn run_on_event_with_tools(
+    fn run_on_event_with_tools_and_limits(
         &self,
         script: &LuaScript,
         event: &Event,
         ctx: &LuaHostContext,
         tool_host: Rc<dyn CapabilityHostApi>,
+        limits: LuaExecutionLimits,
     ) -> Result<LuaEventResult, EvaError> {
-        self.run_on_event_inner(script, event, ctx, Some(tool_host))
+        self.run_on_event_inner(script, event, ctx, Some(tool_host), limits)
     }
 }
 
@@ -69,22 +136,26 @@ impl MluaVmAdapter {
         event: &Event,
         ctx: &LuaHostContext,
         tool_host: Option<Rc<dyn CapabilityHostApi>>,
+        limits: LuaExecutionLimits,
     ) -> Result<LuaEventResult, EvaError> {
         let lua = controlled_lua()?;
+        install_execution_limits(&lua, limits)?;
         let root = lua.create_table().map_err(map_host_setup_error)?;
         lua.globals()
             .set("root", root)
             .map_err(map_host_setup_error)?;
 
         let chunk = lua.load(script.source()).set_name("eva-agent-script");
-        let loaded = chunk.eval::<Value>().map_err(map_load_error)?;
+        let loaded = chunk
+            .eval::<Value>()
+            .map_err(|error| map_load_error(error, limits))?;
         let handler = on_event_handler(&lua, loaded)?;
         let observations = Rc::new(RefCell::new(Vec::new()));
         let event_table = event_table(&lua, event)?;
         let ctx_table = ctx_table(&lua, event, ctx, Rc::clone(&observations), tool_host)?;
         let result = handler
             .call::<_, Value>((event_table, ctx_table))
-            .map_err(map_handler_error)?;
+            .map_err(|error| map_handler_error(error, limits))?;
 
         let mut event_result =
             result_table(result).and_then(|table| lua_result(table, event, ctx))?;
@@ -103,6 +174,44 @@ fn controlled_lua() -> Result<Lua, EvaError> {
         .set("rawset", Value::Nil)
         .map_err(map_host_setup_error)?;
     Ok(lua)
+}
+
+fn install_execution_limits(lua: &Lua, limits: LuaExecutionLimits) -> Result<(), EvaError> {
+    let Some(timeout) = limits.timeout else {
+        return Ok(());
+    };
+    let deadline = Instant::now() + timeout;
+    let interval = limits.hook_instruction_interval.max(1);
+    lua.set_hook(
+        HookTriggers::new().every_nth_instruction(interval),
+        move |_, _| {
+            if Instant::now() >= deadline {
+                return Err(mlua::Error::RuntimeError(LUA_TIMEOUT_MARKER.to_owned()));
+            }
+            Ok(())
+        },
+    );
+    Ok(())
+}
+
+fn lua_timeout_error(limits: LuaExecutionLimits) -> EvaError {
+    let timeout_ms = if let Some(timeout) = limits.timeout {
+        timeout.as_millis().to_string()
+    } else {
+        "unknown".to_owned()
+    };
+    EvaError::timeout("Lua on_event exceeded timeout budget")
+        .with_provider_code("lua_timeout")
+        .with_context("lua_phase", "handler")
+        .with_context("timeout_ms", timeout_ms)
+}
+
+fn is_lua_timeout_error(error: &mlua::Error) -> bool {
+    match error {
+        mlua::Error::RuntimeError(message) => message == LUA_TIMEOUT_MARKER,
+        mlua::Error::CallbackError { cause, .. } => is_lua_timeout_error(cause),
+        _ => false,
+    }
 }
 
 fn on_event_handler<'lua>(lua: &'lua Lua, loaded: Value<'lua>) -> Result<Function<'lua>, EvaError> {
@@ -606,7 +715,10 @@ fn map_host_setup_error(_: mlua::Error) -> EvaError {
         .with_context("lua_phase", "host_setup")
 }
 
-fn map_load_error(error: mlua::Error) -> EvaError {
+fn map_load_error(error: mlua::Error, limits: LuaExecutionLimits) -> EvaError {
+    if is_lua_timeout_error(&error) {
+        return lua_timeout_error(limits).with_context("lua_phase", "load");
+    }
     match error {
         mlua::Error::SyntaxError { .. } => {
             EvaError::invalid_argument("Lua script failed to compile")
@@ -619,7 +731,10 @@ fn map_load_error(error: mlua::Error) -> EvaError {
     }
 }
 
-fn map_handler_error(_: mlua::Error) -> EvaError {
+fn map_handler_error(error: mlua::Error, limits: LuaExecutionLimits) -> EvaError {
+    if is_lua_timeout_error(&error) {
+        return lua_timeout_error(limits);
+    }
     EvaError::internal("Lua on_event runtime error")
         .with_provider_code("lua_runtime_error")
         .with_context("lua_phase", "handler")
