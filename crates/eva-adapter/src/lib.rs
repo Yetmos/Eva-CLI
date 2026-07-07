@@ -8,7 +8,9 @@ pub mod router;
 pub mod runtime;
 pub mod transports;
 
-pub use capability_host::{response_from_report, AdapterBackedCapabilityHost};
+pub use capability_host::{
+    is_retryable_provider_failure, response_from_report, AdapterBackedCapabilityHost,
+};
 pub use manifest::{AdapterCapabilityBinding, AdapterHandle, AdapterHealth};
 pub use registry::AdapterRegistry;
 pub use router::{AdapterRoute, AdapterRouteRequest, AdapterRouter};

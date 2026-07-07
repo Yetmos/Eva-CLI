@@ -65,17 +65,29 @@ impl CapabilityHostApi for AdapterBackedCapabilityHost {
             ));
         }
 
+        let request_id = request.request_id().clone();
         let mut last_retryable_error = None;
         for candidate in &plan.providers {
             match self.invoke_provider(&request, &candidate.provider) {
-                Ok(report) => return Ok(response_from_report(report)),
-                Err(error) if error.is_retryable() => {
+                Ok(report) if report.status == "completed" => {
+                    return Ok(response_from_report(report))
+                }
+                Ok(report) => {
+                    let error =
+                        report_error(report).with_context("provider", candidate.provider.as_str());
+                    if is_retryable_provider_failure(&error) {
+                        last_retryable_error = Some(error);
+                        continue;
+                    }
+                    return Ok(response_from_error(request_id, error));
+                }
+                Err(error) if is_retryable_provider_failure(&error) => {
                     last_retryable_error =
                         Some(error.with_context("provider", candidate.provider.as_str()));
                 }
                 Err(error) => {
                     return Ok(response_from_error(
-                        request.request_id().clone(),
+                        request_id,
                         error.with_context("provider", candidate.provider.as_str()),
                     ));
                 }
@@ -83,7 +95,7 @@ impl CapabilityHostApi for AdapterBackedCapabilityHost {
         }
 
         Ok(response_from_error(
-            request.request_id().clone(),
+            request_id,
             last_retryable_error.unwrap_or_else(|| {
                 EvaError::unavailable("all adapter providers failed")
                     .with_context("capability", plan.capability.as_str())
@@ -129,6 +141,11 @@ pub fn response_from_error(request_id: eva_core::RequestId, error: EvaError) -> 
     } else {
         InvokeResponse::failed(request_id, error)
     }
+}
+
+/// Returns whether adapter-backed capability invocation may try the next provider.
+pub fn is_retryable_provider_failure(error: &EvaError) -> bool {
+    error.is_retryable()
 }
 
 fn report_error(report: AdapterInvokeReport) -> EvaError {
@@ -249,6 +266,115 @@ mod tests {
         );
     }
 
+    #[test]
+    fn adapter_backed_host_falls_back_after_retryable_report_failure() {
+        let host = host_with_provider_selection_and_handles(
+            PermissionSet::deny_all()
+                .allow_capability(capability("repo.summary"))
+                .allow_adapter(adapter("stdio-fail"))
+                .allow_adapter(adapter("builtin-test")),
+            CapabilityProviderSelection::new(
+                None,
+                Some(adapter("stdio-fail")),
+                vec![adapter("builtin-test")],
+                Vec::new(),
+            ),
+            vec![
+                stdio_handle("stdio-fail", Some(test_command()), fail_args()),
+                builtin_handle(true),
+            ],
+        );
+        let request = InvokeRequest::new(
+            RequestId::parse("req-capability-fallback").unwrap(),
+            InvokeTarget::Capability(capability("repo.summary")),
+            InvokeInput::text("repo"),
+        );
+
+        let response = host.invoke(request).unwrap();
+
+        assert_eq!(response.status(), InvokeStatus::Completed);
+        assert!(response
+            .output()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .contains("builtin-test"));
+    }
+
+    #[test]
+    fn adapter_backed_host_stops_after_non_retryable_provider_error() {
+        let host = host_with_provider_selection_and_handles(
+            PermissionSet::deny_all()
+                .allow_capability(capability("repo.summary"))
+                .allow_adapter(adapter("stdio-invalid"))
+                .allow_adapter(adapter("builtin-test")),
+            CapabilityProviderSelection::new(
+                None,
+                Some(adapter("stdio-invalid")),
+                vec![adapter("builtin-test")],
+                Vec::new(),
+            ),
+            vec![
+                stdio_handle("stdio-invalid", None, Vec::new()),
+                builtin_handle(true),
+            ],
+        );
+        let request = InvokeRequest::new(
+            RequestId::parse("req-capability-nonretryable").unwrap(),
+            InvokeTarget::Capability(capability("repo.summary")),
+            InvokeInput::text("repo"),
+        );
+
+        let response = host.invoke(request).unwrap();
+
+        assert_eq!(response.status(), InvokeStatus::Failed);
+        let error = response.error().unwrap();
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+        assert!(!error.is_retryable());
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "provider" && value == "stdio-invalid"));
+    }
+
+    #[test]
+    fn adapter_backed_host_preserves_last_retryable_error_when_all_providers_fail() {
+        let host = host_with_provider_selection_and_handles(
+            PermissionSet::deny_all()
+                .allow_capability(capability("repo.summary"))
+                .allow_adapter(adapter("stdio-fail-a"))
+                .allow_adapter(adapter("stdio-fail-b")),
+            CapabilityProviderSelection::new(
+                None,
+                Some(adapter("stdio-fail-a")),
+                vec![adapter("stdio-fail-b")],
+                Vec::new(),
+            ),
+            vec![
+                stdio_handle("stdio-fail-a", Some(test_command()), fail_args()),
+                stdio_handle("stdio-fail-b", Some(test_command()), fail_args()),
+            ],
+        );
+        let request = InvokeRequest::new(
+            RequestId::parse("req-capability-all-fail").unwrap(),
+            InvokeTarget::Capability(capability("repo.summary")),
+            InvokeInput::text("repo"),
+        );
+
+        let response = host.invoke(request).unwrap();
+
+        assert_eq!(response.status(), InvokeStatus::Failed);
+        let error = response.error().unwrap();
+        assert_eq!(error.kind(), ErrorKind::Unavailable);
+        assert!(error.is_retryable());
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "provider" && value == "stdio-fail-b"));
+    }
+
     fn host_with_builtin_adapter(enabled: bool) -> AdapterBackedCapabilityHost {
         host_with_permissions_and_handle(
             PermissionSet::deny_all()
@@ -267,6 +393,23 @@ mod tests {
         permissions: PermissionSet,
         handle: AdapterHandle,
     ) -> AdapterBackedCapabilityHost {
+        host_with_provider_selection_and_handles(
+            permissions,
+            CapabilityProviderSelection::new(
+                None,
+                Some(adapter("builtin-test")),
+                Vec::new(),
+                vec![capability("repo.analyze")],
+            ),
+            vec![handle],
+        )
+    }
+
+    fn host_with_provider_selection_and_handles(
+        permissions: PermissionSet,
+        provider_selection: CapabilityProviderSelection,
+        handles: Vec<AdapterHandle>,
+    ) -> AdapterBackedCapabilityHost {
         let mut capability_registry = CapabilityRegistry::new();
         capability_registry
             .register(CapabilityDescriptor {
@@ -274,16 +417,13 @@ mod tests {
                 name: capability("repo.summary"),
                 enabled: true,
                 provider: "builtin-test".to_owned(),
-                provider_selection: CapabilityProviderSelection::new(
-                    None,
-                    Some(adapter("builtin-test")),
-                    Vec::new(),
-                    vec![capability("repo.analyze")],
-                ),
+                provider_selection,
             })
             .unwrap();
         let mut adapter_registry = AdapterRegistry::new();
-        adapter_registry.register(handle).unwrap();
+        for handle in handles {
+            adapter_registry.register(handle).unwrap();
+        }
         let runtime = AdapterRuntime::from_registry(adapter_registry);
         AdapterBackedCapabilityHost::new(
             CapabilityRouter::new(capability_registry),
@@ -327,6 +467,40 @@ mod tests {
             hardware_device_class: None,
             bindings: Vec::new(),
         }
+    }
+
+    fn stdio_handle(id: &str, command: Option<&str>, args: Vec<String>) -> AdapterHandle {
+        let mut handle = builtin_handle(true);
+        handle.id = adapter(id);
+        handle.name = format!("Stdio Test {id}");
+        handle.transport = AdapterTransport::Stdio;
+        handle.command = command.map(str::to_owned);
+        handle.args = args;
+        handle
+    }
+
+    #[cfg(windows)]
+    fn test_command() -> &'static str {
+        "powershell"
+    }
+
+    #[cfg(not(windows))]
+    fn test_command() -> &'static str {
+        "sh"
+    }
+
+    #[cfg(windows)]
+    fn fail_args() -> Vec<String> {
+        vec![
+            "-NoProfile".to_owned(),
+            "-Command".to_owned(),
+            "exit 7".to_owned(),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn fail_args() -> Vec<String> {
+        vec!["-c".to_owned(), "exit 7".to_owned()]
     }
 
     fn report(status: &str, output: &str) -> AdapterInvokeReport {
