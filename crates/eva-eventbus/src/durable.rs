@@ -43,6 +43,14 @@ impl DurableEventBus {
         })
     }
 
+    pub fn open_read_only(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
+        Ok(Self {
+            log: FileSystemEventLog::open_read_only(layout)?,
+            dead_letter_store: FileSystemDeadLetterStore::open_read_only(layout)?,
+            receipts: Vec::new(),
+        })
+    }
+
     pub fn log(&self) -> &FileSystemEventLog {
         &self.log
     }
@@ -109,16 +117,41 @@ impl EventBus for DurableEventBus {
 
 impl FileSystemDeadLetterStore {
     pub fn open(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
-        Self::open_dir(layout.event_dir.join(DEAD_LETTER_DIR))
+        Self::open_dir_with_mode(layout.event_dir.join(DEAD_LETTER_DIR), true)
+    }
+
+    pub fn open_read_only(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
+        Self::open_dir_with_mode(layout.event_dir.join(DEAD_LETTER_DIR), false)
     }
 
     pub fn open_dir(root: impl Into<PathBuf>) -> Result<Self, EvaError> {
+        Self::open_dir_with_mode(root, true)
+    }
+
+    fn open_dir_with_mode(
+        root: impl Into<PathBuf>,
+        create_if_missing: bool,
+    ) -> Result<Self, EvaError> {
         let root = root.into();
-        fs::create_dir_all(&root).map_err(|error| {
-            EvaError::internal("failed to create durable dead-letter directory")
-                .with_context("path", root.display().to_string())
-                .with_context("io_error", error.to_string())
-        })?;
+        if root.exists() {
+            if !root.is_dir() {
+                return Err(
+                    EvaError::conflict("durable dead-letter path is not a directory")
+                        .with_context("path", root.display().to_string()),
+                );
+            }
+        } else if create_if_missing {
+            fs::create_dir_all(&root).map_err(|error| {
+                EvaError::internal("failed to create durable dead-letter directory")
+                    .with_context("path", root.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+        } else {
+            return Ok(Self {
+                root,
+                records: Vec::new(),
+            });
+        }
 
         let mut records = load_dead_letters(&root)?;
         records.sort_by(|left, right| left.event_id().cmp(right.event_id()));

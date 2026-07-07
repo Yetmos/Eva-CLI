@@ -2,6 +2,7 @@
 
 pub mod basic;
 pub mod builder;
+pub mod diagnostics;
 pub mod recovery;
 pub mod runtime;
 pub mod services;
@@ -10,6 +11,9 @@ pub mod task;
 
 pub use basic::{BasicRunOptions, BasicRunReport};
 pub use builder::{RuntimeBuilder, RuntimeMode, RuntimeOptions};
+pub use diagnostics::{
+    inspect_durable_backend, DurableDiagnosticsOptions, DurableDiagnosticsReport,
+};
 pub use recovery::{
     RecoveredEvent, RecoveredTask, RuntimeRecoveryCoordinator, RuntimeRecoveryOptions,
     RuntimeRecoveryReport, SkippedRedriveEvent,

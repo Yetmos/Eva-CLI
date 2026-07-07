@@ -125,16 +125,42 @@ impl InMemoryEventLog {
 
 impl FileSystemEventLog {
     pub fn open(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
-        Self::open_dir(layout.event_dir.join(EVENT_LOG_DIR))
+        Self::open_dir_with_mode(layout.event_dir.join(EVENT_LOG_DIR), true)
+    }
+
+    pub fn open_read_only(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
+        Self::open_dir_with_mode(layout.event_dir.join(EVENT_LOG_DIR), false)
     }
 
     pub fn open_dir(root: impl Into<PathBuf>) -> Result<Self, EvaError> {
+        Self::open_dir_with_mode(root, true)
+    }
+
+    fn open_dir_with_mode(
+        root: impl Into<PathBuf>,
+        create_if_missing: bool,
+    ) -> Result<Self, EvaError> {
         let root = root.into();
-        fs::create_dir_all(&root).map_err(|error| {
-            EvaError::internal("failed to create durable event log directory")
-                .with_context("path", root.display().to_string())
-                .with_context("io_error", error.to_string())
-        })?;
+        if root.exists() {
+            if !root.is_dir() {
+                return Err(
+                    EvaError::conflict("durable event log path is not a directory")
+                        .with_context("path", root.display().to_string()),
+                );
+            }
+        } else if create_if_missing {
+            fs::create_dir_all(&root).map_err(|error| {
+                EvaError::internal("failed to create durable event log directory")
+                    .with_context("path", root.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+        } else {
+            return Ok(Self {
+                root,
+                next_sequence: 0,
+                records: Vec::new(),
+            });
+        }
 
         let mut records = load_records(&root)?;
         records.sort_by_key(|record| record.sequence);
