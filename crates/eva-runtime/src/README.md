@@ -7,7 +7,7 @@
 | 文件 | V0.5 状态 | 说明 |
 | --- | --- | --- |
 | `basic.rs` | 已更新 | V1.0 in-memory basic event loop；生成 `BasicRunReport`、`TaskReport`、Lua generation、dead-letter/replay 摘要。 |
-| `recovery.rs` | V1.6.4 in progress | `RuntimeRecoveryCoordinator`；扫描 durable task snapshots，把未完成 task 标记为 `interrupted` 或 `recovering` 并写回 task store。 |
+| `recovery.rs` | V1.6.4 in progress | `RuntimeRecoveryCoordinator`；扫描 durable task snapshots，把未完成 task 标记为 `interrupted` 或 `recovering` 并写回 task store；带 durable EventBus 时只 redrive 未 ack 且已到期的 dead-letter。 |
 | `task.rs` | 新增 | `TaskStatus`、`TaskReport`、`TaskLogEntry`、`CancellationRecord`、`RetryPolicy`、dead-letter/replay summary，并提供 `TaskReport` 到 `eva_storage::TaskStateSnapshot` 的持久化映射。 |
 | `builder.rs` | 已更新 | `RuntimeMode::InMemoryV05`、`RuntimeOptions::in_memory_v05()`、`RuntimeBuilder::in_memory_v05()`。 |
 | `runtime.rs` | 已更新 | `Runtime::run_basic` 委托给 `basic.rs`，保留 summary/shutdown 行为。 |
@@ -29,4 +29,4 @@
 cargo test -p eva-runtime
 ```
 
-当前测试覆盖成功、missing route、cancel、timeout、dead-letter replay、V0.5/V1.0 builder service summary、task report 状态映射和 V1.6.4 recovery scanner。
+当前测试覆盖成功、missing route、cancel、timeout、dead-letter replay、V0.5/V1.0 builder service summary、task report 状态映射、V1.6.4 recovery scanner 和 event redrive checkpoint。

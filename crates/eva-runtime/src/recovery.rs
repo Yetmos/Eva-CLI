@@ -1,6 +1,11 @@
 //! V1.6.4 runtime crash recovery coordinator.
 
-use eva_storage::{FileSystemTaskStateStore, TaskStateSnapshot, TaskStateStore};
+use eva_core::{EvaError, EventId};
+use eva_eventbus::DurableEventBus;
+use eva_storage::{
+    EventLogStatus, FileSystemTaskStateStore, TaskStateReplaySnapshot, TaskStateSnapshot,
+    TaskStateStore,
+};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "runtime restart recovery over durable task evidence";
@@ -8,12 +13,19 @@ pub const RESPONSIBILITY: &str = "runtime restart recovery over durable task evi
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeRecoveryCoordinator;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeRecoveryOptions {
+    pub redrive_ready_at_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeRecoveryReport {
     pub scanned_tasks: usize,
     pub recovered_tasks: Vec<RecoveredTask>,
     pub unchanged_tasks: Vec<String>,
     pub recovered_snapshots: Vec<TaskStateSnapshot>,
+    pub redriven_events: Vec<RecoveredEvent>,
+    pub skipped_redrive_events: Vec<SkippedRedriveEvent>,
     pub audit: Vec<String>,
 }
 
@@ -23,6 +35,22 @@ pub struct RecoveredTask {
     pub previous_status: String,
     pub status: String,
     pub redrive_candidate: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredEvent {
+    pub task_id: String,
+    pub event_id: String,
+    pub replay_event_id: String,
+    pub sequence: u64,
+    pub topic: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedRedriveEvent {
+    pub task_id: String,
+    pub event_id: String,
+    pub reason: String,
 }
 
 impl RuntimeRecoveryCoordinator {
@@ -64,6 +92,8 @@ impl RuntimeRecoveryCoordinator {
             recovered_tasks,
             unchanged_tasks,
             recovered_snapshots,
+            redriven_events: Vec::new(),
+            skipped_redrive_events: Vec::new(),
             audit,
         }
     }
@@ -71,15 +101,21 @@ impl RuntimeRecoveryCoordinator {
     pub fn recover_task_store(
         &self,
         store: &mut FileSystemTaskStateStore,
-    ) -> Result<RuntimeRecoveryReport, eva_core::EvaError> {
+    ) -> Result<RuntimeRecoveryReport, EvaError> {
         let mut report = self.recover_snapshots(store.list_snapshots()?);
-        for snapshot in &report.recovered_snapshots {
-            store.write(snapshot)?;
-        }
-        report.audit.push(format!(
-            "runtime.recovery:persisted:{}",
-            report.recovered_snapshots.len()
-        ));
+        persist_recovered_snapshots(store, &mut report)?;
+        Ok(report)
+    }
+
+    pub fn recover_task_store_with_redrive(
+        &self,
+        store: &mut FileSystemTaskStateStore,
+        bus: &mut DurableEventBus,
+        options: RuntimeRecoveryOptions,
+    ) -> Result<RuntimeRecoveryReport, EvaError> {
+        let mut report = self.recover_snapshots(store.list_snapshots()?);
+        redrive_recovered_events(&mut report, bus, options)?;
+        persist_recovered_snapshots(store, &mut report)?;
         Ok(report)
     }
 }
@@ -92,10 +128,162 @@ fn recovery_status(snapshot: &TaskStateSnapshot) -> Option<&'static str> {
     }
 }
 
+fn persist_recovered_snapshots(
+    store: &mut FileSystemTaskStateStore,
+    report: &mut RuntimeRecoveryReport,
+) -> Result<(), EvaError> {
+    for snapshot in &report.recovered_snapshots {
+        store.write(snapshot)?;
+    }
+    report.audit.push(format!(
+        "runtime.recovery:persisted:{}",
+        report.recovered_snapshots.len()
+    ));
+    Ok(())
+}
+
+fn redrive_recovered_events(
+    report: &mut RuntimeRecoveryReport,
+    bus: &mut DurableEventBus,
+    options: RuntimeRecoveryOptions,
+) -> Result<(), EvaError> {
+    let mut redriven_events = Vec::new();
+    let mut skipped_redrive_events = Vec::new();
+
+    for snapshot in &mut report.recovered_snapshots {
+        if snapshot.status != "recovering" {
+            continue;
+        }
+
+        let task_id = snapshot.task_id.clone();
+        let dead_letters = snapshot.dead_letters.clone();
+        for dead_letter in dead_letters {
+            let event_id = match EventId::parse(&dead_letter.event_id) {
+                Ok(event_id) => event_id,
+                Err(_) => {
+                    skip_redrive(
+                        &mut skipped_redrive_events,
+                        task_id.clone(),
+                        dead_letter.event_id,
+                        "invalid_event_id",
+                    );
+                    continue;
+                }
+            };
+
+            let Some(record) = bus
+                .dead_letters()
+                .iter()
+                .find(|record| record.event_id() == &event_id)
+            else {
+                skip_redrive(
+                    &mut skipped_redrive_events,
+                    task_id.clone(),
+                    event_id.as_str().to_owned(),
+                    "dead_letter_missing",
+                );
+                continue;
+            };
+
+            if record.redrive.next_attempt_after_ms > options.redrive_ready_at_ms {
+                skip_redrive(
+                    &mut skipped_redrive_events,
+                    task_id.clone(),
+                    event_id.as_str().to_owned(),
+                    "redrive_not_due",
+                );
+                continue;
+            }
+
+            match event_log_status(bus, &event_id) {
+                Some(EventLogStatus::Acked) => {
+                    skip_redrive(
+                        &mut skipped_redrive_events,
+                        task_id.clone(),
+                        event_id.as_str().to_owned(),
+                        "already_acked",
+                    );
+                    continue;
+                }
+                Some(EventLogStatus::Appended | EventLogStatus::Failed) => {}
+                None => {
+                    skip_redrive(
+                        &mut skipped_redrive_events,
+                        task_id.clone(),
+                        event_id.as_str().to_owned(),
+                        "event_log_missing",
+                    );
+                    continue;
+                }
+            }
+
+            let receipt = bus.redrive_dead_letter(&event_id)?;
+            snapshot.replayed_events.push(TaskStateReplaySnapshot {
+                event_id: receipt.event_id.as_str().to_owned(),
+                sequence: receipt.sequence,
+                topic: receipt.topic.as_str().to_owned(),
+            });
+            snapshot.push_log(
+                "info",
+                format!(
+                    "runtime recovery redrove dead-letter event {} as {}",
+                    event_id.as_str(),
+                    receipt.event_id.as_str()
+                ),
+            );
+            redriven_events.push(RecoveredEvent {
+                task_id: task_id.clone(),
+                event_id: event_id.as_str().to_owned(),
+                replay_event_id: receipt.event_id.as_str().to_owned(),
+                sequence: receipt.sequence,
+                topic: receipt.topic.as_str().to_owned(),
+            });
+        }
+    }
+
+    report.redriven_events.extend(redriven_events);
+    report.skipped_redrive_events.extend(skipped_redrive_events);
+    report.audit.push(format!(
+        "runtime.recovery:redriven:{}",
+        report.redriven_events.len()
+    ));
+    report.audit.push(format!(
+        "runtime.recovery:redrive_skipped:{}",
+        report.skipped_redrive_events.len()
+    ));
+    Ok(())
+}
+
+fn skip_redrive(
+    skipped_redrive_events: &mut Vec<SkippedRedriveEvent>,
+    task_id: String,
+    event_id: String,
+    reason: &'static str,
+) {
+    skipped_redrive_events.push(SkippedRedriveEvent {
+        task_id,
+        event_id,
+        reason: reason.to_owned(),
+    });
+}
+
+fn event_log_status(bus: &DurableEventBus, event_id: &EventId) -> Option<EventLogStatus> {
+    bus.log()
+        .records()
+        .iter()
+        .find(|record| record.event.event_id() == event_id)
+        .map(|record| record.status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eva_storage::{TaskStateDeadLetterSnapshot, TaskStateLogSnapshot};
+    use eva_core::{AgentId, EvaError, Event, EventId, EventPayload, Topic};
+    use eva_eventbus::{DurableEventBus, EventBus, RedrivePolicy};
+    use eva_storage::{
+        DurableBackendOptions, FileSystemDurableBackend, TaskStateDeadLetterSnapshot,
+        TaskStateLogSnapshot,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -165,6 +353,165 @@ mod tests {
             .any(|entry| entry == "runtime.recovery:persisted:1"));
     }
 
+    #[test]
+    fn recovery_redrives_unacked_dead_letters_and_records_task_replay() {
+        let root = test_root("redrive-durable");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let event = event("evt-recovery-redrive-1");
+
+            bus.publish(event.clone()).unwrap();
+            bus.dead_letter(event, EvaError::timeout("handler timeout"))
+                .unwrap();
+            let mut pending = snapshot("req-recovery-redrive-store", "running");
+            pending
+                .dead_letters
+                .push(dead_letter("evt-recovery-redrive-1"));
+            store.write(&pending).unwrap();
+        }
+
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+
+            let report = RuntimeRecoveryCoordinator
+                .recover_task_store_with_redrive(
+                    &mut store,
+                    &mut bus,
+                    RuntimeRecoveryOptions::default(),
+                )
+                .unwrap();
+            let recovered = store.read(Some("req-recovery-redrive-store")).unwrap();
+
+            assert_eq!(report.redriven_events.len(), 1);
+            assert_eq!(
+                report.redriven_events[0].replay_event_id,
+                "evt-recovery-redrive-1:replay-1"
+            );
+            assert!(report.skipped_redrive_events.is_empty());
+            assert_eq!(recovered.status, "recovering");
+            assert_eq!(recovered.replayed_events.len(), 1);
+            assert_eq!(
+                recovered.replayed_events[0].event_id,
+                "evt-recovery-redrive-1:replay-1"
+            );
+            assert_eq!(bus.dead_letters()[0].replay_count, 1);
+            assert_eq!(bus.log().records().len(), 2);
+            assert_eq!(
+                bus.log().records()[1].event.event_id().as_str(),
+                "evt-recovery-redrive-1:replay-1"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_skips_redrive_for_acked_original_events() {
+        let root = test_root("redrive-acked");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let event = event("evt-recovery-acked-1");
+
+            bus.publish(event.clone()).unwrap();
+            bus.dead_letter(event.clone(), EvaError::timeout("handler timeout"))
+                .unwrap();
+            bus.ack(event.event_id(), AgentId::parse("agent-a").unwrap())
+                .unwrap();
+            let mut pending = snapshot("req-recovery-acked-store", "running");
+            pending
+                .dead_letters
+                .push(dead_letter("evt-recovery-acked-1"));
+            store.write(&pending).unwrap();
+        }
+
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+
+            let report = RuntimeRecoveryCoordinator
+                .recover_task_store_with_redrive(
+                    &mut store,
+                    &mut bus,
+                    RuntimeRecoveryOptions::default(),
+                )
+                .unwrap();
+            let recovered = store.read(Some("req-recovery-acked-store")).unwrap();
+
+            assert!(report.redriven_events.is_empty());
+            assert_eq!(report.skipped_redrive_events.len(), 1);
+            assert_eq!(report.skipped_redrive_events[0].reason, "already_acked");
+            assert!(recovered.replayed_events.is_empty());
+            assert_eq!(bus.log().records().len(), 1);
+        }
+    }
+
+    #[test]
+    fn recovery_skips_redrive_until_policy_is_due() {
+        let root = test_root("redrive-policy");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let event = event("evt-recovery-policy-1");
+
+            bus.publish(event.clone()).unwrap();
+            bus.dead_letter(event.clone(), EvaError::timeout("handler timeout"))
+                .unwrap();
+            bus.set_dead_letter_redrive_policy(
+                event.event_id(),
+                RedrivePolicy {
+                    retry_delay_ms: 5_000,
+                    next_attempt_after_ms: 5_000,
+                },
+            )
+            .unwrap();
+            let mut pending = snapshot("req-recovery-policy-store", "running");
+            pending
+                .dead_letters
+                .push(dead_letter("evt-recovery-policy-1"));
+            store.write(&pending).unwrap();
+        }
+
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+
+            let report = RuntimeRecoveryCoordinator
+                .recover_task_store_with_redrive(
+                    &mut store,
+                    &mut bus,
+                    RuntimeRecoveryOptions {
+                        redrive_ready_at_ms: 1_000,
+                    },
+                )
+                .unwrap();
+
+            assert!(report.redriven_events.is_empty());
+            assert_eq!(report.skipped_redrive_events.len(), 1);
+            assert_eq!(report.skipped_redrive_events[0].reason, "redrive_not_due");
+            assert_eq!(bus.dead_letters()[0].replay_count, 0);
+            assert_eq!(bus.log().records().len(), 1);
+        }
+    }
+
     fn snapshot(task_id: &str, status: &str) -> TaskStateSnapshot {
         TaskStateSnapshot {
             task_id: task_id.to_owned(),
@@ -184,6 +531,24 @@ mod tests {
             dead_letters: Vec::new(),
             replayed_events: Vec::new(),
         }
+    }
+
+    fn dead_letter(event_id: &str) -> TaskStateDeadLetterSnapshot {
+        TaskStateDeadLetterSnapshot {
+            event_id: event_id.to_owned(),
+            topic: "/input/user".to_owned(),
+            reason_kind: "timeout".to_owned(),
+            reason: "handler timeout".to_owned(),
+            replay_count: 0,
+        }
+    }
+
+    fn event(id: &str) -> Event {
+        Event::new(
+            EventId::parse(id).unwrap(),
+            Topic::parse("/input/user").unwrap(),
+            EventPayload::text("hello"),
+        )
     }
 
     struct TestRoot {

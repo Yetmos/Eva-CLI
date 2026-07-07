@@ -63,12 +63,25 @@ impl DurableEventBus {
         self.dead_letter_store.push(event, reason)
     }
 
+    pub fn set_dead_letter_redrive_policy(
+        &mut self,
+        event_id: &EventId,
+        redrive: RedrivePolicy,
+    ) -> Result<DeadLetterRecord, EvaError> {
+        self.dead_letter_store.set_redrive_policy(event_id, redrive)
+    }
+
     pub fn replay_dead_letters(&mut self) -> Result<Vec<EventReceipt>, EvaError> {
         let events = self.dead_letter_store.replay_all_for_publish()?;
         events
             .into_iter()
             .map(|event| self.publish(event))
             .collect()
+    }
+
+    pub fn redrive_dead_letter(&mut self, event_id: &EventId) -> Result<EventReceipt, EvaError> {
+        let event = self.dead_letter_store.redrive_for_publish(event_id)?;
+        self.publish(event)
     }
 }
 
@@ -136,33 +149,57 @@ impl FileSystemDeadLetterStore {
         Ok(record)
     }
 
+    pub fn set_redrive_policy(
+        &mut self,
+        event_id: &EventId,
+        redrive: RedrivePolicy,
+    ) -> Result<DeadLetterRecord, EvaError> {
+        let index = self
+            .records
+            .iter()
+            .position(|record| record.event_id() == event_id)
+            .ok_or_else(|| {
+                EvaError::not_found("dead-letter event does not exist")
+                    .with_context("event_id", event_id.as_str())
+            })?;
+        let mut record = self.records[index].clone();
+        record.redrive = redrive;
+        self.persist(&record)?;
+        self.records[index] = record.clone();
+        Ok(record)
+    }
+
     pub fn replay_all_for_publish(&mut self) -> Result<Vec<Event>, EvaError> {
-        let mut events = Vec::with_capacity(self.records.len());
-        for index in 0..self.records.len() {
-            let mut record = self.records[index].clone();
-            record.replay_count += 1;
-            record.redrive.next_attempt_after_ms = record
-                .redrive
-                .retry_delay_ms
-                .saturating_mul(record.replay_count as u64);
-            let replay_id = EventId::parse(&format!(
-                "{}:replay-{}",
-                record.event.event_id().as_str(),
-                record.replay_count
-            ))?;
-            let event = record
-                .event
-                .child_event(
-                    replay_id,
-                    record.event.topic().clone(),
-                    record.event.payload().clone(),
-                )
-                .with_target(record.event.target().clone());
-            self.persist(&record)?;
-            self.records[index] = record;
-            events.push(event);
-        }
-        Ok(events)
+        let event_ids = self
+            .records
+            .iter()
+            .map(|record| record.event_id().clone())
+            .collect::<Vec<_>>();
+        event_ids
+            .iter()
+            .map(|event_id| self.redrive_for_publish(event_id))
+            .collect()
+    }
+
+    pub fn redrive_for_publish(&mut self, event_id: &EventId) -> Result<Event, EvaError> {
+        let index = self
+            .records
+            .iter()
+            .position(|record| record.event_id() == event_id)
+            .ok_or_else(|| {
+                EvaError::not_found("dead-letter event does not exist")
+                    .with_context("event_id", event_id.as_str())
+            })?;
+        let mut record = self.records[index].clone();
+        record.replay_count += 1;
+        record.redrive.next_attempt_after_ms = record
+            .redrive
+            .retry_delay_ms
+            .saturating_mul(record.replay_count as u64);
+        let event = replay_event_for_publish(&record)?;
+        self.persist(&record)?;
+        self.records[index] = record;
+        Ok(event)
     }
 
     fn record_path(&self, event_id: &EventId) -> PathBuf {
@@ -181,6 +218,22 @@ impl FileSystemDeadLetterStore {
                 .with_context("io_error", error.to_string())
         })
     }
+}
+
+fn replay_event_for_publish(record: &DeadLetterRecord) -> Result<Event, EvaError> {
+    let replay_id = EventId::parse(&format!(
+        "{}:replay-{}",
+        record.event.event_id().as_str(),
+        record.replay_count
+    ))?;
+    Ok(record
+        .event
+        .child_event(
+            replay_id,
+            record.event.topic().clone(),
+            record.event.payload().clone(),
+        )
+        .with_target(record.event.target().clone()))
 }
 
 fn load_dead_letters(root: &Path) -> Result<Vec<DeadLetterRecord>, EvaError> {

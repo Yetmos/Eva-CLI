@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `bus.rs` | 已实现 | `EventBus` trait 和 `EventReceipt`。 |
 | `in_memory.rs` | 已更新 | `InMemoryEventBus`，内部使用 `eva-storage::InMemoryEventLog`，并支持 `replay_dead_letters`。 |
-| `durable.rs` | V1.6.2 已新增 | `DurableEventBus` 和 `FileSystemDeadLetterStore`，保存 publish/ack/fail 与 durable dead-letter redrive。 |
+| `durable.rs` | V1.6.4 已更新 | `DurableEventBus` 和 `FileSystemDeadLetterStore`，保存 publish/ack/fail 与 durable dead-letter redrive；支持恢复检查点需要的单事件 redrive 和 redrive policy 更新。 |
 | `dead_letter.rs` | 已更新 | `DeadLetterQueue`、`DeadLetterRecord`、`RedrivePolicy`、`replay_count`、单事件和批量 replay。 |
 | `recoverable.rs` | 边界保留 | future runtime crash recovery integration。 |
 | `lib.rs` | 已实现 | re-export `EventBus`、`EventReceipt`、`InMemoryEventBus`、`DurableEventBus`、dead-letter 类型。 |
