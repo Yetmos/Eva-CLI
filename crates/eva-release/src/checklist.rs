@@ -5,8 +5,8 @@ use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
 
-const CURRENT_RELEASE_VERSION: &str = "1.6.2-alpha";
-const CURRENT_RELEASE_LABEL: &str = "V1.6.2-alpha";
+const CURRENT_RELEASE_VERSION: &str = "1.6.3-alpha";
+const CURRENT_RELEASE_LABEL: &str = "V1.6.3-alpha";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseGateStatus {
@@ -107,6 +107,7 @@ impl ReleaseHardeningService {
         gates.push(migration_gate(&migration));
         gates.push(durable_backend_gate());
         gates.push(durable_eventbus_gate());
+        gates.push(durable_task_audit_artifact_gate());
 
         let status = if gates
             .iter()
@@ -126,11 +127,12 @@ impl ReleaseHardeningService {
             stability,
             gates,
             audit: vec![
-                "release:readiness:v1.6.2-alpha".to_owned(),
+                "release:readiness:v1.6.3-alpha".to_owned(),
                 "no_destructive_restore_or_process_switch".to_owned(),
                 "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
                 "durable_backend_layout_baseline_ready".to_owned(),
                 "durable_eventbus_redrive_baseline_ready".to_owned(),
+                "durable_task_audit_artifact_baseline_ready".to_owned(),
             ],
         })
     }
@@ -327,9 +329,9 @@ impl ReleaseHardeningService {
             ],
             compatibility_policy: CompatibilityPolicy::v15(),
             audit: vec![
-                "migration:v1.5.1_to_v1.6.2-alpha:no_breaking_changes".to_owned(),
+                "migration:v1.5.1_to_v1.6.3-alpha:no_breaking_changes".to_owned(),
                 "json_envelope_and_exit_codes_remain_stable".to_owned(),
-                "durable_eventbus_additive_alpha_baseline".to_owned(),
+                "durable_task_audit_artifact_additive_alpha_baseline".to_owned(),
             ],
         })
     }
@@ -464,7 +466,7 @@ impl ReleaseHardeningService {
                     "docs/en/release/github-packages-publishing.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
-                    "docs/en/release/release-notes-v1.6.2.md".to_owned(),
+                    "docs/en/release/release-notes-v1.6.3.md".to_owned(),
                 ],
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },
@@ -600,6 +602,29 @@ fn durable_eventbus_gate() -> ReleaseGate {
     }
 }
 
+fn durable_task_audit_artifact_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-DURABLE-STORES-001".to_owned(),
+        domain: "durable_task_audit_artifact".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.6.3 durable task store adapter, audit sink, and artifact metadata hardening are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-storage/src/task_state.rs FileSystemTaskStateStore::from_durable_layout".to_owned(),
+            "crates/eva-storage/src/audit_store.rs FileSystemAuditSink".to_owned(),
+            "crates/eva-storage/src/artifact_store.rs FileSystemArtifactStore v2 metadata".to_owned(),
+            "cargo test -p eva-storage".to_owned(),
+            "cargo test -p eva-cli task_commands_can_use_durable_backend_task_store".to_owned(),
+            "cargo test -p eva-backup".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.3 Done".to_owned(),
+            "docs/en/release/release-notes-v1.6.3.md".to_owned(),
+        ],
+        remediation: vec![
+            "do not start V1.6.4 crash recovery without preserving durable task snapshot, audit query, and artifact metadata corruption tests".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -637,6 +662,9 @@ mod tests {
         }));
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-DURABLE-EVENTBUS-001" && gate.status == ReleaseGateStatus::Pass
+        }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DURABLE-STORES-001" && gate.status == ReleaseGateStatus::Pass
         }));
     }
 

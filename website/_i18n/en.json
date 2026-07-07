@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source V1.6.2-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, and durable EventBus redrive."
+    "description": "Eva-CLI is an open-source V1.6.3-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, and durable task/audit/artifact evidence."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,7 +38,7 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "V1.6.2-alpha adds durable EventBus publish/ack/fail and dead-letter redrive while keeping release checks executable.",
+    "runtimePanelNote": "V1.6.3-alpha adds durable task snapshots, durable audit records, and artifact metadata hardening while keeping release checks executable.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
@@ -47,14 +47,14 @@
     "progressTitle": "From architecture scaffold to the V1.6 durable runtime baseline",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.6.2-alpha durable EventBus redrive is implemented",
-    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface plus the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, and queryable dead-letter redrive queue.",
+    "progressCurrentTitle": "V1.6.3-alpha durable task/audit/artifact evidence is implemented",
+    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface plus the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, restart-readable task snapshots, durable audit records, and hardened artifact metadata.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Promote task, audit, and artifact stores to durable adapters and add restart recovery evidence.",
       "Add runtime crash recovery coordination on top of durable event and task evidence.",
+      "Add durable smoke diagnostics for clean start, restart, and corrupt store recovery.",
       "Keep signed installers, OS packages, provenance bundles, and destructive apply gates behind later V1.10/V1.11 milestones."
     ],
     "featuredBlogEyebrow": "Recommended reading",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "Now",
-        "label": "V1.6.2-alpha durable EventBus redrive",
-        "description": "Schema-versioned durable backend layout, filesystem EventLog, DurableEventBus, queryable dead-letter store, and default redrive fields are implemented for the next recovery slices."
+        "label": "V1.6.3-alpha durable task/audit/artifact evidence",
+        "description": "Schema-versioned durable backend layout, filesystem EventLog, DurableEventBus, durable task snapshots, durable audit records, and artifact metadata hardening are implemented for the next recovery slices."
       },
       {
         "status": "later",
@@ -158,6 +158,11 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages Publishing",
         "description": "The GHCR delivery contract, package tags, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification for ghcr.io/yetmos/eva-cli."
+      },
+      {
+        "id": "release-notes-v1.6.3",
+        "title": "V1.6.3 Alpha Release Notes",
+        "description": "The alpha prerelease that adds durable task snapshots, durable audit records, and artifact metadata hardening."
       },
       {
         "id": "release-notes-v1.6.2",
@@ -333,6 +338,11 @@
         "description": "The JSON envelope, exit-code, command-surface, and deprecation guarantees for the V1.5 source release."
       },
       {
+        "id": "release-notes-v1.6.3",
+        "title": "V1.6.3 Alpha Release Notes",
+        "description": "The alpha prerelease that adds durable task snapshots, durable audit records, and artifact metadata hardening."
+      },
+      {
         "id": "release-notes-v1.6.2",
         "title": "V1.6.2 Alpha Release Notes",
         "description": "The alpha prerelease that adds filesystem EventLog, DurableEventBus, queryable dead-letter storage, and durable redrive evidence."
@@ -386,7 +396,7 @@
   "feedback": {
     "eyebrow": "Feedback",
     "title": "Feedback and suggestions",
-    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.6.2-alpha durable EventBus checkpoint, so concrete reports about command output, docs, package pulls, durable redrive gaps, and future apply-path contracts are especially useful.",
+    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.6.3-alpha durable task/audit/artifact checkpoint, so concrete reports about command output, docs, package pulls, durable recovery gaps, and future apply-path contracts are especially useful.",
     "contactLabel": "Contact email",
     "categoryLabel": "Feedback type",
     "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],

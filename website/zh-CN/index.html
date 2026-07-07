@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Eva-CLI | 多 Agent 运行时</title>
-    <meta name="description" content="Eva-CLI 是面向受控多 Agent 工作流的开源 V1.6.2-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付和 durable EventBus redrive 组织运行时能力。">
+    <meta name="description" content="Eva-CLI 是面向受控多 Agent 工作流的开源 V1.6.3-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付和 durable task/audit/artifact evidence 组织运行时能力。">
     <meta name="author" content="Yetmos">
     <meta property="og:title" content="Eva-CLI | 多 Agent 运行时">
-    <meta property="og:description" content="Eva-CLI 是面向受控多 Agent 工作流的开源 V1.6.2-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付和 durable EventBus redrive 组织运行时能力。">
+    <meta property="og:description" content="Eva-CLI 是面向受控多 Agent 工作流的开源 V1.6.3-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付和 durable task/audit/artifact evidence 组织运行时能力。">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://www.eva-cli.com/zh-CN/">
     <meta name="twitter:card" content="summary">
@@ -84,7 +84,7 @@
               <span>通过权限边界接入 CLI、MCP、HTTP、Skill 与硬件。</span>
             </li>
           </ol>
-          <p class="stage-note">V1.6.2-alpha 补齐 durable EventBus publish/ack/fail 与 dead-letter redrive，同时保持发布检查可执行。</p>
+          <p class="stage-note">V1.6.3-alpha 补齐 durable task snapshot、durable audit record 和 artifact metadata hardening，同时保持发布检查可执行。</p>
         </aside>
       </section>
 
@@ -99,8 +99,8 @@
         <div class="progress-layout">
           <article class="progress-current" aria-label="当前开发阶段">
             <span class="status-label">当前阶段</span>
-            <h3>V1.6.2-alpha durable EventBus redrive 已经落地</h3>
-            <p>仓库现在拥有 V1.5 发布加固与 GHCR 交付面，并补齐 V1.6 durable backend 契约、filesystem EventLog、DurableEventBus 和可查询 dead-letter redrive 队列。</p>
+            <h3>V1.6.3-alpha durable task/audit/artifact evidence 已经落地</h3>
+            <p>仓库现在拥有 V1.5 发布加固与 GHCR 交付面，并补齐 V1.6 durable backend 契约、filesystem EventLog、DurableEventBus、可重启读取的 task snapshot、durable audit record 和 artifact metadata hardening。</p>
           </article>
           <ol class="progress-timeline" aria-label="发布进度阶段">
             <li class="progress-stage progress-stage-complete">
@@ -127,8 +127,8 @@
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">当前</span>
               <div>
-                <strong>V1.6.2-alpha durable EventBus redrive</strong>
-                <p>带 schema version 的 durable backend 布局、filesystem EventLog、DurableEventBus、可查询 dead-letter store 和默认 redrive 字段已经实现，为后续恢复节点打基础。</p>
+                <strong>V1.6.3-alpha durable task/audit/artifact evidence</strong>
+                <p>带 schema version 的 durable backend 布局、filesystem EventLog、DurableEventBus、durable task snapshot、durable audit record 和 artifact metadata hardening 已经实现，为后续恢复节点打基础。</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
@@ -143,8 +143,8 @@
         <div class="progress-next">
           <strong>下一步实现工作</strong>
           <ul>
-            <li>把 task、audit 和 artifact store 升级为 durable adapter，并补重启恢复证据。</li>
             <li>在 durable event 和 task 证据之上增加 runtime crash recovery coordinator。</li>
+            <li>增加覆盖 clean start、restart 和 corrupt store recovery 的 durable smoke 诊断。</li>
             <li>签名安装器、系统包、provenance bundle 和破坏性 apply gate 继续留在后续 V1.10/V1.11 里程碑。</li>
           </ul>
         </div>
@@ -254,6 +254,10 @@
             <span>GitHub Packages 发布</span>
             <small>ghcr.io/yetmos/eva-cli 的 GHCR 交付契约、package tag、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证。</small>
           </a>
+          <a class="doc-link" href="../docs/zh-CN/release/V1.6.3-alpha发布说明.md">
+            <span>V1.6.3 Alpha 发布说明</span>
+            <small>补齐 durable task snapshot、durable audit record 和 artifact metadata hardening 的 alpha 预发布。</small>
+          </a>
           <a class="doc-link" href="../docs/zh-CN/release/V1.6.2-alpha发布说明.md">
             <span>V1.6.2 Alpha 发布说明</span>
             <small>补齐 filesystem EventLog、DurableEventBus、可查询 dead-letter store 和 durable redrive 证据的 alpha 预发布。</small>
@@ -301,7 +305,7 @@
         <div class="feedback-copy">
           <p class="eyebrow">反馈</p>
           <h2 id="feedback-title">反馈和建议</h2>
-          <p class="section-copy">可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.6.2-alpha durable EventBus 检查点；关于命令输出、文档、package 拉取、durable redrive 缺口和后续 apply 路径契约的具体反馈尤其有价值。</p>
+          <p class="section-copy">可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.6.3-alpha durable task/audit/artifact 检查点；关于命令输出、文档、package 拉取、durable recovery 缺口和后续 apply 路径契约的具体反馈尤其有价值。</p>
           <p class="contact-line">
             <span>联系邮箱</span>
             <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>

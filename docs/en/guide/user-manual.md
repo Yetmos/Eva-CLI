@@ -2,12 +2,13 @@
 
 Last updated: 2026-07-07
 
-Applies to: Eva-CLI `1.6.2-alpha`
+Applies to: Eva-CLI `1.6.3-alpha`
 
 This manual is for developers, testers, and documentation maintainers using
-Eva-CLI from source. V1.6.2-alpha is a source alpha checkpoint: the repository
-builds, the CLI surface is executable, durable EventBus redrive evidence is in
-place, and risky paths remain diagnostic or plan-first.
+Eva-CLI from source. V1.6.3-alpha is a source alpha checkpoint: the repository
+builds, the CLI surface is executable, durable EventBus redrive evidence,
+restart-readable task snapshots, durable audit records, and artifact metadata
+evidence are in place, and risky paths remain diagnostic or plan-first.
 
 ## Current Position
 
@@ -17,7 +18,7 @@ place, and risky paths remain diagnostic or plan-first.
 | Runtime | `run --example basic` executes the V1.0 in-memory basic runtime loop. |
 | External capabilities | Adapter, MCP, Skill, and Discovery commands expose controlled diagnostics, not real provider execution. |
 | Risky actions | Hardware binding, restore, upgrade, and lifecycle switching stay plan-first. |
-| Release checks | V1.6.2-alpha provides executable `release check/security/perf/migration` gates. |
+| Release checks | V1.6.3-alpha provides executable `release check/security/perf/migration` gates. |
 
 ![Eva-CLI source workflow](../../assets/eva-cli-user-manual-flow.svg)
 
@@ -42,8 +43,8 @@ cargo run -- --version
 Expected version output includes:
 
 ```text
-eva 1.6.2-alpha
-release: V1.6.2-alpha
+eva 1.6.3-alpha
+release: V1.6.3-alpha
 ```
 
 ## Quick Start
@@ -58,7 +59,7 @@ Run this sequence from the repository root:
 | Inspect runtime | `cargo run -- inspect runtime --output json` | Prints agents, adapters, capabilities, routes, policy, and runtime summary. |
 | Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
 | Task status | `cargo run -- task status --output json` | Reads the latest task report. |
-| Release gate | `cargo run -- release check --output json` | Prints V1.6.2 release readiness. |
+| Release gate | `cargo run -- release check --output json` | Prints V1.6.3 release readiness. |
 
 Use text output for human inspection and `--output json` for scripts or CI.
 
@@ -82,7 +83,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Snapshot | `snapshot create` | Create a release snapshot linked to a backup manifest. | No |
 | Restore | `restore plan` | Produce a restore plan with `apply_allowed:false`. | No |
 | Upgrade | `upgrade check` | Check generation, migration, drain, and rollback readiness. | No |
-| Release | `release check/security/perf/migration` | Run V1.6.2 release readiness, security, performance, and migration gates. | No |
+| Release | `release check/security/perf/migration` | Run V1.6.3 release readiness, security, performance, and migration gates. | No |
 
 ## Basic Runtime Loop
 
@@ -153,7 +154,7 @@ cargo run -- release migration --output json
 | `release check` | Cross-platform, stability, docs, security, performance, migration, and compatibility gates. |
 | `release security` | Policy, Lua sandbox, secret redaction, MCP allowlist, hardware, and lifecycle risks. |
 | `release perf` | EventBus, Scheduler, Adapter, memory, backup, and release-check budgets. |
-| `release migration` | V1.5.1 to V1.6.2-alpha migration steps and compatibility policy. |
+| `release migration` | V1.5.1 to V1.6.3-alpha migration steps and compatibility policy. |
 
 ## Paths
 
@@ -186,9 +187,9 @@ Error JSON output uses `ok`, `command`, `exit_code`, `error`, and `trace`.
 | `5` | Reserved for external capability unavailable. |
 | `64` | Command usage error. |
 
-## Non-Goals in V1.6.2 Alpha
+## Non-Goals in V1.6.3 Alpha
 
-V1.6.2-alpha does not provide packaged installers, signed release artifacts,
+V1.6.3-alpha does not provide packaged installers, signed release artifacts,
 real MCP process execution, real provider process management, raw hardware I/O,
 destructive restore, real Supervisor handoff, full durable task query/recovery
 indexes, runtime audit wiring/export, runtime crash recovery, or durable
