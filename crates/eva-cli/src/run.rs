@@ -31,7 +31,10 @@ use eva_release::{
     PerformanceBudget, PlatformReadiness, ReleaseGate, ReleaseHardeningService,
     ReleaseReadinessReport, SecurityFinding, SecurityReviewReport, StabilityScenario,
 };
-use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder};
+use eva_runtime::{
+    inspect_durable_backend, BasicRunOptions, BasicRunReport, DurableDiagnosticsOptions,
+    DurableDiagnosticsReport, RuntimeBuilder,
+};
 use eva_storage::{
     DurableBackendOptions, FileSystemArtifactStore, FileSystemDurableBackend,
     FileSystemTaskStateStore, InMemoryArtifactStore, TaskStateDeadLetterSnapshot,
@@ -180,22 +183,7 @@ where
                 }
             }
         }
-        Command::Inspect(options) => {
-            let trace = trace_for("cli.inspect");
-            match load_project_config(&options.project_root)
-                .and_then(|project| inspect_project(&project))
-            {
-                Ok(report) => {
-                    write_inspect(stdout, options.output, &report, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    let exit_code = exit_code_for_error(&error);
-                    write_error(stderr, options.output, "inspect", exit_code, &error, &trace)?;
-                    Ok(exit_code)
-                }
-            }
-        }
+        Command::Inspect(options) => execute_inspect(options, stdout, stderr),
         Command::Run(options) => {
             let trace = trace_for("cli.run");
             match execute_run(options, stdout, stderr, &trace) {
@@ -228,7 +216,7 @@ enum Command {
     Version(CommonOptions),
     Doctor(CommonOptions),
     ConfigValidate(CommonOptions),
-    Inspect(CommonOptions),
+    Inspect(InspectOptions),
     Run(RunOptions),
     Task(TaskCommand),
     Adapter(AdapterCommand),
@@ -248,6 +236,20 @@ enum Command {
 struct CommonOptions {
     project_root: PathBuf,
     output: OutputFormat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectOptions {
+    common: CommonOptions,
+    subject: InspectSubject,
+    durable_backend: Option<PathBuf>,
+    redrive_ready_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InspectSubject {
+    Project,
+    Durable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1529,6 +1531,81 @@ fn parse_usize_option(name: &'static str, value: &str) -> Result<usize, EvaError
             .with_context("option", name)
             .with_context("value", value)
     })
+}
+
+fn execute_inspect<W, E>(
+    options: InspectOptions,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match options.subject {
+        InspectSubject::Project => {
+            let trace = trace_for("cli.inspect");
+            match load_project_config(&options.common.project_root)
+                .and_then(|project| inspect_project(&project))
+            {
+                Ok(report) => {
+                    write_inspect(stdout, options.common.output, &report, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => {
+                    let exit_code = exit_code_for_error(&error);
+                    write_error(
+                        stderr,
+                        options.common.output,
+                        "inspect",
+                        exit_code,
+                        &error,
+                        &trace,
+                    )?;
+                    Ok(exit_code)
+                }
+            }
+        }
+        InspectSubject::Durable => {
+            let trace = trace_for("cli.inspect.durable");
+            let result = options
+                .durable_backend
+                .as_deref()
+                .ok_or_else(|| {
+                    EvaError::invalid_argument("inspect durable requires --durable-backend")
+                        .with_context(
+                            "suggestion",
+                            "run `eva inspect durable --durable-backend <path>`",
+                        )
+                })
+                .and_then(|root| {
+                    inspect_durable_backend(
+                        root,
+                        DurableDiagnosticsOptions {
+                            redrive_ready_at_ms: options.redrive_ready_at_ms,
+                        },
+                    )
+                });
+            match result {
+                Ok(report) => {
+                    write_durable_inspect(stdout, options.common.output, &report, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => {
+                    let exit_code = exit_code_for_error(&error);
+                    write_error(
+                        stderr,
+                        options.common.output,
+                        "inspect.durable",
+                        exit_code,
+                        &error,
+                        &trace,
+                    )?;
+                    Ok(exit_code)
+                }
+            }
+        }
+    }
 }
 
 fn execute_run<W, E>(
@@ -2916,25 +2993,44 @@ fn parse_config_command(args: &[String]) -> Result<Command, EvaError> {
     }
 }
 
-fn parse_inspect_options(args: &[String]) -> Result<CommonOptions, EvaError> {
-    let filtered = args
-        .iter()
-        .filter(|arg| {
-            !matches!(
-                arg.as_str(),
-                "all"
-                    | "config"
-                    | "runtime"
-                    | "routes"
-                    | "policy"
-                    | "agents"
-                    | "adapters"
-                    | "capabilities"
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    parse_common_options(&filtered)
+fn parse_inspect_options(args: &[String]) -> Result<InspectOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut subject = InspectSubject::Project;
+    let mut durable_backend = None;
+    let mut redrive_ready_at_ms = 0;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "all" | "config" | "runtime" | "routes" | "policy" | "agents" | "adapters"
+            | "capabilities" => subject = InspectSubject::Project,
+            "durable" | "durable-backend" => subject = InspectSubject::Durable,
+            "--durable-backend" | "--durable-backend-root" => {
+                index += 1;
+                durable_backend = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "durable backend option",
+                )?));
+            }
+            "--redrive-ready-at-ms" => {
+                index += 1;
+                redrive_ready_at_ms = parse_u64_option(
+                    "redrive_ready_at_ms",
+                    required_option(args, index, "redrive ready option")?,
+                )?;
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+
+    Ok(InspectOptions {
+        common: parse_common_options(&passthrough)?,
+        subject,
+        durable_backend,
+        redrive_ready_at_ms,
+    })
 }
 
 fn parse_common_options(args: &[String]) -> Result<CommonOptions, EvaError> {
@@ -3314,6 +3410,50 @@ fn write_inspect<W: Write>(
     }
 }
 
+fn write_durable_inspect<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    report: &DurableDiagnosticsReport,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Eva durable inspect").map_err(write_error_kind)?;
+            writeln!(writer, "backend_path: {}", report.backend_path).map_err(write_error_kind)?;
+            writeln!(writer, "backend_mode: {}", report.backend_mode).map_err(write_error_kind)?;
+            writeln!(writer, "schema_version: {}", report.schema_version)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "layout_version: {}", report.layout_version)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "migration_status: {}", report.migration_status)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "migration_locked: {}", report.migration_locked)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "event_log_records: {}", report.event_log_records)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "dead_letter_count: {}", report.dead_letter_count)
+                .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "pending_redrive_count: {}",
+                report.pending_redrive_count
+            )
+            .map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "inspect.durable",
+                EXIT_OK,
+                &durable_diagnostics_json(report),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn write_version<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -3345,6 +3485,21 @@ fn write_version<W: Write>(
             .map_err(write_error_kind)
         }
     }
+}
+
+fn durable_diagnostics_json(report: &DurableDiagnosticsReport) -> String {
+    format!(
+        "{{\"backend_path\":{},\"backend_mode\":{},\"schema_version\":{},\"layout_version\":{},\"migration_status\":{},\"migration_locked\":{},\"event_log_records\":{},\"dead_letter_count\":{},\"pending_redrive_count\":{}}}",
+        json_string(&report.backend_path),
+        json_string(&report.backend_mode),
+        report.schema_version,
+        json_string(&report.layout_version),
+        json_string(&report.migration_status),
+        report.migration_locked,
+        report.event_log_records,
+        report.dead_letter_count,
+        report.pending_redrive_count
+    )
 }
 
 fn write_adapter_list<W: Write>(
@@ -5077,6 +5232,7 @@ fn help_text() -> &'static str {
         "  eva doctor [--project <path>] [--output text|json]\n",
         "  eva config validate [--project <path>] [--output text|json]\n",
         "  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n",
+        "  eva inspect durable --durable-backend <path> [--redrive-ready-at-ms <ms>] [--output text|json]\n",
         "  eva run --example basic [--project <path>] [--task-id <id>] [--durable-backend <path>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n",
         "  eva task status [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
         "  eva task logs [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
@@ -5106,7 +5262,7 @@ fn help_text() -> &'static str {
         "  version          Print the V1.5 release version and supported contracts.\n",
         "  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n",
         "  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n",
-        "  inspect          Show agents, adapters, capabilities, routes, policy summary, and runtime status.\n",
+        "  inspect          Show project surfaces or durable backend diagnostics without mutating runtime state.\n",
         "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks or a durable backend task store.\n",
         "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
         "  adapter          List and probe authorized Adapter handles derived from manifests.\n",
@@ -5361,6 +5517,49 @@ mod tests {
         assert!(cancel_stdout.contains("\"requested\":true"));
         assert!(cancel_stdout.contains("\"accepted\":false"));
         assert!(cancel_stdout.contains("cancel requested after task reached a terminal state"));
+
+        let _ = fs::remove_dir_all(&durable_root);
+    }
+
+    #[test]
+    fn inspect_durable_reports_backend_diagnostics_json() {
+        let root = workspace_root();
+        let durable_root = test_temp_dir("durable-inspect");
+        let (run_exit, _run_stdout, run_stderr) = run_cli(&[
+            "run",
+            "--example",
+            "basic",
+            "--project",
+            root.to_str().unwrap(),
+            "--task-id",
+            "req-test-durable-inspect",
+            "--durable-backend",
+            durable_root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(run_exit, EXIT_OK, "{run_stderr}");
+        assert!(!durable_root.join("events").join("log").exists());
+        assert!(!durable_root.join("events").join("dead_letters").exists());
+
+        let (inspect_exit, inspect_stdout, inspect_stderr) = run_cli(&[
+            "inspect",
+            "durable",
+            "--durable-backend",
+            durable_root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(inspect_exit, EXIT_OK, "{inspect_stderr}");
+        assert!(inspect_stdout.contains("\"command\":\"inspect.durable\""));
+        assert!(inspect_stdout.contains("\"backend_mode\":\"read_only\""));
+        assert!(inspect_stdout.contains("\"schema_version\":1"));
+        assert!(inspect_stdout.contains("\"layout_version\":\"eva.durable.v1\""));
+        assert!(inspect_stdout.contains("\"migration_status\":\"idle\""));
+        assert!(inspect_stdout.contains("\"pending_redrive_count\":0"));
+        assert!(!durable_root.join("events").join("log").exists());
+        assert!(!durable_root.join("events").join("dead_letters").exists());
 
         let _ = fs::remove_dir_all(&durable_root);
     }

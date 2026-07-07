@@ -2,14 +2,14 @@
 
 更新时间：2026-07-07
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.6.4 仍把主要命令实现集中在 `run.rs`，这样 version、task、external capability、memory context、hardware、backup、lifecycle、release 和 durable recovery gate 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.6.5 仍把主要命令实现集中在 `run.rs`，这样 version、inspect、task、external capability、memory context、hardware、backup、lifecycle、release 和 durable diagnostics gate 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | V1.6.4 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口，以及 V1.6.4 durable recovery release gate。 |
+| `run.rs` | V1.6.5 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate，以及 V1.6.5 durable diagnostics CLI。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -93,6 +93,10 @@ It creates a release pointer plan with audit evidence, returns
 
 这些命令共享 success/error JSON envelope、trace 字段和 exit code 映射。它们不写 `.eva/tasks`，不执行外部 provider，也不把 plan-first restore/upgrade 变成 apply。
 
+## V1.6.5 Durable Diagnostics Surface
+
+`run.rs` 新增 `eva inspect durable --durable-backend <path>` 诊断命令。它调用 `eva_runtime::inspect_durable_backend()`，以 read-only 模式报告 durable backend path、schema/layout version、migration status、event/dead-letter 计数和 `pending_redrive_count`，并保持 `inspect.durable` JSON envelope。诊断读取不会创建缺失的 `events/log` 或 `events/dead_letters` 子目录。
+
 ## 保持集中实现的原因
 
 V1.0 到 V1.5 的 CLI surface 仍处于收敛期。命令 implementations 暂时集中在 `run.rs`，可以让以下行为保持一致：
@@ -117,6 +121,7 @@ cargo run -- snapshot create --output json
 cargo run -- restore plan --output json
 cargo run -- restore apply --plan restore-plan.json --confirm plan-123 --artifact-store .eva/artifacts --output json
 cargo run -- upgrade check --output json
+cargo run -- inspect durable --durable-backend .eva/durable --output json
 cargo run -- release check --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
