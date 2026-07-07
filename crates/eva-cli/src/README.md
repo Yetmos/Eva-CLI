@@ -36,6 +36,9 @@
 - Provider invocation JSON, such as `skill run`, includes both `audit` and
   request-level `trace` inside `data`, while the top-level envelope keeps the
   CLI command span trace.
+- V1.8.4 routes `skill run` into the schema-gated Skill workflow runner, which
+  records stdout/stderr/run-report/artifact evidence while preserving the same
+  JSON envelope shape.
 - Tests covering V1.1 JSON envelopes, blocked MCP tool probes, and V1.1 version identity.
 
 ## V1.2 Memory Context Surface

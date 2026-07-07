@@ -81,7 +81,7 @@ release: V1.7.4-alpha
 | 任务 | `task status/logs/cancel` | 读取或标记 task 诊断。 | 只写 task 取消标记 |
 | Adapter | `adapter list/probe` | 列出或探测 manifest 派生的 Adapter handle。 | 否 |
 | MCP | `mcp list/probe` | 列出或探测 allowlist 中的 MCP tool。 | 否 |
-| Skill | `skill list/run` | 返回受控 workflow skill envelope。 | 否 |
+| Skill | `skill list/run` | 运行受控 workflow skill runner，写入 artifact evidence。 | 仅 manifest allowlist runner |
 | Discovery | `discovery scan` | 扫描可信配置源并输出候选能力。 | 否 |
 | Memory | `memory context` | 构造 request-scoped memory/knowledge context。 | 否 |
 | Hardware | `hardware list/probe/bind` | 发现硬件 manifest 并生成绑定计划。 | 否 |
@@ -146,8 +146,9 @@ cargo run -- task cancel --task req-demo-1 --reason "manual stop" --output json
 
 ## 外部能力诊断
 
-V1.1 以后命令面可以查看 Adapter、MCP、Skill 和 Discovery，但不会启动真实外部
-server、CLI provider 或 workflow runner。
+V1.8 以后命令面可以查看 Adapter、MCP、Skill 和 Discovery，并允许 manifest-gated
+stdio/http、MCP JSON-RPC 和 Skill workflow runner 进入受控执行路径；仍不会启动未声明的
+外部 server、CLI provider 或 workflow runner。
 
 | 场景 | 命令 |
 | --- | --- |
@@ -157,7 +158,7 @@ server、CLI provider 或 workflow runner。
 | 查看 MCP allowlist | `cargo run -- mcp list --output json` |
 | 探测 MCP tool | `cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json` |
 | 查看 Skill | `cargo run -- skill list --output json` |
-| 运行受控 Skill envelope | `cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json` |
+| 运行受控 Skill workflow | `cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json` |
 | 扫描发现候选 | `cargo run -- discovery scan --output json` |
 
 MCP probe 遇到不在 allowlist 中的 tool 时，会返回 blocked 诊断，而不是调用外部

@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_invokes_skill_adapter_as_controlled_envelope() {
+    fn runtime_invokes_skill_adapter_with_controlled_runner() {
         let project = load_project_config(workspace_root()).unwrap();
         let runtime = AdapterRuntime::from_project(&project).unwrap();
         let invocation = AdapterInvocation::new(
@@ -176,12 +176,13 @@ mod tests {
             CapabilityName::parse("workflow.code_review").unwrap(),
         )
         .with_provider(AdapterId::parse("code-review-skill").unwrap())
-        .with_input("current_diff");
+        .with_input("{\"scope\":\"current_diff\"}");
 
         let report = runtime.invoke(invocation).unwrap();
 
         assert_eq!(report.status, "completed");
         assert!(report.output.contains("code-review"));
+        assert!(report.output.contains("builtin_codex_skill"));
         assert_eq!(
             report.trace.request_id.as_ref().map(|id| id.as_str()),
             Some("req-skill-1")
@@ -266,18 +267,28 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request_bytes = Vec::new();
             let mut buffer = [0_u8; 512];
-            loop {
+            let header_end = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    panic!("HTTP test client closed before headers were complete");
+                }
+                request_bytes.extend_from_slice(&buffer[..read]);
+                if let Some(header_end) = http_header_end(&request_bytes) {
+                    break header_end;
+                }
+            };
+            let header = String::from_utf8_lossy(&request_bytes[..header_end]);
+            let content_length = http_content_length(&header);
+            while request_bytes.len().saturating_sub(header_end + 4) < content_length {
                 let read = stream.read(&mut buffer).unwrap();
                 if read == 0 {
                     break;
                 }
                 request_bytes.extend_from_slice(&buffer[..read]);
-                if request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
             }
             let request = String::from_utf8_lossy(&request_bytes);
             assert!(request.contains("Authorization: http-runtime-secret"));
+            assert!(request.contains("{\"message\":\"hello\"}"));
             let body = format!("provider echoed {server_secret}");
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -285,6 +296,7 @@ mod tests {
                 body
             );
             stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
         });
         let runtime = runtime_with_handle(http_handle(
             endpoint,
@@ -322,6 +334,24 @@ mod tests {
         }
     }
 
+    fn http_header_end(bytes: &[u8]) -> Option<usize> {
+        bytes.windows(4).position(|window| window == b"\r\n\r\n")
+    }
+
+    fn http_content_length(header: &str) -> usize {
+        header
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
+    }
+
     fn stdio_handle(
         enabled: bool,
         command: impl Into<String>,
@@ -352,6 +382,12 @@ mod tests {
             skill_id: None,
             skill_kind: None,
             skill_runtime_gate: None,
+            skill_path: None,
+            skill_entry_type: None,
+            skill_runner_command: None,
+            skill_runner_args: Vec::new(),
+            skill_artifact_root: None,
+            skill_input_schema: None,
             hardware_logical_name: None,
             hardware_device_class: None,
             bindings: Vec::new(),
@@ -387,6 +423,12 @@ mod tests {
             skill_id: None,
             skill_kind: None,
             skill_runtime_gate: None,
+            skill_path: None,
+            skill_entry_type: None,
+            skill_runner_command: None,
+            skill_runner_args: Vec::new(),
+            skill_artifact_root: None,
+            skill_input_schema: None,
             hardware_logical_name: None,
             hardware_device_class: None,
             bindings: Vec::new(),

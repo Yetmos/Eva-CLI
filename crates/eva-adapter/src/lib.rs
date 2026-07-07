@@ -15,6 +15,10 @@ pub use transports::http::{
     HttpClient, HttpClientResponse, HttpInvocation, HttpMethod, HttpRunReport, HttpRunner,
     HttpRunnerConfig,
 };
+pub use transports::skill::{
+    SkillArtifactEvidence, SkillRunReport, SkillRunStatus, SkillRunner, SkillRunnerConfig,
+    SkillRunnerInvocation,
+};
 pub use transports::stdio::{
     StdioInvocation, StdioRunReport, StdioRunStatus, StdioRunner, StdioRunnerConfig,
 };

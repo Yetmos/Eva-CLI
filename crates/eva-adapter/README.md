@@ -6,22 +6,22 @@
 
 `eva-adapter` 负责 Adapter manifest 的运行时表示、AdapterRegistry、AdapterRouter、transport runtime 和外部 provider 错误映射。它不做 Discovery 扫描，不授予权限，不改写 policy，只接收已验证配置和已计算边界，并按 transport 约束执行。
 
-V1.1 已实现外部能力的受控 envelope；V1.3 在此基础上实现 hardware transport，使硬件调用必须经由 `eva-hardware` 的 registry、lease 和 driver binding，不允许 Lua 直接访问 raw I/O。V1.8.1 将 stdio/http runner 接入 `AdapterRuntime`，V1.8.2 将 MCP invoke 接到受控 JSON-RPC stdio client，外部 provider 可通过 manifest command/endpoint/env/limits 进入受控执行路径。
+V1.1 已实现外部能力的受控 envelope；V1.3 在此基础上实现 hardware transport，使硬件调用必须经由 `eva-hardware` 的 registry、lease 和 driver binding，不允许 Lua 直接访问 raw I/O。V1.8.1 将 stdio/http runner 接入 `AdapterRuntime`，V1.8.2 将 MCP invoke 接到受控 JSON-RPC stdio client，V1.8.4 将 Skill transport 升级为 schema-gated workflow runner；外部 provider 可通过 manifest command/endpoint/env/limits 进入受控执行路径。
 
 ## 当前模块功能说明
 
 | 功能域 | 当前状态 | 已实现行为 |
 | --- | --- | --- |
-| Manifest runtime | 已完成 V1.8.1 | `AdapterHandle` 从 `AdapterManifest` 派生运行时 handle，保留 transport、capabilities、MCP allowlist、Skill binding、hardware identity，以及 stdio/http command、args、endpoint、env、headers 和 limits。 |
+| Manifest runtime | 已完成 V1.8.4 | `AdapterHandle` 从 `AdapterManifest` 派生运行时 handle，保留 transport、capabilities、MCP allowlist、Skill binding/schema/runner、hardware identity，以及 stdio/http command、args、endpoint、env、headers 和 limits。 |
 | Registry | 已完成 V1.1 | `AdapterRegistry` 支持按 Adapter id 和 capability 查询，处理重复 provider 和禁用 Adapter。 |
 | Router | 已完成 V1.1 | `AdapterRouter` 支持 explicit provider 优先，再按 capability index fallback，并输出结构化错误。 |
-| Runtime | 已完成 V1.8.2 | `AdapterRuntime` 提供 list/probe/invoke；probe 无副作用；invoke 可执行 builtin/Skill/hardware envelope、受控 stdio/http runner，以及 MCP JSON-RPC stdio tool call。 |
+| Runtime | 已完成 V1.8.4 | `AdapterRuntime` 提供 list/probe/invoke；probe 无副作用；invoke 可执行 builtin/hardware envelope、受控 stdio/http runner、MCP JSON-RPC stdio tool call，以及 Skill workflow runner。 |
 | Builtin/EventBus/Lua transport | 已完成 V1.1 | 返回本地受控 envelope，不启动外部进程。 |
 | MCP transport | 已完成 V1.8.2 | 通过 `eva-mcp::McpJsonRpcClient` 校验 tool allowlist 后启动 manifest stdio server，执行 `initialize`、`tools/list` 和 `tools/call`。 |
-| Skill transport | 已完成 V1.1 | 校验 `skill.runtime_gate == normal`，返回带 audit 的 workflow skill envelope。 |
+| Skill transport | 已完成 V1.8.4 | 校验 `skill.kind == workflow_skill`、`runtime_gate == normal` 和输入 schema；创建隔离 working directory，执行 manifest allowlist process runner 或受控 `codex_skill` runner，保存 stdout/stderr/run-report/artifact evidence 并脱敏 credential 输出。 |
 | Hardware transport | 已完成 V1.3 | 通过 `DeviceRegistry` claim/release、`SimulatedDriver` 和 `HardwareDriver` trait 完成模拟硬件调用，audit 包含 `raw_io:false` 和 `lease:released`。 |
 | Stdio / HTTP transport | 已完成 V1.8.1 runtime 接入 | Stdio/HTTP 已具备 allowlist、timeout、output limit、manifest command/endpoint/env/limits 读取和 credential redaction；更完整 provider supervision 留到后续步骤。 |
-| MCP process/session | JSON-RPC invoke 已完成，supervisor 待补 | `AdapterHandle` 从 manifest 读取 `mcp.server_transport`、`mcp.command` 和 `mcp.args`，生成 `eva-mcp::McpSessionConfig`；当前 invoke 可启动 stdio JSON-RPC tool call，长生命周期 supervisor 留到 V1.8.3。 |
+| MCP process/session | 已完成 V1.8.3 | `AdapterHandle` 从 manifest 读取 `mcp.server_transport`、`mcp.command` 和 `mcp.args`，生成 `eva-mcp::McpSessionConfig`；invoke 可启动 stdio JSON-RPC tool call，session registry 已覆盖 start/health/shutdown/orphan cleanup 和 stream abort 边界。 |
 
 ## V1.3 Hardware Transport
 
@@ -60,14 +60,14 @@ V1.3 的 hardware transport 只证明边界：它不会打开真实 USB、串口
 | 文件/模块 | 具体功能 | 当前进度 | 下一步 |
 | --- | --- | --- | --- |
 | `src/lib.rs` | 模块导出 | 已完成 V1.1 | 后续按 transport 稳定性拆分公共 surface。 |
-| `src/manifest.rs` | Adapter runtime 表示 | 已完成 V1.8.1 | 已包含 MCP session typed config、hardware identity、stdio/http command/endpoint/env/headers/limits。 |
+| `src/manifest.rs` | Adapter runtime 表示 | 已完成 V1.8.4 | 已包含 MCP session typed config、Skill path/entry/schema/runner/artifact root、hardware identity、stdio/http command/endpoint/env/headers/limits。 |
 | `src/registry.rs` | Adapter 注册和索引 | 已完成 V1.1 | 后续接健康 probe、并发限制和熔断状态。 |
 | `src/router.rs` | provider 选择 | 已完成 V1.1 | 后续加入优先级和健康降级策略。 |
-| `src/runtime.rs` | transport 执行 | 已完成 V1.8.2 | 后续补 provider supervision、并发限制、熔断和更丰富 provider-specific safe context。 |
+| `src/runtime.rs` | transport 执行 | 已完成 V1.8.4 | 后续补 provider supervision、并发限制、熔断和更丰富 provider-specific safe context。 |
 | `src/error.rs` | 错误映射 | 已完成 V1.1 | 后续扩展 provider-specific safe context。 |
 | `src/transports/builtin.rs` | 内置 transport | 已完成 V1.1 | 后续迁移更多内部受控能力。 |
 | `src/transports/mcp.rs` | MCP transport | 已完成 V1.8.2 | 已接 MCP JSON-RPC stdio client；真实 session registry、streaming 和 orphan cleanup 后续补齐。 |
-| `src/transports/skill.rs` | workflow skill transport | 已完成 V1.1 | 后续接 runtime worker，但保持 gate 和 audit。 |
+| `src/transports/skill.rs` | workflow skill transport | 已完成 V1.8.4 | 已接 schema-gated runner、working directory isolation、artifact evidence、failure/timeout status 和 credential redaction；后续接 runtime worker/policy domain。 |
 | `src/transports/hardware.rs` | hardware transport | 已完成 V1.3 | 后续接真实 driver registry 和硬件模拟器测试。 |
 | `src/transports/stdio.rs` | stdio 命令 transport | 已完成 V1.8.1 | 已分离 command/args，覆盖 allowlist、timeout、output limit、env 注入和 stdout/stderr 脱敏，并已接入 AdapterRuntime。 |
 | `src/transports/http.rs` | HTTP transport | 已完成 V1.8.1 | 已覆盖 URL origin allowlist、method allowlist、timeout、output limit、header env 注入和输出脱敏，并已接入 AdapterRuntime。 |
@@ -90,7 +90,8 @@ V1.3 关键测试覆盖：
 - 禁用的 `scale-main` 在 CLI bind 命令中保持 blocked/plan-first，不打开设备。
 - V1.8.1 覆盖 stdio/http fake provider、disabled provider 不启动、credential env/header/stdout/stderr redaction。
 - V1.8.2 覆盖 MCP fake JSON-RPC server tool call、blocked tool 不发 RPC、timeout、协议错误和 oversized response。
+- V1.8.4 覆盖 Skill schema required/enum 拒绝、内置 `codex_skill` runner、manifest process runner 成功/失败/超时、artifact path 控制和 credential redaction。
 
 ## English
 
-`eva-adapter` owns Adapter runtime descriptors, registry, routing, controlled transport execution, and provider error mapping. V1.8.2 wires stdio/http runners and MCP JSON-RPC stdio tool calls into `AdapterRuntime` with manifest-derived command/endpoint/env/limits and response gates; broader provider supervision remains future work.
+`eva-adapter` owns Adapter runtime descriptors, registry, routing, controlled transport execution, and provider error mapping. V1.8.4 wires stdio/http runners, MCP JSON-RPC stdio tool calls, and schema-gated Skill workflow runners into `AdapterRuntime` with manifest-derived command/endpoint/env/limits and response gates; broader provider supervision remains future work.

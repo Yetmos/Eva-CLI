@@ -81,7 +81,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Task | `task status/logs/cancel` | Read or mark task diagnostics. | Writes task cancel marker |
 | Adapter | `adapter list/probe` | List or probe manifest-derived adapter handles. | No |
 | MCP | `mcp list/probe` | List or probe allowlisted MCP tools. | No |
-| Skill | `skill list/run` | Return controlled workflow skill envelopes. | No |
+| Skill | `skill list/run` | Run controlled workflow skill runners and write artifact evidence. | Manifest allowlisted runner only |
 | Discovery | `discovery scan` | Scan trusted config sources for candidates. | No |
 | Memory | `memory context` | Build request-scoped memory and knowledge context. | No |
 | Hardware | `hardware list/probe/bind` | Discover hardware manifests and produce binding plans. | No |
@@ -118,8 +118,10 @@ cargo run -- task status --task req-durable-1 --durable-backend .eva/durable --o
 
 ## External Capability Diagnostics
 
-V1.1 and later commands expose adapter, MCP, skill, and discovery diagnostics
-without starting real external servers, provider CLIs, or workflow runners.
+V1.8 and later commands expose adapter, MCP, skill, and discovery diagnostics
+and allow manifest-gated stdio/http, MCP JSON-RPC, and Skill workflow runners
+to enter controlled execution paths. They still do not start undeclared external
+servers, provider CLIs, or workflow runners.
 
 | Scenario | Command |
 | --- | --- |
@@ -129,7 +131,7 @@ without starting real external servers, provider CLIs, or workflow runners.
 | List MCP allowlist | `cargo run -- mcp list --output json` |
 | Probe MCP tool | `cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json` |
 | List skills | `cargo run -- skill list --output json` |
-| Return skill envelope | `cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json` |
+| Run controlled skill workflow | `cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json` |
 | Scan discovery candidates | `cargo run -- discovery scan --output json` |
 
 ## Plan-First Safety Boundary

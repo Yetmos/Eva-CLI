@@ -33,6 +33,21 @@ pub struct AdapterManifest {
     pub extra: Mapping,
 }
 
+/// JSON-Schema-like object schema subset preserved from manifest extensions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestObjectSchema {
+    pub schema_type: Option<String>,
+    pub required: Vec<String>,
+    pub properties: BTreeMap<String, ManifestSchemaProperty>,
+}
+
+/// JSON-Schema-like property subset used by current Adapter manifests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestSchemaProperty {
+    pub value_type: Option<String>,
+    pub enum_values: Vec<String>,
+}
+
 /// Supported adapter transport implementations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AdapterTransport {
@@ -176,6 +191,91 @@ impl AdapterManifest {
                 .and_then(|mapping| mapping.get(Value::String((*key).to_owned())))?;
         }
         value.as_str()
+    }
+
+    /// Returns a string list from a nested manifest extension path.
+    pub fn deep_extra_string_list(&self, path: &[&str]) -> Vec<String> {
+        self.deep_extra_value(path)
+            .and_then(Value::as_sequence)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns the object-schema subset used by workflow skill manifests.
+    pub fn deep_extra_object_schema(&self, path: &[&str]) -> Option<ManifestObjectSchema> {
+        let mapping = self.deep_extra_value(path)?.as_mapping()?;
+        let schema_type = mapping
+            .get(Value::String("type".to_owned()))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let required = mapping
+            .get(Value::String("required".to_owned()))
+            .and_then(Value::as_sequence)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let properties = mapping
+            .get(Value::String("properties".to_owned()))
+            .and_then(Value::as_mapping)
+            .map(|properties| {
+                properties
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        let key = key.as_str()?.to_owned();
+                        let property = value.as_mapping()?;
+                        let value_type = property
+                            .get(Value::String("type".to_owned()))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        let enum_values = property
+                            .get(Value::String("enum".to_owned()))
+                            .and_then(Value::as_sequence)
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Some((
+                            key,
+                            ManifestSchemaProperty {
+                                value_type,
+                                enum_values,
+                            },
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(ManifestObjectSchema {
+            schema_type,
+            required,
+            properties,
+        })
+    }
+
+    fn deep_extra_value(&self, path: &[&str]) -> Option<&Value> {
+        let (first, rest) = path.split_first()?;
+        let mut value = self.extra.get(Value::String((*first).to_owned()))?;
+        for key in rest {
+            value = value
+                .as_mapping()
+                .and_then(|mapping| mapping.get(Value::String((*key).to_owned())))?;
+        }
+        Some(value)
     }
 }
 
@@ -366,6 +466,33 @@ capabilities:
         assert_eq!(
             manifest.nested_extra_usize("limits", "max_prompt_bytes"),
             Some(200000)
+        );
+    }
+
+    #[test]
+    fn adapter_manifest_exposes_skill_schema_subset() {
+        let manifest =
+            load_adapter_manifest(workspace_root().join("config/adapters/code-review-skill.yaml"))
+                .unwrap();
+
+        assert_eq!(
+            manifest.deep_extra_string(&["skill", "entry", "type"]),
+            Some("codex_skill")
+        );
+        assert_eq!(
+            manifest.deep_extra_string_list(&["skill", "input_schema", "required"]),
+            vec!["scope".to_owned()]
+        );
+
+        let schema = manifest
+            .deep_extra_object_schema(&["skill", "input_schema"])
+            .unwrap();
+
+        assert_eq!(schema.schema_type.as_deref(), Some("object"));
+        assert!(schema.required.contains(&"scope".to_owned()));
+        assert_eq!(
+            schema.properties["scope"].enum_values,
+            vec!["current_diff".to_owned(), "workspace".to_owned()]
         );
     }
 }

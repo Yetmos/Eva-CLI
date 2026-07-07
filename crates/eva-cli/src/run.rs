@@ -5285,7 +5285,7 @@ fn help_text() -> &'static str {
         "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
         "  adapter          List and probe authorized Adapter handles derived from manifests.\n",
         "  mcp              List and probe allowlisted MCP tools without starting external servers.\n",
-        "  skill            List and run controlled workflow skill envelopes.\n",
+        "  skill            List and run controlled workflow skill runners.\n",
         "  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n",
         "  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n",
         "  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n",

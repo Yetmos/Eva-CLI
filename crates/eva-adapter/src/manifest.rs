@@ -27,6 +27,19 @@ pub struct AdapterCapabilityBinding {
     pub mcp_tool: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillInputSchema {
+    pub schema_type: Option<String>,
+    pub required: Vec<String>,
+    pub properties: BTreeMap<String, SkillInputProperty>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillInputProperty {
+    pub value_type: Option<String>,
+    pub enum_values: Vec<String>,
+}
+
 /// Authorized runtime handle derived from configuration, not from discovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterHandle {
@@ -53,6 +66,12 @@ pub struct AdapterHandle {
     pub skill_id: Option<String>,
     pub skill_kind: Option<String>,
     pub skill_runtime_gate: Option<String>,
+    pub skill_path: Option<String>,
+    pub skill_entry_type: Option<String>,
+    pub skill_runner_command: Option<String>,
+    pub skill_runner_args: Vec<String>,
+    pub skill_artifact_root: Option<String>,
+    pub skill_input_schema: Option<SkillInputSchema>,
     pub hardware_logical_name: Option<String>,
     pub hardware_device_class: Option<String>,
     pub bindings: Vec<AdapterCapabilityBinding>,
@@ -109,6 +128,39 @@ impl AdapterHandle {
             skill_runtime_gate: manifest
                 .nested_extra_string("skill", "runtime_gate")
                 .map(str::to_owned),
+            skill_path: manifest
+                .nested_extra_string("skill", "path")
+                .map(str::to_owned),
+            skill_entry_type: manifest
+                .deep_extra_string(&["skill", "entry", "type"])
+                .map(str::to_owned),
+            skill_runner_command: manifest
+                .deep_extra_string(&["skill", "runner", "command"])
+                .map(str::to_owned),
+            skill_runner_args: manifest.deep_extra_string_list(&["skill", "runner", "args"]),
+            skill_artifact_root: manifest
+                .deep_extra_string(&["skill", "artifacts", "root"])
+                .or_else(|| manifest.deep_extra_string(&["skill", "artifact_root"]))
+                .map(str::to_owned),
+            skill_input_schema: manifest
+                .deep_extra_object_schema(&["skill", "input_schema"])
+                .map(|schema| SkillInputSchema {
+                    schema_type: schema.schema_type,
+                    required: schema.required,
+                    properties: schema
+                        .properties
+                        .into_iter()
+                        .map(|(name, property)| {
+                            (
+                                name,
+                                SkillInputProperty {
+                                    value_type: property.value_type,
+                                    enum_values: property.enum_values,
+                                },
+                            )
+                        })
+                        .collect(),
+                }),
             hardware_logical_name: manifest
                 .deep_extra_string(&["hardware", "identity", "logical_name"])
                 .map(str::to_owned),
@@ -224,6 +276,18 @@ mod tests {
             .credential_env
             .contains(&"GITHUB_TOKEN".to_owned()));
         assert_eq!(skill_handle.skill_name(), Some("code-review"));
+        assert_eq!(
+            skill_handle.skill_path.as_deref(),
+            Some("~/.codex/skills/code-review/SKILL.md")
+        );
+        assert_eq!(
+            skill_handle.skill_entry_type.as_deref(),
+            Some("codex_skill")
+        );
+        assert_eq!(
+            skill_handle.skill_input_schema.as_ref().unwrap().required,
+            vec!["scope".to_owned()]
+        );
     }
 
     #[test]

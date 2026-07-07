@@ -124,6 +124,7 @@ dependencies = [
  "eva-mcp",
  "eva-observability",
  "eva-policy",
+ "eva-storage",
 ]
 
 [[package]]

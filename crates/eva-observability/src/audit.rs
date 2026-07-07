@@ -19,6 +19,9 @@ pub enum AuditAction {
     LuaHostAudit,
     CapabilityInvoked,
     AdapterInvoked,
+    SkillRunStarted,
+    SkillRunCompleted,
+    SkillRunFailed,
     McpSessionStarted,
     McpSessionStopped,
     McpStreamAborted,
@@ -72,6 +75,9 @@ impl AuditAction {
             Self::LuaHostAudit => "lua.host.audit",
             Self::CapabilityInvoked => "capability.invoked",
             Self::AdapterInvoked => "adapter.invoked",
+            Self::SkillRunStarted => "skill.run.started",
+            Self::SkillRunCompleted => "skill.run.completed",
+            Self::SkillRunFailed => "skill.run.failed",
             Self::McpSessionStarted => "mcp.session.started",
             Self::McpSessionStopped => "mcp.session.stopped",
             Self::McpStreamAborted => "mcp.stream.aborted",
@@ -133,6 +139,12 @@ mod tests {
         assert_eq!(AuditAction::RuntimeRecovered.as_str(), "runtime.recovered");
         assert_eq!(AuditAction::LuaHostLog.as_str(), "lua.host.log");
         assert_eq!(AuditAction::LuaHostAudit.as_str(), "lua.host.audit");
+        assert_eq!(AuditAction::SkillRunStarted.as_str(), "skill.run.started");
+        assert_eq!(
+            AuditAction::SkillRunCompleted.as_str(),
+            "skill.run.completed"
+        );
+        assert_eq!(AuditAction::SkillRunFailed.as_str(), "skill.run.failed");
         assert_eq!(
             AuditAction::McpSessionStarted.as_str(),
             "mcp.session.started"
