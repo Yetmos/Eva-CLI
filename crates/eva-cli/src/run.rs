@@ -4854,13 +4854,30 @@ fn run_report_json(report: &BasicRunReport) -> String {
             option_json(result.capability_input.as_deref())
         )
     });
+    let lua_observability = report.lua_observability.iter().map(|observation| {
+        let fields = observation.fields.iter().map(|(key, value)| {
+            format!(
+                "{{\"key\":{},\"value\":{}}}",
+                json_string(key),
+                json_string(value)
+            )
+        });
+        format!(
+            "{{\"action\":{},\"outcome\":{},\"message\":{},\"fields\":{},\"trace\":{}}}",
+            json_string(observation.action.as_str()),
+            json_string(observation.outcome.as_str()),
+            option_json(observation.message.as_deref()),
+            json_array(fields),
+            trace_json(&observation.trace)
+        )
+    });
     let capability_response = report
         .capability_response
         .as_ref()
         .map(capability_response_json)
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"runtime_mode\":{},\"generation_id\":{},\"project_root\":{},\"task\":{},\"event_id\":{},\"topic\":{},\"receipt\":{{\"event_id\":{},\"sequence\":{},\"topic\":{},\"target\":{}}},\"deliveries\":{},\"agent_runs\":{},\"lua_results\":{},\"lua_generation\":{{\"generation_id\":{},\"script_count\":{}}},\"capability_response\":{},\"audit\":{}}}",
+        "{{\"runtime_mode\":{},\"generation_id\":{},\"project_root\":{},\"task\":{},\"event_id\":{},\"topic\":{},\"receipt\":{{\"event_id\":{},\"sequence\":{},\"topic\":{},\"target\":{}}},\"deliveries\":{},\"agent_runs\":{},\"lua_results\":{},\"lua_observability\":{},\"lua_generation\":{{\"generation_id\":{},\"script_count\":{}}},\"capability_response\":{},\"audit\":{}}}",
         json_string(&report.runtime_mode),
         json_string(&report.generation_id),
         json_string(&report.project_root),
@@ -4874,6 +4891,7 @@ fn run_report_json(report: &BasicRunReport) -> String {
         json_array(deliveries),
         json_array(agent_runs),
         json_array(lua_results),
+        json_array(lua_observability),
         json_string(report.lua_generation.generation_id.as_str()),
         report.lua_generation.script_count,
         capability_response,
@@ -5377,6 +5395,9 @@ mod tests {
         assert!(stdout.contains("\"generation_id\":\"basic-v1.0\""));
         assert!(stdout.contains("\"task\""));
         assert!(stdout.contains("\"status\":\"completed\""));
+        assert!(stdout.contains("\"lua_observability\""));
+        assert!(stdout.contains("lua.host.log"));
+        assert!(stdout.contains("lua.host.audit"));
         assert!(stdout.contains("\"capability_response\""));
         assert!(stdout.contains("config.lint") || stdout.contains("valid"));
         assert!(stderr.is_empty());

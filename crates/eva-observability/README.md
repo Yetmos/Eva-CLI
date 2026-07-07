@@ -15,7 +15,7 @@
 | `TraceFields` | 已完成 | 聚合 event、request、topic、agent、adapter、capability、provider、correlation、causation、generation、span；支持 provider invocation trace builder 链式补充 request id |
 | `SpanId` | 已完成 | 稳定 span identifier，限制为跨平台 ASCII 字符 |
 | `TraceFields::from_event` | 已完成 | 从 `eva-core::Event` 提取不含 payload 的链路字段 |
-| `AuditAction` | 已完成 | 定义配置、policy、runtime、event、capability、adapter、安全拒绝等稳定动作 |
+| `AuditAction` | 已完成 | 定义配置、policy、runtime、event、Lua host log/audit、capability、adapter、安全拒绝等稳定动作 |
 | `AuditOutcome` | 已完成 | `ok`、`planned`、`blocked`、`failed` |
 | `AuditEvent` | 已完成 | 记录动作、结果、trace、消息、扩展字段和时间 |
 | `AuditSink` | 已完成 | 抽象审计写入 trait |

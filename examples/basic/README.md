@@ -13,9 +13,9 @@ cargo run -- run --example basic --output json
 3. `eva-eventbus` publishes `/input/user` and appends the event to `eva-storage`.
 4. `eva-scheduler` matches `/input/user` and delivers the event to `root-agent`.
 5. `eva-agent` runs a bounded queue with timeout/cancel/retry controls.
-6. `eva-lua-host` validates the controlled script contract and extracts the static `on_event` result.
-7. The script requests `config.lint`, and `eva-capability` executes the builtin capability.
-8. The CLI prints traceable text or JSON output with delivery, Agent, Lua, capability, task, logs, and audit fields.
+6. `eva-lua-host` executes the controlled Lua `on_event` handler in the restricted VM.
+7. The script emits `ctx.host.log/audit` observations, requests `config.lint`, and `eva-capability` executes the builtin capability.
+8. The CLI prints traceable text or JSON output with delivery, Agent, Lua, capability, task, logs, Lua observability, and audit fields.
 9. The CLI writes the latest task report to `.eva/tasks` so `task status/logs/cancel` can inspect it.
 
 ## V1.0 Diagnostics

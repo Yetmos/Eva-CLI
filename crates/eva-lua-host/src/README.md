@@ -11,4 +11,4 @@
 | `hot_reload.rs` | 已接 runtime marker | `LuaGeneration` marker；V0.5 `BasicRunReport` 输出 generation id 和 script count。 |
 | `lib.rs` | 已实现 | re-export `LuaHost`、`LuaVmAdapter`、`MluaVmAdapter` 和既有公开类型。 |
 
-V1.7.2.1 已经在真实 Lua VM execution boundary 上补齐只读 `ctx.request`、`ctx.trace` 和 `ctx.memory` 表，同时保留 V1.7.1 顶层 context 计数字段兼容旧脚本。它还不是完整 Lua runtime：`ctx.tools`、`ctx.host`、资源限制、shadow load、generation swap 和 rollback 仍在后续 V1.7.2-V1.7.4。`LuaHostContext` 不暴露 memory/knowledge 服务句柄，只携带 Agent id、request/trace metadata、private/global/knowledge 计数和 audit 摘要。验证：`cargo test -p eva-lua-host`。
+V1.7.2.2 已经在真实 Lua VM execution boundary 上补齐只读 `ctx.request`、`ctx.trace`、`ctx.memory` 和 `ctx.host.log/audit`，同时保留 V1.7.1 顶层 context 计数字段兼容旧脚本。它还不是完整 Lua runtime：`ctx.tools`、资源限制、shadow load、generation swap 和 rollback 仍在后续 V1.7.2-V1.7.4。`LuaHostContext` 不暴露 memory/knowledge 服务句柄或 observability sink 句柄，只携带 Agent id、request/trace metadata、private/global/knowledge 计数和 audit 摘要。验证：`cargo test -p eva-lua-host`。

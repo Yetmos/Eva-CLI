@@ -15,6 +15,8 @@ pub enum AuditAction {
     RuntimeStopped,
     EventAccepted,
     EventDelivered,
+    LuaHostLog,
+    LuaHostAudit,
     CapabilityInvoked,
     AdapterInvoked,
     SecurityDenied,
@@ -62,6 +64,8 @@ impl AuditAction {
             Self::RuntimeStopped => "runtime.stopped",
             Self::EventAccepted => "event.accepted",
             Self::EventDelivered => "event.delivered",
+            Self::LuaHostLog => "lua.host.log",
+            Self::LuaHostAudit => "lua.host.audit",
             Self::CapabilityInvoked => "capability.invoked",
             Self::AdapterInvoked => "adapter.invoked",
             Self::SecurityDenied => "security.denied",
@@ -119,6 +123,8 @@ mod tests {
     fn audit_action_spelling_is_stable() {
         assert_eq!(AuditAction::ConfigValidated.as_str(), "config.validated");
         assert_eq!(AuditAction::RuntimeRecovered.as_str(), "runtime.recovered");
+        assert_eq!(AuditAction::LuaHostLog.as_str(), "lua.host.log");
+        assert_eq!(AuditAction::LuaHostAudit.as_str(), "lua.host.audit");
         assert_eq!(AuditOutcome::Blocked.as_str(), "blocked");
     }
 

@@ -1,6 +1,9 @@
 local root = {}
 
 function root.on_event(event, ctx)
+  ctx.host.log("info", "root-agent accepted " .. event.event_id)
+  ctx.host.audit("root-agent requested config.lint")
+
   return {
     status = "accepted",
     agent_id = "root-agent",

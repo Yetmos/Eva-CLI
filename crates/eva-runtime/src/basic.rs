@@ -12,7 +12,10 @@ use eva_core::{
     InvokeResponse, InvokeTarget, RequestId, Topic,
 };
 use eva_eventbus::{DeadLetterRecord, EventBus, EventReceipt, InMemoryEventBus};
-use eva_lua_host::{LuaEventResult, LuaGeneration, LuaHost, LuaHostContext, LuaScript};
+use eva_lua_host::{
+    LuaEventResult, LuaGeneration, LuaHost, LuaHostContext, LuaHostObservation, LuaScript,
+};
+use eva_observability::{AuditAction, AuditSink, InMemoryAuditSink};
 use eva_scheduler::{DeliveryMode, DeliveryPlan, MailboxRegistry, RoutingRule, SubscriptionTable};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -44,6 +47,7 @@ pub struct BasicRunReport {
     pub deliveries: Vec<DeliveryPlan>,
     pub agent_runs: Vec<AgentRunRecord>,
     pub lua_results: Vec<LuaEventResult>,
+    pub lua_observability: Vec<LuaHostObservation>,
     pub lua_generation: LuaGeneration,
     pub capability_response: Option<InvokeResponse>,
     pub audit: Vec<String>,
@@ -117,6 +121,8 @@ pub fn run_basic(
     let lua_host = LuaHost::new();
     let mut agent_runs = Vec::new();
     let mut lua_results = Vec::new();
+    let mut lua_observability = Vec::new();
+    let mut lua_audit_sink = InMemoryAuditSink::default();
 
     for delivery in &deliveries {
         let delivered_event = mailboxes
@@ -136,6 +142,13 @@ pub fn run_basic(
                     event,
                     &LuaHostContext::new(agent_id.clone()),
                 )?;
+                record_lua_observability(
+                    &mut lua_audit_sink,
+                    &mut task,
+                    &mut audit,
+                    &result.observability,
+                )?;
+                lua_observability.extend(result.observability.clone());
                 lua_results.push(result.clone());
                 Ok(AgentHandlerOutput::new(result.status, result.note))
             })
@@ -226,10 +239,47 @@ pub fn run_basic(
         deliveries,
         agent_runs,
         lua_results,
+        lua_observability,
         lua_generation,
         capability_response,
         audit,
     })
+}
+
+fn record_lua_observability(
+    audit_sink: &mut impl AuditSink,
+    task: &mut TaskReport,
+    audit: &mut Vec<String>,
+    observations: &[LuaHostObservation],
+) -> Result<(), EvaError> {
+    for observation in observations {
+        audit_sink.record(observation.to_audit_event())?;
+        let message = observation.message.as_deref().unwrap_or_default();
+        audit.push(format!("{}:{}", observation.action.as_str(), message));
+        match observation.action {
+            AuditAction::LuaHostLog => {
+                task.push_log(log_level(observation), format!("lua host log: {message}"))
+            }
+            AuditAction::LuaHostAudit => {
+                task.push_log(TaskLogLevel::Info, format!("lua host audit: {message}"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn log_level(observation: &LuaHostObservation) -> TaskLogLevel {
+    match observation
+        .fields
+        .iter()
+        .find(|(key, _)| key == "level")
+        .map(|(_, value)| value.as_str())
+    {
+        Some("warn" | "warning") => TaskLogLevel::Warning,
+        Some("error") => TaskLogLevel::Error,
+        _ => TaskLogLevel::Info,
+    }
 }
 
 fn agent_control(options: &BasicRunOptions) -> AgentRunControl {
@@ -393,6 +443,27 @@ mod tests {
         assert_eq!(report.task.status, TaskStatus::Completed);
         assert_eq!(report.task.attempts, 1);
         assert_eq!(report.lua_generation.script_count, 1);
+        assert_eq!(report.lua_observability.len(), 2);
+        assert!(report.lua_observability.iter().any(|event| event.action
+            == AuditAction::LuaHostLog
+            && event
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("root-agent accepted"))));
+        assert!(report
+            .lua_observability
+            .iter()
+            .any(|event| event.action == AuditAction::LuaHostAudit
+                && event.trace.request_id.as_ref().is_some()));
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry.starts_with("lua.host.audit:root-agent requested")));
+        assert!(report
+            .task
+            .logs
+            .iter()
+            .any(|entry| entry.message.contains("lua host log")));
         assert!(report.capability_response.unwrap().is_success());
     }
 

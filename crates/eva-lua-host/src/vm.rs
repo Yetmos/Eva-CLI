@@ -1,9 +1,12 @@
 //! Lua VM adapter boundary for executing controlled Agent scripts.
 
-use crate::bindings::{LuaEventResult, LuaHostContext};
+use crate::bindings::{LuaEventResult, LuaHostContext, LuaHostObservation};
 use crate::loader::LuaScript;
 use eva_core::{AgentId, CapabilityName, EvaError, Event, Topic};
+use eva_observability::{AuditAction, TraceFields};
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "execute Lua on_event handlers behind a VM adapter boundary";
@@ -38,13 +41,17 @@ impl LuaVmAdapter for MluaVmAdapter {
         let chunk = lua.load(script.source()).set_name("eva-agent-script");
         let loaded = chunk.eval::<Value>().map_err(map_load_error)?;
         let handler = on_event_handler(&lua, loaded)?;
+        let observations = Rc::new(RefCell::new(Vec::new()));
         let event_table = event_table(&lua, event)?;
-        let ctx_table = ctx_table(&lua, event, ctx)?;
+        let ctx_table = ctx_table(&lua, event, ctx, Rc::clone(&observations))?;
         let result = handler
             .call::<_, Value>((event_table, ctx_table))
             .map_err(map_handler_error)?;
 
-        result_table(result).and_then(|table| lua_result(table, event, ctx))
+        let mut event_result =
+            result_table(result).and_then(|table| lua_result(table, event, ctx))?;
+        event_result.observability = observations.borrow().clone();
+        Ok(event_result)
     }
 }
 
@@ -123,10 +130,14 @@ fn ctx_table<'lua>(
     lua: &'lua Lua,
     event: &Event,
     ctx: &LuaHostContext,
+    observations: Rc<RefCell<Vec<LuaHostObservation>>>,
 ) -> Result<Table<'lua>, EvaError> {
     readonly_table(lua, |table| {
         table
             .set("agent_id", ctx.agent_id.as_str())
+            .map_err(map_host_setup_error)?;
+        table
+            .set("host", host_table(lua, event, ctx, observations)?)
             .map_err(map_host_setup_error)?;
         table
             .set("request", request_table(lua, event)?)
@@ -152,6 +163,48 @@ fn ctx_table<'lua>(
             .map_err(map_host_setup_error)?;
         Ok(())
     })
+}
+
+fn host_table<'lua>(
+    lua: &'lua Lua,
+    event: &Event,
+    ctx: &LuaHostContext,
+    observations: Rc<RefCell<Vec<LuaHostObservation>>>,
+) -> Result<Table<'lua>, EvaError> {
+    readonly_table(lua, |table| {
+        let trace = trace_fields(event, ctx);
+        let log_trace = trace.clone();
+        let log_observations = Rc::clone(&observations);
+        let log_fn = lua
+            .create_function(move |_, (level, message): (String, String)| {
+                log_observations.borrow_mut().push(
+                    LuaHostObservation::new(AuditAction::LuaHostLog, log_trace.clone())
+                        .with_message(message)
+                        .with_field("level", level),
+                );
+                Ok(())
+            })
+            .map_err(map_host_setup_error)?;
+        table.set("log", log_fn).map_err(map_host_setup_error)?;
+
+        let audit_trace = trace.clone();
+        let audit_observations = Rc::clone(&observations);
+        let audit_fn = lua
+            .create_function(move |_, message: String| {
+                audit_observations.borrow_mut().push(
+                    LuaHostObservation::new(AuditAction::LuaHostAudit, audit_trace.clone())
+                        .with_message(message),
+                );
+                Ok(())
+            })
+            .map_err(map_host_setup_error)?;
+        table.set("audit", audit_fn).map_err(map_host_setup_error)?;
+        Ok(())
+    })
+}
+
+fn trace_fields(event: &Event, ctx: &LuaHostContext) -> TraceFields {
+    TraceFields::from_event(event).with_agent_id(ctx.agent_id.clone())
 }
 
 fn request_table<'lua>(lua: &'lua Lua, event: &Event) -> Result<Table<'lua>, EvaError> {
@@ -305,6 +358,7 @@ fn lua_result(
         capability,
         capability_input,
         context: ctx.context.clone(),
+        observability: Vec::new(),
     })
 }
 

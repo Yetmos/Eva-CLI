@@ -5,6 +5,7 @@ use crate::sandbox::LuaSandboxPolicy;
 use crate::vm::{LuaVmAdapter, MluaVmAdapter};
 use eva_core::{AgentId, CapabilityName, EvaError, Event, Topic};
 use eva_memory::LuaContextSnapshot;
+use eva_observability::{AuditAction, AuditEvent, AuditOutcome, TraceFields};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "typed host API bindings exposed to Lua";
@@ -14,6 +15,16 @@ pub const RESPONSIBILITY: &str = "typed host API bindings exposed to Lua";
 pub struct LuaHostContext {
     pub agent_id: AgentId,
     pub context: LuaContextSnapshot,
+}
+
+/// Host observation emitted by `ctx.host.log` and `ctx.host.audit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LuaHostObservation {
+    pub action: AuditAction,
+    pub outcome: AuditOutcome,
+    pub trace: TraceFields,
+    pub message: Option<String>,
+    pub fields: Vec<(String, String)>,
 }
 
 /// Controlled result returned by the V0.4 Lua host.
@@ -26,6 +37,7 @@ pub struct LuaEventResult {
     pub capability: Option<CapabilityName>,
     pub capability_input: Option<String>,
     pub context: LuaContextSnapshot,
+    pub observability: Vec<LuaHostObservation>,
 }
 
 /// Synchronous controlled Lua host facade.
@@ -104,6 +116,7 @@ fn parse_static_on_event(
         capability,
         capability_input,
         context: ctx.context.clone(),
+        observability: Vec::new(),
     })
 }
 
@@ -134,6 +147,39 @@ impl LuaHostContext {
     }
 }
 
+impl LuaHostObservation {
+    pub fn new(action: AuditAction, trace: TraceFields) -> Self {
+        Self {
+            action,
+            outcome: AuditOutcome::Ok,
+            trace,
+            message: None,
+            fields: Vec::new(),
+        }
+    }
+
+    pub fn with_message(mut self, value: impl Into<String>) -> Self {
+        self.message = Some(value.into());
+        self
+    }
+
+    pub fn with_field(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.fields.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn to_audit_event(&self) -> AuditEvent {
+        let mut event = AuditEvent::new(self.action, self.outcome, self.trace.clone());
+        if let Some(message) = &self.message {
+            event = event.with_message(message.clone());
+        }
+        for (key, value) in &self.fields {
+            event = event.with_field(key.clone(), value.clone());
+        }
+        event
+    }
+}
+
 impl Default for LuaHost<MluaVmAdapter> {
     fn default() -> Self {
         Self::new()
@@ -155,6 +201,7 @@ fn extract_string(source: &str, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use eva_core::{EventId, EventPayload, GenerationId, RequestId, TraceContext};
+    use eva_observability::AuditAction;
 
     fn event() -> Event {
         Event::new(
@@ -311,6 +358,72 @@ return root
 
         assert_eq!(error.kind(), eva_core::ErrorKind::Internal);
         assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
+    }
+
+    #[test]
+    fn on_event_host_log_and_audit_emit_traceable_observability() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  ctx.host.log("info", "handled " .. event.event_id)
+  ctx.host.audit("accepted " .. ctx.request.request_id)
+  return { status = "observed" }
+end
+
+return root
+"#,
+        );
+        let event = event()
+            .with_request_id(RequestId::parse("req-lua-observe-1").unwrap())
+            .with_generation_id(GenerationId::parse("gen-lua-observe-1").unwrap())
+            .with_trace(TraceContext::correlated(
+                EventId::parse("evt-observe-correlation").unwrap(),
+            ));
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+
+        let result = LuaHost::new().run_on_event(&script, &event, &ctx).unwrap();
+
+        assert_eq!(result.status, "observed");
+        assert_eq!(result.observability.len(), 2);
+        assert_eq!(result.observability[0].action, AuditAction::LuaHostLog);
+        assert_eq!(
+            result.observability[0].message.as_deref(),
+            Some("handled evt-1")
+        );
+        assert_eq!(
+            result.observability[0].fields[0],
+            ("level".to_owned(), "info".to_owned())
+        );
+        assert_eq!(result.observability[1].action, AuditAction::LuaHostAudit);
+        assert_eq!(
+            result.observability[1]
+                .trace
+                .request_id
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "req-lua-observe-1"
+        );
+        assert_eq!(
+            result.observability[1]
+                .trace
+                .correlation_id
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "evt-observe-correlation"
+        );
+        assert_eq!(
+            result.observability[1]
+                .trace
+                .agent_id
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "root-agent"
+        );
     }
 
     #[test]
