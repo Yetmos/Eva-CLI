@@ -44,6 +44,16 @@ cargo test -p eva-storage
 
 V0.4 已覆盖：事件 append/watermark、ack consumer、fail structured error、replay cursor、StateStore 版本冲突、TaskStateStore 跨 store 读写、ArtifactStore digest round trip、filesystem artifact missing/tamper checks。
 
+## V1.6.1 Durable Backend Baseline
+
+`FileSystemDurableBackend` defines the first durable backend layout contract:
+
+- `backend.manifest` records `schema_version=1` and layout version `eva.durable.v1`.
+- `events/`, `state/`, `tasks/`, `audit/`, and `artifacts/` are created and verified as stable directories.
+- `migration.lock` is acquired with `create_new` for read-write opens and released on drop.
+- read-only open verifies an existing backend without creating files or taking a lock.
+- `InMemoryDurableBackend` remains available as the test backend.
+
 ## 后续计划
 
 | 版本 | 计划 |

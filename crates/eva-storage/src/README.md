@@ -14,3 +14,12 @@
 | `lib.rs` | 已实现 | re-export V0.4 公开类型，供 eventbus/runtime 直接使用。 |
 
 验证：`cargo test -p eva-storage`。
+
+## V1.6.1 Durable Backend Baseline
+
+`durable_backend.rs` owns the schema-versioned backend contract for local
+durable storage. It exports `DurableBackend`, `DurableBackendOptions`,
+`FileSystemDurableBackend`, and `InMemoryDurableBackend`. The filesystem
+backend creates and verifies `events/`, `state/`, `tasks/`, `audit/`, and
+`artifacts/`, uses `backend.manifest` for schema compatibility, and uses
+`migration.lock` to prevent concurrent read-write migrations.
