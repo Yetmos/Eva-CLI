@@ -2,6 +2,7 @@
 
 use eva_core::{EvaError, EventId};
 use eva_eventbus::DurableEventBus;
+use eva_observability::{AuditAction, AuditEvent, AuditOutcome, AuditSink, TraceFields};
 use eva_storage::{
     EventLogStatus, FileSystemTaskStateStore, TaskStateReplaySnapshot, TaskStateSnapshot,
     TaskStateStore,
@@ -107,6 +108,20 @@ impl RuntimeRecoveryCoordinator {
         Ok(report)
     }
 
+    pub fn recover_task_store_with_audit(
+        &self,
+        store: &mut FileSystemTaskStateStore,
+        audit_sink: &mut impl AuditSink,
+        trace: TraceFields,
+    ) -> Result<RuntimeRecoveryReport, EvaError> {
+        let mut report = self.recover_task_store(store)?;
+        self.record_recovery_audit(audit_sink, trace, &report)?;
+        report
+            .audit
+            .push("runtime.recovery:audit_recorded".to_owned());
+        Ok(report)
+    }
+
     pub fn recover_task_store_with_redrive(
         &self,
         store: &mut FileSystemTaskStateStore,
@@ -117,6 +132,31 @@ impl RuntimeRecoveryCoordinator {
         redrive_recovered_events(&mut report, bus, options)?;
         persist_recovered_snapshots(store, &mut report)?;
         Ok(report)
+    }
+
+    pub fn recover_task_store_with_redrive_and_audit(
+        &self,
+        store: &mut FileSystemTaskStateStore,
+        bus: &mut DurableEventBus,
+        audit_sink: &mut impl AuditSink,
+        trace: TraceFields,
+        options: RuntimeRecoveryOptions,
+    ) -> Result<RuntimeRecoveryReport, EvaError> {
+        let mut report = self.recover_task_store_with_redrive(store, bus, options)?;
+        self.record_recovery_audit(audit_sink, trace, &report)?;
+        report
+            .audit
+            .push("runtime.recovery:audit_recorded".to_owned());
+        Ok(report)
+    }
+
+    pub fn record_recovery_audit(
+        &self,
+        audit_sink: &mut impl AuditSink,
+        trace: TraceFields,
+        report: &RuntimeRecoveryReport,
+    ) -> Result<(), EvaError> {
+        audit_sink.record(recovery_audit_event(trace, report))
     }
 }
 
@@ -275,14 +315,28 @@ fn event_log_status(bus: &DurableEventBus, event_id: &EventId) -> Option<EventLo
         .map(|record| record.status)
 }
 
+fn recovery_audit_event(trace: TraceFields, report: &RuntimeRecoveryReport) -> AuditEvent {
+    AuditEvent::new(AuditAction::RuntimeRecovered, AuditOutcome::Ok, trace)
+        .with_message("runtime recovery checkpoint completed")
+        .with_field("scanned_tasks", report.scanned_tasks.to_string())
+        .with_field("recovered_tasks", report.recovered_tasks.len().to_string())
+        .with_field("unchanged_tasks", report.unchanged_tasks.len().to_string())
+        .with_field("redriven_events", report.redriven_events.len().to_string())
+        .with_field(
+            "skipped_redrive_events",
+            report.skipped_redrive_events.len().to_string(),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use eva_core::{AgentId, EvaError, Event, EventId, EventPayload, Topic};
     use eva_eventbus::{DurableEventBus, EventBus, RedrivePolicy};
+    use eva_observability::{SpanId, TraceFields};
     use eva_storage::{
-        DurableBackendOptions, FileSystemDurableBackend, TaskStateDeadLetterSnapshot,
-        TaskStateLogSnapshot,
+        DurableBackendOptions, FileSystemAuditSink, FileSystemDurableBackend,
+        TaskStateDeadLetterSnapshot, TaskStateLogSnapshot,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -354,6 +408,36 @@ mod tests {
     }
 
     #[test]
+    fn recovery_audit_covers_clean_start_smoke() {
+        let root = test_root("audit-clean-start");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let mut audit = FileSystemAuditSink::open(backend.layout()).unwrap();
+        let trace = TraceFields::default()
+            .with_span_id(SpanId::parse("span-recovery-clean-start").unwrap());
+
+        let report = RuntimeRecoveryCoordinator
+            .recover_task_store_with_audit(&mut store, &mut audit, trace)
+            .unwrap();
+        let reopened = FileSystemAuditSink::open(backend.layout()).unwrap();
+        let records = reopened.query_by_trace_id("span-recovery-clean-start");
+
+        assert_eq!(report.scanned_tasks, 0);
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "runtime.recovery:audit_recorded"));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].action, "runtime.recovered");
+        assert_eq!(records[0].outcome, "ok");
+        assert!(records[0]
+            .fields
+            .iter()
+            .any(|field| field == &("scanned_tasks".to_owned(), "0".to_owned())));
+    }
+
+    #[test]
     fn recovery_redrives_unacked_dead_letters_and_records_task_replay() {
         let root = test_root("redrive-durable");
         {
@@ -408,6 +492,62 @@ mod tests {
                 bus.log().records()[1].event.event_id().as_str(),
                 "evt-recovery-redrive-1:replay-1"
             );
+        }
+    }
+
+    #[test]
+    fn recovery_audit_covers_restart_redrive_smoke() {
+        let root = test_root("audit-restart-redrive");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let event = event("evt-recovery-audit-1");
+
+            bus.publish(event.clone()).unwrap();
+            bus.dead_letter(event, EvaError::timeout("handler timeout"))
+                .unwrap();
+            let mut pending = snapshot("req-recovery-audit-store", "running");
+            pending
+                .dead_letters
+                .push(dead_letter("evt-recovery-audit-1"));
+            store.write(&pending).unwrap();
+        }
+
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let mut audit = FileSystemAuditSink::open(backend.layout()).unwrap();
+            let trace = TraceFields::default()
+                .with_span_id(SpanId::parse("span-recovery-redrive").unwrap());
+
+            let report = RuntimeRecoveryCoordinator
+                .recover_task_store_with_redrive_and_audit(
+                    &mut store,
+                    &mut bus,
+                    &mut audit,
+                    trace,
+                    RuntimeRecoveryOptions::default(),
+                )
+                .unwrap();
+            let reopened = FileSystemAuditSink::open(backend.layout()).unwrap();
+            let records = reopened.query_by_trace_id("span-recovery-redrive");
+
+            assert_eq!(report.redriven_events.len(), 1);
+            assert!(report
+                .audit
+                .iter()
+                .any(|entry| entry == "runtime.recovery:audit_recorded"));
+            assert_eq!(records.len(), 1);
+            assert!(records[0]
+                .fields
+                .iter()
+                .any(|field| field == &("redriven_events".to_owned(), "1".to_owned())));
         }
     }
 
@@ -510,6 +650,25 @@ mod tests {
             assert_eq!(bus.dead_letters()[0].replay_count, 0);
             assert_eq!(bus.log().records().len(), 1);
         }
+    }
+
+    #[test]
+    fn recovery_reports_corrupt_task_store_smoke() {
+        let root = test_root("corrupt-task-store");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        fs::write(
+            backend.layout().task_dir.join("corrupt.task"),
+            "task_id=req-corrupt\nstatus=running\nattempts=not-a-number\n",
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+
+        let error = RuntimeRecoveryCoordinator
+            .recover_task_store(&mut store)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
     }
 
     fn snapshot(task_id: &str, status: &str) -> TaskStateSnapshot {

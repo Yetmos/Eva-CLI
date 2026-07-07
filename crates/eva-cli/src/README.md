@@ -86,7 +86,7 @@ It creates a release pointer plan with audit evidence, returns
 
 `run.rs` 新增 V1.5 发布加固命令：
 
-- `release check`：调用 `eva_release::ReleaseHardeningService::readiness`，输出跨平台、稳定性、文档、安全、性能和迁移门禁。
+- `release check`：调用 `eva_release::ReleaseHardeningService::readiness`，输出跨平台、稳定性、文档、安全、性能、迁移和 V1.6.4 durable recovery 门禁。
 - `release security`：输出 security findings，覆盖 policy、Lua sandbox、secret redaction、MCP allowlist、hardware handle 和 lifecycle apply 风险。
 - `release perf`：输出 release-smoke 性能预算，覆盖 EventBus、Scheduler、Adapter probe、memory context、backup 和 release check。
 - `release migration`：输出 V1.4 -> V1.5 迁移步骤和兼容性策略。

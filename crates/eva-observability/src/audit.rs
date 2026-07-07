@@ -11,6 +11,7 @@ pub enum AuditAction {
     ConfigValidated,
     PolicyEvaluated,
     RuntimeStarted,
+    RuntimeRecovered,
     RuntimeStopped,
     EventAccepted,
     EventDelivered,
@@ -57,6 +58,7 @@ impl AuditAction {
             Self::ConfigValidated => "config.validated",
             Self::PolicyEvaluated => "policy.evaluated",
             Self::RuntimeStarted => "runtime.started",
+            Self::RuntimeRecovered => "runtime.recovered",
             Self::RuntimeStopped => "runtime.stopped",
             Self::EventAccepted => "event.accepted",
             Self::EventDelivered => "event.delivered",
@@ -116,6 +118,7 @@ mod tests {
     #[test]
     fn audit_action_spelling_is_stable() {
         assert_eq!(AuditAction::ConfigValidated.as_str(), "config.validated");
+        assert_eq!(AuditAction::RuntimeRecovered.as_str(), "runtime.recovered");
         assert_eq!(AuditOutcome::Blocked.as_str(), "blocked");
     }
 

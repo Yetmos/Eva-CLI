@@ -108,6 +108,7 @@ impl ReleaseHardeningService {
         gates.push(durable_backend_gate());
         gates.push(durable_eventbus_gate());
         gates.push(durable_task_audit_artifact_gate());
+        gates.push(durable_runtime_recovery_gate());
 
         let status = if gates
             .iter()
@@ -133,6 +134,7 @@ impl ReleaseHardeningService {
                 "durable_backend_layout_baseline_ready".to_owned(),
                 "durable_eventbus_redrive_baseline_ready".to_owned(),
                 "durable_task_audit_artifact_baseline_ready".to_owned(),
+                "durable_runtime_recovery_checkpoint_ready".to_owned(),
             ],
         })
     }
@@ -417,6 +419,20 @@ impl ReleaseHardeningService {
                 recovery_contract: "future apply path must keep backup snapshot before handoff"
                     .to_owned(),
             },
+            StabilityScenario {
+                id: "STAB-RECOVERY-001".to_owned(),
+                status: ReleaseGateStatus::Pass,
+                scenario: "durable runtime recovery can scan, redrive, and audit restart evidence"
+                    .to_owned(),
+                evidence: vec![
+                    "recover_task_store_with_audit covers clean start".to_owned(),
+                    "recover_task_store_with_redrive_and_audit covers restart redrive".to_owned(),
+                    "corrupt task store returns stable error".to_owned(),
+                ],
+                recovery_contract:
+                    "recovery never redrives acked events and records durable audit evidence"
+                        .to_owned(),
+            },
         ]
     }
 
@@ -625,6 +641,28 @@ fn durable_task_audit_artifact_gate() -> ReleaseGate {
     }
 }
 
+fn durable_runtime_recovery_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-DURABLE-RECOVERY-001".to_owned(),
+        domain: "durable_runtime_recovery".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.6.4 runtime recovery scanner, event redrive checkpoint, and durable recovery audit smoke are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-runtime/src/recovery.rs RuntimeRecoveryCoordinator".to_owned(),
+            "crates/eva-eventbus/src/durable.rs DurableEventBus::redrive_dead_letter".to_owned(),
+            "crates/eva-observability/src/audit.rs AuditAction::RuntimeRecovered".to_owned(),
+            "cargo test -p eva-runtime recovery".to_owned(),
+            "cargo test -p eva-eventbus durable".to_owned(),
+            "cargo test -p eva-cli recovery".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.4 Done".to_owned(),
+        ],
+        remediation: vec![
+            "do not enable provider process recovery without preserving ack skip, redrive policy, and durable audit tests".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -665,6 +703,9 @@ mod tests {
         }));
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-DURABLE-STORES-001" && gate.status == ReleaseGateStatus::Pass
+        }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DURABLE-RECOVERY-001" && gate.status == ReleaseGateStatus::Pass
         }));
     }
 

@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | `lib.rs` | 公共导出 | 已完成 | V0.2 |
 | `trace.rs` | `TraceFields`、`SpanId`、event 字段提取、request-level builder | 已完成 | V0.2/V0.4/P5 |
-| `audit.rs` | `AuditAction`、`AuditOutcome`、`AuditEvent`、`AuditSink` | 已完成 | V0.2/V1.x |
+| `audit.rs` | `AuditAction`、`AuditOutcome`、`AuditEvent`、`AuditSink` | V1.6.4 已更新 | V0.2/V1.x |
 | `metrics.rs` | `MetricName`、`MetricLabels`、`MetricPoint` | 已完成 | V0.2/V0.4 |
 
 ## 开发实施步骤
@@ -18,7 +18,7 @@
 | 顺序 | 步骤 | 输出 |
 | --- | --- | --- |
 | 1 | 定义 trace 字段并从 `eva-core::Event` 提取。 | 事件链路可追踪。 |
-| 2 | 定义 audit action/outcome 和 sink trait。 | 高风险操作可审计。 |
+| 2 | 定义 audit action/outcome 和 sink trait。 | 高风险操作可审计；V1.6.4 追加 `runtime.recovered` 用于 durable recovery audit。 |
 | 3 | 定义 metric name、labels、point。 | 指标命名稳定。 |
 | 4 | 后续按模块追加 action 和 metric，不更改已有字段。 | 兼容 CLI 和后端。 |
 

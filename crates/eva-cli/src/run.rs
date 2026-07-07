@@ -5413,6 +5413,26 @@ mod tests {
     }
 
     #[test]
+    fn release_check_json_reports_recovery_gate() {
+        let root = workspace_root();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"id\":\"REL-DURABLE-RECOVERY-001\""));
+        assert!(stdout.contains("\"domain\":\"durable_runtime_recovery\""));
+        assert!(stdout.contains("RuntimeRecoveryCoordinator"));
+        assert!(stdout.contains("cargo test -p eva-cli recovery"));
+        assert!(stdout.contains("durable_runtime_recovery_checkpoint_ready"));
+    }
+
+    #[test]
     fn v11_external_capability_commands_report_json() {
         let root = workspace_root();
         let root = root.to_str().unwrap();

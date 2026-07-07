@@ -13,7 +13,7 @@
 | V0.4 | in-memory basic loop | `RuntimeBuilder::in_memory_v04()` 保留最小 EventBus -> Scheduler -> Agent -> LuaHost -> Capability 闭环。 |
 | V0.5 | task diagnostics loop | `RuntimeBuilder::in_memory_v05()` 增加 task status/logs/cancel、timeout、retry、dead-letter replay 和 Lua generation marker。 |
 | V1.0 | core release loop | `RuntimeBuilder::in_memory_v10()` 复用 V0.5 diagnostics，并将 runtime mode/generation 固定为 `in_memory_v1.0` / `basic-v1.0`。 |
-| V1.6.4 | recovery checkpoint | `RuntimeRecoveryCoordinator` 扫描 durable task snapshots，把重启后残留的 `queued`/`running` task 标记为 `interrupted` 或 `recovering`；带 eventbus 的 checkpoint 可 redrive 未 ack 且已到期的 durable dead-letter，recovery audit wiring 仍在后续节点。 |
+| V1.6.4 | recovery checkpoint | `RuntimeRecoveryCoordinator` 扫描 durable task snapshots，把重启后残留的 `queued`/`running` task 标记为 `interrupted` 或 `recovering`；带 eventbus 的 checkpoint 可 redrive 未 ack 且已到期的 durable dead-letter，并把 recovery evidence 写入 durable audit。 |
 
 ## V1.0 Basic 闭环
 
@@ -45,7 +45,7 @@ use eva_runtime::{BasicRunOptions, RuntimeBuilder, TaskReport};
 | `BasicRunOptions` | 配置 event id、request/task id、topic、payload、timeout、cancel、retry、dead-letter replay。 |
 | `BasicRunReport` | CLI `run` 的完整机器可读报告。 |
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
-| `RuntimeRecoveryCoordinator` | V1.6.4 recovery coordinator；读取 task snapshots，持久化 interrupted/recovering 状态，并可通过 durable EventBus 执行受控 redrive checkpoint。 |
+| `RuntimeRecoveryCoordinator` | V1.6.4 recovery coordinator；读取 task snapshots，持久化 interrupted/recovering 状态，可通过 durable EventBus 执行受控 redrive checkpoint，并可记录 `runtime.recovered` audit。 |
 
 ## V1.6.4 Recovery Checkpoint
 
@@ -65,7 +65,11 @@ task-only 入口只负责确定性状态修复：
 - `next_attempt_after_ms` 大于 checkpoint 的 `redrive_ready_at_ms` 时跳过，保留 backoff 证据。
 - redrive 成功后写回 task snapshot 的 `replayed_events`，并在 report 中记录 redriven/skipped 证据。
 
-recovery audit sink 和 CLI smoke gate 是 V1.6.4 后续节点。
+`recover_task_store_with_audit` 和
+`recover_task_store_with_redrive_and_audit` 会把 scanned/recovered/redriven/skipped
+计数写入 `AuditAction::RuntimeRecovered`。V1.6.4 smoke 覆盖 clean start、
+restart redrive 和 corrupt task store，`release check` 暴露
+`REL-DURABLE-RECOVERY-001`。
 
 ## V1.0 非目标
 
@@ -82,4 +86,4 @@ cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```
 
-已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner 的 interrupted/recovering 状态修复和 event redrive checkpoint。
+已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit 和 corrupt-store smoke。
