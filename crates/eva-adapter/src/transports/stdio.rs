@@ -3,8 +3,11 @@
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "stdio command transport with separated command and args";
 
+use crate::manifest::AdapterHandle;
+use crate::runtime::{AdapterInvocation as RuntimeAdapterInvocation, AdapterInvokeReport};
 use eva_core::EvaError;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -22,6 +25,7 @@ pub struct StdioRunnerConfig {
 pub struct StdioInvocation {
     pub command: String,
     pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
     pub input: Vec<u8>,
 }
 
@@ -68,12 +72,18 @@ impl StdioInvocation {
         Self {
             command: command.into(),
             args: Vec::new(),
+            env: BTreeMap::new(),
             input: Vec::new(),
         }
     }
 
     pub fn with_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.args = args.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env = env;
         self
     }
 
@@ -101,8 +111,10 @@ impl StdioRunner {
         validate_invocation(config, &invocation)?;
 
         let started_at = Instant::now();
+        let sensitive_values = sensitive_values(invocation.env.values());
         let mut child = Command::new(&invocation.command)
             .args(&invocation.args)
+            .envs(&invocation.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -185,8 +197,8 @@ impl StdioRunner {
                         args: invocation.args,
                         status: StdioRunStatus::OutputLimitExceeded,
                         exit_code: None,
-                        stdout,
-                        stderr,
+                        stdout: redact_bytes(stdout, &sensitive_values),
+                        stderr: redact_bytes(stderr, &sensitive_values),
                         duration_ms: started_at.elapsed().as_millis(),
                         audit: vec![
                             "transport:stdio".to_owned(),
@@ -218,8 +230,8 @@ impl StdioRunner {
                     args: invocation.args,
                     status: StdioRunStatus::Completed,
                     exit_code: status.code(),
-                    stdout: stdout_bytes,
-                    stderr: stderr_bytes,
+                    stdout: redact_bytes(stdout_bytes, &sensitive_values),
+                    stderr: redact_bytes(stderr_bytes, &sensitive_values),
                     duration_ms: started_at.elapsed().as_millis(),
                     audit: vec![
                         "transport:stdio".to_owned(),
@@ -237,6 +249,69 @@ impl StdioRunner {
             thread::sleep(Duration::from_millis(5));
         }
     }
+}
+
+pub fn invoke(
+    handle: &AdapterHandle,
+    invocation: RuntimeAdapterInvocation,
+) -> Result<AdapterInvokeReport, EvaError> {
+    let command = handle.command.as_deref().ok_or_else(|| {
+        EvaError::invalid_argument("stdio adapter is missing command")
+            .with_context("adapter_id", handle.id.as_str())
+    })?;
+    validate_input_size(handle, &invocation.input)?;
+
+    let trace = invocation.trace_for_adapter(&handle.id);
+    let request_id = invocation.request_id;
+    let capability = invocation.capability;
+    let credential_env = credential_env_values(&handle.credential_env);
+    let config = StdioRunnerConfig::new(
+        [command.to_owned()],
+        timeout_ms(handle),
+        output_limit_bytes(handle),
+    );
+    let run = StdioRunner.run(
+        &config,
+        StdioInvocation::new(command)
+            .with_args(handle.args.clone())
+            .with_env(credential_env.values.clone())
+            .with_input(invocation.input.into_bytes()),
+    )?;
+    let status = match (run.status, run.exit_code) {
+        (StdioRunStatus::Completed, Some(0)) => "completed",
+        (StdioRunStatus::Completed, _) => "failed",
+        (StdioRunStatus::OutputLimitExceeded, _) => "output_limit_exceeded",
+    }
+    .to_owned();
+    let mut audit = vec![format!("adapter.invoked:{}", handle.id.as_str())];
+    audit.extend(run.audit);
+    audit.push(format!(
+        "stdio.exit_code:{}",
+        run.exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "none".to_owned())
+    ));
+    audit.extend(credential_env.audit);
+
+    Ok(AdapterInvokeReport {
+        request_id,
+        adapter_id: handle.id.clone(),
+        transport: handle.transport,
+        capability,
+        status,
+        output: format!(
+            "{{\"transport\":\"stdio\",\"command\":{},\"exit_code\":{},\"stdout\":{},\"stderr\":{},\"duration_ms\":{}}}",
+            escape_json(&run.command),
+            run.exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "null".to_owned()),
+            escape_json(&String::from_utf8_lossy(&run.stdout)),
+            escape_json(&String::from_utf8_lossy(&run.stderr)),
+            run.duration_ms
+        ),
+        audit,
+        trace,
+    })
 }
 
 enum ReaderMessage {
@@ -323,6 +398,87 @@ fn kill_child(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CredentialEnvValues {
+    values: BTreeMap<String, String>,
+    audit: Vec<String>,
+}
+
+fn credential_env_values(names: &[String]) -> CredentialEnvValues {
+    let mut values = BTreeMap::new();
+    let mut audit = Vec::new();
+    for name in names {
+        match env::var(name) {
+            Ok(value) => {
+                values.insert(name.clone(), value);
+                audit.push(format!("credential_env:{name}:redacted"));
+            }
+            Err(_) => audit.push(format!("credential_env:{name}:missing")),
+        }
+    }
+    CredentialEnvValues { values, audit }
+}
+
+fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaError> {
+    if let Some(limit) = handle.max_prompt_bytes {
+        if input.len() > limit {
+            return Err(
+                EvaError::conflict("stdio provider input exceeded prompt limit")
+                    .with_context("adapter_id", handle.id.as_str())
+                    .with_context("max_prompt_bytes", limit.to_string())
+                    .with_context("actual_bytes", input.len().to_string()),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn timeout_ms(handle: &AdapterHandle) -> u64 {
+    handle.timeout_ms.unwrap_or(30_000)
+}
+
+fn output_limit_bytes(handle: &AdapterHandle) -> usize {
+    handle
+        .output_limit_bytes
+        .or(handle.max_prompt_bytes)
+        .unwrap_or(64 * 1024)
+}
+
+fn sensitive_values<'a>(values: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+    values
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .collect()
+}
+
+fn redact_bytes(bytes: Vec<u8>, sensitive_values: &[String]) -> Vec<u8> {
+    if sensitive_values.is_empty() {
+        return bytes;
+    }
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    for value in sensitive_values {
+        text = text.replace(value, "[REDACTED]");
+    }
+    text.into_bytes()
+}
+
+fn escape_json(value: &str) -> String {
+    let mut escaped = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            value => escaped.push(value),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +526,23 @@ mod tests {
         assert_eq!(report.exit_code, Some(0));
         assert_eq!(String::from_utf8(report.stdout).unwrap(), "ok");
         assert!(report.audit.contains(&"shell:false".to_owned()));
+    }
+
+    #[test]
+    fn runner_redacts_injected_env_from_output_streams() {
+        let config = StdioRunnerConfig::new([test_command()], 5_000, 4096);
+        let secret = "stdio-secret-redaction-test";
+        let invocation = StdioInvocation::new(test_command())
+            .with_args(output_args(secret))
+            .with_env(BTreeMap::from([(
+                "EVA_STDIO_SECRET".to_owned(),
+                secret.to_owned(),
+            )]));
+
+        let report = StdioRunner.run(&config, invocation).unwrap();
+
+        assert!(!String::from_utf8_lossy(&report.stdout).contains(secret));
+        assert!(String::from_utf8_lossy(&report.stdout).contains("[REDACTED]"));
     }
 
     #[cfg(windows)]

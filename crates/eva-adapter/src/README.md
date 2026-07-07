@@ -4,19 +4,19 @@
 
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
-本目录承载 Adapter runtime descriptor、registry、router、transport runtime 和错误映射。V1.1 已经把外部能力做成 side-effect-safe 的受控 envelope；V1.3 新增 hardware transport，让硬件能力经由 `eva-hardware` 的 registry lease 和 driver binding 执行。
+本目录承载 Adapter runtime descriptor、registry、router、transport runtime 和错误映射。V1.1 已经把外部能力做成 side-effect-safe 的受控 envelope；V1.3 新增 hardware transport，让硬件能力经由 `eva-hardware` 的 registry lease 和 driver binding 执行；V1.8.1 将 stdio/http runner 接入 `AdapterRuntime`。
 
 ## 文件职责
 
 | 文件/目录 | 职责 | 当前进度 | 说明 |
 | --- | --- | --- | --- |
 | `lib.rs` | 模块导出 | 已完成 V1.1 | 导出 manifest、registry、router、runtime、error。 |
-| `manifest.rs` | Adapter manifest 的 runtime 表示 | 已完成 V1.3 | `AdapterHandle` 保留 MCP、Skill 和 hardware identity 扩展。 |
+| `manifest.rs` | Adapter manifest 的 runtime 表示 | 已完成 V1.8.1 | `AdapterHandle` 保留 MCP、Skill、hardware identity 以及 stdio/http command、args、endpoint、env、headers、limits 扩展。 |
 | `registry.rs` | Adapter handle 和 capability index | 已完成 V1.1 | 支持按 id/capability 查询和重复检测。 |
 | `router.rs` | explicit provider 和 capability 路由 | 已完成 V1.1 | provider 优先，fallback 到 capability index。 |
-| `runtime.rs` | 授权后 transport 执行、probe、audit | 已完成 P5 | provider invocation report 包含 request-level `TraceFields`；hardware transport 已接入；stdio/http 仍返回 unsupported。 |
+| `runtime.rs` | 授权后 transport 执行、probe、audit | 已完成 V1.8.1 | provider invocation report 包含 request-level `TraceFields`；hardware、stdio 和 http transport 已接入；后续补 provider supervision 与并发/限流。 |
 | `error.rs` | provider/transport 错误映射 | 已完成 V1.1 | 稳定输出 permission/unavailable/unsupported/conflict 等错误。 |
-| `transports/` | 具体 transport 实现 | 已完成 V1.1/V1.3/P5-001/P5-002 部分 | builtin/MCP/Skill/hardware 有受控实现；stdio/http 已有 runner contract；runtime 仍未启动 stdio/http provider。 |
+| `transports/` | 具体 transport 实现 | 已完成 V1.8.1 | builtin/MCP/Skill/hardware 有受控实现；stdio/http runner 已接入 runtime，带 manifest command/endpoint/env/limits、timeout、output limit 和 credential redaction。 |
 
 ## V1.1 已实现 surface
 
@@ -33,7 +33,7 @@ capability, provider, and the stable `adapter.invoke` span. CLI JSON can
 therefore show transport audit entries and invocation trace in the same data
 object.
 
-V1.1 不启动 stdio/http/hardware provider。这保证外部执行先有 manifest、policy、audit、credential、timeout 和平台边界。
+V1.8.1 起 `AdapterRuntime` 可以启动 stdio/http provider runner。stdio 子进程不走 shell，只允许 manifest `command`；HTTP 先支持标准库 `http://` fake/明文 provider，`https://` 在没有 TLS client 时返回稳定 unsupported。credential env/header 只进入受控 runner，输出和审计默认脱敏。
 
 ## V1.3 新增 surface
 
@@ -52,8 +52,8 @@ V1.1 不启动 stdio/http/hardware provider。这保证外部执行先有 manife
 | mcp | 已完成 V1.1 | tool allowlist 先于 envelope。 |
 | skill | 已完成 V1.1 | runtime gate 必须为 `normal`。 |
 | hardware | 已完成 V1.3 | 只接受 registry lease 和 driver binding，不暴露 raw I/O。 |
-| stdio | runner contract 已完成 | command/args 分离，强制 allowlist，覆盖 timeout 和 output limit；runtime 接入留到后续步骤。 |
-| http | runner contract 已完成 | URL origin allowlist、method allowlist、timeout 和 output limit 已覆盖；runtime 接入留到后续步骤。 |
+| stdio | 已接入 AdapterRuntime | command/args 分离，强制 allowlist，覆盖 timeout、output limit、env 注入和 stdout/stderr 脱敏。 |
+| http | 已接入 AdapterRuntime | URL origin allowlist、method allowlist、timeout、output limit、header env 注入和输出脱敏已覆盖。 |
 
 ## 验证
 
@@ -64,4 +64,4 @@ cargo run -- adapter probe --adapter github-mcp --output json
 cargo run -- hardware bind --adapter scale-main --output json
 ```
 
-当前测试覆盖 registry/router/runtime、MCP allowlist、Skill gate、hardware identity 读取、hardware transport simulated audit、stdio runner denied command/timeout/output limit，以及 HTTP URL allowlist、method denial、timeout。
+当前测试覆盖 registry/router/runtime、MCP allowlist、Skill gate、hardware identity 读取、hardware transport simulated audit、stdio runtime runner/redaction/disabled-provider gate、stdio runner denied command/timeout/output limit，以及 HTTP URL allowlist、method denial、timeout、runtime fake provider 和 credential header redaction。

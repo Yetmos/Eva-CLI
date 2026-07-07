@@ -5,6 +5,7 @@ use eva_config::manifest::capability::CapabilityManifest;
 use eva_config::{AdapterTransport, CapabilityKind};
 use eva_core::{AdapterId, CapabilityId, CapabilityName, EvaError};
 use eva_mcp::{McpProcessSpec, McpServerTransport, McpSessionConfig};
+use std::collections::BTreeMap;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "Adapter manifest runtime representation";
@@ -36,6 +37,15 @@ pub struct AdapterHandle {
     pub transport: AdapterTransport,
     pub capabilities: Vec<CapabilityName>,
     pub source_path: String,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub endpoint: Option<String>,
+    pub method: Option<String>,
+    pub credential_env: Vec<String>,
+    pub timeout_ms: Option<u64>,
+    pub output_limit_bytes: Option<usize>,
+    pub max_prompt_bytes: Option<usize>,
+    pub headers: BTreeMap<String, String>,
     pub mcp_server_transport: Option<String>,
     pub mcp_command: Option<String>,
     pub mcp_args: Vec<String>,
@@ -67,6 +77,21 @@ impl AdapterHandle {
             transport: manifest.transport,
             capabilities: manifest.capabilities.clone(),
             source_path: manifest.path.display().to_string(),
+            command: manifest.extra_string("command").map(str::to_owned),
+            args: manifest.extra_string_list("args"),
+            endpoint: manifest.extra_string("endpoint").map(str::to_owned),
+            method: manifest.extra_string("method").map(str::to_owned),
+            credential_env: manifest.nested_extra_string_list("permissions", "env"),
+            timeout_ms: manifest.nested_extra_u64("limits", "timeout_ms"),
+            output_limit_bytes: manifest
+                .nested_extra_usize("limits", "output_limit_bytes")
+                .or_else(|| manifest.nested_extra_usize("limits", "max_output_bytes")),
+            max_prompt_bytes: manifest.nested_extra_usize("limits", "max_prompt_bytes"),
+            headers: {
+                let mut headers = manifest.extra_string_map("headers");
+                headers.extend(manifest.nested_extra_string_map("http", "headers"));
+                headers
+            },
             mcp_server_transport: manifest
                 .nested_extra_string("mcp", "server_transport")
                 .map(str::to_owned),
@@ -194,6 +219,10 @@ mod tests {
         let session_config = mcp_handle.mcp_session_config().unwrap();
         assert_eq!(session_config.server_transport, McpServerTransport::Stdio);
         assert_eq!(session_config.process.command, "github-mcp-server");
+        assert_eq!(mcp_handle.timeout_ms, Some(60000));
+        assert!(mcp_handle
+            .credential_env
+            .contains(&"GITHUB_TOKEN".to_owned()));
         assert_eq!(skill_handle.skill_name(), Some("code-review"));
     }
 
@@ -210,5 +239,35 @@ mod tests {
 
         assert_eq!(handle.hardware_logical_name.as_deref(), Some("main-scale"));
         assert_eq!(handle.hardware_device_class.as_deref(), Some("scale"));
+    }
+
+    #[test]
+    fn handle_reads_stdio_and_http_runtime_fields() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let stdio = project
+            .adapters
+            .iter()
+            .find(|adapter| adapter.id.as_str() == "codex-cli")
+            .unwrap();
+        let http = project
+            .adapters
+            .iter()
+            .find(|adapter| adapter.id.as_str() == "claude-api")
+            .unwrap();
+
+        let stdio_handle = AdapterHandle::from_manifest(stdio);
+        let http_handle = AdapterHandle::from_manifest(http);
+
+        assert_eq!(stdio_handle.command.as_deref(), Some("codex"));
+        assert!(stdio_handle.args.contains(&"exec".to_owned()));
+        assert_eq!(stdio_handle.timeout_ms, Some(300000));
+        assert_eq!(stdio_handle.max_prompt_bytes, Some(200000));
+        assert_eq!(
+            http_handle.endpoint.as_deref(),
+            Some("https://api.anthropic.com/v1/messages")
+        );
+        assert!(http_handle
+            .credential_env
+            .contains(&"ANTHROPIC_API_KEY".to_owned()));
     }
 }

@@ -143,15 +143,8 @@ impl AdapterRuntime {
             | AdapterTransport::LuaCapability
             | AdapterTransport::Eventbus => transports::builtin::invoke(&handle, invocation),
             AdapterTransport::Hardware => transports::hardware::invoke(&handle, invocation),
-            AdapterTransport::Stdio | AdapterTransport::Http => Err(EvaError::unsupported(
-                "Adapter transport requires an external executor not started in this version",
-            )
-            .with_context("adapter_id", handle.id.as_str())
-            .with_context("transport", handle.transport.as_str())
-            .with_context(
-                "suggestion",
-                "use adapter probe/list for diagnostics or a skill/MCP controlled envelope",
-            )),
+            AdapterTransport::Stdio => transports::stdio::invoke(&handle, invocation),
+            AdapterTransport::Http => transports::http::invoke(&handle, invocation),
         }
     }
 }
@@ -159,8 +152,16 @@ impl AdapterRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::AdapterHandle;
+    use crate::registry::AdapterRegistry;
     use eva_config::load_project_config;
+    use eva_config::AdapterTransport;
+    use eva_core::ErrorKind;
+    use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::{Path, PathBuf};
+    use std::thread;
 
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -197,5 +198,217 @@ mod tests {
                 .map(|capability| capability.as_str()),
             Some("workflow.code_review")
         );
+    }
+
+    #[test]
+    fn runtime_invokes_stdio_adapter_with_redacted_env() {
+        let env_name = "EVA_TEST_STDIO_SECRET_RUNTIME";
+        let secret = "stdio-runtime-secret";
+        std::env::set_var(env_name, secret);
+        let runtime = runtime_with_handle(stdio_handle(
+            true,
+            test_command(),
+            env_echo_args(env_name),
+            vec![env_name.to_owned()],
+        ));
+
+        let report = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-stdio-runtime").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap();
+        std::env::remove_var(env_name);
+
+        assert_eq!(report.status, "completed");
+        assert!(!report.output.contains(secret));
+        assert!(report.output.contains("[REDACTED]"));
+        assert!(report
+            .audit
+            .contains(&format!("credential_env:{env_name}:redacted")));
+        assert!(report.audit.contains(&"shell:false".to_owned()));
+    }
+
+    #[test]
+    fn runtime_rejects_disabled_stdio_provider_before_start() {
+        let runtime = runtime_with_handle(stdio_handle(
+            false,
+            "definitely-not-started",
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        let error = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-disabled-stdio").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn runtime_invokes_http_adapter_and_redacts_credential_header() {
+        let env_name = "EVA_TEST_HTTP_SECRET_RUNTIME";
+        let secret = "http-runtime-secret";
+        std::env::set_var(env_name, secret);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1/provider", listener.local_addr().unwrap());
+        let server_secret = secret.to_owned();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 4096];
+            let read = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.contains("Authorization: http-runtime-secret"));
+            let body = format!("provider echoed {server_secret}");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let runtime = runtime_with_handle(http_handle(
+            endpoint,
+            BTreeMap::from([("Authorization".to_owned(), format!("env:{env_name}"))]),
+            vec![env_name.to_owned()],
+        ));
+
+        let report = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-http-runtime").unwrap(),
+                    CapabilityName::parse("chat.reply").unwrap(),
+                )
+                .with_provider(AdapterId::parse("http-test").unwrap())
+                .with_input("{\"message\":\"hello\"}"),
+            )
+            .unwrap();
+        server.join().unwrap();
+        std::env::remove_var(env_name);
+
+        assert_eq!(report.status, "completed");
+        assert!(!report.output.contains(secret));
+        assert!(report.output.contains("[REDACTED]"));
+        assert!(report.audit.contains(&format!(
+            "credential_header:Authorization:env:{env_name}:redacted"
+        )));
+    }
+
+    fn runtime_with_handle(handle: AdapterHandle) -> AdapterRuntime {
+        let mut registry = AdapterRegistry::new();
+        registry.register(handle).unwrap();
+        AdapterRuntime {
+            router: AdapterRouter::new(registry.clone()),
+            registry,
+        }
+    }
+
+    fn stdio_handle(
+        enabled: bool,
+        command: impl Into<String>,
+        args: Vec<String>,
+        credential_env: Vec<String>,
+    ) -> AdapterHandle {
+        AdapterHandle {
+            id: AdapterId::parse("stdio-test").unwrap(),
+            name: "Stdio Test".to_owned(),
+            version: "1.0.0".to_owned(),
+            enabled,
+            transport: AdapterTransport::Stdio,
+            capabilities: vec![CapabilityName::parse("repo.analyze").unwrap()],
+            source_path: "test".to_owned(),
+            command: Some(command.into()),
+            args,
+            endpoint: None,
+            method: None,
+            credential_env,
+            timeout_ms: Some(5_000),
+            output_limit_bytes: Some(4096),
+            max_prompt_bytes: Some(4096),
+            headers: BTreeMap::new(),
+            mcp_server_transport: None,
+            mcp_command: None,
+            mcp_args: Vec::new(),
+            mcp_tools: Vec::new(),
+            skill_id: None,
+            skill_kind: None,
+            skill_runtime_gate: None,
+            hardware_logical_name: None,
+            hardware_device_class: None,
+            bindings: Vec::new(),
+        }
+    }
+
+    fn http_handle(
+        endpoint: String,
+        headers: BTreeMap<String, String>,
+        credential_env: Vec<String>,
+    ) -> AdapterHandle {
+        AdapterHandle {
+            id: AdapterId::parse("http-test").unwrap(),
+            name: "HTTP Test".to_owned(),
+            version: "1.0.0".to_owned(),
+            enabled: true,
+            transport: AdapterTransport::Http,
+            capabilities: vec![CapabilityName::parse("chat.reply").unwrap()],
+            source_path: "test".to_owned(),
+            command: None,
+            args: Vec::new(),
+            endpoint: Some(endpoint),
+            method: Some("POST".to_owned()),
+            credential_env,
+            timeout_ms: Some(5_000),
+            output_limit_bytes: Some(4096),
+            max_prompt_bytes: Some(4096),
+            headers,
+            mcp_server_transport: None,
+            mcp_command: None,
+            mcp_args: Vec::new(),
+            mcp_tools: Vec::new(),
+            skill_id: None,
+            skill_kind: None,
+            skill_runtime_gate: None,
+            hardware_logical_name: None,
+            hardware_device_class: None,
+            bindings: Vec::new(),
+        }
+    }
+
+    #[cfg(windows)]
+    fn test_command() -> &'static str {
+        "powershell"
+    }
+
+    #[cfg(not(windows))]
+    fn test_command() -> &'static str {
+        "sh"
+    }
+
+    #[cfg(windows)]
+    fn env_echo_args(env_name: &str) -> Vec<String> {
+        vec![
+            "-NoProfile".to_owned(),
+            "-Command".to_owned(),
+            format!(
+                "[Console]::Out.Write($env:{env_name}); [Console]::Error.Write($env:{env_name})"
+            ),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn env_echo_args(env_name: &str) -> Vec<String> {
+        vec![
+            "-c".to_owned(),
+            format!("printf \"${env_name}\"; printf \"${env_name}\" >&2"),
+        ]
     }
 }

@@ -4,6 +4,7 @@ use crate::{read_yaml_file, require_non_empty, with_field_context, EvaError};
 use eva_core::{AdapterId, CapabilityName};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Architectural responsibility for this module.
@@ -89,6 +90,30 @@ impl AdapterManifest {
             .and_then(Value::as_str)
     }
 
+    /// Returns a top-level string list preserved in the manifest extension map.
+    pub fn extra_string_list(&self, key: &str) -> Vec<String> {
+        self.extra
+            .get(Value::String(key.to_owned()))
+            .and_then(Value::as_sequence)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns a top-level string map preserved in the manifest extension map.
+    pub fn extra_string_map(&self, key: &str) -> BTreeMap<String, String> {
+        self.extra
+            .get(Value::String(key.to_owned()))
+            .and_then(Value::as_mapping)
+            .map(string_map)
+            .unwrap_or_default()
+    }
+
     /// Returns a nested string field preserved in the manifest extension map.
     pub fn nested_extra_string(&self, section: &str, key: &str) -> Option<&str> {
         self.extra
@@ -115,6 +140,32 @@ impl AdapterManifest {
             .unwrap_or_default()
     }
 
+    /// Returns a nested string map preserved in the manifest extension map.
+    pub fn nested_extra_string_map(&self, section: &str, key: &str) -> BTreeMap<String, String> {
+        self.extra
+            .get(Value::String(section.to_owned()))
+            .and_then(Value::as_mapping)
+            .and_then(|mapping| mapping.get(Value::String(key.to_owned())))
+            .and_then(Value::as_mapping)
+            .map(string_map)
+            .unwrap_or_default()
+    }
+
+    /// Returns a nested unsigned integer preserved in the manifest extension map.
+    pub fn nested_extra_u64(&self, section: &str, key: &str) -> Option<u64> {
+        self.extra
+            .get(Value::String(section.to_owned()))
+            .and_then(Value::as_mapping)
+            .and_then(|mapping| mapping.get(Value::String(key.to_owned())))
+            .and_then(Value::as_u64)
+    }
+
+    /// Returns a nested `usize` preserved in the manifest extension map.
+    pub fn nested_extra_usize(&self, section: &str, key: &str) -> Option<usize> {
+        self.nested_extra_u64(section, key)
+            .and_then(|value| usize::try_from(value).ok())
+    }
+
     /// Returns a string field from a nested manifest extension path.
     pub fn deep_extra_string(&self, path: &[&str]) -> Option<&str> {
         let (first, rest) = path.split_first()?;
@@ -126,6 +177,13 @@ impl AdapterManifest {
         }
         value.as_str()
     }
+}
+
+fn string_map(mapping: &Mapping) -> BTreeMap<String, String> {
+    mapping
+        .iter()
+        .filter_map(|(key, value)| Some((key.as_str()?.to_owned(), value.as_str()?.to_owned())))
+        .collect()
 }
 
 impl AdapterTransport {
@@ -285,6 +343,29 @@ capabilities:
         assert_eq!(
             manifest.deep_extra_string(&["hardware", "identity", "logical_name"]),
             Some("main-scale")
+        );
+    }
+
+    #[test]
+    fn adapter_manifest_exposes_runtime_extension_values() {
+        let manifest =
+            load_adapter_manifest(workspace_root().join("config/adapters/codex-cli.yaml")).unwrap();
+
+        assert_eq!(manifest.extra_string("command"), Some("codex"));
+        assert!(manifest
+            .extra_string_list("args")
+            .contains(&"exec".to_owned()));
+        assert_eq!(
+            manifest.nested_extra_string_list("permissions", "env"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            manifest.nested_extra_u64("limits", "timeout_ms"),
+            Some(300000)
+        );
+        assert_eq!(
+            manifest.nested_extra_usize("limits", "max_prompt_bytes"),
+            Some(200000)
         );
     }
 }

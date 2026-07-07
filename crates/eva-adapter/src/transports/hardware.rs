@@ -66,6 +66,7 @@ mod tests {
     use crate::manifest::AdapterHandle;
     use eva_config::AdapterTransport;
     use eva_core::{AdapterId, CapabilityName};
+    use std::collections::BTreeMap;
 
     #[test]
     fn hardware_transport_returns_simulated_audit_only() {
@@ -77,6 +78,15 @@ mod tests {
             transport: AdapterTransport::Hardware,
             capabilities: vec![CapabilityName::parse("hardware.scale.read").unwrap()],
             source_path: "test".to_owned(),
+            command: None,
+            args: Vec::new(),
+            endpoint: None,
+            method: None,
+            credential_env: Vec::new(),
+            timeout_ms: None,
+            output_limit_bytes: None,
+            max_prompt_bytes: None,
+            headers: BTreeMap::new(),
             mcp_server_transport: None,
             mcp_command: None,
             mcp_args: Vec::new(),
