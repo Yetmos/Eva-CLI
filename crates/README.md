@@ -12,7 +12,7 @@ V1.5 keeps the V1.1 external capability checkpoint, V1.2 request-scoped memory/k
 - `eva-mcp`: allowlist policy helper, in-memory client/probe, tool mapping registry, and minimal side-effect-free server surface descriptor.
 - `eva-discovery`: project manifest discovery candidates, cache, health projection, and the invariant that discovery never grants executable handles.
 - `eva-memory`: private/global memory records, knowledge indexing, budgeted `ContextBuilder`, and `LuaContextSnapshot`.
-- `eva-lua-host`: controlled context snapshot on `LuaHostContext` and `LuaEventResult`.
+- `eva-lua-host`: V1.7.1 Lua VM adapter boundary, restricted standard library, controlled context snapshot on `LuaHostContext`, and `LuaEventResult` conversion.
 - `eva-hardware`: hardware discovery candidates, trusted identities, `DeviceRegistry` claim/release, `HardwareDriver` binding, simulated driver, and hotplug state machine.
 - `eva-backup`: backup artifact plans, manifest verification, migration preflight, release snapshot, and plan-first restore.
 - `eva-lifecycle`: generation handoff, drain plan, rollback plan, and in-memory supervisor readiness checks.
@@ -46,7 +46,7 @@ V1.5 proves that the implemented 1.x source surface can be checked through execu
 | `eva-eventbus` | publish、ack/fail、dead letter、replay | 已完成 V0.5 replay diagnostics | [README](eva-eventbus/README.md) |
 | `eva-scheduler` | Topic 匹配、订阅表、mailbox 投递 | 已完成 V0.4 | [README](eva-scheduler/README.md) |
 | `eva-agent` | Agent 生命周期、队列、事件处理、timeout/cancel/retry 控制 | 已完成 V0.5 run control | [README](eva-agent/README.md) |
-| `eva-lua-host` | Lua loader、sandbox gate、受控 `on_event` contract、generation marker | 已完成 V0.5 generation marker | [README](eva-lua-host/README.md) |
+| `eva-lua-host` | Lua loader、sandbox gate、VM adapter、受控 `on_event` contract、generation marker | 已完成 V1.7.1 real Lua VM execution boundary | [README](eva-lua-host/README.md) |
 | `eva-capability` | Capability registry、router、host API | 已完成 V0.4 builtins | [README](eva-capability/README.md) |
 | `eva-adapter` | Adapter manifest、registry、router、transport runtime | 已完成 V1.3 hardware transport boundary | [README](eva-adapter/README.md) |
 | `eva-mcp` | MCP client/server、tool mapping、schema | 已完成 V1.1 side-effect-free MCP surface | [README](eva-mcp/README.md) |
@@ -69,6 +69,7 @@ V1.5 proves that the implemented 1.x source surface can be checked through execu
 | V1.0 | `eva-cli`、`eva-runtime`、docs、CI | version 命令、`in_memory_v1.0`、quickstart、release notes、已知限制、CI/release gates | 已完成 | 新用户可从源码构建并跑通 V1.0 quickstart |
 | V1.1 | `eva-adapter`、`eva-mcp`、`eva-discovery`、`eva-cli` | 外部能力发现、probe、受控 envelope 调用 | 已完成 | `adapter list/probe`、`mcp list/probe`、`skill list/run`、`discovery scan` 可验证 |
 | V1.2 | `eva-memory`、`eva-lua-host`、`eva-cli` | memory、knowledge、context builder、Lua context snapshot、`memory context` | 已完成 | 上下文组装有权限、预算和审计；Lua 只接收受控快照 |
+| V1.7.1 | `eva-lua-host`、`eva-runtime` | real Lua VM execution boundary、受限标准库、错误映射、compatibility fallback | 已完成 | `cargo test -p eva-lua-host` 和 basic runtime Lua 执行测试通过 |
 | V1.3 | `eva-hardware`、`eva-adapter`、`eva-cli` | 设备发现、绑定、hotplug、hardware transport、hardware list/probe/bind | 已完成 | Lua 不能 raw I/O；`scale-main` 默认 blocked plan-first |
 | V1.4 | `eva-backup`、`eva-lifecycle`、`eva-cli` | 备份、迁移、snapshot、generation rollback、backup/snapshot/restore/upgrade commands | 已完成 | 高风险操作先 plan 后 apply；V1.4 不执行 destructive restore |
 | V1.5 | `eva-release`、`eva-cli`、docs、CI | 安全、性能、发布验收、迁移指南、兼容策略、release commands | 已完成 | `release check/security/perf/migration` 全部通过 |

@@ -2,6 +2,7 @@
 
 use crate::loader::LuaScript;
 use crate::sandbox::LuaSandboxPolicy;
+use crate::vm::{LuaVmAdapter, MluaVmAdapter};
 use eva_core::{AgentId, CapabilityName, EvaError, Event, Topic};
 use eva_memory::LuaContextSnapshot;
 
@@ -29,17 +30,27 @@ pub struct LuaEventResult {
 
 /// Synchronous controlled Lua host facade.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LuaHost {
+pub struct LuaHost<A = MluaVmAdapter> {
     sandbox: LuaSandboxPolicy,
+    vm: A,
 }
 
-impl LuaHost {
+impl LuaHost<MluaVmAdapter> {
     pub fn new() -> Self {
+        Self::with_vm_adapter(MluaVmAdapter)
+    }
+}
+
+impl<A> LuaHost<A> {
+    pub fn with_vm_adapter(vm: A) -> Self {
         Self {
             sandbox: LuaSandboxPolicy::default(),
+            vm,
         }
     }
+}
 
+impl<A: LuaVmAdapter> LuaHost<A> {
     pub fn run_on_event(
         &self,
         script: &LuaScript,
@@ -47,39 +58,66 @@ impl LuaHost {
         ctx: &LuaHostContext,
     ) -> Result<LuaEventResult, EvaError> {
         self.sandbox.validate(script)?;
-        let source = script.source();
-        if !source.contains("on_event") {
-            return Err(EvaError::invalid_argument(
-                "Lua script does not define on_event",
-            ));
+        match self.vm.run_on_event(script, event, ctx) {
+            Ok(result) => Ok(result),
+            Err(error) if should_attempt_static_fallback(script.source(), &error) => {
+                parse_static_on_event(script, event, ctx)
+            }
+            Err(error) => Err(error),
         }
-
-        let agent_id = extract_string(source, "agent_id")
-            .map(|value| AgentId::parse(&value))
-            .transpose()?
-            .unwrap_or_else(|| ctx.agent_id.clone());
-        let status = extract_string(source, "status").unwrap_or_else(|| "handled".to_owned());
-        let topic = extract_string(source, "topic")
-            .map(|value| Topic::parse(&value))
-            .transpose()?
-            .unwrap_or_else(|| event.topic().clone());
-        let note = extract_string(source, "note");
-        let capability = extract_string(source, "capability")
-            .map(|value| CapabilityName::parse(&value))
-            .transpose()?;
-        let capability_input = extract_string(source, "capability_input")
-            .or_else(|| event.payload().as_text().map(str::to_owned));
-
-        Ok(LuaEventResult {
-            agent_id,
-            status,
-            topic,
-            note,
-            capability,
-            capability_input,
-            context: ctx.context.clone(),
-        })
     }
+}
+
+fn parse_static_on_event(
+    script: &LuaScript,
+    event: &Event,
+    ctx: &LuaHostContext,
+) -> Result<LuaEventResult, EvaError> {
+    let source = script.source();
+    if !source.contains("on_event") {
+        return Err(EvaError::invalid_argument(
+            "Lua script does not define on_event",
+        ));
+    }
+
+    let agent_id = extract_string(source, "agent_id")
+        .map(|value| AgentId::parse(&value))
+        .transpose()?
+        .unwrap_or_else(|| ctx.agent_id.clone());
+    let status = extract_string(source, "status").unwrap_or_else(|| "handled".to_owned());
+    let topic = extract_string(source, "topic")
+        .map(|value| Topic::parse(&value))
+        .transpose()?
+        .unwrap_or_else(|| event.topic().clone());
+    let note = extract_string(source, "note");
+    let capability = extract_string(source, "capability")
+        .map(|value| CapabilityName::parse(&value))
+        .transpose()?;
+    let capability_input = extract_string(source, "capability_input")
+        .or_else(|| event.payload().as_text().map(str::to_owned));
+
+    Ok(LuaEventResult {
+        agent_id,
+        status,
+        topic,
+        note,
+        capability,
+        capability_input,
+        context: ctx.context.clone(),
+    })
+}
+
+fn should_attempt_static_fallback(source: &str, error: &EvaError) -> bool {
+    let is_load_failure = error
+        .provider_code()
+        .map(|code| code.as_str() == "lua_syntax_error" || code.as_str() == "lua_load_error")
+        .unwrap_or(false);
+    is_load_failure
+        && source.contains("on_event")
+        && !source.contains("function")
+        && (source.contains("status =")
+            || source.contains("capability =")
+            || source.contains("note ="))
 }
 
 impl LuaHostContext {
@@ -96,7 +134,7 @@ impl LuaHostContext {
     }
 }
 
-impl Default for LuaHost {
+impl Default for LuaHost<MluaVmAdapter> {
     fn default() -> Self {
         Self::new()
     }
@@ -174,5 +212,121 @@ end
             .unwrap();
 
         assert_eq!(result.context, snapshot);
+    }
+
+    #[test]
+    fn real_vm_executes_lua_logic() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  return {
+    status = "accepted",
+    agent_id = ctx.agent_id,
+    topic = event.topic,
+    capability = "config.lint",
+    capability_input = event.payload,
+    note = "handled " .. event.event_id,
+  }
+end
+
+return root
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+
+        let result = LuaHost::new()
+            .run_on_event(&script, &event(), &ctx)
+            .unwrap();
+
+        assert_eq!(result.status, "accepted");
+        assert_eq!(result.topic.as_str(), "/input/user");
+        assert_eq!(result.capability.unwrap().as_str(), "config.lint");
+        assert_eq!(result.capability_input.as_deref(), Some("hello"));
+        assert_eq!(result.note.as_deref(), Some("handled evt-1"));
+    }
+
+    #[test]
+    fn real_vm_does_not_load_os_library() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  return {
+    status = os == nil and "restricted" or "leaked",
+  }
+end
+
+return root
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+
+        let result = LuaHost::new()
+            .run_on_event(&script, &event(), &ctx)
+            .unwrap();
+
+        assert_eq!(result.status, "restricted");
+    }
+
+    #[test]
+    fn syntax_error_maps_without_host_path() {
+        let script = LuaScript::from_source("function root.on_event(event, ctx)");
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+
+        let error = LuaHost::new()
+            .run_on_event(&script, &event(), &ctx)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+        assert_eq!(error.provider_code().unwrap().as_str(), "lua_syntax_error");
+        assert!(!error.message().contains(env!("CARGO_MANIFEST_DIR")));
+    }
+
+    #[test]
+    fn runtime_error_maps_without_host_path() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  error("boom")
+end
+
+return root
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+
+        let error = LuaHost::new()
+            .run_on_event(&script, &event(), &ctx)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Internal);
+        assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
+        assert!(!error.message().contains(env!("CARGO_MANIFEST_DIR")));
+    }
+
+    #[test]
+    fn static_parser_remains_compatibility_fallback() {
+        let script = LuaScript::from_source(
+            r#"
+legacy on_event table contract
+status = "accepted"
+capability = "config.lint"
+note = "fallback"
+"#,
+        );
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+
+        let result = LuaHost::new()
+            .run_on_event(&script, &event(), &ctx)
+            .unwrap();
+
+        assert_eq!(result.status, "accepted");
+        assert_eq!(result.capability.unwrap().as_str(), "config.lint");
+        assert_eq!(result.note.as_deref(), Some("fallback"));
     }
 }
