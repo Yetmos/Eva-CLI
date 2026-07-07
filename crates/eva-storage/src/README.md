@@ -9,7 +9,7 @@
 | `audit_store.rs` | V1.6.3 已实现 | `FileSystemAuditSink`、`AuditRecord`。把 `AuditSink` 记录保存到 durable backend 的 `audit/` 目录，并支持按 trace id 查询。 |
 | `event_log.rs` | V1.6.2 已更新 | `EventLog`、`EventLogRecord`、`EventLogStatus`、`InMemoryEventLog`、`FileSystemEventLog`。支持 append、ack、fail、watermark、replay 和跨 reopen 查询。 |
 | `state_store.rs` | 已实现 | `StateStore`、`StateRecord`、`StateVersion`、`InMemoryStateStore`。支持 get、put、CAS。 |
-| `task_state.rs` | V1.6.3 已实现 | `TaskStateStore`、`TaskStateSnapshot`、`FileSystemTaskStateStore`。默认保存 `.eva/tasks` task snapshot，也可通过 `DurableBackendLayout` 使用 durable backend 的 `tasks/` 目录，支持跨进程读取 latest 或指定 task。 |
+| `task_state.rs` | V1.6.4 in progress | `TaskStateStore`、`TaskStateSnapshot`、`FileSystemTaskStateStore`。默认保存 `.eva/tasks` task snapshot，也可通过 `DurableBackendLayout` 使用 durable backend 的 `tasks/` 目录，支持跨进程读取 latest、指定 task 或 snapshot 列表。 |
 | `artifact_store.rs` | V1.6.3 已实现 | `ArtifactStore`、`ArtifactRecord`、`InMemoryArtifactStore`、`FileSystemArtifactStore`。保存 bytes 并生成 SHA-256 digest；filesystem backend 写入 v2 metadata，记录 size、content type、retention policy 和 retain-until timestamp，并在读取时校验 key、size、digest。 |
 | `sqlite.rs` | 边界保留 | 未来 SQLite/local durable backend。V0.4 不引入 SQLite 依赖。 |
 | `lib.rs` | 已实现 | re-export 公开类型，供 eventbus/runtime 直接使用。 |

@@ -13,6 +13,7 @@
 | V0.4 | in-memory basic loop | `RuntimeBuilder::in_memory_v04()` 保留最小 EventBus -> Scheduler -> Agent -> LuaHost -> Capability 闭环。 |
 | V0.5 | task diagnostics loop | `RuntimeBuilder::in_memory_v05()` 增加 task status/logs/cancel、timeout、retry、dead-letter replay 和 Lua generation marker。 |
 | V1.0 | core release loop | `RuntimeBuilder::in_memory_v10()` 复用 V0.5 diagnostics，并将 runtime mode/generation 固定为 `in_memory_v1.0` / `basic-v1.0`。 |
+| V1.6.4 | recovery scanner | `RuntimeRecoveryCoordinator` 扫描 durable task snapshots，把重启后残留的 `queued`/`running` task 标记为 `interrupted` 或 `recovering`；event redrive 和 recovery audit wiring 仍在后续节点。 |
 
 ## V1.0 Basic 闭环
 
@@ -44,6 +45,19 @@ use eva_runtime::{BasicRunOptions, RuntimeBuilder, TaskReport};
 | `BasicRunOptions` | 配置 event id、request/task id、topic、payload、timeout、cancel、retry、dead-letter replay。 |
 | `BasicRunReport` | CLI `run` 的完整机器可读报告。 |
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
+| `RuntimeRecoveryCoordinator` | V1.6.4 recovery scanner；读取 task snapshots 并持久化 interrupted/recovering 状态。 |
+
+## V1.6.4 Recovery Scanner
+
+`RuntimeRecoveryCoordinator::recover_task_store` 使用
+`eva-storage::FileSystemTaskStateStore::list_snapshots()` 枚举 task snapshots。
+当前节点只负责确定性状态修复：
+
+- `queued` / `running` 且无 dead-letter 证据的 task 标记为 `interrupted`。
+- `queued` / `running` 且已有 dead-letter 证据的 task 标记为 `recovering`，为后续 redrive 节点保留候选。
+- terminal task 不会被重写，避免重复处理已完成、失败、取消或超时的任务。
+
+durable event redrive、recovery audit sink 和 CLI smoke gate 是 V1.6.4 后续节点。
 
 ## V1.0 非目标
 
@@ -60,4 +74,4 @@ cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```
 
-已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告。
+已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner 的 interrupted/recovering 状态修复。

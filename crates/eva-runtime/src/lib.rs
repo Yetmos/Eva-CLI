@@ -2,6 +2,7 @@
 
 pub mod basic;
 pub mod builder;
+pub mod recovery;
 pub mod runtime;
 pub mod services;
 pub mod shutdown;
@@ -9,6 +10,7 @@ pub mod task;
 
 pub use basic::{BasicRunOptions, BasicRunReport};
 pub use builder::{RuntimeBuilder, RuntimeMode, RuntimeOptions};
+pub use recovery::{RecoveredTask, RuntimeRecoveryCoordinator, RuntimeRecoveryReport};
 pub use runtime::{Runtime, RuntimeStatus, RuntimeSummary};
 pub use services::{RuntimeServices, ServiceState, ServiceSummary};
 pub use shutdown::{ShutdownReport, ShutdownState};

@@ -203,7 +203,7 @@ impl TaskStateSnapshot {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.status.as_str(),
-            "completed" | "failed" | "cancelled" | "timed_out"
+            "completed" | "failed" | "cancelled" | "timed_out" | "interrupted"
         )
     }
 }
@@ -231,6 +231,49 @@ impl FileSystemTaskStateStore {
 
     pub fn task_dir(&self) -> PathBuf {
         self.task_dir.clone()
+    }
+
+    pub fn list_snapshots(&self) -> Result<Vec<TaskStateSnapshot>, EvaError> {
+        let dir = self.task_dir();
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(EvaError::internal("failed to read task state directory")
+                    .with_context("path", dir.display().to_string())
+                    .with_context("io_error", error.to_string()));
+            }
+        };
+
+        let mut paths = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                EvaError::internal("failed to read task state directory entry")
+                    .with_context("path", dir.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+            let path = entry.path();
+            if path.file_name().and_then(|name| name.to_str()) == Some("latest-basic.task") {
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) == Some("task") {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+
+        paths
+            .into_iter()
+            .map(|path| {
+                let data = fs::read_to_string(&path).map_err(|error| {
+                    EvaError::internal("failed to read task state")
+                        .with_context("path", path.display().to_string())
+                        .with_context("io_error", error.to_string())
+                })?;
+                TaskStateSnapshot::from_storage(&data)
+                    .map_err(|error| error.with_context("path", path.display().to_string()))
+            })
+            .collect()
     }
 
     fn latest_task_path(&self) -> PathBuf {
@@ -408,6 +451,36 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_task_state_lists_snapshots_without_latest_duplicate() {
+        let root = test_root("list");
+        let mut writer = FileSystemTaskStateStore::new(root.path());
+        writer
+            .write(&sample_snapshot("req-task-state-list-2"))
+            .unwrap();
+        writer
+            .write(&sample_snapshot("req-task-state-list-1"))
+            .unwrap();
+
+        let snapshots = writer.list_snapshots().unwrap();
+
+        assert_eq!(
+            snapshots
+                .iter()
+                .map(|snapshot| snapshot.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["req-task-state-list-1", "req-task-state-list-2"]
+        );
+    }
+
+    #[test]
+    fn filesystem_task_state_lists_empty_missing_directory() {
+        let root = test_root("list-missing");
+        let store = FileSystemTaskStateStore::new(root.path());
+
+        assert!(store.list_snapshots().unwrap().is_empty());
+    }
+
+    #[test]
     fn missing_task_state_is_not_found() {
         let root = test_root("missing");
         let store = FileSystemTaskStateStore::new(root.path());
@@ -422,6 +495,14 @@ mod tests {
         let error = TaskStateSnapshot::from_storage("task_id=req-only\n").unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn interrupted_task_state_is_terminal() {
+        let mut snapshot = sample_snapshot("req-task-state-interrupted");
+        snapshot.status = "interrupted".to_owned();
+
+        assert!(snapshot.is_terminal());
     }
 
     fn sample_snapshot(task_id: &str) -> TaskStateSnapshot {
