@@ -735,6 +735,39 @@ return root
     }
 
     #[test]
+    fn on_event_memory_growth_is_rejected_by_memory_budget() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  local payload = string.rep("x", 1024 * 1024)
+  return { status = payload }
+end
+
+return root
+"#,
+        );
+        let limits = LuaExecutionLimits::with_memory_limit_bytes(128 * 1024);
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());
+
+        let error = LuaHost::new()
+            .run_on_event_with_limits(&script, &event(), &ctx, limits)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Timeout);
+        assert_eq!(
+            error.provider_code().unwrap().as_str(),
+            "lua_memory_limit_exceeded"
+        );
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "memory_limit_bytes" && value == "131072"));
+    }
+
+    #[test]
     fn ctx_tools_exposes_only_call_function() {
         let script = LuaScript::from_source(
             r#"

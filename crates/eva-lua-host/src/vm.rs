@@ -51,6 +51,7 @@ impl LuaCancellationToken {
 pub struct LuaExecutionLimits {
     pub timeout: Option<Duration>,
     pub instruction_budget: Option<u64>,
+    pub memory_limit_bytes: Option<usize>,
     pub cancellation_token: Option<LuaCancellationToken>,
     pub hook_instruction_interval: u32,
 }
@@ -60,6 +61,7 @@ impl LuaExecutionLimits {
         Self {
             timeout: None,
             instruction_budget: None,
+            memory_limit_bytes: None,
             cancellation_token: None,
             hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
         }
@@ -69,6 +71,7 @@ impl LuaExecutionLimits {
         Self {
             timeout: Some(timeout),
             instruction_budget: None,
+            memory_limit_bytes: None,
             cancellation_token: None,
             hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
         }
@@ -78,6 +81,7 @@ impl LuaExecutionLimits {
         Self {
             timeout: None,
             instruction_budget: Some(instruction_budget),
+            memory_limit_bytes: None,
             cancellation_token: None,
             hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
         }
@@ -85,6 +89,21 @@ impl LuaExecutionLimits {
 
     pub const fn with_instruction_budget_limit(mut self, instruction_budget: u64) -> Self {
         self.instruction_budget = Some(instruction_budget);
+        self
+    }
+
+    pub const fn with_memory_limit_bytes(memory_limit_bytes: usize) -> Self {
+        Self {
+            timeout: None,
+            instruction_budget: None,
+            memory_limit_bytes: Some(memory_limit_bytes),
+            cancellation_token: None,
+            hook_instruction_interval: DEFAULT_HOOK_INSTRUCTION_INTERVAL,
+        }
+    }
+
+    pub const fn with_memory_limit(mut self, memory_limit_bytes: usize) -> Self {
+        self.memory_limit_bytes = Some(memory_limit_bytes);
         self
     }
 
@@ -228,6 +247,10 @@ fn controlled_lua() -> Result<Lua, EvaError> {
 }
 
 fn install_execution_limits(lua: &Lua, limits: &LuaExecutionLimits) -> Result<(), EvaError> {
+    if let Some(memory_limit_bytes) = limits.memory_limit_bytes {
+        lua.set_memory_limit(memory_limit_bytes)
+            .map_err(map_memory_limit_setup_error)?;
+    }
     if limits.timeout.is_none()
         && limits.instruction_budget.is_none()
         && limits.cancellation_token.is_none()
@@ -289,6 +312,17 @@ fn lua_instruction_budget_error(limits: &LuaExecutionLimits) -> EvaError {
         .with_context("instruction_budget", instruction_budget)
 }
 
+fn lua_memory_limit_error(limits: &LuaExecutionLimits) -> EvaError {
+    let memory_limit_bytes = limits
+        .memory_limit_bytes
+        .map(|budget| budget.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    EvaError::timeout("Lua on_event exceeded memory budget")
+        .with_provider_code("lua_memory_limit_exceeded")
+        .with_context("lua_phase", "handler")
+        .with_context("memory_limit_bytes", memory_limit_bytes)
+}
+
 fn lua_cancelled_error() -> EvaError {
     EvaError::conflict("Lua on_event was cancelled")
         .with_provider_code("lua_cancelled")
@@ -316,6 +350,14 @@ fn is_lua_cancelled_error(error: &mlua::Error) -> bool {
     match error {
         mlua::Error::RuntimeError(message) => message == LUA_CANCELLED_MARKER,
         mlua::Error::CallbackError { cause, .. } => is_lua_cancelled_error(cause),
+        _ => false,
+    }
+}
+
+fn is_lua_memory_limit_error(error: &mlua::Error) -> bool {
+    match error {
+        mlua::Error::MemoryError(_) => true,
+        mlua::Error::CallbackError { cause, .. } => is_lua_memory_limit_error(cause),
         _ => false,
     }
 }
@@ -821,7 +863,16 @@ fn map_host_setup_error(_: mlua::Error) -> EvaError {
         .with_context("lua_phase", "host_setup")
 }
 
+fn map_memory_limit_setup_error(_: mlua::Error) -> EvaError {
+    EvaError::unsupported("Lua memory limit is not available")
+        .with_provider_code("lua_memory_limit_unavailable")
+        .with_context("lua_phase", "host_setup")
+}
+
 fn map_load_error(error: mlua::Error, limits: &LuaExecutionLimits) -> EvaError {
+    if is_lua_memory_limit_error(&error) {
+        return lua_memory_limit_error(limits).with_context("lua_phase", "load");
+    }
     if is_lua_cancelled_error(&error) {
         return lua_cancelled_error().with_context("lua_phase", "load");
     }
@@ -844,6 +895,9 @@ fn map_load_error(error: mlua::Error, limits: &LuaExecutionLimits) -> EvaError {
 }
 
 fn map_handler_error(error: mlua::Error, limits: &LuaExecutionLimits) -> EvaError {
+    if is_lua_memory_limit_error(&error) {
+        return lua_memory_limit_error(limits);
+    }
     if is_lua_cancelled_error(&error) {
         return lua_cancelled_error();
     }
