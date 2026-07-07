@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source V1.7.3-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, and Lua resource limits."
+    "description": "Eva-CLI is an open-source V1.7.4-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, Lua resource limits, and Lua hot-reload lifecycle evidence."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,7 +38,7 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "V1.7.3-alpha runs Lua on_event(ctx) inside a restricted mlua/Lua 5.4 boundary, keeps read-only ctx, ctx.host.log/audit, ctx.tools.call, and adds timeout, instruction-budget, cancellation, and memory-budget limits.",
+    "runtimePanelNote": "V1.7.4-alpha runs Lua on_event(ctx) inside a restricted mlua/Lua 5.4 boundary, keeps read-only ctx, ctx.host.log/audit, ctx.tools.call, and adds timeout, instruction-budget, memory-budget, shadow-load, route-gate, drain, and rollback-audit boundaries.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
@@ -47,14 +47,14 @@
     "progressTitle": "From architecture scaffold to durable runtime and Lua VM execution",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.7.3-alpha Lua resource limits are implemented",
-    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7.1 restricted Lua VM adapter, V1.7.2 host bindings, and V1.7.3 timeout, instruction-budget, cancellation, and memory-budget limits.",
+    "progressCurrentTitle": "V1.7.4-alpha Lua hot-reload lifecycle is implemented",
+    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7.1 restricted Lua VM adapter, V1.7.2 host bindings, V1.7.3 resource limits, and V1.7.4 shadow-load health checks, scheduler generation route gating, generation drain evidence, and rollback audit evidence.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Add V1.7.4 shadow load, generation swap, drain, and rollback around Lua hot reload.",
       "Start V1.8 provider, MCP, and Skill runner execution behind policy, timeout, audit, and output limits.",
+      "Wire daemon-driven hot-reload orchestration on top of the current V1.7.4 shadow-load, route-gate, drain, and rollback-audit boundaries.",
       "Keep signed installers, OS packages, provenance bundles, and destructive apply gates behind later V1.10/V1.11 milestones."
     ],
     "featuredBlogEyebrow": "Recommended reading",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "Now",
-        "label": "V1.7.3-alpha Lua resource limits",
-        "description": "The V1.6 durable baseline is in place, V1.7.1 runs Lua on_event(ctx) through a restricted mlua/Lua 5.4 adapter, V1.7.2 adds host bindings, and V1.7.3 adds timeout, instruction-budget, cancellation, and memory-budget enforcement."
+        "label": "V1.7.4-alpha Lua hot-reload lifecycle",
+        "description": "The V1.6 durable baseline is in place, V1.7.1 runs Lua on_event(ctx) through a restricted mlua/Lua 5.4 adapter, V1.7.2 adds host bindings, V1.7.3 adds resource limits, and V1.7.4 adds shadow-load health checks, generation route gates, drain evidence, and rollback audit evidence."
       },
       {
         "status": "later",
@@ -158,6 +158,11 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages Publishing",
         "description": "The GHCR delivery contract, package tags, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification for ghcr.io/yetmos/eva-cli."
+      },
+      {
+        "id": "release-notes-v1.7.4",
+        "title": "V1.7.4 Alpha Release Notes",
+        "description": "The alpha prerelease that adds Lua shadow-load health checks, generation route gating, drain evidence, rollback audit evidence, and the Lua hot-reload lifecycle release gate."
       },
       {
         "id": "release-notes-v1.7.3",
@@ -363,6 +368,11 @@
         "description": "The JSON envelope, exit-code, command-surface, and deprecation guarantees for the V1.5 source release."
       },
       {
+        "id": "release-notes-v1.7.4",
+        "title": "V1.7.4 Alpha Release Notes",
+        "description": "The alpha prerelease that adds Lua shadow-load health checks, generation route gating, drain evidence, rollback audit evidence, and the Lua hot-reload lifecycle release gate."
+      },
+      {
         "id": "release-notes-v1.7.3",
         "title": "V1.7.3 Alpha Release Notes",
         "description": "The alpha prerelease that adds Lua wall-clock timeout, instruction budget, cancellation token, memory budget, and the Lua resource limits release gate."
@@ -446,7 +456,7 @@
   "feedback": {
     "eyebrow": "Feedback",
     "title": "Feedback and suggestions",
-    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.7.3-alpha Lua resource-limits checkpoint, so concrete reports about command output, docs, package pulls, Lua on_event(ctx), ctx.tools.call behavior, timeout/cancel behavior, backend diagnostics, and future apply-path contracts are especially useful.",
+    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.7.4-alpha Lua hot-reload lifecycle checkpoint, so concrete reports about command output, docs, package pulls, Lua on_event(ctx), ctx.tools.call behavior, timeout/cancel behavior, backend diagnostics, generation route gates, rollback audit evidence, and future apply-path contracts are especially useful.",
     "contactLabel": "Contact email",
     "categoryLabel": "Feedback type",
     "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],

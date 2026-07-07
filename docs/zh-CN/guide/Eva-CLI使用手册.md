@@ -2,21 +2,21 @@
 
 更新时间：2026-07-07
 
-适用版本：Eva-CLI `1.7.3-alpha`
+适用版本：Eva-CLI `1.7.4-alpha`
 
 本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
-V1.7.3-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
-EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding，以及 Lua timeout、instruction budget、cancel 和 memory 执行限制已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
+V1.7.4-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
+EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制，以及 shadow load、generation route gate、drain evidence 和 rollback audit evidence 已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
 
 ## 当前定位
 
 | 项目 | 当前状态 |
 | --- | --- |
 | 发布形态 | 源码发布；从 Git 仓库和 Rust 工具链运行。 |
-| 运行时 | `run --example basic` 通过 V1.7.3 受限 Lua VM、host binding 与 resource-limit 边界执行 V1.0 in-memory basic runtime 闭环。 |
+| 运行时 | `run --example basic` 通过 V1.7.4 受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环。 |
 | 外部能力 | Adapter、MCP、Skill、Discovery 当前提供受控诊断面，不启动真实 provider。 |
 | 风险动作 | 硬件绑定、恢复、升级和生命周期切换保持 plan-first，不执行 destructive apply。 |
-| 发布检查 | V1.7.3-alpha 提供 `release check/security/perf/migration` 可执行门禁，包含 Lua VM execution、Lua host binding 与 Lua resource-limit readiness。 |
+| 发布检查 | V1.7.4-alpha 提供 `release check/security/perf/migration` 可执行门禁，包含 Lua VM execution、Lua host binding、Lua resource-limit 与 Lua hot-reload lifecycle readiness。 |
 
 ![Eva-CLI 源码使用闭环](../../assets/eva-cli-user-manual-flow.zh-CN.svg)
 
@@ -47,8 +47,8 @@ cargo run -- --version
 预期版本输出包含：
 
 ```text
-eva 1.7.3-alpha
-release: V1.7.3-alpha
+eva 1.7.4-alpha
+release: V1.7.4-alpha
 ```
 
 ## 快速开始
@@ -64,7 +64,7 @@ release: V1.7.3-alpha
 | 查看 durable backend | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | 输出 backend schema、migration status 和 pending redrive count。 |
 | 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
-| 发布门禁 | `cargo run -- release check --output json` | 输出 V1.7.3 release readiness。 |
+| 发布门禁 | `cargo run -- release check --output json` | 输出 V1.7.4 release readiness。 |
 
 文本输出适合人工查看，JSON 输出适合 CI 或脚本处理。需要稳定字段时加
 `--output json`。
@@ -89,7 +89,7 @@ release: V1.7.3-alpha
 | Snapshot | `snapshot create` | 创建绑定 backup manifest 的 release snapshot。 | 否 |
 | Restore | `restore plan` | 生成恢复计划，保持 `apply_allowed:false`。 | 否 |
 | Upgrade | `upgrade check` | 检查 generation、migration、drain 和 rollback readiness。 | 否 |
-| Release | `release check/security/perf/migration` | 执行 V1.7.3 发布准备、安全、性能和迁移门禁。 | 否 |
+| Release | `release check/security/perf/migration` | 执行 V1.7.4 发布准备、安全、性能和迁移门禁。 | 否 |
 
 ## 基本用法
 
@@ -219,7 +219,7 @@ cargo run -- release migration --output json
 | `release check` | 跨平台、稳定性、文档、安全、性能、迁移和兼容门禁汇总。 |
 | `release security` | policy、Lua sandbox、secret redaction、MCP allowlist、hardware 和 lifecycle 风险。 |
 | `release perf` | EventBus、Scheduler、Adapter、memory、backup 和 release check 预算。 |
-| `release migration` | V1.5.1 到 V1.7.3-alpha 的迁移步骤和兼容性策略。 |
+| `release migration` | V1.5.1 到 V1.7.4-alpha 的迁移步骤和兼容性策略。 |
 
 ## 项目结构和配置位置
 
@@ -288,7 +288,7 @@ cargo run -- release migration --output json
 
 ## 当前非目标
 
-当前 V1.7.3-alpha 不提供以下能力：
+当前 V1.7.4-alpha 不提供以下能力：
 
 - 打包安装器和签名 release artifact；
 - 真实 MCP server 或外部 provider 进程管理；
@@ -296,7 +296,7 @@ cargo run -- release migration --output json
 - destructive restore；
 - 真实 Supervisor 进程切换；
 - 完整 durable task 查询/恢复索引、runtime audit wiring/export、runtime crash recovery、durable memory 和 backup database；
-- hot-reload generation swap。
+- 超出当前 shadow load、route gate、drain evidence 和 rollback audit 边界的常驻 daemon 热更新编排。
 
 这些能力需要后续版本在显式 apply gate、持久化存储、签名 artifact 和更强发布证据
 之后逐步接入。

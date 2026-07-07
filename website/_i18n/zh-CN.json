@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | 多 Agent 运行时",
-    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.7.3-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付、durable evidence、recovery checkpoint、backend diagnostics、受限 Lua VM 执行、受控 Lua host binding 和 Lua resource limit 组织运行时能力。"
+    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.7.4-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付、durable evidence、recovery checkpoint、backend diagnostics、受限 Lua VM 执行、受控 Lua host binding、Lua resource limit 和 Lua hot-reload lifecycle evidence 组织运行时能力。"
   },
   "brand": {
     "tagline": "多 Agent 运行时"
@@ -38,7 +38,7 @@
         "description": "通过权限边界接入 CLI、MCP、HTTP、Skill 与硬件。"
       }
     ],
-    "runtimePanelNote": "V1.7.3-alpha 通过受限 mlua/Lua 5.4 边界执行 Lua on_event(ctx)，保留只读 ctx、ctx.host.log/audit、ctx.tools.call，并新增 timeout、instruction budget、cancellation 和 memory budget 限制。",
+    "runtimePanelNote": "V1.7.4-alpha 通过受限 mlua/Lua 5.4 边界执行 Lua on_event(ctx)，保留只读 ctx、ctx.host.log/audit、ctx.tools.call，并新增 timeout、instruction budget、memory budget、shadow load、route gate、drain 和 rollback audit 边界。",
     "actionsLabel": "项目入口",
     "primaryAction": "阅读文档",
     "secondaryAction": "总体架构",
@@ -47,14 +47,14 @@
     "progressTitle": "从架构骨架走向 durable runtime 与 Lua VM 执行",
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
-    "progressCurrentTitle": "V1.7.3-alpha Lua resource limits 已经落地",
-    "progressCurrentBody": "仓库现在拥有 V1.5 发布加固与 GHCR 交付面、V1.6 durable backend 契约、filesystem EventLog、DurableEventBus、可重启读取的 task snapshot、durable audit record、artifact metadata hardening、runtime recovery scanning、ack-safe redrive、recovery audit smoke、inspect.durable diagnostics、V1.7.1 受限 Lua VM adapter、V1.7.2 host bindings，以及 V1.7.3 timeout、instruction budget、cancellation 和 memory budget 限制。",
+    "progressCurrentTitle": "V1.7.4-alpha Lua hot-reload lifecycle 已经落地",
+    "progressCurrentBody": "仓库现在拥有 V1.5 发布加固与 GHCR 交付面、V1.6 durable backend 契约、filesystem EventLog、DurableEventBus、可重启读取的 task snapshot、durable audit record、artifact metadata hardening、runtime recovery scanning、ack-safe redrive、recovery audit smoke、inspect.durable diagnostics、V1.7.1 受限 Lua VM adapter、V1.7.2 host bindings、V1.7.3 resource limits，以及 V1.7.4 shadow-load health check、scheduler generation route gate、generation drain evidence 和 rollback audit evidence。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
-      "补齐 V1.7.4 shadow load、generation swap、drain 和 rollback。",
       "启动 V1.8 provider、MCP 与 Skill runner 真实执行，并保持 policy、timeout、audit 和 output limit 边界。",
+      "在当前 V1.7.4 shadow load、route gate、drain 和 rollback audit 边界之上接入常驻 daemon 热更新编排。",
       "签名安装器、系统包、provenance bundle 和破坏性 apply gate 继续留在后续 V1.10/V1.11 里程碑。"
     ],
     "featuredBlogEyebrow": "推荐阅读",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "当前",
-        "label": "V1.7.3-alpha Lua resource limits",
-        "description": "V1.6 durable 基线已经就位，V1.7.1 通过受限 mlua/Lua 5.4 adapter 执行 Lua on_event(ctx)，V1.7.2 补齐 host bindings，V1.7.3 补齐 timeout、instruction budget、cancellation 和 memory budget。"
+        "label": "V1.7.4-alpha Lua hot-reload lifecycle",
+        "description": "V1.6 durable 基线已经就位，V1.7.1 通过受限 mlua/Lua 5.4 adapter 执行 Lua on_event(ctx)，V1.7.2 补齐 host bindings，V1.7.3 补齐 resource limits，V1.7.4 补齐 shadow-load health check、generation route gate、drain evidence 和 rollback audit evidence。"
       },
       {
         "status": "later",
@@ -158,6 +158,11 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages 发布",
         "description": "ghcr.io/yetmos/eva-cli 的 GHCR 交付契约、package tag、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证。"
+      },
+      {
+        "id": "release-notes-v1.7.4",
+        "title": "V1.7.4 Alpha 发布说明",
+        "description": "补齐 Lua shadow-load health check、generation route gate、drain evidence、rollback audit evidence 和 Lua hot-reload lifecycle release gate 的 alpha 预发布。"
       },
       {
         "id": "release-notes-v1.7.3",
@@ -363,6 +368,11 @@
         "description": "V1.5 源码发布面的 JSON envelope、exit code、命令面和废弃窗口承诺。"
       },
       {
+        "id": "release-notes-v1.7.4",
+        "title": "V1.7.4 Alpha 发布说明",
+        "description": "补齐 Lua shadow-load health check、generation route gate、drain evidence、rollback audit evidence 和 Lua hot-reload lifecycle release gate 的 alpha 预发布。"
+      },
+      {
         "id": "release-notes-v1.7.3",
         "title": "V1.7.3 Alpha 发布说明",
         "description": "补齐 Lua wall-clock timeout、instruction budget、cancellation token、memory budget 和 Lua resource limits release gate 的 alpha 预发布。"
@@ -446,7 +456,7 @@
   "feedback": {
     "eyebrow": "反馈",
     "title": "反馈和建议",
-    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.7.3-alpha Lua resource limits 检查点；关于命令输出、文档、package 拉取、Lua on_event(ctx)、ctx.tools.call 行为、timeout/cancel 行为、backend diagnostics 和后续 apply 路径契约的具体反馈尤其有价值。",
+    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.7.4-alpha Lua hot-reload lifecycle 检查点；关于命令输出、文档、package 拉取、Lua on_event(ctx)、ctx.tools.call 行为、timeout/cancel 行为、backend diagnostics、generation route gate、rollback audit evidence 和后续 apply 路径契约的具体反馈尤其有价值。",
     "contactLabel": "联系邮箱",
     "categoryLabel": "反馈类型",
     "categoryOptions": ["功能建议", "问题反馈", "文档建议", "合作交流", "其他"],

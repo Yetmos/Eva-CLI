@@ -5,8 +5,8 @@ use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
 
-const CURRENT_RELEASE_VERSION: &str = "1.7.3-alpha";
-const CURRENT_RELEASE_LABEL: &str = "V1.7.3-alpha";
+const CURRENT_RELEASE_VERSION: &str = "1.7.4-alpha";
+const CURRENT_RELEASE_LABEL: &str = "V1.7.4-alpha";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseGateStatus {
@@ -133,7 +133,7 @@ impl ReleaseHardeningService {
             stability,
             gates,
             audit: vec![
-                "release:readiness:v1.7.3-alpha".to_owned(),
+                "release:readiness:v1.7.4-alpha".to_owned(),
                 "no_destructive_restore_or_process_switch".to_owned(),
                 "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
                 "durable_backend_layout_baseline_ready".to_owned(),
@@ -341,7 +341,7 @@ impl ReleaseHardeningService {
             ],
             compatibility_policy: CompatibilityPolicy::v15(),
             audit: vec![
-                "migration:v1.5.1_to_v1.7.3-alpha:no_breaking_changes".to_owned(),
+                "migration:v1.5.1_to_v1.7.4-alpha:no_breaking_changes".to_owned(),
                 "json_envelope_and_exit_codes_remain_stable".to_owned(),
                 "durable_task_audit_artifact_additive_alpha_baseline".to_owned(),
             ],
@@ -492,7 +492,7 @@ impl ReleaseHardeningService {
                     "docs/en/release/github-packages-publishing.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
-                    "docs/en/release/release-notes-v1.7.3.md".to_owned(),
+                    "docs/en/release/release-notes-v1.7.4.md".to_owned(),
                 ],
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },

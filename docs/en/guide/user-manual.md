@@ -2,16 +2,17 @@
 
 Last updated: 2026-07-07
 
-Applies to: Eva-CLI `1.7.3-alpha`
+Applies to: Eva-CLI `1.7.4-alpha`
 
 This manual is for developers, testers, and documentation maintainers using
-Eva-CLI from source. V1.7.3-alpha is a source alpha checkpoint: the repository
+Eva-CLI from source. V1.7.4-alpha is a source alpha checkpoint: the repository
 builds, the CLI surface is executable, durable EventBus redrive evidence,
 restart-readable task snapshots, durable audit records, artifact metadata
 evidence, runtime recovery scanner/redrive/audit smoke, durable diagnostics,
 restricted Lua VM `on_event` execution, Lua host observability,
 `ctx.tools.call` capability binding, and Lua timeout/instruction/cancel/memory
-execution limits are in place, while risky paths remain
+execution limits, shadow-load health checks, generation route gating, drain
+evidence, and rollback audit evidence are in place, while risky paths remain
 diagnostic or plan-first.
 
 ## Current Position
@@ -19,10 +20,10 @@ diagnostic or plan-first.
 | Area | Current status |
 | --- | --- |
 | Release shape | Source release from the Git repository and Rust toolchain. |
-| Runtime | `run --example basic` executes the V1.0 in-memory basic runtime loop through the V1.7.3 restricted Lua VM, host binding, and resource-limit boundary. |
+| Runtime | `run --example basic` executes the V1.0 in-memory basic runtime loop through the V1.7.4 restricted Lua VM, host binding, resource-limit, and hot-reload lifecycle boundary. |
 | External capabilities | Adapter, MCP, Skill, and Discovery commands expose controlled diagnostics, not real provider execution. |
 | Risky actions | Hardware binding, restore, upgrade, and lifecycle switching stay plan-first. |
-| Release checks | V1.7.3-alpha provides executable `release check/security/perf/migration` gates, including Lua VM execution, Lua host binding, and Lua resource-limit readiness. |
+| Release checks | V1.7.4-alpha provides executable `release check/security/perf/migration` gates, including Lua VM execution, Lua host binding, Lua resource-limit, and Lua hot-reload lifecycle readiness. |
 
 ![Eva-CLI source workflow](../../assets/eva-cli-user-manual-flow.svg)
 
@@ -47,8 +48,8 @@ cargo run -- --version
 Expected version output includes:
 
 ```text
-eva 1.7.3-alpha
-release: V1.7.3-alpha
+eva 1.7.4-alpha
+release: V1.7.4-alpha
 ```
 
 ## Quick Start
@@ -64,7 +65,7 @@ Run this sequence from the repository root:
 | Inspect durable | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | Reports backend schema, migration status, and pending redrive count. |
 | Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
 | Task status | `cargo run -- task status --output json` | Reads the latest task report. |
-| Release gate | `cargo run -- release check --output json` | Prints V1.7.3 release readiness. |
+| Release gate | `cargo run -- release check --output json` | Prints V1.7.4 release readiness. |
 
 Use text output for human inspection and `--output json` for scripts or CI.
 
@@ -88,7 +89,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Snapshot | `snapshot create` | Create a release snapshot linked to a backup manifest. | No |
 | Restore | `restore plan` | Produce a restore plan with `apply_allowed:false`. | No |
 | Upgrade | `upgrade check` | Check generation, migration, drain, and rollback readiness. | No |
-| Release | `release check/security/perf/migration` | Run V1.7.3 release readiness, security, performance, and migration gates. | No |
+| Release | `release check/security/perf/migration` | Run V1.7.4 release readiness, security, performance, and migration gates. | No |
 
 ## Basic Runtime Loop
 
@@ -159,7 +160,7 @@ cargo run -- release migration --output json
 | `release check` | Cross-platform, stability, docs, security, performance, migration, and compatibility gates. |
 | `release security` | Policy, Lua sandbox, secret redaction, MCP allowlist, hardware, and lifecycle risks. |
 | `release perf` | EventBus, Scheduler, Adapter, memory, backup, and release-check budgets. |
-| `release migration` | V1.5.1 to V1.7.3-alpha migration steps and compatibility policy. |
+| `release migration` | V1.5.1 to V1.7.4-alpha migration steps and compatibility policy. |
 
 ## Paths
 
@@ -192,13 +193,13 @@ Error JSON output uses `ok`, `command`, `exit_code`, `error`, and `trace`.
 | `5` | Reserved for external capability unavailable. |
 | `64` | Command usage error. |
 
-## Non-Goals in V1.7.3 Alpha
+## Non-Goals in V1.7.4 Alpha
 
-V1.7.3-alpha does not provide packaged installers, signed release artifacts,
+V1.7.4-alpha does not provide packaged installers, signed release artifacts,
 real MCP process execution, real provider process management, raw hardware I/O,
 destructive restore, real Supervisor handoff, full durable task query/recovery
 indexes, runtime audit wiring/export, runtime crash recovery, durable
-memory/backup databases, or hot-reload generation swap.
+memory/backup databases, or daemon-driven hot-reload orchestration.
 
 ## Recommended Verification
 
