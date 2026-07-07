@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Eva-CLI | Multi-Agent Runtime</title>
-    <meta name="description" content="Eva-CLI is an open-source V1.6.5-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, and backend diagnostics.">
+    <meta name="description" content="Eva-CLI is an open-source V1.7.1-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, and restricted Lua VM execution.">
     <meta name="author" content="Yetmos">
     <meta property="og:title" content="Eva-CLI | Multi-Agent Runtime">
-    <meta property="og:description" content="Eva-CLI is an open-source V1.6.5-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, and backend diagnostics.">
+    <meta property="og:description" content="Eva-CLI is an open-source V1.7.1-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, and restricted Lua VM execution.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://www.eva-cli.com/">
     <meta name="twitter:card" content="summary">
@@ -84,7 +84,7 @@
               <span>Routes CLI, MCP, HTTP, skills, and hardware through permissions.</span>
             </li>
           </ol>
-          <p class="stage-note">V1.6.5-alpha adds read-only durable backend diagnostics and inspect.durable smoke while keeping recovery checks executable.</p>
+          <p class="stage-note">V1.7.1-alpha runs Lua on_event(ctx) inside a restricted mlua/Lua 5.4 boundary, adds REL-LUA-VM-EXECUTION-001, and keeps durable diagnostics and recovery checks executable.</p>
         </aside>
       </section>
 
@@ -92,15 +92,15 @@
         <div class="section-heading progress-heading">
           <div>
             <p class="eyebrow">Development progress</p>
-            <h2 id="development-progress-title">From architecture scaffold to the V1.6 durable runtime baseline</h2>
+            <h2 id="development-progress-title">From architecture scaffold to durable runtime and Lua VM execution</h2>
           </div>
           <a class="secondary-action progress-roadmap-link" href="docs/en/planning/zero-to-one-roadmap.md">Open roadmap</a>
         </div>
         <div class="progress-layout">
           <article class="progress-current" aria-label="Current development stage">
             <span class="status-label">Current stage</span>
-            <h3>V1.6.5-alpha durable diagnostics checkpoint is implemented</h3>
-            <p>The repository now has the V1.5 release-hardening and GHCR delivery surface plus the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, and inspect.durable diagnostics.</p>
+            <h3>V1.7.1-alpha Lua VM execution boundary is implemented</h3>
+            <p>The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, and the V1.7.1 restricted Lua VM adapter that executes on_event(ctx) with stable error mapping and compatibility fallback.</p>
           </article>
           <ol class="progress-timeline" aria-label="Release progress stages">
             <li class="progress-stage progress-stage-complete">
@@ -127,8 +127,8 @@
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">Now</span>
               <div>
-                <strong>V1.6.5-alpha durable diagnostics checkpoint</strong>
-                <p>Schema-versioned durable backend layout, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanner, ack-safe redrive checkpoint, recovery audit smoke, and inspect.durable diagnostics are implemented.</p>
+                <strong>V1.7.1-alpha Lua VM execution boundary</strong>
+                <p>The V1.6 durable baseline is in place, and V1.7.1 now runs Lua on_event(ctx) through a restricted mlua/Lua 5.4 adapter with stable syntax/runtime error mapping and legacy static fallback.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
@@ -143,8 +143,8 @@
         <div class="progress-next">
           <strong>Next implementation work</strong>
           <ul>
-            <li>Wire scheduler backoff dispatch to durable redrive policy instead of checkpoint-only readiness.</li>
-            <li>Continue into the real Lua VM execution boundary with durable task and audit evidence available.</li>
+            <li>Add V1.7.2 ctx.tools, ctx.host, and memory bindings on top of the restricted Lua VM boundary.</li>
+            <li>Continue V1.7.3 resource limits, timeout, and cancellation handling for Lua execution.</li>
             <li>Keep signed installers, OS packages, provenance bundles, and destructive apply gates behind later V1.10/V1.11 milestones.</li>
           </ul>
         </div>
@@ -254,6 +254,10 @@
             <span>GitHub Packages Publishing</span>
             <small>The GHCR delivery contract, package tags, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification for ghcr.io/yetmos/eva-cli.</small>
           </a>
+          <a class="doc-link" href="docs/en/release/release-notes-v1.7.1.md">
+            <span>V1.7.1 Alpha Release Notes</span>
+            <small>The alpha prerelease that adds the restricted Lua VM execution boundary, on_event(ctx) execution, stable Lua error mapping, and the Lua VM release gate.</small>
+          </a>
           <a class="doc-link" href="docs/en/release/release-notes-v1.6.5.md">
             <span>V1.6.5 Alpha Release Notes</span>
             <small>The alpha prerelease that adds durable backend diagnostics, inspect.durable JSON output, pending redrive counts, and CI/release smoke coverage.</small>
@@ -313,7 +317,7 @@
         <div class="feedback-copy">
           <p class="eyebrow">Feedback</p>
           <h2 id="feedback-title">Feedback and suggestions</h2>
-          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.6.5-alpha durable diagnostics checkpoint, so concrete reports about command output, docs, package pulls, backend diagnostics, and future apply-path contracts are especially useful.</p>
+          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.7.1-alpha Lua VM execution-boundary checkpoint, so concrete reports about command output, docs, package pulls, Lua on_event(ctx) behavior, backend diagnostics, and future apply-path contracts are especially useful.</p>
           <p class="contact-line">
             <span>Contact email</span>
             <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>
