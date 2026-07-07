@@ -5672,6 +5672,10 @@ mod tests {
         assert!(stdout.contains("\"domain\":\"lua_resource_limits\""));
         assert!(stdout.contains("LuaExecutionLimits"));
         assert!(stdout.contains("lua_resource_limits_ready"));
+        assert!(stdout.contains("\"id\":\"REL-LUA-HOT-RELOAD-001\""));
+        assert!(stdout.contains("\"domain\":\"lua_hot_reload_lifecycle\""));
+        assert!(stdout.contains("GenerationRouteGate"));
+        assert!(stdout.contains("lua_hot_reload_lifecycle_ready"));
     }
 
     #[test]

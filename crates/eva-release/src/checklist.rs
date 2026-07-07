@@ -113,6 +113,7 @@ impl ReleaseHardeningService {
         gates.push(lua_vm_execution_gate());
         gates.push(lua_host_bindings_gate());
         gates.push(lua_resource_limits_gate());
+        gates.push(lua_hot_reload_lifecycle_gate());
 
         let status = if gates
             .iter()
@@ -143,6 +144,7 @@ impl ReleaseHardeningService {
                 "lua_vm_execution_boundary_ready".to_owned(),
                 "lua_host_bindings_ready".to_owned(),
                 "lua_resource_limits_ready".to_owned(),
+                "lua_hot_reload_lifecycle_ready".to_owned(),
             ],
         })
     }
@@ -760,6 +762,30 @@ fn lua_resource_limits_gate() -> ReleaseGate {
     }
 }
 
+fn lua_hot_reload_lifecycle_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-LUA-HOT-RELOAD-001".to_owned(),
+        domain: "lua_hot_reload_lifecycle".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.7.4 Lua shadow load, generation route gating, drain evidence, and rollback audit boundaries are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-lua-host/src/hot_reload.rs LuaShadowLoader".to_owned(),
+            "crates/eva-scheduler/src/generation.rs GenerationRouteGate".to_owned(),
+            "crates/eva-lifecycle/src/drain.rs GenerationDrainEvidence".to_owned(),
+            "crates/eva-lifecycle/src/rollback.rs plan_generation_lifecycle_rollback".to_owned(),
+            "cargo test -p eva-lua-host shadow_load".to_owned(),
+            "cargo test -p eva-scheduler generation".to_owned(),
+            "cargo test -p eva-lifecycle drain rollback".to_owned(),
+            "docs/zh-CN/planning/V1.x real runtime implementation plan V1.7.4 Done".to_owned(),
+        ],
+        remediation: vec![
+            "do not promote a candidate generation unless shadow load is healthy".to_owned(),
+            "keep old-generation drain and rollback audit evidence attached to every generation switch".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -818,6 +844,9 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-LUA-RESOURCE-LIMITS-001" && gate.status == ReleaseGateStatus::Pass
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-LUA-HOT-RELOAD-001" && gate.status == ReleaseGateStatus::Pass
+        }));
         assert!(report
             .audit
             .iter()
@@ -834,6 +863,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "lua_resource_limits_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "lua_hot_reload_lifecycle_ready"));
     }
 
     #[test]

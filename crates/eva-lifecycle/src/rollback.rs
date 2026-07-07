@@ -1,5 +1,6 @@
 //! Failed handoff rollback coordination.
 
+use crate::GenerationDrainEvidence;
 use eva_backup::RestorePlan;
 use eva_core::{EvaError, GenerationId};
 
@@ -57,6 +58,44 @@ impl RollbackCoordinator {
             audit: vec!["rollback:planned".to_owned()],
         })
     }
+
+    pub fn plan_generation_lifecycle_rollback(
+        &self,
+        failed_generation: GenerationId,
+        restored_generation: GenerationId,
+        reason: impl Into<String>,
+        drain_evidence: Option<&GenerationDrainEvidence>,
+        restore_plan: Option<&RestorePlan>,
+    ) -> Result<RollbackPlan, EvaError> {
+        let mut plan = self.plan_failed_handoff(
+            failed_generation.clone(),
+            restored_generation.clone(),
+            reason,
+            restore_plan,
+        )?;
+        plan.steps.insert(
+            0,
+            "keep scheduler route on previous healthy generation".to_owned(),
+        );
+        plan.audit.push(format!(
+            "rollback:generation:{}:to:{}",
+            failed_generation.as_str(),
+            restored_generation.as_str()
+        ));
+        if let Some(evidence) = drain_evidence {
+            plan.audit.extend(evidence.audit.iter().map(|entry| {
+                format!(
+                    "rollback:observed_drain:{}:{}",
+                    evidence.from_generation.as_str(),
+                    entry
+                )
+            }));
+        } else {
+            plan.risks
+                .push("no generation drain evidence was attached".to_owned());
+        }
+        Ok(plan)
+    }
 }
 
 #[cfg(test)]
@@ -76,5 +115,39 @@ mod tests {
 
         assert_eq!(plan.status, "planned");
         assert!(plan.risks.iter().any(|risk| risk.contains("no restore")));
+    }
+
+    #[test]
+    fn generation_lifecycle_rollback_carries_drain_audit() {
+        let drain = crate::DrainCoordinator
+            .plan_generation_swap_drain(
+                GenerationId::parse("gen-old").unwrap(),
+                GenerationId::parse("gen-new").unwrap(),
+                1,
+                30_000,
+            )
+            .unwrap();
+
+        let plan = RollbackCoordinator
+            .plan_generation_lifecycle_rollback(
+                GenerationId::parse("gen-new").unwrap(),
+                GenerationId::parse("gen-old").unwrap(),
+                "candidate health failed",
+                Some(&drain),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            plan.steps[0],
+            "keep scheduler route on previous healthy generation"
+        );
+        assert!(plan
+            .audit
+            .iter()
+            .any(|item| item == "rollback:generation:gen-new:to:gen-old"));
+        assert!(plan.audit.iter().any(|item| {
+            item == "rollback:observed_drain:gen-old:generation:gen-old:draining_after_swap_to:gen-new"
+        }));
     }
 }
