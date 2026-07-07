@@ -13,7 +13,7 @@
 | `ids.rs` | Agent、Adapter、Capability、Request、Event、Generation ID | 已完成 | 全部 runtime 模块 |
 | `capability.rs` | `CapabilityName`、`CapabilityRef`、`ProviderHint` | 已完成 | Capability、Adapter、MCP |
 | `event.rs` | `Event`、target、payload、metadata、trace context | 已完成 | EventBus、Scheduler、Agent |
-| `invoke.rs` | `InvokeRequest`、`InvokeResponse`、status、metadata | 已完成 | Agent、Capability、Adapter |
+| `invoke.rs` | `InvokeRequest`、`InvokeResponse`、status、metadata、带结构化错误上下文的 timeout response | 已完成 | Agent、Capability、Adapter |
 | `lib.rs` | 公共 re-export | 已完成 | 全部下游 crate |
 
 ## 开发实施步骤

@@ -79,10 +79,14 @@ impl AdapterInvocation {
 }
 
 impl AdapterRuntime {
+    pub fn from_registry(registry: AdapterRegistry) -> Self {
+        let router = AdapterRouter::new(registry.clone());
+        Self { registry, router }
+    }
+
     pub fn from_project(project: &ProjectConfig) -> Result<Self, EvaError> {
         let registry = AdapterRegistry::from_project(project)?;
-        let router = AdapterRouter::new(registry.clone());
-        Ok(Self { registry, router })
+        Ok(Self::from_registry(registry))
     }
 
     pub fn registry(&self) -> &AdapterRegistry {

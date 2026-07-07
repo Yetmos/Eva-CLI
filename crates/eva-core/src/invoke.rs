@@ -262,6 +262,10 @@ impl InvokeResponse {
         )
     }
 
+    pub fn timeout_with_error(request_id: RequestId, error: EvaError) -> Self {
+        Self::new(request_id, InvokeStatus::Timeout, None, Some(error))
+    }
+
     fn new(
         request_id: RequestId,
         status: InvokeStatus,
@@ -394,6 +398,18 @@ mod tests {
         assert_eq!(response.status(), InvokeStatus::Timeout);
         assert!(response.status().is_terminal());
         assert!(response.error().unwrap().is_retryable());
+    }
+
+    #[test]
+    fn timeout_response_can_preserve_structured_error_context() {
+        let error = EvaError::timeout("provider timed out")
+            .with_provider_code("adapter_status_timeout")
+            .with_context("provider", "codex-cli");
+
+        let response = InvokeResponse::timeout_with_error(request_id("req-1"), error.clone());
+
+        assert_eq!(response.status(), InvokeStatus::Timeout);
+        assert_eq!(response.error(), Some(&error));
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 `eva-adapter` 负责 Adapter manifest 的运行时表示、AdapterRegistry、AdapterRouter、transport runtime 和外部 provider 错误映射。它不做 Discovery 扫描，不授予权限，不改写 policy，只接收已验证配置和已计算边界，并按 transport 约束执行。
 
-V1.1 已实现外部能力的受控 envelope；V1.3 在此基础上实现 hardware transport，使硬件调用必须经由 `eva-hardware` 的 registry、lease 和 driver binding，不允许 Lua 直接访问 raw I/O。V1.8.1 将 stdio/http runner 接入 `AdapterRuntime`，V1.8.2 将 MCP invoke 接到受控 JSON-RPC stdio client，V1.8.4 将 Skill transport 升级为 schema-gated workflow runner；外部 provider 可通过 manifest command/endpoint/env/limits 进入受控执行路径。
+V1.1 已实现外部能力的受控 envelope；V1.3 在此基础上实现 hardware transport，使硬件调用必须经由 `eva-hardware` 的 registry、lease 和 driver binding，不允许 Lua 直接访问 raw I/O。V1.8.1 将 stdio/http runner 接入 `AdapterRuntime`，V1.8.2 将 MCP invoke 接到受控 JSON-RPC stdio client，V1.8.4 将 Skill transport 升级为 schema-gated workflow runner；V1.8.5.3 增加 adapter-backed `CapabilityHostApi`，把授权后的 capability plan 接入 `AdapterRuntime` 并统一 `InvokeResponse`。外部 provider 可通过 manifest command/endpoint/env/limits 进入受控执行路径。
 
 ## 当前模块功能说明
 
@@ -16,6 +16,7 @@ V1.1 已实现外部能力的受控 envelope；V1.3 在此基础上实现 hardwa
 | Registry | 已完成 V1.1 | `AdapterRegistry` 支持按 Adapter id 和 capability 查询，处理重复 provider 和禁用 Adapter。 |
 | Router | 已完成 V1.1 | `AdapterRouter` 支持 explicit provider 优先，再按 capability index fallback，并输出结构化错误。 |
 | Runtime | 已完成 V1.8.4 | `AdapterRuntime` 提供 list/probe/invoke；probe 无副作用；invoke 可执行 builtin/hardware envelope、受控 stdio/http runner、MCP JSON-RPC stdio tool call，以及 Skill workflow runner。 |
+| Capability host | 已完成 V1.8.5.3 | `AdapterBackedCapabilityHost` 复用 `CapabilityRouter::authorized_provider_plan()`，按 provider plan 调用 `AdapterRuntime`，并把 report/error 归一为 `InvokeResponse`。 |
 | Builtin/EventBus/Lua transport | 已完成 V1.1 | 返回本地受控 envelope，不启动外部进程。 |
 | MCP transport | 已完成 V1.8.2 | 通过 `eva-mcp::McpJsonRpcClient` 校验 tool allowlist 后启动 manifest stdio server，执行 `initialize`、`tools/list` 和 `tools/call`。 |
 | Skill transport | 已完成 V1.8.4 | 校验 `skill.kind == workflow_skill`、`runtime_gate == normal` 和输入 schema；创建隔离 working directory，执行 manifest allowlist process runner 或受控 `codex_skill` runner，保存 stdout/stderr/run-report/artifact evidence 并脱敏 credential 输出。 |
@@ -60,6 +61,7 @@ V1.3 的 hardware transport 只证明边界：它不会打开真实 USB、串口
 | 文件/模块 | 具体功能 | 当前进度 | 下一步 |
 | --- | --- | --- | --- |
 | `src/lib.rs` | 模块导出 | 已完成 V1.1 | 后续按 transport 稳定性拆分公共 surface。 |
+| `src/capability_host.rs` | adapter-backed capability host | 已完成 V1.8.5.3 | 已接 authorized provider plan、AdapterRuntime 调用和 InvokeResponse completed/failed/timeout 归一化；后续补 retryable fallback 分类文档和 provider supervision。 |
 | `src/manifest.rs` | Adapter runtime 表示 | 已完成 V1.8.4 | 已包含 MCP session typed config、Skill path/entry/schema/runner/artifact root、hardware identity、stdio/http command/endpoint/env/headers/limits。 |
 | `src/registry.rs` | Adapter 注册和索引 | 已完成 V1.1 | 后续接健康 probe、并发限制和熔断状态。 |
 | `src/router.rs` | provider 选择 | 已完成 V1.1 | 后续加入优先级和健康降级策略。 |
@@ -91,7 +93,8 @@ V1.3 关键测试覆盖：
 - V1.8.1 覆盖 stdio/http fake provider、disabled provider 不启动、credential env/header/stdout/stderr redaction。
 - V1.8.2 覆盖 MCP fake JSON-RPC server tool call、blocked tool 不发 RPC、timeout、协议错误和 oversized response。
 - V1.8.4 覆盖 Skill schema required/enum 拒绝、内置 `codex_skill` runner、manifest process runner 成功/失败/超时、artifact path 控制和 credential redaction。
+- V1.8.5.3 覆盖 adapter-backed capability host 成功调用、未授权 provider 归一为 failed response、disabled provider 归一为 failed response，以及 timeout report 保留 provider code/context。
 
 ## English
 
-`eva-adapter` owns Adapter runtime descriptors, registry, routing, controlled transport execution, and provider error mapping. V1.8.4 wires stdio/http runners, MCP JSON-RPC stdio tool calls, and schema-gated Skill workflow runners into `AdapterRuntime` with manifest-derived command/endpoint/env/limits and response gates; broader provider supervision remains future work.
+`eva-adapter` owns Adapter runtime descriptors, registry, routing, controlled transport execution, provider error mapping, and adapter-backed capability host wiring. V1.8.5.3 wires authorized capability provider plans into `AdapterRuntime` and normalizes adapter reports/errors into `InvokeResponse`; broader provider supervision remains future work.
