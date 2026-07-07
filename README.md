@@ -15,8 +15,8 @@ plan-first binding diagnostics, backup/snapshot/restore/upgrade planning,
 release readiness/security/performance/migration checks, CI gates, quickstart,
 release notes, and explicit known limitations.
 
-Current managed project version: `V1.5.1-release` (`Cargo.toml` version
-`1.5.1`, stable Git tag form `v1.5.1`). Version policy is defined in
+Current managed project version: `V1.6.1-alpha` (`Cargo.toml` version
+`1.6.1-alpha`, prerelease Git tag form `v1.6.1-alpha`). Version policy is defined in
 [Version Management Plan](docs/en/release/version-management-plan.md).
 
 The website uses English as the default public entry with stable
@@ -199,6 +199,7 @@ The release-hardening docs are:
 - [V1.5 Release Hardening](docs/en/release/v1.5-release-hardening.md)
 - [V1.5 Migration Guide](docs/en/release/v1.5-migration-guide.md)
 - [V1.5 Compatibility Policy](docs/en/release/v1.5-compatibility-policy.md)
+- [V1.6.1 Alpha Release Notes](docs/en/release/release-notes-v1.6.1.md)
 - [V1.5.1 Release Notes](docs/en/release/release-notes-v1.5.1.md)
 - [V1.5.0 Release Notes](docs/en/release/release-notes-v1.5.0.md)
 - [V1.5 GitHub Release Plan](docs/en/release/v1.5-github-release-plan.md)

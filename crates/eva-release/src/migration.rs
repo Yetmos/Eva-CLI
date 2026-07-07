@@ -78,9 +78,9 @@ mod tests {
     use crate::ReleaseHardeningService;
 
     #[test]
-    fn migration_has_no_breaking_changes_for_v15() {
+    fn migration_has_no_breaking_changes_for_v161_alpha() {
         let guide = ReleaseHardeningService::v15()
-            .migration_guide("1.5.0", "1.5.1")
+            .migration_guide("1.5.1", "1.6.1-alpha")
             .unwrap();
 
         assert_eq!(guide.status, "compatible");

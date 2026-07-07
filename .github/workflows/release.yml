@@ -877,8 +877,8 @@ jobs:
               `- Tag: \`${tag}\``,
               `- Human version: \`${humanVersion}\``,
               `- Status: \`${status}\``,
-              "- Release workflow: validates Rust workspace, website/docs, version-management rules, V1.5 release gates, and GHCR package publication before publishing.",
-              "- Artifacts: GitHub source archives, workflow release-evidence artifact, and GHCR container package when package evidence status is `published`. Stable V1.5 releases intentionally do not publish signed installers.",
+              "- Release workflow: validates Rust workspace, website/docs, version-management rules, release gates, and GHCR package publication before publishing.",
+              "- Artifacts: GitHub source archives, workflow release-evidence artifact, and GHCR container package when package evidence status is `published`. Current releases intentionally do not publish signed installers.",
               "- Supply-chain evidence: GHCR packages include Buildx provenance and SBOM attestations when package evidence status is `published`.",
               ...packageLines,
             ].filter(Boolean).join("\n\n");

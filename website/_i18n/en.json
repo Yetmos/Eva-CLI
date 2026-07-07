@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source V1.5.1 CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, and GHCR package delivery."
+    "description": "Eva-CLI is an open-source V1.6.1-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, and a durable backend baseline."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,24 +38,24 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "V1.5.1 keeps release checks executable and adds GHCR package delivery behind the same controlled release path.",
+    "runtimePanelNote": "V1.6.1-alpha adds the durable backend schema and migration-lock baseline while keeping release checks executable.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
     "progressAction": "Development progress",
     "progressEyebrow": "Development progress",
-    "progressTitle": "From architecture scaffold to V1.5.1 release and GHCR delivery",
+    "progressTitle": "From architecture scaffold to the V1.6 durable runtime baseline",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.5.1 release hardening and GHCR package delivery are implemented",
-    "progressCurrentBody": "The repository now has a compileable Rust workspace, executable CLI commands through release check/security/perf/migration, configuration validation, an in-memory basic loop, task diagnostics, controlled external capability diagnostics, memory context, hardware binding plans, backup and lifecycle checks, CI gates, release documentation, an SVG-illustrated source user manual, and a GitHub Packages container channel at ghcr.io/yetmos/eva-cli:1.5.1 with Buildx provenance and SBOM evidence.",
+    "progressCurrentTitle": "V1.6.1-alpha durable backend baseline is implemented",
+    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface plus the first V1.6 durable backend contract: schema-versioned backend.manifest, stable events/state/tasks/audit/artifacts layout, read-only verification, and migration locking for future durable EventBus, task, audit, and artifact stores.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Add signed installers, OS package-manager packages, and provenance bundles after the GHCR channel remains stable.",
-      "Move destructive restore, release pointer, and supervisor activation paths behind explicit apply gates.",
-      "Replace in-memory provider/runtime diagnostics with durable stores and real provider process management, then expand the manual alongside the real apply paths."
+      "Wire durable EventBus publish/ack/fail/dead-letter redrive onto the new backend layout.",
+      "Promote task, audit, and artifact stores to durable adapters and add restart recovery evidence.",
+      "Keep signed installers, OS packages, provenance bundles, and destructive apply gates behind later V1.10/V1.11 milestones."
     ],
     "featuredBlogEyebrow": "Recommended reading",
     "featuredBlogTitle": "Latest design notes from the blog",
@@ -75,10 +75,16 @@
         "description": "The in-memory basic loop, CLI quickstart, local task status/log/cancel diagnostics, and core CI checks are implemented."
       },
       {
-        "status": "current",
-        "badge": "Now",
+        "status": "complete",
+        "badge": "Done",
         "label": "V1.1 to V1.5.1 controlled capability, release gates, and GHCR delivery",
         "description": "External capability diagnostics, memory context, hardware plans, backup/lifecycle checks, release hardening commands, the source user manual, and GitHub Packages container delivery are implemented."
+      },
+      {
+        "status": "current",
+        "badge": "Now",
+        "label": "V1.6.1-alpha durable backend baseline",
+        "description": "Schema-versioned durable backend layout, read-only verification, migration locking, and in-memory compatibility backend are implemented for the next durable runtime slices."
       },
       {
         "status": "later",
@@ -152,6 +158,11 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages Publishing",
         "description": "The GHCR delivery contract, package tags, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification for ghcr.io/yetmos/eva-cli."
+      },
+      {
+        "id": "release-notes-v1.6.1",
+        "title": "V1.6.1 Alpha Release Notes",
+        "description": "The alpha prerelease that starts the durable runtime/storage line with the backend manifest, layout, and migration-lock baseline."
       },
       {
         "id": "release-notes-v1.5.1",
@@ -317,6 +328,11 @@
         "description": "The JSON envelope, exit-code, command-surface, and deprecation guarantees for the V1.5 source release."
       },
       {
+        "id": "release-notes-v1.6.1",
+        "title": "V1.6.1 Alpha Release Notes",
+        "description": "The alpha prerelease that starts the durable runtime/storage line with the backend manifest, layout, and migration-lock baseline."
+      },
+      {
         "id": "release-notes-v1.5.1",
         "title": "V1.5.1 Release Notes",
         "description": "The patch release that enables GHCR package publication without breaking V1.5 CLI, config, JSON, or documentation path contracts."
@@ -360,7 +376,7 @@
   "feedback": {
     "eyebrow": "Feedback",
     "title": "Feedback and suggestions",
-    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.5.1 release checkpoint with GHCR package delivery, so concrete reports about command output, docs, package pulls, migration gaps, and future apply-path contracts are especially useful.",
+    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.6.1-alpha durable backend checkpoint, so concrete reports about command output, docs, package pulls, durable migration gaps, and future apply-path contracts are especially useful.",
     "contactLabel": "Contact email",
     "categoryLabel": "Feedback type",
     "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],

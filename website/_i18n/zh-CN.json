@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | 多 Agent 运行时",
-    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.5.1 CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁和 GHCR package 交付组织运行时能力。"
+    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.6.1-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付和 durable backend 基线组织运行时能力。"
   },
   "brand": {
     "tagline": "多 Agent 运行时"
@@ -38,24 +38,24 @@
         "description": "通过权限边界接入 CLI、MCP、HTTP、Skill 与硬件。"
       }
     ],
-    "runtimePanelNote": "V1.5.1 保持发布检查可执行，并在同一受控发布路径中加入 GHCR package 交付。",
+    "runtimePanelNote": "V1.6.1-alpha 补齐 durable backend schema 与 migration lock 基线，同时保持发布检查可执行。",
     "actionsLabel": "项目入口",
     "primaryAction": "阅读文档",
     "secondaryAction": "总体架构",
     "progressAction": "开发进度",
     "progressEyebrow": "开发进度",
-    "progressTitle": "从架构骨架走向 V1.5.1 发布与 GHCR 交付",
+    "progressTitle": "从架构骨架走向 V1.6 durable runtime 基线",
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
-    "progressCurrentTitle": "V1.5.1 发布加固与 GHCR package 交付已经落地",
-    "progressCurrentBody": "仓库已经具备可编译 Rust workspace、覆盖 release check/security/perf/migration 的可执行 CLI、配置校验、in-memory basic loop、task 诊断、受控外部能力诊断、记忆上下文、硬件绑定计划、备份与生命周期检查、CI 门禁、发布文档、带 SVG 插图的源码使用手册，以及带 Buildx provenance 和 SBOM evidence 的 ghcr.io/yetmos/eva-cli:1.5.1 GitHub Packages 容器交付通道。",
+    "progressCurrentTitle": "V1.6.1-alpha durable backend 基线已经落地",
+    "progressCurrentBody": "仓库现在拥有 V1.5 发布加固与 GHCR 交付面，并补齐第一段 V1.6 durable backend 契约：带 schema version 的 backend.manifest、稳定 events/state/tasks/audit/artifacts 布局、只读校验，以及供后续 durable EventBus、task、audit 和 artifact store 复用的 migration lock。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
-      "在 GHCR 通道稳定后补齐签名安装器、系统包管理器 package 和 provenance bundle。",
-      "把破坏性 restore、release pointer 和 Supervisor 激活路径放到显式 apply gate 之后。",
-      "用 durable store 和真实 provider 进程管理替换当前 in-memory 诊断面，并让使用手册随真实 apply 路径同步扩展。"
+      "把 durable EventBus 的 publish/ack/fail/dead-letter redrive 接到新的 backend 布局上。",
+      "把 task、audit 和 artifact store 升级为 durable adapter，并补重启恢复证据。",
+      "签名安装器、系统包、provenance bundle 和破坏性 apply gate 继续留在后续 V1.10/V1.11 里程碑。"
     ],
     "featuredBlogEyebrow": "推荐阅读",
     "featuredBlogTitle": "来自博客的最新设计笔记",
@@ -75,10 +75,16 @@
         "description": "in-memory basic loop、CLI 快速开始、本地 task status/log/cancel 诊断和核心 CI 检查已经实现。"
       },
       {
-        "status": "current",
-        "badge": "当前",
+        "status": "complete",
+        "badge": "已完成",
         "label": "V1.1 到 V1.5.1 受控能力、发布门禁与 GHCR 交付",
         "description": "外部能力诊断、记忆上下文、硬件计划、备份/生命周期检查、发布加固命令、源码使用手册和 GitHub Packages 容器交付已经实现。"
+      },
+      {
+        "status": "current",
+        "badge": "当前",
+        "label": "V1.6.1-alpha durable backend 基线",
+        "description": "带 schema version 的 durable backend 布局、只读校验、迁移锁和 in-memory 兼容 backend 已经实现，为后续 durable runtime 节点打基础。"
       },
       {
         "status": "later",
@@ -152,6 +158,11 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages 发布",
         "description": "ghcr.io/yetmos/eva-cli 的 GHCR 交付契约、package tag、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证。"
+      },
+      {
+        "id": "release-notes-v1.6.1",
+        "title": "V1.6.1 Alpha 发布说明",
+        "description": "启动 durable runtime/storage 线的 alpha 预发布，落地 backend manifest、layout 和 migration lock 基线。"
       },
       {
         "id": "release-notes-v1.5.1",
@@ -317,6 +328,11 @@
         "description": "V1.5 源码发布面的 JSON envelope、exit code、命令面和废弃窗口承诺。"
       },
       {
+        "id": "release-notes-v1.6.1",
+        "title": "V1.6.1 Alpha 发布说明",
+        "description": "启动 durable runtime/storage 线的 alpha 预发布，落地 backend manifest、layout 和 migration lock 基线。"
+      },
+      {
         "id": "release-notes-v1.5.1",
         "title": "V1.5.1 发布说明",
         "description": "启用 GHCR package 发布，同时不破坏 V1.5 CLI、配置、JSON 或文档路径契约的 patch release。"
@@ -360,7 +376,7 @@
   "feedback": {
     "eyebrow": "反馈",
     "title": "反馈和建议",
-    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.5.1 发布检查点，并已加入 GHCR package 交付；关于命令输出、文档、package 拉取、迁移缺口和后续 apply 路径契约的具体反馈尤其有价值。",
+    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.6.1-alpha durable backend 检查点；关于命令输出、文档、package 拉取、durable 迁移缺口和后续 apply 路径契约的具体反馈尤其有价值。",
     "contactLabel": "联系邮箱",
     "categoryLabel": "反馈类型",
     "categoryOptions": ["功能建议", "问题反馈", "文档建议", "合作交流", "其他"],

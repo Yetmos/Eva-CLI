@@ -5,6 +5,9 @@ use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
 
+const CURRENT_RELEASE_VERSION: &str = "1.6.1-alpha";
+const CURRENT_RELEASE_LABEL: &str = "V1.6.1-alpha";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseGateStatus {
     Pass,
@@ -96,12 +99,13 @@ impl ReleaseHardeningService {
         let platforms = self.platforms(&target);
         let security = self.security_review();
         let performance = self.performance_baseline();
-        let migration = self.migration_guide("1.5.0", "1.5.1")?;
+        let migration = self.migration_guide("1.5.1", CURRENT_RELEASE_VERSION)?;
         let stability = self.stability_scenarios();
         let mut gates = self.core_gates(&platforms, &stability);
         gates.extend(security.findings.iter().map(security_gate));
         gates.extend(performance.budgets.iter().map(performance_gate));
         gates.push(migration_gate(&migration));
+        gates.push(durable_backend_gate());
 
         let status = if gates
             .iter()
@@ -114,23 +118,24 @@ impl ReleaseHardeningService {
         .to_owned();
 
         Ok(ReleaseReadinessReport {
-            version: "1.5.1".to_owned(),
+            version: CURRENT_RELEASE_VERSION.to_owned(),
             status,
             target,
             platforms,
             stability,
             gates,
             audit: vec![
-                "release:readiness:v1.5".to_owned(),
+                "release:readiness:v1.6.1-alpha".to_owned(),
                 "no_destructive_restore_or_process_switch".to_owned(),
                 "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
+                "durable_backend_layout_baseline_ready".to_owned(),
             ],
         })
     }
 
     pub fn security_review(&self) -> SecurityReviewReport {
         SecurityReviewReport {
-            version: "1.5.1".to_owned(),
+            version: CURRENT_RELEASE_VERSION.to_owned(),
             status: "reviewed".to_owned(),
             findings: vec![
                 SecurityFinding::passed(
@@ -259,7 +264,7 @@ impl ReleaseHardeningService {
         .to_owned();
 
         PerformanceBaselineReport {
-            version: "1.5.1".to_owned(),
+            version: CURRENT_RELEASE_VERSION.to_owned(),
             status,
             budgets,
             audit: vec![
@@ -289,19 +294,19 @@ impl ReleaseHardeningService {
             steps: vec![
                 MigrationStep::new(
                     "build",
-                    "rebuild the workspace with version 1.5.1",
+                    format!("rebuild the workspace with version {CURRENT_RELEASE_VERSION}"),
                     "cargo build --release",
                     false,
                 ),
                 MigrationStep::new(
                     "smoke",
-                    "run the V1.0 to V1.5 smoke commands before release hardening checks",
+                    "run the V1.0 to V1.6 smoke commands before release checks",
                     "cargo run -- upgrade check --output json",
                     false,
                 ),
                 MigrationStep::new(
                     "release-check",
-                    "run the aggregate V1.5 release readiness command",
+                    "run the aggregate release readiness command",
                     "cargo run -- release check --output json",
                     false,
                 ),
@@ -320,8 +325,9 @@ impl ReleaseHardeningService {
             ],
             compatibility_policy: CompatibilityPolicy::v15(),
             audit: vec![
-                "migration:v1.5.0_to_v1.5.1:no_breaking_changes".to_owned(),
+                "migration:v1.5.1_to_v1.6.1-alpha:no_breaking_changes".to_owned(),
                 "json_envelope_and_exit_codes_remain_stable".to_owned(),
+                "durable_backend_additive_alpha_baseline".to_owned(),
             ],
         })
     }
@@ -358,7 +364,8 @@ impl ReleaseHardeningService {
                 required_commands: smoke_commands(),
                 notes: vec![
                     "CI matrix includes macos-latest".to_owned(),
-                    "no platform-specific native provider is started in V1.5".to_owned(),
+                    "no platform-specific native provider is started in this alpha release"
+                        .to_owned(),
                 ],
             },
         ];
@@ -448,15 +455,14 @@ impl ReleaseHardeningService {
                 domain: "docs".to_owned(),
                 status: ReleaseGateStatus::Pass,
                 required: true,
-                summary: "V1.5.1-release README, version management, GitHub Packages, migration, compatibility, and release notes are part of the release surface"
-                    .to_owned(),
+                summary: format!("{CURRENT_RELEASE_LABEL} README, version management, GitHub Packages, migration, compatibility, and release notes are part of the release surface"),
                 evidence: vec![
                     "crates/eva-release/README.md".to_owned(),
                     "docs/en/release/version-management-plan.md".to_owned(),
                     "docs/en/release/github-packages-publishing.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
-                    "docs/en/release/release-notes-v1.5.1.md".to_owned(),
+                    "docs/en/release/release-notes-v1.6.1.md".to_owned(),
                 ],
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },
@@ -552,6 +558,25 @@ fn migration_gate(guide: &MigrationGuide) -> ReleaseGate {
     }
 }
 
+fn durable_backend_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-DURABLE-BACKEND-001".to_owned(),
+        domain: "durable_backend".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.6.1 durable backend schema, layout, read-only verification, and migration lock baseline are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-storage/src/durable_backend.rs".to_owned(),
+            "cargo test -p eva-storage".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.1 Done".to_owned(),
+            "docs/en/release/release-notes-v1.6.1.md".to_owned(),
+        ],
+        remediation: vec![
+            "do not build V1.6.2 durable EventBus on an unverified backend manifest or migration lock".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -583,6 +608,9 @@ mod tests {
                     .evidence
                     .iter()
                     .any(|item| item == "docs/en/release/github-packages-publishing.md")
+        }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DURABLE-BACKEND-001" && gate.status == ReleaseGateStatus::Pass
         }));
     }
 
