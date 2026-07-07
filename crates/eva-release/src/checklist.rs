@@ -5,8 +5,8 @@ use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
 
-const CURRENT_RELEASE_VERSION: &str = "1.6.1-alpha";
-const CURRENT_RELEASE_LABEL: &str = "V1.6.1-alpha";
+const CURRENT_RELEASE_VERSION: &str = "1.6.2-alpha";
+const CURRENT_RELEASE_LABEL: &str = "V1.6.2-alpha";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseGateStatus {
@@ -106,6 +106,7 @@ impl ReleaseHardeningService {
         gates.extend(performance.budgets.iter().map(performance_gate));
         gates.push(migration_gate(&migration));
         gates.push(durable_backend_gate());
+        gates.push(durable_eventbus_gate());
 
         let status = if gates
             .iter()
@@ -125,10 +126,11 @@ impl ReleaseHardeningService {
             stability,
             gates,
             audit: vec![
-                "release:readiness:v1.6.1-alpha".to_owned(),
+                "release:readiness:v1.6.2-alpha".to_owned(),
                 "no_destructive_restore_or_process_switch".to_owned(),
                 "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
                 "durable_backend_layout_baseline_ready".to_owned(),
+                "durable_eventbus_redrive_baseline_ready".to_owned(),
             ],
         })
     }
@@ -325,9 +327,9 @@ impl ReleaseHardeningService {
             ],
             compatibility_policy: CompatibilityPolicy::v15(),
             audit: vec![
-                "migration:v1.5.1_to_v1.6.1-alpha:no_breaking_changes".to_owned(),
+                "migration:v1.5.1_to_v1.6.2-alpha:no_breaking_changes".to_owned(),
                 "json_envelope_and_exit_codes_remain_stable".to_owned(),
-                "durable_backend_additive_alpha_baseline".to_owned(),
+                "durable_eventbus_additive_alpha_baseline".to_owned(),
             ],
         })
     }
@@ -462,7 +464,7 @@ impl ReleaseHardeningService {
                     "docs/en/release/github-packages-publishing.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
-                    "docs/en/release/release-notes-v1.6.1.md".to_owned(),
+                    "docs/en/release/release-notes-v1.6.2.md".to_owned(),
                 ],
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },
@@ -577,6 +579,27 @@ fn durable_backend_gate() -> ReleaseGate {
     }
 }
 
+fn durable_eventbus_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-DURABLE-EVENTBUS-001".to_owned(),
+        domain: "durable_eventbus".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.6.2 durable EventBus publish/ack/fail, queryable dead-letter store, and redrive baseline are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-storage/src/event_log.rs FileSystemEventLog".to_owned(),
+            "crates/eva-eventbus/src/durable.rs DurableEventBus".to_owned(),
+            "cargo test -p eva-storage".to_owned(),
+            "cargo test -p eva-eventbus".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.2 Done".to_owned(),
+            "docs/en/release/release-notes-v1.6.2.md".to_owned(),
+        ],
+        remediation: vec![
+            "do not build crash recovery on top of EventBus records without preserving publish/ack/fail and dead-letter redrive round trips".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -611,6 +634,9 @@ mod tests {
         }));
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-DURABLE-BACKEND-001" && gate.status == ReleaseGateStatus::Pass
+        }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DURABLE-EVENTBUS-001" && gate.status == ReleaseGateStatus::Pass
         }));
     }
 

@@ -74,6 +74,18 @@ if (-not [string]::IsNullOrWhiteSpace($Tag)) {
 }
 
 $manifest = Read-RepoFile "docs/_i18n/manifest.json" | ConvertFrom-Json
+$readmeDoc = @($manifest.documents | Where-Object { $_.id -eq "readme" }) | Select-Object -First 1
+if ($null -eq $readmeDoc) {
+  Fail "docs/_i18n/manifest.json must register document id 'readme'."
+}
+$docsZhEntryPath = $readmeDoc.translations.'zh-CN'
+if ([string]::IsNullOrWhiteSpace($docsZhEntryPath) -or -not $docsZhEntryPath.StartsWith("docs/zh-CN/")) {
+  Fail "readme zh-CN path must live under docs/zh-CN/."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $Root $docsZhEntryPath))) {
+  Fail "readme zh-CN file does not exist: $docsZhEntryPath"
+}
+
 $versionDoc = @($manifest.documents | Where-Object { $_.id -eq "version-management-plan" }) | Select-Object -First 1
 if ($null -eq $versionDoc) {
   Fail "docs/_i18n/manifest.json must register document id 'version-management-plan'."
@@ -125,13 +137,13 @@ Assert-Contains $packagePlanZhPath "ghcr.io/yetmos/eva-cli"
 Assert-Contains "docs/en/release/github-packages-publishing.md" "ghcr.io/yetmos/eva-cli"
 Assert-Contains "docs/en/README.md" "release/github-packages-publishing.md"
 $packageReadmeLink = $packagePlanZhPath.Substring("docs/zh-CN/".Length)
-Assert-Contains "docs/zh-CN/中文文档入口.md" $packageReadmeLink
+Assert-Contains $docsZhEntryPath $packageReadmeLink
 
 $humanVersionFiles = @(
   "README.md",
   "README.zh-CN.md",
   "docs/en/README.md",
-  "docs/zh-CN/中文文档入口.md",
+  $docsZhEntryPath,
   "crates/eva-cli/src/run.rs"
 )
 
@@ -142,6 +154,6 @@ foreach ($relativePath in $humanVersionFiles) {
 Assert-Contains "crates/eva-cli/src/run.rs" "const RELEASE_STATUS: &str = `"$status`";"
 Assert-Contains "docs/en/README.md" "release/version-management-plan.md"
 $zhReadmeLink = $versionPlanZhPath.Substring("docs/zh-CN/".Length)
-Assert-Contains "docs/zh-CN/中文文档入口.md" $zhReadmeLink
+Assert-Contains $docsZhEntryPath $zhReadmeLink
 
 Write-Host "Version management validated: cargo=$packageVersion human=$humanVersion status=$status tag=$expectedTag"

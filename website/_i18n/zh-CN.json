@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | 多 Agent 运行时",
-    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.6.1-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付和 durable backend 基线组织运行时能力。"
+    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.6.2-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付和 durable EventBus redrive 组织运行时能力。"
   },
   "brand": {
     "tagline": "多 Agent 运行时"
@@ -38,7 +38,7 @@
         "description": "通过权限边界接入 CLI、MCP、HTTP、Skill 与硬件。"
       }
     ],
-    "runtimePanelNote": "V1.6.1-alpha 补齐 durable backend schema 与 migration lock 基线，同时保持发布检查可执行。",
+    "runtimePanelNote": "V1.6.2-alpha 补齐 durable EventBus publish/ack/fail 与 dead-letter redrive，同时保持发布检查可执行。",
     "actionsLabel": "项目入口",
     "primaryAction": "阅读文档",
     "secondaryAction": "总体架构",
@@ -47,14 +47,14 @@
     "progressTitle": "从架构骨架走向 V1.6 durable runtime 基线",
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
-    "progressCurrentTitle": "V1.6.1-alpha durable backend 基线已经落地",
-    "progressCurrentBody": "仓库现在拥有 V1.5 发布加固与 GHCR 交付面，并补齐第一段 V1.6 durable backend 契约：带 schema version 的 backend.manifest、稳定 events/state/tasks/audit/artifacts 布局、只读校验，以及供后续 durable EventBus、task、audit 和 artifact store 复用的 migration lock。",
+    "progressCurrentTitle": "V1.6.2-alpha durable EventBus redrive 已经落地",
+    "progressCurrentBody": "仓库现在拥有 V1.5 发布加固与 GHCR 交付面，并补齐 V1.6 durable backend 契约、filesystem EventLog、DurableEventBus 和可查询 dead-letter redrive 队列。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
-      "把 durable EventBus 的 publish/ack/fail/dead-letter redrive 接到新的 backend 布局上。",
       "把 task、audit 和 artifact store 升级为 durable adapter，并补重启恢复证据。",
+      "在 durable event 和 task 证据之上增加 runtime crash recovery coordinator。",
       "签名安装器、系统包、provenance bundle 和破坏性 apply gate 继续留在后续 V1.10/V1.11 里程碑。"
     ],
     "featuredBlogEyebrow": "推荐阅读",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "当前",
-        "label": "V1.6.1-alpha durable backend 基线",
-        "description": "带 schema version 的 durable backend 布局、只读校验、迁移锁和 in-memory 兼容 backend 已经实现，为后续 durable runtime 节点打基础。"
+        "label": "V1.6.2-alpha durable EventBus redrive",
+        "description": "带 schema version 的 durable backend 布局、filesystem EventLog、DurableEventBus、可查询 dead-letter store 和默认 redrive 字段已经实现，为后续恢复节点打基础。"
       },
       {
         "status": "later",
@@ -158,6 +158,11 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages 发布",
         "description": "ghcr.io/yetmos/eva-cli 的 GHCR 交付契约、package tag、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证。"
+      },
+      {
+        "id": "release-notes-v1.6.2",
+        "title": "V1.6.2 Alpha 发布说明",
+        "description": "补齐 filesystem EventLog、DurableEventBus、可查询 dead-letter store 和 durable redrive 证据的 alpha 预发布。"
       },
       {
         "id": "release-notes-v1.6.1",
@@ -328,6 +333,11 @@
         "description": "V1.5 源码发布面的 JSON envelope、exit code、命令面和废弃窗口承诺。"
       },
       {
+        "id": "release-notes-v1.6.2",
+        "title": "V1.6.2 Alpha 发布说明",
+        "description": "补齐 filesystem EventLog、DurableEventBus、可查询 dead-letter store 和 durable redrive 证据的 alpha 预发布。"
+      },
+      {
         "id": "release-notes-v1.6.1",
         "title": "V1.6.1 Alpha 发布说明",
         "description": "启动 durable runtime/storage 线的 alpha 预发布，落地 backend manifest、layout 和 migration lock 基线。"
@@ -376,7 +386,7 @@
   "feedback": {
     "eyebrow": "反馈",
     "title": "反馈和建议",
-    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.6.1-alpha durable backend 检查点；关于命令输出、文档、package 拉取、durable 迁移缺口和后续 apply 路径契约的具体反馈尤其有价值。",
+    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.6.2-alpha durable EventBus 检查点；关于命令输出、文档、package 拉取、durable redrive 缺口和后续 apply 路径契约的具体反馈尤其有价值。",
     "contactLabel": "联系邮箱",
     "categoryLabel": "反馈类型",
     "categoryOptions": ["功能建议", "问题反馈", "文档建议", "合作交流", "其他"],
