@@ -59,9 +59,9 @@ const EXIT_EXTERNAL_UNAVAILABLE: i32 = 5;
 const EXIT_USAGE: i32 = 64;
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
-const RELEASE_LABEL: &str = "V1.7.1-alpha";
+const RELEASE_LABEL: &str = "V1.7.2-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -1472,7 +1472,7 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
 fn parse_release_migration_options(args: &[String]) -> Result<ReleaseMigrationOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut from_version = "1.5.1".to_owned();
-    let mut to_version = "1.7.1-alpha".to_owned();
+    let mut to_version = "1.7.2-alpha".to_owned();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -5613,18 +5613,18 @@ mod tests {
     }
 
     #[test]
-    fn version_text_and_json_report_v171_lua_vm_alpha() {
+    fn version_text_and_json_report_v172_lua_host_bindings_alpha() {
         let (text_exit, text_stdout, text_stderr) = run_cli(&["--version"]);
         assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
-        assert!(text_stdout.contains("eva 1.7.1-alpha"));
-        assert!(text_stdout.contains("V1.7.1-alpha"));
+        assert!(text_stdout.contains("eva 1.7.2-alpha"));
+        assert!(text_stdout.contains("V1.7.2-alpha"));
         assert!(text_stdout.contains("status: alpha"));
 
         let (json_exit, json_stdout, json_stderr) = run_cli(&["version", "--output", "json"]);
         assert_eq!(json_exit, EXIT_OK, "{json_stderr}");
         assert!(json_stdout.contains("\"command\":\"version\""));
-        assert!(json_stdout.contains("\"version\":\"1.7.1-alpha\""));
-        assert!(json_stdout.contains("\"release\":\"V1.7.1-alpha\""));
+        assert!(json_stdout.contains("\"version\":\"1.7.2-alpha\""));
+        assert!(json_stdout.contains("\"release\":\"V1.7.2-alpha\""));
         assert!(json_stdout.contains("\"status\":\"alpha\""));
         assert!(json_stdout.contains("release_v1.5"));
         assert!(json_stdout.contains("durable_backend_v1.6.1"));
@@ -5633,6 +5633,7 @@ mod tests {
         assert!(json_stdout.contains("durable_runtime_recovery_v1.6.4"));
         assert!(json_stdout.contains("durable_diagnostics_v1.6.5"));
         assert!(json_stdout.contains("lua_vm_execution_v1.7.1"));
+        assert!(json_stdout.contains("lua_host_bindings_v1.7.2"));
         assert!(json_stdout.contains("release check"));
     }
 
@@ -5662,6 +5663,10 @@ mod tests {
         assert!(stdout.contains("\"domain\":\"lua_vm_execution\""));
         assert!(stdout.contains("LuaVmAdapter"));
         assert!(stdout.contains("lua_vm_execution_boundary_ready"));
+        assert!(stdout.contains("\"id\":\"REL-LUA-HOST-BINDINGS-001\""));
+        assert!(stdout.contains("\"domain\":\"lua_host_bindings\""));
+        assert!(stdout.contains("ctx.tools.call"));
+        assert!(stdout.contains("lua_host_bindings_ready"));
     }
 
     #[test]
@@ -5888,7 +5893,7 @@ mod tests {
             "--confirm",
             "snapshot-promote",
             "--release",
-            "1.7.1-alpha",
+            "1.7.2-alpha",
             "--artifact-store",
             artifact_root.to_str().unwrap(),
             "--project",
@@ -6380,7 +6385,7 @@ mod tests {
             "json",
         ]);
         assert!(migration_stdout.contains("\"from_version\":\"1.5.1\""));
-        assert!(migration_stdout.contains("\"to_version\":\"1.7.1-alpha\""));
+        assert!(migration_stdout.contains("\"to_version\":\"1.7.2-alpha\""));
         assert!(migration_stdout.contains("\"breaking_changes\":[]"));
     }
 }

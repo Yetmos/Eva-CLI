@@ -5,8 +5,8 @@ use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
 
-const CURRENT_RELEASE_VERSION: &str = "1.7.1-alpha";
-const CURRENT_RELEASE_LABEL: &str = "V1.7.1-alpha";
+const CURRENT_RELEASE_VERSION: &str = "1.7.2-alpha";
+const CURRENT_RELEASE_LABEL: &str = "V1.7.2-alpha";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseGateStatus {
@@ -111,6 +111,7 @@ impl ReleaseHardeningService {
         gates.push(durable_runtime_recovery_gate());
         gates.push(durable_diagnostics_gate());
         gates.push(lua_vm_execution_gate());
+        gates.push(lua_host_bindings_gate());
 
         let status = if gates
             .iter()
@@ -130,7 +131,7 @@ impl ReleaseHardeningService {
             stability,
             gates,
             audit: vec![
-                "release:readiness:v1.7.1-alpha".to_owned(),
+                "release:readiness:v1.7.2-alpha".to_owned(),
                 "no_destructive_restore_or_process_switch".to_owned(),
                 "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
                 "durable_backend_layout_baseline_ready".to_owned(),
@@ -139,6 +140,7 @@ impl ReleaseHardeningService {
                 "durable_runtime_recovery_checkpoint_ready".to_owned(),
                 "durable_diagnostics_smoke_ready".to_owned(),
                 "lua_vm_execution_boundary_ready".to_owned(),
+                "lua_host_bindings_ready".to_owned(),
             ],
         })
     }
@@ -335,7 +337,7 @@ impl ReleaseHardeningService {
             ],
             compatibility_policy: CompatibilityPolicy::v15(),
             audit: vec![
-                "migration:v1.5.1_to_v1.7.1-alpha:no_breaking_changes".to_owned(),
+                "migration:v1.5.1_to_v1.7.2-alpha:no_breaking_changes".to_owned(),
                 "json_envelope_and_exit_codes_remain_stable".to_owned(),
                 "durable_task_audit_artifact_additive_alpha_baseline".to_owned(),
             ],
@@ -486,7 +488,7 @@ impl ReleaseHardeningService {
                     "docs/en/release/github-packages-publishing.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
-                    "docs/en/release/release-notes-v1.7.1.md".to_owned(),
+                    "docs/en/release/release-notes-v1.7.2.md".to_owned(),
                 ],
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },
@@ -705,7 +707,30 @@ fn lua_vm_execution_gate() -> ReleaseGate {
                 .to_owned(),
         ],
         remediation: vec![
-            "do not add ctx.tools, host APIs, or resource-limit behavior without preserving the LuaVmAdapter boundary and restricted standard library tests".to_owned(),
+            "do not add resource-limit behavior without preserving the LuaVmAdapter boundary and restricted standard library tests".to_owned(),
+        ],
+    }
+}
+
+fn lua_host_bindings_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-LUA-HOST-BINDINGS-001".to_owned(),
+        domain: "lua_host_bindings".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.7.2 read-only Lua ctx, host log/audit, and ctx.tools.call capability binding are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-lua-host/src/bindings.rs run_on_event_with_tools".to_owned(),
+            "crates/eva-lua-host/src/vm.rs ctx.tools.call".to_owned(),
+            "examples/basic/config/agents/root-agent/main.lua direct config.lint tool call".to_owned(),
+            "cargo test -p eva-lua-host".to_owned(),
+            "cargo test -p eva-runtime basic_example_runs_event_to_lua_and_capability".to_owned(),
+            "cargo test -p eva-cli run_basic_example_json_succeeds".to_owned(),
+            "docs/zh-CN/planning/V1.x real runtime implementation plan V1.7.2 Done".to_owned(),
+        ],
+        remediation: vec![
+            "do not expose raw provider, file, socket, process, memory service, knowledge service, or audit sink handles through Lua ctx".to_owned(),
+            "keep unknown and disabled ctx.tools.call capability requests rejected through the host boundary".to_owned(),
         ],
     }
 }
@@ -762,6 +787,9 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-LUA-VM-EXECUTION-001" && gate.status == ReleaseGateStatus::Pass
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-LUA-HOST-BINDINGS-001" && gate.status == ReleaseGateStatus::Pass
+        }));
         assert!(report
             .audit
             .iter()
@@ -770,6 +798,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "lua_vm_execution_boundary_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "lua_host_bindings_ready"));
     }
 
     #[test]

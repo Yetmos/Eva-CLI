@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source V1.7.1-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, and restricted Lua VM execution."
+    "description": "Eva-CLI is an open-source V1.7.2-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, and controlled Lua host bindings."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,7 +38,7 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "V1.7.1-alpha runs Lua on_event(ctx) inside a restricted mlua/Lua 5.4 boundary, adds REL-LUA-VM-EXECUTION-001, and keeps durable diagnostics and recovery checks executable.",
+    "runtimePanelNote": "V1.7.2-alpha runs Lua on_event(ctx) inside a restricted mlua/Lua 5.4 boundary, adds read-only ctx, ctx.host.log/audit, ctx.tools.call, and keeps durable diagnostics and recovery checks executable.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
@@ -47,14 +47,14 @@
     "progressTitle": "From architecture scaffold to durable runtime and Lua VM execution",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.7.1-alpha Lua VM execution boundary is implemented",
-    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, and the V1.7.1 restricted Lua VM adapter that executes on_event(ctx) with stable error mapping and compatibility fallback.",
+    "progressCurrentTitle": "V1.7.2-alpha Lua host bindings are implemented",
+    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7.1 restricted Lua VM adapter, and V1.7.2 read-only ctx tables, ctx.host.log/audit, and ctx.tools.call capability binding.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Add V1.7.2 ctx.tools, ctx.host, and memory bindings on top of the restricted Lua VM boundary.",
       "Continue V1.7.3 resource limits, timeout, and cancellation handling for Lua execution.",
+      "Add V1.7.4 shadow load, generation swap, drain, and rollback around Lua hot reload.",
       "Keep signed installers, OS packages, provenance bundles, and destructive apply gates behind later V1.10/V1.11 milestones."
     ],
     "featuredBlogEyebrow": "Recommended reading",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "Now",
-        "label": "V1.7.1-alpha Lua VM execution boundary",
-        "description": "The V1.6 durable baseline is in place, and V1.7.1 now runs Lua on_event(ctx) through a restricted mlua/Lua 5.4 adapter with stable syntax/runtime error mapping and legacy static fallback."
+        "label": "V1.7.2-alpha Lua host bindings",
+        "description": "The V1.6 durable baseline is in place, V1.7.1 runs Lua on_event(ctx) through a restricted mlua/Lua 5.4 adapter, and V1.7.2 adds read-only ctx, host observations, and controlled ctx.tools.call capability access."
       },
       {
         "status": "later",
@@ -158,6 +158,11 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages Publishing",
         "description": "The GHCR delivery contract, package tags, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification for ghcr.io/yetmos/eva-cli."
+      },
+      {
+        "id": "release-notes-v1.7.2",
+        "title": "V1.7.2 Alpha Release Notes",
+        "description": "The alpha prerelease that adds read-only Lua ctx tables, host log/audit observations, ctx.tools.call capability binding, and the Lua host bindings release gate."
       },
       {
         "id": "release-notes-v1.7.1",
@@ -353,6 +358,11 @@
         "description": "The JSON envelope, exit-code, command-surface, and deprecation guarantees for the V1.5 source release."
       },
       {
+        "id": "release-notes-v1.7.2",
+        "title": "V1.7.2 Alpha Release Notes",
+        "description": "The alpha prerelease that adds read-only Lua ctx tables, host log/audit observations, ctx.tools.call capability binding, and the Lua host bindings release gate."
+      },
+      {
         "id": "release-notes-v1.7.1",
         "title": "V1.7.1 Alpha Release Notes",
         "description": "The alpha prerelease that adds the restricted Lua VM execution boundary, on_event(ctx) execution, stable Lua error mapping, and the Lua VM release gate."
@@ -426,7 +436,7 @@
   "feedback": {
     "eyebrow": "Feedback",
     "title": "Feedback and suggestions",
-    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.7.1-alpha Lua VM execution-boundary checkpoint, so concrete reports about command output, docs, package pulls, Lua on_event(ctx) behavior, backend diagnostics, and future apply-path contracts are especially useful.",
+    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.7.2-alpha Lua host binding checkpoint, so concrete reports about command output, docs, package pulls, Lua on_event(ctx), ctx.tools.call behavior, backend diagnostics, and future apply-path contracts are especially useful.",
     "contactLabel": "Contact email",
     "categoryLabel": "Feedback type",
     "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],
