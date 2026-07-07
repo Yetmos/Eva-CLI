@@ -2,14 +2,14 @@
 
 更新时间：2026-07-07
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.6.3 仍把主要命令实现集中在 `run.rs`，这样 version、task、external capability、memory context、hardware、backup、lifecycle 和 release command 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.6.4 仍把主要命令实现集中在 `run.rs`，这样 version、task、external capability、memory context、hardware、backup、lifecycle、release 和 durable recovery gate 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | V1.6.3 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`，以及 V1.6.3 `--durable-backend` task store 入口。 |
+| `run.rs` | V1.6.4 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口，以及 V1.6.4 durable recovery release gate。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -17,7 +17,7 @@
 | `adapter.rs` | 边界保留 | 后续可从 `run.rs` 拆出 adapter 子命令。 |
 | `capability.rs` | 边界保留 | 后续 capability list/inspect/dry-run invoke。 |
 
-## V1.0/V1.6.3 任务状态
+## V1.0/V1.6.4 任务状态
 
 `run.rs` 在 `eva run --example basic` 成功返回报告后，默认写入两类文件：
 

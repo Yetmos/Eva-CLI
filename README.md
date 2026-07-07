@@ -7,18 +7,19 @@ release hardening, diagnostics, configuration validation, request-scoped
 memory/knowledge context assembly, hardware binding plans, backup/lifecycle
 checks, and source-release operations.
 
-The repository is at the V1.6.3-alpha durable runtime checkpoint: a compileable
+The repository is at the V1.6.4-alpha durable runtime recovery checkpoint: a compileable
 Rust workspace, configuration examples, schemas, the in-memory basic runtime
 loop, local task diagnostics, Adapter/MCP/Skill/Discovery control surfaces,
 request-scoped memory/knowledge context assembly, hardware discovery and
 plan-first binding diagnostics, backup/snapshot/restore/upgrade planning,
 release readiness/security/performance/migration checks, the V1.6.1 durable
 backend baseline, the V1.6.2 durable EventBus redrive baseline, the V1.6.3
-durable task/audit/artifact evidence baseline, CI gates, quickstart, release
-notes, and explicit known limitations.
+durable task/audit/artifact evidence baseline, the V1.6.4 runtime recovery
+scanner and ack-safe redrive checkpoint, CI gates, quickstart, release notes,
+and explicit known limitations.
 
-Current managed project version: `V1.6.3-alpha` (`Cargo.toml` version
-`1.6.3-alpha`, prerelease Git tag form `v1.6.3-alpha`). Version policy is defined in
+Current managed project version: `V1.6.4-alpha` (`Cargo.toml` version
+`1.6.4-alpha`, prerelease Git tag form `v1.6.4-alpha`). Version policy is defined in
 [Version Management Plan](docs/en/release/version-management-plan.md).
 
 The website uses English as the default public entry with stable
@@ -38,7 +39,7 @@ maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
 
 Updated: 2026-07-07
 
-Eva-CLI has moved past a design-only repository and now has a V1.6.3-alpha
+Eva-CLI has moved past a design-only repository and now has a V1.6.4-alpha
 durable runtime surface. It includes a compileable Rust workspace, configuration examples and
 schemas, implemented foundation contracts, project configuration loading, a
 V1.0 CLI quickstart, the `in_memory_v1.0` basic runtime composition root, local
@@ -49,7 +50,8 @@ plans, lifecycle generation/drain/rollback checks, executable release
 hardening gates, durable backend migration locking, durable EventBus
 publish/ack/fail logging, queryable dead-letter records, redrive evidence,
 durable task snapshots, filesystem audit records, artifact metadata hardening,
-and CI release gates.
+runtime recovery scanning, runtime recovered audit evidence, and CI release
+gates.
 
 | Area | Status | Evidence | Remaining Work |
 | --- | --- | --- | --- |
@@ -58,13 +60,13 @@ and CI release gates.
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 20 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V1.6.3 implemented | `version`, `doctor`, `config validate`, `inspect`, `run --example basic`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `hardware list/probe/bind`, `backup create`, `snapshot create`, `restore plan`, `upgrade check`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task store selection, and exit-code mapping | Keep command contracts stable as future apply paths are added |
+| `eva-cli` | V1.6.4 implemented | `version`, `doctor`, `config validate`, `inspect`, `run --example basic`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `hardware list/probe/bind`, `backup create`, `snapshot create`, `restore plan`, `upgrade check`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task store selection, recovery evidence, and exit-code mapping | Keep command contracts stable as future apply paths are added |
 | Runtime composition | V1.0 core implemented | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, and idempotent shutdown | Durable/runtime lifecycle work remains later scope |
-| EventBus and Scheduler | V1.6.2 durable EventBus baseline implemented | EventBus publish/ack/fail/dead-letter/replay diagnostics; durable EventLog records; queryable dead-letter store; redrive replay attempts; Scheduler topic routing and mailbox delivery | Scheduler-driven delayed backoff and crash recovery remain later scope |
+| EventBus and Scheduler | V1.6.4 durable recovery baseline implemented | EventBus publish/ack/fail/dead-letter/replay diagnostics; durable EventLog records; queryable dead-letter store; redrive replay attempts; ack-safe recovery redrive checkpoint; Scheduler topic routing and mailbox delivery | Scheduler-driven delayed backoff and broader crash recovery remain later scope |
 | Agent and Lua host | V0.5 implemented for basic loop | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, controlled bindings, generation marker | Real Lua VM and generation swap remain later scope |
 | Capability and Adapter layers | V1.1 controlled envelopes implemented | `eva-capability` has V0.4 builtins; `eva-adapter` now builds authorized handles, routes capabilities to providers, probes adapters, and invokes MCP/Skill controlled envelopes | Real stdio/http process execution and richer policy evaluation remain later scope |
-| Policy, observability, storage | Mixed with V1.6 durable backend baseline | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` has in-memory stores/logs plus schema-versioned durable backend layout, migration lock, filesystem EventLog, durable task snapshot adapter, durable audit sink, artifact metadata hardening, and read-only verification | Runtime audit wiring/export, task query indexes, richer audit sinks, and metrics remain later scope |
-| Discovery, MCP, memory, hardware, backup, lifecycle, release | Mixed | Discovery and MCP have V1.1 side-effect-free candidates/probes; memory has V1.2 in-memory private/global records, knowledge search, ContextBuilder, and Lua context snapshots; hardware has V1.3 discovery candidates, registry leases, simulated driver binding, hotplug state machine, Adapter hardware transport, and CLI binding plans; backup and lifecycle have V1.4 backup artifact verification, migration preflight, release snapshot restore plans, generation handoff, drain, rollback, and upgrade checks; release has V1.6.3 readiness/security/performance/migration gates | Real apply paths, signed artifacts, and packaged installers remain later scope |
+| Policy, observability, storage | Mixed with V1.6 durable backend baseline | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` has in-memory stores/logs plus schema-versioned durable backend layout, migration lock, filesystem EventLog, durable task snapshot adapter, durable audit sink, runtime recovered audit records, artifact metadata hardening, and read-only verification | Runtime audit export, task query indexes, richer audit sinks, and metrics remain later scope |
+| Discovery, MCP, memory, hardware, backup, lifecycle, release | Mixed | Discovery and MCP have V1.1 side-effect-free candidates/probes; memory has V1.2 in-memory private/global records, knowledge search, ContextBuilder, and Lua context snapshots; hardware has V1.3 discovery candidates, registry leases, simulated driver binding, hotplug state machine, Adapter hardware transport, and CLI binding plans; backup and lifecycle have V1.4 backup artifact verification, migration preflight, release snapshot restore plans, generation handoff, drain, rollback, and upgrade checks; release has V1.6.4 readiness/security/performance/migration gates plus durable recovery smoke evidence | Real apply paths, signed artifacts, and packaged installers remain later scope |
 | Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, V1.0 quickstart smoke commands, V1.1 external capability smoke commands, V1.2 memory context smoke, V1.3 hardware smoke, V1.4 backup/lifecycle smoke, V1.5 release hardening smoke, V1.6 durable backend/EventBus smoke, and website i18n validation | Add gates as future runtime behavior expands |
 
 ## Implementation Plan
@@ -204,6 +206,7 @@ The release-hardening docs are:
 - [V1.5 Release Hardening](docs/en/release/v1.5-release-hardening.md)
 - [V1.5 Migration Guide](docs/en/release/v1.5-migration-guide.md)
 - [V1.5 Compatibility Policy](docs/en/release/v1.5-compatibility-policy.md)
+- [V1.6.4 Alpha Release Notes](docs/en/release/release-notes-v1.6.4.md)
 - [V1.6.3 Alpha Release Notes](docs/en/release/release-notes-v1.6.3.md)
 - [V1.6.2 Alpha Release Notes](docs/en/release/release-notes-v1.6.2.md)
 - [V1.6.1 Alpha Release Notes](docs/en/release/release-notes-v1.6.1.md)
@@ -340,7 +343,7 @@ Core boundaries:
 
 ## Remaining V1.x Gaps
 
-V1.6.3-alpha is a source alpha and durable task/audit/artifact evidence
+V1.6.4-alpha is a source alpha and durable runtime recovery evidence
 checkpoint, not a packaged
 installer distribution. Later release tags that contain package support publish
 the GHCR container image `ghcr.io/yetmos/eva-cli`; old tags are not republished

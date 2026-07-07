@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Eva-CLI | Multi-Agent Runtime</title>
-    <meta name="description" content="Eva-CLI is an open-source V1.6.3-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, and durable task/audit/artifact evidence.">
+    <meta name="description" content="Eva-CLI is an open-source V1.6.4-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, and recovery checkpoints.">
     <meta name="author" content="Yetmos">
     <meta property="og:title" content="Eva-CLI | Multi-Agent Runtime">
-    <meta property="og:description" content="Eva-CLI is an open-source V1.6.3-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, and durable task/audit/artifact evidence.">
+    <meta property="og:description" content="Eva-CLI is an open-source V1.6.4-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, and recovery checkpoints.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://www.eva-cli.com/">
     <meta name="twitter:card" content="summary">
@@ -84,7 +84,7 @@
               <span>Routes CLI, MCP, HTTP, skills, and hardware through permissions.</span>
             </li>
           </ol>
-          <p class="stage-note">V1.6.3-alpha adds durable task snapshots, durable audit records, and artifact metadata hardening while keeping release checks executable.</p>
+          <p class="stage-note">V1.6.4-alpha adds runtime recovery scanning, ack-safe event redrive checkpoints, and durable recovery audit smoke while keeping release checks executable.</p>
         </aside>
       </section>
 
@@ -99,8 +99,8 @@
         <div class="progress-layout">
           <article class="progress-current" aria-label="Current development stage">
             <span class="status-label">Current stage</span>
-            <h3>V1.6.3-alpha durable task/audit/artifact evidence is implemented</h3>
-            <p>The repository now has the V1.5 release-hardening and GHCR delivery surface plus the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, restart-readable task snapshots, durable audit records, and hardened artifact metadata.</p>
+            <h3>V1.6.4-alpha durable runtime recovery checkpoint is implemented</h3>
+            <p>The repository now has the V1.5 release-hardening and GHCR delivery surface plus the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, restart-readable task snapshots, durable audit records, hardened artifact metadata, runtime recovery scanning, ack-safe redrive, and recovery audit smoke.</p>
           </article>
           <ol class="progress-timeline" aria-label="Release progress stages">
             <li class="progress-stage progress-stage-complete">
@@ -127,8 +127,8 @@
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">Now</span>
               <div>
-                <strong>V1.6.3-alpha durable task/audit/artifact evidence</strong>
-                <p>Schema-versioned durable backend layout, filesystem EventLog, DurableEventBus, durable task snapshots, durable audit records, and artifact metadata hardening are implemented for the next recovery slices.</p>
+                <strong>V1.6.4-alpha durable runtime recovery checkpoint</strong>
+                <p>Schema-versioned durable backend layout, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanner, ack-safe redrive checkpoint, and recovery audit smoke are implemented.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
@@ -143,8 +143,8 @@
         <div class="progress-next">
           <strong>Next implementation work</strong>
           <ul>
-            <li>Add runtime crash recovery coordination on top of durable event and task evidence.</li>
-            <li>Add durable smoke diagnostics for clean start, restart, and corrupt store recovery.</li>
+            <li>Add durable diagnostic commands that report backend path, schema version, migration status, and pending redrive counts.</li>
+            <li>Wire scheduler backoff dispatch to durable redrive policy instead of checkpoint-only readiness.</li>
             <li>Keep signed installers, OS packages, provenance bundles, and destructive apply gates behind later V1.10/V1.11 milestones.</li>
           </ul>
         </div>
@@ -254,6 +254,10 @@
             <span>GitHub Packages Publishing</span>
             <small>The GHCR delivery contract, package tags, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification for ghcr.io/yetmos/eva-cli.</small>
           </a>
+          <a class="doc-link" href="docs/en/release/release-notes-v1.6.4.md">
+            <span>V1.6.4 Alpha Release Notes</span>
+            <small>The alpha prerelease that adds runtime recovery scanning, ack-safe event redrive, durable recovery audit records, and the recovery release gate.</small>
+          </a>
           <a class="doc-link" href="docs/en/release/release-notes-v1.6.3.md">
             <span>V1.6.3 Alpha Release Notes</span>
             <small>The alpha prerelease that adds durable task snapshots, durable audit records, and artifact metadata hardening.</small>
@@ -305,7 +309,7 @@
         <div class="feedback-copy">
           <p class="eyebrow">Feedback</p>
           <h2 id="feedback-title">Feedback and suggestions</h2>
-          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.6.3-alpha durable task/audit/artifact checkpoint, so concrete reports about command output, docs, package pulls, durable recovery gaps, and future apply-path contracts are especially useful.</p>
+          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.6.4-alpha durable runtime recovery checkpoint, so concrete reports about command output, docs, package pulls, recovery audit evidence, and future apply-path contracts are especially useful.</p>
           <p class="contact-line">
             <span>Contact email</span>
             <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>

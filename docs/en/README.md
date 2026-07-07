@@ -4,17 +4,18 @@
 > Published default: docs/en/README.md
 > Current detail authority: [简体中文](../zh-CN/中文文档入口.md)
 
-Eva-CLI has reached the V1.6.3-alpha durable runtime checkpoint. The repository now
+Eva-CLI has reached the V1.6.4-alpha durable runtime checkpoint. The repository now
 contains a compileable Rust workspace, executable CLI surfaces, configuration
 validation, an in-memory basic runtime loop, local task diagnostics, controlled
 Adapter/MCP/Skill/Discovery surfaces, request-scoped memory and knowledge
 context assembly, hardware binding plans, backup/lifecycle diagnostics, and
 release readiness, security, performance, migration, compatibility checks,
 durable EventBus redrive, durable task snapshots, durable audit records, and
-artifact metadata hardening.
+artifact metadata hardening, plus a runtime recovery scanner, event redrive
+checkpoint, and durable recovery audit smoke.
 
-Current managed project version: `V1.6.3-alpha` (`Cargo.toml` version
-`1.6.3-alpha`, prerelease Git tag form `v1.6.3-alpha`). See
+Current managed project version: `V1.6.4-alpha` (`Cargo.toml` version
+`1.6.4-alpha`, prerelease Git tag form `v1.6.4-alpha`). See
 [Eva-CLI Version Management Plan](release/version-management-plan.md).
 
 Important source rule: English documents currently provide the default public
@@ -77,6 +78,7 @@ migration policy.
 - [Eva-CLI V1.5 Release Hardening](release/v1.5-release-hardening.md)
 - [Eva-CLI V1.5 Migration Guide](release/v1.5-migration-guide.md)
 - [Eva-CLI V1.5 Compatibility Policy](release/v1.5-compatibility-policy.md)
+- [Eva-CLI V1.6.4 Alpha Release Notes](release/release-notes-v1.6.4.md)
 - [Eva-CLI V1.6.3 Alpha Release Notes](release/release-notes-v1.6.3.md)
 - [Eva-CLI V1.6.2 Alpha Release Notes](release/release-notes-v1.6.2.md)
 - [Eva-CLI V1.6.1 Alpha Release Notes](release/release-notes-v1.6.1.md)

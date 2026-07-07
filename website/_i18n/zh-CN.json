@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | 多 Agent 运行时",
-    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.6.3-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付和 durable task/audit/artifact evidence 组织运行时能力。"
+    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.6.4-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付、durable evidence 和 recovery checkpoint 组织运行时能力。"
   },
   "brand": {
     "tagline": "多 Agent 运行时"
@@ -38,7 +38,7 @@
         "description": "通过权限边界接入 CLI、MCP、HTTP、Skill 与硬件。"
       }
     ],
-    "runtimePanelNote": "V1.6.3-alpha 补齐 durable task snapshot、durable audit record 和 artifact metadata hardening，同时保持发布检查可执行。",
+    "runtimePanelNote": "V1.6.4-alpha 补齐 runtime recovery scanning、ack-safe event redrive checkpoint 和 durable recovery audit smoke，同时保持发布检查可执行。",
     "actionsLabel": "项目入口",
     "primaryAction": "阅读文档",
     "secondaryAction": "总体架构",
@@ -47,14 +47,14 @@
     "progressTitle": "从架构骨架走向 V1.6 durable runtime 基线",
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
-    "progressCurrentTitle": "V1.6.3-alpha durable task/audit/artifact evidence 已经落地",
-    "progressCurrentBody": "仓库现在拥有 V1.5 发布加固与 GHCR 交付面，并补齐 V1.6 durable backend 契约、filesystem EventLog、DurableEventBus、可重启读取的 task snapshot、durable audit record 和 artifact metadata hardening。",
+    "progressCurrentTitle": "V1.6.4-alpha durable runtime recovery checkpoint 已经落地",
+    "progressCurrentBody": "仓库现在拥有 V1.5 发布加固与 GHCR 交付面，并补齐 V1.6 durable backend 契约、filesystem EventLog、DurableEventBus、可重启读取的 task snapshot、durable audit record、artifact metadata hardening、runtime recovery scanning、ack-safe redrive 和 recovery audit smoke。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
-      "在 durable event 和 task 证据之上增加 runtime crash recovery coordinator。",
-      "增加覆盖 clean start、restart 和 corrupt store recovery 的 durable smoke 诊断。",
+      "增加报告 backend path、schema version、migration status 和 pending redrive count 的 durable 诊断命令。",
+      "把 scheduler backoff dispatch 接入 durable redrive policy，而不是仅依赖 checkpoint readiness。",
       "签名安装器、系统包、provenance bundle 和破坏性 apply gate 继续留在后续 V1.10/V1.11 里程碑。"
     ],
     "featuredBlogEyebrow": "推荐阅读",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "当前",
-        "label": "V1.6.3-alpha durable task/audit/artifact evidence",
-        "description": "带 schema version 的 durable backend 布局、filesystem EventLog、DurableEventBus、durable task snapshot、durable audit record 和 artifact metadata hardening 已经实现，为后续恢复节点打基础。"
+        "label": "V1.6.4-alpha durable runtime recovery checkpoint",
+        "description": "带 schema version 的 durable backend 布局、filesystem EventLog、DurableEventBus、task snapshot、audit record、artifact metadata hardening、runtime recovery scanner、ack-safe redrive checkpoint 和 recovery audit smoke 已经实现。"
       },
       {
         "status": "later",
@@ -158,6 +158,11 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages 发布",
         "description": "ghcr.io/yetmos/eva-cli 的 GHCR 交付契约、package tag、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证。"
+      },
+      {
+        "id": "release-notes-v1.6.4",
+        "title": "V1.6.4 Alpha 发布说明",
+        "description": "补齐 runtime recovery scanning、ack-safe event redrive、durable recovery audit record 和 recovery release gate 的 alpha 预发布。"
       },
       {
         "id": "release-notes-v1.6.3",
@@ -338,6 +343,11 @@
         "description": "V1.5 源码发布面的 JSON envelope、exit code、命令面和废弃窗口承诺。"
       },
       {
+        "id": "release-notes-v1.6.4",
+        "title": "V1.6.4 Alpha 发布说明",
+        "description": "补齐 runtime recovery scanning、ack-safe event redrive、durable recovery audit record 和 recovery release gate 的 alpha 预发布。"
+      },
+      {
         "id": "release-notes-v1.6.3",
         "title": "V1.6.3 Alpha 发布说明",
         "description": "补齐 durable task snapshot、durable audit record 和 artifact metadata hardening 的 alpha 预发布。"
@@ -396,7 +406,7 @@
   "feedback": {
     "eyebrow": "反馈",
     "title": "反馈和建议",
-    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.6.3-alpha durable task/audit/artifact 检查点；关于命令输出、文档、package 拉取、durable recovery 缺口和后续 apply 路径契约的具体反馈尤其有价值。",
+    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.6.4-alpha durable runtime recovery 检查点；关于命令输出、文档、package 拉取、recovery audit evidence 和后续 apply 路径契约的具体反馈尤其有价值。",
     "contactLabel": "联系邮箱",
     "categoryLabel": "反馈类型",
     "categoryOptions": ["功能建议", "问题反馈", "文档建议", "合作交流", "其他"],
