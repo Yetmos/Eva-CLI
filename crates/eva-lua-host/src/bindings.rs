@@ -621,6 +621,7 @@ return root
                 name: CapabilityName::parse("runtime.echo").unwrap(),
                 enabled: false,
                 provider: "builtin".to_owned(),
+                provider_selection: Default::default(),
             })
             .unwrap();
         let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap());

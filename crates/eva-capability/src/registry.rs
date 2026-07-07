@@ -1,7 +1,8 @@
 //! Capability registration and lookup.
 
+use crate::selection::CapabilityProviderSelection;
 use eva_config::manifest::capability::CapabilityManifest;
-use eva_core::{CapabilityId, CapabilityName, EvaError};
+use eva_core::{AdapterId, CapabilityId, CapabilityName, EvaError};
 use std::collections::BTreeMap;
 
 /// Architectural responsibility for this module.
@@ -14,6 +15,7 @@ pub struct CapabilityDescriptor {
     pub name: CapabilityName,
     pub enabled: bool,
     pub provider: String,
+    pub provider_selection: CapabilityProviderSelection,
 }
 
 /// In-memory descriptor registry.
@@ -29,10 +31,17 @@ impl CapabilityDescriptor {
             name,
             enabled: true,
             provider: "builtin".to_owned(),
+            provider_selection: CapabilityProviderSelection::default(),
         }
     }
 
     pub fn from_manifest(manifest: &CapabilityManifest) -> Self {
+        let provider_selection = CapabilityProviderSelection::new(
+            manifest.provider.clone(),
+            manifest.default_provider.clone(),
+            manifest.allowed_adapter_providers.clone(),
+            manifest.required_adapter_capabilities.clone(),
+        );
         Self {
             id: manifest.id.clone(),
             name: manifest.capability.clone(),
@@ -43,7 +52,16 @@ impl CapabilityDescriptor {
                 .or(manifest.provider.as_ref())
                 .map(ToString::to_string)
                 .unwrap_or_else(|| manifest.kind.as_str().to_owned()),
+            provider_selection,
         }
+    }
+
+    pub fn provider_plan(
+        &self,
+        explicit_provider: Option<AdapterId>,
+    ) -> crate::selection::CapabilityProviderPlan {
+        self.provider_selection
+            .plan_for(self.name.clone(), explicit_provider)
     }
 }
 
@@ -98,5 +116,31 @@ mod tests {
         assert!(registry
             .get(&CapabilityName::parse("config.lint").unwrap())
             .is_some());
+    }
+
+    #[test]
+    fn manifest_descriptor_preserves_provider_selection_metadata() {
+        let manifest = eva_config::manifest::capability::load_capability_manifest(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("config/capabilities/repo-summary.yaml"),
+        )
+        .unwrap();
+
+        let descriptor = CapabilityDescriptor::from_manifest(&manifest);
+        let plan = descriptor.provider_plan(Some(AdapterId::parse("explicit-provider").unwrap()));
+
+        assert_eq!(descriptor.provider, "codex-cli");
+        assert_eq!(
+            plan.provider_ids()
+                .map(AdapterId::as_str)
+                .collect::<Vec<_>>(),
+            ["explicit-provider", "codex-cli"]
+        );
+        assert_eq!(
+            plan.required_adapter_capabilities[0].as_str(),
+            "repo.analyze"
+        );
     }
 }

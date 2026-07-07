@@ -1,10 +1,10 @@
 # eva-capability / Capability 注册与路由
 
-更新时间：2026-07-03
+更新时间：2026-07-07
 
 ![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
 
-`eva-capability` 负责 capability descriptor、registry、router、generation marker 和给 Lua/Agent 使用的 typed host API。V0.4 已实现内存注册表和两个无外部副作用 builtin：`config.lint`、`runtime.echo`。
+`eva-capability` 负责 capability descriptor、registry、router、provider selection plan、generation marker 和给 Lua/Agent 使用的 typed host API。V0.4 已实现内存注册表和两个无外部副作用 builtin：`config.lint`、`runtime.echo`。V1.8.5.1 起，manifest 中的 provider/default/fallback metadata 会保存在 descriptor 中，并可生成稳定 provider plan；真实 Adapter/MCP/Hardware 调用仍由后续节点接入。
 
 ## V0.4 当前实现
 
@@ -12,8 +12,9 @@
 | --- | --- | --- |
 | Descriptor | `CapabilityDescriptor` | 可从 manifest 构造，也可构造 builtin descriptor。 |
 | Registry | `CapabilityRegistry` | 支持 register、get、list；重复 capability name 返回 `Conflict`。 |
+| Selection | `CapabilityProviderSelection` | 生成 explicit request、manifest provider、default provider、fallback providers 的稳定去重顺序。 |
 | Builtins | `with_v04_builtins` | 注册 `config.lint` 和 `runtime.echo`。 |
-| Router | `CapabilityRouter` | 仅接受 `InvokeTarget::Capability`，查 registry 后执行 builtin provider。 |
+| Router | `CapabilityRouter` | 仅接受 `InvokeTarget::Capability`；builtin 仍本地执行，adapter-backed capability 可先生成 provider plan。 |
 | Host API | `CapabilityHostApi` | 定义 `invoke(InvokeRequest) -> InvokeResponse`。 |
 | Generation | `CapabilityGeneration` | 保存 generation id 和 capability count。 |
 
@@ -28,7 +29,7 @@
 
 ## 模块边界
 
-`eva-capability` 不实现 HTTP、stdio、MCP、hardware transport。外部 provider 运行时属于 `eva-adapter`、`eva-mcp`、`eva-hardware` 等后续模块。Lua 和 Agent 只能通过 `CapabilityHostApi` 间接调用 capability。
+`eva-capability` 不实现 HTTP、stdio、MCP、hardware transport。外部 provider 运行时属于 `eva-adapter`、`eva-mcp`、`eva-hardware` 等后续模块。`selection.rs` 只输出调用顺序和安全元数据，不授予 raw provider/file/socket/process handle。Lua 和 Agent 只能通过 `CapabilityHostApi` 间接调用 capability。
 
 ## 公开入口
 
@@ -42,12 +43,13 @@ use eva_capability::{CapabilityHostApi, CapabilityRouter};
 cargo test -p eva-capability
 ```
 
-V0.4 已覆盖：builtin registry、`config.lint` completed response。
+当前已覆盖：builtin registry、`config.lint` completed response、manifest provider metadata 保留、provider plan 稳定排序和 disabled capability 拒绝。
 
 ## 后续计划
 
 | 版本 | 计划 |
 | --- | --- |
-| V0.5 | 增加更完整的 provider selection、permission gate、generation handle。 |
-| V1.1 | 接入 AdapterRuntime/MCP provider。 |
+| V1.8.5.1 | 已完成 provider selection plan 和稳定 fallback 顺序。 |
+| V1.8.5.2 | 增加 capability/provider permission gate。 |
+| V1.8.5.3 | 接入 AdapterRuntime/MCP provider 并统一 InvokeResponse。 |
 | V1.3 | 接入 HardwareAdapter provider。 |

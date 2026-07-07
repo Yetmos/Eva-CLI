@@ -2,7 +2,8 @@
 
 use crate::host_api::CapabilityHostApi;
 use crate::registry::{CapabilityDescriptor, CapabilityRegistry};
-use eva_core::{EvaError, InvokeOutput, InvokeRequest, InvokeResponse, InvokeTarget};
+use crate::selection::CapabilityProviderPlan;
+use eva_core::{AdapterId, EvaError, InvokeOutput, InvokeRequest, InvokeResponse, InvokeTarget};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "capability routing before provider execution";
@@ -26,15 +27,22 @@ impl CapabilityRouter {
         &self.registry
     }
 
+    pub fn provider_plan(
+        &self,
+        request: &InvokeRequest,
+        explicit_provider: Option<AdapterId>,
+    ) -> Result<CapabilityProviderPlan, EvaError> {
+        let descriptor = self.descriptor_for_request(request)?;
+        self.ensure_enabled(descriptor)?;
+        Ok(descriptor.provider_plan(explicit_provider))
+    }
+
     fn invoke_descriptor(
         &self,
         descriptor: &CapabilityDescriptor,
         request: InvokeRequest,
     ) -> Result<InvokeResponse, EvaError> {
-        if !descriptor.enabled {
-            return Err(EvaError::permission_denied("capability is disabled")
-                .with_context("capability", descriptor.name.as_str()));
-        }
+        self.ensure_enabled(descriptor)?;
 
         let text = request.input().as_text().unwrap_or_default();
         let output = match descriptor.name.as_str() {
@@ -53,10 +61,11 @@ impl CapabilityRouter {
             InvokeOutput::text(output),
         ))
     }
-}
 
-impl CapabilityHostApi for CapabilityRouter {
-    fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
+    fn descriptor_for_request(
+        &self,
+        request: &InvokeRequest,
+    ) -> Result<&CapabilityDescriptor, EvaError> {
         let capability = match request.target() {
             InvokeTarget::Capability(capability) => capability,
             _ => {
@@ -65,10 +74,25 @@ impl CapabilityHostApi for CapabilityRouter {
                 ))
             }
         };
-        let descriptor = self.registry.get(capability).ok_or_else(|| {
+        self.registry.get(capability).ok_or_else(|| {
             EvaError::not_found("capability is not registered")
                 .with_context("capability", capability.as_str())
-        })?;
+        })
+    }
+
+    fn ensure_enabled(&self, descriptor: &CapabilityDescriptor) -> Result<(), EvaError> {
+        if descriptor.enabled {
+            return Ok(());
+        }
+
+        Err(EvaError::permission_denied("capability is disabled")
+            .with_context("capability", descriptor.name.as_str()))
+    }
+}
+
+impl CapabilityHostApi for CapabilityRouter {
+    fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
+        let descriptor = self.descriptor_for_request(&request)?;
         self.invoke_descriptor(descriptor, request)
     }
 }
@@ -91,7 +115,8 @@ fn escape_json(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eva_core::{CapabilityName, InvokeInput, RequestId};
+    use crate::registry::CapabilityRegistry;
+    use eva_core::{CapabilityId, CapabilityName, ErrorKind, InvokeInput, RequestId};
 
     #[test]
     fn builtin_config_lint_returns_completed_response() {
@@ -111,5 +136,29 @@ mod tests {
             .as_text()
             .unwrap()
             .contains("valid"));
+    }
+
+    #[test]
+    fn provider_plan_rejects_disabled_capability_before_selection() {
+        let mut registry = CapabilityRegistry::new();
+        registry
+            .register(CapabilityDescriptor {
+                id: CapabilityId::parse("runtime-echo-disabled").unwrap(),
+                name: CapabilityName::parse("runtime.echo").unwrap(),
+                enabled: false,
+                provider: "builtin".to_owned(),
+                provider_selection: Default::default(),
+            })
+            .unwrap();
+        let router = CapabilityRouter::new(registry);
+        let request = InvokeRequest::new(
+            RequestId::parse("req-disabled-plan").unwrap(),
+            InvokeTarget::Capability(CapabilityName::parse("runtime.echo").unwrap()),
+            InvokeInput::text("hello"),
+        );
+
+        let error = router.provider_plan(&request, None).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     }
 }
