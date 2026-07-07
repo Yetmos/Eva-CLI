@@ -154,7 +154,7 @@ fn extract_string(source: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eva_core::{EventId, EventPayload};
+    use eva_core::{EventId, EventPayload, GenerationId, RequestId, TraceContext};
 
     fn event() -> Event {
         Event::new(
@@ -212,6 +212,105 @@ end
             .unwrap();
 
         assert_eq!(result.context, snapshot);
+    }
+
+    #[test]
+    fn on_event_receives_read_only_request_trace_and_memory_tables() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  return {
+    status = ctx.request.request_id .. ":" .. ctx.trace.correlation_id .. ":" .. tostring(ctx.memory.private_memory_count) .. ":" .. tostring(ctx.private_memory_count),
+    note = ctx.memory.audit[1],
+  }
+end
+
+return root
+"#,
+        );
+        let event = event()
+            .with_request_id(RequestId::parse("req-lua-context-1").unwrap())
+            .with_generation_id(GenerationId::parse("gen-lua-context-1").unwrap())
+            .with_trace(TraceContext::new(
+                Some(EventId::parse("evt-correlation-1").unwrap()),
+                Some(EventId::parse("evt-parent-1").unwrap()),
+            ));
+        let snapshot = LuaContextSnapshot {
+            private_memory_count: 3,
+            global_memory_count: 2,
+            knowledge_count: 1,
+            audit: vec!["scope:controlled".to_owned()],
+        };
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap())
+            .with_context(snapshot.clone());
+
+        let result = LuaHost::new().run_on_event(&script, &event, &ctx).unwrap();
+
+        assert_eq!(result.status, "req-lua-context-1:evt-correlation-1:3:3");
+        assert_eq!(result.note.as_deref(), Some("scope:controlled"));
+        assert_eq!(result.context, snapshot);
+    }
+
+    #[test]
+    fn on_event_cannot_mutate_memory_snapshot_table() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  ctx.memory.private_memory_count = 99
+  return { status = "mutated" }
+end
+
+return root
+"#,
+        );
+        let snapshot = LuaContextSnapshot {
+            private_memory_count: 1,
+            global_memory_count: 0,
+            knowledge_count: 0,
+            audit: Vec::new(),
+        };
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap()).with_context(snapshot);
+
+        let error = LuaHost::new()
+            .run_on_event(&script, &event(), &ctx)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Internal);
+        assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
+    }
+
+    #[test]
+    fn on_event_cannot_rawset_memory_snapshot_table() {
+        let script = LuaScript::from_source(
+            r#"
+local root = {}
+
+function root.on_event(event, ctx)
+  rawset(ctx.memory, "private_memory_count", 99)
+  return { status = "mutated" }
+end
+
+return root
+"#,
+        );
+        let snapshot = LuaContextSnapshot {
+            private_memory_count: 1,
+            global_memory_count: 0,
+            knowledge_count: 0,
+            audit: Vec::new(),
+        };
+        let ctx = LuaHostContext::new(AgentId::parse("root-agent").unwrap()).with_context(snapshot);
+
+        let error = LuaHost::new()
+            .run_on_event(&script, &event(), &ctx)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Internal);
+        assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
     }
 
     #[test]
