@@ -11,6 +11,14 @@ pub struct DeadLetterRecord {
     pub event: Event,
     pub reason: EvaError,
     pub replay_count: usize,
+    pub redrive: RedrivePolicy,
+}
+
+/// Redrive timing metadata for durable dead-letter records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RedrivePolicy {
+    pub retry_delay_ms: u64,
+    pub next_attempt_after_ms: u64,
 }
 
 /// In-memory dead-letter queue used by the V0.4 loop.
@@ -25,6 +33,7 @@ impl DeadLetterRecord {
             event,
             reason,
             replay_count: 0,
+            redrive: RedrivePolicy::default(),
         }
     }
 

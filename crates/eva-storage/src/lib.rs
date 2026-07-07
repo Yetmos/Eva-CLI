@@ -15,7 +15,9 @@ pub use durable_backend::{
     DurableBackendOptions, DurableBackendReport, FileSystemDurableBackend, InMemoryDurableBackend,
     CURRENT_DURABLE_SCHEMA_VERSION, DURABLE_LAYOUT_VERSION,
 };
-pub use event_log::{EventLog, EventLogRecord, EventLogStatus, InMemoryEventLog};
+pub use event_log::{
+    EventLog, EventLogRecord, EventLogStatus, FileSystemEventLog, InMemoryEventLog,
+};
 pub use state_store::{InMemoryStateStore, StateRecord, StateStore, StateVersion};
 pub use task_state::{
     FileSystemTaskStateStore, TaskStateDeadLetterSnapshot, TaskStateLogSnapshot,
