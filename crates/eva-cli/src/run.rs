@@ -5630,6 +5630,10 @@ mod tests {
         assert!(stdout.contains("RuntimeRecoveryCoordinator"));
         assert!(stdout.contains("cargo test -p eva-cli recovery"));
         assert!(stdout.contains("durable_runtime_recovery_checkpoint_ready"));
+        assert!(stdout.contains("\"id\":\"REL-DURABLE-DIAGNOSTICS-001\""));
+        assert!(stdout.contains("\"domain\":\"durable_diagnostics\""));
+        assert!(stdout.contains("inspect.durable"));
+        assert!(stdout.contains("durable_diagnostics_smoke_ready"));
     }
 
     #[test]

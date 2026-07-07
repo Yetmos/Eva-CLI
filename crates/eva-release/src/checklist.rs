@@ -109,6 +109,7 @@ impl ReleaseHardeningService {
         gates.push(durable_eventbus_gate());
         gates.push(durable_task_audit_artifact_gate());
         gates.push(durable_runtime_recovery_gate());
+        gates.push(durable_diagnostics_gate());
 
         let status = if gates
             .iter()
@@ -135,6 +136,7 @@ impl ReleaseHardeningService {
                 "durable_eventbus_redrive_baseline_ready".to_owned(),
                 "durable_task_audit_artifact_baseline_ready".to_owned(),
                 "durable_runtime_recovery_checkpoint_ready".to_owned(),
+                "durable_diagnostics_smoke_ready".to_owned(),
             ],
         })
     }
@@ -663,12 +665,34 @@ fn durable_runtime_recovery_gate() -> ReleaseGate {
     }
 }
 
+fn durable_diagnostics_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-DURABLE-DIAGNOSTICS-001".to_owned(),
+        domain: "durable_diagnostics".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.6.5 durable backend diagnostics report schema, migration, and pending redrive counts through inspect.durable".to_owned(),
+        evidence: vec![
+            "crates/eva-runtime/src/diagnostics.rs inspect_durable_backend".to_owned(),
+            "crates/eva-cli/src/run.rs inspect.durable JSON envelope".to_owned(),
+            "cargo test -p eva-runtime diagnostics".to_owned(),
+            "cargo test -p eva-cli inspect_durable".to_owned(),
+            "cargo run -- inspect durable --durable-backend .eva/ci-durable --output json".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.5 Done".to_owned(),
+        ],
+        remediation: vec![
+            "do not remove inspect.durable from CI smoke while durable backend fields are part of the release surface".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
         "cargo clippy --workspace --all-targets -- -D warnings".to_owned(),
         "cargo test --workspace".to_owned(),
         "cargo run -- --version".to_owned(),
+        "cargo run -- inspect durable --durable-backend .eva/ci-durable --output json".to_owned(),
         "cargo run -- release check --output json".to_owned(),
     ]
 }
@@ -707,6 +731,13 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-DURABLE-RECOVERY-001" && gate.status == ReleaseGateStatus::Pass
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DURABLE-DIAGNOSTICS-001" && gate.status == ReleaseGateStatus::Pass
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "durable_diagnostics_smoke_ready"));
     }
 
     #[test]

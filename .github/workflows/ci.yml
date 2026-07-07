@@ -44,15 +44,19 @@ jobs:
         shell: pwsh
         run: ./scripts/validate-version-management.ps1
 
-      - name: V1.5 quickstart, external capability, context, hardware, lifecycle, and release smoke
+      - name: V1.6 quickstart, durable diagnostics, external capability, context, hardware, lifecycle, and release smoke
         shell: pwsh
         run: |
+          $durable = Join-Path (Get-Location) ".eva/ci-durable"
+          Remove-Item -LiteralPath $durable -Recurse -Force -ErrorAction SilentlyContinue
           cargo run -- --version
           cargo run -- version --output json
           cargo run -- doctor --output json
           cargo run -- config validate --output json
           cargo run -- inspect runtime --output json
           cargo run -- run --example basic --task-id req-ci-v10 --output json
+          cargo run -- run --example basic --task-id req-ci-durable --durable-backend $durable --output json
+          cargo run -- inspect durable --durable-backend $durable --output json
           cargo run -- task status --task req-ci-v10 --output json
           cargo run -- task logs --task req-ci-v10 --output json
           cargo run -- run --example basic --task-id req-ci-timeout --timeout-ms 0 --replay-dead-letters --output json
