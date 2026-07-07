@@ -19,6 +19,10 @@ pub enum AuditAction {
     LuaHostAudit,
     CapabilityInvoked,
     AdapterInvoked,
+    McpSessionStarted,
+    McpSessionStopped,
+    McpStreamAborted,
+    McpProxyDenied,
     SecurityDenied,
 }
 
@@ -68,6 +72,10 @@ impl AuditAction {
             Self::LuaHostAudit => "lua.host.audit",
             Self::CapabilityInvoked => "capability.invoked",
             Self::AdapterInvoked => "adapter.invoked",
+            Self::McpSessionStarted => "mcp.session.started",
+            Self::McpSessionStopped => "mcp.session.stopped",
+            Self::McpStreamAborted => "mcp.stream.aborted",
+            Self::McpProxyDenied => "mcp.proxy.denied",
             Self::SecurityDenied => "security.denied",
         }
     }
@@ -125,6 +133,16 @@ mod tests {
         assert_eq!(AuditAction::RuntimeRecovered.as_str(), "runtime.recovered");
         assert_eq!(AuditAction::LuaHostLog.as_str(), "lua.host.log");
         assert_eq!(AuditAction::LuaHostAudit.as_str(), "lua.host.audit");
+        assert_eq!(
+            AuditAction::McpSessionStarted.as_str(),
+            "mcp.session.started"
+        );
+        assert_eq!(
+            AuditAction::McpSessionStopped.as_str(),
+            "mcp.session.stopped"
+        );
+        assert_eq!(AuditAction::McpStreamAborted.as_str(), "mcp.stream.aborted");
+        assert_eq!(AuditAction::McpProxyDenied.as_str(), "mcp.proxy.denied");
         assert_eq!(AuditOutcome::Blocked.as_str(), "blocked");
     }
 

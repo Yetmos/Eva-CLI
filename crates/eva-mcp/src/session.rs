@@ -192,6 +192,14 @@ impl McpSession {
         self.handle.is_some()
     }
 
+    pub fn process_id(&self) -> Option<u32> {
+        self.handle.as_ref().and_then(|handle| handle.process_id)
+    }
+
+    pub fn server_transport(&self) -> McpServerTransport {
+        self.config.server_transport
+    }
+
     pub fn start_report(&self) -> Result<McpSessionStartReport, EvaError> {
         let handle = self.handle.as_ref().ok_or_else(|| {
             EvaError::conflict("MCP session is not running")

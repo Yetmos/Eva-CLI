@@ -15,7 +15,7 @@
 | `TraceFields` | 已完成 | 聚合 event、request、topic、agent、adapter、capability、provider、correlation、causation、generation、span；支持 provider invocation trace builder 链式补充 request id |
 | `SpanId` | 已完成 | 稳定 span identifier，限制为跨平台 ASCII 字符 |
 | `TraceFields::from_event` | 已完成 | 从 `eva-core::Event` 提取不含 payload 的链路字段 |
-| `AuditAction` | 已完成 | 定义配置、policy、runtime、event、Lua host log/audit、capability、adapter、安全拒绝等稳定动作 |
+| `AuditAction` | 已完成 V1.8.3 | 定义配置、policy、runtime、event、Lua host log/audit、capability、adapter、MCP session/stream/proxy、安全拒绝等稳定动作 |
 | `AuditOutcome` | 已完成 | `ok`、`planned`、`blocked`、`failed` |
 | `AuditEvent` | 已完成 | 记录动作、结果、trace、消息、扩展字段和时间 |
 | `AuditSink` | 已完成 | 抽象审计写入 trait |
@@ -106,7 +106,7 @@ data payload as the top-level CLI envelope uses for command-level trace.
 | 3 | V0.2 | 定义 `MetricName`、`MetricLabels`、`MetricPoint`。 | 标准库 `BTreeMap` | 标签顺序稳定。 |
 | 4 | V0.3 | 接 CLI 输出 envelope 和诊断 trace 字段。 | `eva-cli` | human/json 输出共享同一 trace 字段。 |
 | 5 | V0.4 | 接 runtime、eventbus、scheduler、agent 的 audit/metrics。 | runtime 主链路 | 事件闭环每个阶段有 trace。 |
-| 6 | V1.1+ | 接 adapter、MCP、discovery、hardware、backup、lifecycle 审计动作。 | 扩展模块 | 外部能力和高风险操作可审计。 |
+| 6 | V1.1+ | 接 adapter、MCP、discovery、hardware、backup、lifecycle 审计动作。 | 扩展模块 | 外部能力和高风险操作可审计；V1.8.3 已加入 MCP session/stream/proxy 动作。 |
 | 7 | V1.5 | 接具体后端：tracing、OpenTelemetry、文件或数据库。 | 发布阶段选型 | 后端不改变公共字段契约。 |
 
 ### 详细开发进度表
@@ -115,7 +115,7 @@ data payload as the top-level CLI envelope uses for command-level trace.
 | --- | --- | --- | --- |
 | `src/lib.rs` | 公共导出 | 已完成 | 随新观测动作扩展 re-export。 |
 | `src/trace.rs` | trace 字段、span id、event 提取 | 已完成 | V0.4 接 runtime/eventbus/agent span。 |
-| `src/audit.rs` | audit action/outcome/event/sink | 已完成 | V1.x 增加 Adapter、MCP、backup 等动作。 |
+| `src/audit.rs` | audit action/outcome/event/sink | 已完成 V1.8.3 | 后续继续追加高风险 apply 和分发动作。 |
 | `src/metrics.rs` | metric name、labels、point | 已完成 | V0.4 定义 runtime/eventbus 指标命名。 |
 | `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和后续阶段。 |
 | concrete backend | tracing/OpenTelemetry/file/db | 未实现 | V1.5 发布前独立选型。 |

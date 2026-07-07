@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod json_rpc;
+pub mod lifecycle;
 pub mod policy;
 pub mod schema;
 pub mod server;
@@ -13,8 +14,13 @@ pub use json_rpc::{
     McpJsonRpcCallReport, McpJsonRpcClient, McpJsonRpcClientConfig, McpJsonRpcTool,
     McpJsonRpcTransport, McpStdioJsonRpcTransport,
 };
+pub use lifecycle::{
+    McpOrphanCleanupReport, McpProcessInspector, McpRegisteredSession, McpSessionHealthReport,
+    McpSessionLifecycleReport, McpSessionLifecycleStatus, McpSessionRegistry, McpStreamReport,
+    McpStreamStatus,
+};
 pub use policy::McpAllowlist;
-pub use server::{EvaMcpServerSurface, McpServerTool};
+pub use server::{EvaMcpServerSurface, McpServerTool, McpServerToolGateReport};
 pub use session::{
     McpProcessHandle, McpProcessShutdownRequest, McpProcessSpec, McpProcessStartRequest,
     McpServerTransport, McpSession, McpSessionConfig, McpSessionManager, McpSessionShutdownReport,
