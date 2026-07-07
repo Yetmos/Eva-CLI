@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Eva-CLI | Multi-Agent Runtime</title>
-    <meta name="description" content="Eva-CLI is an open-source V1.7.2-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, and controlled Lua host bindings.">
+    <meta name="description" content="Eva-CLI is an open-source V1.7.3-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, and Lua resource limits.">
     <meta name="author" content="Yetmos">
     <meta property="og:title" content="Eva-CLI | Multi-Agent Runtime">
-    <meta property="og:description" content="Eva-CLI is an open-source V1.7.2-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, and controlled Lua host bindings.">
+    <meta property="og:description" content="Eva-CLI is an open-source V1.7.3-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, and Lua resource limits.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://www.eva-cli.com/">
     <meta name="twitter:card" content="summary">
@@ -84,7 +84,7 @@
               <span>Routes CLI, MCP, HTTP, skills, and hardware through permissions.</span>
             </li>
           </ol>
-          <p class="stage-note">V1.7.2-alpha runs Lua on_event(ctx) inside a restricted mlua/Lua 5.4 boundary, adds read-only ctx, ctx.host.log/audit, ctx.tools.call, and keeps durable diagnostics and recovery checks executable.</p>
+          <p class="stage-note">V1.7.3-alpha runs Lua on_event(ctx) inside a restricted mlua/Lua 5.4 boundary, keeps read-only ctx, ctx.host.log/audit, ctx.tools.call, and adds timeout, instruction-budget, cancellation, and memory-budget limits.</p>
         </aside>
       </section>
 
@@ -99,8 +99,8 @@
         <div class="progress-layout">
           <article class="progress-current" aria-label="Current development stage">
             <span class="status-label">Current stage</span>
-            <h3>V1.7.2-alpha Lua host bindings are implemented</h3>
-            <p>The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7.1 restricted Lua VM adapter, and V1.7.2 read-only ctx tables, ctx.host.log/audit, and ctx.tools.call capability binding.</p>
+            <h3>V1.7.3-alpha Lua resource limits are implemented</h3>
+            <p>The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7.1 restricted Lua VM adapter, V1.7.2 host bindings, and V1.7.3 timeout, instruction-budget, cancellation, and memory-budget limits.</p>
           </article>
           <ol class="progress-timeline" aria-label="Release progress stages">
             <li class="progress-stage progress-stage-complete">
@@ -127,8 +127,8 @@
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">Now</span>
               <div>
-                <strong>V1.7.2-alpha Lua host bindings</strong>
-                <p>The V1.6 durable baseline is in place, V1.7.1 runs Lua on_event(ctx) through a restricted mlua/Lua 5.4 adapter, and V1.7.2 adds read-only ctx, host observations, and controlled ctx.tools.call capability access.</p>
+                <strong>V1.7.3-alpha Lua resource limits</strong>
+                <p>The V1.6 durable baseline is in place, V1.7.1 runs Lua on_event(ctx) through a restricted mlua/Lua 5.4 adapter, V1.7.2 adds host bindings, and V1.7.3 adds timeout, instruction-budget, cancellation, and memory-budget enforcement.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
@@ -143,8 +143,8 @@
         <div class="progress-next">
           <strong>Next implementation work</strong>
           <ul>
-            <li>Continue V1.7.3 resource limits, timeout, and cancellation handling for Lua execution.</li>
             <li>Add V1.7.4 shadow load, generation swap, drain, and rollback around Lua hot reload.</li>
+            <li>Start V1.8 provider, MCP, and Skill runner execution behind policy, timeout, audit, and output limits.</li>
             <li>Keep signed installers, OS packages, provenance bundles, and destructive apply gates behind later V1.10/V1.11 milestones.</li>
           </ul>
         </div>
@@ -254,6 +254,10 @@
             <span>GitHub Packages Publishing</span>
             <small>The GHCR delivery contract, package tags, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification for ghcr.io/yetmos/eva-cli.</small>
           </a>
+          <a class="doc-link" href="docs/en/release/release-notes-v1.7.3.md">
+            <span>V1.7.3 Alpha Release Notes</span>
+            <small>The alpha prerelease that adds Lua wall-clock timeout, instruction budget, cancellation token, memory budget, and the Lua resource limits release gate.</small>
+          </a>
           <a class="doc-link" href="docs/en/release/release-notes-v1.7.2.md">
             <span>V1.7.2 Alpha Release Notes</span>
             <small>The alpha prerelease that adds read-only Lua ctx tables, host log/audit observations, ctx.tools.call capability binding, and the Lua host bindings release gate.</small>
@@ -321,7 +325,7 @@
         <div class="feedback-copy">
           <p class="eyebrow">Feedback</p>
           <h2 id="feedback-title">Feedback and suggestions</h2>
-          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.7.2-alpha Lua host binding checkpoint, so concrete reports about command output, docs, package pulls, Lua on_event(ctx), ctx.tools.call behavior, backend diagnostics, and future apply-path contracts are especially useful.</p>
+          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.7.3-alpha Lua resource-limits checkpoint, so concrete reports about command output, docs, package pulls, Lua on_event(ctx), ctx.tools.call behavior, timeout/cancel behavior, backend diagnostics, and future apply-path contracts are especially useful.</p>
           <p class="contact-line">
             <span>Contact email</span>
             <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>

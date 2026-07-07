@@ -4,9 +4,9 @@
 
 Eva-CLI 是一个基于 Rust 的 CLI runtime，用于受控多 Agent 工作流、发布加固、诊断、配置校验、请求级记忆/知识上下文组装、硬件绑定计划、备份/生命周期检查和源码发布运维。
 
-Eva-CLI 当前已经推进到 V1.7.2-alpha Lua host binding 检查点。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载、V1.0 in-memory basic runtime、V1.1 外部能力诊断、V1.2 记忆/知识上下文、V1.3 硬件发现/probe/plan-first 绑定、V1.4 的 backup、snapshot、restore plan 和 upgrade check、V1.5 的 release check/security/perf/migration、V1.6.1 durable backend 基线、V1.6.2 durable EventBus redrive 基线、V1.6.3 durable task/audit/artifact evidence 基线、V1.6.4 runtime recovery scanner、ack-safe redrive checkpoint 和 runtime recovered audit evidence、V1.6.5 `inspect durable` 诊断命令和 durable diagnostics release gate、V1.7.1 受限 Lua VM `on_event` 真实执行边界，以及 V1.7.2 只读 Lua context、`ctx.host.log/audit` 和 `ctx.tools.call` 受控 capability 调用边界。
+Eva-CLI 当前已经推进到 V1.7.3-alpha Lua resource limits 检查点。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载、V1.0 in-memory basic runtime、V1.1 外部能力诊断、V1.2 记忆/知识上下文、V1.3 硬件发现/probe/plan-first 绑定、V1.4 的 backup、snapshot、restore plan 和 upgrade check、V1.5 的 release check/security/perf/migration、V1.6.1 durable backend 基线、V1.6.2 durable EventBus redrive 基线、V1.6.3 durable task/audit/artifact evidence 基线、V1.6.4 runtime recovery scanner、ack-safe redrive checkpoint 和 runtime recovered audit evidence、V1.6.5 `inspect durable` 诊断命令和 durable diagnostics release gate、V1.7.1 受限 Lua VM `on_event` 真实执行边界、V1.7.2 只读 Lua context、`ctx.host.log/audit` 和 `ctx.tools.call` 受控 capability 调用边界，以及 V1.7.3 Lua timeout、instruction budget、cancellation 和 memory budget 执行限制。
 
-当前受管理项目版本：`V1.7.2-alpha`（`Cargo.toml` 版本 `1.7.2-alpha`，预发布 Git tag 形式 `v1.7.2-alpha`）。版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。
+当前受管理项目版本：`V1.7.3-alpha`（`Cargo.toml` 版本 `1.7.3-alpha`，预发布 Git tag 形式 `v1.7.3-alpha`）。版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。
 
 Canonical 官网：
 
@@ -17,7 +17,7 @@ Canonical 官网：
 
 ## 当前进度
 
-Eva-CLI 已经完成 V0.1 到 V1.7.2-alpha 的阶段实现：
+Eva-CLI 已经完成 V0.1 到 V1.7.3-alpha 的阶段实现：
 
 1. Rust workspace 和 20 个 crate 边界已创建；
 2. `eva-core`、`eva-config`、`eva-policy`、`eva-observability` 已具备基础契约；
@@ -25,13 +25,13 @@ Eva-CLI 已经完成 V0.1 到 V1.7.2-alpha 的阶段实现：
 4. `eva-cli` 已实现 `version`、`doctor`、`config validate`、`inspect`、`inspect durable`、`run --example basic`、`task status/logs/cancel`、`adapter`、`mcp`、`skill`、`discovery`、`memory context`、`hardware list/probe/bind`、`backup/snapshot/restore/upgrade` 和 `release check/security/perf/migration`；
 5. `eva-hardware` 已实现 V1.3 discovery candidate、DeviceRegistry lease、simulated driver binding 和 hotplug state machine；
 6. `eva-backup` 和 `eva-lifecycle` 已实现 V1.4 backup artifact verification、migration preflight、release snapshot、restore plan、generation handoff、drain 和 rollback plan；
-7. `eva-release` 已实现 V1.7.2 release readiness、security review、performance baseline、migration guide、compatibility policy、durable recovery smoke gate、durable diagnostics smoke gate、Lua VM execution gate 和 Lua host bindings gate；
+7. `eva-release` 已实现 V1.7.3 release readiness、security review、performance baseline、migration guide、compatibility policy、durable recovery smoke gate、durable diagnostics smoke gate、Lua VM execution gate、Lua host bindings gate 和 Lua resource limits gate；
 8. `eva-storage`、`eva-eventbus` 与 `eva-runtime` 已实现 V1.6 durable backend manifest、migration lock、filesystem EventLog、DurableEventBus、queryable dead-letter store、redrive 基线、durable task snapshot adapter、durable audit sink、runtime recovery scanner、runtime recovered audit evidence、durable backend diagnostics report 和 artifact metadata hardening；
-9. `eva-lua-host` 已实现 V1.7.1 `mlua` VM adapter、受限标准库、真实 `on_event` 执行、稳定错误映射、旧静态 parser compatibility fallback，以及 V1.7.2 只读 request/trace/memory、host observability 和 `ctx.tools.call` capability binding。
+9. `eva-lua-host` 已实现 V1.7.1 `mlua` VM adapter、受限标准库、真实 `on_event` 执行、稳定错误映射、旧静态 parser compatibility fallback、V1.7.2 只读 request/trace/memory、host observability 和 `ctx.tools.call` capability binding，以及 V1.7.3 wall-clock timeout、instruction budget、cancellation token 和 memory budget。
 
 完整阶段划分见 [从零到 1.0 版本路线图](docs/zh-CN/planning/从零到1.0版本路线图.md)。
 V1.5.0 的 GitHub 托管发版流程见 [V1.5 GitHub 发版计划](docs/zh-CN/release/V1.5-GitHub发版计划.md)。
-版本命名、递增、tag、GitHub Release 和 package 规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。V1.7.2-alpha 的发版内容见 [V1.7.2 Alpha 发布说明](docs/zh-CN/release/V1.7.2-alpha发布说明.md)，历史 V1.7.1-alpha 内容见 [V1.7.1 Alpha 发布说明](docs/zh-CN/release/V1.7.1-alpha发布说明.md)。
+版本命名、递增、tag、GitHub Release 和 package 规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。V1.7.3-alpha 的发版内容见 [V1.7.3 Alpha 发布说明](docs/zh-CN/release/V1.7.3-alpha发布说明.md)，历史 V1.7.2-alpha 内容见 [V1.7.2 Alpha 发布说明](docs/zh-CN/release/V1.7.2-alpha发布说明.md)。
 
 ## eva-core 模块要实现的功能
 
@@ -131,11 +131,11 @@ Eva-CLI/
 
 ## V1.x 剩余缺口
 
-V1.7.2-alpha 是源码 alpha 与 Lua host binding evidence 检查点，不是已经带安装包的完整 runtime 发行版。后续包含 package 支持的 release tag 会发布 GHCR 容器镜像 `ghcr.io/yetmos/eva-cli`；旧 tag 不追溯重新发布。后续工作已经从“是否能落地”收窄为更具体的执行边界：
+V1.7.3-alpha 是源码 alpha 与 Lua resource limits evidence 检查点，不是已经带安装包的完整 runtime 发行版。后续包含 package 支持的 release tag 会发布 GHCR 容器镜像 `ghcr.io/yetmos/eva-cli`；旧 tag 不追溯重新发布。后续工作已经从“是否能落地”收窄为更具体的执行边界：
 
 - stdio/http/MCP 等真实 provider 进程执行，包括认证、会话隔离、超时和限流。
 - Durable Scheduler、runtime audit wiring、artifact metadata、memory 和 backup store，衔接当前 durable EventBus/task snapshot/audit sink 基线与本地诊断表面。
-- Lua 资源限制、generation swap 和 hot reload rollback。
+- Lua generation swap 和 hot reload rollback。
 - `restore apply`、release pointer mutation、Supervisor 激活、blue-green Runtime 进程切换等破坏性 apply 路径。
 - 签名 release artifact、跨平台安装包、包管理器 package 和 artifact provenance。
 - 当高风险 apply 路径从 plan-only 诊断进入真实执行时，需要更深的机器可校验 schema 与 policy 检查。

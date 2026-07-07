@@ -5,8 +5,8 @@ use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
 
-const CURRENT_RELEASE_VERSION: &str = "1.7.2-alpha";
-const CURRENT_RELEASE_LABEL: &str = "V1.7.2-alpha";
+const CURRENT_RELEASE_VERSION: &str = "1.7.3-alpha";
+const CURRENT_RELEASE_LABEL: &str = "V1.7.3-alpha";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseGateStatus {
@@ -112,6 +112,7 @@ impl ReleaseHardeningService {
         gates.push(durable_diagnostics_gate());
         gates.push(lua_vm_execution_gate());
         gates.push(lua_host_bindings_gate());
+        gates.push(lua_resource_limits_gate());
 
         let status = if gates
             .iter()
@@ -131,7 +132,7 @@ impl ReleaseHardeningService {
             stability,
             gates,
             audit: vec![
-                "release:readiness:v1.7.2-alpha".to_owned(),
+                "release:readiness:v1.7.3-alpha".to_owned(),
                 "no_destructive_restore_or_process_switch".to_owned(),
                 "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
                 "durable_backend_layout_baseline_ready".to_owned(),
@@ -141,6 +142,7 @@ impl ReleaseHardeningService {
                 "durable_diagnostics_smoke_ready".to_owned(),
                 "lua_vm_execution_boundary_ready".to_owned(),
                 "lua_host_bindings_ready".to_owned(),
+                "lua_resource_limits_ready".to_owned(),
             ],
         })
     }
@@ -337,7 +339,7 @@ impl ReleaseHardeningService {
             ],
             compatibility_policy: CompatibilityPolicy::v15(),
             audit: vec![
-                "migration:v1.5.1_to_v1.7.2-alpha:no_breaking_changes".to_owned(),
+                "migration:v1.5.1_to_v1.7.3-alpha:no_breaking_changes".to_owned(),
                 "json_envelope_and_exit_codes_remain_stable".to_owned(),
                 "durable_task_audit_artifact_additive_alpha_baseline".to_owned(),
             ],
@@ -488,7 +490,7 @@ impl ReleaseHardeningService {
                     "docs/en/release/github-packages-publishing.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
-                    "docs/en/release/release-notes-v1.7.2.md".to_owned(),
+                    "docs/en/release/release-notes-v1.7.3.md".to_owned(),
                 ],
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },
@@ -735,6 +737,29 @@ fn lua_host_bindings_gate() -> ReleaseGate {
     }
 }
 
+fn lua_resource_limits_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-LUA-RESOURCE-LIMITS-001".to_owned(),
+        domain: "lua_resource_limits".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.7.3 Lua wall-clock timeout, instruction budget, cancellation token, and memory budget limits are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-lua-host/src/vm.rs LuaExecutionLimits".to_owned(),
+            "crates/eva-lua-host/src/bindings.rs cancellation and memory-budget host tests".to_owned(),
+            "crates/eva-runtime/src/basic.rs BasicRunOptions timeout/cancel Lua limits".to_owned(),
+            "cargo test -p eva-lua-host".to_owned(),
+            "cargo test -p eva-runtime timeout_basic_run_records_dead_letter_and_replay".to_owned(),
+            "cargo test -p eva-runtime cancelled_basic_run_returns_task_record".to_owned(),
+            "docs/zh-CN/planning/V1.x real runtime implementation plan V1.7.3 Done".to_owned(),
+        ],
+        remediation: vec![
+            "do not add Lua hot reload or generation swap without preserving timeout, instruction budget, cancellation, and memory limit hooks".to_owned(),
+            "keep capability calls behind cancellation-aware Lua execution so cancelled scripts cannot continue side effects".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -790,6 +815,9 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-LUA-HOST-BINDINGS-001" && gate.status == ReleaseGateStatus::Pass
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-LUA-RESOURCE-LIMITS-001" && gate.status == ReleaseGateStatus::Pass
+        }));
         assert!(report
             .audit
             .iter()
@@ -802,6 +830,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "lua_host_bindings_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "lua_resource_limits_ready"));
     }
 
     #[test]
