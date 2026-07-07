@@ -22,6 +22,14 @@ pub struct DrainPlan {
     pub audit: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenerationDrainEvidence {
+    pub from_generation: GenerationId,
+    pub to_generation: GenerationId,
+    pub plan: DrainPlan,
+    pub audit: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DrainCoordinator;
 
@@ -59,6 +67,33 @@ impl DrainCoordinator {
         })
     }
 
+    pub fn plan_generation_swap_drain(
+        &self,
+        from_generation: GenerationId,
+        to_generation: GenerationId,
+        inflight_tasks: usize,
+        timeout_ms: u64,
+    ) -> Result<GenerationDrainEvidence, EvaError> {
+        if from_generation == to_generation {
+            return Err(EvaError::conflict(
+                "generation drain requires distinct source and target generations",
+            )
+            .with_context("generation", from_generation.as_str()));
+        }
+        let mut plan = self.plan(from_generation.clone(), inflight_tasks, timeout_ms)?;
+        plan.audit.push(format!(
+            "generation:{}:draining_after_swap_to:{}",
+            from_generation.as_str(),
+            to_generation.as_str()
+        ));
+        Ok(GenerationDrainEvidence {
+            from_generation,
+            to_generation,
+            audit: plan.audit.clone(),
+            plan,
+        })
+    }
+
     pub fn complete(&self, mut plan: DrainPlan) -> DrainPlan {
         plan.inflight_tasks = 0;
         plan.status = DrainStatus::Completed;
@@ -89,5 +124,41 @@ mod tests {
         let completed = DrainCoordinator.complete(plan);
         assert_eq!(completed.status, DrainStatus::Completed);
         assert_eq!(completed.inflight_tasks, 0);
+    }
+
+    #[test]
+    fn generation_swap_drain_evidence_blocks_new_work_on_old_generation() {
+        let evidence = DrainCoordinator
+            .plan_generation_swap_drain(
+                GenerationId::parse("gen-old").unwrap(),
+                GenerationId::parse("gen-new").unwrap(),
+                2,
+                30_000,
+            )
+            .unwrap();
+
+        assert_eq!(evidence.from_generation.as_str(), "gen-old");
+        assert_eq!(evidence.to_generation.as_str(), "gen-new");
+        assert!(!evidence.plan.accepts_new_work);
+        assert_eq!(evidence.plan.status, DrainStatus::Planned);
+        assert!(evidence
+            .audit
+            .iter()
+            .any(|item| { item == "generation:gen-old:draining_after_swap_to:gen-new" }));
+    }
+
+    #[test]
+    fn generation_swap_drain_completes_when_no_inflight_tasks_remain() {
+        let evidence = DrainCoordinator
+            .plan_generation_swap_drain(
+                GenerationId::parse("gen-old").unwrap(),
+                GenerationId::parse("gen-new").unwrap(),
+                0,
+                30_000,
+            )
+            .unwrap();
+
+        assert_eq!(evidence.plan.status, DrainStatus::Completed);
+        assert_eq!(evidence.plan.inflight_tasks, 0);
     }
 }
