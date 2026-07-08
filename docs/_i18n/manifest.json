@@ -36,6 +36,17 @@
       }
     },
     {
+      "id": "linux-waydroid-agent-os-diagram",
+      "title": "Linux, Waydroid, and Eva-CLI Agent OS Diagram",
+      "source": "assets/linux-waydroid-agent-os.svg",
+      "translations": {
+        "zh-CN": "assets/linux-waydroid-agent-os.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
       "id": "multi-agent-memory-design-diagram",
       "title": "Multi-Agent Memory Design Diagram",
       "source": "assets/multi-agent-memory-design.svg",

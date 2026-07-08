@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">Linux, Waydroid, and Eva-CLI Agent OS Prototype</title>
+  <desc id="desc">Layered architecture showing Linux as the system base, Waydroid as the Android Launcher layer, and Eva-CLI as the Agent runtime and control plane.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 700 36px Arial, sans-serif; fill: #172033; }
+      .subtitle { font: 400 17px Arial, sans-serif; fill: #526070; }
+      .label { font: 700 18px Arial, sans-serif; fill: #172033; }
+      .small { font: 400 13px Arial, sans-serif; fill: #425466; }
+      .tiny { font: 400 12px Arial, sans-serif; fill: #5d6b7a; }
+      .mono { font: 500 13px Menlo, Consolas, monospace; fill: #334155; }
+      .shell { fill: #ffffff; stroke: #aab7c7; stroke-width: 2; rx: 18; }
+      .linux { fill: #eef5ff; stroke: #2f6fed; stroke-width: 2.4; rx: 14; }
+      .waydroid { fill: #edf8f2; stroke: #218455; stroke-width: 2.4; rx: 14; }
+      .eva { fill: #fff8e7; stroke: #af7600; stroke-width: 2.4; rx: 14; }
+      .android { fill: #f5f0ff; stroke: #7c5cc4; stroke-width: 2.2; rx: 14; }
+      .risk { fill: #fff0f0; stroke: #d45b5b; stroke-width: 2; rx: 14; }
+      .card { fill: #ffffff; stroke: #c9d3df; stroke-width: 1.5; rx: 8; }
+      .arrow { stroke: #334155; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .arrow-blue { stroke: #2f6fed; stroke-width: 2.4; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-green { stroke: #218455; stroke-width: 2.4; fill: none; marker-end: url(#arrow-green); }
+      .arrow-amber { stroke: #af7600; stroke-width: 2.4; fill: none; marker-end: url(#arrow-amber); }
+      .arrow-dash { stroke: #64748b; stroke-width: 2.1; fill: none; stroke-dasharray: 7 7; marker-end: url(#arrow-gray); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f6fed"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#218455"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#af7600"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1600" height="980"/>
+  <text class="title" x="70" y="72">Agent OS Prototype: Linux + Waydroid + Eva-CLI</text>
+  <text class="subtitle" x="70" y="106">Linux remains the real OS, Waydroid provides the Android user layer, and Eva-CLI governs autonomous actions.</text>
+
+  <rect class="shell" x="70" y="145" width="1460" height="700"/>
+
+  <rect class="linux" x="120" y="610" width="1360" height="170"/>
+  <text class="label" x="160" y="650">Linux system base</text>
+  <text class="small" x="160" y="677">kernel, drivers, systemd, Wayland, LXC, cgroups, networking, storage, remote maintenance</text>
+  <rect class="card" x="160" y="705" width="250" height="44"/>
+  <text class="mono" x="184" y="733">systemd services</text>
+  <rect class="card" x="455" y="705" width="250" height="44"/>
+  <text class="mono" x="490" y="733">Wayland session</text>
+  <rect class="card" x="750" y="705" width="250" height="44"/>
+  <text class="mono" x="793" y="733">hardware access</text>
+  <rect class="card" x="1045" y="705" width="250" height="44"/>
+  <text class="mono" x="1083" y="733">update / rollback</text>
+
+  <rect class="waydroid" x="120" y="380" width="610" height="170"/>
+  <text class="label" x="160" y="420">Waydroid Android layer</text>
+  <text class="small" x="160" y="447">full-screen Android Launcher, Android apps, intents, package state, app data</text>
+  <rect class="card" x="160" y="475" width="230" height="44"/>
+  <text class="mono" x="185" y="503">waydroid show-full-ui</text>
+  <rect class="card" x="430" y="475" width="230" height="44"/>
+  <text class="mono" x="473" y="503">Android apps</text>
+
+  <rect class="eva" x="790" y="295" width="640" height="255"/>
+  <text class="label" x="830" y="335">Eva-CLI Agent control plane</text>
+  <text class="small" x="830" y="362">runtime, policy, audit, memory, AdapterRegistry, MCP, hardware capability, lifecycle evidence</text>
+  <rect class="card" x="830" y="395" width="180" height="50"/>
+  <text class="small" x="868" y="425">Policy Gate</text>
+  <rect class="card" x="1040" y="395" width="180" height="50"/>
+  <text class="small" x="1079" y="425">Memory</text>
+  <rect class="card" x="1250" y="395" width="140" height="50"/>
+  <text class="small" x="1283" y="425">Audit</text>
+  <rect class="card" x="830" y="470" width="245" height="50"/>
+  <text class="small" x="888" y="500">Android Adapter</text>
+  <rect class="card" x="1105" y="470" width="285" height="50"/>
+  <text class="small" x="1170" y="500">Linux / Hardware Adapter</text>
+
+  <rect class="android" x="120" y="210" width="610" height="110"/>
+  <text class="label" x="160" y="250">Android front end</text>
+  <text class="small" x="160" y="277">chat, task approval, notifications, status panels, user preferences</text>
+
+  <rect class="risk" x="790" y="175" width="640" height="78"/>
+  <text class="label" x="830" y="215">Human confirmation boundary</text>
+  <text class="small" x="830" y="239">high-risk operations require explicit approval, trace ids, and rollback guidance</text>
+
+  <path class="arrow-green" d="M 425 320 L 425 380"/>
+  <path class="arrow-dash" d="M 730 268 C 820 270 790 335 830 395"/>
+  <path class="arrow-amber" d="M 955 470 C 860 530 665 530 600 475"/>
+  <path class="arrow-blue" d="M 1110 550 L 1110 610"/>
+  <path class="arrow" d="M 1110 253 L 1110 295"/>
+
+  <text class="tiny" x="455" y="354">user-facing Launcher</text>
+  <text class="tiny" x="770" y="285">local API / socket bridge</text>
+  <text class="tiny" x="600" y="560">intent, shell, shared files</text>
+  <text class="tiny" x="1140" y="585">system actions stay gated</text>
+
+  <rect class="shell" x="70" y="875" width="1460" height="60"/>
+  <text class="small" x="110" y="912">Product rule: Android UI, Agents, and Waydroid do not own system authority. Linux + Eva-CLI runtime boundaries own authorization, execution, evidence, and rollback.</text>
+</svg>

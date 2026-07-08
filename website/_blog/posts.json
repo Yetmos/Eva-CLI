@@ -24,6 +24,26 @@
   ],
   "posts": [
     {
+      "id": "linux-waydroid-agent-os",
+      "locale": "en",
+      "slug": "linux-waydroid-agent-os",
+      "title": "Linux, Waydroid, and Eva-CLI as an Agent OS Prototype",
+      "description": "A practical architecture for using Linux as the system base, Waydroid as a full-screen Android Launcher layer, and Eva-CLI as the Agent runtime and control plane.",
+      "date": "2026-07-08",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/en/linux-waydroid-agent-os.html"
+    },
+    {
+      "id": "linux-waydroid-agent-os",
+      "locale": "zh-CN",
+      "slug": "linux-waydroid-agent-os",
+      "title": "Linux + Waydroid + Eva-CLI：Agent OS 原型路线",
+      "description": "如何用 Linux 做系统底座、Waydroid 做全屏 Android Launcher 层，并让 Eva-CLI 成为 Agent runtime 和控制平面。",
+      "date": "2026-07-08",
+      "category": "runtime",
+      "contentPath": "website/_blog/content/zh-CN/linux-waydroid-agent-os.html"
+    },
+    {
       "id": "topic-routing-hybrid-sync",
       "locale": "en",
       "slug": "topic-routing-hybrid-sync",

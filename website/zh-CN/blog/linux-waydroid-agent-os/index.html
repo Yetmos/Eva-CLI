@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Linux + Waydroid + Eva-CLI：Agent OS 原型路线 | Eva-CLI 博客</title>
+    <meta name="description" content="如何用 Linux 做系统底座、Waydroid 做全屏 Android Launcher 层，并让 Eva-CLI 成为 Agent runtime 和控制平面。">
+    <meta name="author" content="Yetmos">
+    <meta property="og:title" content="Linux + Waydroid + Eva-CLI：Agent OS 原型路线 | Eva-CLI 博客">
+    <meta property="og:description" content="如何用 Linux 做系统底座、Waydroid 做全屏 Android Launcher 层，并让 Eva-CLI 成为 Agent runtime 和控制平面。">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://www.eva-cli.com/zh-CN/blog/linux-waydroid-agent-os/">
+    <meta property="article:published_time" content="2026-07-08">
+    <meta property="article:section" content="运行时">
+    <meta name="twitter:card" content="summary">
+    <link rel="canonical" href="https://www.eva-cli.com/zh-CN/blog/linux-waydroid-agent-os/">
+    <link rel="alternate" hreflang="en" href="https://www.eva-cli.com/blog/linux-waydroid-agent-os/">
+    <link rel="alternate" hreflang="zh-CN" href="https://www.eva-cli.com/zh-CN/blog/linux-waydroid-agent-os/">
+    <link rel="alternate" hreflang="x-default" href="https://www.eva-cli.com/blog/linux-waydroid-agent-os/">
+    <link rel="icon" type="image/svg+xml" href="../../../assets/eva-cli-logo.svg">
+    <link rel="stylesheet" href="../../../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../../../" aria-label="Eva-CLI home">
+        <img src="../../../assets/eva-cli-logo.svg" alt="" class="brand-mark">
+        <span class="brand-copy">
+          <span class="brand-name">Eva-CLI</span>
+          <span class="brand-tagline">多 Agent 运行时</span>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <a href="../../../">首页</a>
+        <a href="../../../docs/zh-CN/中文文档入口.md">文档</a>
+        <a href="../../../zh-CN/blog/">博客</a>
+        <a href="../../../docs/zh-CN/architecture/总体架构方案.md">架构</a>
+        <a href="../../../#discussion">讨论</a>
+        <a href="../../../#feedback">反馈</a>
+        <a href="https://github.com/Yetmos/Eva-CLI">GitHub</a>
+      </nav>
+      <div class="language-switch" aria-label="Language">
+        <span>Language</span>
+        <div class="language-links">
+          <a href="../../../blog/linux-waydroid-agent-os/" hreflang="en" lang="en">English</a>
+          <a href="../../../zh-CN/blog/linux-waydroid-agent-os/" hreflang="zh-CN" lang="zh-CN" aria-current="page">简体中文</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="blog-page">
+      <article class="blog-article">
+        <header class="blog-article-header">
+          <p class="eyebrow">博客</p>
+          <h1>Linux + Waydroid + Eva-CLI：Agent OS 原型路线</h1>
+          <p class="blog-lead">如何用 Linux 做系统底座、Waydroid 做全屏 Android Launcher 层，并让 Eva-CLI 成为 Agent runtime 和控制平面。</p>
+          <div class="blog-meta">
+            <span>发布： <time datetime="2026-07-08">2026-07-08</time></span>
+            <a href="../../../zh-CN/blog/category/runtime/">分类： 运行时</a>
+          </div>
+        </header>
+        <div class="blog-content">
+<p>如果目标是做一个“Agent 的操作系统”，最务实的路线不是从零写一个新 OS，也不是把 Eva-CLI 塞进 Android 沙箱里。更稳的定义是：Linux 继续做真正的系统底座，Waydroid 提供用户可见的 Android Launcher 和 App 生态，Eva-CLI 作为后台 Agent runtime、权限控制平面、记忆系统和能力路由层。</p>
+
+<p>这条路线可以把体验做得像 Android 设备：开机或登录后直接进入全屏 Android Launcher，用户主要和 Android App 交互；同时保留 Linux 的 systemd、容器、CLI、驱动、远程维护、本地模型和硬件接入能力。Eva-CLI 不需要假装自己是内核或桌面环境，它应该成为这台设备里的受控自主层。</p>
+
+<p class="blog-note">本文是产品和架构路线整理，不代表当前 Eva-CLI 已经实现完整 daemon、Android adapter 或 Waydroid 集成。当前最值得验证的是系统分层、权限边界、MVP 接口和不能承诺的兼容性。</p>
+
+<figure class="blog-figure">
+  <img src="../../../assets/linux-waydroid-agent-os.zh-CN.svg" alt="Linux、Waydroid 和 Eva-CLI 组成 Agent OS 原型的分层架构图。">
+  <figcaption>Linux 负责底层系统和维护能力，Waydroid 负责 Android Launcher 与 App 体验，Eva-CLI 负责 Agent 控制平面和受控能力调用。</figcaption>
+</figure>
+
+<h2>为什么先选 Linux</h2>
+<p>Eva-CLI 的核心是 Rust CLI runtime、多 Agent 调度、Adapter、MCP、记忆、硬件计划、生命周期和发布证据。这些能力天然更适合 Linux 作为第一运行平台：systemd 可以托管常驻服务，容器和 cgroup 可以隔离进程，本地模型、CLI 工具、文件系统、USB、串口、蓝牙和网络设备都更容易进入统一的 runtime 边界。</p>
+
+<p>macOS 仍然很适合做开发者体验，Windows 应保持 CI 和 archive 兼容，但如果目标是设备化、常驻化和可维护的 Agent OS 原型，Linux 是最小阻力路径。Waydroid 又补上了 Android App 和 Launcher 体验，因此不需要在第一阶段直接做纯 Android ROM。</p>
+
+<h2>Waydroid 在这里承担什么</h2>
+<p>Waydroid 的角色是“Android 用户层”，不是替换 Linux。它基于 Linux 和容器运行 Android 系统，可以用全屏 UI 进入 Android Launcher，也可以配合 Wayland-only session，让用户登录后看到的第一屏就是 Android 界面。官方文档里的 Waydroid-only session 通常会用一个极简 Wayland compositor，例如 Cage，去启动 <code>waydroid show-full-ui</code>。</p>
+
+<pre class="blog-code"><code>[Desktop Entry]
+Name=WayDroid
+Exec=/usr/bin/cage waydroid show-full-ui
+Type=Application</code></pre>
+
+<p>这样得到的是一个清晰分工：Linux 负责启动、驱动、网络、更新、日志、远程维护和故障恢复；Waydroid 负责 Android Launcher、Android App、通知和面向用户的前台体验；Eva-CLI 在后台编排任务、权限、记忆和工具调用。</p>
+
+<h2>Eva-CLI 应该站在哪一层</h2>
+<p>Eva-CLI 不应该直接变成 Android Launcher，也不应该绕开系统权限去控制一切。更稳的做法是把 Eva-CLI 放在 Linux 后台服务层，作为 Agent control plane。它拥有自己的 Runtime、policy、audit、memory、AdapterRegistry 和 lifecycle 状态；Android 前端只是其中一个用户界面，Waydroid 也只是其中一个受控能力域。</p>
+
+<table class="blog-table">
+  <tr>
+    <th>层</th>
+    <th>职责</th>
+    <th>边界</th>
+  </tr>
+  <tr>
+    <td>Linux</td>
+    <td>内核、驱动、systemd、Wayland、容器、网络、存储、远程维护。</td>
+    <td>真正的系统权威，危险操作必须受 policy、确认和审计约束。</td>
+  </tr>
+  <tr>
+    <td>Waydroid</td>
+    <td>Android Launcher、Android App、Android intent、应用数据和前台交互。</td>
+    <td>容器化 Android 用户层，不等同于完整手机 ROM。</td>
+  </tr>
+  <tr>
+    <td>Eva-CLI</td>
+    <td>Agent runtime、任务调度、记忆、Adapter、MCP、硬件能力、验证和回滚证据。</td>
+    <td>Agent 表达意图，Runtime 决定授权、执行和记录。</td>
+  </tr>
+  <tr>
+    <td>Android 前端</td>
+    <td>聊天、任务确认、通知、状态面板、Launcher 入口和用户偏好。</td>
+    <td>通过 localhost、WebSocket、Unix socket bridge 或受控 HTTP API 连接 Eva-CLI。</td>
+  </tr>
+</table>
+
+<h2>Android Adapter 是关键接口</h2>
+<p>真正要做成产品，关键不是“让 Agent 点屏幕”，而是设计一个 Android Adapter。这个 Adapter 应该封装 Waydroid 与 Android 系统交互的稳定入口，例如 <code>waydroid shell</code>、ADB、Android intent、共享目录、剪贴板、通知、包管理、前台 Activity 查询和应用内可暴露 API。</p>
+
+<p>Agent 不应该直接拼任意 shell 命令。它应该请求结构化 capability，例如 <code>android.intent.send</code>、<code>android.app.open</code>、<code>android.file.share</code>、<code>android.notification.post</code>、<code>android.package.list</code> 或 <code>android.activity.current</code>。Adapter 再根据 manifest、schema、policy、用户确认和审计规则决定是否执行。</p>
+
+<pre class="blog-code"><code>Agent request
+  -> capability: android.app.open
+  -> target: com.example.app/.MainActivity
+  -> risk: foreground-ui-change
+  -> policy gate
+  -> Android Adapter
+  -> waydroid shell / intent bridge
+  -> audit record</code></pre>
+
+<h2>MVP 应该怎么做</h2>
+<p>第一个 MVP 不需要完整“操作系统”。它只需要证明四件事：设备能直接进入 Android 风格界面，Eva-CLI 能稳定常驻，Android 前端能和 Eva-CLI 交换任务，Agent 能通过受控 Adapter 触发有限的 Android 操作。</p>
+
+<ol>
+  <li>准备 Linux 发行版，启用 Wayland、LXC、Waydroid 和必要 GPU 支持。</li>
+  <li>配置 Waydroid-only session，让登录后直接进入全屏 Android Launcher。</li>
+  <li>把 Eva-CLI 作为 systemd service 或 user service 托管，先只开放本地 socket 或 localhost API。</li>
+  <li>做一个极薄 Android 前端 App：展示任务、确认高风险操作、显示日志和 Agent 状态。</li>
+  <li>实现第一版 <code>android-adapter</code>，只支持打开 App、发送 intent、共享文件、读取包列表和返回当前前台状态。</li>
+  <li>给所有操作加 policy、trace id、audit record、超时、取消和失败回滚建议。</li>
+</ol>
+
+<p>这个 MVP 的重点是边界，而不是炫技。只要能稳定完成“用户在 Android 前端提出目标，Eva-CLI 规划任务，Android Adapter 执行受控动作，前端显示结果和审计摘要”，Agent OS 的骨架就成立了。</p>
+
+<h2>哪些事不能承诺</h2>
+<p>Waydroid 不是完整手机 ROM，因此不能把所有 Android App 兼容性当成产品承诺。Play Integrity、银行类 App、强 DRM、特定厂商服务、传感器、电话基带、蓝牙权限、ARM App 转译和图形加速表现都可能成为限制。产品定义上应避免承诺“完整 Android 手机替代品”。</p>
+
+<p>桌面自动化也要谨慎。Wayland 下全局截图、输入注入和窗口控制天然更受限制，这是好事，因为它迫使系统走显式 API、Adapter 和用户确认。Agent OS 应该优先调用 intent、应用 API、文件交换和通知协议，只有在明确授权的调试模式下才考虑视觉点击自动化。</p>
+
+<h2>和 Eva-CLI 现有架构的对应关系</h2>
+<p>这条路线正好落在 Eva-CLI 已经规划的能力边界上。<code>eva-runtime</code> 负责组合 runtime，<code>eva-policy</code> 负责权限收敛，<code>eva-adapter</code> 负责外部能力，<code>eva-discovery</code> 可以发现 Android/Waydroid 能力，<code>eva-memory</code> 保存长期偏好和设备经验，<code>eva-hardware</code> 处理设备和驱动边界，<code>eva-lifecycle</code> 与 release evidence 负责升级、回滚和可验证发布。</p>
+
+<p>最重要的设计原则仍然不变：Android 前端不拥有系统权威，Agent 不拥有系统权威，Waydroid 也不拥有系统权威。系统权威留在 Linux 和 Eva-CLI runtime 边界里，由 policy、schema、audit、backup、snapshot 和 human confirmation 共同约束。</p>
+
+<h2>结论</h2>
+<p>Linux + Waydroid + Eva-CLI 可以实现一个可信的 Agent OS 原型。它不是新内核，也不是魔改 Android，而是一个 Agent-first Linux appliance：Linux 提供稳定系统和维护能力，Waydroid 提供 Android 用户体验，Eva-CLI 提供自主任务、记忆、工具调用、权限和审计。</p>
+
+<p>这条路线的工程难点可控，产品边界也清晰。先把它做成可启动、可交互、可审计、可回滚的本地设备，再逐步扩展 Android Adapter、硬件能力、本地模型和远程管理，比直接追求完整 OS 更实际。</p>
+
+<h2>参考</h2>
+<ul>
+  <li><a href="https://waydro.id/">Waydroid 官方网站</a></li>
+  <li><a href="https://docs.waydro.id/faq/setting-up-waydroid-only-sessions">Waydroid-only session 官方说明</a></li>
+  <li><a href="https://developer.android.com/studio/run/emulator-acceleration">Android Emulator acceleration 官方文档</a></li>
+</ul>
+
+        </div>
+        <footer class="blog-article-footer">
+          <a class="secondary-action" href="../../../zh-CN/blog/">返回博客</a>
+        </footer>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>作者： <a href="https://github.com/Yetmos">Yetmos</a></span>
+      <span>反馈： <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a></span>
+      <a href="../../../#feedback">提交反馈</a>
+    </footer>
+  </body>
+</html>
