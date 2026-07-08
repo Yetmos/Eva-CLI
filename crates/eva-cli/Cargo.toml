@@ -15,6 +15,7 @@ eva-lifecycle = { path = "../eva-lifecycle" }
 eva-memory = { path = "../eva-memory" }
 eva-mcp = { path = "../eva-mcp" }
 eva-observability = { path = "../eva-observability" }
+eva-policy = { path = "../eva-policy" }
 eva-release = { path = "../eva-release" }
 eva-runtime = { path = "../eva-runtime" }
 eva-storage = { path = "../eva-storage" }

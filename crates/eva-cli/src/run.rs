@@ -26,6 +26,7 @@ use eva_memory::{
     InMemoryMemoryService, KnowledgeId, KnowledgeItem, KnowledgeSource, MemoryWrite,
 };
 use eva_observability::{SpanId, TraceFields};
+use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use eva_release::{
     CompatibilityPolicy, MigrationGuide, MigrationStep, PerformanceBaselineReport,
     PerformanceBudget, PlatformReadiness, ReleaseGate, ReleaseHardeningService,
@@ -1890,10 +1891,10 @@ where
         }
         SkillCommand::Run(options) => {
             let trace = trace_for("cli.skill.run");
-            match load_project_config(&options.common.project_root)
-                .and_then(|project| AdapterRuntime::from_project(&project))
-                .and_then(|runtime| run_skill_runtime(&runtime, &options))
-            {
+            match load_project_config(&options.common.project_root).and_then(|project| {
+                let runtime = AdapterRuntime::from_project(&project)?;
+                run_skill_runtime(&runtime, &project, &options)
+            }) {
                 Ok(report) => {
                     write_adapter_invoke(
                         stdout,
@@ -2301,6 +2302,7 @@ struct HardwareBindPlan {
     device: Option<DeviceCandidate>,
     steps: Vec<String>,
     risks: Vec<String>,
+    audit: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2354,11 +2356,37 @@ fn hardware_bind_plan(
         .candidates
         .into_iter()
         .find(|candidate| candidate.identity.adapter_id == adapter_id);
+    let adapter = project
+        .adapters
+        .iter()
+        .find(|adapter| adapter.id == adapter_id);
+    let mut policy_request =
+        RuntimePolicyRequest::new(HighRiskAction::HardwareBind).with_adapter(adapter_id.clone());
+    if let Some(candidate) = &device {
+        policy_request = policy_request.with_bus(candidate.identity.bus.as_str());
+    }
+    if let Some(capability) = adapter
+        .and_then(|adapter| adapter.capabilities.first())
+        .cloned()
+    {
+        policy_request = policy_request.with_capability(capability);
+    }
+    if let Some(timeout_ms) =
+        adapter.and_then(|adapter| adapter.nested_extra_u64("limits", "timeout_ms"))
+    {
+        policy_request = policy_request.with_timeout_ms(timeout_ms);
+    }
+    let policy_decision = RuntimePolicyGate::from_project(project)?.decide(policy_request);
     let status = match &device {
         Some(candidate) if candidate.rejected_reason.is_none() && options.apply => "ready_to_apply",
         Some(candidate) if candidate.rejected_reason.is_none() => "planned",
         Some(_) => "blocked",
         None => "missing",
+    };
+    let status = if options.apply && !policy_decision.allowed {
+        "blocked"
+    } else {
+        status
     }
     .to_owned();
     let mut risks = vec!["hardware binding is plan-first; no raw I/O is opened by CLI".to_owned()];
@@ -2367,6 +2395,12 @@ fn hardware_bind_plan(
             "--apply only validates the logical plan in V1.3; physical claims remain runtime-gated"
                 .to_owned(),
         );
+    }
+    if !policy_decision.allowed {
+        risks.push(format!(
+            "runtime policy denied hardware bind apply path: {}",
+            policy_decision.reason
+        ));
     }
     if let Some(candidate) = &device {
         if let Some(reason) = &candidate.rejected_reason {
@@ -2382,11 +2416,13 @@ fn hardware_bind_plan(
         steps: vec![
             "discover hardware manifest candidate".to_owned(),
             "verify adapter manifest and policy boundary".to_owned(),
+            "evaluate runtime policy domain gate".to_owned(),
             "create logical DeviceRegistry lease".to_owned(),
             "route invocation through AdapterRuntime hardware transport".to_owned(),
             "release logical lease and emit audit".to_owned(),
         ],
         risks,
+        audit: policy_decision.audit,
     })
 }
 
@@ -2502,6 +2538,9 @@ fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult
 }
 
 fn create_restore_apply_denial(options: &RestoreApplyOptions) -> Result<(), EvaError> {
+    let project = load_project_config(&options.common.project_root)?;
+    let policy_decision = RuntimePolicyGate::from_project(&project)?
+        .decide(RuntimePolicyRequest::new(HighRiskAction::RestoreApply));
     let plan = options
         .plan
         .as_ref()
@@ -2523,6 +2562,16 @@ fn create_restore_apply_denial(options: &RestoreApplyOptions) -> Result<(), EvaE
     .with_context("required_gate", "verified artifact digest")
     .with_context("required_gate", "backup evidence")
     .with_context("required_gate", "policy approval")
+    .with_context(
+        "policy_decision",
+        if policy_decision.allowed {
+            "allowed"
+        } else {
+            "denied"
+        },
+    )
+    .with_context("policy_reason", policy_decision.reason)
+    .with_context("policy_audit", policy_decision.audit.join(";"))
     .with_context(
         "suggestion",
         "run restore plan and keep restore apply disabled until P6 apply gates are complete",
@@ -2723,8 +2772,21 @@ fn create_upgrade_apply(options: &UpgradeApplyOptions) -> Result<UpgradeApplyRes
         .with_context("plan_id", &plan.plan_id));
     }
 
+    let project = load_project_config(&options.common.project_root)?;
+    let policy_decision = RuntimePolicyGate::from_project(&project)?
+        .decide(RuntimePolicyRequest::new(HighRiskAction::SupervisorHandoff));
     let mut store = FileSystemUpgradeApplyLockStore::new(lock_store_path);
-    let report = UpgradeApplyCoordinator.acquire_lock(&mut store, &plan, &options.owner)?;
+    let mut report = UpgradeApplyCoordinator.acquire_lock(&mut store, &plan, &options.owner)?;
+    report.audit.extend(policy_decision.audit.clone());
+    if !policy_decision.allowed {
+        report.risks.push(format!(
+            "runtime policy denied destructive supervisor handoff: {}",
+            policy_decision.reason
+        ));
+        report
+            .audit
+            .push("supervisor.handoff:policy_denied".to_owned());
+    }
     Ok(UpgradeApplyResult {
         report,
         lock_store: lock_store_ref(Some(lock_store_path)),
@@ -2948,6 +3010,7 @@ fn probe_mcp_runtime(
 
 fn run_skill_runtime(
     runtime: &AdapterRuntime,
+    project: &ProjectConfig,
     options: &SkillRunOptions,
 ) -> Result<AdapterInvokeReport, EvaError> {
     let capability = options
@@ -2970,6 +3033,17 @@ fn run_skill_runtime(
     } else {
         None
     };
+    if let Some(provider) = &provider {
+        if let Some(handle) = runtime.registry().get(provider) {
+            if handle.transport == AdapterTransport::Skill {
+                let decision = RuntimePolicyGate::from_project(project)?.decide(
+                    RuntimePolicyRequest::new(HighRiskAction::SkillRun)
+                        .with_tool(handle.skill_runtime_gate.as_deref().unwrap_or("")),
+                );
+                decision.ensure_allowed()?;
+            }
+        }
+    }
     let invocation = AdapterInvocation::new(RequestId::parse(&options.request_id)?, capability)
         .with_input(options.input.clone());
     let invocation = if let Some(provider) = provider {
@@ -4383,7 +4457,7 @@ fn hardware_candidate_json(candidate: &DeviceCandidate) -> String {
 
 fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
     format!(
-        "{{\"adapter_id\":{},\"request_id\":{},\"status\":{},\"apply\":{},\"device\":{},\"steps\":{},\"risks\":{}}}",
+        "{{\"adapter_id\":{},\"request_id\":{},\"status\":{},\"apply\":{},\"device\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
         json_string(plan.adapter_id.as_str()),
         json_string(plan.request_id.as_str()),
         json_string(&plan.status),
@@ -4393,7 +4467,8 @@ fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
             .map(hardware_candidate_json)
             .unwrap_or_else(|| "null".to_owned()),
         json_array(plan.steps.iter().map(|step| json_string(step))),
-        json_array(plan.risks.iter().map(|risk| json_string(risk)))
+        json_array(plan.risks.iter().map(|risk| json_string(risk))),
+        json_array(plan.audit.iter().map(|entry| json_string(entry)))
     )
 }
 

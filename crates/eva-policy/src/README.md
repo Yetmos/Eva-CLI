@@ -2,7 +2,7 @@
 
 ![Eva module implementation roadmap](../../assets/eva-module-implementation-roadmap.svg)
 
-本目录承载权限集合、沙箱策略和 effective policy 计算。V0.2 已完成最小权限契约，后续版本主要把它接入 CLI、Runtime、Adapter、Hardware 和 Backup。
+本目录承载权限集合、沙箱策略、effective policy 计算和 V1.9.2 policy domain runtime gate。`eva-config` 负责加载 YAML，当前目录负责解释已定义的策略领域并返回可审计 decision。
 
 ## 功能说明
 
@@ -12,6 +12,7 @@
 | `permissions.rs` | `PermissionSet`、收紧、diff、subset、显式 capability/adapter allow 查询 | 已完成 | V0.2/V0.3/V1.8.5.2 |
 | `sandbox.rs` | `SandboxPolicy`、Lua 默认安全基线、收紧 | 已完成 | V0.2/V0.4 |
 | `effective.rs` | `PolicyLayer`、`EffectivePolicy`、request gate | 已完成 | V0.2/V0.4 |
+| `domains.rs` | typed policy domain parser、`RuntimePolicyGate`、高风险 action allow/deny audit | 已完成 | V1.9.2 |
 
 ## 开发实施步骤
 
@@ -21,6 +22,8 @@
 | 2 | 实现权限收紧、扩权 diff 和 subset 检查。 | request gate 可用。 |
 | 3 | 定义沙箱资源限制和 Lua 默认安全基线。 | Lua host 可映射限制。 |
 | 4 | 将多层策略合并成 effective policy。 | Runtime 调用前可统一授权。 |
+| 5 | 将 policy YAML domain 解析为 typed domain 和 `PolicyLayer`。 | Adapter/MCP/Hardware/Runtime/Lua policy 可 round trip。 |
+| 6 | 对高风险 runtime action 执行默认拒绝和显式 allow 判定。 | Skill/Hardware/Restore/Upgrade 等路径可写 audit evidence。 |
 
 ## 进度表
 
@@ -29,4 +32,5 @@
 | Permissions | 权限集合、扩权检测和显式 allow 查询 | 已完成 | CLI 展示 diff；runtime/capability gate 复用。 |
 | Sandbox | 沙箱限制 | 已完成 | Lua host 接入。 |
 | Effective | 多层合并和 request gate | 已完成 | Runtime/capability gate 接入。 |
-| Domain parser | YAML policy domain 解释 | 未实现 | V0.4/V1.x 分模块扩展。 |
+| Domain parser | YAML policy domain 解释 | 已完成 V1.9.2 | 真实 provider/hardware/backup/lifecycle apply 继续复用。 |
+| Runtime gate | 高风险 action 默认拒绝、显式 allow 和 audit decision | 已完成 V1.9.2 | 接生产 audit sink 和常驻 runtime。 |

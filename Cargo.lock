@@ -173,6 +173,7 @@ dependencies = [
  "eva-mcp",
  "eva-memory",
  "eva-observability",
+ "eva-policy",
  "eva-release",
  "eva-runtime",
  "eva-storage",
@@ -275,6 +276,7 @@ version = "1.7.4-alpha"
 dependencies = [
  "eva-config",
  "eva-core",
+ "serde_yaml",
 ]
 
 [[package]]

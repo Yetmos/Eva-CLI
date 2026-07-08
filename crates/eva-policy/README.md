@@ -1,6 +1,6 @@
 # eva-policy / 权限策略
 
-更新时间：2026-07-07
+更新时间：2026-07-08
 
 ![Eva module implementation roadmap](../assets/eva-module-implementation-roadmap.svg)
 
@@ -23,7 +23,8 @@ V0.2 已落地最小权限契约：
 | `PolicyLayer` | 已完成 | 表示 system、manifest、session、request 等任意策略层 |
 | `EffectivePolicy` | 已完成 | 从一个或多个 `PolicyLayer` 计算最终权限和沙箱策略 |
 | request 校验 | 已完成 | `ensure_request_allowed` 会拒绝试图扩大 effective policy 的请求 |
-| YAML policy 解析 | 不在本 crate | `eva-config` 只加载 extensible policy document，领域解释留给本 crate 后续切片 |
+| YAML policy 解析 | 已完成 V1.9.2 | `PolicyDomainSet` 解释 `adapter_policy`、`hardware_policy`、`mcp_server`、`runtime_policy` 和 `lua_sandbox`，并生成 `PolicyLayer` |
+| 运行时高风险门禁 | 已完成 V1.9.2 | `RuntimePolicyGate` 对 MCP tool/topic、Skill、Hardware、Restore/Upgrade/Release/Supervisor 等动作输出 allow/deny decision 和 audit |
 
 ### 公开 API
 
@@ -41,6 +42,9 @@ V0.2 已落地最小权限契约：
 | `PolicyLayer::new` | 名称、权限、沙箱 | `PolicyLayer` | 构造一个策略层 |
 | `EffectivePolicy::from_layers` | `IntoIterator<PolicyLayer>` | `Result<EffectivePolicy, EvaError>` | 计算最终策略，要求至少一层 |
 | `EffectivePolicy::ensure_request_allowed` | `&PermissionSet` | `Result<(), EvaError>` | 拒绝扩权 request |
+| `PolicyDomainSet::from_documents` | `&[PolicyDocument]` | `Result<PolicyDomainSet, EvaError>` | 将配置加载出的 policy YAML 转成 typed domain 和 policy layers |
+| `PolicyDomainSet::effective_policy` | 无 | `Result<EffectivePolicy, EvaError>` | 合并 policy domain 生成的 layers |
+| `RuntimePolicyGate::decide` | `RuntimePolicyRequest` | `PolicyDecision` | 对高风险动作执行默认拒绝和显式 allow 判定 |
 
 ### 权限收紧规则
 
@@ -74,12 +78,13 @@ V0.2 已落地最小权限契约：
 - 表示权限和沙箱策略。
 - 计算 effective policy。
 - 拒绝扩权 request。
+- 解释当前已定义的 policy YAML domain。
+- 为高风险 runtime action 生成可审计的 allow/deny decision。
 - 返回结构化 `EvaError`。
 
 `eva-policy` 不做：
 
 - 不扫描 `config/`。
-- 不解析所有 policy YAML 领域字段。
 - 不执行 shell、文件、网络、MCP、硬件或 Adapter。
 - 不决定 CLI 展示格式和 exit code。
 - 不保存审计日志，只能提供可被审计记录引用的结构化结果。
@@ -88,7 +93,7 @@ V0.2 已落地最小权限契约：
 
 | 命令 | 当前结果 |
 | --- | --- |
-| `cargo test -p eva-policy` | 通过，11 个测试 |
+| `cargo test -p eva-policy` | 通过，18 个测试 |
 | `cargo test --workspace` | 通过 |
 
 关键测试覆盖：
@@ -104,6 +109,9 @@ V0.2 已落地最小权限契约：
 | `narrowing_unions_disabled_libs_and_uses_lower_limits` | 沙箱禁用库并集、资源限制取更小值 |
 | `effective_policy_intersects_layers` | 多策略层合并结果正确 |
 | `request_expansion_is_rejected` | 扩权请求返回 `PermissionDenied` |
+| `parses_sample_policy_domains` | 示例 policy YAML 可解析为 typed domain |
+| `runtime_gate_requires_explicit_high_risk_allow` | restore/upgrade 等高风险动作默认拒绝 |
+| `runtime_policy_can_explicitly_allow_high_risk_action` | 显式 allow path 生成允许 decision |
 
 ### 详细开发实施步骤
 
@@ -115,7 +123,7 @@ V0.2 已落地最小权限契约：
 | 4 | V0.2 | 实现 `PolicyLayer` 和 `EffectivePolicy::from_layers`。 | 权限/沙箱模型 | 多层策略只会收紧。 |
 | 5 | V0.3 | 将 policy 错误映射到 CLI human/json 诊断。 | `eva-cli` | 用户能看懂被拒绝字段。 |
 | 6 | V0.4 | 在 capability/Agent/Lua 调用前应用 effective policy。 | runtime/capability/lua-host | 未授权调用无法执行。 |
-| 7 | V1.1-V1.4 | 解释 Adapter、MCP、Hardware、Backup policy domain。 | 扩展模块 manifest | 高风险权限有明确策略层。 |
+| 7 | V1.9.2 | 解释 Adapter、MCP、Hardware、Runtime、Lua policy domain。 | `eva-config::PolicyDocument` | 高风险权限有明确策略层和 audit decision。 |
 
 ### 详细开发进度表
 
@@ -125,8 +133,9 @@ V0.2 已落地最小权限契约：
 | `src/permissions.rs` | `PermissionSet`、收紧、diff、subset | 已完成 | V0.3 增加 CLI 友好的 diff 展示。 |
 | `src/sandbox.rs` | `SandboxPolicy`、Lua 默认沙箱、收紧 | 已完成 | V0.4 接 `eva-lua-host` 限制映射。 |
 | `src/effective.rs` | `PolicyLayer`、`EffectivePolicy`、request 校验 | 已完成 | V0.4 接 runtime/capability gate。 |
+| `src/domains.rs` | YAML policy domain parser、`RuntimePolicyGate`、高风险 action decision | 已完成 V1.9.2 | 后续接生产 runtime/supervisor/hardware apply。 |
 | `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和后续阶段。 |
-| policy domain parser | YAML domain 到策略层 | 未实现 | 由 `eva-config` 加载后交给本模块解释。 |
+| policy domain parser | YAML domain 到策略层 | 已完成 V1.9.2 | 扩展真实 provider/hardware/backup/lifecycle 细粒度策略。 |
 
 ### 后续版本移交
 
@@ -134,8 +143,8 @@ V0.2 已落地最小权限契约：
 | --- | --- |
 | V0.3 | CLI 将使用 `ensure_request_allowed` 转换成人类/JSON 诊断和 exit code |
 | V0.4 | Runtime/Tool Layer 在 capability 调用前应用 effective policy |
-| V1.1 | AdapterRegistry 解释 adapter policy 领域字段并生成 `PolicyLayer` |
-| V1.3 | Hardware policy 领域字段生成设备访问 `PolicyLayer` |
+| V1.9.2 | Adapter/MCP/Hardware/Runtime/Lua policy domain 解释并输出 runtime gate audit |
+| V1.10+ | Hardware、restore、upgrade 等真实 apply 路径复用 runtime gate 并写入生产 audit sink |
 
 ## English
 

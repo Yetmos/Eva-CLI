@@ -45,6 +45,8 @@
 - V1.8.4 routes `skill run` into the schema-gated Skill workflow runner, which
   records stdout/stderr/run-report/artifact evidence while preserving the same
   JSON envelope shape.
+- V1.9.2 checks the Skill runtime gate through `RuntimePolicyGate` before the
+  runner is started.
 - Tests covering V1.1 JSON envelopes, blocked MCP tool probes, and V1.1 version identity.
 
 ## V1.2 Memory Context Surface
@@ -64,8 +66,8 @@
 - Parser branch: `parse_hardware_command` 分发 `list`、`probe`、`bind`。
 - `hardware list`：加载项目配置并调用 `discover_project_devices`，输出 hardware candidates。
 - `hardware probe --adapter <id>`：过滤单个 Adapter 的硬件候选；找不到时返回 `NotFound`。
-- `hardware bind --adapter <id>`：生成 `HardwareBindPlan`，包含 candidate、status、apply 标记、plan steps 和 risks。
-- `hardware bind --apply`：V1.3 仍不打开设备，只把 `apply_requested` 写入计划并验证逻辑边界。
+- `hardware bind --adapter <id>`：生成 `HardwareBindPlan`，包含 candidate、status、apply 标记、plan steps、risks 和 V1.9.2 policy audit。
+- `hardware bind --apply`：V1.3 仍不打开设备，只把 `apply_requested` 写入计划并验证逻辑边界；V1.9.2 会附加 runtime policy gate evidence。
 - JSON writer 输出 `hardware.list`、`hardware.probe`、`hardware.bind` 三种 command envelope。
 - Tests 覆盖 V1.3 version identity、硬件候选 JSON、bind plan JSON 和 blocked disabled manifest。
 
@@ -78,14 +80,15 @@
 - `backup create`：调用 `eva_backup::BackupService`，默认写入 in-memory `ArtifactStore`；传入 `--artifact-store <path>` 时写入 filesystem artifact store，生成 manifest 并校验 digest。
 - `snapshot create`：调用 `ReleaseSnapshotService` 生成 pre/post release snapshot，并可通过 `--artifact-store <path>` 落盘其依赖的 backup artifact。
 - `restore plan`：调用 `ReleaseSnapshotService::restore_plan`，输出 `apply_allowed:false`，并可通过 `--artifact-store <path>` 生成 filesystem backup evidence。
-- `restore apply`：默认仍返回稳定 `unsupported` JSON；带 `--dry-run` 时读取 plan 文件并验证 filesystem artifact store 中的 backup artifact key 和 digest，不执行破坏性恢复。
+- `restore apply`：默认仍返回稳定 `unsupported` JSON，并在错误上下文写入 V1.9.2 policy decision；带 `--dry-run` 时读取 plan 文件并验证 filesystem artifact store 中的 backup artifact key 和 digest，不执行破坏性恢复。
 - `upgrade check`：调用 `eva_lifecycle` 的 in-memory supervisor、generation、drain、rollback 状态机，并结合 migration preflight。
 
 这些命令是 release/lifecycle readiness smoke，不执行真实文件恢复、release pointer 切换或 OS 进程启动。
 
 P6-003 adds `upgrade apply --plan <path> --confirm <plan_id> --lock-store <path>`.
 It reads a key/value upgrade plan, creates a filesystem lock, returns
-`apply_allowed:false`, and does not start runtime handoff.
+`apply_allowed:false`, records the destructive supervisor handoff policy
+decision in audit, and does not start runtime handoff.
 
 P6-004 adds `snapshot promote --snapshot-id <id> --confirm <snapshot_id>`.
 It creates a release pointer plan with audit evidence, returns
