@@ -6,6 +6,7 @@ pub mod omx;
 pub mod path_commands;
 pub mod project_adapters;
 pub mod project_agents;
+pub mod registry;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "trusted discovery source adapters";

@@ -13,7 +13,7 @@ use eva_config::{load_project_config, schema_paths, AdapterTransport, ProjectCon
 use eva_core::{
     AdapterId, AgentId, CapabilityName, ErrorKind, EvaError, GenerationId, InvokeStatus, RequestId,
 };
-use eva_discovery::{DiscoveryCandidate, DiscoveryService};
+use eva_discovery::{DiscoveryScanReport, DiscoveryService, DiscoverySourceReport};
 use eva_hardware::{discover_project_devices, DeviceCandidate, HardwareDiscoveryReport};
 use eva_lifecycle::{
     DrainCoordinator, DrainPlan, FileSystemUpgradeApplyLockStore, GenerationState,
@@ -1929,7 +1929,7 @@ where
                 Ok(project) => {
                     let mut service = DiscoveryService::new();
                     let report = service.scan_project(&project);
-                    write_discovery_scan(stdout, options.output, &report.candidates, &trace)?;
+                    write_discovery_scan(stdout, options.output, &report, &trace)?;
                     Ok(EXIT_OK)
                 }
                 Err(error) => {
@@ -3759,13 +3759,13 @@ fn write_adapter_invoke<W: Write>(
 fn write_discovery_scan<W: Write>(
     writer: &mut W,
     output: OutputFormat,
-    candidates: &[DiscoveryCandidate],
+    report: &DiscoveryScanReport,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
     match output {
         OutputFormat::Text => {
             writeln!(writer, "Eva discovery candidates").map_err(write_error_kind)?;
-            for candidate in candidates {
+            for candidate in &report.candidates {
                 writeln!(
                     writer,
                     "  - {} kind={} source={} trust={} handle_granted={}",
@@ -3777,6 +3777,22 @@ fn write_discovery_scan<W: Write>(
                 )
                 .map_err(write_error_kind)?;
             }
+            writeln!(writer, "Sources").map_err(write_error_kind)?;
+            for source in &report.source_reports {
+                let rejected_reason = source.rejected_reason.as_deref().unwrap_or("-");
+                writeln!(
+                    writer,
+                    "  - {} status={} cache_key={} timeout_ms={} elapsed_ms={} candidates={} rejected_reason={}",
+                    source.source_id,
+                    source.status,
+                    source.cache_key,
+                    source.timeout_ms,
+                    source.elapsed_ms,
+                    source.candidates.len(),
+                    rejected_reason
+                )
+                .map_err(write_error_kind)?;
+            }
             Ok(())
         }
         OutputFormat::Json => writeln!(
@@ -3785,7 +3801,7 @@ fn write_discovery_scan<W: Write>(
             success_envelope(
                 "discovery.scan",
                 EXIT_OK,
-                &discovery_scan_json(candidates),
+                &discovery_scan_json(report),
                 trace
             )
         )
@@ -4350,7 +4366,8 @@ fn adapter_invoke_json(report: &AdapterInvokeReport) -> String {
     )
 }
 
-fn discovery_scan_json(candidates: &[DiscoveryCandidate]) -> String {
+fn discovery_scan_json(report: &DiscoveryScanReport) -> String {
+    let candidates = &report.candidates;
     let entries = candidates.iter().map(|candidate| {
         format!(
             "{{\"id\":{},\"kind\":{},\"source\":{},\"trust\":{},\"adapter_id\":{},\"capability\":{},\"handle_granted\":{},\"rejected_reason\":{}}}",
@@ -4364,10 +4381,36 @@ fn discovery_scan_json(candidates: &[DiscoveryCandidate]) -> String {
             option_json(candidate.rejected_reason.as_deref())
         )
     });
+    let source_reports = report
+        .source_reports
+        .iter()
+        .map(discovery_source_report_json);
     format!(
-        "{{\"candidate_count\":{},\"candidates\":{}}}",
+        "{{\"candidate_count\":{},\"candidates\":{},\"source_report_count\":{},\"source_reports\":{}}}",
         candidates.len(),
-        json_array(entries)
+        json_array(entries),
+        report.source_reports.len(),
+        json_array(source_reports)
+    )
+}
+
+fn discovery_source_report_json(report: &DiscoverySourceReport) -> String {
+    let rejected_count = report
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.rejected_reason.is_some())
+        .count();
+    format!(
+        "{{\"source_id\":{},\"cache_key\":{},\"status\":{},\"timeout_ms\":{},\"elapsed_ms\":{},\"candidate_count\":{},\"rejected_candidate_count\":{},\"error\":{},\"rejected_reason\":{}}}",
+        json_string(&report.source_id),
+        json_string(&report.cache_key),
+        json_string(&report.status),
+        report.timeout_ms,
+        report.elapsed_ms,
+        report.candidates.len(),
+        rejected_count,
+        option_json(report.error.as_deref()),
+        option_json(report.rejected_reason.as_deref())
     )
 }
 
@@ -5907,6 +5950,38 @@ mod tests {
 
         assert_eq!(exit_code, EXIT_OK, "{stderr}");
         assert!(stdout.contains("\"status\":\"blocked\""));
+    }
+
+    #[test]
+    fn discovery_scan_json_reports_source_statuses() {
+        let root = workspace_root();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "discovery",
+            "scan",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"candidate_count\""), "{stdout}");
+        assert!(stdout.contains("\"candidates\""), "{stdout}");
+        assert!(stdout.contains("\"source_report_count\""), "{stdout}");
+        assert!(stdout.contains("\"source_reports\""), "{stdout}");
+        assert!(
+            stdout.contains("\"source_id\":\"path_commands\""),
+            "{stdout}"
+        );
+        assert!(stdout.contains("\"source_id\":\"mcp\""), "{stdout}");
+        assert!(
+            stdout.contains("\"source_id\":\"external_registry\""),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("\"rejected_reason\":\"external registry source is not configured\""),
+            "{stdout}"
+        );
     }
 
     #[test]

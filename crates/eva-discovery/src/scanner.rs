@@ -3,20 +3,33 @@
 use crate::normalizer::{dedupe, DiscoveryCandidate, DiscoveryCandidateKind, DiscoveryTrust};
 use eva_config::{AdapterTransport, CapabilityKind, ProjectConfig};
 use eva_core::EvaError;
+use std::collections::BTreeSet;
+use std::time::Instant;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "scan trusted sources for candidate capabilities";
 
 pub trait DiscoverySource {
     fn source_id(&self) -> &str;
+    fn cache_key(&self) -> String {
+        self.source_id().to_owned()
+    }
+    fn timeout_ms(&self) -> u64 {
+        1_000
+    }
     fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoverySourceReport {
     pub source_id: String,
+    pub cache_key: String,
+    pub timeout_ms: u64,
+    pub elapsed_ms: u64,
+    pub status: String,
     pub candidates: Vec<DiscoveryCandidate>,
     pub error: Option<String>,
+    pub rejected_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +57,7 @@ impl DiscoverySource for ProjectDiscoverySource<'_> {
         let mut candidates = Vec::new();
         for adapter in &self.project.adapters {
             candidates.push(DiscoveryCandidate::adapter(
-                "project_adapters",
+                self.source_id(),
                 adapter.id.clone(),
             ));
             for capability in &adapter.capabilities {
@@ -59,7 +72,7 @@ impl DiscoverySource for ProjectDiscoverySource<'_> {
                     DiscoveryTrust::DisplayOnly
                 };
                 let candidate = DiscoveryCandidate::capability(
-                    "project_adapters",
+                    self.source_id(),
                     capability.clone(),
                     Some(adapter.id.clone()),
                     kind,
@@ -79,7 +92,7 @@ impl DiscoverySource for ProjectDiscoverySource<'_> {
                 _ => DiscoveryCandidateKind::Capability,
             };
             candidates.push(DiscoveryCandidate::capability(
-                "project_capabilities",
+                self.source_id(),
                 capability.capability.clone(),
                 capability
                     .default_provider
@@ -97,25 +110,97 @@ pub fn scan_sources(sources: &[&dyn DiscoverySource]) -> DiscoveryScanReport {
     let mut all = Vec::new();
     let mut source_reports = Vec::new();
     for source in sources {
+        let cache_key = source.cache_key();
+        let timeout_ms = source.timeout_ms();
+        if timeout_ms == 0 {
+            source_reports.push(DiscoverySourceReport {
+                source_id: source.source_id().to_owned(),
+                cache_key,
+                timeout_ms,
+                elapsed_ms: 0,
+                status: "timeout".to_owned(),
+                candidates: Vec::new(),
+                error: Some("discovery source timed out before scan".to_owned()),
+                rejected_reason: Some("timeout_ms is zero".to_owned()),
+            });
+            continue;
+        }
+        let started = Instant::now();
         match source.scan() {
             Ok(candidates) => {
+                let elapsed_ms = elapsed_ms(started);
+                if elapsed_ms > timeout_ms {
+                    source_reports.push(DiscoverySourceReport {
+                        source_id: source.source_id().to_owned(),
+                        cache_key,
+                        timeout_ms,
+                        elapsed_ms,
+                        status: "timeout".to_owned(),
+                        candidates: Vec::new(),
+                        error: Some("discovery source timed out".to_owned()),
+                        rejected_reason: Some(format!(
+                            "elapsed_ms {elapsed_ms} exceeded timeout_ms {timeout_ms}"
+                        )),
+                    });
+                    continue;
+                }
+                let status = source_status(&candidates).to_owned();
+                let rejected_reason = source_rejected_reason(&candidates);
                 all.extend(candidates.clone());
                 source_reports.push(DiscoverySourceReport {
                     source_id: source.source_id().to_owned(),
+                    cache_key,
+                    timeout_ms,
+                    elapsed_ms,
+                    status,
                     candidates,
                     error: None,
+                    rejected_reason,
                 });
             }
             Err(error) => source_reports.push(DiscoverySourceReport {
                 source_id: source.source_id().to_owned(),
+                cache_key,
+                timeout_ms,
+                elapsed_ms: elapsed_ms(started),
+                status: "error".to_owned(),
                 candidates: Vec::new(),
                 error: Some(error.message().to_owned()),
+                rejected_reason: Some(error.message().to_owned()),
             }),
         }
     }
     DiscoveryScanReport {
         candidates: dedupe(all),
         source_reports,
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+fn source_status(candidates: &[DiscoveryCandidate]) -> &'static str {
+    if !candidates.is_empty()
+        && candidates
+            .iter()
+            .all(|candidate| candidate.rejected_reason.is_some())
+    {
+        "rejected"
+    } else {
+        "ok"
+    }
+}
+
+fn source_rejected_reason(candidates: &[DiscoveryCandidate]) -> Option<String> {
+    let reasons = candidates
+        .iter()
+        .filter_map(|candidate| candidate.rejected_reason.as_deref())
+        .collect::<BTreeSet<_>>();
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(reasons.into_iter().collect::<Vec<_>>().join("; "))
     }
 }
 
@@ -142,5 +227,75 @@ mod tests {
             .iter()
             .any(|candidate| candidate.kind == DiscoveryCandidateKind::Skill));
         assert!(candidates.iter().all(|candidate| !candidate.handle_granted));
+    }
+
+    struct TimeoutSource;
+
+    impl DiscoverySource for TimeoutSource {
+        fn source_id(&self) -> &str {
+            "slow_source"
+        }
+
+        fn timeout_ms(&self) -> u64 {
+            0
+        }
+
+        fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+            Ok(vec![DiscoveryCandidate::named(
+                self.source_id(),
+                DiscoveryCandidateKind::Workflow,
+                "should-not-run",
+                None,
+                DiscoveryTrust::ConfiguredAllowlist,
+            )])
+        }
+    }
+
+    #[test]
+    fn scan_sources_reports_timeout_without_candidates() {
+        let source = TimeoutSource;
+        let report = scan_sources(&[&source]);
+
+        assert!(report.candidates.is_empty());
+        assert_eq!(report.source_reports[0].status, "timeout");
+        assert_eq!(
+            report.source_reports[0].rejected_reason.as_deref(),
+            Some("timeout_ms is zero")
+        );
+    }
+
+    struct RejectedSource;
+
+    impl DiscoverySource for RejectedSource {
+        fn source_id(&self) -> &str {
+            "rejected_source"
+        }
+
+        fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+            Ok(vec![DiscoveryCandidate::named(
+                self.source_id(),
+                DiscoveryCandidateKind::Workflow,
+                "disabled-workflow",
+                None,
+                DiscoveryTrust::DisplayOnly,
+            )
+            .rejected("workflow is disabled")])
+        }
+    }
+
+    #[test]
+    fn scan_sources_reports_candidate_rejections() {
+        let source = RejectedSource;
+        let report = scan_sources(&[&source]);
+
+        assert_eq!(report.source_reports[0].status, "rejected");
+        assert_eq!(
+            report.source_reports[0].rejected_reason.as_deref(),
+            Some("workflow is disabled")
+        );
+        assert!(report
+            .candidates
+            .iter()
+            .all(|candidate| !candidate.handle_granted));
     }
 }

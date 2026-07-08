@@ -1,6 +1,6 @@
 # eva-discovery / 能力发现
 
-更新时间：2026-07-02
+更新时间：2026-07-08
 
 ![V1.x extension module flow](../assets/eva-extension-module-flow.svg)
 
@@ -10,16 +10,16 @@
 
 | 功能域 | 当前状态 | 目标行为 |
 | --- | --- | --- |
-| Discovery service | 骨架 | 协调来源扫描、健康探测、归一化和缓存。 |
-| Scanner | 骨架 | 调用各 trusted source adapter，收集候选。 |
-| Normalizer | 骨架 | 统一 candidate ID、capability、provider、trust reason、reject reason。 |
-| Health | 骨架 | 对候选做轻量 probe，不产生副作用。 |
-| Cache | 骨架 | 缓存 discovery 结果，避免每次启动重复扫描。 |
-| Project agent source | 骨架 | 从项目 Agent manifest 发现本地 Agent 能力。 |
-| Project adapter source | 骨架 | 从 Adapter manifest 发现外部 provider 候选。 |
-| PATH command source | 骨架 | 只扫描配置允许的命令路径。 |
-| MCP source | 骨架 | 发现已配置 MCP server 的 tool/resource/prompt。 |
-| OMX/Codex source | 骨架 | 发现受信 workflow 或 Codex 能力 surface。 |
+| Discovery service | 已实现 V1.9.3 基线 | 协调多来源扫描、健康投影、归一化和缓存。 |
+| Scanner | 已实现 | 调用 trusted source adapter，记录 source timeout、cache key、elapsed/status 和 reject reason。 |
+| Normalizer | 已实现 | 统一 candidate ID、capability、provider、trust reason、reject reason，所有候选不授予 handle。 |
+| Health | 已实现 | 从候选生成无副作用 `seen/rejected` 健康状态。 |
+| Cache | 已实现基础 | 支持全量 replace 和按 source 增量 merge；TTL/跨进程 cache 后续实现。 |
+| Project config source | 已实现 | 从项目 Adapter/Capability 配置发现受信候选。 |
+| PATH command source | 已实现 | 只记录 stdio Adapter manifest 中配置的命令名，不执行 PATH lookup。 |
+| MCP source | 已实现 | 从 MCP Adapter allowlist 发现 tool 候选。 |
+| OMX/Codex source | 已实现 | 发现受信 workflow/Codex surface，未配置状态输出 rejected reason。 |
+| External registry source | 已实现边界 | 记录 registry source 是否配置；真实 registry 协议和认证后续实现。 |
 
 ## 模块边界
 
@@ -53,19 +53,18 @@
 
 | 文件/模块 | 具体功能 | 当前进度 | 下一步 |
 | --- | --- | --- | --- |
-| `src/lib.rs` | 模块导出 | 骨架 | re-export service、scanner、normalizer、health、cache、sources。 |
-| `src/service.rs` | Discovery 协调服务 | `RESPONSIBILITY` 占位 | 定义 scan/refresh/cache API。 |
-| `src/scanner.rs` | source 调度 | `RESPONSIBILITY` 占位 | 定义 source trait、超时、错误聚合。 |
-| `src/normalizer.rs` | 候选归一化 | `RESPONSIBILITY` 占位 | 定义 candidate、reject reason、dedupe。 |
-| `src/health.rs` | 健康探测 | `RESPONSIBILITY` 占位 | 定义无副作用 probe 结果。 |
-| `src/cache.rs` | 发现缓存 | `RESPONSIBILITY` 占位 | 定义 snapshot、TTL、refresh reason。 |
-| `src/sources/project_agents.rs` | 项目 Agent manifest 来源 | 骨架 | 从 ProjectConfig 提取 Agent 候选。 |
-| `src/sources/project_adapters.rs` | 项目 Adapter manifest 来源 | 骨架 | 从 AdapterManifest 提取 provider 候选。 |
-| `src/sources/path_commands.rs` | PATH 命令来源 | 骨架 | 只扫描 allowlist 路径和命令。 |
-| `src/sources/mcp.rs` | MCP 来源 | 骨架 | 从配置的 MCP endpoint 提取 tool 候选。 |
-| `src/sources/omx.rs` | OMX workflow 来源 | 骨架 | 只暴露受信 workflow surface。 |
-| `src/sources/codex.rs` | Codex 能力来源 | 骨架 | 只记录候选，不授予调用。 |
-| `src/README.md` | 源码目录说明 | 简略 | 补充文件职责和进度。 |
+| `src/lib.rs` | 模块导出 | 已实现 | 继续按公共 API 稳定性收敛导出。 |
+| `src/service.rs` | Discovery 协调服务 | 已实现 | 后续接跨进程 cache 和生产健康探测。 |
+| `src/scanner.rs` | source 调度 | 已实现 | 后续接真实 async timeout/metrics。 |
+| `src/normalizer.rs` | 候选归一化 | 已实现 | 后续补 source-specific schema mismatch 明细。 |
+| `src/health.rs` | 健康探测 | 已实现基础 | 后续接无副作用 provider health probe。 |
+| `src/cache.rs` | 发现缓存 | 已实现基础 | 后续实现 TTL、过期和持久化。 |
+| `src/sources/path_commands.rs` | PATH 命令来源 | 已实现 | 后续接 source auth 和路径策略。 |
+| `src/sources/mcp.rs` | MCP 来源 | 已实现 | 后续接真实 MCP registry/protocol metadata。 |
+| `src/sources/omx.rs` | OMX workflow 来源 | 已实现 | 后续接更细 workflow trust metadata。 |
+| `src/sources/codex.rs` | Codex 能力来源 | 已实现 | 后续接 Codex source auth 和版本 metadata。 |
+| `src/sources/registry.rs` | 外部 registry 来源 | 已实现边界 | 后续接真实 registry 协议、认证和缓存。 |
+| `src/README.md` | 源码目录说明 | 已更新 | 随 V1.9.x 继续维护。 |
 | `src/sources/README.md` | source 目录说明 | 简略 | 补充各来源信任边界。 |
 
 ## 验证计划
@@ -76,44 +75,22 @@
 | V1.1 | Adapter/MCP integration tests | discovery candidate 不等于 executable handle。 |
 | V1.5 | startup performance tests | 慢 source 不拖垮启动。 |
 
-## English
+## V1.9.3 Status
 
-`eva-discovery` owns trusted source scanning, normalization, health probing, and cache. Discovery returns candidates and rejected reasons only; authorization remains outside this crate.
+V1.9.3 implements multi-source discovery while preserving the central boundary: discovery never grants executable handles.
 
-## V1.1 Status
+- `DiscoveryCandidate` records candidate id, kind, source, trust level, optional adapter id, optional capability, rejected reason, and `handle_granted=false`.
+- `scan_sources` isolates source timeout/error/rejection and emits `DiscoverySourceReport` with source id, cache key, timeout, elapsed, status, error, and rejected reason.
+- `DiscoveryService::scan_project` performs a full multi-source scan; `scan_project_incremental` merges successful source snapshots into `DiscoveryCache`.
+- PATH command, MCP, OMX, Codex, project config, and external registry sources are now visible as isolated reports.
+- `DiscoveryHealth` reports `seen` or `rejected` status from candidates without side effects.
 
-V1.1 implements the first trusted discovery data path while preserving the central boundary: discovery never grants executable handles.
+Runtime execution must still go through `eva-adapter::AdapterRuntime`, provider routing, and policy gates.
 
-- `DiscoveryCandidate` records candidate id, kind, source, trust level, optional adapter id, optional capability, and `handle_granted=false`.
-- `ProjectDiscoverySource` reads already-loaded `ProjectConfig` and emits Adapter, capability, MCP tool, and Skill candidates from trusted project manifests.
-- `scan_sources` isolates source errors so a failing source can be reported without granting fallback execution rights.
-- `DiscoveryService` coordinates project scans and stores the latest snapshot in `DiscoveryCache`.
-- `DiscoveryHealth` reports `seen` or `rejected` status with human-readable messages, still without side effects.
-
-Disabled adapters become display-only/rejected candidates. Runtime execution must still go through `eva-adapter::AdapterRuntime` and policy gates.
-
-## V1.1 Verification
+## V1.9.3 Verification
 
 ```powershell
 cargo test -p eva-discovery
-cargo run -- discovery scan --output json
-```
-
-## V1.1 Status
-
-V1.1 implements the first trusted discovery data path while preserving the central boundary: discovery never grants executable handles.
-
-- `DiscoveryCandidate` records candidate id, kind, source, trust level, optional adapter id, optional capability, and `handle_granted=false`.
-- `ProjectDiscoverySource` reads already-loaded `ProjectConfig` and emits Adapter, capability, MCP tool, and Skill candidates from trusted project manifests.
-- `scan_sources` isolates source errors so a failing source can be reported without granting fallback execution rights.
-- `DiscoveryService` coordinates project scans and stores the latest snapshot in `DiscoveryCache`.
-- `DiscoveryHealth` reports `seen` or `rejected` status with human-readable messages, still without side effects.
-
-Disabled adapters become display-only/rejected candidates. Runtime execution must still go through `eva-adapter::AdapterRuntime` and policy gates.
-
-## V1.1 Verification
-
-```powershell
-cargo test -p eva-discovery
+cargo test -p eva-cli discovery_scan_json_reports_source_statuses
 cargo run -- discovery scan --output json
 ```

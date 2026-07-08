@@ -1,15 +1,15 @@
 # eva-cli/src
 
-更新时间：2026-07-07
+更新时间：2026-07-08
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.9.1 仍把主要命令实现集中在 `run.rs`，这样 version、config validate、inspect、task、external capability、memory context、hardware、backup、lifecycle、release、durable diagnostics gate 和 schema validation error 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.9.3 仍把主要命令实现集中在 `run.rs`，这样 version、config validate、inspect、task、external capability、memory context、hardware、backup、lifecycle、release、durable diagnostics gate、schema validation error 和 discovery source report 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | V1.9.1 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate、V1.6.5 durable diagnostics CLI，以及 V1.9.1 schema validation error context。 |
+| `run.rs` | V1.9.3 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate、V1.6.5 durable diagnostics CLI、V1.9.1 schema validation error context，以及 V1.9.3 discovery source report JSON/text 输出。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -47,6 +47,9 @@
   JSON envelope shape.
 - V1.9.2 checks the Skill runtime gate through `RuntimePolicyGate` before the
   runner is started.
+- V1.9.3 writes `discovery scan` source reports in text/JSON, including source
+  id, cache key, timeout, elapsed time, status, candidate counts, error, and
+  rejected reason.
 - Tests covering V1.1 JSON envelopes, blocked MCP tool probes, and V1.1 version identity.
 
 ## V1.2 Memory Context Surface

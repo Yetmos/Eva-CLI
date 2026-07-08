@@ -10,8 +10,11 @@ pub enum DiscoveryCandidateKind {
     Agent,
     Adapter,
     Capability,
+    PathCommand,
     McpTool,
     Skill,
+    Workflow,
+    RegistryEntry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -39,8 +42,11 @@ impl DiscoveryCandidateKind {
             Self::Agent => "agent",
             Self::Adapter => "adapter",
             Self::Capability => "capability",
+            Self::PathCommand => "path_command",
             Self::McpTool => "mcp_tool",
             Self::Skill => "skill",
+            Self::Workflow => "workflow",
+            Self::RegistryEntry => "registry_entry",
         }
     }
 }
@@ -92,6 +98,31 @@ impl DiscoveryCandidate {
             trust,
             adapter_id,
             capability: Some(capability),
+            handle_granted: false,
+            rejected_reason: None,
+        }
+    }
+
+    pub fn named(
+        source: impl Into<String>,
+        kind: DiscoveryCandidateKind,
+        name: impl Into<String>,
+        adapter_id: Option<AdapterId>,
+        trust: DiscoveryTrust,
+    ) -> Self {
+        let source = source.into();
+        let name = name.into();
+        let id = match &adapter_id {
+            Some(adapter_id) => format!("{}:{}:{}", kind.as_str(), adapter_id.as_str(), name),
+            None => format!("{}:{}", kind.as_str(), name),
+        };
+        Self {
+            id,
+            kind,
+            source,
+            trust,
+            adapter_id,
+            capability: None,
             handle_granted: false,
             rejected_reason: None,
         }
