@@ -1,6 +1,7 @@
 //! Knowledge item indexing and retrieval contracts.
 
-use eva_core::{EvaError, RequestId};
+use eva_core::{AdapterId, AgentId, CapabilityName, EvaError, RequestId};
+use eva_policy::{HighRiskAction, PolicyDecision, RuntimePolicyGate, RuntimePolicyRequest};
 use std::collections::BTreeMap;
 
 /// Architectural responsibility for this module.
@@ -38,6 +39,14 @@ pub struct KnowledgeSearchResult {
     pub item: KnowledgeItem,
     pub score: usize,
     pub matched_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalKnowledgeRetrievalRequest {
+    pub agent: AgentId,
+    pub capability: CapabilityName,
+    pub provider: AdapterId,
+    pub query: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -173,12 +182,50 @@ impl InMemoryKnowledgeService {
         Ok(results)
     }
 
+    pub fn snapshot_items(&self) -> Vec<KnowledgeItem> {
+        self.items.values().cloned().collect()
+    }
+
+    pub fn rebuild_from_items(items: Vec<KnowledgeItem>) -> Result<Self, EvaError> {
+        let mut service = Self::new();
+        for item in items {
+            service.index(item)?;
+        }
+        Ok(service)
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+}
+
+impl ExternalKnowledgeRetrievalRequest {
+    pub fn new(
+        agent: AgentId,
+        capability: CapabilityName,
+        provider: AdapterId,
+        query: impl Into<String>,
+    ) -> Self {
+        Self {
+            agent,
+            capability,
+            provider,
+            query: query.into(),
+        }
+    }
+
+    pub fn policy_decision(&self, gate: &RuntimePolicyGate) -> PolicyDecision {
+        gate.decide(
+            RuntimePolicyRequest::new(HighRiskAction::AdapterInvoke)
+                .with_agent(self.agent.clone())
+                .with_capability(self.capability.clone())
+                .with_provider(self.provider.clone())
+                .with_adapter(self.provider.clone()),
+        )
     }
 }
 
@@ -224,6 +271,7 @@ fn lightweight_digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eva_policy::PolicyDomainSet;
 
     fn item(id: &str, summary: &str, content: &str) -> KnowledgeItem {
         KnowledgeItem::new(
@@ -261,5 +309,44 @@ mod tests {
             .index(item("memory-plan", "two", "body"))
             .unwrap_err();
         assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn knowledge_index_can_be_rebuilt_from_items() {
+        let mut service = InMemoryKnowledgeService::new();
+        service
+            .index(item("memory-plan", "one", "memory body"))
+            .unwrap();
+        service
+            .index(item("runtime-plan", "two", "runtime body"))
+            .unwrap();
+
+        let rebuilt =
+            InMemoryKnowledgeService::rebuild_from_items(service.snapshot_items()).unwrap();
+        let results = rebuilt.search(&KnowledgeSearch::new("runtime")).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].item.id.as_str(), "runtime-plan");
+    }
+
+    #[test]
+    fn external_retrieval_requires_runtime_policy_gate() {
+        let mut domains = PolicyDomainSet::default();
+        domains
+            .adapter
+            .deny_capabilities
+            .insert(CapabilityName::parse("knowledge.retrieve").unwrap());
+        let gate = RuntimePolicyGate::new(domains);
+        let request = ExternalKnowledgeRetrievalRequest::new(
+            AgentId::parse("root-agent").unwrap(),
+            CapabilityName::parse("knowledge.retrieve").unwrap(),
+            AdapterId::parse("claude-api").unwrap(),
+            "memory",
+        );
+
+        let decision = request.policy_decision(&gate);
+
+        assert!(!decision.allowed);
+        assert_eq!(decision.action, HighRiskAction::AdapterInvoke);
     }
 }

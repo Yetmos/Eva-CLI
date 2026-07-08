@@ -2,6 +2,7 @@
 
 use crate::knowledge_service::{InMemoryKnowledgeService, KnowledgeSearch, KnowledgeSearchResult};
 use crate::memory_service::{InMemoryMemoryService, MemoryRecord};
+use crate::redaction::{redact_knowledge_result, redact_memory_record};
 use eva_core::{AgentId, EvaError, RequestId};
 
 /// Architectural responsibility for this module.
@@ -20,6 +21,7 @@ pub struct ContextRequest {
     pub agent_id: AgentId,
     pub query: String,
     pub budget: ContextBudget,
+    pub now_ms: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,11 +58,17 @@ impl ContextRequest {
             agent_id,
             query: query.into(),
             budget: ContextBudget::default(),
+            now_ms: 0,
         }
     }
 
     pub fn with_budget(mut self, budget: ContextBudget) -> Self {
         self.budget = budget;
+        self
+    }
+
+    pub fn with_now_ms(mut self, now_ms: u128) -> Self {
+        self.now_ms = now_ms;
         self
     }
 }
@@ -97,18 +105,25 @@ impl<'a> ContextBuilder<'a> {
         if request.query.trim().is_empty() {
             return Err(EvaError::invalid_argument("context query cannot be empty"));
         }
-        let memory = self.memory.snapshot_for_agent(
+        let memory = self.memory.snapshot_for_agent_at(
             &request.agent_id,
             request.budget.private_memory,
             request.budget.global_memory,
+            request.now_ms,
         );
         let knowledge = self.knowledge.search(
             &KnowledgeSearch::new(request.query.clone()).with_limit(request.budget.knowledge),
         )?;
+        let (private_memory, private_redactions) = redact_memory_records(memory.private);
+        let (global_memory, global_redactions) = redact_memory_records(memory.global);
+        let (knowledge, knowledge_redactions) = redact_knowledge_results(knowledge);
+        let redaction_count = private_redactions + global_redactions + knowledge_redactions;
         let audit = vec![
-            format!("private_memory:{}", memory.private.len()),
-            format!("global_memory:{}", memory.global.len()),
+            format!("private_memory:{}", private_memory.len()),
+            format!("global_memory:{}", global_memory.len()),
             format!("knowledge:{}", knowledge.len()),
+            format!("redaction:{}", redaction_count),
+            format!("expiration_reference_ms:{}", request.now_ms),
             "scope:agent_private_plus_global_plus_knowledge".to_owned(),
         ];
 
@@ -116,12 +131,40 @@ impl<'a> ContextBuilder<'a> {
             request_id: request.request_id,
             agent_id: request.agent_id,
             query: request.query,
-            memory: memory.private,
-            global_memory: memory.global,
+            memory: private_memory,
+            global_memory,
             knowledge,
             audit,
         })
     }
+}
+
+fn redact_memory_records(records: Vec<MemoryRecord>) -> (Vec<MemoryRecord>, usize) {
+    let mut replacement_count = 0;
+    let records = records
+        .into_iter()
+        .map(|record| {
+            let (record, count) = redact_memory_record(&record);
+            replacement_count += count;
+            record
+        })
+        .collect();
+    (records, replacement_count)
+}
+
+fn redact_knowledge_results(
+    results: Vec<KnowledgeSearchResult>,
+) -> (Vec<KnowledgeSearchResult>, usize) {
+    let mut replacement_count = 0;
+    let results = results
+        .into_iter()
+        .map(|result| {
+            let (result, count) = redact_knowledge_result(&result);
+            replacement_count += count;
+            result
+        })
+        .collect();
+    (results, replacement_count)
 }
 
 #[cfg(test)]
@@ -205,5 +248,28 @@ mod tests {
         assert_eq!(built.memory.len(), 1);
         assert_eq!(built.global_memory.len(), 0);
         assert_eq!(built.knowledge.len(), 0);
+    }
+
+    #[test]
+    fn context_filters_expired_memory_and_redacts_sensitive_values() {
+        let mut memory = InMemoryMemoryService::new();
+        let root = agent("root-agent");
+        memory
+            .write(MemoryWrite::private(root.clone(), "live", "token=secret").with_ttl_ms(100, 100))
+            .unwrap();
+        memory
+            .write(
+                MemoryWrite::private(root.clone(), "expired", "password=secret").with_ttl_ms(1, 1),
+            )
+            .unwrap();
+
+        let knowledge = InMemoryKnowledgeService::new();
+        let built = ContextBuilder::new(&memory, &knowledge)
+            .build(ContextRequest::new(request("req-memory-3"), root, "token").with_now_ms(50))
+            .unwrap();
+
+        assert_eq!(built.memory.len(), 1);
+        assert_eq!(built.memory[0].value, "token=[REDACTED]");
+        assert!(built.audit.contains(&"redaction:1".to_owned()));
     }
 }

@@ -19,6 +19,13 @@ pub enum MemoryRetention {
     Persistent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum MemoryCompression {
+    #[default]
+    None,
+    RunLength,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryRecord {
     pub key: String,
@@ -29,6 +36,9 @@ pub struct MemoryRecord {
     pub version: StateVersion,
     pub request_id: Option<RequestId>,
     pub audit_reason: String,
+    pub created_at_ms: u128,
+    pub expires_at_ms: Option<u128>,
+    pub compression: MemoryCompression,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +50,9 @@ pub struct MemoryWrite {
     pub retention: MemoryRetention,
     pub request_id: Option<RequestId>,
     pub audit_reason: String,
+    pub created_at_ms: u128,
+    pub expires_at_ms: Option<u128>,
+    pub compression: MemoryCompression,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +88,15 @@ impl MemoryVisibility {
             Self::Global => "global",
         }
     }
+
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "private" => Ok(Self::Private),
+            "global" => Ok(Self::Global),
+            _ => Err(EvaError::invalid_argument("unknown memory visibility")
+                .with_context("visibility", value)),
+        }
+    }
 }
 
 impl MemoryRetention {
@@ -82,6 +104,33 @@ impl MemoryRetention {
         match self {
             Self::Session => "session",
             Self::Persistent => "persistent",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "session" => Ok(Self::Session),
+            "persistent" => Ok(Self::Persistent),
+            _ => Err(EvaError::invalid_argument("unknown memory retention")
+                .with_context("retention", value)),
+        }
+    }
+}
+
+impl MemoryCompression {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::RunLength => "run_length",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "none" => Ok(Self::None),
+            "run_length" => Ok(Self::RunLength),
+            _ => Err(EvaError::invalid_argument("unknown memory compression")
+                .with_context("compression", value)),
         }
     }
 }
@@ -96,6 +145,9 @@ impl MemoryWrite {
             retention: MemoryRetention::Session,
             request_id: None,
             audit_reason: "agent private memory write".to_owned(),
+            created_at_ms: 0,
+            expires_at_ms: None,
+            compression: MemoryCompression::None,
         }
     }
 
@@ -108,6 +160,9 @@ impl MemoryWrite {
             retention: MemoryRetention::Persistent,
             request_id: None,
             audit_reason: "global memory write".to_owned(),
+            created_at_ms: 0,
+            expires_at_ms: None,
+            compression: MemoryCompression::None,
         }
     }
 
@@ -118,6 +173,27 @@ impl MemoryWrite {
 
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
         self.audit_reason = reason.into();
+        self
+    }
+
+    pub fn with_retention(mut self, retention: MemoryRetention) -> Self {
+        self.retention = retention;
+        self
+    }
+
+    pub fn with_created_at_ms(mut self, created_at_ms: u128) -> Self {
+        self.created_at_ms = created_at_ms;
+        self
+    }
+
+    pub fn with_ttl_ms(mut self, created_at_ms: u128, ttl_ms: u128) -> Self {
+        self.created_at_ms = created_at_ms;
+        self.expires_at_ms = Some(created_at_ms.saturating_add(ttl_ms));
+        self
+    }
+
+    pub fn with_compression(mut self, compression: MemoryCompression) -> Self {
+        self.compression = compression;
         self
     }
 }
@@ -184,12 +260,23 @@ impl InMemoryMemoryService {
             version,
             request_id: write.request_id,
             audit_reason: write.audit_reason,
+            created_at_ms: write.created_at_ms,
+            expires_at_ms: write.expires_at_ms,
+            compression: write.compression,
         };
         self.records.insert(index, record.clone());
         Ok(record)
     }
 
     pub fn read(&self, request: &MemoryReadRequest) -> Result<Option<MemoryRecord>, EvaError> {
+        self.read_at(request, 0)
+    }
+
+    pub fn read_at(
+        &self,
+        request: &MemoryReadRequest,
+        now_ms: u128,
+    ) -> Result<Option<MemoryRecord>, EvaError> {
         validate_memory_key(&request.key)?;
         self.authorize_read(request)?;
         let index = MemoryIndexKey::new(
@@ -197,16 +284,25 @@ impl InMemoryMemoryService {
             request.owner_agent.clone(),
             request.key.as_str(),
         );
-        Ok(self.records.get(&index).cloned())
+        Ok(self
+            .records
+            .get(&index)
+            .filter(|record| !record.is_expired_at(now_ms))
+            .cloned())
     }
 
     pub fn list_private(&self, requester: &AgentId) -> Vec<MemoryRecord> {
+        self.list_private_at(requester, 0)
+    }
+
+    pub fn list_private_at(&self, requester: &AgentId, now_ms: u128) -> Vec<MemoryRecord> {
         let mut records = self
             .records
             .values()
             .filter(|record| {
                 record.visibility == MemoryVisibility::Private
                     && record.owner_agent.as_ref() == Some(requester)
+                    && !record.is_expired_at(now_ms)
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -215,10 +311,16 @@ impl InMemoryMemoryService {
     }
 
     pub fn list_global(&self) -> Vec<MemoryRecord> {
+        self.list_global_at(0)
+    }
+
+    pub fn list_global_at(&self, now_ms: u128) -> Vec<MemoryRecord> {
         let mut records = self
             .records
             .values()
-            .filter(|record| record.visibility == MemoryVisibility::Global)
+            .filter(|record| {
+                record.visibility == MemoryVisibility::Global && !record.is_expired_at(now_ms)
+            })
             .cloned()
             .collect::<Vec<_>>();
         records.sort_by(|left, right| left.key.cmp(&right.key));
@@ -231,9 +333,19 @@ impl InMemoryMemoryService {
         private_limit: usize,
         global_limit: usize,
     ) -> MemorySnapshot {
+        self.snapshot_for_agent_at(requester, private_limit, global_limit, 0)
+    }
+
+    pub fn snapshot_for_agent_at(
+        &self,
+        requester: &AgentId,
+        private_limit: usize,
+        global_limit: usize,
+        now_ms: u128,
+    ) -> MemorySnapshot {
         MemorySnapshot {
-            private: take_records(self.list_private(requester), private_limit),
-            global: take_records(self.list_global(), global_limit),
+            private: take_records(self.list_private_at(requester, now_ms), private_limit),
+            global: take_records(self.list_global_at(now_ms), global_limit),
         }
     }
 
@@ -263,6 +375,25 @@ impl InMemoryMemoryService {
             );
         }
         Ok(())
+    }
+
+    pub fn insert_record(&mut self, record: MemoryRecord) -> Result<(), EvaError> {
+        validate_memory_key(&record.key)?;
+        let index = MemoryIndexKey::new(
+            record.visibility,
+            record.owner_agent.clone(),
+            record.key.as_str(),
+        );
+        self.records.insert(index, record);
+        Ok(())
+    }
+}
+
+impl MemoryRecord {
+    pub fn is_expired_at(&self, now_ms: u128) -> bool {
+        self.expires_at_ms
+            .map(|expires_at_ms| expires_at_ms <= now_ms)
+            .unwrap_or(false)
     }
 }
 
@@ -352,5 +483,22 @@ mod tests {
 
         assert_eq!(first.version, StateVersion(1));
         assert_eq!(second.version, StateVersion(2));
+    }
+
+    #[test]
+    fn expired_memory_is_omitted_from_snapshots() {
+        let mut service = InMemoryMemoryService::new();
+        let owner = agent("root-agent");
+        service
+            .write(MemoryWrite::private(owner.clone(), "fresh", "keep").with_ttl_ms(100, 100))
+            .unwrap();
+        service
+            .write(MemoryWrite::private(owner.clone(), "expired", "drop").with_ttl_ms(100, 1))
+            .unwrap();
+
+        let snapshot = service.snapshot_for_agent_at(&owner, 8, 8, 150);
+
+        assert_eq!(snapshot.private.len(), 1);
+        assert_eq!(snapshot.private[0].key, "fresh");
     }
 }

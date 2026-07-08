@@ -22,8 +22,9 @@ use eva_lifecycle::{
 };
 use eva_mcp::{InMemoryMcpClient, McpAllowlist, McpProbeReport};
 use eva_memory::{
-    BuiltContext, ContextBudget, ContextBuilder, ContextRequest, InMemoryKnowledgeService,
-    InMemoryMemoryService, KnowledgeId, KnowledgeItem, KnowledgeSource, MemoryWrite,
+    BuiltContext, ContextBudget, ContextBuilder, ContextRequest, FileSystemKnowledgeStore,
+    FileSystemMemoryStore, InMemoryKnowledgeService, InMemoryMemoryService, KnowledgeId,
+    KnowledgeItem, KnowledgeSource, MemoryCompression, MemoryRetention, MemoryWrite,
 };
 use eva_observability::{SpanId, TraceFields};
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
@@ -46,6 +47,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
@@ -380,6 +382,7 @@ struct MemoryContextOptions {
     private_limit: usize,
     global_limit: usize,
     knowledge_limit: usize,
+    durable_backend: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -902,6 +905,7 @@ fn parse_memory_context_options(args: &[String]) -> Result<MemoryContextOptions,
     let mut private_limit = 8;
     let mut global_limit = 8;
     let mut knowledge_limit = 8;
+    let mut durable_backend = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -939,6 +943,14 @@ fn parse_memory_context_options(args: &[String]) -> Result<MemoryContextOptions,
                     required_option(args, index, "knowledge limit option")?,
                 )?;
             }
+            "--durable-backend" | "--durable-backend-root" => {
+                index += 1;
+                durable_backend = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "durable backend option",
+                )?));
+            }
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -954,6 +966,7 @@ fn parse_memory_context_options(args: &[String]) -> Result<MemoryContextOptions,
         private_limit,
         global_limit,
         knowledge_limit,
+        durable_backend,
     })
 }
 
@@ -2866,49 +2879,85 @@ fn build_memory_context(
         );
     }
     let request_id = RequestId::parse(&options.request_id)?;
-    let mut memory = InMemoryMemoryService::new();
-    memory.write(
+    let now_ms = current_time_ms();
+    let memory_writes = seeded_memory_writes(project, &agent_id, &request_id, now_ms);
+    let knowledge_items = seeded_knowledge_items(request_id.clone())?;
+    let (memory, knowledge) = if let Some(root) = &options.durable_backend {
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(root))?;
+        let mut memory_store = FileSystemMemoryStore::from_durable_layout(backend.layout());
+        for write in memory_writes {
+            memory_store.write(write)?;
+        }
+        let mut knowledge_store = FileSystemKnowledgeStore::from_durable_layout(backend.layout());
+        for item in &knowledge_items {
+            knowledge_store.write_item(item)?;
+        }
+        (memory_store.load()?, knowledge_store.load_index()?)
+    } else {
+        let mut memory = InMemoryMemoryService::new();
+        for write in memory_writes {
+            memory.write(write)?;
+        }
+        let mut knowledge = InMemoryKnowledgeService::new();
+        for item in knowledge_items {
+            knowledge.index(item)?;
+        }
+        (memory, knowledge)
+    };
+    ContextBuilder::new(&memory, &knowledge).build(
+        ContextRequest::new(request_id, agent_id, options.query.clone())
+            .with_budget(ContextBudget {
+                private_memory: options.private_limit,
+                global_memory: options.global_limit,
+                knowledge: options.knowledge_limit,
+            })
+            .with_now_ms(now_ms),
+    )
+}
+
+fn seeded_memory_writes(
+    project: &ProjectConfig,
+    agent_id: &AgentId,
+    request_id: &RequestId,
+    now_ms: u128,
+) -> Vec<MemoryWrite> {
+    vec![
         MemoryWrite::private(
             agent_id.clone(),
             "agent.identity",
-            format!("agent {} owns this private context", agent_id),
+            format!("agent {agent_id} owns this private context"),
         )
-        .with_request_id(request_id.clone()),
-    )?;
-    memory.write(
+        .with_request_id(request_id.clone())
+        .with_created_at_ms(now_ms),
         MemoryWrite::private(
             agent_id.clone(),
             "project.agent_count",
             project.agents.len().to_string(),
         )
-        .with_request_id(request_id.clone()),
-    )?;
-    memory.write(
-        MemoryWrite::global("release.checkpoint", "V1.2 memory and knowledge context")
-            .with_request_id(request_id.clone()),
-    )?;
-    memory.write(
+        .with_request_id(request_id.clone())
+        .with_created_at_ms(now_ms),
+        MemoryWrite::private(agent_id.clone(), "session.secret", "token=memory-secret")
+            .with_request_id(request_id.clone())
+            .with_ttl_ms(now_ms, 60_000)
+            .with_compression(MemoryCompression::RunLength),
+        MemoryWrite::private(agent_id.clone(), "expired.note", "password=expired-secret")
+            .with_request_id(request_id.clone())
+            .with_ttl_ms(now_ms.saturating_sub(10_000), 1),
+        MemoryWrite::global(
+            "release.checkpoint",
+            "V1.9.4 durable memory and knowledge context",
+        )
+        .with_request_id(request_id.clone())
+        .with_retention(MemoryRetention::Persistent)
+        .with_created_at_ms(now_ms),
         MemoryWrite::global("workspace.root", display_path(&project.project_root))
-            .with_request_id(request_id.clone()),
-    )?;
-
-    let mut knowledge = InMemoryKnowledgeService::new();
-    index_context_knowledge(&mut knowledge, request_id.clone())?;
-    ContextBuilder::new(&memory, &knowledge).build(
-        ContextRequest::new(request_id, agent_id, options.query.clone()).with_budget(
-            ContextBudget {
-                private_memory: options.private_limit,
-                global_memory: options.global_limit,
-                knowledge: options.knowledge_limit,
-            },
-        ),
-    )
+            .with_request_id(request_id.clone())
+            .with_retention(MemoryRetention::Persistent)
+            .with_created_at_ms(now_ms),
+    ]
 }
 
-fn index_context_knowledge(
-    knowledge: &mut InMemoryKnowledgeService,
-    request_id: RequestId,
-) -> Result<(), EvaError> {
+fn seeded_knowledge_items(request_id: RequestId) -> Result<Vec<KnowledgeItem>, EvaError> {
     let items = [
         (
             "memory-service",
@@ -2929,19 +2978,27 @@ fn index_context_knowledge(
             "v1.2 knowledge index search citation digest",
         ),
     ];
-    for (id, title, summary, content) in items {
-        knowledge.index(
-            KnowledgeItem::new(
+    items
+        .into_iter()
+        .map(|(id, title, summary, content)| {
+            Ok(KnowledgeItem::new(
                 KnowledgeId::parse(id)?,
                 KnowledgeSource::new(format!("docs/{id}.md"), title, content.as_bytes()),
                 summary,
                 content,
             )?
             .with_tag("v1.2")
-            .with_request_id(request_id.clone()),
-        )?;
-    }
-    Ok(())
+            .with_tag("v1.9.4")
+            .with_request_id(request_id.clone()))
+        })
+        .collect()
+}
+
+fn current_time_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
 }
 
 fn write_command_error<W: Write>(
@@ -4434,14 +4491,20 @@ fn memory_context_json(context: &BuiltContext) -> String {
 
 fn memory_record_json(record: &eva_memory::MemoryRecord) -> String {
     format!(
-        "{{\"key\":{},\"value\":{},\"visibility\":{},\"owner_agent\":{},\"retention\":{},\"version\":{},\"audit_reason\":{}}}",
+        "{{\"key\":{},\"value\":{},\"visibility\":{},\"owner_agent\":{},\"retention\":{},\"version\":{},\"audit_reason\":{},\"created_at_ms\":{},\"expires_at_ms\":{},\"compression\":{}}}",
         json_string(&record.key),
         json_string(&record.value),
         json_string(record.visibility.as_str()),
         option_json(record.owner_agent.as_ref().map(|agent| agent.as_str())),
         json_string(record.retention.as_str()),
         record.version.0,
-        json_string(&record.audit_reason)
+        json_string(&record.audit_reason),
+        record.created_at_ms,
+        record
+            .expires_at_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_owned()),
+        json_string(record.compression.as_str())
     )
 }
 
@@ -5380,7 +5443,7 @@ fn help_text() -> &'static str {
         "  eva skill list [--project <path>] [--output text|json]\n",
         "  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n",
         "  eva discovery scan [--project <path>] [--output text|json]\n",
-        "  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--project <path>] [--output text|json]\n",
+        "  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--durable-backend <path>] [--project <path>] [--output text|json]\n",
         "  eva hardware list [--project <path>] [--output text|json]\n",
         "  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n",
         "  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n",
@@ -6034,6 +6097,49 @@ mod tests {
         assert!(stdout.contains("\"global_memory\""));
         assert!(stdout.contains("\"knowledge\""));
         assert!(stdout.contains("\"lua_context\""));
+    }
+
+    #[test]
+    fn memory_context_can_use_durable_backend_with_redaction_and_expiration() {
+        let root = workspace_root();
+        let durable_root = test_temp_dir("memory-durable");
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "memory",
+            "context",
+            "--project",
+            root.to_str().unwrap(),
+            "--agent",
+            "root-agent",
+            "--query",
+            "memory",
+            "--private-limit",
+            "8",
+            "--durable-backend",
+            durable_root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"memory.context\""));
+        assert!(stdout.contains("\"key\":\"session.secret\""), "{stdout}");
+        assert!(
+            stdout.contains("\"value\":\"token=[REDACTED]\""),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("\"compression\":\"run_length\""),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("\"redaction\":1") || stdout.contains("redaction:1"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("expired.note"), "{stdout}");
+        assert!(!stdout.contains("expired-secret"), "{stdout}");
+        assert!(durable_root.join("state").join("memory").is_dir());
+        assert!(durable_root.join("state").join("knowledge").is_dir());
+        fs::remove_dir_all(durable_root).ok();
     }
 
     #[test]

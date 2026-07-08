@@ -1,22 +1,27 @@
 # eva-memory/src
 
-Updated: 2026-07-04
+Updated: 2026-07-08
 
-This directory contains the V1.2 in-memory implementation of Eva's memory,
-knowledge, and context contracts.
+This directory contains Eva's memory, knowledge, durable persistence, redaction,
+and context contracts.
 
-| File | Responsibility | V1.2 Status |
+| File | Responsibility | Status |
 | --- | --- | --- |
-| `lib.rs` | Re-exports the public V1.2 memory, knowledge, and context types. | Implemented |
-| `memory_service.rs` | Defines private/global memory records, writes, reads, retention, visibility, versions, and Agent-private authorization. | Implemented |
-| `knowledge_service.rs` | Defines knowledge ids, source metadata, items, tags, ranked search, duplicate-id checks, and lightweight digests. | Implemented |
-| `context_builder.rs` | Combines memory and knowledge into `BuiltContext` under `ContextBudget`, then projects a `LuaContextSnapshot`. | Implemented |
+| `lib.rs` | Re-exports public memory, knowledge, durable store, redaction, and context types. | V1.9.4 |
+| `memory_service.rs` | Defines private/global memory records, writes, reads, retention, visibility, versions, TTL/expiration, compression metadata, and Agent-private authorization. | V1.9.4 |
+| `knowledge_service.rs` | Defines knowledge ids, source metadata, items, tags, ranked search, duplicate-id checks, lightweight digests, index rebuild, and external retrieval provider gate decisions. | V1.9.4 |
+| `durable.rs` | Filesystem memory and knowledge stores under durable backend `state/memory` and `state/knowledge`. | V1.9.4 |
+| `redaction.rs` | Sensitive token/password/secret/API-key redaction before context injection. | V1.9.4 |
+| `context_builder.rs` | Combines unexpired, redacted memory and knowledge into `BuiltContext` under `ContextBudget`, then projects a `LuaContextSnapshot`. | V1.9.4 |
 
 ## Local Contracts
 
 - `MemoryVisibility::Private` requires an owner `AgentId` and can only be read by that same Agent.
 - `MemoryVisibility::Global` has no private owner and is available to context assembly for any Agent.
-- `ContextBuilder` is the only V1.2 path that joins memory with knowledge for request execution.
+- `ContextBuilder` is the path that joins memory with knowledge for request execution.
+- Expired memory is filtered with an explicit `now_ms` reference before context output.
+- Sensitive memory and knowledge text is redacted before entering `BuiltContext`.
+- Durable stores rebuild in-memory services before context use; they do not grant raw file handles.
 - `LuaContextSnapshot` deliberately carries counts and audit details, not service handles.
 
 ## Tests
@@ -26,5 +31,6 @@ cargo test -p eva-memory
 ```
 
 Coverage includes privacy isolation, global visibility, version increments,
-knowledge duplicate rejection, tagged search, budget truncation, and context
+TTL filtering, durable round trips, knowledge index rebuild, external retrieval
+gate decisions, redaction, tagged search, budget truncation, and context
 construction without cross-Agent private memory leakage.
