@@ -1,6 +1,7 @@
 //! CLI command parsing, output envelopes, and process exit mapping.
 
 mod adapter_cmd;
+mod backup_cmd;
 mod config_cmd;
 mod discovery_cmd;
 mod hardware_cmd;
@@ -15,14 +16,14 @@ mod version_cmd;
 use crate::doctor::{doctor_project, CheckStatus, DoctorReport};
 use crate::inspect::{inspect_project, InspectReport};
 use adapter_cmd::AdapterCommand;
+use backup_cmd::{BackupCommand, BackupCreateOptions, BackupCreateResult};
 use discovery_cmd::DiscoveryCommand;
 use eva_backup::{
-    BackupArchiveManifest, BackupEncryptionKey, BackupEncryptionManifest, BackupEntry, BackupPlan,
-    BackupResult, BackupScope, BackupService, FileSystemRestoreApplyLockStore,
-    MigrationPackageManifest, MigrationPackageService, MigrationPreflight,
-    PreRestoreBackupEvidence, ReleasePointerPlan, ReleaseSnapshot, ReleaseSnapshotService,
-    RemoteBackupTarget, RestoreApplyCoordinator, RestoreApplyDryRunReport, RestoreApplyHealthCheck,
-    RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator, RestorePlan, SnapshotRole,
+    FileSystemRestoreApplyLockStore, MigrationPackageManifest, MigrationPackageService,
+    MigrationPreflight, PreRestoreBackupEvidence, ReleasePointerPlan, ReleaseSnapshot,
+    ReleaseSnapshotService, RestoreApplyCoordinator, RestoreApplyDryRunReport,
+    RestoreApplyHealthCheck, RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator,
+    RestorePlan, SnapshotRole,
 };
 use eva_config::load_project_config;
 use eva_core::{CapabilityName, ErrorKind, EvaError, GenerationId, InvokeStatus, RequestId};
@@ -39,7 +40,7 @@ use eva_runtime::{
     inspect_durable_backend, BasicRunOptions, BasicRunReport, DurableDiagnosticsOptions,
     DurableDiagnosticsReport, RuntimeBuilder,
 };
-use eva_storage::{FileSystemArtifactStore, InMemoryArtifactStore};
+use eva_storage::FileSystemArtifactStore;
 use hardware_cmd::HardwareCommand;
 use mcp_cmd::McpCommand;
 use memory_cmd::MemoryCommand;
@@ -193,7 +194,7 @@ where
             observability_cmd::execute_observability(command, stdout, stderr)
         }
         Command::Hardware(command) => hardware_cmd::execute_hardware(command, stdout, stderr),
-        Command::Backup(command) => execute_backup(command, stdout, stderr),
+        Command::Backup(command) => backup_cmd::execute_backup(command, stdout, stderr),
         Command::Snapshot(command) => execute_snapshot(command, stdout, stderr),
         Command::Restore(command) => execute_restore(command, stdout, stderr),
         Command::Upgrade(command) => execute_upgrade(command, stdout, stderr),
@@ -257,11 +258,6 @@ struct RunOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum BackupCommand {
-    Create(BackupCreateOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum SnapshotCommand {
     Create(SnapshotCreateOptions),
     Promote(SnapshotPromoteOptions),
@@ -277,18 +273,6 @@ enum RestoreCommand {
 enum UpgradeCommand {
     Check(UpgradeCheckOptions),
     Apply(UpgradeApplyOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BackupCreateOptions {
-    common: CommonOptions,
-    artifact_id: String,
-    request_id: String,
-    project_id: String,
-    reason: String,
-    dry_run: bool,
-    encrypt: bool,
-    artifact_store: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,12 +347,6 @@ enum OutputFormat {
 struct ArtifactStoreRef {
     kind: String,
     path: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BackupCreateResult {
-    backup: BackupResult,
-    artifact_store: ArtifactStoreRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,7 +440,9 @@ where
         "hardware" => Ok(Command::Hardware(hardware_cmd::parse_hardware_command(
             &args[1..],
         )?)),
-        "backup" => parse_backup_command(&args[1..]),
+        "backup" => Ok(Command::Backup(backup_cmd::parse_backup_command(
+            &args[1..],
+        )?)),
         "snapshot" => parse_snapshot_command(&args[1..]),
         "restore" => parse_restore_command(&args[1..]),
         "upgrade" => parse_upgrade_command(&args[1..]),
@@ -540,76 +520,6 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
         cancel_requested,
         retry_attempts,
         replay_dead_letters,
-    })
-}
-
-fn parse_backup_command(args: &[String]) -> Result<Command, EvaError> {
-    let (subcommand, rest) = args
-        .split_first()
-        .ok_or_else(|| EvaError::invalid_argument("missing backup subcommand"))?;
-    match subcommand.as_str() {
-        "create" => Ok(Command::Backup(BackupCommand::Create(
-            parse_backup_create_options(rest)?,
-        ))),
-        value => {
-            Err(EvaError::unsupported("unknown backup subcommand")
-                .with_context("subcommand", value))
-        }
-    }
-}
-
-fn parse_backup_create_options(args: &[String]) -> Result<BackupCreateOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut artifact_id = "backup-v14".to_owned();
-    let mut request_id = "req-backup-1".to_owned();
-    let mut project_id = "eva-cli".to_owned();
-    let mut reason = "pre-upgrade safety checkpoint".to_owned();
-    let mut dry_run = false;
-    let mut encrypt = false;
-    let mut artifact_store = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--artifact" | "--artifact-id" => {
-                index += 1;
-                artifact_id = required_option(args, index, "artifact option")?.clone();
-            }
-            "--request-id" | "--task-id" | "--task" => {
-                index += 1;
-                request_id = required_option(args, index, "request id option")?.clone();
-            }
-            "--project-id" => {
-                index += 1;
-                project_id = required_option(args, index, "project id option")?.clone();
-            }
-            "--reason" => {
-                index += 1;
-                reason = required_option(args, index, "reason option")?.clone();
-            }
-            "--artifact-store" | "--artifact-store-dir" => {
-                index += 1;
-                artifact_store = Some(PathBuf::from(required_option(
-                    args,
-                    index,
-                    "artifact store option",
-                )?));
-            }
-            "--dry-run" => dry_run = true,
-            "--encrypt" => encrypt = true,
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-    RequestId::parse(&request_id)?;
-    Ok(BackupCreateOptions {
-        common: parse_common_options(&passthrough)?,
-        artifact_id,
-        request_id,
-        project_id,
-        reason,
-        dry_run,
-        encrypt,
-        artifact_store,
     })
 }
 
@@ -1211,35 +1121,6 @@ where
     }
 }
 
-fn execute_backup<W, E>(
-    command: BackupCommand,
-    stdout: &mut W,
-    stderr: &mut E,
-) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match command {
-        BackupCommand::Create(options) => {
-            let trace = trace_for("cli.backup.create");
-            match create_backup_result(&options) {
-                Ok(result) => {
-                    write_backup_create(stdout, options.common.output, &result, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => write_command_error(
-                    stderr,
-                    options.common.output,
-                    "backup.create",
-                    &error,
-                    &trace,
-                ),
-            }
-        }
-    }
-}
-
 fn execute_snapshot<W, E>(
     command: SnapshotCommand,
     stdout: &mut W,
@@ -1438,46 +1319,6 @@ struct LockStoreRef {
     path: Option<String>,
 }
 
-fn create_backup_result(options: &BackupCreateOptions) -> Result<BackupCreateResult, EvaError> {
-    let scope = BackupScope::new(
-        options.project_id.clone(),
-        vec![
-            BackupEntry::new("config/eva.yaml", "runtime: in_memory_v1.0")?,
-            BackupEntry::new("config/adapters/hardware/scale-main.yaml", "enabled: false")?,
-            BackupEntry::new("state/release-pointer", options.project_id.as_bytes())?.redacted(),
-        ],
-    )?;
-    let mut plan = BackupPlan::new(
-        options.artifact_id.clone(),
-        RequestId::parse(&options.request_id)?,
-        GenerationId::parse("gen-v14")?,
-        "cli",
-        options.reason.clone(),
-        scope,
-    )?;
-    if options.dry_run {
-        plan = plan.dry_run();
-    }
-    if options.encrypt {
-        plan = plan.encrypted_with(BackupEncryptionKey::local_development());
-    }
-    let artifact_store = artifact_store_ref(options.artifact_store.as_deref());
-    let backup = match &options.artifact_store {
-        Some(path) => {
-            let mut store = FileSystemArtifactStore::new(path);
-            BackupService.create(plan, &mut store)?
-        }
-        None => {
-            let mut store = InMemoryArtifactStore::new();
-            BackupService.create(plan, &mut store)?
-        }
-    };
-    Ok(BackupCreateResult {
-        backup,
-        artifact_store,
-    })
-}
-
 fn create_snapshot_result(
     options: &SnapshotCreateOptions,
 ) -> Result<(BackupCreateResult, ReleaseSnapshot), EvaError> {
@@ -1491,7 +1332,7 @@ fn create_snapshot_result(
         encrypt: false,
         artifact_store: options.artifact_store.clone(),
     };
-    let backup = create_backup_result(&backup_options)?;
+    let backup = backup_cmd::create_backup_result(&backup_options)?;
     let snapshot = ReleaseSnapshotService.create(
         options.snapshot_id.clone(),
         options.role,
@@ -1510,7 +1351,7 @@ fn create_snapshot_promote(
         EvaError::invalid_argument("snapshot promote requires --confirm")
             .with_context("required_option", "--confirm")
     })?;
-    let backup = create_backup_result(&BackupCreateOptions {
+    let backup = backup_cmd::create_backup_result(&BackupCreateOptions {
         common: options.common.clone(),
         artifact_id: format!("backup-for-{}", options.snapshot_id),
         request_id: options.request_id.clone(),
@@ -2377,44 +2218,6 @@ fn durable_diagnostics_json(report: &DurableDiagnosticsReport) -> String {
     )
 }
 
-fn write_backup_create<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    result: &BackupCreateResult,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Backup artifact created").map_err(write_error_kind)?;
-            writeln!(writer, "artifact: {}", result.backup.manifest.artifact_id)
-                .map_err(write_error_kind)?;
-            writeln!(writer, "digest: {}", result.backup.manifest.digest)
-                .map_err(write_error_kind)?;
-            writeln!(
-                writer,
-                "archive_signature: {}",
-                result.backup.manifest.archive.signature.key_id
-            )
-            .map_err(write_error_kind)?;
-            writeln!(
-                writer,
-                "archive_encrypted: {}",
-                result.backup.manifest.archive.encrypted
-            )
-            .map_err(write_error_kind)?;
-            writeln!(writer, "verified: {}", result.backup.verification.verified)
-                .map_err(write_error_kind)?;
-            write_artifact_store_ref(writer, &result.artifact_store)
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("backup.create", EXIT_OK, &backup_result_json(result), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
 fn write_snapshot_create<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -2667,73 +2470,6 @@ fn write_upgrade_apply<W: Write>(
     }
 }
 
-fn backup_result_json(result: &BackupCreateResult) -> String {
-    format!(
-        "{{\"artifact_id\":{},\"request_id\":{},\"runtime_generation\":{},\"project_id\":{},\"digest\":{},\"verified\":{},\"artifact_store\":{},\"archive\":{},\"entries\":{},\"risks\":{},\"audit\":{}}}",
-        json_string(&result.backup.manifest.artifact_id),
-        json_string(result.backup.manifest.request_id.as_str()),
-        json_string(result.backup.manifest.runtime_generation.as_str()),
-        json_string(&result.backup.manifest.project_id),
-        json_string(&result.backup.manifest.digest),
-        result.backup.verification.verified,
-        artifact_store_ref_json(&result.artifact_store),
-        backup_archive_json(&result.backup.manifest.archive),
-        json_array(result.backup.manifest.entries.iter().map(|entry| {
-            format!(
-                "{{\"path\":{},\"size_bytes\":{},\"redacted\":{}}}",
-                json_string(&entry.path),
-                entry.size_bytes,
-                entry.redacted
-            )
-        })),
-        json_array(result.backup.plan.risks.iter().map(|risk| json_string(risk))),
-        json_array(result.backup.manifest.audit.iter().map(|entry| json_string(entry)))
-    )
-}
-
-fn backup_archive_json(archive: &BackupArchiveManifest) -> String {
-    format!(
-        "{{\"format\":{},\"artifact_key\":{},\"checksum\":{},\"plaintext_checksum\":{},\"encrypted\":{},\"signature\":{{\"key_id\":{},\"algorithm\":{},\"value\":{}}},\"encryption\":{},\"remote_target\":{}}}",
-        json_string(&archive.format),
-        json_string(&archive.artifact_key),
-        json_string(&archive.checksum),
-        json_string(&archive.plaintext_checksum),
-        archive.encrypted,
-        json_string(&archive.signature.key_id),
-        json_string(&archive.signature.algorithm),
-        json_string(&archive.signature.value),
-        backup_encryption_json(archive.encryption.as_ref()),
-        remote_backup_target_json(archive.remote_target.as_ref())
-    )
-}
-
-fn backup_encryption_json(encryption: Option<&BackupEncryptionManifest>) -> String {
-    encryption
-        .map(|encryption| {
-            format!(
-                "{{\"key_id\":{},\"algorithm\":{},\"plaintext_checksum\":{}}}",
-                json_string(&encryption.key_id),
-                json_string(&encryption.algorithm),
-                json_string(&encryption.plaintext_checksum)
-            )
-        })
-        .unwrap_or_else(|| "null".to_owned())
-}
-
-fn remote_backup_target_json(target: Option<&RemoteBackupTarget>) -> String {
-    target
-        .map(|target| {
-            format!(
-                "{{\"kind\":{},\"endpoint\":{},\"prefix\":{},\"required\":{}}}",
-                json_string(target.kind.as_str()),
-                json_string(&target.endpoint),
-                json_string(&target.prefix),
-                target.required
-            )
-        })
-        .unwrap_or_else(|| "null".to_owned())
-}
-
 fn snapshot_json(snapshot: &ReleaseSnapshot) -> String {
     format!(
         "{{\"snapshot_id\":{},\"role\":{},\"release_ref\":{},\"request_id\":{},\"runtime_generation\":{},\"backup_artifact_id\":{},\"backup_digest\":{},\"health_status\":{},\"audit\":{}}}",
@@ -2753,7 +2489,7 @@ fn snapshot_create_json(backup: &BackupCreateResult, snapshot: &ReleaseSnapshot)
     format!(
         "{{\"snapshot\":{},\"backup\":{}}}",
         snapshot_json(snapshot),
-        backup_result_json(backup)
+        backup_cmd::backup_result_json(backup)
     )
 }
 
@@ -2761,7 +2497,7 @@ fn snapshot_promote_json(result: &SnapshotPromoteResult) -> String {
     format!(
         "{{\"snapshot\":{},\"backup\":{},\"release_pointer_plan\":{}}}",
         snapshot_json(&result.snapshot),
-        backup_result_json(&result.backup),
+        backup_cmd::backup_result_json(&result.backup),
         release_pointer_plan_json(&result.pointer_plan)
     )
 }
@@ -2801,7 +2537,7 @@ fn restore_plan_json(result: &RestorePlanResult) -> String {
     format!(
         "{{\"snapshot\":{},\"backup\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
         snapshot_json(&result.snapshot),
-        backup_result_json(&result.backup),
+        backup_cmd::backup_result_json(&result.backup),
         json_string(&result.plan.snapshot_id),
         json_string(&result.plan.status),
         result.plan.apply_allowed,
