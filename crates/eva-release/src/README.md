@@ -14,7 +14,7 @@ run in local development and CI.
 | File | Responsibility |
 | --- | --- |
 | `lib.rs` | Re-exports the public release-hardening API and declares the module responsibility. |
-| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, and V1.10.3 signed backup archive gates. |
+| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, and V1.10.4 restore apply gate readiness. |
 | `security.rs` | Defines security severity and findings for policy, sandbox, secret, MCP, hardware, and lifecycle boundaries. |
 | `performance.rs` | Defines source-release performance budgets and the baseline report. |
 | `migration.rs` | Defines migration steps and the V1.5 compatibility policy. |
@@ -36,11 +36,14 @@ of CLI formatting so future release tooling can reuse the same data contracts.
 
 ## Design Notes
 
-- Warning findings are intentionally preserved. For example, destructive
-  restore and real process handoff are tracked as future risks instead of being
-  hidden because the current CLI keeps them plan-first.
+- Warning findings are intentionally preserved. For example, destructive file
+  mutation and real process handoff are tracked as future risks instead of
+  being hidden because the current CLI keeps them staged behind gates.
 - The signed backup archive gate proves archive signature and pre-restore
   evidence checks exist, but it does not enable destructive restore.
+- The restore apply gate proves confirmation, policy approval, filesystem lock,
+  health check, rollback-required output, and `mutation_executed:false` evidence
+  exist, but it does not execute workspace mutation.
 - Performance budgets are release-smoke thresholds, not statistically rigorous
   benchmarks. They exist to make regressions visible and to document the
   expected cost class of the current in-memory implementation.
@@ -59,4 +62,4 @@ The module-level tests cover:
 - all performance budgets are within threshold;
 - V1.4 -> V1.5 migration remains compatible and includes the new release
   command surface;
-- signed backup archive readiness is present without creating a blocked release state.
+- signed backup archive and restore apply gate readiness are present without creating a blocked release state.

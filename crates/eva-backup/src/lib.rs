@@ -24,5 +24,7 @@ pub use release_snapshot::{
     ReleasePointerPlan, ReleaseSnapshot, ReleaseSnapshotService, RestorePlan, SnapshotRole,
 };
 pub use restore_apply::{
-    PreRestoreBackupEvidence, RestoreApplyDryRunReport, RestoreApplyPlan, RestoreApplyValidator,
+    FileSystemRestoreApplyLockStore, InMemoryRestoreApplyLockStore, PreRestoreBackupEvidence,
+    RestoreApplyCoordinator, RestoreApplyDryRunReport, RestoreApplyHealthCheck, RestoreApplyLock,
+    RestoreApplyLockStore, RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator,
 };

@@ -115,6 +115,7 @@ impl ReleaseHardeningService {
         gates.push(lua_resource_limits_gate());
         gates.push(lua_hot_reload_lifecycle_gate());
         gates.push(signed_backup_archive_gate());
+        gates.push(restore_apply_gate());
 
         let status = if gates
             .iter()
@@ -147,6 +148,7 @@ impl ReleaseHardeningService {
                 "lua_resource_limits_ready".to_owned(),
                 "lua_hot_reload_lifecycle_ready".to_owned(),
                 "signed_backup_archive_baseline_ready".to_owned(),
+                "restore_apply_gate_baseline_ready".to_owned(),
             ],
         })
     }
@@ -211,15 +213,16 @@ impl ReleaseHardeningService {
                     "SEC-LIFE-001",
                     "restore_and_upgrade",
                     SecuritySeverity::Medium,
-                    "restore and upgrade remain diagnostic until real apply authorization exists",
+                    "restore and upgrade remain staged until real destructive mutation and process handoff exist",
                     vec![
                         "restore plan reports apply_allowed=false".to_owned(),
-                        "backup archive signatures and pre-restore evidence are verified before dry-run apply".to_owned(),
+                        "restore apply gate verifies confirmation, archive evidence, policy approval, lock, and health before reporting apply_allowed=true".to_owned(),
+                        "restore apply reports mutation_executed=false until destructive file mutation exists".to_owned(),
                         "upgrade check does not start supervisor processes".to_owned(),
                     ],
                     vec![
-                        "require destructive restore confirmation, policy approval, and health checks before apply".to_owned(),
-                        "require explicit apply authorization before process handoff".to_owned(),
+                        "require destructive restore file mutation to stay behind the existing restore apply gate".to_owned(),
+                        "require explicit process handoff authorization before release pointer mutation".to_owned(),
                     ],
                 ),
             ],
@@ -809,6 +812,27 @@ fn signed_backup_archive_gate() -> ReleaseGate {
     }
 }
 
+fn restore_apply_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-RESTORE-APPLY-GATE-001".to_owned(),
+        domain: "restore_apply_gate".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.10.4 restore apply confirmation, policy approval, filesystem lock, health gate, rollback-required plan, and staged mutation boundary are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-backup/src/restore_apply.rs RestoreApplyCoordinator".to_owned(),
+            "crates/eva-cli/src/run.rs restore apply --lock-store policy and health gate".to_owned(),
+            "cargo test -p eva-backup restore_apply".to_owned(),
+            "cargo test -p eva-cli restore_apply".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.10.4 Done".to_owned(),
+        ],
+        remediation: vec![
+            "do not execute destructive file mutation unless confirmation, evidence, policy, lock, and health gates still pass".to_owned(),
+            "keep mutation_executed explicit until restore apply performs real workspace mutation".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -873,6 +897,9 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-BACKUP-ARCHIVE-001" && gate.status == ReleaseGateStatus::Pass
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-RESTORE-APPLY-GATE-001" && gate.status == ReleaseGateStatus::Pass
+        }));
         assert!(report
             .audit
             .iter()
@@ -897,6 +924,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "signed_backup_archive_baseline_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "restore_apply_gate_baseline_ready"));
     }
 
     #[test]

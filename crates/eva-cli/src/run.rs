@@ -5,10 +5,11 @@ use crate::inspect::{inspect_project, InspectReport};
 use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};
 use eva_backup::{
     BackupArchiveManifest, BackupEncryptionKey, BackupEncryptionManifest, BackupEntry, BackupPlan,
-    BackupResult, BackupScope, BackupService, MigrationPackageManifest, MigrationPackageService,
-    MigrationPreflight, PreRestoreBackupEvidence, ReleasePointerPlan, ReleaseSnapshot,
-    ReleaseSnapshotService, RemoteBackupTarget, RestoreApplyDryRunReport, RestoreApplyPlan,
-    RestoreApplyValidator, RestorePlan, SnapshotRole,
+    BackupResult, BackupScope, BackupService, FileSystemRestoreApplyLockStore,
+    MigrationPackageManifest, MigrationPackageService, MigrationPreflight,
+    PreRestoreBackupEvidence, ReleasePointerPlan, ReleaseSnapshot, ReleaseSnapshotService,
+    RemoteBackupTarget, RestoreApplyCoordinator, RestoreApplyDryRunReport, RestoreApplyHealthCheck,
+    RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator, RestorePlan, SnapshotRole,
 };
 use eva_config::{load_project_config, schema_paths, AdapterTransport, ProjectConfig};
 use eva_core::{
@@ -87,6 +88,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "snapshot create",
     "snapshot promote",
     "restore plan",
+    "restore apply",
     "upgrade check",
     "upgrade apply",
     "release check",
@@ -465,7 +467,10 @@ struct RestoreApplyOptions {
     plan: Option<PathBuf>,
     confirm: Option<String>,
     artifact_store: Option<PathBuf>,
+    lock_store: Option<PathBuf>,
     dry_run: bool,
+    owner: String,
+    health: RestoreApplyHealthOption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,8 +555,24 @@ struct SnapshotPromoteResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RestoreApplyDryRunResult {
+    plan: RestoreApplyPlan,
     report: RestoreApplyDryRunReport,
     artifact_store: ArtifactStoreRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreApplyResult {
+    report: RestoreApplyReport,
+    dry_run: RestoreApplyDryRunReport,
+    artifact_store: ArtifactStoreRef,
+    lock_store: LockStoreRef,
+    rollback_plan: Option<RollbackPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RestoreApplyHealthOption {
+    Healthy,
+    Failed(String),
 }
 
 fn parse_command<I>(args: I) -> Result<Command, EvaError>
@@ -1356,7 +1377,10 @@ fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, E
     let mut plan = None;
     let mut confirm = None;
     let mut artifact_store = None;
+    let mut lock_store = None;
     let mut dry_run = false;
+    let mut owner = "cli".to_owned();
+    let mut health = RestoreApplyHealthOption::Healthy;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1376,6 +1400,23 @@ fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, E
                     "artifact store option",
                 )?));
             }
+            "--lock-store" | "--lock-store-dir" => {
+                index += 1;
+                lock_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "lock store option",
+                )?));
+            }
+            "--owner" => {
+                index += 1;
+                owner = required_option(args, index, "owner option")?.clone();
+            }
+            "--health" | "--health-check" => {
+                index += 1;
+                health =
+                    parse_restore_apply_health(required_option(args, index, "health option")?)?;
+            }
             "--dry-run" => {
                 dry_run = true;
             }
@@ -1388,8 +1429,24 @@ fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, E
         plan,
         confirm,
         artifact_store,
+        lock_store,
         dry_run,
+        owner,
+        health,
     })
+}
+
+fn parse_restore_apply_health(value: &str) -> Result<RestoreApplyHealthOption, EvaError> {
+    match value {
+        "healthy" | "pass" | "passed" => Ok(RestoreApplyHealthOption::Healthy),
+        "failed" | "fail" | "unhealthy" => Ok(RestoreApplyHealthOption::Failed(
+            "restore apply health check failed".to_owned(),
+        )),
+        value => Err(
+            EvaError::invalid_argument("restore apply health must be healthy or failed")
+                .with_context("health", value),
+        ),
+    }
 }
 
 fn parse_upgrade_command(args: &[String]) -> Result<Command, EvaError> {
@@ -2267,8 +2324,22 @@ where
                     ),
                 }
             } else {
-                match create_restore_apply_denial(&options) {
-                    Ok(()) => unreachable!("restore apply is intentionally denied in P6-001"),
+                match create_restore_apply(&options) {
+                    Ok(result) => {
+                        let exit_code = if result.report.apply_allowed {
+                            EXIT_OK
+                        } else {
+                            EXIT_RUNTIME_UNAVAILABLE
+                        };
+                        write_restore_apply(
+                            stdout,
+                            options.common.output,
+                            exit_code,
+                            &result,
+                            &trace,
+                        )?;
+                        Ok(exit_code)
+                    }
                     Err(error) => write_command_error(
                         stderr,
                         options.common.output,
@@ -2646,47 +2717,6 @@ fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult
     })
 }
 
-fn create_restore_apply_denial(options: &RestoreApplyOptions) -> Result<(), EvaError> {
-    let project = load_project_config(&options.common.project_root)?;
-    let policy_decision = RuntimePolicyGate::from_project(&project)?
-        .decide(RuntimePolicyRequest::new(HighRiskAction::RestoreApply));
-    let plan = options
-        .plan
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "<missing>".to_owned());
-    let confirm = options.confirm.as_deref().unwrap_or("<missing>");
-    let artifact_store = options
-        .artifact_store
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "<missing>".to_owned());
-    Err(EvaError::unsupported(
-        "restore apply is not enabled until durable apply gates are implemented",
-    )
-    .with_context("plan", plan)
-    .with_context("confirm", confirm)
-    .with_context("artifact_store", artifact_store)
-    .with_context("required_gate", "matching plan id")
-    .with_context("required_gate", "verified artifact digest")
-    .with_context("required_gate", "backup evidence")
-    .with_context("required_gate", "policy approval")
-    .with_context(
-        "policy_decision",
-        if policy_decision.allowed {
-            "allowed"
-        } else {
-            "denied"
-        },
-    )
-    .with_context("policy_reason", policy_decision.reason)
-    .with_context("policy_audit", policy_decision.audit.join(";"))
-    .with_context(
-        "suggestion",
-        "run restore plan and keep restore apply disabled until P6 apply gates are complete",
-    ))
-}
-
 fn create_restore_apply_dry_run(
     options: &RestoreApplyOptions,
 ) -> Result<RestoreApplyDryRunResult, EvaError> {
@@ -2734,8 +2764,53 @@ fn create_restore_apply_dry_run(
     let report = RestoreApplyValidator.dry_run(&plan, &artifact, Some(&pre_restore_artifact))?;
 
     Ok(RestoreApplyDryRunResult {
+        plan,
         report,
         artifact_store: artifact_store_ref(Some(artifact_store_path)),
+    })
+}
+
+fn create_restore_apply(options: &RestoreApplyOptions) -> Result<RestoreApplyResult, EvaError> {
+    let lock_store_path = options.lock_store.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply requires --lock-store")
+            .with_context("required_option", "--lock-store")
+    })?;
+    let dry_run = create_restore_apply_dry_run(options)?;
+    let project = load_project_config(&options.common.project_root)?;
+    let policy_decision = RuntimePolicyGate::from_project(&project)?
+        .decide(RuntimePolicyRequest::new(HighRiskAction::RestoreApply));
+    let health = match &options.health {
+        RestoreApplyHealthOption::Healthy => RestoreApplyHealthCheck::healthy(),
+        RestoreApplyHealthOption::Failed(message) => {
+            RestoreApplyHealthCheck::failed(message.clone())?
+        }
+    };
+    let mut lock_store = FileSystemRestoreApplyLockStore::new(lock_store_path);
+    let report = RestoreApplyCoordinator.apply(
+        &mut lock_store,
+        &dry_run.plan,
+        &dry_run.report,
+        &policy_decision,
+        health,
+        &options.owner,
+    )?;
+    let rollback_plan = if report.health.healthy {
+        None
+    } else {
+        Some(RollbackCoordinator.plan_failed_handoff(
+            GenerationId::parse("gen-restore-apply")?,
+            GenerationId::parse("gen-current")?,
+            report.health.message.clone(),
+            None,
+        )?)
+    };
+
+    Ok(RestoreApplyResult {
+        report,
+        dry_run: dry_run.report,
+        artifact_store: dry_run.artifact_store,
+        lock_store: lock_store_ref(Some(lock_store_path)),
+        rollback_plan,
     })
 }
 
@@ -4381,6 +4456,49 @@ fn write_restore_apply_dry_run<W: Write>(
     }
 }
 
+fn write_restore_apply<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    exit_code: i32,
+    result: &RestoreApplyResult,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Restore apply gate").map_err(write_error_kind)?;
+            writeln!(writer, "plan: {}", result.report.plan_id).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", result.report.status).map_err(write_error_kind)?;
+            writeln!(writer, "apply_allowed: {}", result.report.apply_allowed)
+                .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "mutation_executed: {}",
+                result.report.mutation_executed
+            )
+            .map_err(write_error_kind)?;
+            writeln!(writer, "lock: {}", result.report.lock.lock_id).map_err(write_error_kind)?;
+            writeln!(writer, "health: {}", result.report.health.message)
+                .map_err(write_error_kind)?;
+            if let Some(rollback) = &result.rollback_plan {
+                writeln!(writer, "rollback: {}", rollback.status).map_err(write_error_kind)?;
+            }
+            write_artifact_store_ref(writer, &result.artifact_store)?;
+            write_lock_store_ref(writer, &result.lock_store)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "restore.apply",
+                exit_code,
+                &restore_apply_json(result),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn write_artifact_store_ref<W: Write>(
     writer: &mut W,
     artifact_store: &ArtifactStoreRef,
@@ -4975,19 +5093,63 @@ fn restore_plan_json(result: &RestorePlanResult) -> String {
 }
 
 fn restore_apply_dry_run_json(result: &RestoreApplyDryRunResult) -> String {
+    restore_apply_dry_run_report_json(&result.report, &result.artifact_store)
+}
+
+fn restore_apply_dry_run_report_json(
+    report: &RestoreApplyDryRunReport,
+    artifact_store: &ArtifactStoreRef,
+) -> String {
     format!(
         "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"pre_restore_backup_artifact_key\":{},\"pre_restore_expected_digest\":{},\"pre_restore_actual_digest\":{},\"artifact_store\":{},\"audit\":{}}}",
+        json_string(&report.plan_id),
+        json_string(&report.status),
+        report.apply_allowed,
+        json_string(&report.backup_artifact_key),
+        json_string(&report.expected_digest),
+        json_string(&report.actual_digest),
+        json_string(&report.pre_restore_backup_artifact_key),
+        json_string(&report.pre_restore_expected_digest),
+        json_string(&report.pre_restore_actual_digest),
+        artifact_store_ref_json(artifact_store),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn restore_apply_json(result: &RestoreApplyResult) -> String {
+    format!(
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"backup_artifact_key\":{},\"pre_restore_backup_artifact_key\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"steps\":{},\"risks\":{},\"audit\":{},\"rollback_plan\":{}}}",
         json_string(&result.report.plan_id),
         json_string(&result.report.status),
         result.report.apply_allowed,
+        result.report.mutation_executed,
         json_string(&result.report.backup_artifact_key),
-        json_string(&result.report.expected_digest),
-        json_string(&result.report.actual_digest),
         json_string(&result.report.pre_restore_backup_artifact_key),
-        json_string(&result.report.pre_restore_expected_digest),
-        json_string(&result.report.pre_restore_actual_digest),
+        restore_apply_lock_json(&result.report.lock),
+        result.report.health.healthy,
+        json_string(&result.report.health.message),
         artifact_store_ref_json(&result.artifact_store),
-        json_array(result.report.audit.iter().map(|entry| json_string(entry)))
+        lock_store_ref_json(&result.lock_store),
+        restore_apply_dry_run_report_json(&result.dry_run, &result.artifact_store),
+        json_array(result.report.steps.iter().map(|step| json_string(step))),
+        json_array(result.report.risks.iter().map(|risk| json_string(risk))),
+        json_array(result.report.audit.iter().map(|entry| json_string(entry))),
+        result
+            .rollback_plan
+            .as_ref()
+            .map(rollback_plan_json)
+            .unwrap_or_else(|| "null".to_owned())
+    )
+}
+
+fn restore_apply_lock_json(lock: &eva_backup::RestoreApplyLock) -> String {
+    format!(
+        "{{\"lock_id\":{},\"plan_id\":{},\"owner\":{},\"status\":{},\"audit\":{}}}",
+        json_string(&lock.lock_id),
+        json_string(&lock.plan_id),
+        json_string(&lock.owner),
+        json_string(&lock.status),
+        json_array(lock.audit.iter().map(|entry| json_string(entry)))
     )
 }
 
@@ -5751,6 +5913,7 @@ fn help_text() -> &'static str {
         "  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
         "  eva snapshot promote --snapshot-id <id> --confirm <snapshot_id> [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
         "  eva restore plan [--snapshot-id <id>] [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
+        "  eva restore apply --plan <path> --confirm <plan_id> --artifact-store <path> --lock-store <path> [--dry-run] [--owner <id>] [--health healthy|failed] [--project <path>] [--output text|json]\n",
         "  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n",
         "  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--owner <id>] [--project <path>] [--output text|json]\n",
         "  eva release check [--target all|windows|linux|macos] [--project <path>] [--output text|json]\n",
@@ -5830,6 +5993,44 @@ mod tests {
                 fs::copy(&source, &destination).unwrap();
             }
         }
+    }
+
+    fn restore_apply_fixture(
+        name: &str,
+        plan_id: &str,
+        backup_id: &str,
+        pre_restore_id: &str,
+    ) -> (PathBuf, PathBuf) {
+        let artifact_root = test_temp_dir(name);
+        let plan_path = artifact_root.join("restore.plan");
+        let mut store = FileSystemArtifactStore::new(&artifact_root);
+        let artifact = store
+            .put_bytes(format!("backup/{backup_id}"), b"ok".as_slice())
+            .unwrap();
+        let pre_restore = store
+            .put_bytes(format!("backup/{pre_restore_id}"), b"before".as_slice())
+            .unwrap();
+        fs::write(
+            &plan_path,
+            format!(
+                "plan_id={plan_id}\nbackup_artifact_id={backup_id}\nbackup_digest={}\npre_restore_backup_artifact_id={pre_restore_id}\npre_restore_backup_digest={}\n",
+                artifact.digest, pre_restore.digest
+            ),
+        )
+        .unwrap();
+        (artifact_root, plan_path)
+    }
+
+    fn project_with_restore_apply_allowed(name: &str) -> PathBuf {
+        let root = workspace_root();
+        let fixture = test_temp_dir(name);
+        copy_dir(&root.join("config"), &fixture.join("config"));
+        fs::write(
+            fixture.join("config/policies/restore-allow.yaml"),
+            "runtime_policy:\n  allow_high_risk_actions:\n    - restore.apply\n",
+        )
+        .unwrap();
+        fixture
     }
 
     #[test]
@@ -6167,6 +6368,7 @@ mod tests {
         assert!(json_stdout.contains("lua_host_bindings_v1.7.2"));
         assert!(json_stdout.contains("lua_resource_limits_v1.7.3"));
         assert!(json_stdout.contains("lua_hot_reload_lifecycle_v1.7.4"));
+        assert!(json_stdout.contains("restore apply"));
         assert!(json_stdout.contains("release check"));
     }
 
@@ -6622,31 +6824,220 @@ mod tests {
     }
 
     #[test]
-    fn restore_apply_json_is_parsed_but_blocked() {
+    fn restore_apply_requires_lock_store_before_policy_gate() {
         let root = workspace_root();
+        let (artifact_root, plan_path) = restore_apply_fixture(
+            "restore-apply-missing-lock",
+            "plan-lock",
+            "apply-lock",
+            "pre-lock",
+        );
+
         let (exit_code, stdout, stderr) = run_cli(&[
             "restore",
             "apply",
             "--plan",
-            "restore-plan.json",
+            plan_path.to_str().unwrap(),
             "--confirm",
-            "plan-123",
+            "plan-lock",
             "--artifact-store",
-            ".eva/artifacts",
+            artifact_root.to_str().unwrap(),
             "--project",
             root.to_str().unwrap(),
             "--output",
             "json",
         ]);
 
-        assert_eq!(exit_code, EXIT_RUNTIME_UNAVAILABLE);
+        assert_eq!(exit_code, EXIT_CONFIG);
         assert!(stdout.is_empty());
         assert!(stderr.contains("\"command\":\"restore.apply\""));
-        assert!(stderr.contains("\"kind\":\"unsupported\""));
-        assert!(stderr.contains("\"key\":\"plan\",\"value\":\"restore-plan.json\""));
-        assert!(stderr.contains("\"key\":\"confirm\",\"value\":\"plan-123\""));
-        assert!(stderr.contains("\"key\":\"artifact_store\",\"value\":\".eva/artifacts\""));
-        assert!(stderr.contains("\"span_id\":\"cli.restore.apply\""));
+        assert!(stderr.contains("\"kind\":\"invalid_argument\""));
+        assert!(stderr.contains("\"required_option\",\"value\":\"--lock-store\""));
+
+        fs::remove_dir_all(artifact_root).unwrap();
+    }
+
+    #[test]
+    fn restore_apply_default_policy_denies_without_locking() {
+        let root = workspace_root();
+        let (artifact_root, plan_path) = restore_apply_fixture(
+            "restore-apply-policy-deny",
+            "plan-deny",
+            "apply-deny",
+            "pre-deny",
+        );
+        let lock_root = test_temp_dir("restore-apply-policy-deny-lock");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-deny",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_POLICY);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"command\":\"restore.apply\""));
+        assert!(stderr.contains("\"kind\":\"permission_denied\""));
+        assert!(stderr.contains("\"action\",\"value\":\"restore.apply\""));
+        assert!(!lock_root.join("plan-deny.restore.lock").exists());
+
+        fs::remove_dir_all(artifact_root).unwrap();
+        fs::remove_dir_all(lock_root).ok();
+    }
+
+    #[test]
+    fn restore_apply_gates_when_policy_lock_and_health_pass() {
+        let project = project_with_restore_apply_allowed("restore-apply-allowed-project");
+        let (artifact_root, plan_path) = restore_apply_fixture(
+            "restore-apply-allowed",
+            "plan-allowed",
+            "apply-allowed",
+            "pre-allowed",
+        );
+        let lock_root = test_temp_dir("restore-apply-allowed-lock");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-allowed",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"restore.apply\""));
+        assert!(stdout.contains("\"status\":\"gated\""));
+        assert!(stdout.contains("\"apply_allowed\":true"));
+        assert!(stdout.contains("\"mutation_executed\":false"));
+        assert!(stdout.contains("\"lock_id\":\"restore-apply-plan-allowed\""));
+        assert!(stdout.contains("\"health\":{\"healthy\":true"));
+        assert!(stdout.contains("\"rollback_plan\":null"));
+        assert!(lock_root.join("plan-allowed.restore.lock").exists());
+
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(artifact_root).unwrap();
+        fs::remove_dir_all(lock_root).unwrap();
+    }
+
+    #[test]
+    fn restore_apply_health_failure_emits_rollback_plan() {
+        let project = project_with_restore_apply_allowed("restore-apply-health-project");
+        let (artifact_root, plan_path) = restore_apply_fixture(
+            "restore-apply-health",
+            "plan-health",
+            "apply-health",
+            "pre-health",
+        );
+        let lock_root = test_temp_dir("restore-apply-health-lock");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-health",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--health",
+            "failed",
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_RUNTIME_UNAVAILABLE, "{stderr}");
+        assert!(stdout.contains("\"command\":\"restore.apply\""));
+        assert!(stdout.contains("\"status\":\"blocked\""));
+        assert!(stdout.contains("\"apply_allowed\":false"));
+        assert!(stdout.contains("\"mutation_executed\":false"));
+        assert!(stdout.contains("\"rollback_plan\":{"));
+        assert!(stdout.contains("\"rollback:planned\""));
+        assert!(lock_root.join("plan-health.restore.lock").exists());
+
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(artifact_root).unwrap();
+        fs::remove_dir_all(lock_root).unwrap();
+    }
+
+    #[test]
+    fn restore_apply_reports_lock_conflict() {
+        let project = project_with_restore_apply_allowed("restore-apply-conflict-project");
+        let (artifact_root, plan_path) = restore_apply_fixture(
+            "restore-apply-conflict",
+            "plan-conflict",
+            "apply-conflict",
+            "pre-conflict",
+        );
+        let lock_root = test_temp_dir("restore-apply-conflict-lock");
+
+        let first = run_cli(&[
+            "restore",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-conflict",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(first.0, EXIT_OK, "{}", first.2);
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-conflict",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"kind\":\"conflict\""));
+        assert!(stderr.contains("\"command\":\"restore.apply\""));
+        assert!(stderr.contains("restore apply lock already exists"));
+
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(artifact_root).unwrap();
+        fs::remove_dir_all(lock_root).unwrap();
     }
 
     #[test]
