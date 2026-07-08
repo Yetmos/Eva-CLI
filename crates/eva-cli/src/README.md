@@ -2,19 +2,21 @@
 
 更新时间：2026-07-08
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.11.4 开始把稳定命令组从 `run.rs` 拆到子模块：`version`、`config validate`、`adapter`、`mcp`、`discovery` 和 `release` 已迁移到 `run/` 子模块，并继续复用 `run.rs` 的 JSON envelope、trace 字段和 exit code helper。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.11.4 开始把稳定命令组从 `run.rs` 拆到子模块：`version`、`config validate`、`adapter`、`mcp`、`discovery`、`memory`、`observability` 和 `release` 已迁移到 `run/` 子模块，并继续复用 `run.rs` 的 JSON envelope、trace 字段和 exit code helper。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | V1.11.4 拆分中 | 顶层命令解析、formatter、exit code、共享 JSON envelope/trace helper，以及尚未拆出的 `inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、`skill list/run`、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4/V1.10.5 `backup create` / `snapshot create` / `restore plan` / `restore apply` / `upgrade check` / `upgrade apply --state-store`、V1.6.3 `--durable-backend` task store 入口、V1.6.5 durable diagnostics CLI、V1.9.4 `memory context --durable-backend` durable memory/knowledge 输出和 V1.9.5 `observability smoke` file JSONL backend 输出。 |
+| `run.rs` | V1.11.4 拆分中 | 顶层命令解析、formatter、exit code、共享 JSON envelope/trace helper，以及尚未拆出的 `inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、`skill list/run`、V1.3 `hardware list/probe/bind`、V1.4/V1.10.5 `backup create` / `snapshot create` / `restore plan` / `restore apply` / `upgrade check` / `upgrade apply --state-store`、V1.6.3 `--durable-backend` task store 入口和 V1.6.5 durable diagnostics CLI。 |
 | `run/version_cmd.rs` | V1.11.4 已实现 | `version` / `--version` 的 text/JSON writer，输出 release label、runtime mode 和稳定 command contract。 |
 | `run/config_cmd.rs` | V1.11.4 已实现 | `config validate` parser、`ValidationReport`、schema path summary 和 text/JSON writer；保持 schema validation error context 的 `config.validate` envelope 不变。 |
 | `run/adapter_cmd.rs` | V1.11.4 已实现 | `adapter list/probe` parser、runtime probe、text/JSON writer 和 adapter report formatter；保持外部能力诊断 envelope 不变。 |
 | `run/mcp_cmd.rs` | V1.11.4 已实现 | `mcp list/probe` parser、allowlist probe、text/JSON writer 和 MCP report formatter；保持未授权/非 MCP adapter 错误映射不变。 |
 | `run/discovery_cmd.rs` | V1.11.4 已实现 | `discovery scan` parser、source scan、source report text/JSON writer 和 discovery candidate formatter。 |
+| `run/memory_cmd.rs` | V1.11.4 已实现 | `memory context` parser、in-memory/durable context seed、text/JSON writer、memory/knowledge/Lua context formatter；保持 redaction、expiration 和 durable round trip 输出不变。 |
+| `run/observability_cmd.rs` | V1.11.4 已实现 | `observability smoke` parser、file JSONL backend smoke、text/JSON writer 和 degraded report formatter；保持 audit/metrics/span 计数和 continuity key 输出不变。 |
 | `run/release_cmd.rs` | V1.11.4 已实现 | `release check/security/perf/migration` 的 parser、artifact/distribution/security scan/benchmark evidence reader、文本/JSON writer 和 release report formatter；保持 V1.11.1-V1.11.3 release evidence gate 的公开 JSON shape 与 exit code 不变。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
@@ -40,7 +42,7 @@
 
 ## V1.1 External Capability Surface
 
-`run.rs` 拥有第一版外部能力命令面：
+CLI 拥有第一版外部能力命令面；V1.11.4 后其中 `adapter`、`mcp` 和 `discovery` 已拆入 `run/` 子模块：
 
 - Parser branches for `adapter`, `mcp`, `skill`, and `discovery` subcommands.
 - Execution bridges into `eva-adapter`, `eva-mcp`, and `eva-discovery` without adding persistent CLI state.
@@ -63,7 +65,7 @@
 
 ## V1.2 Memory Context Surface
 
-`run.rs` 实现 `eva memory context`。该命令加载项目配置，种子化一个 in-memory V1.2 context，调用 `eva_memory::ContextBuilder`，并输出与其他 CLI 命令一致的 JSON envelope。它是诊断 smoke，不是 durable memory persistence。
+`run/memory_cmd.rs` 实现 `eva memory context`。该命令加载项目配置，种子化一个 in-memory V1.2 context，调用 `eva_memory::ContextBuilder`，并输出与其他 CLI 命令一致的 JSON envelope。它是诊断 smoke，不是 durable memory persistence。
 
 当前 V1.2 测试覆盖：
 

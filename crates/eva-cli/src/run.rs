@@ -4,6 +4,8 @@ mod adapter_cmd;
 mod config_cmd;
 mod discovery_cmd;
 mod mcp_cmd;
+mod memory_cmd;
+mod observability_cmd;
 mod release_cmd;
 mod version_cmd;
 
@@ -22,7 +24,7 @@ use eva_backup::{
 };
 use eva_config::{load_project_config, AdapterTransport, ProjectConfig};
 use eva_core::{
-    AdapterId, AgentId, CapabilityName, ErrorKind, EvaError, GenerationId, InvokeStatus, RequestId,
+    AdapterId, CapabilityName, ErrorKind, EvaError, GenerationId, InvokeStatus, RequestId,
 };
 use eva_hardware::{discover_project_devices, DeviceCandidate, HardwareDiscoveryReport};
 use eva_lifecycle::{
@@ -32,16 +34,7 @@ use eva_lifecycle::{
     SupervisorHandoffReport, SupervisorHandoffRequest, SupervisorReport, UpgradeApplyCoordinator,
     UpgradeApplyLock, UpgradeApplyPlan, UpgradeApplyReport,
 };
-use eva_memory::{
-    BuiltContext, ContextBudget, ContextBuilder, ContextRequest, FileSystemKnowledgeStore,
-    FileSystemMemoryStore, InMemoryKnowledgeService, InMemoryMemoryService, KnowledgeId,
-    KnowledgeItem, KnowledgeSource, MemoryCompression, MemoryRetention, MemoryWrite,
-};
-use eva_observability::{
-    AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
-    MetricLabels, MetricName, MetricPoint, MetricSink, ObservabilitySmokeReport, SpanId,
-    TraceFields,
-};
+use eva_observability::{SpanId, TraceFields};
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use eva_runtime::{
     inspect_durable_backend, BasicRunOptions, BasicRunReport, DurableDiagnosticsOptions,
@@ -53,6 +46,8 @@ use eva_storage::{
     TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
 };
 use mcp_cmd::McpCommand;
+use memory_cmd::MemoryCommand;
+use observability_cmd::ObservabilityCommand;
 use release_cmd::ReleaseCommand;
 use std::env;
 use std::ffi::OsString;
@@ -60,7 +55,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
@@ -195,8 +190,10 @@ where
         Command::Mcp(command) => mcp_cmd::execute_mcp(command, stdout, stderr),
         Command::Skill(command) => execute_skill(command, stdout, stderr),
         Command::Discovery(command) => discovery_cmd::execute_discovery(command, stdout, stderr),
-        Command::Memory(command) => execute_memory(command, stdout, stderr),
-        Command::Observability(command) => execute_observability(command, stdout, stderr),
+        Command::Memory(command) => memory_cmd::execute_memory(command, stdout, stderr),
+        Command::Observability(command) => {
+            observability_cmd::execute_observability(command, stdout, stderr)
+        }
         Command::Hardware(command) => execute_hardware(command, stdout, stderr),
         Command::Backup(command) => execute_backup(command, stdout, stderr),
         Command::Snapshot(command) => execute_snapshot(command, stdout, stderr),
@@ -275,16 +272,6 @@ enum SkillCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum MemoryCommand {
-    Context(MemoryContextOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ObservabilityCommand {
-    Smoke(ObservabilitySmokeOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum HardwareCommand {
     List(CommonOptions),
     Probe(HardwareProbeOptions),
@@ -330,24 +317,6 @@ struct SkillRunOptions {
     capability: Option<String>,
     input: String,
     request_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MemoryContextOptions {
-    common: CommonOptions,
-    agent_id: String,
-    query: String,
-    request_id: String,
-    private_limit: usize,
-    global_limit: usize,
-    knowledge_limit: usize,
-    durable_backend: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ObservabilitySmokeOptions {
-    common: CommonOptions,
-    backend: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -538,8 +507,12 @@ where
         "discovery" => Ok(Command::Discovery(discovery_cmd::parse_discovery_command(
             &args[1..],
         )?)),
-        "memory" => parse_memory_command(&args[1..]),
-        "observability" => parse_observability_command(&args[1..]),
+        "memory" => Ok(Command::Memory(memory_cmd::parse_memory_command(
+            &args[1..],
+        )?)),
+        "observability" => Ok(Command::Observability(
+            observability_cmd::parse_observability_command(&args[1..])?,
+        )),
         "hardware" => parse_hardware_command(&args[1..]),
         "backup" => parse_backup_command(&args[1..]),
         "snapshot" => parse_snapshot_command(&args[1..]),
@@ -742,131 +715,6 @@ fn parse_skill_run_options(args: &[String]) -> Result<SkillRunOptions, EvaError>
         capability,
         input,
         request_id,
-    })
-}
-
-fn parse_memory_command(args: &[String]) -> Result<Command, EvaError> {
-    let (subcommand, rest) = args
-        .split_first()
-        .ok_or_else(|| EvaError::invalid_argument("missing memory subcommand"))?;
-    match subcommand.as_str() {
-        "context" => Ok(Command::Memory(MemoryCommand::Context(
-            parse_memory_context_options(rest)?,
-        ))),
-        value => {
-            Err(EvaError::unsupported("unknown memory subcommand")
-                .with_context("subcommand", value))
-        }
-    }
-}
-
-fn parse_memory_context_options(args: &[String]) -> Result<MemoryContextOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut agent_id = "root-agent".to_owned();
-    let mut query = "memory".to_owned();
-    let mut request_id = "req-memory-1".to_owned();
-    let mut private_limit = 8;
-    let mut global_limit = 8;
-    let mut knowledge_limit = 8;
-    let mut durable_backend = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--agent" | "--agent-id" => {
-                index += 1;
-                agent_id = required_option(args, index, "agent option")?.clone();
-            }
-            "--query" => {
-                index += 1;
-                query = required_option(args, index, "query option")?.clone();
-            }
-            "--request-id" | "--task-id" | "--task" => {
-                index += 1;
-                request_id = required_option(args, index, "request id option")?.clone();
-            }
-            "--private-limit" => {
-                index += 1;
-                private_limit = parse_usize_option(
-                    "private_limit",
-                    required_option(args, index, "private limit option")?,
-                )?;
-            }
-            "--global-limit" => {
-                index += 1;
-                global_limit = parse_usize_option(
-                    "global_limit",
-                    required_option(args, index, "global limit option")?,
-                )?;
-            }
-            "--knowledge-limit" => {
-                index += 1;
-                knowledge_limit = parse_usize_option(
-                    "knowledge_limit",
-                    required_option(args, index, "knowledge limit option")?,
-                )?;
-            }
-            "--durable-backend" | "--durable-backend-root" => {
-                index += 1;
-                durable_backend = Some(PathBuf::from(required_option(
-                    args,
-                    index,
-                    "durable backend option",
-                )?));
-            }
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-
-    AgentId::parse(&agent_id)?;
-    RequestId::parse(&request_id)?;
-    Ok(MemoryContextOptions {
-        common: parse_common_options(&passthrough)?,
-        agent_id,
-        query,
-        request_id,
-        private_limit,
-        global_limit,
-        knowledge_limit,
-        durable_backend,
-    })
-}
-
-fn parse_observability_command(args: &[String]) -> Result<Command, EvaError> {
-    let (subcommand, rest) = args
-        .split_first()
-        .ok_or_else(|| EvaError::invalid_argument("missing observability subcommand"))?;
-    match subcommand.as_str() {
-        "smoke" => Ok(Command::Observability(ObservabilityCommand::Smoke(
-            parse_observability_smoke_options(rest)?,
-        ))),
-        value => Err(EvaError::unsupported("unknown observability subcommand")
-            .with_context("subcommand", value)),
-    }
-}
-
-fn parse_observability_smoke_options(
-    args: &[String],
-) -> Result<ObservabilitySmokeOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut backend = PathBuf::from(".eva/observability");
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--backend" | "--observability-backend" => {
-                index += 1;
-                backend = PathBuf::from(required_option(args, index, "backend option")?);
-            }
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-
-    Ok(ObservabilitySmokeOptions {
-        common: parse_common_options(&passthrough)?,
-        backend,
     })
 }
 
@@ -1744,67 +1592,6 @@ where
                 Err(error) => {
                     write_command_error(stderr, options.common.output, "skill.run", &error, &trace)
                 }
-            }
-        }
-    }
-}
-
-fn execute_memory<W, E>(
-    command: MemoryCommand,
-    stdout: &mut W,
-    stderr: &mut E,
-) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match command {
-        MemoryCommand::Context(options) => {
-            let trace = trace_for("cli.memory.context");
-            match load_project_config(&options.common.project_root)
-                .and_then(|project| build_memory_context(&project, &options))
-            {
-                Ok(context) => {
-                    write_memory_context(stdout, options.common.output, &context, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => write_command_error(
-                    stderr,
-                    options.common.output,
-                    "memory.context",
-                    &error,
-                    &trace,
-                ),
-            }
-        }
-    }
-}
-
-fn execute_observability<W, E>(
-    command: ObservabilityCommand,
-    stdout: &mut W,
-    stderr: &mut E,
-) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match command {
-        ObservabilityCommand::Smoke(options) => {
-            let trace = trace_for("cli.observability.smoke")
-                .with_request_id(RequestId::parse("req-observability-smoke")?);
-            match run_observability_smoke(&options, &trace) {
-                Ok(report) => {
-                    write_observability_smoke(stdout, options.common.output, &report, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => write_command_error(
-                    stderr,
-                    options.common.output,
-                    "observability.smoke",
-                    &error,
-                    &trace,
-                ),
             }
         }
     }
@@ -2829,208 +2616,6 @@ fn parse_upgrade_apply_plan(data: &str) -> Result<UpgradeApplyPlan, EvaError> {
     )
 }
 
-fn build_memory_context(
-    project: &ProjectConfig,
-    options: &MemoryContextOptions,
-) -> Result<BuiltContext, EvaError> {
-    let agent_id = AgentId::parse(&options.agent_id)?;
-    if !project.agents.iter().any(|agent| agent.id == agent_id) {
-        return Err(
-            EvaError::not_found("Agent does not exist for memory context")
-                .with_context("agent_id", agent_id.as_str()),
-        );
-    }
-    let request_id = RequestId::parse(&options.request_id)?;
-    let now_ms = current_time_ms();
-    let memory_writes = seeded_memory_writes(project, &agent_id, &request_id, now_ms);
-    let knowledge_items = seeded_knowledge_items(request_id.clone())?;
-    let (memory, knowledge) = if let Some(root) = &options.durable_backend {
-        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(root))?;
-        let mut memory_store = FileSystemMemoryStore::from_durable_layout(backend.layout());
-        for write in memory_writes {
-            memory_store.write(write)?;
-        }
-        let mut knowledge_store = FileSystemKnowledgeStore::from_durable_layout(backend.layout());
-        for item in &knowledge_items {
-            knowledge_store.write_item(item)?;
-        }
-        (memory_store.load()?, knowledge_store.load_index()?)
-    } else {
-        let mut memory = InMemoryMemoryService::new();
-        for write in memory_writes {
-            memory.write(write)?;
-        }
-        let mut knowledge = InMemoryKnowledgeService::new();
-        for item in knowledge_items {
-            knowledge.index(item)?;
-        }
-        (memory, knowledge)
-    };
-    ContextBuilder::new(&memory, &knowledge).build(
-        ContextRequest::new(request_id, agent_id, options.query.clone())
-            .with_budget(ContextBudget {
-                private_memory: options.private_limit,
-                global_memory: options.global_limit,
-                knowledge: options.knowledge_limit,
-            })
-            .with_now_ms(now_ms),
-    )
-}
-
-fn seeded_memory_writes(
-    project: &ProjectConfig,
-    agent_id: &AgentId,
-    request_id: &RequestId,
-    now_ms: u128,
-) -> Vec<MemoryWrite> {
-    vec![
-        MemoryWrite::private(
-            agent_id.clone(),
-            "agent.identity",
-            format!("agent {agent_id} owns this private context"),
-        )
-        .with_request_id(request_id.clone())
-        .with_created_at_ms(now_ms),
-        MemoryWrite::private(
-            agent_id.clone(),
-            "project.agent_count",
-            project.agents.len().to_string(),
-        )
-        .with_request_id(request_id.clone())
-        .with_created_at_ms(now_ms),
-        MemoryWrite::private(agent_id.clone(), "session.secret", "token=memory-secret")
-            .with_request_id(request_id.clone())
-            .with_ttl_ms(now_ms, 60_000)
-            .with_compression(MemoryCompression::RunLength),
-        MemoryWrite::private(agent_id.clone(), "expired.note", "password=expired-secret")
-            .with_request_id(request_id.clone())
-            .with_ttl_ms(now_ms.saturating_sub(10_000), 1),
-        MemoryWrite::global(
-            "release.checkpoint",
-            "V1.9.4 durable memory and knowledge context",
-        )
-        .with_request_id(request_id.clone())
-        .with_retention(MemoryRetention::Persistent)
-        .with_created_at_ms(now_ms),
-        MemoryWrite::global("workspace.root", display_path(&project.project_root))
-            .with_request_id(request_id.clone())
-            .with_retention(MemoryRetention::Persistent)
-            .with_created_at_ms(now_ms),
-    ]
-}
-
-fn seeded_knowledge_items(request_id: RequestId) -> Result<Vec<KnowledgeItem>, EvaError> {
-    let items = [
-        (
-            "memory-service",
-            "MemoryService",
-            "Agent private memory is isolated by agent_id; global memory is shared and audited.",
-            "v1.2 memory private global audit context",
-        ),
-        (
-            "context-builder",
-            "ContextBuilder",
-            "ContextBuilder assembles private memory, global memory, and knowledge under request budgets.",
-            "v1.2 context budget knowledge lua controlled api",
-        ),
-        (
-            "knowledge-service",
-            "KnowledgeService",
-            "KnowledgeService indexes traceable documents and code snippets with lightweight digests.",
-            "v1.2 knowledge index search citation digest",
-        ),
-    ];
-    items
-        .into_iter()
-        .map(|(id, title, summary, content)| {
-            Ok(KnowledgeItem::new(
-                KnowledgeId::parse(id)?,
-                KnowledgeSource::new(format!("docs/{id}.md"), title, content.as_bytes()),
-                summary,
-                content,
-            )?
-            .with_tag("v1.2")
-            .with_tag("v1.9.4")
-            .with_request_id(request_id.clone()))
-        })
-        .collect()
-}
-
-fn current_time_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default()
-}
-
-fn run_observability_smoke(
-    options: &ObservabilitySmokeOptions,
-    trace: &TraceFields,
-) -> Result<ObservabilitySmokeReport, EvaError> {
-    let backend_root = options.backend.display().to_string();
-    let mut pipeline = BestEffortObservabilityPipeline::open(&options.backend);
-    let runtime_trace = trace.child_span(SpanId::parse("runtime.observability.smoke")?);
-    let provider_trace = runtime_trace
-        .clone()
-        .with_adapter_id(AdapterId::parse("codex-cli")?)
-        .with_capability(CapabilityName::parse("code.review")?)
-        .with_provider("codex-cli");
-
-    AuditSink::record(
-        &mut pipeline,
-        AuditEvent::new(
-            AuditAction::RuntimeStarted,
-            AuditOutcome::Ok,
-            runtime_trace.clone(),
-        )
-        .with_message("observability smoke recorded")
-        .with_field("backend", &backend_root),
-    )?;
-    MetricSink::record(
-        &mut pipeline,
-        MetricPoint::new(
-            MetricName::parse("runtime.events.accepted")?,
-            MetricKind::Counter,
-            1.0,
-        )
-        .with_labels(MetricLabels::runtime("in_memory_v1.0", "active")),
-    )?;
-    MetricSink::record(
-        &mut pipeline,
-        MetricPoint::new(
-            MetricName::parse("provider.invocations")?,
-            MetricKind::Counter,
-            1.0,
-        )
-        .with_labels(MetricLabels::provider(
-            "codex-cli",
-            "code.review",
-            "codex-cli",
-        )),
-    )?;
-    MetricSink::record(
-        &mut pipeline,
-        MetricPoint::new(
-            MetricName::parse("task.completed")?,
-            MetricKind::Counter,
-            1.0,
-        )
-        .with_labels(MetricLabels::task("completed", "root-agent")),
-    )?;
-    pipeline.export_span(
-        "cli.observability.smoke",
-        trace,
-        &[("component", "cli"), ("command", "observability.smoke")],
-    )?;
-    pipeline.export_span(
-        "runtime.provider.smoke",
-        &provider_trace,
-        &[("component", "provider"), ("adapter_id", "codex-cli")],
-    )?;
-
-    Ok(pipeline.smoke_report(backend_root, trace.continuity_key()))
-}
-
 fn write_command_error<W: Write>(
     stderr: &mut W,
     output: OutputFormat,
@@ -3528,68 +3113,6 @@ fn write_adapter_invoke<W: Write>(
     }
 }
 
-fn write_memory_context<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    context: &BuiltContext,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Eva memory context").map_err(write_error_kind)?;
-            writeln!(writer, "request: {}", context.request_id).map_err(write_error_kind)?;
-            writeln!(writer, "agent: {}", context.agent_id).map_err(write_error_kind)?;
-            writeln!(writer, "query: {}", context.query).map_err(write_error_kind)?;
-            writeln!(writer, "private_memory: {}", context.memory.len())
-                .map_err(write_error_kind)?;
-            writeln!(writer, "global_memory: {}", context.global_memory.len())
-                .map_err(write_error_kind)?;
-            writeln!(writer, "knowledge: {}", context.knowledge.len()).map_err(write_error_kind)
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope(
-                "memory.context",
-                EXIT_OK,
-                &memory_context_json(context),
-                trace
-            )
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn write_observability_smoke<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    report: &ObservabilitySmokeReport,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Eva observability smoke").map_err(write_error_kind)?;
-            writeln!(writer, "backend_root: {}", report.backend_root).map_err(write_error_kind)?;
-            writeln!(writer, "degraded: {}", report.degraded).map_err(write_error_kind)?;
-            writeln!(writer, "audit_events: {}", report.audit_events).map_err(write_error_kind)?;
-            writeln!(writer, "metric_points: {}", report.metric_points)
-                .map_err(write_error_kind)?;
-            writeln!(writer, "otel_spans: {}", report.otel_spans).map_err(write_error_kind)
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope(
-                "observability.smoke",
-                EXIT_OK,
-                &observability_smoke_json(report),
-                trace
-            )
-        )
-        .map_err(write_error_kind),
-    }
-}
-
 fn write_hardware_list<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -4010,80 +3533,6 @@ fn adapter_invoke_json(report: &AdapterInvokeReport) -> String {
         json_string(&report.output),
         json_array(report.audit.iter().map(|entry| json_string(entry))),
         trace_json(&report.trace)
-    )
-}
-
-fn memory_context_json(context: &BuiltContext) -> String {
-    format!(
-        "{{\"request_id\":{},\"agent_id\":{},\"query\":{},\"totals\":{{\"items\":{},\"private_memory\":{},\"global_memory\":{},\"knowledge\":{}}},\"memory\":{},\"global_memory\":{},\"knowledge\":{},\"lua_context\":{},\"audit\":{}}}",
-        json_string(context.request_id.as_str()),
-        json_string(context.agent_id.as_str()),
-        json_string(&context.query),
-        context.total_items(),
-        context.memory.len(),
-        context.global_memory.len(),
-        context.knowledge.len(),
-        json_array(context.memory.iter().map(memory_record_json)),
-        json_array(context.global_memory.iter().map(memory_record_json)),
-        json_array(context.knowledge.iter().map(knowledge_result_json)),
-        lua_context_json(context),
-        json_array(context.audit.iter().map(|entry| json_string(entry)))
-    )
-}
-
-fn memory_record_json(record: &eva_memory::MemoryRecord) -> String {
-    format!(
-        "{{\"key\":{},\"value\":{},\"visibility\":{},\"owner_agent\":{},\"retention\":{},\"version\":{},\"audit_reason\":{},\"created_at_ms\":{},\"expires_at_ms\":{},\"compression\":{}}}",
-        json_string(&record.key),
-        json_string(&record.value),
-        json_string(record.visibility.as_str()),
-        option_json(record.owner_agent.as_ref().map(|agent| agent.as_str())),
-        json_string(record.retention.as_str()),
-        record.version.0,
-        json_string(&record.audit_reason),
-        record.created_at_ms,
-        record
-            .expires_at_ms
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "null".to_owned()),
-        json_string(record.compression.as_str())
-    )
-}
-
-fn knowledge_result_json(result: &eva_memory::KnowledgeSearchResult) -> String {
-    format!(
-        "{{\"id\":{},\"title\":{},\"source\":{},\"digest\":{},\"summary\":{},\"score\":{},\"matched_by\":{}}}",
-        json_string(result.item.id.as_str()),
-        json_string(&result.item.source.title),
-        json_string(&result.item.source.uri),
-        json_string(&result.item.source.digest),
-        json_string(&result.item.summary),
-        result.score,
-        json_array(result.matched_by.iter().map(|entry| json_string(entry)))
-    )
-}
-
-fn lua_context_json(context: &BuiltContext) -> String {
-    let snapshot = context.lua_summary();
-    format!(
-        "{{\"private_memory_count\":{},\"global_memory_count\":{},\"knowledge_count\":{},\"audit\":{}}}",
-        snapshot.private_memory_count,
-        snapshot.global_memory_count,
-        snapshot.knowledge_count,
-        json_array(snapshot.audit.iter().map(|entry| json_string(entry)))
-    )
-}
-
-fn observability_smoke_json(report: &ObservabilitySmokeReport) -> String {
-    format!(
-        "{{\"backend_root\":{},\"degraded\":{},\"degraded_reasons\":{},\"audit_events\":{},\"metric_points\":{},\"otel_spans\":{},\"continuity_key\":{}}}",
-        json_string(&report.backend_root),
-        report.degraded,
-        json_array(report.degraded_reasons.iter().map(|entry| json_string(entry))),
-        report.audit_events,
-        report.metric_points,
-        report.otel_spans,
-        option_json(report.continuity_key.as_deref())
     )
 }
 
