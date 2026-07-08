@@ -2,14 +2,14 @@
 
 更新时间：2026-07-08
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.9.5 仍把主要命令实现集中在 `run.rs`，这样 version、config validate、inspect、task、external capability、memory context、hardware、backup、lifecycle、release、durable diagnostics gate、schema validation error、discovery source report、durable memory context 和 observability backend smoke 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.10.3 仍把主要命令实现集中在 `run.rs`，这样 version、config validate、inspect、task、external capability、memory context、hardware、backup、lifecycle、release、durable diagnostics gate、schema validation error、discovery source report、durable memory context、observability backend smoke 和 restore dry-run evidence 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | V1.9.5 已更新 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate、V1.6.5 durable diagnostics CLI、V1.9.1 schema validation error context、V1.9.3 discovery source report JSON/text 输出、V1.9.4 `memory context --durable-backend` durable memory/knowledge 输出，以及 V1.9.5 `observability smoke` file JSONL backend 输出。 |
+| `run.rs` | V1.10.3 已更新 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4/V1.10.3 `backup create` / `snapshot create` / `restore plan` / `restore apply --dry-run` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate、V1.6.5 durable diagnostics CLI、V1.9.1 schema validation error context、V1.9.3 discovery source report JSON/text 输出、V1.9.4 `memory context --durable-backend` durable memory/knowledge 输出，以及 V1.9.5 `observability smoke` file JSONL backend 输出。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -83,10 +83,10 @@
 
 `run.rs` 新增 V1.4 plan-first 命令：
 
-- `backup create`：调用 `eva_backup::BackupService`，默认写入 in-memory `ArtifactStore`；传入 `--artifact-store <path>` 时写入 filesystem artifact store，生成 manifest 并校验 digest。
+- `backup create`：调用 `eva_backup::BackupService`，默认写入 in-memory `ArtifactStore`；传入 `--artifact-store <path>` 时写入 filesystem artifact store，生成 signed archive manifest 并校验 digest/signature；传入 `--encrypt` 时生成 sealed archive metadata。
 - `snapshot create`：调用 `ReleaseSnapshotService` 生成 pre/post release snapshot，并可通过 `--artifact-store <path>` 落盘其依赖的 backup artifact。
 - `restore plan`：调用 `ReleaseSnapshotService::restore_plan`，输出 `apply_allowed:false`，并可通过 `--artifact-store <path>` 生成 filesystem backup evidence。
-- `restore apply`：默认仍返回稳定 `unsupported` JSON，并在错误上下文写入 V1.9.2 policy decision；带 `--dry-run` 时读取 plan 文件并验证 filesystem artifact store 中的 backup artifact key 和 digest，不执行破坏性恢复。
+- `restore apply`：默认仍返回稳定 `unsupported` JSON，并在错误上下文写入 V1.9.2 policy decision；带 `--dry-run` 时读取 plan 文件并验证 filesystem artifact store 中的 backup artifact key/digest 与 pre-restore backup evidence，不执行破坏性恢复。
 - `upgrade check`：调用 `eva_lifecycle` 的 in-memory supervisor、generation、drain、rollback 状态机，并结合 migration preflight。
 
 这些命令是 release/lifecycle readiness smoke，不执行真实文件恢复、release pointer 切换或 OS 进程启动。
@@ -141,7 +141,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 cargo run -- backup create --output json
 cargo run -- snapshot create --output json
 cargo run -- restore plan --output json
-cargo run -- restore apply --plan restore-plan.json --confirm plan-123 --artifact-store .eva/artifacts --output json
+cargo run -- restore apply --dry-run --plan restore-plan.txt --confirm plan-123 --artifact-store .eva/artifacts --output json
 cargo run -- upgrade check --output json
 cargo run -- inspect durable --durable-backend .eva/durable --output json
 cargo run -- observability smoke --backend .eva/ci-observability --output json

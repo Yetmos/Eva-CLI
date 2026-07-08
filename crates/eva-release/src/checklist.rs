@@ -114,6 +114,7 @@ impl ReleaseHardeningService {
         gates.push(lua_host_bindings_gate());
         gates.push(lua_resource_limits_gate());
         gates.push(lua_hot_reload_lifecycle_gate());
+        gates.push(signed_backup_archive_gate());
 
         let status = if gates
             .iter()
@@ -145,6 +146,7 @@ impl ReleaseHardeningService {
                 "lua_host_bindings_ready".to_owned(),
                 "lua_resource_limits_ready".to_owned(),
                 "lua_hot_reload_lifecycle_ready".to_owned(),
+                "signed_backup_archive_baseline_ready".to_owned(),
             ],
         })
     }
@@ -212,10 +214,11 @@ impl ReleaseHardeningService {
                     "restore and upgrade remain diagnostic until real apply authorization exists",
                     vec![
                         "restore plan reports apply_allowed=false".to_owned(),
+                        "backup archive signatures and pre-restore evidence are verified before dry-run apply".to_owned(),
                         "upgrade check does not start supervisor processes".to_owned(),
                     ],
                     vec![
-                        "require signed artifacts before destructive restore".to_owned(),
+                        "require destructive restore confirmation, policy approval, and health checks before apply".to_owned(),
                         "require explicit apply authorization before process handoff".to_owned(),
                     ],
                 ),
@@ -786,6 +789,26 @@ fn lua_hot_reload_lifecycle_gate() -> ReleaseGate {
     }
 }
 
+fn signed_backup_archive_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-BACKUP-ARCHIVE-001".to_owned(),
+        domain: "backup_archive".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.10.3 signed backup archive, optional archive sealing, remote target contract, and pre-restore evidence checks are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-backup/src/archive.rs BackupArchiveCodec".to_owned(),
+            "crates/eva-backup/src/restore_apply.rs PreRestoreBackupEvidence".to_owned(),
+            "cargo test -p eva-backup backup_service_can_encrypt_archive_and_record_remote_target".to_owned(),
+            "cargo test -p eva-cli restore_apply_dry_run_validates_durable_backup".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.10.3 Done".to_owned(),
+        ],
+        remediation: vec![
+            "do not enable destructive restore unless signed archive verification and pre-restore evidence remain blocking gates".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -847,6 +870,9 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-LUA-HOT-RELOAD-001" && gate.status == ReleaseGateStatus::Pass
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-BACKUP-ARCHIVE-001" && gate.status == ReleaseGateStatus::Pass
+        }));
         assert!(report
             .audit
             .iter()
@@ -867,6 +893,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "lua_hot_reload_lifecycle_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "signed_backup_archive_baseline_ready"));
     }
 
     #[test]

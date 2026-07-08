@@ -1,8 +1,9 @@
 # eva-release / Release Hardening
 
-Updated: 2026-07-04
+Updated: 2026-07-08
 
-`eva-release` owns the V1.5 release-hardening boundary. It turns the final
+`eva-release` owns the V1.5 release-hardening boundary and later additive
+runtime-readiness gates. It turns the final
 1.x readiness work into executable Rust contracts instead of leaving it as a
 manual checklist. The crate does not build installers, sign artifacts, run
 external scanners, or start runtime processes. It aggregates the readiness
@@ -13,12 +14,13 @@ to `eva-cli release ...`.
 
 | Area | Public Type | Behavior |
 | --- | --- | --- |
-| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, and migration gates. |
+| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, and signed backup archive gates. |
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
 | Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, hardware handle boundaries, and lifecycle apply risk. |
 | Performance baseline | `PerformanceBaselineReport`, `PerformanceBudget` | Defines source-release smoke budgets for EventBus, Scheduler, Adapter probe, memory context, backup, and release check. |
 | Migration and compatibility | `MigrationGuide`, `MigrationStep`, `CompatibilityPolicy` | Documents V1.4 -> V1.5 migration steps, compatibility guarantees, public CLI contracts, and deprecation policy. |
+| Backup archive readiness | `ReleaseGate` | Records V1.10.3 signed backup archive, optional sealing, remote target contract, and pre-restore evidence as release readiness evidence. |
 
 ## CLI Surface
 
@@ -54,6 +56,7 @@ runtime-unavailable exit code `4`.
 - keep security findings explicit and auditable;
 - define performance budgets as release-smoke contracts;
 - document the migration and compatibility policy that V1.5 promises;
+- expose signed backup archive and pre-restore evidence as a readiness gate;
 - preserve known future risks as warnings instead of silently enabling apply paths.
 
 `eva-release` does not:
@@ -79,4 +82,5 @@ cargo run -- release migration --output json
 The module tests assert that V1.5 readiness has no blocked required gates, the
 security review covers the required policy/sandbox/secret/MCP/hardware
 boundaries, all performance budgets are within threshold, and the V1.4 -> V1.5
-migration has no breaking changes.
+migration has no breaking changes. V1.10.3 also adds a required signed backup
+archive gate while destructive restore remains disabled.

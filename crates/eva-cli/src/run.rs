@@ -4,10 +4,11 @@ use crate::doctor::{doctor_project, CheckStatus, DoctorReport};
 use crate::inspect::{inspect_project, InspectReport};
 use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};
 use eva_backup::{
-    BackupEntry, BackupPlan, BackupResult, BackupScope, BackupService, MigrationPackageManifest,
-    MigrationPackageService, MigrationPreflight, ReleasePointerPlan, ReleaseSnapshot,
-    ReleaseSnapshotService, RestoreApplyDryRunReport, RestoreApplyPlan, RestoreApplyValidator,
-    RestorePlan, SnapshotRole,
+    BackupArchiveManifest, BackupEncryptionKey, BackupEncryptionManifest, BackupEntry, BackupPlan,
+    BackupResult, BackupScope, BackupService, MigrationPackageManifest, MigrationPackageService,
+    MigrationPreflight, PreRestoreBackupEvidence, ReleasePointerPlan, ReleaseSnapshot,
+    ReleaseSnapshotService, RemoteBackupTarget, RestoreApplyDryRunReport, RestoreApplyPlan,
+    RestoreApplyValidator, RestorePlan, SnapshotRole,
 };
 use eva_config::{load_project_config, schema_paths, AdapterTransport, ProjectConfig};
 use eva_core::{
@@ -425,6 +426,7 @@ struct BackupCreateOptions {
     project_id: String,
     reason: String,
     dry_run: bool,
+    encrypt: bool,
     artifact_store: Option<PathBuf>,
 }
 
@@ -1123,6 +1125,7 @@ fn parse_backup_create_options(args: &[String]) -> Result<BackupCreateOptions, E
     let mut project_id = "eva-cli".to_owned();
     let mut reason = "pre-upgrade safety checkpoint".to_owned();
     let mut dry_run = false;
+    let mut encrypt = false;
     let mut artifact_store = None;
     let mut index = 0;
     while index < args.len() {
@@ -1152,6 +1155,7 @@ fn parse_backup_create_options(args: &[String]) -> Result<BackupCreateOptions, E
                 )?));
             }
             "--dry-run" => dry_run = true,
+            "--encrypt" => encrypt = true,
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -1164,6 +1168,7 @@ fn parse_backup_create_options(args: &[String]) -> Result<BackupCreateOptions, E
         project_id,
         reason,
         dry_run,
+        encrypt,
         artifact_store,
     })
 }
@@ -2545,6 +2550,9 @@ fn create_backup_result(options: &BackupCreateOptions) -> Result<BackupCreateRes
     if options.dry_run {
         plan = plan.dry_run();
     }
+    if options.encrypt {
+        plan = plan.encrypted_with(BackupEncryptionKey::local_development());
+    }
     let artifact_store = artifact_store_ref(options.artifact_store.as_deref());
     let backup = match &options.artifact_store {
         Some(path) => {
@@ -2572,6 +2580,7 @@ fn create_snapshot_result(
         project_id: "eva-cli".to_owned(),
         reason: "snapshot capture requires verified backup artifact".to_owned(),
         dry_run: false,
+        encrypt: false,
         artifact_store: options.artifact_store.clone(),
     };
     let backup = create_backup_result(&backup_options)?;
@@ -2600,6 +2609,7 @@ fn create_snapshot_promote(
         project_id: "eva-cli".to_owned(),
         reason: format!("snapshot promote {}", options.snapshot_id),
         dry_run: false,
+        encrypt: false,
         artifact_store: options.artifact_store.clone(),
     })?;
     let snapshot = ReleaseSnapshotService.create(
@@ -2709,7 +2719,19 @@ fn create_restore_apply_dry_run(
             .with_context("artifact_key", &artifact_key)
             .with_context("artifact_store", artifact_store_path.display().to_string())
     })?;
-    let report = RestoreApplyValidator.dry_run(&plan, &artifact)?;
+    let pre_restore = plan.pre_restore_backup.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply requires pre-restore backup evidence")
+            .with_context("plan_id", &plan.plan_id)
+            .with_context("required_field", "pre_restore_backup_artifact_id")
+            .with_context("required_field", "pre_restore_backup_digest")
+    })?;
+    let pre_restore_key = pre_restore.backup_artifact_key();
+    let pre_restore_artifact = store.try_get_bytes(&pre_restore_key)?.ok_or_else(|| {
+        EvaError::not_found("restore apply pre-restore backup artifact is missing")
+            .with_context("artifact_key", &pre_restore_key)
+            .with_context("artifact_store", artifact_store_path.display().to_string())
+    })?;
+    let report = RestoreApplyValidator.dry_run(&plan, &artifact, Some(&pre_restore_artifact))?;
 
     Ok(RestoreApplyDryRunResult {
         report,
@@ -2736,6 +2758,8 @@ fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, EvaError> {
     let mut plan_id = None;
     let mut backup_artifact_id = None;
     let mut backup_digest = None;
+    let mut pre_restore_backup_artifact_id = None;
+    let mut pre_restore_backup_digest = None;
     for line in data.lines() {
         let line = line.trim_start_matches('\u{feff}');
         let trimmed = line.trim();
@@ -2751,6 +2775,10 @@ fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, EvaError> {
             "plan_id" => plan_id = Some(value.to_owned()),
             "backup_artifact_id" => backup_artifact_id = Some(value.to_owned()),
             "backup_digest" => backup_digest = Some(value.to_owned()),
+            "pre_restore_backup_artifact_id" => {
+                pre_restore_backup_artifact_id = Some(value.to_owned())
+            }
+            "pre_restore_backup_digest" => pre_restore_backup_digest = Some(value.to_owned()),
             _ => {
                 return Err(EvaError::invalid_argument(
                     "restore apply plan contains unsupported field",
@@ -2759,7 +2787,7 @@ fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, EvaError> {
             }
         }
     }
-    RestoreApplyPlan::new(
+    let plan = RestoreApplyPlan::new(
         plan_id.ok_or_else(|| EvaError::invalid_argument("restore apply plan missing plan_id"))?,
         backup_artifact_id.ok_or_else(|| {
             EvaError::invalid_argument("restore apply plan missing backup_artifact_id")
@@ -2767,7 +2795,16 @@ fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, EvaError> {
         backup_digest.ok_or_else(|| {
             EvaError::invalid_argument("restore apply plan missing backup_digest")
         })?,
-    )
+    )?;
+    match (pre_restore_backup_artifact_id, pre_restore_backup_digest) {
+        (Some(artifact_id), Some(digest)) => {
+            Ok(plan.with_pre_restore_backup(PreRestoreBackupEvidence::new(artifact_id, digest)?))
+        }
+        (None, None) => Ok(plan),
+        _ => Err(EvaError::invalid_argument(
+            "restore apply plan pre-restore backup evidence must include artifact id and digest",
+        )),
+    }
 }
 
 fn artifact_store_ref(path: Option<&Path>) -> ArtifactStoreRef {
@@ -4195,6 +4232,18 @@ fn write_backup_create<W: Write>(
                 .map_err(write_error_kind)?;
             writeln!(writer, "digest: {}", result.backup.manifest.digest)
                 .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "archive_signature: {}",
+                result.backup.manifest.archive.signature.key_id
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "archive_encrypted: {}",
+                result.backup.manifest.archive.encrypted
+            )
+            .map_err(write_error_kind)?;
             writeln!(writer, "verified: {}", result.backup.verification.verified)
                 .map_err(write_error_kind)?;
             write_artifact_store_ref(writer, &result.artifact_store)
@@ -4310,6 +4359,12 @@ fn write_restore_apply_dry_run<W: Write>(
             writeln!(writer, "status: {}", result.report.status).map_err(write_error_kind)?;
             writeln!(writer, "apply_allowed: {}", result.report.apply_allowed)
                 .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "pre_restore_backup: {}",
+                result.report.pre_restore_backup_artifact_key
+            )
+            .map_err(write_error_kind)?;
             write_artifact_store_ref(writer, &result.artifact_store)
         }
         OutputFormat::Json => writeln!(
@@ -4777,7 +4832,7 @@ fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
 
 fn backup_result_json(result: &BackupCreateResult) -> String {
     format!(
-        "{{\"artifact_id\":{},\"request_id\":{},\"runtime_generation\":{},\"project_id\":{},\"digest\":{},\"verified\":{},\"artifact_store\":{},\"entries\":{},\"risks\":{},\"audit\":{}}}",
+        "{{\"artifact_id\":{},\"request_id\":{},\"runtime_generation\":{},\"project_id\":{},\"digest\":{},\"verified\":{},\"artifact_store\":{},\"archive\":{},\"entries\":{},\"risks\":{},\"audit\":{}}}",
         json_string(&result.backup.manifest.artifact_id),
         json_string(result.backup.manifest.request_id.as_str()),
         json_string(result.backup.manifest.runtime_generation.as_str()),
@@ -4785,6 +4840,7 @@ fn backup_result_json(result: &BackupCreateResult) -> String {
         json_string(&result.backup.manifest.digest),
         result.backup.verification.verified,
         artifact_store_ref_json(&result.artifact_store),
+        backup_archive_json(&result.backup.manifest.archive),
         json_array(result.backup.manifest.entries.iter().map(|entry| {
             format!(
                 "{{\"path\":{},\"size_bytes\":{},\"redacted\":{}}}",
@@ -4796,6 +4852,49 @@ fn backup_result_json(result: &BackupCreateResult) -> String {
         json_array(result.backup.plan.risks.iter().map(|risk| json_string(risk))),
         json_array(result.backup.manifest.audit.iter().map(|entry| json_string(entry)))
     )
+}
+
+fn backup_archive_json(archive: &BackupArchiveManifest) -> String {
+    format!(
+        "{{\"format\":{},\"artifact_key\":{},\"checksum\":{},\"plaintext_checksum\":{},\"encrypted\":{},\"signature\":{{\"key_id\":{},\"algorithm\":{},\"value\":{}}},\"encryption\":{},\"remote_target\":{}}}",
+        json_string(&archive.format),
+        json_string(&archive.artifact_key),
+        json_string(&archive.checksum),
+        json_string(&archive.plaintext_checksum),
+        archive.encrypted,
+        json_string(&archive.signature.key_id),
+        json_string(&archive.signature.algorithm),
+        json_string(&archive.signature.value),
+        backup_encryption_json(archive.encryption.as_ref()),
+        remote_backup_target_json(archive.remote_target.as_ref())
+    )
+}
+
+fn backup_encryption_json(encryption: Option<&BackupEncryptionManifest>) -> String {
+    encryption
+        .map(|encryption| {
+            format!(
+                "{{\"key_id\":{},\"algorithm\":{},\"plaintext_checksum\":{}}}",
+                json_string(&encryption.key_id),
+                json_string(&encryption.algorithm),
+                json_string(&encryption.plaintext_checksum)
+            )
+        })
+        .unwrap_or_else(|| "null".to_owned())
+}
+
+fn remote_backup_target_json(target: Option<&RemoteBackupTarget>) -> String {
+    target
+        .map(|target| {
+            format!(
+                "{{\"kind\":{},\"endpoint\":{},\"prefix\":{},\"required\":{}}}",
+                json_string(target.kind.as_str()),
+                json_string(&target.endpoint),
+                json_string(&target.prefix),
+                target.required
+            )
+        })
+        .unwrap_or_else(|| "null".to_owned())
 }
 
 fn snapshot_json(snapshot: &ReleaseSnapshot) -> String {
@@ -4877,13 +4976,16 @@ fn restore_plan_json(result: &RestorePlanResult) -> String {
 
 fn restore_apply_dry_run_json(result: &RestoreApplyDryRunResult) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"artifact_store\":{},\"audit\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"pre_restore_backup_artifact_key\":{},\"pre_restore_expected_digest\":{},\"pre_restore_actual_digest\":{},\"artifact_store\":{},\"audit\":{}}}",
         json_string(&result.report.plan_id),
         json_string(&result.report.status),
         result.report.apply_allowed,
         json_string(&result.report.backup_artifact_key),
         json_string(&result.report.expected_digest),
         json_string(&result.report.actual_digest),
+        json_string(&result.report.pre_restore_backup_artifact_key),
+        json_string(&result.report.pre_restore_expected_digest),
+        json_string(&result.report.pre_restore_actual_digest),
         artifact_store_ref_json(&result.artifact_store),
         json_array(result.report.audit.iter().map(|entry| json_string(entry)))
     )
@@ -5645,7 +5747,7 @@ fn help_text() -> &'static str {
         "  eva hardware list [--project <path>] [--output text|json]\n",
         "  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n",
         "  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n",
-        "  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--artifact-store <path>] [--dry-run] [--project <path>] [--output text|json]\n",
+        "  eva backup create [--artifact-id <id>] [--request-id <id>] [--reason <text>] [--artifact-store <path>] [--dry-run] [--encrypt] [--project <path>] [--output text|json]\n",
         "  eva snapshot create [--snapshot-id <id>] [--release <ref>] [--role pre_release|post_release] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
         "  eva snapshot promote --snapshot-id <id> --confirm <snapshot_id> [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
         "  eva restore plan [--snapshot-id <id>] [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
@@ -6691,11 +6793,14 @@ mod tests {
         let artifact = store
             .put_bytes("backup/apply-ok", b"ok".as_slice())
             .unwrap();
+        let pre_restore = store
+            .put_bytes("backup/pre-apply-ok", b"before".as_slice())
+            .unwrap();
         fs::write(
             &plan_path,
             format!(
-                "plan_id=plan-ok\nbackup_artifact_id=apply-ok\nbackup_digest={}\n",
-                artifact.digest
+                "plan_id=plan-ok\nbackup_artifact_id=apply-ok\nbackup_digest={}\npre_restore_backup_artifact_id=pre-apply-ok\npre_restore_backup_digest={}\n",
+                artifact.digest, pre_restore.digest
             ),
         )
         .unwrap();
@@ -6721,6 +6826,7 @@ mod tests {
         assert!(stdout.contains("\"status\":\"dry_run_validated\""));
         assert!(stdout.contains("\"apply_allowed\":false"));
         assert!(stdout.contains("\"backup_artifact_key\":\"backup/apply-ok\""));
+        assert!(stdout.contains("\"pre_restore_backup_artifact_key\":\"backup/pre-apply-ok\""));
 
         fs::remove_dir_all(artifact_root).unwrap();
     }
@@ -6728,12 +6834,61 @@ mod tests {
     #[test]
     fn restore_apply_plan_allows_utf8_bom() {
         let plan = parse_restore_apply_plan(
-            "\u{feff}plan_id=plan-bom\nbackup_artifact_id=apply-bom\nbackup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\n",
+            "\u{feff}plan_id=plan-bom\nbackup_artifact_id=apply-bom\nbackup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\npre_restore_backup_artifact_id=pre-apply-bom\npre_restore_backup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\n",
         )
         .unwrap();
 
         assert_eq!(plan.plan_id, "plan-bom");
         assert_eq!(plan.backup_artifact_key(), "backup/apply-bom");
+        assert_eq!(
+            plan.pre_restore_backup
+                .as_ref()
+                .unwrap()
+                .backup_artifact_key(),
+            "backup/pre-apply-bom"
+        );
+    }
+
+    #[test]
+    fn restore_apply_dry_run_requires_pre_restore_evidence() {
+        let root = workspace_root();
+        let artifact_root = test_temp_dir("restore-apply-no-pre");
+        let plan_path = artifact_root.join("restore.plan");
+        let mut store = FileSystemArtifactStore::new(&artifact_root);
+        let artifact = store
+            .put_bytes("backup/apply-no-pre", b"ok".as_slice())
+            .unwrap();
+        fs::write(
+            &plan_path,
+            format!(
+                "plan_id=plan-no-pre\nbackup_artifact_id=apply-no-pre\nbackup_digest={}\n",
+                artifact.digest
+            ),
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--dry-run",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-no-pre",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"kind\":\"invalid_argument\""));
+        assert!(stderr.contains("pre_restore_backup_artifact_id"));
+
+        fs::remove_dir_all(artifact_root).unwrap();
     }
 
     #[test]
@@ -6741,10 +6896,16 @@ mod tests {
         let root = workspace_root();
         let artifact_root = test_temp_dir("restore-apply-missing");
         let plan_path = artifact_root.join("restore.plan");
-        fs::create_dir_all(&artifact_root).unwrap();
+        let mut store = FileSystemArtifactStore::new(&artifact_root);
+        let pre_restore = store
+            .put_bytes("backup/pre-missing", b"before".as_slice())
+            .unwrap();
         fs::write(
             &plan_path,
-            "plan_id=plan-missing\nbackup_artifact_id=missing\nbackup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\n",
+            format!(
+                "plan_id=plan-missing\nbackup_artifact_id=missing\nbackup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\npre_restore_backup_artifact_id=pre-missing\npre_restore_backup_digest={}\n",
+                pre_restore.digest
+            ),
         )
         .unwrap();
 
@@ -6773,6 +6934,48 @@ mod tests {
     }
 
     #[test]
+    fn restore_apply_dry_run_reports_missing_pre_restore_backup() {
+        let root = workspace_root();
+        let artifact_root = test_temp_dir("restore-apply-missing-pre");
+        let plan_path = artifact_root.join("restore.plan");
+        let mut store = FileSystemArtifactStore::new(&artifact_root);
+        let artifact = store
+            .put_bytes("backup/apply-missing-pre", b"ok".as_slice())
+            .unwrap();
+        fs::write(
+            &plan_path,
+            format!(
+                "plan_id=plan-missing-pre\nbackup_artifact_id=apply-missing-pre\nbackup_digest={}\npre_restore_backup_artifact_id=pre-missing\npre_restore_backup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\n",
+                artifact.digest
+            ),
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--dry-run",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-missing-pre",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"kind\":\"not_found\""));
+        assert!(stderr.contains("\"artifact_key\",\"value\":\"backup/pre-missing\""));
+
+        fs::remove_dir_all(artifact_root).unwrap();
+    }
+
+    #[test]
     fn restore_apply_dry_run_reports_digest_mismatch() {
         let root = workspace_root();
         let artifact_root = test_temp_dir("restore-apply-mismatch");
@@ -6781,11 +6984,14 @@ mod tests {
         let artifact = store
             .put_bytes("backup/apply-mismatch", b"ok".as_slice())
             .unwrap();
+        let pre_restore = store
+            .put_bytes("backup/pre-mismatch", b"before".as_slice())
+            .unwrap();
         fs::write(
             &plan_path,
             format!(
-                "plan_id=plan-mismatch\nbackup_artifact_id=apply-mismatch\nbackup_digest={}\n",
-                artifact.digest
+                "plan_id=plan-mismatch\nbackup_artifact_id=apply-mismatch\nbackup_digest={}\npre_restore_backup_artifact_id=pre-mismatch\npre_restore_backup_digest={}\n",
+                artifact.digest, pre_restore.digest
             ),
         )
         .unwrap();

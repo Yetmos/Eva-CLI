@@ -1,5 +1,7 @@
 //! Artifact and manifest integrity verification.
 
+use crate::archive::{verify_record_checksum, BackupArchiveVerifier, BackupSigningKey};
+use crate::backup_service::BackupManifest;
 use eva_core::EvaError;
 use eva_storage::ArtifactRecord;
 
@@ -29,12 +31,7 @@ impl ManifestVerifier {
                     .with_context("artifact_key", &record.key),
             );
         }
-        if record.digest != expected_digest {
-            return Err(EvaError::conflict("artifact digest mismatch")
-                .with_context("artifact_key", &record.key)
-                .with_context("expected_digest", expected_digest)
-                .with_context("actual_digest", &record.digest));
-        }
+        verify_record_checksum(record, expected_digest)?;
         Ok(VerificationReport {
             artifact_key: record.key.clone(),
             expected_digest: expected_digest.to_owned(),
@@ -45,6 +42,37 @@ impl ManifestVerifier {
                 format!("artifact:{}", record.key),
             ],
         })
+    }
+
+    pub fn verify_backup_archive(
+        record: &ArtifactRecord,
+        manifest: &BackupManifest,
+        signing_key: &BackupSigningKey,
+    ) -> Result<VerificationReport, EvaError> {
+        if manifest.archive.artifact_key != record.key {
+            return Err(EvaError::conflict("backup archive artifact key mismatch")
+                .with_context("expected_artifact_key", &manifest.archive.artifact_key)
+                .with_context("actual_artifact_key", &record.key));
+        }
+        if manifest.archive.checksum != manifest.digest {
+            return Err(
+                EvaError::conflict("backup archive manifest checksum mismatch")
+                    .with_context("artifact_key", &record.key)
+                    .with_context("manifest_digest", &manifest.digest)
+                    .with_context("archive_checksum", &manifest.archive.checksum),
+            );
+        }
+        let mut report = Self::verify_artifact(record, &manifest.digest)?;
+        let signature = BackupArchiveVerifier::verify_signature(&manifest.archive, signing_key)?;
+        report.audit.push("archive:verified".to_owned());
+        report.audit.push(format!("signature:{}", signature.key_id));
+        if manifest.archive.encrypted {
+            report.audit.push("archive:encrypted".to_owned());
+        }
+        if manifest.archive.remote_target.is_some() {
+            report.audit.push("remote_target:declared".to_owned());
+        }
+        Ok(report)
     }
 }
 
@@ -59,5 +87,17 @@ mod tests {
         let error = ManifestVerifier::verify_artifact(&record, "sha256:wrong").unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn verifier_rejects_corrupt_record_bytes() {
+        let mut record = ArtifactRecord::new("backup/test", b"ok".as_slice());
+        let expected = record.digest.clone();
+        record.bytes = b"tampered".to_vec();
+
+        let error = ManifestVerifier::verify_artifact(&record, &expected).unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert!(error.message().contains("bytes digest"));
     }
 }
