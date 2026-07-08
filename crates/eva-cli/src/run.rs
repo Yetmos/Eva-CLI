@@ -7,6 +7,7 @@ mod mcp_cmd;
 mod memory_cmd;
 mod observability_cmd;
 mod release_cmd;
+mod skill_cmd;
 mod task_cmd;
 mod version_cmd;
 
@@ -14,7 +15,6 @@ use crate::doctor::{doctor_project, CheckStatus, DoctorReport};
 use crate::inspect::{inspect_project, InspectReport};
 use adapter_cmd::AdapterCommand;
 use discovery_cmd::DiscoveryCommand;
-use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterRuntime};
 use eva_backup::{
     BackupArchiveManifest, BackupEncryptionKey, BackupEncryptionManifest, BackupEntry, BackupPlan,
     BackupResult, BackupScope, BackupService, FileSystemRestoreApplyLockStore,
@@ -23,7 +23,7 @@ use eva_backup::{
     RemoteBackupTarget, RestoreApplyCoordinator, RestoreApplyDryRunReport, RestoreApplyHealthCheck,
     RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator, RestorePlan, SnapshotRole,
 };
-use eva_config::{load_project_config, AdapterTransport, ProjectConfig};
+use eva_config::{load_project_config, ProjectConfig};
 use eva_core::{
     AdapterId, CapabilityName, ErrorKind, EvaError, GenerationId, InvokeStatus, RequestId,
 };
@@ -46,6 +46,7 @@ use mcp_cmd::McpCommand;
 use memory_cmd::MemoryCommand;
 use observability_cmd::ObservabilityCommand;
 use release_cmd::ReleaseCommand;
+use skill_cmd::SkillCommand;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -186,7 +187,7 @@ where
         Command::Task(command) => task_cmd::execute_task(command, stdout, stderr),
         Command::Adapter(command) => adapter_cmd::execute_adapter(command, stdout, stderr),
         Command::Mcp(command) => mcp_cmd::execute_mcp(command, stdout, stderr),
-        Command::Skill(command) => execute_skill(command, stdout, stderr),
+        Command::Skill(command) => skill_cmd::execute_skill(command, stdout, stderr),
         Command::Discovery(command) => discovery_cmd::execute_discovery(command, stdout, stderr),
         Command::Memory(command) => memory_cmd::execute_memory(command, stdout, stderr),
         Command::Observability(command) => {
@@ -257,12 +258,6 @@ struct RunOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum SkillCommand {
-    List(CommonOptions),
-    Run(SkillRunOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum HardwareCommand {
     List(CommonOptions),
     Probe(HardwareProbeOptions),
@@ -290,16 +285,6 @@ enum RestoreCommand {
 enum UpgradeCommand {
     Check(UpgradeCheckOptions),
     Apply(UpgradeApplyOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SkillRunOptions {
-    common: CommonOptions,
-    adapter_id: Option<String>,
-    skill_id: Option<String>,
-    capability: Option<String>,
-    input: String,
-    request_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -486,7 +471,7 @@ where
             &args[1..],
         )?)),
         "mcp" => Ok(Command::Mcp(mcp_cmd::parse_mcp_command(&args[1..])?)),
-        "skill" => parse_skill_command(&args[1..]),
+        "skill" => Ok(Command::Skill(skill_cmd::parse_skill_command(&args[1..])?)),
         "discovery" => Ok(Command::Discovery(discovery_cmd::parse_discovery_command(
             &args[1..],
         )?)),
@@ -575,70 +560,6 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
         cancel_requested,
         retry_attempts,
         replay_dead_letters,
-    })
-}
-
-fn parse_skill_command(args: &[String]) -> Result<Command, EvaError> {
-    let (subcommand, rest) = args
-        .split_first()
-        .ok_or_else(|| EvaError::invalid_argument("missing skill subcommand"))?;
-    match subcommand.as_str() {
-        "list" => Ok(Command::Skill(SkillCommand::List(parse_common_options(
-            rest,
-        )?))),
-        "run" => Ok(Command::Skill(SkillCommand::Run(parse_skill_run_options(
-            rest,
-        )?))),
-        value => {
-            Err(EvaError::unsupported("unknown skill subcommand").with_context("subcommand", value))
-        }
-    }
-}
-
-fn parse_skill_run_options(args: &[String]) -> Result<SkillRunOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut adapter_id = None;
-    let mut skill_id = None;
-    let mut capability = None;
-    let mut input = "{}".to_owned();
-    let mut request_id = "req-skill-1".to_owned();
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--adapter" | "--adapter-id" => {
-                index += 1;
-                adapter_id = Some(required_option(args, index, "adapter option")?.clone());
-            }
-            "--skill" | "--skill-id" => {
-                index += 1;
-                skill_id = Some(required_option(args, index, "skill option")?.clone());
-            }
-            "--capability" => {
-                index += 1;
-                capability = Some(required_option(args, index, "capability option")?.clone());
-            }
-            "--input" => {
-                index += 1;
-                input = required_option(args, index, "input option")?.clone();
-            }
-            "--request-id" | "--task-id" | "--task" => {
-                index += 1;
-                request_id = required_option(args, index, "request id option")?.clone();
-            }
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-
-    RequestId::parse(&request_id)?;
-    Ok(SkillRunOptions {
-        common: parse_common_options(&passthrough)?,
-        adapter_id,
-        skill_id,
-        capability,
-        input,
-        request_id,
     })
 }
 
@@ -1381,54 +1302,6 @@ where
                 trace,
             )?;
             Ok(exit_code)
-        }
-    }
-}
-
-fn execute_skill<W, E>(
-    command: SkillCommand,
-    stdout: &mut W,
-    stderr: &mut E,
-) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match command {
-        SkillCommand::List(options) => {
-            let trace = trace_for("cli.skill.list");
-            match load_project_config(&options.project_root)
-                .and_then(|project| AdapterRuntime::from_project(&project))
-            {
-                Ok(runtime) => {
-                    write_skill_list(stdout, options.output, &runtime, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    write_command_error(stderr, options.output, "skill.list", &error, &trace)
-                }
-            }
-        }
-        SkillCommand::Run(options) => {
-            let trace = trace_for("cli.skill.run");
-            match load_project_config(&options.common.project_root).and_then(|project| {
-                let runtime = AdapterRuntime::from_project(&project)?;
-                run_skill_runtime(&runtime, &project, &options)
-            }) {
-                Ok(report) => {
-                    write_adapter_invoke(
-                        stdout,
-                        options.common.output,
-                        "skill.run",
-                        &report,
-                        &trace,
-                    )?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    write_command_error(stderr, options.common.output, "skill.run", &error, &trace)
-                }
-            }
         }
     }
 }
@@ -2464,52 +2337,6 @@ fn write_command_error<W: Write>(
     Ok(exit_code)
 }
 
-fn run_skill_runtime(
-    runtime: &AdapterRuntime,
-    project: &ProjectConfig,
-    options: &SkillRunOptions,
-) -> Result<AdapterInvokeReport, EvaError> {
-    let capability = options
-        .capability
-        .as_deref()
-        .map(CapabilityName::parse)
-        .transpose()?
-        .unwrap_or_else(|| CapabilityName::parse("workflow.code_review").unwrap());
-    let provider = if let Some(adapter_id) = &options.adapter_id {
-        Some(AdapterId::parse(adapter_id)?)
-    } else if let Some(skill_id) = &options.skill_id {
-        runtime
-            .list()
-            .into_iter()
-            .find(|handle| {
-                handle.transport == AdapterTransport::Skill
-                    && handle.skill_name() == Some(skill_id.as_str())
-            })
-            .map(|handle| handle.id.clone())
-    } else {
-        None
-    };
-    if let Some(provider) = &provider {
-        if let Some(handle) = runtime.registry().get(provider) {
-            if handle.transport == AdapterTransport::Skill {
-                let decision = RuntimePolicyGate::from_project(project)?.decide(
-                    RuntimePolicyRequest::new(HighRiskAction::SkillRun)
-                        .with_tool(handle.skill_runtime_gate.as_deref().unwrap_or("")),
-                );
-                decision.ensure_allowed()?;
-            }
-        }
-    }
-    let invocation = AdapterInvocation::new(RequestId::parse(&options.request_id)?, capability)
-        .with_input(options.input.clone());
-    let invocation = if let Some(provider) = provider {
-        invocation.with_provider(provider)
-    } else {
-        invocation
-    };
-    runtime.invoke(invocation)
-}
-
 fn parse_inspect_options(args: &[String]) -> Result<InspectOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut subject = InspectSubject::Project;
@@ -2817,67 +2644,6 @@ fn durable_diagnostics_json(report: &DurableDiagnosticsReport) -> String {
         report.dead_letter_count,
         report.pending_redrive_count
     )
-}
-
-fn write_skill_list<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    runtime: &AdapterRuntime,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Eva skills").map_err(write_error_kind)?;
-            for handle in runtime
-                .list()
-                .into_iter()
-                .filter(|handle| handle.transport == AdapterTransport::Skill)
-            {
-                writeln!(
-                    writer,
-                    "  - {} skill={} gate={} capabilities={}",
-                    handle.id,
-                    handle.skill_name().unwrap_or(""),
-                    handle.skill_runtime_gate.as_deref().unwrap_or(""),
-                    join_capabilities(&handle.capabilities)
-                )
-                .map_err(write_error_kind)?;
-            }
-            Ok(())
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("skill.list", EXIT_OK, &skill_list_json(runtime), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn write_adapter_invoke<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    command: &str,
-    report: &AdapterInvokeReport,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "OK {command}").map_err(write_error_kind)?;
-            writeln!(writer, "adapter: {}", report.adapter_id).map_err(write_error_kind)?;
-            writeln!(writer, "capability: {}", report.capability).map_err(write_error_kind)?;
-            writeln!(writer, "transport: {}", report.transport.as_str())
-                .map_err(write_error_kind)?;
-            writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
-            writeln!(writer, "output: {}", report.output).map_err(write_error_kind)
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope(command, EXIT_OK, &adapter_invoke_json(report), trace)
-        )
-        .map_err(write_error_kind),
-    }
 }
 
 fn write_hardware_list<W: Write>(
@@ -3268,39 +3034,6 @@ fn write_upgrade_apply<W: Write>(
         )
         .map_err(write_error_kind),
     }
-}
-
-fn skill_list_json(runtime: &AdapterRuntime) -> String {
-    let entries = runtime
-        .list()
-        .into_iter()
-        .filter(|handle| handle.transport == AdapterTransport::Skill)
-        .map(|handle| {
-            format!(
-                "{{\"adapter_id\":{},\"skill_id\":{},\"skill_kind\":{},\"runtime_gate\":{},\"capabilities\":{},\"enabled\":{}}}",
-                json_string(handle.id.as_str()),
-                option_json(handle.skill_name()),
-                option_json(handle.skill_kind.as_deref()),
-                option_json(handle.skill_runtime_gate.as_deref()),
-                json_array(handle.capabilities.iter().map(|capability| json_string(capability.as_str()))),
-                handle.enabled
-            )
-        });
-    format!("{{\"skills\":{}}}", json_array(entries))
-}
-
-fn adapter_invoke_json(report: &AdapterInvokeReport) -> String {
-    format!(
-        "{{\"request_id\":{},\"adapter_id\":{},\"transport\":{},\"capability\":{},\"status\":{},\"output\":{},\"audit\":{},\"trace\":{}}}",
-        json_string(report.request_id.as_str()),
-        json_string(report.adapter_id.as_str()),
-        json_string(report.transport.as_str()),
-        json_string(report.capability.as_str()),
-        json_string(&report.status),
-        json_string(&report.output),
-        json_array(report.audit.iter().map(|entry| json_string(entry))),
-        trace_json(&report.trace)
-    )
 }
 
 fn hardware_candidates_json(candidates: &[DeviceCandidate]) -> String {
