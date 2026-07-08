@@ -1,12 +1,17 @@
 //! CLI command parsing, output envelopes, and process exit mapping.
 
+mod adapter_cmd;
 mod config_cmd;
+mod discovery_cmd;
+mod mcp_cmd;
 mod release_cmd;
 mod version_cmd;
 
 use crate::doctor::{doctor_project, CheckStatus, DoctorReport};
 use crate::inspect::{inspect_project, InspectReport};
-use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};
+use adapter_cmd::AdapterCommand;
+use discovery_cmd::DiscoveryCommand;
+use eva_adapter::{AdapterInvocation, AdapterInvokeReport, AdapterRuntime};
 use eva_backup::{
     BackupArchiveManifest, BackupEncryptionKey, BackupEncryptionManifest, BackupEntry, BackupPlan,
     BackupResult, BackupScope, BackupService, FileSystemRestoreApplyLockStore,
@@ -19,7 +24,6 @@ use eva_config::{load_project_config, AdapterTransport, ProjectConfig};
 use eva_core::{
     AdapterId, AgentId, CapabilityName, ErrorKind, EvaError, GenerationId, InvokeStatus, RequestId,
 };
-use eva_discovery::{DiscoveryScanReport, DiscoveryService, DiscoverySourceReport};
 use eva_hardware::{discover_project_devices, DeviceCandidate, HardwareDiscoveryReport};
 use eva_lifecycle::{
     DrainCoordinator, DrainPlan, FileSystemSupervisorStateStore, FileSystemUpgradeApplyLockStore,
@@ -28,7 +32,6 @@ use eva_lifecycle::{
     SupervisorHandoffReport, SupervisorHandoffRequest, SupervisorReport, UpgradeApplyCoordinator,
     UpgradeApplyLock, UpgradeApplyPlan, UpgradeApplyReport,
 };
-use eva_mcp::{InMemoryMcpClient, McpAllowlist, McpProbeReport};
 use eva_memory::{
     BuiltContext, ContextBudget, ContextBuilder, ContextRequest, FileSystemKnowledgeStore,
     FileSystemMemoryStore, InMemoryKnowledgeService, InMemoryMemoryService, KnowledgeId,
@@ -49,6 +52,7 @@ use eva_storage::{
     FileSystemTaskStateStore, InMemoryArtifactStore, TaskStateDeadLetterSnapshot,
     TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
 };
+use mcp_cmd::McpCommand;
 use release_cmd::ReleaseCommand;
 use std::env;
 use std::ffi::OsString;
@@ -187,10 +191,10 @@ where
             }
         }
         Command::Task(command) => execute_task(command, stdout, stderr),
-        Command::Adapter(command) => execute_adapter(command, stdout, stderr),
-        Command::Mcp(command) => execute_mcp(command, stdout, stderr),
+        Command::Adapter(command) => adapter_cmd::execute_adapter(command, stdout, stderr),
+        Command::Mcp(command) => mcp_cmd::execute_mcp(command, stdout, stderr),
         Command::Skill(command) => execute_skill(command, stdout, stderr),
-        Command::Discovery(command) => execute_discovery(command, stdout, stderr),
+        Command::Discovery(command) => discovery_cmd::execute_discovery(command, stdout, stderr),
         Command::Memory(command) => execute_memory(command, stdout, stderr),
         Command::Observability(command) => execute_observability(command, stdout, stderr),
         Command::Hardware(command) => execute_hardware(command, stdout, stderr),
@@ -265,26 +269,9 @@ enum TaskCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum AdapterCommand {
-    List(CommonOptions),
-    Probe(AdapterProbeOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum McpCommand {
-    List(CommonOptions),
-    Probe(McpProbeOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum SkillCommand {
     List(CommonOptions),
     Run(SkillRunOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DiscoveryCommand {
-    Scan(CommonOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -333,21 +320,6 @@ struct TaskOptions {
     task_id: Option<String>,
     reason: Option<String>,
     durable_backend: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AdapterProbeOptions {
-    common: CommonOptions,
-    adapter_id: Option<String>,
-    capability: Option<String>,
-    provider: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct McpProbeOptions {
-    common: CommonOptions,
-    adapter_id: String,
-    tool: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,10 +530,14 @@ where
         "inspect" => Ok(Command::Inspect(parse_inspect_options(&args[1..])?)),
         "run" => Ok(Command::Run(parse_run_options(&args[1..])?)),
         "task" => parse_task_command(&args[1..]),
-        "adapter" => parse_adapter_command(&args[1..]),
-        "mcp" => parse_mcp_command(&args[1..]),
+        "adapter" => Ok(Command::Adapter(adapter_cmd::parse_adapter_command(
+            &args[1..],
+        )?)),
+        "mcp" => Ok(Command::Mcp(mcp_cmd::parse_mcp_command(&args[1..])?)),
         "skill" => parse_skill_command(&args[1..]),
-        "discovery" => parse_discovery_command(&args[1..]),
+        "discovery" => Ok(Command::Discovery(discovery_cmd::parse_discovery_command(
+            &args[1..],
+        )?)),
         "memory" => parse_memory_command(&args[1..]),
         "observability" => parse_observability_command(&args[1..]),
         "hardware" => parse_hardware_command(&args[1..]),
@@ -705,101 +681,6 @@ fn parse_task_options(args: &[String]) -> Result<TaskOptions, EvaError> {
     })
 }
 
-fn parse_adapter_command(args: &[String]) -> Result<Command, EvaError> {
-    let (subcommand, rest) = args
-        .split_first()
-        .ok_or_else(|| EvaError::invalid_argument("missing adapter subcommand"))?;
-    match subcommand.as_str() {
-        "list" => Ok(Command::Adapter(AdapterCommand::List(
-            parse_common_options(rest)?,
-        ))),
-        "probe" => Ok(Command::Adapter(AdapterCommand::Probe(
-            parse_adapter_probe_options(rest)?,
-        ))),
-        value => {
-            Err(EvaError::unsupported("unknown adapter subcommand")
-                .with_context("subcommand", value))
-        }
-    }
-}
-
-fn parse_adapter_probe_options(args: &[String]) -> Result<AdapterProbeOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut adapter_id = None;
-    let mut capability = None;
-    let mut provider = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--adapter" | "--adapter-id" => {
-                index += 1;
-                adapter_id = Some(required_option(args, index, "adapter option")?.clone());
-            }
-            "--capability" => {
-                index += 1;
-                capability = Some(required_option(args, index, "capability option")?.clone());
-            }
-            "--provider" => {
-                index += 1;
-                provider = Some(required_option(args, index, "provider option")?.clone());
-            }
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-
-    Ok(AdapterProbeOptions {
-        common: parse_common_options(&passthrough)?,
-        adapter_id,
-        capability,
-        provider,
-    })
-}
-
-fn parse_mcp_command(args: &[String]) -> Result<Command, EvaError> {
-    let (subcommand, rest) = args
-        .split_first()
-        .ok_or_else(|| EvaError::invalid_argument("missing mcp subcommand"))?;
-    match subcommand.as_str() {
-        "list" => Ok(Command::Mcp(McpCommand::List(parse_common_options(rest)?))),
-        "probe" => Ok(Command::Mcp(McpCommand::Probe(parse_mcp_probe_options(
-            rest,
-        )?))),
-        value => {
-            Err(EvaError::unsupported("unknown mcp subcommand").with_context("subcommand", value))
-        }
-    }
-}
-
-fn parse_mcp_probe_options(args: &[String]) -> Result<McpProbeOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut adapter_id = None;
-    let mut tool = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--adapter" | "--adapter-id" => {
-                index += 1;
-                adapter_id = Some(required_option(args, index, "adapter option")?.clone());
-            }
-            "--tool" => {
-                index += 1;
-                tool = Some(required_option(args, index, "tool option")?.clone());
-            }
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-
-    Ok(McpProbeOptions {
-        common: parse_common_options(&passthrough)?,
-        adapter_id: adapter_id.unwrap_or_else(|| "github-mcp".to_owned()),
-        tool,
-    })
-}
-
 fn parse_skill_command(args: &[String]) -> Result<Command, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -862,21 +743,6 @@ fn parse_skill_run_options(args: &[String]) -> Result<SkillRunOptions, EvaError>
         input,
         request_id,
     })
-}
-
-fn parse_discovery_command(args: &[String]) -> Result<Command, EvaError> {
-    let (subcommand, rest) = args
-        .split_first()
-        .ok_or_else(|| EvaError::invalid_argument("missing discovery subcommand"))?;
-    match subcommand.as_str() {
-        "scan" => Ok(Command::Discovery(DiscoveryCommand::Scan(
-            parse_common_options(rest)?,
-        ))),
-        value => {
-            Err(EvaError::unsupported("unknown discovery subcommand")
-                .with_context("subcommand", value))
-        }
-    }
 }
 
 fn parse_memory_command(args: &[String]) -> Result<Command, EvaError> {
@@ -1835,90 +1701,6 @@ where
     }
 }
 
-fn execute_adapter<W, E>(
-    command: AdapterCommand,
-    stdout: &mut W,
-    stderr: &mut E,
-) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match command {
-        AdapterCommand::List(options) => {
-            let trace = trace_for("cli.adapter.list");
-            match load_project_config(&options.project_root)
-                .and_then(|project| AdapterRuntime::from_project(&project))
-            {
-                Ok(runtime) => {
-                    write_adapter_list(stdout, options.output, &runtime, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    write_command_error(stderr, options.output, "adapter.list", &error, &trace)
-                }
-            }
-        }
-        AdapterCommand::Probe(options) => {
-            let trace = trace_for("cli.adapter.probe");
-            match load_project_config(&options.common.project_root)
-                .and_then(|project| AdapterRuntime::from_project(&project))
-                .and_then(|runtime| probe_adapter_runtime(&runtime, &options))
-            {
-                Ok(report) => {
-                    write_adapter_probe(stdout, options.common.output, &report, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => write_command_error(
-                    stderr,
-                    options.common.output,
-                    "adapter.probe",
-                    &error,
-                    &trace,
-                ),
-            }
-        }
-    }
-}
-
-fn execute_mcp<W, E>(command: McpCommand, stdout: &mut W, stderr: &mut E) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match command {
-        McpCommand::List(options) => {
-            let trace = trace_for("cli.mcp.list");
-            match load_project_config(&options.project_root)
-                .and_then(|project| AdapterRuntime::from_project(&project))
-            {
-                Ok(runtime) => {
-                    write_mcp_list(stdout, options.output, &runtime, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    write_command_error(stderr, options.output, "mcp.list", &error, &trace)
-                }
-            }
-        }
-        McpCommand::Probe(options) => {
-            let trace = trace_for("cli.mcp.probe");
-            match load_project_config(&options.common.project_root)
-                .and_then(|project| AdapterRuntime::from_project(&project))
-                .and_then(|runtime| probe_mcp_runtime(&runtime, &options))
-            {
-                Ok(report) => {
-                    write_mcp_probe(stdout, options.common.output, &report, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    write_command_error(stderr, options.common.output, "mcp.probe", &error, &trace)
-                }
-            }
-        }
-    }
-}
-
 fn execute_skill<W, E>(
     command: SkillCommand,
     stdout: &mut W,
@@ -1961,33 +1743,6 @@ where
                 }
                 Err(error) => {
                     write_command_error(stderr, options.common.output, "skill.run", &error, &trace)
-                }
-            }
-        }
-    }
-}
-
-fn execute_discovery<W, E>(
-    command: DiscoveryCommand,
-    stdout: &mut W,
-    stderr: &mut E,
-) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match command {
-        DiscoveryCommand::Scan(options) => {
-            let trace = trace_for("cli.discovery.scan");
-            match load_project_config(&options.project_root) {
-                Ok(project) => {
-                    let mut service = DiscoveryService::new();
-                    let report = service.scan_project(&project);
-                    write_discovery_scan(stdout, options.output, &report, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    write_command_error(stderr, options.output, "discovery.scan", &error, &trace)
                 }
             }
         }
@@ -3288,58 +3043,6 @@ fn write_command_error<W: Write>(
     Ok(exit_code)
 }
 
-fn probe_adapter_runtime(
-    runtime: &AdapterRuntime,
-    options: &AdapterProbeOptions,
-) -> Result<AdapterProbeReport, EvaError> {
-    if let Some(adapter_id) = &options.adapter_id {
-        return runtime.probe_adapter(&AdapterId::parse(adapter_id)?);
-    }
-    let capability = options
-        .capability
-        .as_deref()
-        .map(CapabilityName::parse)
-        .transpose()?
-        .unwrap_or_else(|| CapabilityName::parse("workflow.code_review").unwrap());
-    let provider = options
-        .provider
-        .as_deref()
-        .map(AdapterId::parse)
-        .transpose()?;
-    runtime.probe_capability(capability, provider)
-}
-
-fn probe_mcp_runtime(
-    runtime: &AdapterRuntime,
-    options: &McpProbeOptions,
-) -> Result<McpProbeReport, EvaError> {
-    let adapter_id = AdapterId::parse(&options.adapter_id)?;
-    let handle = runtime.registry().get(&adapter_id).ok_or_else(|| {
-        EvaError::not_found("MCP adapter does not exist")
-            .with_context("adapter_id", adapter_id.as_str())
-    })?;
-    if handle.transport != AdapterTransport::Mcp {
-        return Err(
-            EvaError::invalid_argument("adapter is not an MCP transport")
-                .with_context("adapter_id", handle.id.as_str())
-                .with_context("transport", handle.transport.as_str()),
-        );
-    }
-    let tool = options
-        .tool
-        .clone()
-        .or_else(|| handle.mcp_tools.first().cloned())
-        .ok_or_else(|| {
-            EvaError::not_found("MCP adapter has no allowlisted tools")
-                .with_context("adapter_id", handle.id.as_str())
-        })?;
-    let client = InMemoryMcpClient::new(
-        handle.id.clone(),
-        McpAllowlist::from_tools(handle.mcp_tools.iter().cloned())?,
-    );
-    Ok(client.probe_tool(&tool))
-}
-
 fn run_skill_runtime(
     runtime: &AdapterRuntime,
     project: &ProjectConfig,
@@ -3764,125 +3467,6 @@ fn durable_diagnostics_json(report: &DurableDiagnosticsReport) -> String {
     )
 }
 
-fn write_adapter_list<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    runtime: &AdapterRuntime,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Eva adapters").map_err(write_error_kind)?;
-            for handle in runtime.list() {
-                writeln!(
-                    writer,
-                    "  - {} transport={} enabled={} health={} capabilities={}",
-                    handle.id,
-                    handle.transport.as_str(),
-                    handle.enabled,
-                    handle.health().as_str(),
-                    join_capabilities(&handle.capabilities)
-                )
-                .map_err(write_error_kind)?;
-            }
-            Ok(())
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("adapter.list", EXIT_OK, &adapter_list_json(runtime), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn write_adapter_probe<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    report: &AdapterProbeReport,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Adapter probe").map_err(write_error_kind)?;
-            writeln!(writer, "adapter: {}", report.adapter_id).map_err(write_error_kind)?;
-            writeln!(writer, "transport: {}", report.transport.as_str())
-                .map_err(write_error_kind)?;
-            writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
-            writeln!(
-                writer,
-                "capabilities: {}",
-                join_capabilities(&report.capabilities)
-            )
-            .map_err(write_error_kind)?;
-            writeln!(writer, "detail: {}", report.detail).map_err(write_error_kind)
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("adapter.probe", EXIT_OK, &adapter_probe_json(report), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn write_mcp_list<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    runtime: &AdapterRuntime,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Eva MCP adapters").map_err(write_error_kind)?;
-            for handle in runtime
-                .list()
-                .into_iter()
-                .filter(|handle| handle.transport == AdapterTransport::Mcp)
-            {
-                writeln!(
-                    writer,
-                    "  - {} tools={} capabilities={}",
-                    handle.id,
-                    handle.mcp_tools.join(","),
-                    join_capabilities(&handle.capabilities)
-                )
-                .map_err(write_error_kind)?;
-            }
-            Ok(())
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("mcp.list", EXIT_OK, &mcp_list_json(runtime), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn write_mcp_probe<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    report: &McpProbeReport,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "MCP probe").map_err(write_error_kind)?;
-            writeln!(writer, "adapter: {}", report.adapter_id).map_err(write_error_kind)?;
-            writeln!(writer, "tool: {}", report.tool).map_err(write_error_kind)?;
-            writeln!(writer, "status: {}", report.status.as_str()).map_err(write_error_kind)?;
-            writeln!(writer, "detail: {}", report.message).map_err(write_error_kind)
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("mcp.probe", EXIT_OK, &mcp_probe_json(report), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
 fn write_skill_list<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -3939,59 +3523,6 @@ fn write_adapter_invoke<W: Write>(
             writer,
             "{}",
             success_envelope(command, EXIT_OK, &adapter_invoke_json(report), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn write_discovery_scan<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    report: &DiscoveryScanReport,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Eva discovery candidates").map_err(write_error_kind)?;
-            for candidate in &report.candidates {
-                writeln!(
-                    writer,
-                    "  - {} kind={} source={} trust={} handle_granted={}",
-                    candidate.id,
-                    candidate.kind.as_str(),
-                    candidate.source,
-                    candidate.trust.as_str(),
-                    candidate.handle_granted
-                )
-                .map_err(write_error_kind)?;
-            }
-            writeln!(writer, "Sources").map_err(write_error_kind)?;
-            for source in &report.source_reports {
-                let rejected_reason = source.rejected_reason.as_deref().unwrap_or("-");
-                writeln!(
-                    writer,
-                    "  - {} status={} cache_key={} timeout_ms={} elapsed_ms={} candidates={} rejected_reason={}",
-                    source.source_id,
-                    source.status,
-                    source.cache_key,
-                    source.timeout_ms,
-                    source.elapsed_ms,
-                    source.candidates.len(),
-                    rejected_reason
-                )
-                .map_err(write_error_kind)?;
-            }
-            Ok(())
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope(
-                "discovery.scan",
-                EXIT_OK,
-                &discovery_scan_json(report),
-                trace
-            )
         )
         .map_err(write_error_kind),
     }
@@ -4449,73 +3980,6 @@ fn write_upgrade_apply<W: Write>(
     }
 }
 
-fn adapter_list_json(runtime: &AdapterRuntime) -> String {
-    let entries = runtime.list().into_iter().map(|handle| {
-        format!(
-            "{{\"id\":{},\"name\":{},\"version\":{},\"enabled\":{},\"health\":{},\"transport\":{},\"capabilities\":{},\"mcp_tools\":{},\"skill_id\":{},\"source_path\":{}}}",
-            json_string(handle.id.as_str()),
-            json_string(&handle.name),
-            json_string(&handle.version),
-            handle.enabled,
-            json_string(handle.health().as_str()),
-            json_string(handle.transport.as_str()),
-            json_array(handle.capabilities.iter().map(|capability| json_string(capability.as_str()))),
-            json_array(handle.mcp_tools.iter().map(|tool| json_string(tool))),
-            option_json(handle.skill_name()),
-            json_string(&handle.source_path)
-        )
-    });
-    format!("{{\"adapters\":{}}}", json_array(entries))
-}
-
-fn adapter_probe_json(report: &AdapterProbeReport) -> String {
-    format!(
-        "{{\"adapter_id\":{},\"transport\":{},\"status\":{},\"capabilities\":{},\"detail\":{}}}",
-        json_string(report.adapter_id.as_str()),
-        json_string(report.transport.as_str()),
-        json_string(&report.status),
-        json_array(
-            report
-                .capabilities
-                .iter()
-                .map(|capability| json_string(capability.as_str()))
-        ),
-        json_string(&report.detail)
-    )
-}
-
-fn mcp_list_json(runtime: &AdapterRuntime) -> String {
-    let entries = runtime
-        .list()
-        .into_iter()
-        .filter(|handle| handle.transport == AdapterTransport::Mcp)
-        .map(|handle| {
-            format!(
-                "{{\"adapter_id\":{},\"tools\":{},\"capabilities\":{},\"enabled\":{}}}",
-                json_string(handle.id.as_str()),
-                json_array(handle.mcp_tools.iter().map(|tool| json_string(tool))),
-                json_array(
-                    handle
-                        .capabilities
-                        .iter()
-                        .map(|capability| json_string(capability.as_str()))
-                ),
-                handle.enabled
-            )
-        });
-    format!("{{\"mcp_adapters\":{}}}", json_array(entries))
-}
-
-fn mcp_probe_json(report: &McpProbeReport) -> String {
-    format!(
-        "{{\"adapter_id\":{},\"tool\":{},\"status\":{},\"message\":{}}}",
-        json_string(report.adapter_id.as_str()),
-        json_string(&report.tool),
-        json_string(report.status.as_str()),
-        json_string(&report.message)
-    )
-}
-
 fn skill_list_json(runtime: &AdapterRuntime) -> String {
     let entries = runtime
         .list()
@@ -4546,54 +4010,6 @@ fn adapter_invoke_json(report: &AdapterInvokeReport) -> String {
         json_string(&report.output),
         json_array(report.audit.iter().map(|entry| json_string(entry))),
         trace_json(&report.trace)
-    )
-}
-
-fn discovery_scan_json(report: &DiscoveryScanReport) -> String {
-    let candidates = &report.candidates;
-    let entries = candidates.iter().map(|candidate| {
-        format!(
-            "{{\"id\":{},\"kind\":{},\"source\":{},\"trust\":{},\"adapter_id\":{},\"capability\":{},\"handle_granted\":{},\"rejected_reason\":{}}}",
-            json_string(&candidate.id),
-            json_string(candidate.kind.as_str()),
-            json_string(&candidate.source),
-            json_string(candidate.trust.as_str()),
-            option_json(candidate.adapter_id.as_ref().map(|id| id.as_str())),
-            option_json(candidate.capability.as_ref().map(|capability| capability.as_str())),
-            candidate.handle_granted,
-            option_json(candidate.rejected_reason.as_deref())
-        )
-    });
-    let source_reports = report
-        .source_reports
-        .iter()
-        .map(discovery_source_report_json);
-    format!(
-        "{{\"candidate_count\":{},\"candidates\":{},\"source_report_count\":{},\"source_reports\":{}}}",
-        candidates.len(),
-        json_array(entries),
-        report.source_reports.len(),
-        json_array(source_reports)
-    )
-}
-
-fn discovery_source_report_json(report: &DiscoverySourceReport) -> String {
-    let rejected_count = report
-        .candidates
-        .iter()
-        .filter(|candidate| candidate.rejected_reason.is_some())
-        .count();
-    format!(
-        "{{\"source_id\":{},\"cache_key\":{},\"status\":{},\"timeout_ms\":{},\"elapsed_ms\":{},\"candidate_count\":{},\"rejected_candidate_count\":{},\"error\":{},\"rejected_reason\":{}}}",
-        json_string(&report.source_id),
-        json_string(&report.cache_key),
-        json_string(&report.status),
-        report.timeout_ms,
-        report.elapsed_ms,
-        report.candidates.len(),
-        rejected_count,
-        option_json(report.error.as_deref()),
-        option_json(report.rejected_reason.as_deref())
     )
 }
 
