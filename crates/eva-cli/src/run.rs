@@ -26,7 +26,11 @@ use eva_memory::{
     FileSystemMemoryStore, InMemoryKnowledgeService, InMemoryMemoryService, KnowledgeId,
     KnowledgeItem, KnowledgeSource, MemoryCompression, MemoryRetention, MemoryWrite,
 };
-use eva_observability::{SpanId, TraceFields};
+use eva_observability::{
+    AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
+    MetricLabels, MetricName, MetricPoint, MetricSink, ObservabilitySmokeReport, SpanId,
+    TraceFields,
+};
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use eva_release::{
     CompatibilityPolicy, MigrationGuide, MigrationStep, PerformanceBaselineReport,
@@ -76,6 +80,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "skill list/run",
     "discovery scan",
     "memory context",
+    "observability smoke",
     "hardware list/probe/bind",
     "backup create",
     "snapshot create",
@@ -204,6 +209,7 @@ where
         Command::Skill(command) => execute_skill(command, stdout, stderr),
         Command::Discovery(command) => execute_discovery(command, stdout, stderr),
         Command::Memory(command) => execute_memory(command, stdout, stderr),
+        Command::Observability(command) => execute_observability(command, stdout, stderr),
         Command::Hardware(command) => execute_hardware(command, stdout, stderr),
         Command::Backup(command) => execute_backup(command, stdout, stderr),
         Command::Snapshot(command) => execute_snapshot(command, stdout, stderr),
@@ -227,6 +233,7 @@ enum Command {
     Skill(SkillCommand),
     Discovery(DiscoveryCommand),
     Memory(MemoryCommand),
+    Observability(ObservabilityCommand),
     Hardware(HardwareCommand),
     Backup(BackupCommand),
     Snapshot(SnapshotCommand),
@@ -300,6 +307,11 @@ enum DiscoveryCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MemoryCommand {
     Context(MemoryContextOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ObservabilityCommand {
+    Smoke(ObservabilitySmokeOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,6 +395,12 @@ struct MemoryContextOptions {
     global_limit: usize,
     knowledge_limit: usize,
     durable_backend: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservabilitySmokeOptions {
+    common: CommonOptions,
+    backend: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -569,6 +587,7 @@ where
         "skill" => parse_skill_command(&args[1..]),
         "discovery" => parse_discovery_command(&args[1..]),
         "memory" => parse_memory_command(&args[1..]),
+        "observability" => parse_observability_command(&args[1..]),
         "hardware" => parse_hardware_command(&args[1..]),
         "backup" => parse_backup_command(&args[1..]),
         "snapshot" => parse_snapshot_command(&args[1..]),
@@ -967,6 +986,43 @@ fn parse_memory_context_options(args: &[String]) -> Result<MemoryContextOptions,
         global_limit,
         knowledge_limit,
         durable_backend,
+    })
+}
+
+fn parse_observability_command(args: &[String]) -> Result<Command, EvaError> {
+    let (subcommand, rest) = args
+        .split_first()
+        .ok_or_else(|| EvaError::invalid_argument("missing observability subcommand"))?;
+    match subcommand.as_str() {
+        "smoke" => Ok(Command::Observability(ObservabilityCommand::Smoke(
+            parse_observability_smoke_options(rest)?,
+        ))),
+        value => Err(EvaError::unsupported("unknown observability subcommand")
+            .with_context("subcommand", value)),
+    }
+}
+
+fn parse_observability_smoke_options(
+    args: &[String],
+) -> Result<ObservabilitySmokeOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut backend = PathBuf::from(".eva/observability");
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--backend" | "--observability-backend" => {
+                index += 1;
+                backend = PathBuf::from(required_option(args, index, "backend option")?);
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+
+    Ok(ObservabilitySmokeOptions {
+        common: parse_common_options(&passthrough)?,
+        backend,
     })
 }
 
@@ -1976,6 +2032,36 @@ where
                     stderr,
                     options.common.output,
                     "memory.context",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+    }
+}
+
+fn execute_observability<W, E>(
+    command: ObservabilityCommand,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match command {
+        ObservabilityCommand::Smoke(options) => {
+            let trace = trace_for("cli.observability.smoke")
+                .with_request_id(RequestId::parse("req-observability-smoke")?);
+            match run_observability_smoke(&options, &trace) {
+                Ok(report) => {
+                    write_observability_smoke(stdout, options.common.output, &report, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "observability.smoke",
                     &error,
                     &trace,
                 ),
@@ -3001,6 +3087,74 @@ fn current_time_ms() -> u128 {
         .unwrap_or_default()
 }
 
+fn run_observability_smoke(
+    options: &ObservabilitySmokeOptions,
+    trace: &TraceFields,
+) -> Result<ObservabilitySmokeReport, EvaError> {
+    let backend_root = options.backend.display().to_string();
+    let mut pipeline = BestEffortObservabilityPipeline::open(&options.backend);
+    let runtime_trace = trace.child_span(SpanId::parse("runtime.observability.smoke")?);
+    let provider_trace = runtime_trace
+        .clone()
+        .with_adapter_id(AdapterId::parse("codex-cli")?)
+        .with_capability(CapabilityName::parse("code.review")?)
+        .with_provider("codex-cli");
+
+    AuditSink::record(
+        &mut pipeline,
+        AuditEvent::new(
+            AuditAction::RuntimeStarted,
+            AuditOutcome::Ok,
+            runtime_trace.clone(),
+        )
+        .with_message("observability smoke recorded")
+        .with_field("backend", &backend_root),
+    )?;
+    MetricSink::record(
+        &mut pipeline,
+        MetricPoint::new(
+            MetricName::parse("runtime.events.accepted")?,
+            MetricKind::Counter,
+            1.0,
+        )
+        .with_labels(MetricLabels::runtime("in_memory_v1.0", "active")),
+    )?;
+    MetricSink::record(
+        &mut pipeline,
+        MetricPoint::new(
+            MetricName::parse("provider.invocations")?,
+            MetricKind::Counter,
+            1.0,
+        )
+        .with_labels(MetricLabels::provider(
+            "codex-cli",
+            "code.review",
+            "codex-cli",
+        )),
+    )?;
+    MetricSink::record(
+        &mut pipeline,
+        MetricPoint::new(
+            MetricName::parse("task.completed")?,
+            MetricKind::Counter,
+            1.0,
+        )
+        .with_labels(MetricLabels::task("completed", "root-agent")),
+    )?;
+    pipeline.export_span(
+        "cli.observability.smoke",
+        trace,
+        &[("component", "cli"), ("command", "observability.smoke")],
+    )?;
+    pipeline.export_span(
+        "runtime.provider.smoke",
+        &provider_trace,
+        &[("component", "provider"), ("adapter_id", "codex-cli")],
+    )?;
+
+    Ok(pipeline.smoke_report(backend_root, trace.continuity_key()))
+}
+
 fn write_command_error<W: Write>(
     stderr: &mut W,
     output: OutputFormat,
@@ -3898,6 +4052,36 @@ fn write_memory_context<W: Write>(
     }
 }
 
+fn write_observability_smoke<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    report: &ObservabilitySmokeReport,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Eva observability smoke").map_err(write_error_kind)?;
+            writeln!(writer, "backend_root: {}", report.backend_root).map_err(write_error_kind)?;
+            writeln!(writer, "degraded: {}", report.degraded).map_err(write_error_kind)?;
+            writeln!(writer, "audit_events: {}", report.audit_events).map_err(write_error_kind)?;
+            writeln!(writer, "metric_points: {}", report.metric_points)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "otel_spans: {}", report.otel_spans).map_err(write_error_kind)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "observability.smoke",
+                EXIT_OK,
+                &observability_smoke_json(report),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn write_hardware_list<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -4529,6 +4713,19 @@ fn lua_context_json(context: &BuiltContext) -> String {
         snapshot.global_memory_count,
         snapshot.knowledge_count,
         json_array(snapshot.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn observability_smoke_json(report: &ObservabilitySmokeReport) -> String {
+    format!(
+        "{{\"backend_root\":{},\"degraded\":{},\"degraded_reasons\":{},\"audit_events\":{},\"metric_points\":{},\"otel_spans\":{},\"continuity_key\":{}}}",
+        json_string(&report.backend_root),
+        report.degraded,
+        json_array(report.degraded_reasons.iter().map(|entry| json_string(entry))),
+        report.audit_events,
+        report.metric_points,
+        report.otel_spans,
+        option_json(report.continuity_key.as_deref())
     )
 }
 
@@ -5444,6 +5641,7 @@ fn help_text() -> &'static str {
         "  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n",
         "  eva discovery scan [--project <path>] [--output text|json]\n",
         "  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--durable-backend <path>] [--project <path>] [--output text|json]\n",
+        "  eva observability smoke [--backend <path>] [--project <path>] [--output text|json]\n",
         "  eva hardware list [--project <path>] [--output text|json]\n",
         "  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n",
         "  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n",
@@ -6140,6 +6338,48 @@ mod tests {
         assert!(durable_root.join("state").join("memory").is_dir());
         assert!(durable_root.join("state").join("knowledge").is_dir());
         fs::remove_dir_all(durable_root).ok();
+    }
+
+    #[test]
+    fn observability_smoke_writes_backend_and_reports_degraded_mode() {
+        let backend = test_temp_dir("observability");
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "observability",
+            "smoke",
+            "--backend",
+            backend.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"observability.smoke\""));
+        assert!(stdout.contains("\"degraded\":false"), "{stdout}");
+        assert!(stdout.contains("\"audit_events\":1"), "{stdout}");
+        assert!(stdout.contains("\"metric_points\":3"), "{stdout}");
+        assert!(stdout.contains("\"otel_spans\":2"), "{stdout}");
+        assert!(backend.join("audit.jsonl").is_file());
+        assert!(backend.join("metrics.jsonl").is_file());
+        assert!(backend.join("otel-spans.jsonl").is_file());
+        fs::remove_dir_all(&backend).ok();
+
+        let degraded_path = test_temp_dir("observability-degraded");
+        fs::write(&degraded_path, b"not a directory").unwrap();
+        let (degraded_exit, degraded_stdout, degraded_stderr) = run_cli(&[
+            "observability",
+            "smoke",
+            "--backend",
+            degraded_path.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(degraded_exit, EXIT_OK, "{degraded_stderr}");
+        assert!(
+            degraded_stdout.contains("\"degraded\":true"),
+            "{degraded_stdout}"
+        );
+        fs::remove_file(degraded_path).ok();
     }
 
     #[test]

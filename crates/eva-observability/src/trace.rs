@@ -107,6 +107,28 @@ impl TraceFields {
         self
     }
 
+    pub fn child_span(&self, span_id: SpanId) -> Self {
+        let mut child = self.clone();
+        child.span_id = Some(span_id);
+        child
+    }
+
+    pub fn continuity_key(&self) -> Option<String> {
+        self.request_id
+            .as_ref()
+            .map(|value| format!("request_id:{}", value.as_str()))
+            .or_else(|| {
+                self.correlation_id
+                    .as_ref()
+                    .map(|value| format!("correlation_id:{}", value.as_str()))
+            })
+            .or_else(|| {
+                self.span_id
+                    .as_ref()
+                    .map(|value| format!("span_id:{}", value.as_str()))
+            })
+    }
+
     /// Returns a flat list of present fields for text/JSON output adapters.
     pub fn entries(&self) -> Vec<(&'static str, String)> {
         let mut entries = Vec::new();
@@ -183,5 +205,18 @@ mod tests {
                 ("span_id", "span-1".to_owned())
             ]
         );
+    }
+
+    #[test]
+    fn child_span_preserves_trace_continuity() {
+        let parent = TraceFields::default()
+            .with_request_id(RequestId::parse("req-1").unwrap())
+            .with_span_id(SpanId::parse("cli.memory").unwrap());
+
+        let child = parent.child_span(SpanId::parse("runtime.memory").unwrap());
+
+        assert_eq!(child.request_id.unwrap().as_str(), "req-1");
+        assert_eq!(child.span_id.unwrap().as_str(), "runtime.memory");
+        assert_eq!(parent.continuity_key().as_deref(), Some("request_id:req-1"));
     }
 }

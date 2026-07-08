@@ -36,6 +36,11 @@ pub trait MetricSink {
     fn record(&mut self, point: MetricPoint) -> Result<(), EvaError>;
 }
 
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct InMemoryMetricSink {
+    pub points: Vec<MetricPoint>,
+}
+
 impl MetricName {
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         if value.is_empty() || value.trim() != value {
@@ -84,6 +89,32 @@ impl MetricLabels {
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
     }
+
+    pub fn runtime(runtime_mode: impl Into<String>, generation: impl Into<String>) -> Self {
+        Self::new()
+            .with("surface", "runtime")
+            .with("runtime_mode", runtime_mode)
+            .with("generation", generation)
+    }
+
+    pub fn provider(
+        adapter_id: impl Into<String>,
+        capability: impl Into<String>,
+        provider: impl Into<String>,
+    ) -> Self {
+        Self::new()
+            .with("surface", "provider")
+            .with("adapter_id", adapter_id)
+            .with("capability", capability)
+            .with("provider", provider)
+    }
+
+    pub fn task(status: impl Into<String>, agent_id: impl Into<String>) -> Self {
+        Self::new()
+            .with("surface", "task")
+            .with("status", status)
+            .with("agent_id", agent_id)
+    }
 }
 
 impl MetricKind {
@@ -109,6 +140,13 @@ impl MetricPoint {
     pub fn with_labels(mut self, labels: MetricLabels) -> Self {
         self.labels = labels;
         self
+    }
+}
+
+impl MetricSink for InMemoryMetricSink {
+    fn record(&mut self, point: MetricPoint) -> Result<(), EvaError> {
+        self.points.push(point);
+        Ok(())
     }
 }
 
@@ -147,5 +185,30 @@ mod tests {
 
         assert_eq!(point.kind.as_str(), "counter");
         assert_eq!(point.labels.get("topic"), Some("/input/user"));
+    }
+
+    #[test]
+    fn metric_labels_cover_runtime_provider_and_task_surfaces() {
+        let runtime = MetricLabels::runtime("basic", "gen-active");
+        let provider = MetricLabels::provider("codex-cli", "code.review", "codex-cli");
+        let task = MetricLabels::task("completed", "root-agent");
+
+        assert_eq!(runtime.get("surface"), Some("runtime"));
+        assert_eq!(provider.get("surface"), Some("provider"));
+        assert_eq!(provider.get("capability"), Some("code.review"));
+        assert_eq!(task.get("surface"), Some("task"));
+    }
+
+    #[test]
+    fn in_memory_metric_sink_records_points() {
+        let mut sink = InMemoryMetricSink::default();
+        sink.record(MetricPoint::new(
+            MetricName::parse("runtime.event.accepted").unwrap(),
+            MetricKind::Counter,
+            1.0,
+        ))
+        .unwrap();
+
+        assert_eq!(sink.points.len(), 1);
     }
 }

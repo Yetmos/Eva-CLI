@@ -2,14 +2,14 @@
 
 更新时间：2026-07-08
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.9.4 仍把主要命令实现集中在 `run.rs`，这样 version、config validate、inspect、task、external capability、memory context、hardware、backup、lifecycle、release、durable diagnostics gate、schema validation error、discovery source report 和 durable memory context 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.9.5 仍把主要命令实现集中在 `run.rs`，这样 version、config validate、inspect、task、external capability、memory context、hardware、backup、lifecycle、release、durable diagnostics gate、schema validation error、discovery source report、durable memory context 和 observability backend smoke 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | V1.9.4 in progress | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate、V1.6.5 durable diagnostics CLI、V1.9.1 schema validation error context、V1.9.3 discovery source report JSON/text 输出，以及 V1.9.4 `memory context --durable-backend` durable memory/knowledge 输出。 |
+| `run.rs` | V1.9.5 已更新 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4 `backup create` / `snapshot create` / `restore plan` / `upgrade check`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate、V1.6.5 durable diagnostics CLI、V1.9.1 schema validation error context、V1.9.3 discovery source report JSON/text 输出、V1.9.4 `memory context --durable-backend` durable memory/knowledge 输出，以及 V1.9.5 `observability smoke` file JSONL backend 输出。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -115,9 +115,13 @@ It creates a release pointer plan with audit evidence, returns
 
 `run.rs` 新增 `eva inspect durable --durable-backend <path>` 诊断命令。它调用 `eva_runtime::inspect_durable_backend()`，以 read-only 模式报告 durable backend path、schema/layout version、migration status、event/dead-letter 计数和 `pending_redrive_count`，并保持 `inspect.durable` JSON envelope。诊断读取不会创建缺失的 `events/log` 或 `events/dead_letters` 子目录。
 
+## V1.9.5 Observability Smoke Surface
+
+`run.rs` 新增 `eva observability smoke --backend <path>` 诊断命令。它调用 `eva_observability::BestEffortObservabilityPipeline`，写入 runtime audit event、runtime/provider/task metrics 和两条 OTel-style span JSONL 记录，并在 JSON envelope 中输出 `backend_root`、`degraded`、`degraded_reasons`、`audit_events`、`metric_points`、`otel_spans` 和 `continuity_key`。后端不可用时命令仍返回成功，用 degraded evidence 标记降级路径。
+
 ## 保持集中实现的原因
 
-V1.0 到 V1.5 的 CLI surface 仍处于收敛期。命令 implementations 暂时集中在 `run.rs`，可以让以下行为保持一致：
+V1.0 到 V1.9.5 的 CLI surface 仍处于收敛期。命令 implementations 暂时集中在 `run.rs`，可以让以下行为保持一致：
 
 - success/error JSON envelope。
 - trace 字段和 command 名称。
@@ -140,6 +144,7 @@ cargo run -- restore plan --output json
 cargo run -- restore apply --plan restore-plan.json --confirm plan-123 --artifact-store .eva/artifacts --output json
 cargo run -- upgrade check --output json
 cargo run -- inspect durable --durable-backend .eva/durable --output json
+cargo run -- observability smoke --backend .eva/ci-observability --output json
 cargo run -- release check --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
