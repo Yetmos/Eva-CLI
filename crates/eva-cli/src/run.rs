@@ -7,6 +7,7 @@ mod mcp_cmd;
 mod memory_cmd;
 mod observability_cmd;
 mod release_cmd;
+mod task_cmd;
 mod version_cmd;
 
 use crate::doctor::{doctor_project, CheckStatus, DoctorReport};
@@ -40,11 +41,7 @@ use eva_runtime::{
     inspect_durable_backend, BasicRunOptions, BasicRunReport, DurableDiagnosticsOptions,
     DurableDiagnosticsReport, RuntimeBuilder,
 };
-use eva_storage::{
-    DurableBackendOptions, FileSystemArtifactStore, FileSystemDurableBackend,
-    FileSystemTaskStateStore, InMemoryArtifactStore, TaskStateDeadLetterSnapshot,
-    TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
-};
+use eva_storage::{FileSystemArtifactStore, InMemoryArtifactStore};
 use mcp_cmd::McpCommand;
 use memory_cmd::MemoryCommand;
 use observability_cmd::ObservabilityCommand;
@@ -56,6 +53,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{Duration, Instant};
+use task_cmd::TaskCommand;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
@@ -185,7 +183,7 @@ where
                 }
             }
         }
-        Command::Task(command) => execute_task(command, stdout, stderr),
+        Command::Task(command) => task_cmd::execute_task(command, stdout, stderr),
         Command::Adapter(command) => adapter_cmd::execute_adapter(command, stdout, stderr),
         Command::Mcp(command) => mcp_cmd::execute_mcp(command, stdout, stderr),
         Command::Skill(command) => execute_skill(command, stdout, stderr),
@@ -259,13 +257,6 @@ struct RunOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum TaskCommand {
-    Status(TaskOptions),
-    Logs(TaskOptions),
-    Cancel(TaskOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum SkillCommand {
     List(CommonOptions),
     Run(SkillRunOptions),
@@ -299,14 +290,6 @@ enum RestoreCommand {
 enum UpgradeCommand {
     Check(UpgradeCheckOptions),
     Apply(UpgradeApplyOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TaskOptions {
-    common: CommonOptions,
-    task_id: Option<String>,
-    reason: Option<String>,
-    durable_backend: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -498,7 +481,7 @@ where
         )?)),
         "inspect" => Ok(Command::Inspect(parse_inspect_options(&args[1..])?)),
         "run" => Ok(Command::Run(parse_run_options(&args[1..])?)),
-        "task" => parse_task_command(&args[1..]),
+        "task" => Ok(Command::Task(task_cmd::parse_task_command(&args[1..])?)),
         "adapter" => Ok(Command::Adapter(adapter_cmd::parse_adapter_command(
             &args[1..],
         )?)),
@@ -592,65 +575,6 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
         cancel_requested,
         retry_attempts,
         replay_dead_letters,
-    })
-}
-
-fn parse_task_command(args: &[String]) -> Result<Command, EvaError> {
-    let (subcommand, rest) = args
-        .split_first()
-        .ok_or_else(|| EvaError::invalid_argument("missing task subcommand"))?;
-    let options = parse_task_options(rest)?;
-    match subcommand.as_str() {
-        "status" => Ok(Command::Task(TaskCommand::Status(options))),
-        "logs" => Ok(Command::Task(TaskCommand::Logs(options))),
-        "cancel" => Ok(Command::Task(TaskCommand::Cancel(options))),
-        value => {
-            Err(EvaError::unsupported("unknown task subcommand").with_context("subcommand", value))
-        }
-    }
-}
-
-fn parse_task_options(args: &[String]) -> Result<TaskOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut task_id = None;
-    let mut reason = None;
-    let mut durable_backend = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--task" | "--task-id" => {
-                index += 1;
-                let value = args
-                    .get(index)
-                    .ok_or_else(|| EvaError::invalid_argument("missing value for task option"))?;
-                task_id = Some(value.clone());
-            }
-            "--reason" => {
-                index += 1;
-                let value = args
-                    .get(index)
-                    .ok_or_else(|| EvaError::invalid_argument("missing value for reason option"))?;
-                reason = Some(value.clone());
-            }
-            "--durable-backend" | "--durable-backend-root" => {
-                index += 1;
-                durable_backend = Some(PathBuf::from(required_option(
-                    args,
-                    index,
-                    "durable backend option",
-                )?));
-            }
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-
-    Ok(TaskOptions {
-        common: parse_common_options(&passthrough)?,
-        task_id,
-        reason,
-        durable_backend,
     })
 }
 
@@ -1407,7 +1331,7 @@ where
                     .map(|report| (project, runtime, report))
             }) {
                 Ok((_project, _runtime, report)) => {
-                    write_task_snapshot(
+                    task_cmd::write_task_snapshot(
                         &options.common.project_root,
                         options.durable_backend.as_deref(),
                         &report,
@@ -1457,94 +1381,6 @@ where
                 trace,
             )?;
             Ok(exit_code)
-        }
-    }
-}
-
-fn execute_task<W, E>(command: TaskCommand, stdout: &mut W, stderr: &mut E) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match command {
-        TaskCommand::Status(options) => {
-            let trace = trace_for("cli.task.status");
-            match read_task_snapshot(
-                &options.common.project_root,
-                options.durable_backend.as_deref(),
-                options.task_id.as_deref(),
-            ) {
-                Ok(snapshot) => {
-                    write_task_status(stdout, options.common.output, &snapshot, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    let exit_code = exit_code_for_error(&error);
-                    write_error(
-                        stderr,
-                        options.common.output,
-                        "task.status",
-                        exit_code,
-                        &error,
-                        &trace,
-                    )?;
-                    Ok(exit_code)
-                }
-            }
-        }
-        TaskCommand::Logs(options) => {
-            let trace = trace_for("cli.task.logs");
-            match read_task_snapshot(
-                &options.common.project_root,
-                options.durable_backend.as_deref(),
-                options.task_id.as_deref(),
-            ) {
-                Ok(snapshot) => {
-                    write_task_logs(stdout, options.common.output, &snapshot, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    let exit_code = exit_code_for_error(&error);
-                    write_error(
-                        stderr,
-                        options.common.output,
-                        "task.logs",
-                        exit_code,
-                        &error,
-                        &trace,
-                    )?;
-                    Ok(exit_code)
-                }
-            }
-        }
-        TaskCommand::Cancel(options) => {
-            let trace = trace_for("cli.task.cancel");
-            match cancel_task_snapshot(
-                &options.common.project_root,
-                options.durable_backend.as_deref(),
-                options.task_id.as_deref(),
-                options
-                    .reason
-                    .as_deref()
-                    .unwrap_or("cancel requested by CLI"),
-            ) {
-                Ok(snapshot) => {
-                    write_task_cancel(stdout, options.common.output, &snapshot, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    let exit_code = exit_code_for_error(&error);
-                    write_error(
-                        stderr,
-                        options.common.output,
-                        "task.cancel",
-                        exit_code,
-                        &error,
-                        &trace,
-                    )?;
-                    Ok(exit_code)
-                }
-            }
         }
     }
 }
@@ -2765,75 +2601,6 @@ impl OutputFormat {
                 .with_context("supported", "text,json")),
         }
     }
-}
-
-fn write_task_snapshot(
-    project_root: &Path,
-    durable_backend: Option<&Path>,
-    report: &BasicRunReport,
-) -> Result<(), EvaError> {
-    let snapshot = TaskStateSnapshot::from(&report.task);
-    let mut store = open_task_state_store(project_root, durable_backend, TaskStoreAccess::Write)?;
-    store.write(&snapshot)
-}
-
-fn read_task_snapshot(
-    project_root: &Path,
-    durable_backend: Option<&Path>,
-    task_id: Option<&str>,
-) -> Result<TaskStateSnapshot, EvaError> {
-    open_task_state_store(project_root, durable_backend, TaskStoreAccess::Read)?.read(task_id)
-}
-
-fn cancel_task_snapshot(
-    project_root: &Path,
-    durable_backend: Option<&Path>,
-    task_id: Option<&str>,
-    reason: &str,
-) -> Result<TaskStateSnapshot, EvaError> {
-    let mut snapshot = read_task_snapshot(project_root, durable_backend, task_id)?;
-    snapshot.cancel_requested = true;
-    snapshot.cancel_reason = Some(reason.to_owned());
-    if snapshot.is_terminal() {
-        snapshot.cancel_accepted = false;
-        snapshot.push_log(
-            "warning",
-            "cancel requested after task reached a terminal state",
-        );
-    } else {
-        snapshot.cancel_accepted = true;
-        snapshot.status = "cancelled".to_owned();
-        snapshot.push_log("warning", format!("cancel accepted: {reason}"));
-    }
-
-    let mut store = open_task_state_store(project_root, durable_backend, TaskStoreAccess::Write)?;
-    store.write(&snapshot)?;
-    Ok(snapshot)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TaskStoreAccess {
-    Read,
-    Write,
-}
-
-fn open_task_state_store(
-    project_root: &Path,
-    durable_backend: Option<&Path>,
-    access: TaskStoreAccess,
-) -> Result<FileSystemTaskStateStore, EvaError> {
-    let Some(root) = durable_backend else {
-        return Ok(FileSystemTaskStateStore::new(project_root));
-    };
-
-    let options = match access {
-        TaskStoreAccess::Read => DurableBackendOptions::read_only(root),
-        TaskStoreAccess::Write => DurableBackendOptions::read_write(root),
-    };
-    let backend = FileSystemDurableBackend::open(options)?;
-    Ok(FileSystemTaskStateStore::from_durable_layout(
-        backend.layout(),
-    ))
 }
 
 fn write_doctor<W: Write>(
@@ -4082,7 +3849,7 @@ fn run_report_json(report: &BasicRunReport) -> String {
         json_string(&report.runtime_mode),
         json_string(&report.generation_id),
         json_string(&report.project_root),
-        task_snapshot_json(&TaskStateSnapshot::from(&report.task)),
+        task_cmd::task_snapshot_json_from_report(report),
         json_string(&report.event_id),
         json_string(&report.topic),
         json_string(report.receipt.event_id.as_str()),
@@ -4097,157 +3864,6 @@ fn run_report_json(report: &BasicRunReport) -> String {
         report.lua_generation.script_count,
         capability_response,
         json_array(report.audit.iter().map(|entry| json_string(entry)))
-    )
-}
-
-fn write_task_status<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    snapshot: &TaskStateSnapshot,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(
-                writer,
-                "task {} status={} attempts={}/{}",
-                snapshot.task_id, snapshot.status, snapshot.attempts, snapshot.retry_max_attempts
-            )
-            .map_err(write_error_kind)?;
-            if let Some(message) = &snapshot.error_message {
-                writeln!(writer, "error: {message}").map_err(write_error_kind)?;
-            }
-            writeln!(writer, "dead_letters: {}", snapshot.dead_letters.len())
-                .map_err(write_error_kind)?;
-            writeln!(
-                writer,
-                "replayed_events: {}",
-                snapshot.replayed_events.len()
-            )
-            .map_err(write_error_kind)
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("task.status", EXIT_OK, &task_snapshot_json(snapshot), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn write_task_logs<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    snapshot: &TaskStateSnapshot,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "task {} logs", snapshot.task_id).map_err(write_error_kind)?;
-            for entry in &snapshot.logs {
-                writeln!(
-                    writer,
-                    "{} [{}] {}",
-                    entry.sequence, entry.level, entry.message
-                )
-                .map_err(write_error_kind)?;
-            }
-            Ok(())
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("task.logs", EXIT_OK, &task_logs_json(snapshot), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn write_task_cancel<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    snapshot: &TaskStateSnapshot,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => writeln!(
-            writer,
-            "task {} cancel_requested={} accepted={} status={}",
-            snapshot.task_id, snapshot.cancel_requested, snapshot.cancel_accepted, snapshot.status
-        )
-        .map_err(write_error_kind),
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("task.cancel", EXIT_OK, &task_snapshot_json(snapshot), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn task_logs_json(snapshot: &TaskStateSnapshot) -> String {
-    format!(
-        "{{\"task_id\":{},\"status\":{},\"logs\":{}}}",
-        json_string(&snapshot.task_id),
-        json_string(&snapshot.status),
-        json_array(snapshot.logs.iter().map(task_log_json))
-    )
-}
-
-fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
-    format!(
-        "{{\"task_id\":{},\"status\":{},\"attempts\":{},\"retry_policy\":{{\"max_attempts\":{}}},\"cancellation\":{{\"requested\":{},\"accepted\":{},\"reason\":{}}},\"error\":{},\"logs\":{},\"dead_letters\":{},\"replayed_events\":{}}}",
-        json_string(&snapshot.task_id),
-        json_string(&snapshot.status),
-        snapshot.attempts,
-        snapshot.retry_max_attempts,
-        snapshot.cancel_requested,
-        snapshot.cancel_accepted,
-        option_json(snapshot.cancel_reason.as_deref()),
-        task_error_json(snapshot),
-        json_array(snapshot.logs.iter().map(task_log_json)),
-        json_array(snapshot.dead_letters.iter().map(dead_letter_json)),
-        json_array(snapshot.replayed_events.iter().map(replay_json))
-    )
-}
-
-fn task_error_json(snapshot: &TaskStateSnapshot) -> String {
-    match (&snapshot.error_kind, &snapshot.error_message) {
-        (Some(kind), Some(message)) => format!(
-            "{{\"kind\":{},\"message\":{}}}",
-            json_string(kind),
-            json_string(message)
-        ),
-        _ => "null".to_owned(),
-    }
-}
-
-fn task_log_json(entry: &TaskStateLogSnapshot) -> String {
-    format!(
-        "{{\"sequence\":{},\"level\":{},\"message\":{}}}",
-        entry.sequence,
-        json_string(&entry.level),
-        json_string(&entry.message)
-    )
-}
-
-fn dead_letter_json(entry: &TaskStateDeadLetterSnapshot) -> String {
-    format!(
-        "{{\"event_id\":{},\"topic\":{},\"reason_kind\":{},\"reason\":{},\"replay_count\":{}}}",
-        json_string(&entry.event_id),
-        json_string(&entry.topic),
-        json_string(&entry.reason_kind),
-        json_string(&entry.reason),
-        entry.replay_count
-    )
-}
-
-fn replay_json(entry: &TaskStateReplaySnapshot) -> String {
-    format!(
-        "{{\"event_id\":{},\"sequence\":{},\"topic\":{}}}",
-        json_string(&entry.event_id),
-        entry.sequence,
-        json_string(&entry.topic)
     )
 }
 
