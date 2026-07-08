@@ -227,6 +227,7 @@ V1.5 新增 `release` 命令组：
 
 ```powershell
 cargo run -- release check --output json
+cargo run -- release check --artifact-evidence release-evidence/release-artifact.evidence --output json
 cargo run -- release check --target windows --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
@@ -236,6 +237,7 @@ cargo run -- release migration --output json
 | 命令 | 行为 |
 | --- | --- |
 | `release check` | 调用 `eva_release::ReleaseHardeningService::readiness`，聚合 release gates、platform readiness、stability scenarios 和 audit。 |
+| `release check --artifact-evidence` | 读取 V1.11.1 key/value artifact evidence，校验 signed artifact、SHA-256 keyed signature、source commit provenance、SBOM 标记和 scan status；失败时 required gate blocked 并返回配置门禁 exit code `2`。 |
 | `release security` | 输出 `SecurityReviewReport`，覆盖 policy、Lua sandbox、secret redaction、MCP allowlist、hardware raw I/O 和 lifecycle apply risk。 |
 | `release perf` | 输出 `PerformanceBaselineReport`，用 release-smoke budget 记录当前 in-memory 实现的性能边界。 |
 | `release migration` | 输出 `MigrationGuide` 和 `CompatibilityPolicy`，声明 V1.4 到 V1.5 无破坏性变更。 |

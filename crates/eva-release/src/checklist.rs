@@ -1,5 +1,8 @@
 //! Release readiness checklist aggregation.
 
+use crate::artifact::{
+    ReleaseArtifactEvidence, ReleaseArtifactSigningKey, ReleaseArtifactVerificationReport,
+};
 use crate::migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
@@ -83,7 +86,22 @@ impl ReleaseHardeningService {
     }
 
     pub fn readiness(&self, target: impl Into<String>) -> Result<ReleaseReadinessReport, EvaError> {
-        let target = target.into();
+        self.readiness_inner(target.into(), None)
+    }
+
+    pub fn readiness_with_artifact_evidence(
+        &self,
+        target: impl Into<String>,
+        evidence: &ReleaseArtifactEvidence,
+    ) -> Result<ReleaseReadinessReport, EvaError> {
+        self.readiness_inner(target.into(), Some(evidence))
+    }
+
+    fn readiness_inner(
+        &self,
+        target: String,
+        artifact_evidence: Option<&ReleaseArtifactEvidence>,
+    ) -> Result<ReleaseReadinessReport, EvaError> {
         if target.trim().is_empty() {
             return Err(EvaError::invalid_argument(
                 "release readiness target cannot be empty",
@@ -117,6 +135,11 @@ impl ReleaseHardeningService {
         gates.push(signed_backup_archive_gate());
         gates.push(restore_apply_gate());
         gates.push(supervisor_handoff_gate());
+        let artifact_report = artifact_evidence
+            .map(|evidence| evidence.verify(&ReleaseArtifactSigningKey::local_development()));
+        if let Some(report) = artifact_report.as_ref() {
+            gates.push(release_artifact_provenance_gate(report));
+        }
 
         let status = if gates
             .iter()
@@ -135,23 +158,7 @@ impl ReleaseHardeningService {
             platforms,
             stability,
             gates,
-            audit: vec![
-                "release:readiness:v1.7.4-alpha".to_owned(),
-                "no_unauthorized_destructive_restore_or_process_switch".to_owned(),
-                "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
-                "durable_backend_layout_baseline_ready".to_owned(),
-                "durable_eventbus_redrive_baseline_ready".to_owned(),
-                "durable_task_audit_artifact_baseline_ready".to_owned(),
-                "durable_runtime_recovery_checkpoint_ready".to_owned(),
-                "durable_diagnostics_smoke_ready".to_owned(),
-                "lua_vm_execution_boundary_ready".to_owned(),
-                "lua_host_bindings_ready".to_owned(),
-                "lua_resource_limits_ready".to_owned(),
-                "lua_hot_reload_lifecycle_ready".to_owned(),
-                "signed_backup_archive_baseline_ready".to_owned(),
-                "restore_apply_gate_baseline_ready".to_owned(),
-                "supervisor_handoff_baseline_ready".to_owned(),
-            ],
+            audit: release_audit(artifact_report.as_ref()),
         })
     }
 
@@ -505,6 +512,64 @@ impl ReleaseHardeningService {
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },
         ]
+    }
+}
+
+fn release_audit(artifact_report: Option<&ReleaseArtifactVerificationReport>) -> Vec<String> {
+    let mut audit = vec![
+        "release:readiness:v1.7.4-alpha".to_owned(),
+        "no_unauthorized_destructive_restore_or_process_switch".to_owned(),
+        "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
+        "durable_backend_layout_baseline_ready".to_owned(),
+        "durable_eventbus_redrive_baseline_ready".to_owned(),
+        "durable_task_audit_artifact_baseline_ready".to_owned(),
+        "durable_runtime_recovery_checkpoint_ready".to_owned(),
+        "durable_diagnostics_smoke_ready".to_owned(),
+        "lua_vm_execution_boundary_ready".to_owned(),
+        "lua_host_bindings_ready".to_owned(),
+        "lua_resource_limits_ready".to_owned(),
+        "lua_hot_reload_lifecycle_ready".to_owned(),
+        "signed_backup_archive_baseline_ready".to_owned(),
+        "restore_apply_gate_baseline_ready".to_owned(),
+        "supervisor_handoff_baseline_ready".to_owned(),
+    ];
+    if let Some(report) = artifact_report {
+        if report.status == "verified" {
+            audit.push("signed_artifact_provenance_verified".to_owned());
+        } else {
+            audit.push("signed_artifact_provenance_blocked".to_owned());
+        }
+        audit.extend(report.audit.iter().cloned());
+    }
+    audit
+}
+
+fn release_artifact_provenance_gate(report: &ReleaseArtifactVerificationReport) -> ReleaseGate {
+    let mut evidence = vec![
+        format!("artifact:{}", report.artifact_name),
+        format!("target:{}", report.target),
+        format!("digest:{}", report.artifact_digest),
+        format!("source_commit:{}", report.source_commit),
+        format!("signature_verified:{}", report.signature_verified),
+        format!("provenance_verified:{}", report.provenance_verified),
+    ];
+    evidence.extend(report.audit.iter().cloned());
+    ReleaseGate {
+        id: "REL-ARTIFACT-PROVENANCE-001".to_owned(),
+        domain: "release_artifact_provenance".to_owned(),
+        status: if report.status == "verified" {
+            ReleaseGateStatus::Pass
+        } else {
+            ReleaseGateStatus::Blocked
+        },
+        required: true,
+        summary: "V1.11.1 signed release artifact and provenance evidence are verified".to_owned(),
+        evidence,
+        remediation: if report.risks.is_empty() {
+            Vec::new()
+        } else {
+            report.risks.clone()
+        },
     }
 }
 
@@ -873,6 +938,50 @@ fn smoke_commands() -> Vec<String> {
 mod tests {
     use super::*;
 
+    const ARTIFACT_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+    const ARTIFACT_DIGEST: &str =
+        "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df";
+
+    fn artifact_evidence(signed: bool) -> ReleaseArtifactEvidence {
+        let key = ReleaseArtifactSigningKey::local_development();
+        let artifact = crate::artifact::ReleaseArtifactSubject::new(
+            "eva-cli-1.7.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
+            "x86_64-unknown-linux-gnu",
+            "tar.gz",
+            "eva",
+            ARTIFACT_DIGEST,
+            4096,
+            signed,
+        )
+        .unwrap();
+        let provenance = crate::artifact::ReleaseProvenanceEvidence::new(
+            "github-actions",
+            ARTIFACT_COMMIT,
+            "cargo-build-release-locked-bin-eva",
+            "release",
+            "spdx:release-evidence/eva.spdx.json",
+            "passed",
+        )
+        .unwrap();
+        let signature = crate::artifact::ReleaseArtifactSignature::new(
+            key.key_id(),
+            crate::artifact::RELEASE_SIGNATURE_ALGORITHM,
+            "pending",
+        )
+        .unwrap();
+        let mut evidence = ReleaseArtifactEvidence::new(
+            "1.7.4-alpha",
+            "v1.7.4-alpha",
+            ARTIFACT_COMMIT,
+            artifact,
+            provenance,
+            signature,
+        )
+        .unwrap();
+        evidence.signature = evidence.sign(&key);
+        evidence
+    }
+
     #[test]
     fn readiness_has_no_blocking_required_gates() {
         let report = ReleaseHardeningService::v15().readiness("all").unwrap();
@@ -959,6 +1068,43 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "supervisor_handoff_baseline_ready"));
+    }
+
+    #[test]
+    fn readiness_with_signed_artifact_evidence_passes_release_artifact_gate() {
+        let evidence = artifact_evidence(true);
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_artifact_evidence("all", &evidence)
+            .unwrap();
+
+        assert_eq!(report.status, "ready");
+        assert_eq!(report.blocking_count(), 0);
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-ARTIFACT-PROVENANCE-001" && gate.status == ReleaseGateStatus::Pass
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "signed_artifact_provenance_verified"));
+    }
+
+    #[test]
+    fn readiness_with_unsigned_artifact_evidence_blocks_release_artifact_gate() {
+        let evidence = artifact_evidence(false);
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_artifact_evidence("all", &evidence)
+            .unwrap();
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.blocking_count(), 1);
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-ARTIFACT-PROVENANCE-001"
+                && gate.status == ReleaseGateStatus::Blocked
+                && gate
+                    .remediation
+                    .iter()
+                    .any(|item| item == "release artifact is marked unsigned")
+        }));
     }
 
     #[test]

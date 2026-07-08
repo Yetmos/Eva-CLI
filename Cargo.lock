@@ -286,6 +286,7 @@ name = "eva-release"
 version = "1.7.4-alpha"
 dependencies = [
  "eva-core",
+ "eva-storage",
 ]
 
 [[package]]

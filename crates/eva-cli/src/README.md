@@ -155,6 +155,7 @@ cargo run -- upgrade apply --plan upgrade.plan --confirm plan-upgrade --lock-sto
 cargo run -- inspect durable --durable-backend .eva/durable --output json
 cargo run -- observability smoke --backend .eva/ci-observability --output json
 cargo run -- release check --output json
+cargo run -- release check --artifact-evidence release-evidence/release-artifact.evidence --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
 cargo run -- release migration --output json
