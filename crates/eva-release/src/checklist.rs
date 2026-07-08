@@ -116,6 +116,7 @@ impl ReleaseHardeningService {
         gates.push(lua_hot_reload_lifecycle_gate());
         gates.push(signed_backup_archive_gate());
         gates.push(restore_apply_gate());
+        gates.push(supervisor_handoff_gate());
 
         let status = if gates
             .iter()
@@ -136,7 +137,7 @@ impl ReleaseHardeningService {
             gates,
             audit: vec![
                 "release:readiness:v1.7.4-alpha".to_owned(),
-                "no_destructive_restore_or_process_switch".to_owned(),
+                "no_unauthorized_destructive_restore_or_process_switch".to_owned(),
                 "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
                 "durable_backend_layout_baseline_ready".to_owned(),
                 "durable_eventbus_redrive_baseline_ready".to_owned(),
@@ -149,6 +150,7 @@ impl ReleaseHardeningService {
                 "lua_hot_reload_lifecycle_ready".to_owned(),
                 "signed_backup_archive_baseline_ready".to_owned(),
                 "restore_apply_gate_baseline_ready".to_owned(),
+                "supervisor_handoff_baseline_ready".to_owned(),
             ],
         })
     }
@@ -213,16 +215,16 @@ impl ReleaseHardeningService {
                     "SEC-LIFE-001",
                     "restore_and_upgrade",
                     SecuritySeverity::Medium,
-                    "restore and upgrade remain staged until real destructive mutation and process handoff exist",
+                    "restore and upgrade mutations are gated while service-manager integration remains future work",
                     vec![
                         "restore plan reports apply_allowed=false".to_owned(),
                         "restore apply gate verifies confirmation, archive evidence, policy approval, lock, and health before reporting apply_allowed=true".to_owned(),
                         "restore apply reports mutation_executed=false until destructive file mutation exists".to_owned(),
-                        "upgrade check does not start supervisor processes".to_owned(),
+                        "upgrade apply can commit a controlled supervisor handoff and release pointer mutation inside the configured state store after policy approval".to_owned(),
                     ],
                     vec![
                         "require destructive restore file mutation to stay behind the existing restore apply gate".to_owned(),
-                        "require explicit process handoff authorization before release pointer mutation".to_owned(),
+                        "replace the local supervisor adapter smoke with a real service-manager adapter before daemonized production handoff".to_owned(),
                     ],
                 ),
             ],
@@ -833,6 +835,28 @@ fn restore_apply_gate() -> ReleaseGate {
     }
 }
 
+fn supervisor_handoff_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-SUPERVISOR-HANDOFF-001".to_owned(),
+        domain: "supervisor_handoff".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.10.5 supervisor blue-green handoff, release pointer mutation, persisted state, and rollback-on-health-failure baseline are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-lifecycle/src/handoff.rs SupervisorHandoffCoordinator".to_owned(),
+            "crates/eva-cli/src/run.rs upgrade apply --state-store".to_owned(),
+            "cargo test -p eva-lifecycle handoff".to_owned(),
+            "cargo test -p eva-cli upgrade_apply".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.10.5 Done".to_owned(),
+        ],
+        remediation: vec![
+            "do not write release pointer without supervisor.handoff and release.pointer_mutation policy approval".to_owned(),
+            "keep rollback plans attached to failed candidate health checks".to_owned(),
+            "replace local runtime-binary smoke with a production service-manager adapter before daemonized handoff".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -900,6 +924,9 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-RESTORE-APPLY-GATE-001" && gate.status == ReleaseGateStatus::Pass
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-SUPERVISOR-HANDOFF-001" && gate.status == ReleaseGateStatus::Pass
+        }));
         assert!(report
             .audit
             .iter()
@@ -928,6 +955,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "restore_apply_gate_baseline_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "supervisor_handoff_baseline_ready"));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 pub mod apply_lock;
 pub mod drain;
 pub mod generation;
+pub mod handoff;
 pub mod rollback;
 pub mod supervisor;
 
@@ -12,5 +13,10 @@ pub use apply_lock::{
 };
 pub use drain::{DrainCoordinator, DrainPlan, DrainStatus, GenerationDrainEvidence};
 pub use generation::{GenerationController, GenerationState, RuntimeGeneration};
+pub use handoff::{
+    FileSystemSupervisorStateStore, InMemorySupervisorStateStore, ReleasePointerMutation,
+    RuntimeBinaryProbe, SupervisorHandoffCoordinator, SupervisorHandoffReport,
+    SupervisorHandoffRequest, SupervisorStateStore,
+};
 pub use rollback::{RollbackCoordinator, RollbackPlan};
 pub use supervisor::{InMemorySupervisor, RuntimeHealth, SupervisorReport};

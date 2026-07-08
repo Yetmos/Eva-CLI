@@ -178,6 +178,7 @@ cargo run -- backup create --artifact-store .eva/artifacts --output json
 cargo run -- snapshot promote --snapshot-id snapshot-v15 --confirm snapshot-v15 --artifact-store .eva/artifacts --output json
 cargo run -- upgrade check --output json
 cargo run -- upgrade apply --plan upgrade-plan.txt --confirm plan-upgrade --lock-store .eva/locks --output json
+cargo run -- upgrade apply --plan upgrade-plan.txt --confirm plan-upgrade --lock-store .eva/locks --state-store .eva/supervisor --output json
 ```
 
 | 命令 | 行为 |
@@ -187,6 +188,7 @@ cargo run -- upgrade apply --plan upgrade-plan.txt --confirm plan-upgrade --lock
 | `restore plan` | 输出 restore steps、risks、audit，且 `apply_allowed:false`；传入 `--artifact-store <path>` 时使用同一 filesystem artifact store 生成可追溯 backup evidence。 |
 | `restore apply` | `--dry-run` 读取 plan 文件并验证 filesystem artifact store 中的 backup digest 和 pre-restore backup evidence，保持 `apply_allowed:false`；非 dry-run 必须提供 `--lock-store`，默认 project policy 会拒绝 `restore.apply`，显式 allow 后才获取 `{plan_id}.restore.lock` 并运行 health gate，成功返回 `status:"gated"`、`apply_allowed:true`、`mutation_executed:false`，health 失败返回 rollback plan。 |
 | `upgrade check` | 输出 supervisor candidate、migration preflight、drain plan 和 rollback plan。 |
+| `upgrade apply` | 未传 `--state-store` 时保持 lock-only 输出；传入 `--state-store` 且 project policy 同时允许 `supervisor.handoff` 和 `release.pointer_mutation` 时，会提交本地 blue-green handoff、写 `state/release-pointer`、持久化 `handoff.prepared` / `handoff.committed`，health 失败时输出 rollback plan 且不写 pointer。 |
 
 `restore apply --dry-run` 和 gated `restore apply` 的 plan 文件使用稳定 key/value 格式：
 
@@ -200,9 +202,11 @@ pre_restore_backup_digest=sha256:<hex>
 
 V1.10.4 `restore apply` 只完成受控 destructive apply gate：confirmation、artifact evidence、policy approval、apply lock 和 health check 都通过后仍只产出 staged report。它不执行 destructive file mutation，不移动 release pointer，不启动真实 Supervisor/Runtime 进程；JSON 中 `mutation_executed:false` 是固定证据。
 
-`upgrade apply` creates a filesystem lock and still returns `apply_allowed:false`.
-V1.9.2 records the destructive supervisor handoff policy decision in audit; it
-does not perform runtime handoff.
+`upgrade apply` 不传 `--state-store` 时只创建 filesystem lock 并保持
+`apply_allowed:false`，用于兼容旧的 plan-first lock path。V1.10.5 开始，传入
+`--state-store` 后会在 policy allow、lock、runtime binary smoke 和 health gate
+通过后提交本地 supervisor handoff state，并写入 `state/release-pointer`。这仍是
+local supervisor adapter smoke，不是生产 service manager/daemon handoff。
 
 `snapshot promote` creates a release pointer plan and still returns
 `apply_allowed:false`. It does not move `state/release-pointer`.
@@ -215,7 +219,7 @@ from_release=1.4.0
 to_release=1.5.1
 ```
 
-V1.4/P6 dry-run and lock paths do not execute destructive restore, move release pointer, or start real Supervisor/Runtime processes.
+V1.4/P6 dry-run and lock-only paths do not execute destructive restore, move release pointer, or start real Supervisor/Runtime processes. V1.10.5 `upgrade apply --state-store` is the controlled exception for local release pointer mutation after explicit policy approval.
 
 ## V1.5 Release Hardening Commands
 
@@ -236,7 +240,7 @@ cargo run -- release migration --output json
 | `release perf` | 输出 `PerformanceBaselineReport`，用 release-smoke budget 记录当前 in-memory 实现的性能边界。 |
 | `release migration` | 输出 `MigrationGuide` 和 `CompatibilityPolicy`，声明 V1.4 到 V1.5 无破坏性变更。 |
 
-这些命令不修改 `.eva/tasks`，不启动外部 provider，不执行真实 restore 或 supervisor handoff。阻断门禁会映射到稳定 exit code：配置门禁 `2`、policy 门禁 `3`、性能门禁 `4`。
+这些 release 命令不修改 `.eva/tasks`，不启动外部 provider，不执行真实 restore 或 supervisor handoff；V1.10.5 的本地 handoff/pointer mutation 只存在于单独的 `upgrade apply --state-store` 路径。阻断门禁会映射到稳定 exit code：配置门禁 `2`、policy 门禁 `3`、性能门禁 `4`。
 
 ## 验证
 

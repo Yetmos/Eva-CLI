@@ -1,14 +1,14 @@
 # eva-lifecycle / 生命周期管理
 
-更新时间：2026-07-04
+更新时间：2026-07-08
 
 ![V1.x extension module flow](../assets/eva-extension-module-flow.svg)
 
-`eva-lifecycle` 是 V1.4 的 Supervisor、runtime generation、drain 和 rollback 边界。它管理运行时代际切换和失败恢复，不承载 Lua 业务决策，不生成 backup artifact，也不绕过 `eva-backup` 的 snapshot/restore plan 校验。
+`eva-lifecycle` 是 V1.4/V1.10 的 Supervisor、runtime generation、drain、rollback、upgrade apply lock 和 blue-green handoff 边界。它管理运行时代际切换和失败恢复，不承载 Lua 业务决策，不生成 backup artifact，也不绕过 `eva-backup` 的 snapshot/restore plan 校验。
 
-V1.4 的实现是 in-memory lifecycle planning：可以表达 active/candidate generation、drain plan、rollback plan 和 mock supervisor health check，但不会启动真实进程、移动 release pointer 或执行真实升级。
+V1.10.5 之后，`upgrade apply --state-store <path>` 可以在 confirmation、apply lock、`supervisor.handoff` policy、`release.pointer_mutation` policy、runtime binary smoke 和 candidate health 都通过后提交 blue-green handoff，并在 state store 中写入 `state/release-pointer`。它仍是本地 supervisor adapter smoke，不是 daemonized service-manager integration。
 
-## V1.4 已实现能力
+## 已实现能力
 
 | 功能域 | 当前状态 | 已实现行为 |
 | --- | --- | --- |
@@ -16,8 +16,10 @@ V1.4 的实现是 in-memory lifecycle planning：可以表达 active/candidate g
 | Drain | 已完成 V1.4 | `DrainCoordinator` 输出 plan/completed/timed_out，并显式 `accepts_new_work:false`。 |
 | Rollback | 已完成 V1.4 | `RollbackCoordinator` 根据 failed handoff 和可选 `RestorePlan` 生成 rollback steps、risks、audit。 |
 | Supervisor | 已完成 V1.4 | `InMemorySupervisor` 支持 start candidate、commit healthy candidate 和 structured report。 |
+| Upgrade apply lock | 已完成 V1.10.3 | `UpgradeApplyCoordinator` 获取 filesystem lock，冲突返回稳定 `Conflict`。 |
+| Blue-green handoff | 已完成 V1.10.5 | `SupervisorHandoffCoordinator` 验证 policy、lock、runtime binary smoke 和 health，提交 candidate generation、drain 旧 generation、写 release pointer，并持久化 handoff state。 |
 | Backup integration | 已完成 V1.4 | rollback 可携带 `eva-backup::RestorePlan` 的 snapshot/risk 信息。 |
-| CLI | 已完成 V1.4 | `eva upgrade check` 输出 supervisor、migration preflight、drain 和 rollback readiness。 |
+| CLI | 已完成 V1.10.5 | `eva upgrade check` 输出 readiness；`upgrade apply --state-store` 可提交受控 handoff/pointer mutation。 |
 
 ## Public API
 
@@ -31,11 +33,16 @@ V1.4 的实现是 in-memory lifecycle planning：可以表达 active/candidate g
 | `InMemorySupervisor` | V1.4 mock supervisor，用于验证 generation handoff 语义。 |
 | `RuntimeHealth` | candidate runtime health input。 |
 | `SupervisorReport` | active/candidate generation、health、audit 摘要。 |
+| `SupervisorHandoffCoordinator` | V1.10.5 blue-green handoff 协调器，负责 policy 后的 candidate commit、drain、release pointer mutation 和 rollback 输出。 |
+| `RuntimeBinaryProbe` | runtime binary smoke 结果；CLI 默认使用 managed-by-cli simulated probe，也可传 `--runtime-binary <path>`。 |
+| `FileSystemSupervisorStateStore` | 将 `handoff.prepared`、`handoff.committed` 和 `state/release-pointer` 写入本地 state store。 |
+| `SupervisorHandoffReport` | handoff 状态、apply/mutation 标记、runtime binary、release pointer、rollback、steps/risks/audit。 |
 
 ## CLI 验证入口
 
 ```powershell
 cargo run -- upgrade check --output json
+cargo run -- upgrade apply --plan upgrade.plan --confirm plan-upgrade --lock-store .eva/locks --state-store .eva/supervisor --output json
 ```
 
 输出会包含：
@@ -47,12 +54,21 @@ cargo run -- upgrade check --output json
 - `rollback.status`
 - `risks`，明确 CLI 不启动真实 runtime 进程。
 
+`upgrade apply --state-store` 的 JSON 包含：
+
+- `status: "committed"` 或 `"blocked"`
+- `handoff.mutation_executed`
+- `handoff.release_pointer.pointer_path`
+- `handoff.rollback_plan`
+- `state_store.path`
+
 ## 模块边界
 
 `eva-lifecycle` 做：
 
 - 管理 runtime generation 的创建、激活、drain、回滚计划。
 - 协调高风险 apply/restore 的执行前状态。
+- 在显式 policy approval 后提交本地 blue-green handoff state 和 release pointer mutation。
 - 记录 lifecycle audit、trace 和失败原因。
 
 `eva-lifecycle` 不做：
@@ -61,7 +77,7 @@ cargo run -- upgrade check --output json
 - 不执行 Lua 业务逻辑。
 - 不决定 Adapter 或 capability 的业务路由。
 - 不静默执行不可逆 mutation，所有高风险路径必须先有 plan。
-- 不在 V1.4 启动真实 OS 进程、service manager、Supervisor binary 或 runtime binary。
+- 不替代 OS service manager；V1.10.5 的 runtime binary 启动仍是本地 smoke/adapter 边界，不是常驻 daemon supervisor。
 
 ## 验证计划
 
@@ -76,11 +92,18 @@ cargo run -- upgrade check --output json
 - drain plan 停止接收新工作并可完成。
 - rollback plan 保留 previous generation 并记录风险。
 - in-memory supervisor 只提交 healthy candidate。
+- handoff 在 policy、lock、health 通过后写入 release pointer 和 committed state。
+- candidate health 失败时不写 pointer，并输出 rollback plan。
+- filesystem state store 可恢复 `handoff.prepared` / `handoff.committed` / `state/release-pointer` 证据。
 
 ## English
 
-`eva-lifecycle` owns V1.4 supervisor boundaries, runtime generations, drain planning, and rollback planning. It models lifecycle safety without starting real processes in V1.4.
+`eva-lifecycle` owns supervisor boundaries, runtime generations, drain planning, rollback planning, upgrade locks, and V1.10.5 controlled blue-green handoff state.
 
 P6-003 adds the upgrade apply lock model. `upgrade apply` can acquire a
 filesystem-backed lock for a confirmed plan and report `apply_allowed:false`;
 real generation promotion remains behind later destructive apply gates.
+
+V1.10.5 adds `SupervisorHandoffCoordinator` and filesystem state persistence.
+The CLI can commit a controlled handoff with `--state-store`, while production
+service-manager integration remains future work.

@@ -18,9 +18,11 @@ use eva_core::{
 use eva_discovery::{DiscoveryScanReport, DiscoveryService, DiscoverySourceReport};
 use eva_hardware::{discover_project_devices, DeviceCandidate, HardwareDiscoveryReport};
 use eva_lifecycle::{
-    DrainCoordinator, DrainPlan, FileSystemUpgradeApplyLockStore, GenerationState,
-    InMemorySupervisor, RollbackCoordinator, RollbackPlan, RuntimeGeneration, SupervisorReport,
-    UpgradeApplyCoordinator, UpgradeApplyLock, UpgradeApplyPlan, UpgradeApplyReport,
+    DrainCoordinator, DrainPlan, FileSystemSupervisorStateStore, FileSystemUpgradeApplyLockStore,
+    GenerationState, InMemorySupervisor, ReleasePointerMutation, RollbackCoordinator, RollbackPlan,
+    RuntimeBinaryProbe, RuntimeGeneration, RuntimeHealth, SupervisorHandoffCoordinator,
+    SupervisorHandoffReport, SupervisorHandoffRequest, SupervisorReport, UpgradeApplyCoordinator,
+    UpgradeApplyLock, UpgradeApplyPlan, UpgradeApplyReport,
 };
 use eva_mcp::{InMemoryMcpClient, McpAllowlist, McpProbeReport};
 use eva_memory::{
@@ -53,7 +55,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command as ProcessCommand, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
@@ -488,7 +491,10 @@ struct UpgradeApplyOptions {
     plan: Option<PathBuf>,
     confirm: Option<String>,
     lock_store: Option<PathBuf>,
+    state_store: Option<PathBuf>,
+    runtime_binary: Option<PathBuf>,
     owner: String,
+    health: UpgradeApplyHealthOption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -571,6 +577,12 @@ struct RestoreApplyResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RestoreApplyHealthOption {
+    Healthy,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpgradeApplyHealthOption {
     Healthy,
     Failed(String),
 }
@@ -1512,7 +1524,10 @@ fn parse_upgrade_apply_options(args: &[String]) -> Result<UpgradeApplyOptions, E
     let mut plan = None;
     let mut confirm = None;
     let mut lock_store = None;
+    let mut state_store = None;
+    let mut runtime_binary = None;
     let mut owner = "cli".to_owned();
+    let mut health = UpgradeApplyHealthOption::Healthy;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1537,9 +1552,33 @@ fn parse_upgrade_apply_options(args: &[String]) -> Result<UpgradeApplyOptions, E
                     "upgrade apply lock store option",
                 )?));
             }
+            "--state-store" | "--state-store-dir" => {
+                index += 1;
+                state_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "upgrade apply state store option",
+                )?));
+            }
+            "--runtime-binary" => {
+                index += 1;
+                runtime_binary = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "upgrade apply runtime binary option",
+                )?));
+            }
             "--owner" => {
                 index += 1;
                 owner = required_option(args, index, "upgrade apply owner option")?.clone();
+            }
+            "--health" | "--health-check" => {
+                index += 1;
+                health = parse_upgrade_apply_health(required_option(
+                    args,
+                    index,
+                    "upgrade apply health option",
+                )?)?;
             }
             _ => passthrough.push(args[index].clone()),
         }
@@ -1550,8 +1589,27 @@ fn parse_upgrade_apply_options(args: &[String]) -> Result<UpgradeApplyOptions, E
         plan,
         confirm,
         lock_store,
+        state_store,
+        runtime_binary,
         owner,
+        health,
     })
+}
+
+fn parse_upgrade_apply_health(value: &str) -> Result<UpgradeApplyHealthOption, EvaError> {
+    match value {
+        "healthy" | "pass" | "passed" => Ok(UpgradeApplyHealthOption::Healthy),
+        "failed" | "fail" | "unhealthy" => Ok(UpgradeApplyHealthOption::Failed(
+            "candidate runtime health check failed".to_owned(),
+        )),
+        "unavailable" | "missing" => Ok(UpgradeApplyHealthOption::Failed(
+            "runtime binary is unavailable".to_owned(),
+        )),
+        _ => Err(EvaError::invalid_argument(
+            "upgrade apply health must be healthy, failed, or unavailable",
+        )
+        .with_context("health", value)),
+    }
 }
 
 fn parse_release_command(args: &[String]) -> Result<Command, EvaError> {
@@ -2495,6 +2553,8 @@ struct UpgradeCheckReport {
 struct UpgradeApplyResult {
     report: UpgradeApplyReport,
     lock_store: LockStoreRef,
+    state_store: Option<LockStoreRef>,
+    handoff: Option<SupervisorHandoffReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2984,24 +3044,178 @@ fn create_upgrade_apply(options: &UpgradeApplyOptions) -> Result<UpgradeApplyRes
     }
 
     let project = load_project_config(&options.common.project_root)?;
-    let policy_decision = RuntimePolicyGate::from_project(&project)?
-        .decide(RuntimePolicyRequest::new(HighRiskAction::SupervisorHandoff));
+    let policy_gate = RuntimePolicyGate::from_project(&project)?;
+    let supervisor_policy =
+        policy_gate.decide(RuntimePolicyRequest::new(HighRiskAction::SupervisorHandoff));
+    let pointer_policy = policy_gate.decide(RuntimePolicyRequest::new(
+        HighRiskAction::ReleasePointerMutation,
+    ));
     let mut store = FileSystemUpgradeApplyLockStore::new(lock_store_path);
     let mut report = UpgradeApplyCoordinator.acquire_lock(&mut store, &plan, &options.owner)?;
-    report.audit.extend(policy_decision.audit.clone());
-    if !policy_decision.allowed {
+    report.audit.extend(supervisor_policy.audit.clone());
+    report.audit.extend(pointer_policy.audit.clone());
+    if !supervisor_policy.allowed {
         report.risks.push(format!(
             "runtime policy denied destructive supervisor handoff: {}",
-            policy_decision.reason
+            supervisor_policy.reason
         ));
         report
             .audit
             .push("supervisor.handoff:policy_denied".to_owned());
     }
+    if !pointer_policy.allowed {
+        report.risks.push(format!(
+            "runtime policy denied release pointer mutation: {}",
+            pointer_policy.reason
+        ));
+        report
+            .audit
+            .push("release.pointer:policy_denied".to_owned());
+    }
+
+    let handoff = if let Some(state_store_path) = options.state_store.as_ref() {
+        let mut state_store = FileSystemSupervisorStateStore::new(state_store_path);
+        let runtime_binary = options
+            .runtime_binary
+            .as_ref()
+            .map(|path| probe_runtime_binary(path))
+            .unwrap_or_else(|| RuntimeBinaryProbe::simulated("runtime-binary:managed-by-cli"));
+        let health = match &options.health {
+            UpgradeApplyHealthOption::Healthy => RuntimeHealth::healthy(plan.to_generation.clone()),
+            UpgradeApplyHealthOption::Failed(message) => RuntimeHealth {
+                generation_id: plan.to_generation.clone(),
+                healthy: false,
+                message: message.clone(),
+            },
+        };
+        let handoff = SupervisorHandoffCoordinator.handoff(
+            &mut state_store,
+            SupervisorHandoffRequest {
+                plan: &plan,
+                lock: report.lock.clone(),
+                supervisor_policy: &supervisor_policy,
+                pointer_policy: &pointer_policy,
+                runtime_binary,
+                health,
+            },
+        )?;
+        report.status = handoff.status.clone();
+        report.apply_allowed = handoff.apply_allowed;
+        report.steps = handoff.steps.clone();
+        report.risks.extend(handoff.risks.clone());
+        report.audit.extend(handoff.audit.clone());
+        Some(handoff)
+    } else {
+        None
+    };
+
     Ok(UpgradeApplyResult {
         report,
         lock_store: lock_store_ref(Some(lock_store_path)),
+        state_store: options
+            .state_store
+            .as_ref()
+            .map(|path| lock_store_ref(Some(path))),
+        handoff,
     })
+}
+
+fn probe_runtime_binary(path: &Path) -> RuntimeBinaryProbe {
+    let binary_path = path.display().to_string();
+    if !path.exists() {
+        return RuntimeBinaryProbe {
+            binary_path: binary_path.clone(),
+            status: "unavailable".to_owned(),
+            audit: vec![
+                "runtime.binary:missing".to_owned(),
+                format!("runtime.binary:{binary_path}"),
+            ],
+        };
+    }
+
+    let mut child = match ProcessCommand::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return RuntimeBinaryProbe {
+                binary_path: binary_path.clone(),
+                status: "unavailable".to_owned(),
+                audit: vec![
+                    "runtime.binary:version_smoke_error".to_owned(),
+                    format!("runtime.binary:{binary_path}"),
+                    format!("runtime.binary.error:{error}"),
+                ],
+            };
+        }
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                return RuntimeBinaryProbe {
+                    binary_path: binary_path.clone(),
+                    status: "ready".to_owned(),
+                    audit: vec![
+                        "runtime.binary:version_smoke".to_owned(),
+                        format!("runtime.binary:{binary_path}"),
+                        format!(
+                            "runtime.binary.exit_code:{}",
+                            status
+                                .code()
+                                .map_or_else(|| "signal".to_owned(), |code| code.to_string())
+                        ),
+                    ],
+                };
+            }
+            Ok(Some(status)) => {
+                return RuntimeBinaryProbe {
+                    binary_path: binary_path.clone(),
+                    status: "unavailable".to_owned(),
+                    audit: vec![
+                        "runtime.binary:version_smoke_failed".to_owned(),
+                        format!("runtime.binary:{binary_path}"),
+                        format!(
+                            "runtime.binary.exit_code:{}",
+                            status
+                                .code()
+                                .map_or_else(|| "signal".to_owned(), |code| code.to_string())
+                        ),
+                    ],
+                };
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return RuntimeBinaryProbe {
+                    binary_path: binary_path.clone(),
+                    status: "unavailable".to_owned(),
+                    audit: vec![
+                        "runtime.binary:version_smoke_timeout".to_owned(),
+                        format!("runtime.binary:{binary_path}"),
+                        "runtime.binary.timeout_ms:5000".to_owned(),
+                    ],
+                };
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                return RuntimeBinaryProbe {
+                    binary_path: binary_path.clone(),
+                    status: "unavailable".to_owned(),
+                    audit: vec![
+                        "runtime.binary:version_smoke_error".to_owned(),
+                        format!("runtime.binary:{binary_path}"),
+                        format!("runtime.binary.error:{error}"),
+                    ],
+                };
+            }
+        }
+    }
 }
 
 fn read_upgrade_apply_plan(path: &Path) -> Result<UpgradeApplyPlan, EvaError> {
@@ -4557,7 +4771,23 @@ fn write_upgrade_apply<W: Write>(
             writeln!(writer, "status: {}", result.report.status).map_err(write_error_kind)?;
             writeln!(writer, "apply_allowed: {}", result.report.apply_allowed)
                 .map_err(write_error_kind)?;
-            write_lock_store_ref(writer, &result.lock_store)
+            if let Some(handoff) = &result.handoff {
+                writeln!(writer, "mutation_executed: {}", handoff.mutation_executed)
+                    .map_err(write_error_kind)?;
+                writeln!(writer, "active_generation: {}", handoff.active_generation)
+                    .map_err(write_error_kind)?;
+                if let Some(rollback) = &handoff.rollback_plan {
+                    writeln!(writer, "rollback: {}", rollback.status).map_err(write_error_kind)?;
+                }
+            }
+            write_lock_store_ref(writer, &result.lock_store)?;
+            if let Some(state_store) = &result.state_store {
+                writeln!(writer, "state_store: {}", state_store.kind).map_err(write_error_kind)?;
+                if let Some(path) = &state_store.path {
+                    writeln!(writer, "state_store_path: {path}").map_err(write_error_kind)?;
+                }
+            }
+            Ok(())
         }
         OutputFormat::Json => writeln!(
             writer,
@@ -5155,15 +5385,73 @@ fn restore_apply_lock_json(lock: &eva_backup::RestoreApplyLock) -> String {
 
 fn upgrade_apply_json(result: &UpgradeApplyResult) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"lock_store\":{},\"lock\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"lock_store\":{},\"state_store\":{},\"lock\":{},\"handoff\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
         json_string(&result.report.plan_id),
         json_string(&result.report.status),
         result.report.apply_allowed,
         lock_store_ref_json(&result.lock_store),
+        result
+            .state_store
+            .as_ref()
+            .map(lock_store_ref_json)
+            .unwrap_or_else(|| "null".to_owned()),
         upgrade_apply_lock_json(&result.report.lock),
+        result
+            .handoff
+            .as_ref()
+            .map(supervisor_handoff_json)
+            .unwrap_or_else(|| "null".to_owned()),
         json_array(result.report.steps.iter().map(|step| json_string(step))),
         json_array(result.report.risks.iter().map(|risk| json_string(risk))),
         json_array(result.report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn supervisor_handoff_json(report: &SupervisorHandoffReport) -> String {
+    format!(
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"runtime_binary\":{},\"active_generation\":{},\"previous_generation\":{},\"release_ref\":{},\"release_pointer\":{},\"rollback_plan\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
+        json_string(&report.plan_id),
+        json_string(&report.status),
+        report.apply_allowed,
+        report.mutation_executed,
+        runtime_binary_probe_json(&report.runtime_binary),
+        json_string(&report.active_generation),
+        json_string(&report.previous_generation),
+        json_string(&report.release_ref),
+        report
+            .release_pointer
+            .as_ref()
+            .map(release_pointer_mutation_json)
+            .unwrap_or_else(|| "null".to_owned()),
+        report
+            .rollback_plan
+            .as_ref()
+            .map(rollback_plan_json)
+            .unwrap_or_else(|| "null".to_owned()),
+        json_array(report.steps.iter().map(|step| json_string(step))),
+        json_array(report.risks.iter().map(|risk| json_string(risk))),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn runtime_binary_probe_json(probe: &RuntimeBinaryProbe) -> String {
+    format!(
+        "{{\"binary_path\":{},\"status\":{},\"audit\":{}}}",
+        json_string(&probe.binary_path),
+        json_string(&probe.status),
+        json_array(probe.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn release_pointer_mutation_json(mutation: &ReleasePointerMutation) -> String {
+    format!(
+        "{{\"pointer_path\":{},\"previous_generation\":{},\"active_generation\":{},\"release_ref\":{},\"status\":{},\"audit\":{}}}",
+        json_string(&mutation.pointer_path),
+        json_string(&mutation.previous_generation),
+        json_string(&mutation.active_generation),
+        json_string(&mutation.release_ref),
+        json_string(&mutation.status),
+        json_array(mutation.audit.iter().map(|entry| json_string(entry)))
     )
 }
 
@@ -5915,7 +6203,7 @@ fn help_text() -> &'static str {
         "  eva restore plan [--snapshot-id <id>] [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
         "  eva restore apply --plan <path> --confirm <plan_id> --artifact-store <path> --lock-store <path> [--dry-run] [--owner <id>] [--health healthy|failed] [--project <path>] [--output text|json]\n",
         "  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n",
-        "  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--owner <id>] [--project <path>] [--output text|json]\n",
+        "  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--state-store <path>] [--runtime-binary <path>] [--health healthy|failed|unavailable] [--owner <id>] [--project <path>] [--output text|json]\n",
         "  eva release check [--target all|windows|linux|macos] [--project <path>] [--output text|json]\n",
         "  eva release security [--project <path>] [--output text|json]\n",
         "  eva release perf [--project <path>] [--output text|json]\n",
@@ -5936,7 +6224,7 @@ fn help_text() -> &'static str {
         "  backup           Create and verify a V1.4 backup artifact, optionally in a filesystem ArtifactStore.\n",
         "  snapshot         Capture or plan promotion for a release snapshot without moving release pointer.\n",
         "  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n",
-        "  upgrade          Check or lock generation upgrade readiness without starting processes.\n",
+        "  upgrade          Check, lock, or commit policy-gated generation handoff state.\n",
         "  release          Run V1.5 cross-platform, security, performance, migration, and compatibility release gates.\n\n",
         "Exit codes:\n",
         "  0 success\n",
@@ -5953,6 +6241,8 @@ mod tests {
     use super::*;
     use eva_storage::ArtifactStore;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace_root() -> PathBuf {
@@ -6031,6 +6321,48 @@ mod tests {
         )
         .unwrap();
         fixture
+    }
+
+    fn project_with_upgrade_apply_allowed(name: &str) -> PathBuf {
+        let root = workspace_root();
+        let fixture = test_temp_dir(name);
+        copy_dir(&root.join("config"), &fixture.join("config"));
+        fs::write(
+            fixture.join("config/policies/upgrade-allow.yaml"),
+            "runtime_policy:\n  allow_high_risk_actions:\n    - supervisor.handoff\n    - release.pointer_mutation\n",
+        )
+        .unwrap();
+        fixture
+    }
+
+    fn upgrade_apply_plan_fixture(name: &str, plan_id: &str) -> (PathBuf, PathBuf) {
+        let root = test_temp_dir(name);
+        let plan_path = root.join("upgrade.plan");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &plan_path,
+            format!(
+                "plan_id={plan_id}\nfrom_generation=gen-v14\nto_generation=gen-v15\nfrom_release=1.4.0\nto_release=1.5.1\n"
+            ),
+        )
+        .unwrap();
+        (root, plan_path)
+    }
+
+    #[cfg(unix)]
+    fn executable_runtime_binary_fixture(name: &str) -> (PathBuf, PathBuf) {
+        let root = test_temp_dir(name);
+        let binary_path = root.join("eva-runtime-smoke.sh");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &binary_path,
+            "#!/bin/sh\nprintf 'eva-runtime-smoke 1.0.0\\n'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&binary_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary_path, permissions).unwrap();
+        (root, binary_path)
     }
 
     #[test]
@@ -7075,6 +7407,212 @@ mod tests {
         assert!(lock_root.join("plan-upgrade.lock").exists());
 
         fs::remove_dir_all(lock_root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_apply_handoff_commits_release_pointer_when_policy_health_and_state_store_pass() {
+        let project = project_with_upgrade_apply_allowed("upgrade-apply-allowed-project");
+        let (plan_root, plan_path) =
+            upgrade_apply_plan_fixture("upgrade-apply-handoff", "plan-handoff");
+        let lock_root = test_temp_dir("upgrade-apply-handoff-lock");
+        let state_root = test_temp_dir("upgrade-apply-handoff-state");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-handoff",
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--state-store",
+            state_root.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"upgrade.apply\""));
+        assert!(stdout.contains("\"status\":\"committed\""));
+        assert!(stdout.contains("\"apply_allowed\":true"));
+        assert!(stdout.contains("\"mutation_executed\":true"));
+        assert!(stdout.contains("\"release_pointer\":{"));
+        assert!(stdout.contains("\"active_generation\":\"gen-v15\""));
+        assert!(state_root.join("handoff.prepared").exists());
+        assert!(state_root.join("handoff.committed").exists());
+        assert!(state_root.join("state/release-pointer").exists());
+
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(plan_root).unwrap();
+        fs::remove_dir_all(lock_root).unwrap();
+        fs::remove_dir_all(state_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upgrade_apply_handoff_runs_runtime_binary_version_smoke() {
+        let project = project_with_upgrade_apply_allowed("upgrade-apply-runtime-project");
+        let (plan_root, plan_path) =
+            upgrade_apply_plan_fixture("upgrade-apply-runtime", "plan-runtime");
+        let lock_root = test_temp_dir("upgrade-apply-runtime-lock");
+        let state_root = test_temp_dir("upgrade-apply-runtime-state");
+        let (runtime_root, runtime_binary) =
+            executable_runtime_binary_fixture("upgrade-apply-runtime-binary");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-runtime",
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--state-store",
+            state_root.to_str().unwrap(),
+            "--runtime-binary",
+            runtime_binary.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"status\":\"committed\""));
+        assert!(stdout.contains("\"mutation_executed\":true"));
+        assert!(stdout.contains("\"runtime.binary:version_smoke\""));
+        assert!(stdout.contains("\"runtime.binary.exit_code:0\""));
+        assert!(state_root.join("state/release-pointer").exists());
+
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(plan_root).unwrap();
+        fs::remove_dir_all(lock_root).unwrap();
+        fs::remove_dir_all(state_root).unwrap();
+        fs::remove_dir_all(runtime_root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_apply_handoff_missing_runtime_binary_blocks_before_pointer_mutation() {
+        let project = project_with_upgrade_apply_allowed("upgrade-apply-missing-runtime-project");
+        let (plan_root, plan_path) =
+            upgrade_apply_plan_fixture("upgrade-apply-missing-runtime", "plan-missing-runtime");
+        let lock_root = test_temp_dir("upgrade-apply-missing-runtime-lock");
+        let state_root = test_temp_dir("upgrade-apply-missing-runtime-state");
+        let missing_binary = test_temp_dir("upgrade-apply-missing-runtime-bin").join("eva-runtime");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-missing-runtime",
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--state-store",
+            state_root.to_str().unwrap(),
+            "--runtime-binary",
+            missing_binary.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"status\":\"blocked\""));
+        assert!(stdout.contains("\"mutation_executed\":false"));
+        assert!(stdout.contains("\"runtime_binary\":{"));
+        assert!(stdout.contains("\"status\":\"unavailable\""));
+        assert!(stdout.contains("\"runtime.binary:missing\""));
+        assert!(stdout.contains("\"rollback_plan\":{"));
+        assert!(!state_root.join("state/release-pointer").exists());
+        assert!(state_root.join("handoff.prepared").exists());
+
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(plan_root).unwrap();
+        fs::remove_dir_all(lock_root).unwrap();
+        fs::remove_dir_all(state_root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_apply_handoff_health_failure_emits_rollback_without_pointer_mutation() {
+        let project = project_with_upgrade_apply_allowed("upgrade-apply-health-project");
+        let (plan_root, plan_path) =
+            upgrade_apply_plan_fixture("upgrade-apply-health", "plan-health");
+        let lock_root = test_temp_dir("upgrade-apply-health-lock");
+        let state_root = test_temp_dir("upgrade-apply-health-state");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-health",
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--state-store",
+            state_root.to_str().unwrap(),
+            "--health",
+            "failed",
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"status\":\"blocked\""));
+        assert!(stdout.contains("\"mutation_executed\":false"));
+        assert!(stdout.contains("\"rollback_plan\":{"));
+        assert!(!state_root.join("state/release-pointer").exists());
+        assert!(state_root.join("handoff.prepared").exists());
+
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(plan_root).unwrap();
+        fs::remove_dir_all(lock_root).unwrap();
+        fs::remove_dir_all(state_root).unwrap();
+    }
+
+    #[test]
+    fn upgrade_apply_handoff_default_policy_denies_before_state_mutation() {
+        let root = workspace_root();
+        let (plan_root, plan_path) =
+            upgrade_apply_plan_fixture("upgrade-apply-policy", "plan-policy");
+        let lock_root = test_temp_dir("upgrade-apply-policy-lock");
+        let state_root = test_temp_dir("upgrade-apply-policy-state");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-policy",
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--state-store",
+            state_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_POLICY);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"command\":\"upgrade.apply\""));
+        assert!(stderr.contains("\"kind\":\"permission_denied\""));
+        assert!(!state_root.join("state/release-pointer").exists());
+
+        fs::remove_dir_all(plan_root).unwrap();
+        fs::remove_dir_all(lock_root).ok();
+        fs::remove_dir_all(state_root).ok();
     }
 
     #[test]
