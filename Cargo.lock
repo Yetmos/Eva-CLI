@@ -217,8 +217,10 @@ version = "1.7.4-alpha"
 dependencies = [
  "eva-config",
  "eva-core",
+ "eva-eventbus",
  "eva-observability",
  "eva-policy",
+ "serde_yaml",
 ]
 
 [[package]]

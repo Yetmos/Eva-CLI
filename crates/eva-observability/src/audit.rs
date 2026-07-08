@@ -26,6 +26,9 @@ pub enum AuditAction {
     McpSessionStopped,
     McpStreamAborted,
     McpProxyDenied,
+    HardwareDriverStarted,
+    HardwareDriverStopped,
+    HardwareHotplugPublished,
     SecurityDenied,
 }
 
@@ -82,6 +85,9 @@ impl AuditAction {
             Self::McpSessionStopped => "mcp.session.stopped",
             Self::McpStreamAborted => "mcp.stream.aborted",
             Self::McpProxyDenied => "mcp.proxy.denied",
+            Self::HardwareDriverStarted => "hardware.driver.started",
+            Self::HardwareDriverStopped => "hardware.driver.stopped",
+            Self::HardwareHotplugPublished => "hardware.hotplug.published",
             Self::SecurityDenied => "security.denied",
         }
     }
@@ -155,6 +161,18 @@ mod tests {
         );
         assert_eq!(AuditAction::McpStreamAborted.as_str(), "mcp.stream.aborted");
         assert_eq!(AuditAction::McpProxyDenied.as_str(), "mcp.proxy.denied");
+        assert_eq!(
+            AuditAction::HardwareDriverStarted.as_str(),
+            "hardware.driver.started"
+        );
+        assert_eq!(
+            AuditAction::HardwareDriverStopped.as_str(),
+            "hardware.driver.stopped"
+        );
+        assert_eq!(
+            AuditAction::HardwareHotplugPublished.as_str(),
+            "hardware.hotplug.published"
+        );
         assert_eq!(AuditOutcome::Blocked.as_str(), "blocked");
     }
 

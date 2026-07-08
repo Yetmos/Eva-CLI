@@ -6,7 +6,7 @@
 
 `eva-hardware` 是 V1.3 起的受控硬件接入层。它把硬件设备拆成“发现候选、可信身份、设备注册表、逻辑租约、driver registry、driver binding、hotplug 状态机”几个可测试边界，并明确禁止 Lua、Agent 或 CLI 直接持有系统设备句柄、串口、USB、BLE、socket 或 vendor SDK raw I/O。
 
-V1.10.1 继续保持不打开真实硬件：项目中的 `scale-main` 硬件 manifest 默认 `enabled: false`，CLI 可以发现、probe 和生成绑定计划，但不会打开设备文件。真实 USB/串口/BLE/socket/vendor SDK driver 只作为 typed config 和 driver kind 预留。
+V1.10.2 继续保持不打开真实硬件：项目中的 `scale-main` 硬件 manifest 默认 `enabled: false`，CLI 可以发现、probe 和生成绑定计划，但不会打开设备文件。真实 USB/串口/BLE/socket/vendor SDK driver 只作为 typed config、driver kind 和 lifecycle 边界预留。
 
 ## V1.3 已实现能力
 
@@ -17,7 +17,9 @@ V1.10.1 继续保持不打开真实硬件：项目中的 `scale-main` 硬件 man
 | Registry | 已完成 V1.3 | `DeviceRegistry` 支持从候选注册可信设备，拒绝 rejected candidate，提供 `claim`、`release`、`list`、`get`，并阻止重复 claim。 |
 | Driver binding | 已完成 V1.10.1 | `DriverBinding`、`DriverOperation`、`DriverOutput`、`HardwareDriver` 和 `SimulatedDriver` 把硬件能力封装成受控 trait。模拟 driver 的 audit 明确包含 `raw_io:false`。 |
 | Driver registry | 已完成 V1.10.1 | `HardwareDriverRegistry` 注册 trait object driver，按 driver id 调用；`run_simulator_contract_suite` 验证 simulator 不暴露 raw handle、不允许 raw I/O、拒绝 capability 绕过。 |
+| Driver lifecycle | 已完成 V1.10.2 | `HardwareLifecycleCoordinator` 在 driver start 前检查 runtime policy 和 OS permission，claim lease 后进入 opened 状态；stop 释放 lease 并写 audit；crash path 清理 lease 并写 failed audit。 |
 | Hotplug | 已完成 V1.3 | `HotplugStateMachine` 将 insert/reconnect/remove/fail 转成稳定 Topic：`/hardware/connected`、`/hardware/disconnected`、`/hardware/failed`。 |
+| Hotplug publish | 已完成 V1.10.2 | `publish_hotplug_event` 将 typed hotplug event 发布到 `EventBus`，payload 包含 device/action/previous/next/reason，并写 `hardware.hotplug.published` audit。 |
 | Adapter bridge | 已完成 V1.10.1 | `eva-adapter` 的 hardware transport 通过 `DeviceRegistry` lease 和 `HardwareDriverRegistry` 调用 `SimulatedDriver`，完成后释放 lease，并输出 `transport:hardware`、`lease:released` 审计。 |
 | CLI | 已完成 V1.3 | `eva hardware list/probe/bind` 可诊断硬件候选；`bind` 是 plan-first，`--apply` 在 V1.3 只校验逻辑计划，不打开 raw I/O。 |
 
@@ -30,10 +32,12 @@ V1.3 的硬件路径是：
 3. CLI `hardware list/probe` 展示候选、信任级别、健康状态、match 字段和拒绝原因。
 4. `DeviceRegistry::from_candidates` 只注册非 rejected 候选。
 5. `DeviceRegistry::claim` 为一次 request 生成独占 `DeviceLease`。
-6. `HardwareDriverRegistry` 按 driver id 调用 `HardwareDriver` trait object。
-7. `SimulatedDriver` 通过 `HardwareDriver` trait 返回受控输出和审计记录。
-8. Adapter hardware transport 释放 lease 后返回 `AdapterInvokeReport`。
-9. 后续真实硬件 driver 必须复用同一条 device registry + lease + driver registry + driver binding 路径。
+6. `HardwareLifecycleCoordinator` 在 driver start 前检查 `RuntimePolicyGate` 和 OS permission。
+7. `DeviceRegistry::claim` 生成 request-scoped lease 后，driver lifecycle 才进入 opened 状态。
+8. `HardwareDriverRegistry` 按 driver id 调用 `HardwareDriver` trait object。
+9. `SimulatedDriver` 通过 `HardwareDriver` trait 返回受控输出和审计记录。
+10. Adapter hardware transport 释放 lease 后返回 `AdapterInvokeReport`。
+11. 后续真实硬件 driver 必须复用同一条 policy + OS permission + device registry + lease + driver registry + driver binding 路径。
 
 ## Public API
 
@@ -50,6 +54,9 @@ V1.3 的硬件路径是：
 | `HardwareDriverRegistry` | 按 driver id 注册和调用 `HardwareDriver` trait object。 |
 | `SimulatedDriver` | V1.3 默认 driver，只返回模拟读取结果和 `raw_io:false` audit。 |
 | `run_simulator_contract_suite` | V1.10.1 simulator 回归入口，验证 raw I/O、raw handle 和 capability mismatch 边界。 |
+| `HardwareLifecycleCoordinator` | V1.10.2 driver lifecycle 入口，负责 policy/OS permission、lease、opened/stopped/crashed 状态和 audit。 |
+| `StaticOsPermissionProvider` | 测试和本地 smoke 使用的 OS permission provider，可稳定模拟 granted/denied。 |
+| `publish_hotplug_event` | 将 `HotplugEvent` 转为 EventBus typed event 并写 audit。 |
 | `HotplugStateMachine` | 将硬件动作转换成健康状态和稳定硬件 Topic。 |
 
 ## CLI 验证入口
@@ -78,6 +85,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 - 管理设备注册、claim、release 和 lease 冲突。
 - 提供 driver binding trait 和模拟 driver。
 - 提供 driver registry 和 simulator contract suite。
+- 提供 driver lifecycle coordinator、OS permission check 抽象和 hotplug publish helper。
 - 将 hotplug 动作映射为稳定 Topic。
 - 为 AdapterRuntime 输出可审计的硬件调用边界。
 
@@ -87,7 +95,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 - 不保存业务状态。
 - 不绕过 AdapterRuntime 或 policy gate 调用硬件。
 - 不在 V1.3 打开真实设备文件或执行不可逆设备操作。
-- 不在 V1.10.1 启用真实 USB/串口/BLE/socket/vendor SDK driver。
+- 不在 V1.10.2 启用真实 USB/串口/BLE/socket/vendor SDK driver。
 - 不把 discovery candidate 当作授权 handle。
 
 ## 与其他模块的关系
@@ -98,7 +106,8 @@ cargo run -- hardware bind --adapter scale-main --output json
 | `eva-adapter` | 通过 `hardware` transport 调用 registry、lease 和 driver binding。 |
 | `eva-cli` | 暴露 `hardware list/probe/bind` 诊断和 plan-first 绑定命令。 |
 | `eva-policy` | 后续版本继续扩展 raw I/O、设备路径、vendor SDK 权限约束。 |
-| `eva-eventbus` | 后续版本可把 `HotplugEvent.topic` 发布到运行时事件流。 |
+| `eva-eventbus` | V1.10.2 起 `publish_hotplug_event` 可把 `HotplugEvent.topic` 发布到运行时事件流。 |
+| `eva-observability` | V1.10.2 起记录 hardware driver lifecycle 和 hotplug publish audit action。 |
 
 ## 验证计划
 
@@ -122,11 +131,14 @@ cargo run -- hardware bind --adapter scale-main --output json
 - Adapter hardware transport 输出 `raw_io:false` 并释放 lease。
 - driver registry 只能调用已注册 driver。
 - simulator contract suite 验证无 raw handle、无 raw I/O 和 capability mismatch 拒绝。
+- lifecycle start 会先检查 policy 和 OS permission，再 claim lease；OS permission 缺失错误稳定。
+- stop 的 request id 必须匹配 lease；driver crash 会释放 lease。
+- hotplug event 可发布到 EventBus 并被订阅者读取。
 
 ## 后续范围
 
-V1.10.1 没有集成真实 USB/串口/BLE/socket/vendor SDK 设备，也没有处理 OS 权限、热插拔事件发布或真实 driver 生命周期。V1.10.2 会继续补 OS 权限检查、真实 driver lifecycle、hotplug event 发布和观测审计。
+V1.10.2 没有集成真实 USB/串口/BLE/socket/vendor SDK 设备，也没有打开 OS device handle。V1.10 后续会继续补真实 driver implementation、设备权限探测实现、热插拔事件接入常驻 runtime 和观测后端。
 
 ## English
 
-`eva-hardware` owns the controlled hardware boundary: discovery candidates, trusted identities, registry leases, driver registry, driver bindings, hotplug state, and simulated driver invocation. Raw hardware I/O is not exposed to Lua, Agents, or CLI commands.
+`eva-hardware` owns the controlled hardware boundary: discovery candidates, trusted identities, registry leases, driver registry, driver lifecycle, hotplug publish, and simulated driver invocation. Raw hardware I/O is not exposed to Lua, Agents, or CLI commands.
