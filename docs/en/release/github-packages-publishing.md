@@ -34,6 +34,8 @@ The package job:
   image;
 - records provenance and SBOM evidence fields, including verification commands,
   in `release-evidence/package-ghcr.json`;
+- runs `docker buildx imagetools inspect` against the pushed digest as the
+  package-manager dry-run check and records that command/status;
 - uploads `package-evidence-${RELEASE_TAG}` and lets the publish job merge that
   file into `release-evidence-${RELEASE_TAG}`.
 
@@ -88,13 +90,23 @@ published package, verify those records with the commands stored under the
 `provenance.verification` and `sbom.verification` fields in
 `release-evidence/package-ghcr.json`.
 
+V1.11.2 also copies the GHCR dry-run result into
+`release-evidence/release-distribution.evidence`, then runs:
+
+```powershell
+cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --output json
+```
+
+That gate blocks if the package-manager dry-run is missing or not `passed`.
+
 ## Scope Limits
 
 GitHub Packages is not a Cargo crate registry replacement. Public Rust crate
 publication remains a separate crates.io decision.
 
-This GHCR channel does not add signed installers, OS package-manager packages,
-or provenance bundles. Those remain future release scope.
+This GHCR channel now supplies package metadata dry-run evidence. It does not
+add signed native installers, Homebrew/Winget/Apt repository publication, or
+production signing credentials. Those remain future release scope.
 
 The existing `v1.5.0` release tag predates this package channel and remains
 immutable. It should not be moved or republished only to backfill GHCR. Package

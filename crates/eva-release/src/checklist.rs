@@ -3,6 +3,7 @@
 use crate::artifact::{
     ReleaseArtifactEvidence, ReleaseArtifactSigningKey, ReleaseArtifactVerificationReport,
 };
+use crate::distribution::{ReleaseDistributionEvidence, ReleaseDistributionVerificationReport};
 use crate::migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
@@ -86,7 +87,7 @@ impl ReleaseHardeningService {
     }
 
     pub fn readiness(&self, target: impl Into<String>) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), None)
+        self.readiness_inner(target.into(), None, None)
     }
 
     pub fn readiness_with_artifact_evidence(
@@ -94,13 +95,31 @@ impl ReleaseHardeningService {
         target: impl Into<String>,
         evidence: &ReleaseArtifactEvidence,
     ) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), Some(evidence))
+        self.readiness_inner(target.into(), Some(evidence), None)
+    }
+
+    pub fn readiness_with_distribution_evidence(
+        &self,
+        target: impl Into<String>,
+        evidence: &ReleaseDistributionEvidence,
+    ) -> Result<ReleaseReadinessReport, EvaError> {
+        self.readiness_inner(target.into(), None, Some(evidence))
+    }
+
+    pub fn readiness_with_release_evidence(
+        &self,
+        target: impl Into<String>,
+        artifact_evidence: Option<&ReleaseArtifactEvidence>,
+        distribution_evidence: Option<&ReleaseDistributionEvidence>,
+    ) -> Result<ReleaseReadinessReport, EvaError> {
+        self.readiness_inner(target.into(), artifact_evidence, distribution_evidence)
     }
 
     fn readiness_inner(
         &self,
         target: String,
         artifact_evidence: Option<&ReleaseArtifactEvidence>,
+        distribution_evidence: Option<&ReleaseDistributionEvidence>,
     ) -> Result<ReleaseReadinessReport, EvaError> {
         if target.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -140,6 +159,10 @@ impl ReleaseHardeningService {
         if let Some(report) = artifact_report.as_ref() {
             gates.push(release_artifact_provenance_gate(report));
         }
+        let distribution_report = distribution_evidence.map(ReleaseDistributionEvidence::verify);
+        if let Some(report) = distribution_report.as_ref() {
+            gates.push(release_distribution_gate(report));
+        }
 
         let status = if gates
             .iter()
@@ -158,7 +181,7 @@ impl ReleaseHardeningService {
             platforms,
             stability,
             gates,
-            audit: release_audit(artifact_report.as_ref()),
+            audit: release_audit(artifact_report.as_ref(), distribution_report.as_ref()),
         })
     }
 
@@ -500,11 +523,12 @@ impl ReleaseHardeningService {
                 domain: "docs".to_owned(),
                 status: ReleaseGateStatus::Pass,
                 required: true,
-                summary: format!("{CURRENT_RELEASE_LABEL} README, version management, GitHub Packages, migration, compatibility, and release notes are part of the release surface"),
+                summary: format!("{CURRENT_RELEASE_LABEL} README, version management, GitHub Packages, install/upgrade/uninstall docs, migration, compatibility, and release notes are part of the release surface"),
                 evidence: vec![
                     "crates/eva-release/README.md".to_owned(),
                     "docs/en/release/version-management-plan.md".to_owned(),
                     "docs/en/release/github-packages-publishing.md".to_owned(),
+                    "docs/en/release/install-upgrade-uninstall.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
                     "docs/en/release/release-notes-v1.7.4.md".to_owned(),
@@ -515,7 +539,10 @@ impl ReleaseHardeningService {
     }
 }
 
-fn release_audit(artifact_report: Option<&ReleaseArtifactVerificationReport>) -> Vec<String> {
+fn release_audit(
+    artifact_report: Option<&ReleaseArtifactVerificationReport>,
+    distribution_report: Option<&ReleaseDistributionVerificationReport>,
+) -> Vec<String> {
     let mut audit = vec![
         "release:readiness:v1.7.4-alpha".to_owned(),
         "no_unauthorized_destructive_restore_or_process_switch".to_owned(),
@@ -538,6 +565,14 @@ fn release_audit(artifact_report: Option<&ReleaseArtifactVerificationReport>) ->
             audit.push("signed_artifact_provenance_verified".to_owned());
         } else {
             audit.push("signed_artifact_provenance_blocked".to_owned());
+        }
+        audit.extend(report.audit.iter().cloned());
+    }
+    if let Some(report) = distribution_report {
+        if report.status == "verified" {
+            audit.push("distribution_install_smoke_verified".to_owned());
+        } else {
+            audit.push("distribution_install_smoke_blocked".to_owned());
         }
         audit.extend(report.audit.iter().cloned());
     }
@@ -564,6 +599,48 @@ fn release_artifact_provenance_gate(report: &ReleaseArtifactVerificationReport) 
         },
         required: true,
         summary: "V1.11.1 signed release artifact and provenance evidence are verified".to_owned(),
+        evidence,
+        remediation: if report.risks.is_empty() {
+            Vec::new()
+        } else {
+            report.risks.clone()
+        },
+    }
+}
+
+fn release_distribution_gate(report: &ReleaseDistributionVerificationReport) -> ReleaseGate {
+    let mut evidence = vec![
+        format!("version:{}", report.version),
+        format!("source_commit:{}", report.source_commit),
+        format!("install_docs_verified:{}", report.install_docs_verified),
+        format!(
+            "package_dry_runs_verified:{}",
+            report.package_dry_runs_verified
+        ),
+    ];
+    evidence.extend(report.platform_smokes.iter().map(|smoke| {
+        format!(
+            "install_smoke:{}:{}:{}:{}",
+            smoke.os, smoke.target, smoke.artifact, smoke.status
+        )
+    }));
+    evidence.extend(report.package_dry_runs.iter().map(|dry_run| {
+        format!(
+            "package_dry_run:{}:{}:{}",
+            dry_run.manager, dry_run.target, dry_run.status
+        )
+    }));
+    evidence.extend(report.audit.iter().cloned());
+    ReleaseGate {
+        id: "REL-DISTRIBUTION-001".to_owned(),
+        domain: "release_distribution".to_owned(),
+        status: if report.status == "verified" {
+            ReleaseGateStatus::Pass
+        } else {
+            ReleaseGateStatus::Blocked
+        },
+        required: true,
+        summary: "V1.11.2 cross-platform installer smoke and package-manager dry-run evidence are verified".to_owned(),
         evidence,
         remediation: if report.risks.is_empty() {
             Vec::new()
@@ -982,6 +1059,76 @@ mod tests {
         evidence
     }
 
+    fn install_smoke(
+        os: &str,
+        target: &str,
+        artifact: &str,
+        package_format: &str,
+        status: &str,
+    ) -> crate::distribution::ReleaseInstallSmokeEvidence {
+        crate::distribution::ReleaseInstallSmokeEvidence::new(
+            os,
+            target,
+            artifact,
+            package_format,
+            format!("install {artifact}"),
+            "eva --version",
+            format!("uninstall {artifact}"),
+            format!("upgrade {artifact}"),
+            status,
+        )
+        .unwrap()
+    }
+
+    fn package_dry_run(status: &str) -> crate::distribution::ReleasePackageDryRunEvidence {
+        crate::distribution::ReleasePackageDryRunEvidence::new(
+            "ghcr",
+            "ghcr.io/yetmos/eva-cli",
+            "linux/amd64+linux/arm64",
+            "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:1.7.4-alpha",
+            status,
+        )
+        .unwrap()
+    }
+
+    fn distribution_evidence(
+        package_status: &str,
+    ) -> crate::distribution::ReleaseDistributionEvidence {
+        crate::distribution::ReleaseDistributionEvidence::new(
+            "1.7.4-alpha",
+            "v1.7.4-alpha",
+            ARTIFACT_COMMIT,
+            "docs/en/release/install-upgrade-uninstall.md",
+            "docs/en/release/install-upgrade-uninstall.md",
+            "docs/en/release/install-upgrade-uninstall.md",
+            vec![
+                install_smoke(
+                    "windows",
+                    "x86_64-pc-windows-msvc",
+                    "eva-cli-1.7.4-alpha-x86_64-pc-windows-msvc.zip",
+                    "zip",
+                    "passed",
+                ),
+                install_smoke(
+                    "linux",
+                    "x86_64-unknown-linux-gnu",
+                    "eva-cli-1.7.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
+                    "tar.gz",
+                    "passed",
+                ),
+                install_smoke(
+                    "macos",
+                    "x86_64-apple-darwin",
+                    "eva-cli-1.7.4-alpha-x86_64-apple-darwin.tar.gz",
+                    "tar.gz",
+                    "passed",
+                ),
+            ],
+            vec![package_dry_run(package_status)],
+        )
+        .unwrap()
+    }
+
     #[test]
     fn readiness_has_no_blocking_required_gates() {
         let report = ReleaseHardeningService::v15().readiness("all").unwrap();
@@ -999,6 +1146,10 @@ mod tests {
                     .evidence
                     .iter()
                     .any(|item| item == "docs/en/release/github-packages-publishing.md")
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "docs/en/release/install-upgrade-uninstall.md")
         }));
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-DURABLE-BACKEND-001" && gate.status == ReleaseGateStatus::Pass
@@ -1104,6 +1255,64 @@ mod tests {
                     .remediation
                     .iter()
                     .any(|item| item == "release artifact is marked unsigned")
+        }));
+    }
+
+    #[test]
+    fn readiness_with_distribution_evidence_passes_release_distribution_gate() {
+        let evidence = distribution_evidence("passed");
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_distribution_evidence("all", &evidence)
+            .unwrap();
+
+        assert_eq!(report.status, "ready");
+        assert_eq!(report.blocking_count(), 0);
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DISTRIBUTION-001" && gate.status == ReleaseGateStatus::Pass
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "distribution_install_smoke_verified"));
+    }
+
+    #[test]
+    fn readiness_with_failed_package_dry_run_blocks_release_distribution_gate() {
+        let evidence = distribution_evidence("failed");
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_distribution_evidence("all", &evidence)
+            .unwrap();
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.blocking_count(), 1);
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DISTRIBUTION-001"
+                && gate.status == ReleaseGateStatus::Blocked
+                && gate
+                    .remediation
+                    .iter()
+                    .any(|item| item.contains("package manager dry-run for ghcr"))
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "distribution_install_smoke_blocked"));
+    }
+
+    #[test]
+    fn readiness_with_artifact_and_distribution_evidence_passes_both_gates() {
+        let artifact = artifact_evidence(true);
+        let distribution = distribution_evidence("passed");
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_release_evidence("all", Some(&artifact), Some(&distribution))
+            .unwrap();
+
+        assert_eq!(report.status, "ready");
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-ARTIFACT-PROVENANCE-001" && gate.status == ReleaseGateStatus::Pass
+        }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DISTRIBUTION-001" && gate.status == ReleaseGateStatus::Pass
         }));
     }
 

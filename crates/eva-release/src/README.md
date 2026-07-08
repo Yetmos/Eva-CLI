@@ -15,6 +15,7 @@ run in local development and CI.
 | --- | --- |
 | `lib.rs` | Re-exports the public release-hardening API and declares the module responsibility. |
 | `artifact.rs` | Defines V1.11.1 signed release artifact evidence, SHA-256 keyed signature verification, provenance/source commit checks, and key/value manifest parsing. |
+| `distribution.rs` | Defines V1.11.2 distribution evidence, Windows/Linux/macOS install smoke verification, package-manager dry-run verification, and key/value manifest parsing. |
 | `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, V1.10.4 restore apply gate, and V1.10.5 supervisor handoff readiness. |
 | `security.rs` | Defines security severity and findings for policy, sandbox, secret, MCP, hardware, and lifecycle boundaries. |
 | `performance.rs` | Defines source-release performance budgets and the baseline report. |
@@ -29,6 +30,10 @@ produce four independent reports:
   `linux`, or `macos`;
 - `readiness_with_artifact_evidence(target, evidence)`: aggregate release gate
   report plus a required V1.11.1 signed artifact/provenance gate;
+- `readiness_with_distribution_evidence(target, evidence)`: aggregate release
+  gate report plus a required V1.11.2 install smoke/package dry-run gate;
+- `readiness_with_release_evidence(target, artifact, distribution)`: aggregate
+  release gate report with both optional evidence gates;
 - `security_review()`: policy/sandbox/secret/MCP/hardware/lifecycle security
   review;
 - `performance_baseline()`: fixed V1.5 performance budget table;
@@ -54,6 +59,10 @@ of CLI formatting so future release tooling can reuse the same data contracts.
 - The release artifact evidence gate is opt-in until CI generates the key/value
   evidence manifest. When supplied, unsigned artifacts, signature mismatch, or
   provenance/source commit mismatch block readiness.
+- The distribution evidence gate is opt-in and verifies the CI-generated
+  key/value manifest. When supplied, missing Windows/Linux/macOS install smoke,
+  missing install/upgrade/uninstall docs, or failed package-manager dry-run
+  blocks readiness.
 - Performance budgets are release-smoke thresholds, not statistically rigorous
   benchmarks. They exist to make regressions visible and to document the
   expected cost class of the current in-memory implementation.
@@ -75,3 +84,5 @@ The module-level tests cover:
 - signed backup archive, restore apply gate, and supervisor handoff readiness are present without creating a blocked release state.
 - signed artifact evidence passes when the keyed signature and provenance match,
   and blocks when the artifact is unsigned.
+- distribution evidence passes when three-platform install smoke and package
+  dry-run evidence are passed, and blocks when the package dry-run fails.

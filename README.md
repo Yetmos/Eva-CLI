@@ -69,13 +69,13 @@ generation drain evidence, rollback audit evidence, and CI release gates.
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 20 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V1.7.4 implemented | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `hardware list/probe/bind`, `backup create`, `snapshot create`, `restore plan`, `upgrade check`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, Lua host binding evidence, Lua resource-limit evidence, Lua hot-reload lifecycle evidence, and exit-code mapping | Keep command contracts stable as future apply paths are added |
+| `eva-cli` | V1.11.2 implemented | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `hardware list/probe/bind`, `backup create`, `snapshot create`, `restore plan`, `upgrade check`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, Lua host binding evidence, Lua resource-limit evidence, Lua hot-reload lifecycle evidence, artifact evidence, distribution evidence, and exit-code mapping | Keep command contracts stable as future apply paths are added |
 | Runtime composition | V1.0 core implemented | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, and idempotent shutdown | Durable/runtime lifecycle work remains later scope |
 | EventBus and Scheduler | V1.6.4 durable recovery baseline implemented | EventBus publish/ack/fail/dead-letter/replay diagnostics; durable EventLog records; queryable dead-letter store; redrive replay attempts; ack-safe recovery redrive checkpoint; Scheduler topic routing and mailbox delivery | Scheduler-driven delayed backoff and broader crash recovery remain later scope |
 | Agent and Lua host | V1.7.4 hot-reload lifecycle implemented | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, restricted `mlua` VM adapter, real `on_event` execution, read-only request/trace/memory tables, `ctx.host.log/audit`, `ctx.tools.call`, Lua wall-clock timeout, instruction budget, cancellation token, memory budget, static parser fallback, generation marker, shadow-load health checks, generation route gating, drain evidence, and rollback audit evidence | Daemon-driven hot-reload orchestration and real provider paths remain later scope |
 | Capability and Adapter layers | V1.1 controlled envelopes implemented | `eva-capability` has V0.4 builtins; `eva-adapter` now builds authorized handles, routes capabilities to providers, probes adapters, and invokes MCP/Skill controlled envelopes | Real stdio/http process execution and richer policy evaluation remain later scope |
 | Policy, observability, storage | Mixed with V1.6 durable backend baseline | `eva-policy` and `eva-observability` have V0.2 contracts; `eva-storage` has in-memory stores/logs plus schema-versioned durable backend layout, migration lock, filesystem EventLog, durable task snapshot adapter, durable audit sink, runtime recovered audit records, artifact metadata hardening, read-only verification, and diagnostics-friendly read-only event/dead-letter access | Runtime audit export, task query indexes, richer audit sinks, and metrics remain later scope |
-| Discovery, MCP, memory, hardware, backup, lifecycle, release | Mixed | Discovery and MCP have V1.1 side-effect-free candidates/probes; memory has V1.2 in-memory private/global records, knowledge search, ContextBuilder, and Lua context snapshots; hardware has V1.3 discovery candidates, registry leases, simulated driver binding, hotplug state machine, Adapter hardware transport, and CLI binding plans; backup and lifecycle have V1.4 backup artifact verification, migration preflight, release snapshot restore plans, generation handoff, drain, rollback, and upgrade checks; release has V1.7.4 readiness/security/performance/migration gates plus durable recovery, diagnostics, Lua VM execution, Lua host binding, Lua resource-limit, and Lua hot-reload lifecycle smoke evidence | Real apply paths, signed artifacts, and packaged installers remain later scope |
+| Discovery, MCP, memory, hardware, backup, lifecycle, release | Mixed | Discovery and MCP have V1.1 side-effect-free candidates/probes; memory has V1.2 in-memory private/global records, knowledge search, ContextBuilder, and Lua context snapshots; hardware has V1.3 discovery candidates, registry leases, simulated driver binding, hotplug state machine, Adapter hardware transport, and CLI binding plans; backup and lifecycle have V1.4 backup artifact verification, migration preflight, release snapshot restore plans, generation handoff, drain, rollback, and upgrade checks; release has V1.11.2 readiness/security/performance/migration gates plus durable recovery, diagnostics, Lua VM execution, Lua host binding, Lua resource-limit, Lua hot-reload lifecycle, signed artifact evidence, and distribution install smoke/package dry-run evidence | Real apply paths, production signing credentials, external scanners, and OS package repository publication remain later scope |
 | Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, V1.0 quickstart smoke commands, V1.1 external capability smoke commands, V1.2 memory context smoke, V1.3 hardware smoke, V1.4 backup/lifecycle smoke, V1.5 release hardening smoke, V1.6 durable backend/EventBus smoke, and website i18n validation | Add gates as future runtime behavior expands |
 
 ## Implementation Plan
@@ -358,10 +358,10 @@ Core boundaries:
 ## Remaining V1.x Gaps
 
 V1.7.4-alpha is a source alpha and Lua hot-reload lifecycle evidence
-checkpoint, not a packaged
-installer distribution. Later release tags that contain package support publish
-the GHCR container image `ghcr.io/yetmos/eva-cli`; old tags are not republished
-retroactively. The main remaining work is now narrower and more
+checkpoint with V1.11.2 release-distribution evidence. Later release tags that
+contain package support publish the GHCR container image `ghcr.io/yetmos/eva-cli`,
+native archive metadata, and install-smoke/package dry-run evidence; old tags
+are not republished retroactively. The main remaining work is now narrower and more
 implementation-focused:
 
 - Real provider execution for stdio/http/MCP processes, including authentication,
@@ -373,8 +373,8 @@ implementation-focused:
   route-gate, drain-evidence, and rollback-audit boundaries.
 - Destructive apply paths such as `restore apply`, release pointer mutation,
   supervisor activation, and blue-green runtime process handoff.
-- Signed release artifacts, cross-platform installers, package-manager packages,
-  and artifact provenance.
+- Production signing credentials, Homebrew/Winget/Apt repository publication,
+  external scanner integration, and stronger artifact provenance.
 - Deeper machine-verifiable schemas and policy checks as high-risk apply paths
   move from plan-only diagnostics to execution.
 

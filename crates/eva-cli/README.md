@@ -228,6 +228,7 @@ V1.5 新增 `release` 命令组：
 ```powershell
 cargo run -- release check --output json
 cargo run -- release check --artifact-evidence release-evidence/release-artifact.evidence --output json
+cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --output json
 cargo run -- release check --target windows --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
@@ -238,6 +239,7 @@ cargo run -- release migration --output json
 | --- | --- |
 | `release check` | 调用 `eva_release::ReleaseHardeningService::readiness`，聚合 release gates、platform readiness、stability scenarios 和 audit。 |
 | `release check --artifact-evidence` | 读取 V1.11.1 key/value artifact evidence，校验 signed artifact、SHA-256 keyed signature、source commit provenance、SBOM 标记和 scan status；失败时 required gate blocked 并返回配置门禁 exit code `2`。 |
+| `release check --distribution-evidence` | 读取 V1.11.2 key/value distribution evidence，校验 Windows/Linux/macOS install smoke、安装/升级/卸载文档路径和 package-manager dry-run；失败时 required gate blocked 并返回配置门禁 exit code `2`。 |
 | `release security` | 输出 `SecurityReviewReport`，覆盖 policy、Lua sandbox、secret redaction、MCP allowlist、hardware raw I/O 和 lifecycle apply risk。 |
 | `release perf` | 输出 `PerformanceBaselineReport`，用 release-smoke budget 记录当前 in-memory 实现的性能边界。 |
 | `release migration` | 输出 `MigrationGuide` 和 `CompatibilityPolicy`，声明 V1.4 到 V1.5 无破坏性变更。 |
@@ -273,9 +275,10 @@ cargo run -- restore apply --plan restore-plan.txt --confirm plan-123 --artifact
 cargo run -- upgrade check --output json
 cargo run -- observability smoke --backend .eva/ci-observability --output json
 cargo run -- release check --output json
+cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
 cargo run -- release migration --output json
 ```
 
-当前测试覆盖 version text/JSON、config validate JSON、inspect text、unknown command、JSON escaping、basic run JSON、cancelled basic run、task status/logs/cancel、doctor sample project、V1.1 external capability commands、V1.2 memory context、V1.3 hardware command JSON、V1.4 backup/lifecycle command JSON、V1.5 release hardening command JSON、V1.9.5 observability smoke JSONL backend，以及 V1.10.4 restore apply policy denial、lock conflict、health failure rollback 和 gated report contract。
+当前测试覆盖 version text/JSON、config validate JSON、inspect text、unknown command、JSON escaping、basic run JSON、cancelled basic run、task status/logs/cancel、doctor sample project、V1.1 external capability commands、V1.2 memory context、V1.3 hardware command JSON、V1.4 backup/lifecycle command JSON、V1.5 release hardening command JSON、V1.9.5 observability smoke JSONL backend、V1.10.4 restore apply policy denial、lock conflict、health failure rollback 和 gated report contract，以及 V1.11.1 artifact evidence / V1.11.2 distribution evidence release gates。

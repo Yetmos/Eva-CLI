@@ -1028,6 +1028,23 @@
       "sourceCoverage": "full-detail"
     },
     {
+      "id": "install-upgrade-uninstall",
+      "title": "Eva-CLI Install, Upgrade, And Uninstall",
+      "source": "docs/en/release/install-upgrade-uninstall.md",
+      "translations": {
+        "zh-CN": "docs/zh-CN/release/安装升级卸载说明.md"
+      },
+      "status": {
+        "zh-CN": "current"
+      },
+      "contentAuthority": {
+        "locale": "zh-CN",
+        "path": "docs/zh-CN/release/安装升级卸载说明.md",
+        "coverage": "full-detail"
+      },
+      "sourceCoverage": "full-detail"
+    },
+    {
       "id": "signed-provenance-apply-roadmap",
       "title": "Signed Installers, Provenance, and Real Apply Paths Roadmap",
       "source": "docs/en/release/signed-provenance-apply-roadmap.md",

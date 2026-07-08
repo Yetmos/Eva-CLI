@@ -220,6 +220,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Package manager dry-run check
+        id: package_dry_run
+        if: steps.package_support.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/yetmos/eva-cli@${{ steps.build.outputs.digest }}"
+          command="docker buildx imagetools inspect ${image}"
+          ${command}
+          {
+            echo "status=passed"
+            echo "command=${command}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Capture package evidence
         if: steps.package_support.outputs.enabled == 'true'
         shell: pwsh
@@ -231,6 +245,8 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
           SOURCE_SHA: ${{ steps.release_vars.outputs.source_sha }}
+          PACKAGE_DRY_RUN_STATUS: ${{ steps.package_dry_run.outputs.status }}
+          PACKAGE_DRY_RUN_COMMAND: ${{ steps.package_dry_run.outputs.command }}
         run: |
           New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
           $tags = $env:TAGS -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
@@ -247,6 +263,12 @@ jobs:
             tags = @($tags)
             platforms = @("linux/amd64", "linux/arm64")
             prerelease = [System.Convert]::ToBoolean($env:PRERELEASE)
+            package_manager_dry_run = [ordered]@{
+              manager = "ghcr"
+              target = "linux/amd64+linux/arm64"
+              command = $env:PACKAGE_DRY_RUN_COMMAND
+              status = $env:PACKAGE_DRY_RUN_STATUS
+            }
             provenance = [ordered]@{
               enabled = $true
               generator = "docker/build-push-action@v6"
@@ -277,6 +299,12 @@ jobs:
             source_tag = $env:RELEASE_TAG
             source_sha = "${{ steps.release_vars.outputs.source_sha }}"
             reason = "The checked-out release tag does not contain Dockerfile and .dockerignore package support."
+            package_manager_dry_run = [ordered]@{
+              manager = "ghcr"
+              target = "linux/amd64+linux/arm64"
+              command = "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:<version>"
+              status = "skipped"
+            }
             provenance = [ordered]@{
               enabled = $false
               reason = "Package publication was skipped."
@@ -348,6 +376,16 @@ jobs:
           $readme | Set-Content -LiteralPath dist\windows\README.txt -Encoding utf8
           Compress-Archive -LiteralPath dist\windows\eva.exe, dist\windows\README.txt -DestinationPath "dist\${{ steps.native_vars.outputs.archive }}" -Force
 
+      - name: Smoke install Windows archive
+        shell: pwsh
+        run: |
+          $installRoot = Join-Path (Get-Location) "dist\install-smoke-windows"
+          Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+          Expand-Archive -LiteralPath "dist\${{ steps.native_vars.outputs.archive }}" -DestinationPath $installRoot -Force
+          & (Join-Path $installRoot "eva.exe") --version
+          Remove-Item -LiteralPath $installRoot -Recurse -Force
+
       - name: Capture Windows native artifact evidence
         shell: pwsh
         run: |
@@ -367,6 +405,10 @@ jobs:
               binary = "eva.exe"
               checksum = "sha256:$hash"
               signed = $false
+              smoke_test = "passed"
+              install_command = "Expand-Archive ${{ steps.native_vars.outputs.archive }} and run eva.exe --version"
+              uninstall_command = "Remove the extracted Eva-CLI archive directory"
+              upgrade_command = "Replace the archive contents and run eva upgrade check --output json"
             }
           }
           $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath release-evidence/native-windows.json -Encoding utf8
@@ -436,6 +478,17 @@ jobs:
           EOF
           tar -C dist/linux -czf "dist/${{ steps.native_vars.outputs.archive }}" eva README.txt
 
+      - name: Smoke install Linux archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root="dist/install-smoke-linux"
+          rm -rf "${install_root}"
+          mkdir -p "${install_root}"
+          tar -C "${install_root}" -xzf "dist/${{ steps.native_vars.outputs.archive }}"
+          "${install_root}/eva" --version
+          rm -rf "${install_root}"
+
       - name: Capture Linux native artifact evidence
         shell: bash
         run: |
@@ -456,7 +509,11 @@ jobs:
               "format": "tar.gz",
               "binary": "eva",
               "checksum": "sha256:${hash}",
-              "signed": false
+              "signed": false,
+              "smoke_test": "passed",
+              "install_command": "tar -xzf ${{ steps.native_vars.outputs.archive }} && ./eva --version",
+              "uninstall_command": "remove the extracted Eva-CLI archive directory",
+              "upgrade_command": "replace the archive contents and run eva upgrade check --output json"
             }
           }
           EOF
@@ -537,6 +594,17 @@ jobs:
           EOF
           tar -C "dist/${{ matrix.target }}" -czf "dist/${{ steps.native_vars.outputs.archive }}" eva README.txt
 
+      - name: Smoke install macOS archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root="dist/install-smoke-${{ matrix.target }}"
+          rm -rf "${install_root}"
+          mkdir -p "${install_root}"
+          tar -C "${install_root}" -xzf "dist/${{ steps.native_vars.outputs.archive }}"
+          "${install_root}/eva" --version
+          rm -rf "${install_root}"
+
       - name: Capture macOS native artifact evidence
         shell: bash
         run: |
@@ -560,7 +628,10 @@ jobs:
               "checksum": "sha256:${hash}",
               "signed": false,
               "notarized": false,
-              "smoke_test": "${smoke_status}"
+              "smoke_test": "${smoke_status}",
+              "install_command": "tar -xzf ${{ steps.native_vars.outputs.archive }} && ./eva --version",
+              "uninstall_command": "remove the extracted Eva-CLI archive directory",
+              "upgrade_command": "replace the archive contents and run eva upgrade check --output json"
             }
           }
           EOF
@@ -636,6 +707,10 @@ jobs:
               binary = "eva.exe"
               checksum = $null
               signed = $false
+              smoke_test = "planned"
+              install_command = "Expand-Archive eva-cli-$version-x86_64-pc-windows-msvc.zip and run eva.exe --version"
+              uninstall_command = "Remove the extracted Eva-CLI archive directory"
+              upgrade_command = "Replace the archive contents and run eva upgrade check --output json"
             },
             [ordered]@{
               target = "x86_64-unknown-linux-gnu"
@@ -644,6 +719,10 @@ jobs:
               binary = "eva"
               checksum = $null
               signed = $false
+              smoke_test = "planned"
+              install_command = "tar -xzf eva-cli-$version-x86_64-unknown-linux-gnu.tar.gz && ./eva --version"
+              uninstall_command = "remove the extracted Eva-CLI archive directory"
+              upgrade_command = "replace the archive contents and run eva upgrade check --output json"
             },
             [ordered]@{
               target = "x86_64-apple-darwin"
@@ -652,6 +731,10 @@ jobs:
               binary = "eva"
               checksum = $null
               signed = $false
+              smoke_test = "planned"
+              install_command = "tar -xzf eva-cli-$version-x86_64-apple-darwin.tar.gz && ./eva --version"
+              uninstall_command = "remove the extracted Eva-CLI archive directory"
+              upgrade_command = "replace the archive contents and run eva upgrade check --output json"
             },
             [ordered]@{
               target = "aarch64-apple-darwin"
@@ -660,6 +743,10 @@ jobs:
               binary = "eva"
               checksum = $null
               signed = $false
+              smoke_test = "planned"
+              install_command = "tar -xzf eva-cli-$version-aarch64-apple-darwin.tar.gz && ./eva --version"
+              uninstall_command = "remove the extracted Eva-CLI archive directory"
+              upgrade_command = "replace the archive contents and run eva upgrade check --output json"
             }
           )
           $evidence = [ordered]@{
@@ -819,6 +906,67 @@ jobs:
           }
           $bundle | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath release-evidence/provenance-bundle.json -Encoding utf8
 
+      - name: Generate distribution evidence
+        shell: pwsh
+        run: |
+          $nativeEvidence = Get-Content -Raw -LiteralPath release-evidence/native-artifacts.json | ConvertFrom-Json
+          $packageEvidence = Get-Content -Raw -LiteralPath release-evidence/package-ghcr.json | ConvertFrom-Json
+          $lines = New-Object System.Collections.Generic.List[string]
+          $lines.Add("format=eva.release.distribution_evidence.v1")
+          $lines.Add("version=$($nativeEvidence.version)")
+          $lines.Add("source_tag=$($nativeEvidence.source_tag)")
+          $lines.Add("source_commit=$($nativeEvidence.source_sha)")
+          $lines.Add("docs.install=docs/en/release/install-upgrade-uninstall.md")
+          $lines.Add("docs.uninstall=docs/en/release/install-upgrade-uninstall.md")
+          $lines.Add("docs.upgrade=docs/en/release/install-upgrade-uninstall.md")
+
+          $index = 0
+          foreach ($artifact in @($nativeEvidence.artifacts)) {
+            $target = [string]$artifact.target
+            if ($target -like "*windows*") {
+              $os = "windows"
+            } elseif ($target -like "*linux*") {
+              $os = "linux"
+            } elseif ($target -like "*apple-darwin*") {
+              $os = "macos"
+            } else {
+              throw "Cannot derive release distribution OS from target '$target'."
+            }
+
+            $status = if ([string]$artifact.smoke_test -eq "passed") { "passed" } else { "blocked" }
+            $installCommand = if ([string]::IsNullOrWhiteSpace([string]$artifact.install_command)) { "install $($artifact.archive)" } else { [string]$artifact.install_command }
+            $uninstallCommand = if ([string]::IsNullOrWhiteSpace([string]$artifact.uninstall_command)) { "remove the extracted Eva-CLI archive directory" } else { [string]$artifact.uninstall_command }
+            $upgradeCommand = if ([string]::IsNullOrWhiteSpace([string]$artifact.upgrade_command)) { "replace the archive contents and run eva upgrade check --output json" } else { [string]$artifact.upgrade_command }
+
+            $lines.Add("smoke.$index.os=$os")
+            $lines.Add("smoke.$index.target=$target")
+            $lines.Add("smoke.$index.artifact=$($artifact.archive)")
+            $lines.Add("smoke.$index.package_format=$($artifact.format)")
+            $lines.Add("smoke.$index.install_command=$installCommand")
+            $lines.Add("smoke.$index.smoke_command=eva --version")
+            $lines.Add("smoke.$index.uninstall_command=$uninstallCommand")
+            $lines.Add("smoke.$index.upgrade_command=$upgradeCommand")
+            $lines.Add("smoke.$index.status=$status")
+            $index += 1
+          }
+
+          $dryRun = $packageEvidence.package_manager_dry_run
+          $dryRunStatus = if ($null -ne $dryRun -and -not [string]::IsNullOrWhiteSpace([string]$dryRun.status)) { [string]$dryRun.status } else { "skipped" }
+          $dryRunCommand = if ($null -ne $dryRun -and -not [string]::IsNullOrWhiteSpace([string]$dryRun.command)) { [string]$dryRun.command } else { "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:<version>" }
+          $dryRunTarget = if ($null -ne $dryRun -and -not [string]::IsNullOrWhiteSpace([string]$dryRun.target)) { [string]$dryRun.target } else { "linux/amd64+linux/arm64" }
+          $dryRunManager = if ($null -ne $dryRun -and -not [string]::IsNullOrWhiteSpace([string]$dryRun.manager)) { [string]$dryRun.manager } else { "ghcr" }
+          $packageName = if (-not [string]::IsNullOrWhiteSpace([string]$packageEvidence.package)) { [string]$packageEvidence.package } else { "ghcr.io/yetmos/eva-cli" }
+          $lines.Add("package.0.manager=$dryRunManager")
+          $lines.Add("package.0.package=$packageName")
+          $lines.Add("package.0.target=$dryRunTarget")
+          $lines.Add("package.0.command=$dryRunCommand")
+          $lines.Add("package.0.status=$dryRunStatus")
+          $lines | Set-Content -LiteralPath release-evidence/release-distribution.evidence -Encoding utf8
+
+      - name: Verify distribution evidence gate
+        shell: pwsh
+        run: cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --output json | Tee-Object -FilePath release-evidence/release-check-distribution.json
+
       - name: Upload release evidence artifact
         uses: actions/upload-artifact@v4
         with:
@@ -885,9 +1033,9 @@ jobs:
               `- Tag: \`${tag}\``,
               `- Human version: \`${humanVersion}\``,
               `- Status: \`${status}\``,
-              "- Release workflow: validates Rust workspace, website/docs, version-management rules, release gates, and GHCR package publication before publishing.",
-              "- Artifacts: GitHub source archives, workflow release-evidence artifact, and GHCR container package when package evidence status is `published`. Current releases intentionally do not publish signed installers.",
-              "- Supply-chain evidence: GHCR packages include Buildx provenance and SBOM attestations when package evidence status is `published`.",
+              "- Release workflow: validates Rust workspace, website/docs, version-management rules, release gates, native archive install smoke, distribution evidence, and GHCR package publication before publishing.",
+              "- Artifacts: GitHub source archives, native Windows/Linux/macOS archives, workflow release-evidence artifact, and GHCR container package when package evidence status is `published`. Current releases intentionally do not publish signed installers.",
+              "- Supply-chain evidence: GHCR packages include Buildx provenance and SBOM attestations when package evidence status is `published`; `release-distribution.evidence` records three-platform install smoke and package-manager dry-run status.",
               ...packageLines,
             ].filter(Boolean).join("\n\n");
 

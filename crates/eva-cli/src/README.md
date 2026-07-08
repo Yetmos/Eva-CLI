@@ -2,14 +2,14 @@
 
 更新时间：2026-07-08
 
-本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.10.5 仍把主要命令实现集中在 `run.rs`，这样 version、config validate、inspect、task、external capability、memory context、hardware、backup、lifecycle、release、durable diagnostics gate、schema validation error、discovery source report、durable memory context、observability backend smoke、restore apply gate 和 supervisor handoff 的 envelope 与错误映射保持一致。
+本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.11.2 仍把主要命令实现集中在 `run.rs`，这样 version、config validate、inspect、task、external capability、memory context、hardware、backup、lifecycle、release、durable diagnostics gate、schema validation error、discovery source report、durable memory context、observability backend smoke、restore apply gate、supervisor handoff 和 distribution evidence gate 的 envelope 与错误映射保持一致。
 
 ## 文件职责
 
 | 文件 | 当前状态 | 说明 |
 | --- | --- | --- |
 | `lib.rs` | 已实现 | 导出 CLI 顶层入口。 |
-| `run.rs` | V1.10.5 已更新 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4/V1.10.5 `backup create` / `snapshot create` / `restore plan` / `restore apply --dry-run` / gated `restore apply` / `upgrade check` / `upgrade apply --state-store`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate、V1.6.5 durable diagnostics CLI、V1.9.1 schema validation error context、V1.9.3 discovery source report JSON/text 输出、V1.9.4 `memory context --durable-backend` durable memory/knowledge 输出，以及 V1.9.5 `observability smoke` file JSONL backend 输出。 |
+| `run.rs` | V1.11.2 已更新 | 命令解析、formatter、exit code、`version`、`config validate`、`inspect` / `inspect durable`、V1.0 `run --example basic`、`task status/logs/cancel`、V1.1 Adapter/MCP/Skill/Discovery、V1.2 `memory context`、V1.3 `hardware list/probe/bind`、V1.4/V1.10.5 `backup create` / `snapshot create` / `restore plan` / `restore apply --dry-run` / gated `restore apply` / `upgrade check` / `upgrade apply --state-store`、V1.5 `release check` / `release security` / `release perf` / `release migration`、V1.6.3 `--durable-backend` task store 入口、V1.6.4 durable recovery release gate、V1.6.5 durable diagnostics CLI、V1.9.1 schema validation error context、V1.9.3 discovery source report JSON/text 输出、V1.9.4 `memory context --durable-backend` durable memory/knowledge 输出、V1.9.5 `observability smoke` file JSONL backend 输出、V1.11.1 `--artifact-evidence` 和 V1.11.2 `--distribution-evidence`。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
@@ -112,6 +112,8 @@ It creates a release pointer plan with audit evidence, returns
 `run.rs` 新增 V1.5 发布加固命令：
 
 - `release check`：调用 `eva_release::ReleaseHardeningService::readiness`，输出跨平台、稳定性、文档、安全、性能、迁移、V1.6.4 durable recovery 和 V1.6.5 durable diagnostics 门禁。
+- `release check --artifact-evidence <path>`：读取 V1.11.1 signed artifact/provenance evidence，失败时返回配置门禁 exit code `2`。
+- `release check --distribution-evidence <path>`：读取 V1.11.2 distribution evidence，校验 Windows/Linux/macOS install smoke、安装/升级/卸载文档路径和 package-manager dry-run，失败时返回配置门禁 exit code `2`。
 - `release security`：输出 security findings，覆盖 policy、Lua sandbox、secret redaction、MCP allowlist、hardware handle 和 lifecycle apply 风险。
 - `release perf`：输出 release-smoke 性能预算，覆盖 EventBus、Scheduler、Adapter probe、memory context、backup 和 release check。
 - `release migration`：输出 V1.4 -> V1.5 迁移步骤和兼容性策略。
@@ -156,6 +158,7 @@ cargo run -- inspect durable --durable-backend .eva/durable --output json
 cargo run -- observability smoke --backend .eva/ci-observability --output json
 cargo run -- release check --output json
 cargo run -- release check --artifact-evidence release-evidence/release-artifact.evidence --output json
+cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
 cargo run -- release migration --output json

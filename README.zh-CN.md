@@ -131,13 +131,13 @@ Eva-CLI/
 
 ## V1.x 剩余缺口
 
-V1.7.4-alpha 是源码 alpha 与 Lua hot-reload lifecycle evidence 检查点，不是已经带安装包的完整 runtime 发行版。后续包含 package 支持的 release tag 会发布 GHCR 容器镜像 `ghcr.io/yetmos/eva-cli`；旧 tag 不追溯重新发布。后续工作已经从“是否能落地”收窄为更具体的执行边界：
+V1.7.4-alpha 是源码 alpha 与 Lua hot-reload lifecycle evidence 检查点，并已补入 V1.11.2 release-distribution evidence。后续包含 package 支持的 release tag 会发布 GHCR 容器镜像 `ghcr.io/yetmos/eva-cli`、native archive metadata，以及 install-smoke/package dry-run evidence；旧 tag 不追溯重新发布。后续工作已经从“是否能落地”收窄为更具体的执行边界：
 
 - stdio/http/MCP 等真实 provider 进程执行，包括认证、会话隔离、超时和限流。
 - Durable Scheduler、runtime audit wiring、artifact metadata、memory 和 backup store，衔接当前 durable EventBus/task snapshot/audit sink 基线与本地诊断表面。
 - 超出当前 shadow load、route gate、drain evidence 和 rollback audit 边界的常驻 daemon 热更新编排。
 - `restore apply`、release pointer mutation、Supervisor 激活、blue-green Runtime 进程切换等破坏性 apply 路径。
-- 签名 release artifact、跨平台安装包、包管理器 package 和 artifact provenance。
+- 生产签名凭据、Homebrew/Winget/Apt 仓库发布、外部 scanner 接入和更强 artifact provenance。
 - 当高风险 apply 路径从 plan-only 诊断进入真实执行时，需要更深的机器可校验 schema 与 policy 检查。
 
 当前文档已经区分“已实现诊断面”和“目标 apply 路径”。原始架构风险清单见 [方案设计风险评审](docs/zh-CN/planning/方案设计风险评审.md)，V1.5 源码发布保持稳定的契约见 [V1.5 兼容性策略](docs/zh-CN/release/V1.5兼容性策略.md)。

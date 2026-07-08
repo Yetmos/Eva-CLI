@@ -17,7 +17,8 @@ diagnostics, restricted Lua VM `on_event` execution, read-only Lua context
 tables, Lua host observability, controlled `ctx.tools.call` capability
 binding, Lua timeout/instruction/cancellation/memory execution limits, and Lua
 shadow-load health checks, scheduler generation route gating, drain evidence,
-and rollback audit evidence.
+rollback audit evidence, signed artifact/provenance release evidence, and
+distribution install-smoke/package dry-run release evidence.
 
 Current managed project version: `V1.7.4-alpha` (`Cargo.toml` version
 `1.7.4-alpha`, prerelease Git tag form `v1.7.4-alpha`). See
@@ -77,6 +78,7 @@ migration policy.
 - [Eva-CLI Project Release Plan](release/project-release-plan.md)
 - [Eva-CLI Version Management Plan](release/version-management-plan.md)
 - [Eva-CLI GitHub Packages Publishing](release/github-packages-publishing.md)
+- [Eva-CLI Install, Upgrade, And Uninstall](release/install-upgrade-uninstall.md)
 - [Signed Installers, Provenance, and Real Apply Paths Roadmap](release/signed-provenance-apply-roadmap.md)
 - [Eva-CLI V1.0 Known Limitations](release/v1.0-known-limitations.md)
 - [Eva-CLI V1.0.0 Release Notes](release/release-notes-v1.0.0.md)

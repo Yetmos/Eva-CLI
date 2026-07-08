@@ -2,6 +2,7 @@
 
 pub mod artifact;
 pub mod checklist;
+pub mod distribution;
 pub mod migration;
 pub mod performance;
 pub mod security;
@@ -13,6 +14,10 @@ pub use artifact::{
 pub use checklist::{
     PlatformReadiness, ReleaseGate, ReleaseGateStatus, ReleaseHardeningService,
     ReleaseReadinessReport, StabilityScenario,
+};
+pub use distribution::{
+    ReleaseDistributionEvidence, ReleaseDistributionVerificationReport,
+    ReleaseInstallSmokeEvidence, ReleasePackageDryRunEvidence,
 };
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 pub use performance::{PerformanceBaselineReport, PerformanceBudget};

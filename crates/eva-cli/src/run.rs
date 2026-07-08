@@ -38,9 +38,9 @@ use eva_observability::{
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use eva_release::{
     CompatibilityPolicy, MigrationGuide, MigrationStep, PerformanceBaselineReport,
-    PerformanceBudget, PlatformReadiness, ReleaseArtifactEvidence, ReleaseGate,
-    ReleaseHardeningService, ReleaseReadinessReport, SecurityFinding, SecurityReviewReport,
-    StabilityScenario,
+    PerformanceBudget, PlatformReadiness, ReleaseArtifactEvidence, ReleaseDistributionEvidence,
+    ReleaseGate, ReleaseHardeningService, ReleaseReadinessReport, SecurityFinding,
+    SecurityReviewReport, StabilityScenario,
 };
 use eva_runtime::{
     inspect_durable_backend, BasicRunOptions, BasicRunReport, DurableDiagnosticsOptions,
@@ -503,6 +503,7 @@ struct ReleaseCheckOptions {
     common: CommonOptions,
     target: String,
     artifact_evidence: Option<PathBuf>,
+    distribution_evidence: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1642,6 +1643,7 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
     let mut passthrough = Vec::new();
     let mut target = "all".to_owned();
     let mut artifact_evidence = None;
+    let mut distribution_evidence = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1657,6 +1659,14 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
                     "artifact evidence option",
                 )?));
             }
+            "--distribution-evidence" | "--distribution-evidence-file" => {
+                index += 1;
+                distribution_evidence = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "distribution evidence option",
+                )?));
+            }
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -1668,6 +1678,7 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
         common: parse_common_options(&passthrough)?,
         target,
         artifact_evidence,
+        distribution_evidence,
     })
 }
 
@@ -2481,12 +2492,23 @@ where
     match command {
         ReleaseCommand::Check(options) => {
             let trace = trace_for("cli.release.check");
-            let report = match options.artifact_evidence.as_ref() {
-                Some(path) => read_release_artifact_evidence(path).and_then(|evidence| {
-                    service.readiness_with_artifact_evidence(&options.target, &evidence)
-                }),
-                None => service.readiness(&options.target),
-            };
+            let report = (|| {
+                let artifact_evidence = options
+                    .artifact_evidence
+                    .as_ref()
+                    .map(|path| read_release_artifact_evidence(path))
+                    .transpose()?;
+                let distribution_evidence = options
+                    .distribution_evidence
+                    .as_ref()
+                    .map(|path| read_release_distribution_evidence(path))
+                    .transpose()?;
+                service.readiness_with_release_evidence(
+                    &options.target,
+                    artifact_evidence.as_ref(),
+                    distribution_evidence.as_ref(),
+                )
+            })();
             match report {
                 Ok(report) => {
                     write_release_check(stdout, options.common.output, &report, &trace)?;
@@ -2557,6 +2579,23 @@ fn read_release_artifact_evidence(path: &Path) -> Result<ReleaseArtifactEvidence
     })?;
     ReleaseArtifactEvidence::parse_manifest(&data)
         .map_err(|error| error.with_context("artifact_evidence", path.display().to_string()))
+}
+
+fn read_release_distribution_evidence(
+    path: &Path,
+) -> Result<ReleaseDistributionEvidence, EvaError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            "release distribution evidence file is missing"
+        } else {
+            "failed to read release distribution evidence file"
+        };
+        EvaError::not_found(message)
+            .with_context("distribution_evidence", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    ReleaseDistributionEvidence::parse_manifest(&data)
+        .map_err(|error| error.with_context("distribution_evidence", path.display().to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6237,7 +6276,7 @@ fn help_text() -> &'static str {
         "  eva restore apply --plan <path> --confirm <plan_id> --artifact-store <path> --lock-store <path> [--dry-run] [--owner <id>] [--health healthy|failed] [--project <path>] [--output text|json]\n",
         "  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n",
         "  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--state-store <path>] [--runtime-binary <path>] [--health healthy|failed|unavailable] [--owner <id>] [--project <path>] [--output text|json]\n",
-        "  eva release check [--target all|windows|linux|macos] [--artifact-evidence <path>] [--project <path>] [--output text|json]\n",
+        "  eva release check [--target all|windows|linux|macos] [--artifact-evidence <path>] [--distribution-evidence <path>] [--project <path>] [--output text|json]\n",
         "  eva release security [--project <path>] [--output text|json]\n",
         "  eva release perf [--project <path>] [--output text|json]\n",
         "  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\n",
@@ -6423,6 +6462,71 @@ mod tests {
         )
         .unwrap();
         evidence.signature = evidence.sign(&key);
+        fs::write(&evidence_path, evidence.to_manifest()).unwrap();
+        (root, evidence_path)
+    }
+
+    fn release_distribution_evidence_fixture(
+        name: &str,
+        package_status: &str,
+    ) -> (PathBuf, PathBuf) {
+        let root = test_temp_dir(name);
+        let evidence_path = root.join("release-distribution.evidence");
+        fs::create_dir_all(&root).unwrap();
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let install_doc = "docs/en/release/install-upgrade-uninstall.md";
+        let smoke = |os: &str, target: &str, artifact: &str, package_format: &str| {
+            eva_release::ReleaseInstallSmokeEvidence::new(
+                os,
+                target,
+                artifact,
+                package_format,
+                format!("install {artifact}"),
+                "eva --version",
+                format!("uninstall {artifact}"),
+                format!("upgrade {artifact}"),
+                "passed",
+            )
+            .unwrap()
+        };
+        let dry_run = eva_release::ReleasePackageDryRunEvidence::new(
+            "ghcr",
+            "ghcr.io/yetmos/eva-cli",
+            "linux/amd64+linux/arm64",
+            "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:1.7.4-alpha",
+            package_status,
+        )
+        .unwrap();
+        let evidence = eva_release::ReleaseDistributionEvidence::new(
+            "1.7.4-alpha",
+            "v1.7.4-alpha",
+            commit,
+            install_doc,
+            install_doc,
+            install_doc,
+            vec![
+                smoke(
+                    "windows",
+                    "x86_64-pc-windows-msvc",
+                    "eva-cli-1.7.4-alpha-x86_64-pc-windows-msvc.zip",
+                    "zip",
+                ),
+                smoke(
+                    "linux",
+                    "x86_64-unknown-linux-gnu",
+                    "eva-cli-1.7.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
+                    "tar.gz",
+                ),
+                smoke(
+                    "macos",
+                    "x86_64-apple-darwin",
+                    "eva-cli-1.7.4-alpha-x86_64-apple-darwin.tar.gz",
+                    "tar.gz",
+                ),
+            ],
+            vec![dry_run],
+        )
+        .unwrap();
         fs::write(&evidence_path, evidence.to_manifest()).unwrap();
         (root, evidence_path)
     }
@@ -6869,6 +6973,57 @@ mod tests {
         assert!(stdout.contains("\"status\":\"blocked\""));
         assert!(stdout.contains("release artifact is marked unsigned"));
         assert!(stdout.contains("signed_artifact_provenance_blocked"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    fn release_check_with_distribution_evidence_passes_gate() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) =
+            release_distribution_evidence_fixture("release-distribution-passed", "passed");
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--distribution-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"id\":\"REL-DISTRIBUTION-001\""));
+        assert!(stdout.contains("\"domain\":\"release_distribution\""));
+        assert!(stdout.contains("\"status\":\"pass\""));
+        assert!(stdout.contains("distribution_install_smoke_verified"));
+        assert!(stdout.contains("package_dry_runs_verified:true"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    fn release_check_with_failed_distribution_evidence_blocks_gate() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) =
+            release_distribution_evidence_fixture("release-distribution-failed", "failed");
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--distribution-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG, "{stderr}");
+        assert!(stdout.contains("\"id\":\"REL-DISTRIBUTION-001\""));
+        assert!(stdout.contains("\"status\":\"blocked\""));
+        assert!(stdout.contains("package manager dry-run for ghcr"));
+        assert!(stdout.contains("distribution_install_smoke_blocked"));
 
         fs::remove_dir_all(evidence_root).unwrap();
     }

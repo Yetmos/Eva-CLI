@@ -160,6 +160,11 @@
         "description": "ghcr.io/yetmos/eva-cli 的 GHCR 交付契约、package tag、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证。"
       },
       {
+        "id": "install-upgrade-uninstall",
+        "title": "安装、升级和卸载",
+        "description": "V1.11.2 native archive install smoke 路径、升级/卸载命令、release-distribution evidence 和 package-manager dry-run 门禁。"
+      },
+      {
         "id": "release-notes-v1.7.4",
         "title": "V1.7.4 Alpha 发布说明",
         "description": "补齐 Lua shadow-load health check、generation route gate、drain evidence、rollback audit evidence 和 Lua hot-reload lifecycle release gate 的 alpha 预发布。"
