@@ -1,0 +1,651 @@
+use super::{
+    artifact_store_ref, artifact_store_ref_json, backup_cmd, json_array, json_string,
+    lock_store_ref, lock_store_ref_json, parse_common_options, required_option, rollback_plan_json,
+    snapshot_cmd, success_envelope, trace_for, write_artifact_store_ref, write_command_error,
+    write_error_kind, write_lock_store_ref, ArtifactStoreRef, CommonOptions, LockStoreRef,
+    OutputFormat, EXIT_OK, EXIT_RUNTIME_UNAVAILABLE,
+};
+use backup_cmd::BackupCreateResult;
+use eva_backup::{
+    FileSystemRestoreApplyLockStore, PreRestoreBackupEvidence, ReleaseSnapshot,
+    ReleaseSnapshotService, RestoreApplyCoordinator, RestoreApplyDryRunReport,
+    RestoreApplyHealthCheck, RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator,
+    RestorePlan, SnapshotRole,
+};
+use eva_config::load_project_config;
+use eva_core::{EvaError, GenerationId, RequestId};
+use eva_lifecycle::{RollbackCoordinator, RollbackPlan};
+use eva_observability::TraceFields;
+use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
+use eva_storage::FileSystemArtifactStore;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RestoreCommand {
+    Plan(RestorePlanOptions),
+    Apply(RestoreApplyOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RestorePlanOptions {
+    common: CommonOptions,
+    snapshot_id: String,
+    request_id: String,
+    release_ref: String,
+    artifact_store: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RestoreApplyOptions {
+    common: CommonOptions,
+    plan: Option<PathBuf>,
+    confirm: Option<String>,
+    artifact_store: Option<PathBuf>,
+    lock_store: Option<PathBuf>,
+    dry_run: bool,
+    owner: String,
+    health: RestoreApplyHealthOption,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestorePlanResult {
+    backup: BackupCreateResult,
+    snapshot: ReleaseSnapshot,
+    plan: RestorePlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreApplyDryRunResult {
+    plan: RestoreApplyPlan,
+    report: RestoreApplyDryRunReport,
+    artifact_store: ArtifactStoreRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreApplyResult {
+    report: RestoreApplyReport,
+    dry_run: RestoreApplyDryRunReport,
+    artifact_store: ArtifactStoreRef,
+    lock_store: LockStoreRef,
+    rollback_plan: Option<RollbackPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RestoreApplyHealthOption {
+    Healthy,
+    Failed(String),
+}
+
+pub(super) fn parse_restore_command(args: &[String]) -> Result<RestoreCommand, EvaError> {
+    let (subcommand, rest) = args
+        .split_first()
+        .ok_or_else(|| EvaError::invalid_argument("missing restore subcommand"))?;
+    match subcommand.as_str() {
+        "plan" => Ok(RestoreCommand::Plan(parse_restore_plan_options(rest)?)),
+        "apply" => Ok(RestoreCommand::Apply(parse_restore_apply_options(rest)?)),
+        value => {
+            Err(EvaError::unsupported("unknown restore subcommand")
+                .with_context("subcommand", value))
+        }
+    }
+}
+
+pub(super) fn execute_restore<W, E>(
+    command: RestoreCommand,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, EvaError>
+where
+    W: Write,
+    E: Write,
+{
+    match command {
+        RestoreCommand::Plan(options) => {
+            let trace = trace_for("cli.restore.plan");
+            match create_restore_plan(&options) {
+                Ok(result) => {
+                    write_restore_plan(stdout, options.common.output, &result, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "restore.plan",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
+        RestoreCommand::Apply(options) => {
+            let trace = trace_for("cli.restore.apply");
+            if options.dry_run {
+                match create_restore_apply_dry_run(&options) {
+                    Ok(result) => {
+                        write_restore_apply_dry_run(
+                            stdout,
+                            options.common.output,
+                            &result,
+                            &trace,
+                        )?;
+                        Ok(EXIT_OK)
+                    }
+                    Err(error) => write_command_error(
+                        stderr,
+                        options.common.output,
+                        "restore.apply",
+                        &error,
+                        &trace,
+                    ),
+                }
+            } else {
+                match create_restore_apply(&options) {
+                    Ok(result) => {
+                        let exit_code = if result.report.apply_allowed {
+                            EXIT_OK
+                        } else {
+                            EXIT_RUNTIME_UNAVAILABLE
+                        };
+                        write_restore_apply(
+                            stdout,
+                            options.common.output,
+                            exit_code,
+                            &result,
+                            &trace,
+                        )?;
+                        Ok(exit_code)
+                    }
+                    Err(error) => write_command_error(
+                        stderr,
+                        options.common.output,
+                        "restore.apply",
+                        &error,
+                        &trace,
+                    ),
+                }
+            }
+        }
+    }
+}
+
+fn parse_restore_plan_options(args: &[String]) -> Result<RestorePlanOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut snapshot_id = "snapshot-v14".to_owned();
+    let mut request_id = "req-restore-1".to_owned();
+    let mut release_ref = "1.4.0".to_owned();
+    let mut artifact_store = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--snapshot" | "--snapshot-id" => {
+                index += 1;
+                snapshot_id = required_option(args, index, "snapshot option")?.clone();
+            }
+            "--request-id" | "--task-id" | "--task" => {
+                index += 1;
+                request_id = required_option(args, index, "request id option")?.clone();
+            }
+            "--release" | "--release-ref" => {
+                index += 1;
+                release_ref = required_option(args, index, "release option")?.clone();
+            }
+            "--artifact-store" | "--artifact-store-dir" => {
+                index += 1;
+                artifact_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "artifact store option",
+                )?));
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    RequestId::parse(&request_id)?;
+    Ok(RestorePlanOptions {
+        common: parse_common_options(&passthrough)?,
+        snapshot_id,
+        request_id,
+        release_ref,
+        artifact_store,
+    })
+}
+
+fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut plan = None;
+    let mut confirm = None;
+    let mut artifact_store = None;
+    let mut lock_store = None;
+    let mut dry_run = false;
+    let mut owner = "cli".to_owned();
+    let mut health = RestoreApplyHealthOption::Healthy;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--plan" => {
+                index += 1;
+                plan = Some(PathBuf::from(required_option(args, index, "plan option")?));
+            }
+            "--confirm" => {
+                index += 1;
+                confirm = Some(required_option(args, index, "confirm option")?.clone());
+            }
+            "--artifact-store" | "--artifact-store-dir" => {
+                index += 1;
+                artifact_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "artifact store option",
+                )?));
+            }
+            "--lock-store" | "--lock-store-dir" => {
+                index += 1;
+                lock_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "lock store option",
+                )?));
+            }
+            "--owner" => {
+                index += 1;
+                owner = required_option(args, index, "owner option")?.clone();
+            }
+            "--health" | "--health-check" => {
+                index += 1;
+                health =
+                    parse_restore_apply_health(required_option(args, index, "health option")?)?;
+            }
+            "--dry-run" => {
+                dry_run = true;
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    Ok(RestoreApplyOptions {
+        common: parse_common_options(&passthrough)?,
+        plan,
+        confirm,
+        artifact_store,
+        lock_store,
+        dry_run,
+        owner,
+        health,
+    })
+}
+
+fn parse_restore_apply_health(value: &str) -> Result<RestoreApplyHealthOption, EvaError> {
+    match value {
+        "healthy" | "pass" | "passed" => Ok(RestoreApplyHealthOption::Healthy),
+        "failed" | "fail" | "unhealthy" => Ok(RestoreApplyHealthOption::Failed(
+            "restore apply health check failed".to_owned(),
+        )),
+        value => Err(
+            EvaError::invalid_argument("restore apply health must be healthy or failed")
+                .with_context("health", value),
+        ),
+    }
+}
+
+fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult, EvaError> {
+    let snapshot_options = snapshot_cmd::SnapshotCreateOptions {
+        common: options.common.clone(),
+        snapshot_id: options.snapshot_id.clone(),
+        request_id: options.request_id.clone(),
+        release_ref: options.release_ref.clone(),
+        role: SnapshotRole::PreRelease,
+        artifact_store: options.artifact_store.clone(),
+    };
+    let (backup, snapshot) = snapshot_cmd::create_snapshot_result(&snapshot_options)?;
+    let plan = ReleaseSnapshotService.restore_plan(&snapshot);
+    Ok(RestorePlanResult {
+        backup,
+        snapshot,
+        plan,
+    })
+}
+
+fn create_restore_apply_dry_run(
+    options: &RestoreApplyOptions,
+) -> Result<RestoreApplyDryRunResult, EvaError> {
+    let plan_path = options.plan.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply dry-run requires --plan")
+            .with_context("required_option", "--plan")
+    })?;
+    let confirm = options.confirm.as_deref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply dry-run requires --confirm")
+            .with_context("required_option", "--confirm")
+    })?;
+    let artifact_store_path = options.artifact_store.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply dry-run requires --artifact-store")
+            .with_context("required_option", "--artifact-store")
+    })?;
+
+    let plan = read_restore_apply_plan(plan_path)?;
+    if confirm != plan.plan_id {
+        return Err(EvaError::permission_denied(
+            "restore apply confirmation does not match plan id",
+        )
+        .with_context("confirm", confirm)
+        .with_context("plan_id", &plan.plan_id));
+    }
+
+    let store = FileSystemArtifactStore::new(artifact_store_path);
+    let artifact_key = plan.backup_artifact_key();
+    let artifact = store.try_get_bytes(&artifact_key)?.ok_or_else(|| {
+        EvaError::not_found("restore apply backup artifact is missing")
+            .with_context("artifact_key", &artifact_key)
+            .with_context("artifact_store", artifact_store_path.display().to_string())
+    })?;
+    let pre_restore = plan.pre_restore_backup.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply requires pre-restore backup evidence")
+            .with_context("plan_id", &plan.plan_id)
+            .with_context("required_field", "pre_restore_backup_artifact_id")
+            .with_context("required_field", "pre_restore_backup_digest")
+    })?;
+    let pre_restore_key = pre_restore.backup_artifact_key();
+    let pre_restore_artifact = store.try_get_bytes(&pre_restore_key)?.ok_or_else(|| {
+        EvaError::not_found("restore apply pre-restore backup artifact is missing")
+            .with_context("artifact_key", &pre_restore_key)
+            .with_context("artifact_store", artifact_store_path.display().to_string())
+    })?;
+    let report = RestoreApplyValidator.dry_run(&plan, &artifact, Some(&pre_restore_artifact))?;
+
+    Ok(RestoreApplyDryRunResult {
+        plan,
+        report,
+        artifact_store: artifact_store_ref(Some(artifact_store_path)),
+    })
+}
+
+fn create_restore_apply(options: &RestoreApplyOptions) -> Result<RestoreApplyResult, EvaError> {
+    let lock_store_path = options.lock_store.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore apply requires --lock-store")
+            .with_context("required_option", "--lock-store")
+    })?;
+    let dry_run = create_restore_apply_dry_run(options)?;
+    let project = load_project_config(&options.common.project_root)?;
+    let policy_decision = RuntimePolicyGate::from_project(&project)?
+        .decide(RuntimePolicyRequest::new(HighRiskAction::RestoreApply));
+    let health = match &options.health {
+        RestoreApplyHealthOption::Healthy => RestoreApplyHealthCheck::healthy(),
+        RestoreApplyHealthOption::Failed(message) => {
+            RestoreApplyHealthCheck::failed(message.clone())?
+        }
+    };
+    let mut lock_store = FileSystemRestoreApplyLockStore::new(lock_store_path);
+    let report = RestoreApplyCoordinator.apply(
+        &mut lock_store,
+        &dry_run.plan,
+        &dry_run.report,
+        &policy_decision,
+        health,
+        &options.owner,
+    )?;
+    let rollback_plan = if report.health.healthy {
+        None
+    } else {
+        Some(RollbackCoordinator.plan_failed_handoff(
+            GenerationId::parse("gen-restore-apply")?,
+            GenerationId::parse("gen-current")?,
+            report.health.message.clone(),
+            None,
+        )?)
+    };
+
+    Ok(RestoreApplyResult {
+        report,
+        dry_run: dry_run.report,
+        artifact_store: dry_run.artifact_store,
+        lock_store: lock_store_ref(Some(lock_store_path)),
+        rollback_plan,
+    })
+}
+
+fn read_restore_apply_plan(path: &Path) -> Result<RestoreApplyPlan, EvaError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            "restore apply plan is missing"
+        } else {
+            "failed to read restore apply plan"
+        };
+        EvaError::not_found(message)
+            .with_context("plan", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    parse_restore_apply_plan(&data)
+        .map_err(|error| error.with_context("plan", path.display().to_string()))
+}
+
+pub(super) fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, EvaError> {
+    let mut plan_id = None;
+    let mut backup_artifact_id = None;
+    let mut backup_digest = None;
+    let mut pre_restore_backup_artifact_id = None;
+    let mut pre_restore_backup_digest = None;
+    for line in data.lines() {
+        let line = line.trim_start_matches('\u{feff}');
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            return Err(EvaError::invalid_argument(
+                "restore apply plan line must use key=value format",
+            ));
+        };
+        match key {
+            "plan_id" => plan_id = Some(value.to_owned()),
+            "backup_artifact_id" => backup_artifact_id = Some(value.to_owned()),
+            "backup_digest" => backup_digest = Some(value.to_owned()),
+            "pre_restore_backup_artifact_id" => {
+                pre_restore_backup_artifact_id = Some(value.to_owned())
+            }
+            "pre_restore_backup_digest" => pre_restore_backup_digest = Some(value.to_owned()),
+            _ => {
+                return Err(EvaError::invalid_argument(
+                    "restore apply plan contains unsupported field",
+                )
+                .with_context("field", key));
+            }
+        }
+    }
+    let plan = RestoreApplyPlan::new(
+        plan_id.ok_or_else(|| EvaError::invalid_argument("restore apply plan missing plan_id"))?,
+        backup_artifact_id.ok_or_else(|| {
+            EvaError::invalid_argument("restore apply plan missing backup_artifact_id")
+        })?,
+        backup_digest.ok_or_else(|| {
+            EvaError::invalid_argument("restore apply plan missing backup_digest")
+        })?,
+    )?;
+    match (pre_restore_backup_artifact_id, pre_restore_backup_digest) {
+        (Some(artifact_id), Some(digest)) => {
+            Ok(plan.with_pre_restore_backup(PreRestoreBackupEvidence::new(artifact_id, digest)?))
+        }
+        (None, None) => Ok(plan),
+        _ => Err(EvaError::invalid_argument(
+            "restore apply plan pre-restore backup evidence must include artifact id and digest",
+        )),
+    }
+}
+
+fn write_restore_plan<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    result: &RestorePlanResult,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Restore plan").map_err(write_error_kind)?;
+            writeln!(writer, "snapshot: {}", result.snapshot.snapshot_id)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", result.plan.status).map_err(write_error_kind)?;
+            writeln!(writer, "apply_allowed: {}", result.plan.apply_allowed)
+                .map_err(write_error_kind)?;
+            write_artifact_store_ref(writer, &result.backup.artifact_store)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope("restore.plan", EXIT_OK, &restore_plan_json(result), trace)
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_restore_apply_dry_run<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    result: &RestoreApplyDryRunResult,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Restore apply dry-run").map_err(write_error_kind)?;
+            writeln!(writer, "plan: {}", result.report.plan_id).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", result.report.status).map_err(write_error_kind)?;
+            writeln!(writer, "apply_allowed: {}", result.report.apply_allowed)
+                .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "pre_restore_backup: {}",
+                result.report.pre_restore_backup_artifact_key
+            )
+            .map_err(write_error_kind)?;
+            write_artifact_store_ref(writer, &result.artifact_store)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "restore.apply",
+                EXIT_OK,
+                &restore_apply_dry_run_json(result),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn write_restore_apply<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    exit_code: i32,
+    result: &RestoreApplyResult,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Restore apply gate").map_err(write_error_kind)?;
+            writeln!(writer, "plan: {}", result.report.plan_id).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", result.report.status).map_err(write_error_kind)?;
+            writeln!(writer, "apply_allowed: {}", result.report.apply_allowed)
+                .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "mutation_executed: {}",
+                result.report.mutation_executed
+            )
+            .map_err(write_error_kind)?;
+            writeln!(writer, "lock: {}", result.report.lock.lock_id).map_err(write_error_kind)?;
+            writeln!(writer, "health: {}", result.report.health.message)
+                .map_err(write_error_kind)?;
+            if let Some(rollback) = &result.rollback_plan {
+                writeln!(writer, "rollback: {}", rollback.status).map_err(write_error_kind)?;
+            }
+            write_artifact_store_ref(writer, &result.artifact_store)?;
+            write_lock_store_ref(writer, &result.lock_store)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "restore.apply",
+                exit_code,
+                &restore_apply_json(result),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
+fn restore_plan_json(result: &RestorePlanResult) -> String {
+    format!(
+        "{{\"snapshot\":{},\"backup\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
+        snapshot_cmd::snapshot_json(&result.snapshot),
+        backup_cmd::backup_result_json(&result.backup),
+        json_string(&result.plan.snapshot_id),
+        json_string(&result.plan.status),
+        result.plan.apply_allowed,
+        json_array(result.plan.steps.iter().map(|step| json_string(step))),
+        json_array(result.plan.risks.iter().map(|risk| json_string(risk))),
+        json_array(result.plan.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn restore_apply_dry_run_json(result: &RestoreApplyDryRunResult) -> String {
+    restore_apply_dry_run_report_json(&result.report, &result.artifact_store)
+}
+
+fn restore_apply_dry_run_report_json(
+    report: &RestoreApplyDryRunReport,
+    artifact_store: &ArtifactStoreRef,
+) -> String {
+    format!(
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"pre_restore_backup_artifact_key\":{},\"pre_restore_expected_digest\":{},\"pre_restore_actual_digest\":{},\"artifact_store\":{},\"audit\":{}}}",
+        json_string(&report.plan_id),
+        json_string(&report.status),
+        report.apply_allowed,
+        json_string(&report.backup_artifact_key),
+        json_string(&report.expected_digest),
+        json_string(&report.actual_digest),
+        json_string(&report.pre_restore_backup_artifact_key),
+        json_string(&report.pre_restore_expected_digest),
+        json_string(&report.pre_restore_actual_digest),
+        artifact_store_ref_json(artifact_store),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn restore_apply_json(result: &RestoreApplyResult) -> String {
+    format!(
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"backup_artifact_key\":{},\"pre_restore_backup_artifact_key\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"steps\":{},\"risks\":{},\"audit\":{},\"rollback_plan\":{}}}",
+        json_string(&result.report.plan_id),
+        json_string(&result.report.status),
+        result.report.apply_allowed,
+        result.report.mutation_executed,
+        json_string(&result.report.backup_artifact_key),
+        json_string(&result.report.pre_restore_backup_artifact_key),
+        restore_apply_lock_json(&result.report.lock),
+        result.report.health.healthy,
+        json_string(&result.report.health.message),
+        artifact_store_ref_json(&result.artifact_store),
+        lock_store_ref_json(&result.lock_store),
+        restore_apply_dry_run_report_json(&result.dry_run, &result.artifact_store),
+        json_array(result.report.steps.iter().map(|step| json_string(step))),
+        json_array(result.report.risks.iter().map(|risk| json_string(risk))),
+        json_array(result.report.audit.iter().map(|entry| json_string(entry))),
+        result
+            .rollback_plan
+            .as_ref()
+            .map(rollback_plan_json)
+            .unwrap_or_else(|| "null".to_owned())
+    )
+}
+
+fn restore_apply_lock_json(lock: &eva_backup::RestoreApplyLock) -> String {
+    format!(
+        "{{\"lock_id\":{},\"plan_id\":{},\"owner\":{},\"status\":{},\"audit\":{}}}",
+        json_string(&lock.lock_id),
+        json_string(&lock.plan_id),
+        json_string(&lock.owner),
+        json_string(&lock.status),
+        json_array(lock.audit.iter().map(|entry| json_string(entry)))
+    )
+}
