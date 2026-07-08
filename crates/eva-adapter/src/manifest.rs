@@ -74,6 +74,8 @@ pub struct AdapterHandle {
     pub skill_input_schema: Option<SkillInputSchema>,
     pub hardware_logical_name: Option<String>,
     pub hardware_device_class: Option<String>,
+    pub hardware_driver_id: Option<String>,
+    pub hardware_driver_kind: Option<String>,
     pub bindings: Vec<AdapterCapabilityBinding>,
 }
 
@@ -88,6 +90,7 @@ impl AdapterHealth {
 
 impl AdapterHandle {
     pub fn from_manifest(manifest: &AdapterManifest) -> Self {
+        let hardware_config = manifest.hardware_config().ok().flatten();
         Self {
             id: manifest.id.clone(),
             name: manifest.name.clone(),
@@ -161,12 +164,18 @@ impl AdapterHandle {
                         })
                         .collect(),
                 }),
-            hardware_logical_name: manifest
-                .deep_extra_string(&["hardware", "identity", "logical_name"])
-                .map(str::to_owned),
-            hardware_device_class: manifest
-                .deep_extra_string(&["hardware", "identity", "device_class"])
-                .map(str::to_owned),
+            hardware_logical_name: hardware_config
+                .as_ref()
+                .map(|hardware| hardware.identity.logical_name.clone()),
+            hardware_device_class: hardware_config
+                .as_ref()
+                .map(|hardware| hardware.identity.device_class.clone()),
+            hardware_driver_id: hardware_config
+                .as_ref()
+                .map(|hardware| hardware.driver.driver_id.clone()),
+            hardware_driver_kind: hardware_config
+                .as_ref()
+                .map(|hardware| hardware.driver.kind.as_str().to_owned()),
             bindings: Vec::new(),
         }
     }
@@ -303,6 +312,11 @@ mod tests {
 
         assert_eq!(handle.hardware_logical_name.as_deref(), Some("main-scale"));
         assert_eq!(handle.hardware_device_class.as_deref(), Some("scale"));
+        assert_eq!(
+            handle.hardware_driver_id.as_deref(),
+            Some("scale-main-simulated-driver")
+        );
+        assert_eq!(handle.hardware_driver_kind.as_deref(), Some("simulated"));
     }
 
     #[test]

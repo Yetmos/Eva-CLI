@@ -2,6 +2,7 @@
 
 use crate::registry::DeviceLease;
 use eva_core::{CapabilityName, EvaError, RequestId};
+use std::collections::BTreeMap;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "driver binding behind policy-controlled interfaces";
@@ -37,6 +38,21 @@ pub trait HardwareDriver {
         lease: &DeviceLease,
         operation: DriverOperation,
     ) -> Result<DriverOutput, EvaError>;
+}
+
+#[derive(Default)]
+pub struct HardwareDriverRegistry {
+    drivers: BTreeMap<String, Box<dyn HardwareDriver>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimulatorContractReport {
+    pub driver_id: String,
+    pub device_id: String,
+    pub capability: CapabilityName,
+    pub raw_io_allowed: bool,
+    pub raw_handle_exposed: bool,
+    pub capability_mismatch_rejected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +101,93 @@ impl SimulatedDriver {
     pub fn new(binding: DriverBinding) -> Self {
         Self { binding }
     }
+}
+
+impl HardwareDriverRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register<D>(&mut self, driver: D) -> Result<(), EvaError>
+    where
+        D: HardwareDriver + 'static,
+    {
+        let driver_id = driver.binding().driver_id.clone();
+        if self.drivers.contains_key(&driver_id) {
+            return Err(EvaError::conflict("hardware driver already registered")
+                .with_context("driver_id", driver_id));
+        }
+        self.drivers.insert(driver_id, Box::new(driver));
+        Ok(())
+    }
+
+    pub fn list_bindings(&self) -> Vec<&DriverBinding> {
+        self.drivers
+            .values()
+            .map(|driver| driver.binding())
+            .collect()
+    }
+
+    pub fn binding(&self, driver_id: &str) -> Option<&DriverBinding> {
+        self.drivers.get(driver_id).map(|driver| driver.binding())
+    }
+
+    pub fn invoke(
+        &self,
+        driver_id: &str,
+        lease: &DeviceLease,
+        operation: DriverOperation,
+    ) -> Result<DriverOutput, EvaError> {
+        let driver = self.drivers.get(driver_id).ok_or_else(|| {
+            EvaError::not_found("hardware driver is not registered")
+                .with_context("driver_id", driver_id)
+        })?;
+        driver.invoke(lease, operation)
+    }
+}
+
+pub fn run_simulator_contract_suite<D>(
+    driver: &D,
+    lease: &DeviceLease,
+) -> Result<SimulatorContractReport, EvaError>
+where
+    D: HardwareDriver,
+{
+    let binding = driver.binding();
+    let output = driver.invoke(
+        lease,
+        DriverOperation::new(lease.request_id.clone(), binding.capability.clone())
+            .with_input("simulator-contract"),
+    )?;
+    let audit_text = output.audit.join("\n");
+    let raw_io_allowed = !output.audit.iter().any(|entry| entry == "raw_io:false");
+    let raw_handle_exposed = audit_text.contains("raw_handle:")
+        || output.output.contains("raw_handle:")
+        || audit_text.contains("/dev/")
+        || output.output.contains("/dev/");
+    let capability_mismatch_rejected = match CapabilityName::parse("hardware.raw.write") {
+        Ok(raw_capability) if raw_capability != binding.capability => driver
+            .invoke(
+                lease,
+                DriverOperation::new(lease.request_id.clone(), raw_capability),
+            )
+            .is_err_and(|error| error.kind() == eva_core::ErrorKind::PermissionDenied),
+        _ => true,
+    };
+
+    let report = SimulatorContractReport {
+        driver_id: binding.driver_id.clone(),
+        device_id: lease.device_id.as_str().to_owned(),
+        capability: binding.capability.clone(),
+        raw_io_allowed,
+        raw_handle_exposed,
+        capability_mismatch_rejected,
+    };
+    if report.raw_io_allowed || report.raw_handle_exposed || !report.capability_mismatch_rejected {
+        return Err(EvaError::internal("simulator driver contract failed")
+            .with_context("driver_id", &report.driver_id));
+    }
+    Ok(report)
 }
 
 impl HardwareDriver for SimulatedDriver {
@@ -154,5 +257,61 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn driver_registry_invokes_registered_simulator() {
+        let binding = DriverBinding::new(
+            "scale-sim",
+            CapabilityName::parse("hardware.scale.read").unwrap(),
+            "scale",
+        )
+        .unwrap();
+        let mut registry = HardwareDriverRegistry::new();
+        registry
+            .register(SimulatedDriver::new(binding.clone()))
+            .unwrap();
+        let lease = DeviceLease {
+            device_id: DeviceId::parse("scale-main:main-scale").unwrap(),
+            request_id: RequestId::parse("req-hardware-1").unwrap(),
+            exclusive: true,
+        };
+
+        let output = registry
+            .invoke(
+                "scale-sim",
+                &lease,
+                DriverOperation::new(
+                    RequestId::parse("req-hardware-1").unwrap(),
+                    binding.capability,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(output.status, "completed");
+        assert!(output.audit.contains(&"raw_io:false".to_owned()));
+        assert_eq!(registry.list_bindings().len(), 1);
+    }
+
+    #[test]
+    fn simulator_contract_suite_rejects_raw_io_and_capability_bypass() {
+        let binding = DriverBinding::new(
+            "scale-sim",
+            CapabilityName::parse("hardware.scale.read").unwrap(),
+            "scale",
+        )
+        .unwrap();
+        let driver = SimulatedDriver::new(binding);
+        let lease = DeviceLease {
+            device_id: DeviceId::parse("scale-main:main-scale").unwrap(),
+            request_id: RequestId::parse("req-hardware-1").unwrap(),
+            exclusive: true,
+        };
+
+        let report = run_simulator_contract_suite(&driver, &lease).unwrap();
+
+        assert!(!report.raw_io_allowed);
+        assert!(!report.raw_handle_exposed);
+        assert!(report.capability_mismatch_rejected);
     }
 }

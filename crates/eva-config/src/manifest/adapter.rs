@@ -1,6 +1,6 @@
 //! Adapter manifest loading and normalization.
 
-use crate::{read_yaml_file, require_non_empty, with_field_context, EvaError};
+use crate::{invalid_config, read_yaml_file, require_non_empty, with_field_context, EvaError};
 use eva_core::{AdapterId, CapabilityName};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
@@ -46,6 +46,90 @@ pub struct ManifestObjectSchema {
 pub struct ManifestSchemaProperty {
     pub value_type: Option<String>,
     pub enum_values: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareAdapterConfig {
+    pub bus: HardwareBusKind,
+    pub match_rule: HardwareMatchConfig,
+    pub identity: HardwareIdentityConfig,
+    pub protocol: HardwareProtocolConfig,
+    pub hotplug: HardwareHotplugConfig,
+    pub driver: HardwareDriverConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HardwareBusKind {
+    Usb,
+    Serial,
+    Ble,
+    Socket,
+    VendorSdk,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HardwareMatchConfig {
+    pub vendor_id: Option<String>,
+    pub product_id: Option<String>,
+    pub serial: Option<String>,
+    pub address: Option<String>,
+    pub path: Option<String>,
+    pub service_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareIdentityConfig {
+    pub logical_name: String,
+    pub device_class: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareProtocolConfig {
+    pub kind: HardwareProtocolKind,
+    pub baud_rate: Option<u32>,
+    pub endpoint: Option<String>,
+    pub service_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HardwareProtocolKind {
+    Simulated,
+    LineJson,
+    Binary,
+    ModbusRtu,
+    BleGatt,
+    TcpSocket,
+    UdpSocket,
+    VendorSdk,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareHotplugConfig {
+    pub claim: HardwareClaimMode,
+    pub reconnect_backoff_ms: u64,
+    pub max_reconnect_attempts: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HardwareClaimMode {
+    Exclusive,
+    SharedRead,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareDriverConfig {
+    pub driver_id: String,
+    pub kind: HardwareDriverKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HardwareDriverKind {
+    Simulated,
+    Usb,
+    Serial,
+    Ble,
+    Socket,
+    VendorSdk,
 }
 
 /// Supported adapter transport implementations.
@@ -193,6 +277,11 @@ impl AdapterManifest {
         value.as_str()
     }
 
+    /// Returns an unsigned integer from a nested manifest extension path.
+    pub fn deep_extra_u64(&self, path: &[&str]) -> Option<u64> {
+        self.deep_extra_value(path).and_then(Value::as_u64)
+    }
+
     /// Returns a string list from a nested manifest extension path.
     pub fn deep_extra_string_list(&self, path: &[&str]) -> Vec<String> {
         self.deep_extra_value(path)
@@ -277,6 +366,250 @@ impl AdapterManifest {
         }
         Some(value)
     }
+
+    /// Parses the typed hardware adapter config preserved under `hardware`.
+    pub fn hardware_config(&self) -> Result<Option<HardwareAdapterConfig>, EvaError> {
+        if self.transport != AdapterTransport::Hardware {
+            return Ok(None);
+        }
+        HardwareAdapterConfig::from_manifest(self).map(Some)
+    }
+}
+
+impl HardwareAdapterConfig {
+    fn from_manifest(manifest: &AdapterManifest) -> Result<Self, EvaError> {
+        let bus = parse_hardware_field(
+            manifest,
+            &["hardware", "bus"],
+            "hardware.bus",
+            HardwareBusKind::parse,
+        )?
+        .unwrap_or(HardwareBusKind::Usb);
+        let identity = HardwareIdentityConfig {
+            logical_name: manifest
+                .deep_extra_string(&["hardware", "identity", "logical_name"])
+                .unwrap_or_else(|| manifest.id.as_str())
+                .to_owned(),
+            device_class: manifest
+                .deep_extra_string(&["hardware", "identity", "device_class"])
+                .unwrap_or("hardware")
+                .to_owned(),
+        };
+        if identity.logical_name.trim().is_empty() || identity.device_class.trim().is_empty() {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                &manifest.path,
+                "hardware.identity",
+                "logical_name and device_class cannot be empty",
+            ));
+        }
+
+        let protocol_kind = parse_hardware_field(
+            manifest,
+            &["hardware", "protocol", "kind"],
+            "hardware.protocol.kind",
+            HardwareProtocolKind::parse,
+        )?
+        .unwrap_or(HardwareProtocolKind::Simulated);
+        let driver_kind = parse_hardware_field(
+            manifest,
+            &["hardware", "driver", "kind"],
+            "hardware.driver.kind",
+            HardwareDriverKind::parse,
+        )?
+        .unwrap_or(HardwareDriverKind::Simulated);
+        let driver_id = manifest
+            .deep_extra_string(&["hardware", "driver", "id"])
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{}-{}-driver", manifest.id.as_str(), driver_kind.as_str()));
+        if driver_id.trim().is_empty() {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                &manifest.path,
+                "hardware.driver.id",
+                "driver id cannot be empty",
+            ));
+        }
+
+        Ok(Self {
+            bus,
+            match_rule: HardwareMatchConfig {
+                vendor_id: hardware_string(manifest, &["hardware", "match", "vendor_id"]),
+                product_id: hardware_string(manifest, &["hardware", "match", "product_id"]),
+                serial: hardware_string(manifest, &["hardware", "match", "serial"]),
+                address: hardware_string(manifest, &["hardware", "match", "address"]),
+                path: hardware_string(manifest, &["hardware", "match", "path"]),
+                service_uuid: hardware_string(manifest, &["hardware", "match", "service_uuid"]),
+            },
+            identity,
+            protocol: HardwareProtocolConfig {
+                kind: protocol_kind,
+                baud_rate: optional_u32(
+                    manifest,
+                    &["hardware", "protocol", "baud_rate"],
+                    "hardware.protocol.baud_rate",
+                )?,
+                endpoint: hardware_string(manifest, &["hardware", "protocol", "endpoint"]),
+                service_uuid: hardware_string(manifest, &["hardware", "protocol", "service_uuid"]),
+            },
+            hotplug: HardwareHotplugConfig {
+                claim: parse_hardware_field(
+                    manifest,
+                    &["hardware", "hotplug", "claim"],
+                    "hardware.hotplug.claim",
+                    HardwareClaimMode::parse,
+                )?
+                .unwrap_or(HardwareClaimMode::Exclusive),
+                reconnect_backoff_ms: manifest
+                    .deep_extra_u64(&["hardware", "hotplug", "reconnect_backoff_ms"])
+                    .unwrap_or(0),
+                max_reconnect_attempts: optional_u32(
+                    manifest,
+                    &["hardware", "hotplug", "max_reconnect_attempts"],
+                    "hardware.hotplug.max_reconnect_attempts",
+                )?
+                .unwrap_or(0),
+            },
+            driver: HardwareDriverConfig {
+                driver_id,
+                kind: driver_kind,
+            },
+        })
+    }
+}
+
+impl HardwareBusKind {
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "usb" => Ok(Self::Usb),
+            "serial" => Ok(Self::Serial),
+            "ble" => Ok(Self::Ble),
+            "socket" | "network" => Ok(Self::Socket),
+            "vendor_sdk" => Ok(Self::VendorSdk),
+            _ => Err(EvaError::unsupported("unsupported hardware bus").with_context("bus", value)),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Usb => "usb",
+            Self::Serial => "serial",
+            Self::Ble => "ble",
+            Self::Socket => "socket",
+            Self::VendorSdk => "vendor_sdk",
+        }
+    }
+}
+
+impl HardwareProtocolKind {
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "simulated" => Ok(Self::Simulated),
+            "line_json" => Ok(Self::LineJson),
+            "binary" => Ok(Self::Binary),
+            "modbus_rtu" => Ok(Self::ModbusRtu),
+            "ble_gatt" => Ok(Self::BleGatt),
+            "tcp_socket" => Ok(Self::TcpSocket),
+            "udp_socket" => Ok(Self::UdpSocket),
+            "vendor_sdk" => Ok(Self::VendorSdk),
+            _ => Err(EvaError::unsupported("unsupported hardware protocol")
+                .with_context("protocol", value)),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Simulated => "simulated",
+            Self::LineJson => "line_json",
+            Self::Binary => "binary",
+            Self::ModbusRtu => "modbus_rtu",
+            Self::BleGatt => "ble_gatt",
+            Self::TcpSocket => "tcp_socket",
+            Self::UdpSocket => "udp_socket",
+            Self::VendorSdk => "vendor_sdk",
+        }
+    }
+}
+
+impl HardwareClaimMode {
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "exclusive" => Ok(Self::Exclusive),
+            "shared_read" => Ok(Self::SharedRead),
+            _ => Err(EvaError::unsupported("unsupported hardware claim mode")
+                .with_context("claim", value)),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exclusive => "exclusive",
+            Self::SharedRead => "shared_read",
+        }
+    }
+}
+
+impl HardwareDriverKind {
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "simulated" => Ok(Self::Simulated),
+            "usb" => Ok(Self::Usb),
+            "serial" => Ok(Self::Serial),
+            "ble" => Ok(Self::Ble),
+            "socket" | "network" => Ok(Self::Socket),
+            "vendor_sdk" => Ok(Self::VendorSdk),
+            _ => Err(EvaError::unsupported("unsupported hardware driver kind")
+                .with_context("driver_kind", value)),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Simulated => "simulated",
+            Self::Usb => "usb",
+            Self::Serial => "serial",
+            Self::Ble => "ble",
+            Self::Socket => "socket",
+            Self::VendorSdk => "vendor_sdk",
+        }
+    }
+}
+
+fn parse_hardware_field<T>(
+    manifest: &AdapterManifest,
+    path: &[&str],
+    field: &'static str,
+    parse: impl FnOnce(&str) -> Result<T, EvaError>,
+) -> Result<Option<T>, EvaError> {
+    manifest
+        .deep_extra_string(path)
+        .map(parse)
+        .transpose()
+        .map_err(|error| with_field_context(error, CONFIG_TYPE, &manifest.path, field))
+}
+
+fn optional_u32(
+    manifest: &AdapterManifest,
+    path: &[&str],
+    field: &'static str,
+) -> Result<Option<u32>, EvaError> {
+    manifest
+        .deep_extra_u64(path)
+        .map(|value| {
+            u32::try_from(value).map_err(|_| {
+                invalid_config(
+                    CONFIG_TYPE,
+                    &manifest.path,
+                    field,
+                    "integer value exceeds u32 range",
+                )
+            })
+        })
+        .transpose()
+}
+
+fn hardware_string(manifest: &AdapterManifest, path: &[&str]) -> Option<String> {
+    manifest.deep_extra_string(path).map(str::to_owned)
 }
 
 fn string_map(mapping: &Mapping) -> BTreeMap<String, String> {
@@ -443,6 +776,45 @@ capabilities:
         assert_eq!(
             manifest.deep_extra_string(&["hardware", "identity", "logical_name"]),
             Some("main-scale")
+        );
+    }
+
+    #[test]
+    fn adapter_manifest_parses_hardware_typed_config() {
+        let manifest = load_adapter_manifest(
+            workspace_root().join("config/adapters/hardware/scale-main.yaml"),
+        )
+        .unwrap();
+
+        let hardware = manifest.hardware_config().unwrap().unwrap();
+
+        assert_eq!(hardware.bus, HardwareBusKind::Usb);
+        assert_eq!(hardware.identity.logical_name, "main-scale");
+        assert_eq!(hardware.identity.device_class, "scale");
+        assert_eq!(hardware.protocol.kind, HardwareProtocolKind::LineJson);
+        assert_eq!(hardware.protocol.baud_rate, Some(115200));
+        assert_eq!(hardware.hotplug.claim, HardwareClaimMode::Exclusive);
+        assert_eq!(hardware.hotplug.reconnect_backoff_ms, 1000);
+        assert_eq!(hardware.hotplug.max_reconnect_attempts, 5);
+        assert_eq!(hardware.driver.kind, HardwareDriverKind::Simulated);
+    }
+
+    #[test]
+    fn hardware_config_reserves_real_driver_kinds() {
+        assert_eq!(HardwareBusKind::parse("serial").unwrap().as_str(), "serial");
+        assert_eq!(HardwareBusKind::parse("ble").unwrap().as_str(), "ble");
+        assert_eq!(HardwareBusKind::parse("socket").unwrap().as_str(), "socket");
+        assert_eq!(
+            HardwareBusKind::parse("vendor_sdk").unwrap().as_str(),
+            "vendor_sdk"
+        );
+        assert_eq!(
+            HardwareProtocolKind::parse("tcp_socket").unwrap().as_str(),
+            "tcp_socket"
+        );
+        assert_eq!(
+            HardwareDriverKind::parse("vendor_sdk").unwrap().as_str(),
+            "vendor_sdk"
         );
     }
 

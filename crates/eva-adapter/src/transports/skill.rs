@@ -1423,6 +1423,8 @@ mod tests {
             }),
             hardware_logical_name: None,
             hardware_device_class: None,
+            hardware_driver_id: None,
+            hardware_driver_kind: None,
             bindings: Vec::new(),
         })
     }

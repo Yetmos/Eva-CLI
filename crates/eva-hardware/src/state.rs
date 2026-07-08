@@ -10,6 +10,7 @@ pub enum DeviceBus {
     Usb,
     Serial,
     Ble,
+    Socket,
     Network,
     VendorSdk,
 }
@@ -49,6 +50,7 @@ impl DeviceBus {
             "usb" => Ok(Self::Usb),
             "serial" => Ok(Self::Serial),
             "ble" => Ok(Self::Ble),
+            "socket" => Ok(Self::Socket),
             "network" => Ok(Self::Network),
             "vendor_sdk" => Ok(Self::VendorSdk),
             _ => Err(EvaError::unsupported("unsupported hardware bus").with_context("bus", value)),
@@ -60,6 +62,7 @@ impl DeviceBus {
             Self::Usb => "usb",
             Self::Serial => "serial",
             Self::Ble => "ble",
+            Self::Socket => "socket",
             Self::Network => "network",
             Self::VendorSdk => "vendor_sdk",
         }

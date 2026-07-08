@@ -1,6 +1,6 @@
 # eva-config / 配置加载与归一化
 
-更新时间：2026-07-07
+更新时间：2026-07-08
 
 ![eva-config validation flow](assets/eva-config-validation-flow.svg)
 
@@ -16,7 +16,7 @@
 
 ### 当前实现状态
 
-第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。V0.3 起 `eva-cli` 已通过 `eva config validate` 暴露文本/JSON 校验报告，V0.5 task diagnostics basic loop 也复用同一份 `ProjectConfig` 作为组合输入。V1.9.1 起，加载项目配置会先按 schema 文件验证 `eva.yaml`、Agent/Adapter/Capability manifest、policy 和 routes，错误上下文包含文件、字段 path、schema rule 和修复建议。
+第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。V0.3 起 `eva-cli` 已通过 `eva config validate` 暴露文本/JSON 校验报告，V0.5 task diagnostics basic loop 也复用同一份 `ProjectConfig` 作为组合输入。V1.9.1 起，加载项目配置会先按 schema 文件验证 `eva.yaml`、Agent/Adapter/Capability manifest、policy 和 routes，错误上下文包含文件、字段 path、schema rule 和修复建议。V1.10.1 起，hardware Adapter manifest 会额外解析为 typed hardware config，预留 USB、串口、BLE、socket 和 vendor SDK driver 配置。
 
 ```text
 project root
@@ -34,12 +34,12 @@ project root
 | 主配置加载 | 已完成 | `load_eva_config` 读取 `eva.yaml` 并解析 `runtime`、`config` 稳定字段 |
 | 配置根路径 | 已完成 | `ConfigRoots::resolve_against` 将相对路径按项目根目录解析 |
 | Agent manifest | 已完成 | 校验 `AgentId`、`parent`、`children`、`script`、`subscriptions`、部分权限字段 |
-| Adapter manifest | 已完成 | 校验 `AdapterId`、`transport` 和 `capabilities` |
+| Adapter manifest | 已完成 V1.10.1 | 校验 `AdapterId`、`transport` 和 `capabilities`；hardware Adapter 解析 typed bus/match/identity/protocol/hotplug/driver config |
 | Capability manifest | 已完成 | 校验 `CapabilityId`、`kind`、runtime `CapabilityName` 和 provider 引用格式 |
 | Policy document | 已完成 | 加载 `config/policies/*.yaml` 为 extensible domain map，最终解释留给 `eva-policy` |
 | Routes 配置 | 已完成 | 加载 `config/routes/topics.yaml`，校验 `TopicPattern`、delivery 和目标 Agent ID |
 | 项目级聚合 | 已完成 | `load_project_config` 汇总主配置、三类 manifest、policy 文档和 routes |
-| 跨文件一致性 | 已完成 | 检查重复 ID、Agent 父子引用、Agent 脚本文件、Capability provider Adapter、Route target Agent |
+| 跨文件一致性 | 已完成 V1.10.1 | 检查重复 ID、Agent 父子引用、Agent 脚本文件、Capability provider Adapter、Route target Agent 和 hardware typed config |
 | schema 辅助 | 已完成 V1.9.1 | 暴露 schema 路径和当前支持的枚举值，包括 route delivery |
 | JSON Schema validator | 已完成 V1.9.1 | 支持当前 schema 使用的 `type`、`required`、`properties`、`additionalProperties`、`items`、`enum`、`pattern` 和 `minProperties` |
 | CLI `eva config validate` | 已完成 V1.9.1 | `eva-cli` 输出人类可读和机器可读的配置验证结果，并在 JSON error context 中透传 schema rule |
@@ -51,6 +51,7 @@ project root
 | `load_eva_config` | `impl AsRef<Path>` | `Result<EvaConfig, EvaError>` | 读取并校验主配置 |
 | `load_agent_manifest` | `impl AsRef<Path>` | `Result<AgentManifest, EvaError>` | 读取单个 Agent manifest |
 | `load_adapter_manifest` | `impl AsRef<Path>` | `Result<AdapterManifest, EvaError>` | 读取单个 Adapter manifest |
+| `AdapterManifest::hardware_config` | `&self` | `Result<Option<HardwareAdapterConfig>, EvaError>` | 解析 hardware Adapter 的 bus/match/identity/protocol/hotplug/driver typed config |
 | `load_capability_manifest` | `impl AsRef<Path>` | `Result<CapabilityManifest, EvaError>` | 读取单个 Capability manifest |
 | `load_policy_document` | `impl AsRef<Path>` | `Result<PolicyDocument, EvaError>` | 读取单个 policy YAML 文档 |
 | `load_routes` | `impl AsRef<Path>` | `Result<RouteConfig, EvaError>` | 读取 Topic route table |
@@ -68,6 +69,7 @@ project root
 | `ConfigRoots` | `src/eva_yaml.rs` | `agent_dir`、`adapter_dir`、`capability_dir`、`policy_dir`、`route_file`、`schema_dir` | 拆分配置发现入口 |
 | `AgentManifest` | `src/manifest/agent.rs` | `id`、`enabled`、`parent`、`children`、`script`、`subscriptions`、`permissions` | Agent 注册前配置契约 |
 | `AdapterManifest` | `src/manifest/adapter.rs` | `id`、`name`、`version`、`enabled`、`transport`、`capabilities` | Adapter 注册前配置契约 |
+| `HardwareAdapterConfig` | `src/manifest/adapter.rs` | `bus`、`match_rule`、`identity`、`protocol`、`hotplug`、`driver` | V1.10.1 hardware driver registry 和 simulator/real driver 共用 typed 配置 |
 | `CapabilityManifest` | `src/manifest/capability.rs` | `id`、`name`、`version`、`enabled`、`kind`、`capability`、`provider` | Capability 注册前配置契约 |
 | `PolicyDocument` | `src/policy.rs` | `path`、`domains` | policy 文件加载结果，领域解释不在 `eva-config` |
 | `RouteConfig` | `src/routes.rs` | `path`、`routes` | Topic route table |
@@ -104,6 +106,7 @@ project root
 | 必填字段缺失或为空 | `InvalidArgument` | `config_type`、`path`、`field` |
 | ID、TopicPattern、CapabilityName 非法 | `InvalidArgument` | 原始 `eva-core` 错误上下文 + 字段上下文 |
 | Adapter transport 不支持 | `Unsupported` | `transport` |
+| hardware bus/protocol/claim/driver kind 不支持 | `Unsupported` | `field`、`path`、具体值 |
 | Capability kind 不支持 | `Unsupported` | `kind` |
 | 跨文件引用不存在 | `NotFound` | 引用方 ID、被引用 ID、文件路径 |
 | 重复 ID | `Conflict` | 重复 ID、首次文件、冲突文件 |
@@ -115,7 +118,7 @@ project root
 | 命令 | 当前结果 |
 | --- | --- |
 | `cargo fmt -p eva-config --check` | 通过 |
-| `cargo test -p eva-config` | 通过，37 个测试 |
+| `cargo test -p eva-config` | 通过，40 个测试 |
 | `cargo check -p eva-config` | 通过 |
 | `cargo check --workspace` | 通过 |
 | `cargo test --workspace` | 通过 |
@@ -132,6 +135,9 @@ project root
 | `load_adapter_manifest_accepts_sample_adapter` | 示例 Adapter manifest 可加载 |
 | `load_adapter_manifest_rejects_unknown_transport` | 未知 transport 会失败 |
 | `load_adapter_manifest_rejects_invalid_capability_name` | 非法 capability name 会失败 |
+| `adapter_manifest_parses_hardware_typed_config` | hardware manifest 解析 typed bus/protocol/hotplug/driver config |
+| `hardware_config_reserves_real_driver_kinds` | USB/串口/BLE/socket/vendor SDK driver kind 预留稳定拼写 |
+| `load_project_config_rejects_unknown_hardware_driver_kind` | 项目加载阶段拒绝未知 hardware driver kind |
 | `load_capability_manifest_accepts_sample_capability` | 示例 Capability manifest 可加载 |
 | `load_capability_manifest_rejects_invalid_runtime_capability` | 非法 runtime capability 会失败 |
 | `load_policy_document_accepts_sample_policy` | 示例 policy 文件可加载 |
@@ -150,8 +156,9 @@ project root
 | 3 | V0.2 | 完成跨文件一致性检查。 | 项目示例配置 | 重复 ID、未知 Agent、缺失脚本可被拒绝。 |
 | 4 | V0.3 | 接入 `eva-cli config validate` 和 `doctor`。 | `eva-cli` | human/json 诊断稳定。 |
 | 5 | V1.9.1 | 补完整 JSON Schema validator。 | `config/schemas` | 错误定位到文件、字段和 schema 规则。 |
-| 6 | V0.4 | 将 routes 注册到 Scheduler。 | `eva-scheduler` | route YAML 变成可执行投递规则。 |
-| 7 | V1.1 | 为 Adapter/MCP/Discovery 扩展 manifest 字段。 | `eva-adapter`、`eva-mcp`、`eva-discovery` | 新字段保持向后兼容。 |
+| 6 | V1.10.1 | 为 hardware Adapter 增加 typed driver config。 | `eva-hardware`、`eva-adapter` | USB/串口/BLE/socket/vendor SDK driver kind 可被启动前校验。 |
+| 7 | V0.4 | 将 routes 注册到 Scheduler。 | `eva-scheduler` | route YAML 变成可执行投递规则。 |
+| 8 | V1.1+ | 为 Adapter/MCP/Discovery 扩展 manifest 字段。 | `eva-adapter`、`eva-mcp`、`eva-discovery` | 新字段保持向后兼容。 |
 
 ### 详细开发进度表
 
@@ -160,7 +167,7 @@ project root
 | `src/lib.rs` | `ProjectConfig` 聚合、加载入口、跨文件校验 | 已完成 | V0.3 输出 CLI 诊断模型。 |
 | `src/eva_yaml.rs` | `config/eva.yaml` 解析和 `ConfigRoots` | 已完成 | 增加 schema validator 细粒度错误。 |
 | `src/manifest/agent.rs` | Agent manifest 解析和基础校验 | 已完成 | 扩展 permission 字段解释。 |
-| `src/manifest/adapter.rs` | Adapter manifest 解析和基础校验 | 已完成 | V1.1 增加 transport/schema/policy 细化字段。 |
+| `src/manifest/adapter.rs` | Adapter manifest 解析、基础校验、hardware typed config | 已完成 V1.10.1 | 后续随真实 driver lifecycle 增加 OS 权限配置。 |
 | `src/manifest/capability.rs` | Capability manifest 解析和 provider 引用校验 | 已完成 | 接 CapabilityRegistry descriptor。 |
 | `src/policy.rs` | policy YAML document 加载 | 已完成 | 与 `eva-policy` 协作解释 policy domain。 |
 | `src/routes.rs` | routes YAML 加载和 delivery 校验 | 已完成 | 接 `eva-scheduler` route registry。 |

@@ -20,7 +20,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub use eva_yaml::{load_eva_config, RuntimeConfig};
-pub use manifest::adapter::{AdapterTransport, RawAdapterTransport};
+pub use manifest::adapter::{
+    AdapterTransport, HardwareAdapterConfig, HardwareBusKind, HardwareClaimMode,
+    HardwareDriverConfig, HardwareDriverKind, HardwareHotplugConfig, HardwareIdentityConfig,
+    HardwareMatchConfig, HardwareProtocolConfig, HardwareProtocolKind, RawAdapterTransport,
+};
 pub use manifest::agent::AgentManifestPermissions;
 pub use manifest::capability::{CapabilityKind, RawCapabilityKind};
 pub use routes::{RawRouteDelivery, RouteDelivery, RouteRule};
@@ -115,6 +119,7 @@ pub fn validate_project_config(project: &ProjectConfig) -> Result<(), EvaError> 
     validate_agent_references(&project.agents)?;
     validate_agent_permission_references(project)?;
     validate_agent_scripts(&project.agents)?;
+    validate_hardware_adapter_configs(&project.adapters)?;
     validate_capability_providers(project)?;
     validate_route_agents(project)?;
     Ok(())
@@ -380,6 +385,13 @@ fn validate_capability_providers(project: &ProjectConfig) -> Result<(), EvaError
     Ok(())
 }
 
+fn validate_hardware_adapter_configs(adapters: &[AdapterManifest]) -> Result<(), EvaError> {
+    for adapter in adapters {
+        adapter.hardware_config()?;
+    }
+    Ok(())
+}
+
 fn validate_route_agents(project: &ProjectConfig) -> Result<(), EvaError> {
     let agents = project
         .agents
@@ -586,6 +598,40 @@ mod tests {
             "suggestion",
             "add the Adapter manifest or remove the provider permission",
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_project_config_rejects_unknown_hardware_driver_kind() {
+        let root = minimal_project("bad-hardware-driver", "codex-cli");
+        fs::write(
+            root.join("config/adapters/bad-scale.yaml"),
+            r#"id: bad-scale
+name: Bad Scale
+version: 1.0.0
+enabled: true
+transport: hardware
+hardware:
+  bus: usb
+  identity:
+    logical_name: bad-scale
+    device_class: scale
+  driver:
+    kind: mystery
+capabilities:
+  - hardware.scale.read
+permissions: {}
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+
+        let error = load_project_config(&root).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert_context(&error, "field", "hardware.driver.kind");
 
         fs::remove_dir_all(root).unwrap();
     }

@@ -4,8 +4,8 @@ use crate::manifest::AdapterHandle;
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
 use eva_core::{EvaError, RequestId};
 use eva_hardware::{
-    DeviceCandidate, DeviceId, DeviceRegistry, DriverBinding, DriverOperation, HardwareDriver,
-    SimulatedDriver,
+    DeviceCandidate, DeviceId, DeviceRegistry, DriverBinding, DriverOperation,
+    HardwareDriverRegistry, SimulatedDriver,
 };
 
 /// Architectural responsibility for this module.
@@ -26,16 +26,33 @@ pub fn invoke(
     let device_id = DeviceId::parse(&format!("{}:{}", handle.id.as_str(), logical_name))?;
     let request_id = invocation.request_id.clone();
     let lease = registry.claim(&device_id, request_id.clone())?;
+    let driver_id = handle
+        .hardware_driver_id
+        .clone()
+        .unwrap_or_else(|| format!("{}-simulated-driver", handle.id.as_str()));
+    let driver_kind = handle
+        .hardware_driver_kind
+        .as_deref()
+        .unwrap_or("simulated");
+    if driver_kind != "simulated" {
+        return Err(
+            EvaError::unsupported("hardware driver kind is reserved but not implemented")
+                .with_context("driver_kind", driver_kind)
+                .with_context("driver_id", &driver_id),
+        );
+    }
     let binding = DriverBinding::new(
-        format!("{}-simulated-driver", handle.id.as_str()),
+        driver_id.clone(),
         invocation.capability.clone(),
         handle
             .hardware_device_class
             .as_deref()
             .unwrap_or("hardware"),
     )?;
-    let driver = SimulatedDriver::new(binding);
-    let output = driver.invoke(
+    let mut driver_registry = HardwareDriverRegistry::new();
+    driver_registry.register(SimulatedDriver::new(binding))?;
+    let output = driver_registry.invoke(
+        &driver_id,
         &lease,
         DriverOperation::new(
             RequestId::parse(request_id.as_str())?,
@@ -102,6 +119,8 @@ mod tests {
             skill_input_schema: None,
             hardware_logical_name: Some("main-scale".to_owned()),
             hardware_device_class: Some("scale".to_owned()),
+            hardware_driver_id: Some("scale-main-simulated-driver".to_owned()),
+            hardware_driver_kind: Some("simulated".to_owned()),
             bindings: Vec::new(),
         };
         handle.capabilities.sort();

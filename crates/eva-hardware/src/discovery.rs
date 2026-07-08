@@ -1,7 +1,7 @@
 //! Device discovery and trusted identity matching.
 
 use crate::state::{DeviceBus, DeviceHealth, DeviceId, DeviceIdentity, DeviceTrust};
-use eva_config::{AdapterTransport, ProjectConfig};
+use eva_config::{AdapterTransport, HardwareBusKind, ProjectConfig};
 use eva_core::{AdapterId, EvaError};
 
 /// Architectural responsibility for this module.
@@ -33,17 +33,13 @@ pub fn discover_project_devices(
         if adapter.transport != AdapterTransport::Hardware {
             continue;
         }
-        let bus = adapter
-            .deep_extra_string(&["hardware", "bus"])
-            .map(DeviceBus::parse)
-            .transpose()?
-            .unwrap_or(DeviceBus::Usb);
-        let logical_name = adapter
-            .deep_extra_string(&["hardware", "identity", "logical_name"])
-            .unwrap_or_else(|| adapter.id.as_str());
-        let device_class = adapter
-            .deep_extra_string(&["hardware", "identity", "device_class"])
-            .unwrap_or("hardware");
+        let hardware = adapter.hardware_config()?.ok_or_else(|| {
+            EvaError::invalid_argument("hardware adapter missing hardware config")
+                .with_context("adapter_id", adapter.id.as_str())
+        })?;
+        let bus = device_bus_from_config(hardware.bus);
+        let logical_name = hardware.identity.logical_name;
+        let device_class = hardware.identity.device_class;
         let id = DeviceId::parse(&format!("{}:{}", adapter.id.as_str(), logical_name))?;
         let trust = if adapter.enabled {
             DeviceTrust::Manifest
@@ -58,24 +54,16 @@ pub fn discover_project_devices(
         candidates.push(DeviceCandidate {
             identity: DeviceIdentity::new(
                 id,
-                logical_name,
-                device_class,
+                &logical_name,
+                &device_class,
                 bus,
                 adapter.id.clone(),
                 trust,
             )?,
-            vendor_id: adapter
-                .deep_extra_string(&["hardware", "match", "vendor_id"])
-                .map(str::to_owned),
-            product_id: adapter
-                .deep_extra_string(&["hardware", "match", "product_id"])
-                .map(str::to_owned),
-            serial: adapter
-                .deep_extra_string(&["hardware", "match", "serial"])
-                .map(str::to_owned),
-            protocol: adapter
-                .deep_extra_string(&["hardware", "protocol", "kind"])
-                .map(str::to_owned),
+            vendor_id: hardware.match_rule.vendor_id,
+            product_id: hardware.match_rule.product_id,
+            serial: hardware.match_rule.serial,
+            protocol: Some(hardware.protocol.kind.as_str().to_owned()),
             health,
             source_path: adapter.path.display().to_string(),
             handle_granted: false,
@@ -85,6 +73,16 @@ pub fn discover_project_devices(
     }
     candidates.sort_by(|left, right| left.identity.id.cmp(&right.identity.id));
     Ok(HardwareDiscoveryReport { candidates })
+}
+
+fn device_bus_from_config(bus: HardwareBusKind) -> DeviceBus {
+    match bus {
+        HardwareBusKind::Usb => DeviceBus::Usb,
+        HardwareBusKind::Serial => DeviceBus::Serial,
+        HardwareBusKind::Ble => DeviceBus::Ble,
+        HardwareBusKind::Socket => DeviceBus::Socket,
+        HardwareBusKind::VendorSdk => DeviceBus::VendorSdk,
+    }
 }
 
 impl DeviceCandidate {

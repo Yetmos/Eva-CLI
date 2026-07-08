@@ -394,6 +394,8 @@ mod tests {
             skill_input_schema: None,
             hardware_logical_name: None,
             hardware_device_class: None,
+            hardware_driver_id: None,
+            hardware_driver_kind: None,
             bindings: Vec::new(),
         }
     }
@@ -435,6 +437,8 @@ mod tests {
             skill_input_schema: None,
             hardware_logical_name: None,
             hardware_device_class: None,
+            hardware_driver_id: None,
+            hardware_driver_kind: None,
             bindings: Vec::new(),
         }
     }

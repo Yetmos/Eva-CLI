@@ -47,6 +47,12 @@ hardware:
     reconnect_backoff_ms: 1000
     # Maximum reconnect attempts before surfacing failure. / 暴露失败前的最大重连次数。
     max_reconnect_attempts: 5
+  # Driver binding selected by the runtime driver registry. / 运行时 driver registry 选择的 driver 绑定。
+  driver:
+    # Simulator remains the default while this adapter is disabled. / Adapter 禁用期间默认使用模拟器边界。
+    kind: simulated
+    # Stable driver id used by simulator contract tests. / simulator contract 测试使用的稳定 driver id。
+    id: scale-main-simulated-driver
 
 # Capabilities exposed through this adapter. / 通过此 Adapter 暴露的能力。
 capabilities:
