@@ -38,9 +38,9 @@ use eva_observability::{
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use eva_release::{
     CompatibilityPolicy, MigrationGuide, MigrationStep, PerformanceBaselineReport,
-    PerformanceBudget, PlatformReadiness, ReleaseArtifactEvidence, ReleaseDistributionEvidence,
-    ReleaseGate, ReleaseHardeningService, ReleaseReadinessReport, SecurityFinding,
-    SecurityReviewReport, StabilityScenario,
+    PerformanceBudget, PlatformReadiness, ReleaseArtifactEvidence, ReleaseBenchmarkEvidence,
+    ReleaseDistributionEvidence, ReleaseGate, ReleaseHardeningService, ReleaseReadinessReport,
+    ReleaseSecurityScanEvidence, SecurityFinding, SecurityReviewReport, StabilityScenario,
 };
 use eva_runtime::{
     inspect_durable_backend, BasicRunOptions, BasicRunReport, DurableDiagnosticsOptions,
@@ -355,7 +355,7 @@ enum UpgradeCommand {
 enum ReleaseCommand {
     Check(ReleaseCheckOptions),
     Security(CommonOptions),
-    Perf(CommonOptions),
+    Perf(ReleasePerfOptions),
     Migration(ReleaseMigrationOptions),
 }
 
@@ -504,6 +504,14 @@ struct ReleaseCheckOptions {
     target: String,
     artifact_evidence: Option<PathBuf>,
     distribution_evidence: Option<PathBuf>,
+    security_scan_evidence: Option<PathBuf>,
+    benchmark_evidence: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleasePerfOptions {
+    common: CommonOptions,
+    benchmark_evidence: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1627,7 +1635,7 @@ fn parse_release_command(args: &[String]) -> Result<Command, EvaError> {
             parse_common_options(rest)?,
         ))),
         "perf" | "performance" => Ok(Command::Release(ReleaseCommand::Perf(
-            parse_common_options(rest)?,
+            parse_release_perf_options(rest)?,
         ))),
         "migration" => Ok(Command::Release(ReleaseCommand::Migration(
             parse_release_migration_options(rest)?,
@@ -1644,6 +1652,8 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
     let mut target = "all".to_owned();
     let mut artifact_evidence = None;
     let mut distribution_evidence = None;
+    let mut security_scan_evidence = None;
+    let mut benchmark_evidence = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1667,6 +1677,22 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
                     "distribution evidence option",
                 )?));
             }
+            "--security-scan-evidence" | "--scanner-evidence" | "--security-scan-evidence-file" => {
+                index += 1;
+                security_scan_evidence = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "security scan evidence option",
+                )?));
+            }
+            "--benchmark-evidence" | "--benchmark-evidence-file" => {
+                index += 1;
+                benchmark_evidence = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "benchmark evidence option",
+                )?));
+            }
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -1679,6 +1705,32 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
         target,
         artifact_evidence,
         distribution_evidence,
+        security_scan_evidence,
+        benchmark_evidence,
+    })
+}
+
+fn parse_release_perf_options(args: &[String]) -> Result<ReleasePerfOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut benchmark_evidence = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--benchmark-evidence" | "--benchmark-evidence-file" => {
+                index += 1;
+                benchmark_evidence = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "benchmark evidence option",
+                )?));
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    Ok(ReleasePerfOptions {
+        common: parse_common_options(&passthrough)?,
+        benchmark_evidence,
     })
 }
 
@@ -2503,10 +2555,22 @@ where
                     .as_ref()
                     .map(|path| read_release_distribution_evidence(path))
                     .transpose()?;
+                let security_scan_evidence = options
+                    .security_scan_evidence
+                    .as_ref()
+                    .map(|path| read_release_security_scan_evidence(path))
+                    .transpose()?;
+                let benchmark_evidence = options
+                    .benchmark_evidence
+                    .as_ref()
+                    .map(|path| read_release_benchmark_evidence(path))
+                    .transpose()?;
                 service.readiness_with_release_evidence(
                     &options.target,
                     artifact_evidence.as_ref(),
                     distribution_evidence.as_ref(),
+                    security_scan_evidence.as_ref(),
+                    benchmark_evidence.as_ref(),
                 )
             })();
             match report {
@@ -2539,13 +2603,38 @@ where
         }
         ReleaseCommand::Perf(options) => {
             let trace = trace_for("cli.release.perf");
-            let report = service.performance_baseline();
-            write_release_perf(stdout, options.output, &report, &trace)?;
-            Ok(if report.over_budget_count() == 0 {
-                EXIT_OK
-            } else {
-                EXIT_RUNTIME_UNAVAILABLE
-            })
+            let report = (|| {
+                let benchmark_evidence = options
+                    .benchmark_evidence
+                    .as_ref()
+                    .map(|path| read_release_benchmark_evidence(path))
+                    .transpose()?;
+                Ok::<PerformanceBaselineReport, EvaError>(
+                    benchmark_evidence
+                        .as_ref()
+                        .map(ReleaseBenchmarkEvidence::to_performance_report)
+                        .unwrap_or_else(|| service.performance_baseline()),
+                )
+            })();
+            match report {
+                Ok(report) => {
+                    write_release_perf(stdout, options.common.output, &report, &trace)?;
+                    Ok(
+                        if report.status == "within_budget" && report.over_budget_count() == 0 {
+                            EXIT_OK
+                        } else {
+                            EXIT_RUNTIME_UNAVAILABLE
+                        },
+                    )
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "release.perf",
+                    &error,
+                    &trace,
+                ),
+            }
         }
         ReleaseCommand::Migration(options) => {
             let trace = trace_for("cli.release.migration");
@@ -2596,6 +2685,38 @@ fn read_release_distribution_evidence(
     })?;
     ReleaseDistributionEvidence::parse_manifest(&data)
         .map_err(|error| error.with_context("distribution_evidence", path.display().to_string()))
+}
+
+fn read_release_security_scan_evidence(
+    path: &Path,
+) -> Result<ReleaseSecurityScanEvidence, EvaError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            "release security scan evidence file is missing"
+        } else {
+            "failed to read release security scan evidence file"
+        };
+        EvaError::not_found(message)
+            .with_context("security_scan_evidence", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    ReleaseSecurityScanEvidence::parse_manifest(&data)
+        .map_err(|error| error.with_context("security_scan_evidence", path.display().to_string()))
+}
+
+fn read_release_benchmark_evidence(path: &Path) -> Result<ReleaseBenchmarkEvidence, EvaError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            "release benchmark evidence file is missing"
+        } else {
+            "failed to read release benchmark evidence file"
+        };
+        EvaError::not_found(message)
+            .with_context("benchmark_evidence", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    ReleaseBenchmarkEvidence::parse_manifest(&data)
+        .map_err(|error| error.with_context("benchmark_evidence", path.display().to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6276,9 +6397,9 @@ fn help_text() -> &'static str {
         "  eva restore apply --plan <path> --confirm <plan_id> --artifact-store <path> --lock-store <path> [--dry-run] [--owner <id>] [--health healthy|failed] [--project <path>] [--output text|json]\n",
         "  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n",
         "  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--state-store <path>] [--runtime-binary <path>] [--health healthy|failed|unavailable] [--owner <id>] [--project <path>] [--output text|json]\n",
-        "  eva release check [--target all|windows|linux|macos] [--artifact-evidence <path>] [--distribution-evidence <path>] [--project <path>] [--output text|json]\n",
+        "  eva release check [--target all|windows|linux|macos] [--artifact-evidence <path>] [--distribution-evidence <path>] [--security-scan-evidence <path>] [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
         "  eva release security [--project <path>] [--output text|json]\n",
-        "  eva release perf [--project <path>] [--output text|json]\n",
+        "  eva release perf [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
         "  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\n",
         "Commands:\n",
         "  version          Print the V1.5 release version and supported contracts.\n",
@@ -6525,6 +6646,74 @@ mod tests {
                 ),
             ],
             vec![dry_run],
+        )
+        .unwrap();
+        fs::write(&evidence_path, evidence.to_manifest()).unwrap();
+        (root, evidence_path)
+    }
+
+    fn release_security_scan_evidence_fixture(
+        name: &str,
+        scan_status: &str,
+        severity: Option<&str>,
+    ) -> (PathBuf, PathBuf) {
+        let root = test_temp_dir(name);
+        let evidence_path = root.join("release-security-scan.evidence");
+        fs::create_dir_all(&root).unwrap();
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let findings = severity
+            .map(|severity| {
+                vec![eva_release::ReleaseSecurityScanFinding::new(
+                    "RUSTSEC-0000-0000",
+                    "demo-crate",
+                    "1.0.0",
+                    severity,
+                    "demo advisory",
+                    "upgrade demo-crate",
+                )
+                .unwrap()]
+            })
+            .unwrap_or_default();
+        let evidence = eva_release::ReleaseSecurityScanEvidence::new(
+            "1.7.4-alpha",
+            "v1.7.4-alpha",
+            commit,
+            "cargo-audit",
+            "1.0.0",
+            scan_status,
+            "cargo audit --json",
+            findings,
+        )
+        .unwrap();
+        fs::write(&evidence_path, evidence.to_manifest()).unwrap();
+        (root, evidence_path)
+    }
+
+    fn release_benchmark_evidence_fixture(
+        name: &str,
+        status: &str,
+        observed_ms: u64,
+    ) -> (PathBuf, PathBuf) {
+        let root = test_temp_dir(name);
+        let evidence_path = root.join("release-benchmark.evidence");
+        fs::create_dir_all(&root).unwrap();
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let measurement = eva_release::ReleaseBenchmarkMeasurement::new(
+            "release.check",
+            "cli release check wall time",
+            200,
+            observed_ms,
+            3,
+            "target/release/eva release check --output json",
+            "github-actions-ubuntu-latest",
+        )
+        .unwrap();
+        let evidence = eva_release::ReleaseBenchmarkEvidence::new(
+            "1.7.4-alpha",
+            "v1.7.4-alpha",
+            commit,
+            status,
+            vec![measurement],
         )
         .unwrap();
         fs::write(&evidence_path, evidence.to_manifest()).unwrap();
@@ -7024,6 +7213,184 @@ mod tests {
         assert!(stdout.contains("\"status\":\"blocked\""));
         assert!(stdout.contains("package manager dry-run for ghcr"));
         assert!(stdout.contains("distribution_install_smoke_blocked"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    fn release_check_with_security_scan_evidence_passes_gate() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) =
+            release_security_scan_evidence_fixture("release-security-scan-passed", "passed", None);
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--security-scan-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"id\":\"REL-SECURITY-SCAN-001\""));
+        assert!(stdout.contains("\"domain\":\"external_security_scan\""));
+        assert!(stdout.contains("\"status\":\"pass\""));
+        assert!(stdout.contains("external_security_scan_verified"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    fn release_check_with_high_security_scan_finding_blocks_gate() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) = release_security_scan_evidence_fixture(
+            "release-security-scan-high",
+            "passed",
+            Some("high"),
+        );
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--security-scan-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG, "{stderr}");
+        assert!(stdout.contains("\"id\":\"REL-SECURITY-SCAN-001\""));
+        assert!(stdout.contains("\"status\":\"blocked\""));
+        assert!(stdout.contains("security scanner finding RUSTSEC-0000-0000 is high severity"));
+        assert!(stdout.contains("external_security_scan_blocked"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    fn release_check_with_benchmark_evidence_passes_gate() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) =
+            release_benchmark_evidence_fixture("release-benchmark-passed", "passed", 120);
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--benchmark-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"id\":\"REL-BENCHMARK-001\""));
+        assert!(stdout.contains("\"domain\":\"production_benchmark\""));
+        assert!(stdout.contains("\"status\":\"pass\""));
+        assert!(stdout.contains("production_benchmark_verified"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    fn release_check_with_benchmark_regression_blocks_gate() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) =
+            release_benchmark_evidence_fixture("release-benchmark-regression", "passed", 250);
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--benchmark-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG, "{stderr}");
+        assert!(stdout.contains("\"id\":\"REL-BENCHMARK-001\""));
+        assert!(stdout.contains("\"status\":\"blocked\""));
+        assert!(stdout.contains("benchmark release.check observed 250ms over 200ms budget"));
+        assert!(stdout.contains("production_benchmark_blocked"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    fn release_perf_with_benchmark_evidence_uses_observed_measurements() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) =
+            release_benchmark_evidence_fixture("release-perf-benchmark-passed", "passed", 120);
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "perf",
+            "--benchmark-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"release.perf\""));
+        assert!(stdout.contains("\"status\":\"within_budget\""));
+        assert!(stdout.contains("\"component\":\"release.check\""));
+        assert!(stdout.contains("\"observed_ms\":120"));
+        assert!(stdout.contains("performance:benchmark_evidence:v1.11.3"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    fn release_perf_with_benchmark_regression_returns_runtime_exit() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) =
+            release_benchmark_evidence_fixture("release-perf-benchmark-regression", "passed", 250);
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "perf",
+            "--benchmark-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_RUNTIME_UNAVAILABLE, "{stderr}");
+        assert!(stdout.contains("\"command\":\"release.perf\""));
+        assert!(stdout.contains("\"status\":\"over_budget\""));
+        assert!(stdout.contains("\"over_budget\":1"));
+        assert!(stdout.contains("\"observed_ms\":250"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    fn release_perf_with_failed_benchmark_status_returns_runtime_exit() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) =
+            release_benchmark_evidence_fixture("release-perf-benchmark-failed", "failed", 120);
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "perf",
+            "--benchmark-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_RUNTIME_UNAVAILABLE, "{stderr}");
+        assert!(stdout.contains("\"command\":\"release.perf\""));
+        assert!(stdout.contains("\"status\":\"over_budget\""));
+        assert!(stdout.contains("benchmark_status:failed"));
 
         fs::remove_dir_all(evidence_root).unwrap();
     }

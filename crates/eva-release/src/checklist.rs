@@ -3,9 +3,11 @@
 use crate::artifact::{
     ReleaseArtifactEvidence, ReleaseArtifactSigningKey, ReleaseArtifactVerificationReport,
 };
+use crate::benchmark::{ReleaseBenchmarkEvidence, ReleaseBenchmarkVerificationReport};
 use crate::distribution::{ReleaseDistributionEvidence, ReleaseDistributionVerificationReport};
 use crate::migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
+use crate::scanner::{ReleaseSecurityScanEvidence, ReleaseSecurityScanVerificationReport};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
 
@@ -87,7 +89,7 @@ impl ReleaseHardeningService {
     }
 
     pub fn readiness(&self, target: impl Into<String>) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), None, None)
+        self.readiness_inner(target.into(), None, None, None, None)
     }
 
     pub fn readiness_with_artifact_evidence(
@@ -95,7 +97,7 @@ impl ReleaseHardeningService {
         target: impl Into<String>,
         evidence: &ReleaseArtifactEvidence,
     ) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), Some(evidence), None)
+        self.readiness_inner(target.into(), Some(evidence), None, None, None)
     }
 
     pub fn readiness_with_distribution_evidence(
@@ -103,7 +105,23 @@ impl ReleaseHardeningService {
         target: impl Into<String>,
         evidence: &ReleaseDistributionEvidence,
     ) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), None, Some(evidence))
+        self.readiness_inner(target.into(), None, Some(evidence), None, None)
+    }
+
+    pub fn readiness_with_security_scan_evidence(
+        &self,
+        target: impl Into<String>,
+        evidence: &ReleaseSecurityScanEvidence,
+    ) -> Result<ReleaseReadinessReport, EvaError> {
+        self.readiness_inner(target.into(), None, None, Some(evidence), None)
+    }
+
+    pub fn readiness_with_benchmark_evidence(
+        &self,
+        target: impl Into<String>,
+        evidence: &ReleaseBenchmarkEvidence,
+    ) -> Result<ReleaseReadinessReport, EvaError> {
+        self.readiness_inner(target.into(), None, None, None, Some(evidence))
     }
 
     pub fn readiness_with_release_evidence(
@@ -111,8 +129,16 @@ impl ReleaseHardeningService {
         target: impl Into<String>,
         artifact_evidence: Option<&ReleaseArtifactEvidence>,
         distribution_evidence: Option<&ReleaseDistributionEvidence>,
+        security_scan_evidence: Option<&ReleaseSecurityScanEvidence>,
+        benchmark_evidence: Option<&ReleaseBenchmarkEvidence>,
     ) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), artifact_evidence, distribution_evidence)
+        self.readiness_inner(
+            target.into(),
+            artifact_evidence,
+            distribution_evidence,
+            security_scan_evidence,
+            benchmark_evidence,
+        )
     }
 
     fn readiness_inner(
@@ -120,6 +146,8 @@ impl ReleaseHardeningService {
         target: String,
         artifact_evidence: Option<&ReleaseArtifactEvidence>,
         distribution_evidence: Option<&ReleaseDistributionEvidence>,
+        security_scan_evidence: Option<&ReleaseSecurityScanEvidence>,
+        benchmark_evidence: Option<&ReleaseBenchmarkEvidence>,
     ) -> Result<ReleaseReadinessReport, EvaError> {
         if target.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -163,6 +191,14 @@ impl ReleaseHardeningService {
         if let Some(report) = distribution_report.as_ref() {
             gates.push(release_distribution_gate(report));
         }
+        let security_scan_report = security_scan_evidence.map(ReleaseSecurityScanEvidence::verify);
+        if let Some(report) = security_scan_report.as_ref() {
+            gates.push(release_security_scan_gate(report));
+        }
+        let benchmark_report = benchmark_evidence.map(ReleaseBenchmarkEvidence::verify);
+        if let Some(report) = benchmark_report.as_ref() {
+            gates.push(release_benchmark_gate(report));
+        }
 
         let status = if gates
             .iter()
@@ -181,7 +217,12 @@ impl ReleaseHardeningService {
             platforms,
             stability,
             gates,
-            audit: release_audit(artifact_report.as_ref(), distribution_report.as_ref()),
+            audit: release_audit(
+                artifact_report.as_ref(),
+                distribution_report.as_ref(),
+                security_scan_report.as_ref(),
+                benchmark_report.as_ref(),
+            ),
         })
     }
 
@@ -542,6 +583,8 @@ impl ReleaseHardeningService {
 fn release_audit(
     artifact_report: Option<&ReleaseArtifactVerificationReport>,
     distribution_report: Option<&ReleaseDistributionVerificationReport>,
+    security_scan_report: Option<&ReleaseSecurityScanVerificationReport>,
+    benchmark_report: Option<&ReleaseBenchmarkVerificationReport>,
 ) -> Vec<String> {
     let mut audit = vec![
         "release:readiness:v1.7.4-alpha".to_owned(),
@@ -573,6 +616,22 @@ fn release_audit(
             audit.push("distribution_install_smoke_verified".to_owned());
         } else {
             audit.push("distribution_install_smoke_blocked".to_owned());
+        }
+        audit.extend(report.audit.iter().cloned());
+    }
+    if let Some(report) = security_scan_report {
+        if report.status == "verified" {
+            audit.push("external_security_scan_verified".to_owned());
+        } else {
+            audit.push("external_security_scan_blocked".to_owned());
+        }
+        audit.extend(report.audit.iter().cloned());
+    }
+    if let Some(report) = benchmark_report {
+        if report.status == "verified" {
+            audit.push("production_benchmark_verified".to_owned());
+        } else {
+            audit.push("production_benchmark_blocked".to_owned());
         }
         audit.extend(report.audit.iter().cloned());
     }
@@ -641,6 +700,80 @@ fn release_distribution_gate(report: &ReleaseDistributionVerificationReport) -> 
         },
         required: true,
         summary: "V1.11.2 cross-platform installer smoke and package-manager dry-run evidence are verified".to_owned(),
+        evidence,
+        remediation: if report.risks.is_empty() {
+            Vec::new()
+        } else {
+            report.risks.clone()
+        },
+    }
+}
+
+fn release_security_scan_gate(report: &ReleaseSecurityScanVerificationReport) -> ReleaseGate {
+    let mut evidence = vec![
+        format!("scanner:{}", report.scanner),
+        format!("scanner_version:{}", report.scanner_version),
+        format!("scan_status:{}", report.scan_status),
+        format!("source_commit:{}", report.source_commit),
+        format!("finding_count:{}", report.findings.len()),
+        format!("blocking_findings:{}", report.blocking_findings.len()),
+    ];
+    evidence.extend(report.findings.iter().map(|finding| {
+        format!(
+            "finding:{}:{}:{}",
+            finding.id,
+            finding.package,
+            finding.severity.as_str()
+        )
+    }));
+    evidence.extend(report.audit.iter().cloned());
+    ReleaseGate {
+        id: "REL-SECURITY-SCAN-001".to_owned(),
+        domain: "external_security_scan".to_owned(),
+        status: if report.status == "verified" {
+            ReleaseGateStatus::Pass
+        } else {
+            ReleaseGateStatus::Blocked
+        },
+        required: true,
+        summary: "V1.11.3 external security scanner evidence has no high or critical findings"
+            .to_owned(),
+        evidence,
+        remediation: if report.risks.is_empty() {
+            Vec::new()
+        } else {
+            report.risks.clone()
+        },
+    }
+}
+
+fn release_benchmark_gate(report: &ReleaseBenchmarkVerificationReport) -> ReleaseGate {
+    let mut evidence = vec![
+        format!("benchmark_status:{}", report.benchmark_status),
+        format!("source_commit:{}", report.source_commit),
+        format!("measurement_count:{}", report.measurements.len()),
+        format!("regression_count:{}", report.regressions.len()),
+    ];
+    evidence.extend(report.measurements.iter().map(|measurement| {
+        format!(
+            "measurement:{}:{}ms/{}ms:{}samples",
+            measurement.component,
+            measurement.observed_ms,
+            measurement.budget_ms,
+            measurement.sample_count
+        )
+    }));
+    evidence.extend(report.audit.iter().cloned());
+    ReleaseGate {
+        id: "REL-BENCHMARK-001".to_owned(),
+        domain: "production_benchmark".to_owned(),
+        status: if report.status == "verified" {
+            ReleaseGateStatus::Pass
+        } else {
+            ReleaseGateStatus::Blocked
+        },
+        required: true,
+        summary: "V1.11.3 production benchmark evidence stays within configured budgets".to_owned(),
         evidence,
         remediation: if report.risks.is_empty() {
             Vec::new()
@@ -1129,6 +1262,62 @@ mod tests {
         .unwrap()
     }
 
+    fn security_scan_finding(severity: &str) -> crate::scanner::ReleaseSecurityScanFinding {
+        crate::scanner::ReleaseSecurityScanFinding::new(
+            "RUSTSEC-0000-0000",
+            "demo-crate",
+            "1.0.0",
+            severity,
+            "demo advisory",
+            "upgrade demo-crate",
+        )
+        .unwrap()
+    }
+
+    fn security_scan_evidence(
+        status: &str,
+        findings: Vec<crate::scanner::ReleaseSecurityScanFinding>,
+    ) -> crate::scanner::ReleaseSecurityScanEvidence {
+        crate::scanner::ReleaseSecurityScanEvidence::new(
+            "1.7.4-alpha",
+            "v1.7.4-alpha",
+            ARTIFACT_COMMIT,
+            "cargo-audit",
+            "1.0.0",
+            status,
+            "cargo audit --json",
+            findings,
+        )
+        .unwrap()
+    }
+
+    fn benchmark_measurement(observed_ms: u64) -> crate::benchmark::ReleaseBenchmarkMeasurement {
+        crate::benchmark::ReleaseBenchmarkMeasurement::new(
+            "release.check",
+            "cli release check wall time",
+            200,
+            observed_ms,
+            3,
+            "target/release/eva release check --output json",
+            "github-actions-ubuntu-latest",
+        )
+        .unwrap()
+    }
+
+    fn benchmark_evidence(
+        status: &str,
+        observed_ms: u64,
+    ) -> crate::benchmark::ReleaseBenchmarkEvidence {
+        crate::benchmark::ReleaseBenchmarkEvidence::new(
+            "1.7.4-alpha",
+            "v1.7.4-alpha",
+            ARTIFACT_COMMIT,
+            status,
+            vec![benchmark_measurement(observed_ms)],
+        )
+        .unwrap()
+    }
+
     #[test]
     fn readiness_has_no_blocking_required_gates() {
         let report = ReleaseHardeningService::v15().readiness("all").unwrap();
@@ -1304,7 +1493,13 @@ mod tests {
         let artifact = artifact_evidence(true);
         let distribution = distribution_evidence("passed");
         let report = ReleaseHardeningService::v15()
-            .readiness_with_release_evidence("all", Some(&artifact), Some(&distribution))
+            .readiness_with_release_evidence(
+                "all",
+                Some(&artifact),
+                Some(&distribution),
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(report.status, "ready");
@@ -1314,6 +1509,117 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-DISTRIBUTION-001" && gate.status == ReleaseGateStatus::Pass
         }));
+    }
+
+    #[test]
+    fn readiness_with_clean_security_scan_evidence_passes_gate() {
+        let evidence = security_scan_evidence("passed", Vec::new());
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_security_scan_evidence("all", &evidence)
+            .unwrap();
+
+        assert_eq!(report.status, "ready");
+        assert_eq!(report.blocking_count(), 0);
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-SECURITY-SCAN-001" && gate.status == ReleaseGateStatus::Pass
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "external_security_scan_verified"));
+    }
+
+    #[test]
+    fn readiness_with_high_security_scan_finding_blocks_gate() {
+        let evidence = security_scan_evidence("passed", vec![security_scan_finding("high")]);
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_security_scan_evidence("all", &evidence)
+            .unwrap();
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.blocking_count(), 1);
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-SECURITY-SCAN-001"
+                && gate.status == ReleaseGateStatus::Blocked
+                && gate.remediation.iter().any(|item| {
+                    item == "security scanner finding RUSTSEC-0000-0000 is high severity"
+                })
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "external_security_scan_blocked"));
+    }
+
+    #[test]
+    fn readiness_with_benchmark_evidence_passes_gate() {
+        let evidence = benchmark_evidence("passed", 120);
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_benchmark_evidence("all", &evidence)
+            .unwrap();
+
+        assert_eq!(report.status, "ready");
+        assert_eq!(report.blocking_count(), 0);
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-BENCHMARK-001" && gate.status == ReleaseGateStatus::Pass
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "production_benchmark_verified"));
+    }
+
+    #[test]
+    fn readiness_with_benchmark_regression_blocks_gate() {
+        let evidence = benchmark_evidence("passed", 250);
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_benchmark_evidence("all", &evidence)
+            .unwrap();
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.blocking_count(), 1);
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-BENCHMARK-001"
+                && gate.status == ReleaseGateStatus::Blocked
+                && gate
+                    .remediation
+                    .iter()
+                    .any(|item| item == "benchmark release.check observed 250ms over 200ms budget")
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "production_benchmark_blocked"));
+    }
+
+    #[test]
+    fn readiness_with_all_release_evidence_passes_release_gates() {
+        let artifact = artifact_evidence(true);
+        let distribution = distribution_evidence("passed");
+        let security_scan = security_scan_evidence("passed", Vec::new());
+        let benchmark = benchmark_evidence("passed", 120);
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_release_evidence(
+                "all",
+                Some(&artifact),
+                Some(&distribution),
+                Some(&security_scan),
+                Some(&benchmark),
+            )
+            .unwrap();
+
+        assert_eq!(report.status, "ready");
+        for gate_id in [
+            "REL-ARTIFACT-PROVENANCE-001",
+            "REL-DISTRIBUTION-001",
+            "REL-SECURITY-SCAN-001",
+            "REL-BENCHMARK-001",
+        ] {
+            assert!(report
+                .gates
+                .iter()
+                .any(|gate| { gate.id == gate_id && gate.status == ReleaseGateStatus::Pass }));
+        }
     }
 
     #[test]

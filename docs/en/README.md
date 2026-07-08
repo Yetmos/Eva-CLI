@@ -17,8 +17,9 @@ diagnostics, restricted Lua VM `on_event` execution, read-only Lua context
 tables, Lua host observability, controlled `ctx.tools.call` capability
 binding, Lua timeout/instruction/cancellation/memory execution limits, and Lua
 shadow-load health checks, scheduler generation route gating, drain evidence,
-rollback audit evidence, signed artifact/provenance release evidence, and
-distribution install-smoke/package dry-run release evidence.
+rollback audit evidence, signed artifact/provenance release evidence,
+distribution install-smoke/package dry-run release evidence, external scanner
+release evidence, and measured benchmark release evidence.
 
 Current managed project version: `V1.7.4-alpha` (`Cargo.toml` version
 `1.7.4-alpha`, prerelease Git tag form `v1.7.4-alpha`). See

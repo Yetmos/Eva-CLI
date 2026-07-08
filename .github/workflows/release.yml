@@ -693,6 +693,178 @@ jobs:
           cargo run -- release perf --output json | Tee-Object -FilePath release-evidence/release-perf.json
           cargo run -- release migration --output json | Tee-Object -FilePath release-evidence/release-migration.json
 
+      - name: Install external security scanner
+        run: cargo install cargo-audit --locked
+
+      - name: Generate security scan evidence
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
+          $auditJsonPath = "release-evidence/cargo-audit.json"
+          cargo audit --json > $auditJsonPath
+          $auditExit = $LASTEXITCODE
+          $auditText = Get-Content -Raw -LiteralPath $auditJsonPath -ErrorAction SilentlyContinue
+          $audit = $null
+          if (-not [string]::IsNullOrWhiteSpace($auditText)) {
+            try {
+              $audit = $auditText | ConvertFrom-Json
+            } catch {
+              $audit = $null
+            }
+          }
+
+          function Normalize-EvidenceValue([string]$value, [string]$fallback) {
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              return $fallback
+            }
+            return (($value -replace "[`r`n]+", " ") -replace "\s+", " ").Trim()
+          }
+
+          function Normalize-Severity($advisory) {
+            $severity = Normalize-EvidenceValue ([string]$advisory.severity) ""
+            if ($severity -match "^(?i:critical|high|medium|low)$") {
+              return $severity.ToLowerInvariant()
+            }
+
+            $score = $null
+            if ($null -ne $advisory.cvss -and $null -ne $advisory.cvss.score) {
+              $score = [double]$advisory.cvss.score
+            } elseif ($null -ne $advisory.cvss -and $advisory.cvss -is [double]) {
+              $score = [double]$advisory.cvss
+            }
+
+            if ($null -eq $score) {
+              return "medium"
+            }
+            if ($score -ge 9.0) {
+              return "critical"
+            }
+            if ($score -ge 7.0) {
+              return "high"
+            }
+            if ($score -ge 4.0) {
+              return "medium"
+            }
+            return "low"
+          }
+
+          $lines = New-Object System.Collections.Generic.List[string]
+          $version = $env:RELEASE_TAG.TrimStart("v")
+          $sourceSha = git rev-parse HEAD
+          $lines.Add("format=eva.release.security_scan_evidence.v1")
+          $lines.Add("version=$version")
+          $lines.Add("source_tag=$env:RELEASE_TAG")
+          $lines.Add("source_commit=$sourceSha")
+          $lines.Add("scanner=cargo-audit")
+          $scannerVersion = (cargo audit --version | Select-Object -First 1)
+          $lines.Add("scanner_version=$(Normalize-EvidenceValue $scannerVersion 'unknown')")
+          $lines.Add("command=cargo audit --json")
+
+          $findingLines = New-Object System.Collections.Generic.List[string]
+          $blockingFindings = 0
+          $index = 0
+          if ($null -ne $audit -and $null -ne $audit.vulnerabilities -and $null -ne $audit.vulnerabilities.list) {
+            foreach ($item in @($audit.vulnerabilities.list)) {
+              $advisory = $item.advisory
+              if ($null -eq $advisory) {
+                continue
+              }
+              $severity = Normalize-Severity $advisory
+              if ($severity -eq "high" -or $severity -eq "critical") {
+                $blockingFindings += 1
+              }
+
+              $packageName = Normalize-EvidenceValue ([string]$item.package.name) (Normalize-EvidenceValue ([string]$advisory.package) "unknown-package")
+              $packageVersion = Normalize-EvidenceValue ([string]$item.package.version) "unknown"
+              $findingId = Normalize-EvidenceValue ([string]$advisory.id) "RUSTSEC-UNKNOWN-$index"
+              $summary = Normalize-EvidenceValue ([string]$advisory.title) "cargo audit advisory"
+              $remediation = Normalize-EvidenceValue ([string]$item.versions.patched) "review cargo audit advisory and update dependency"
+
+              $findingLines.Add("finding.$index.id=$findingId")
+              $findingLines.Add("finding.$index.package=$packageName")
+              $findingLines.Add("finding.$index.version=$packageVersion")
+              $findingLines.Add("finding.$index.severity=$severity")
+              $findingLines.Add("finding.$index.summary=$summary")
+              $findingLines.Add("finding.$index.remediation=$remediation")
+              $index += 1
+            }
+          }
+
+          $scanStatus = if ($null -eq $audit) {
+            "blocked"
+          } elseif ($blockingFindings -gt 0) {
+            "failed"
+          } else {
+            "passed"
+          }
+          $lines.Insert(7, "scan_status=$scanStatus")
+          foreach ($line in $findingLines) {
+            $lines.Add($line)
+          }
+          $lines | Set-Content -LiteralPath release-evidence/release-security-scan.evidence -Encoding utf8
+          if ($auditExit -ne 0 -and $scanStatus -eq "passed") {
+            Write-Host "cargo audit returned $auditExit with only non-blocking findings recorded in evidence."
+          }
+
+      - name: Generate benchmark evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
+          cargo build --release --locked --bin eva
+          $eva = Join-Path (Get-Location) "target/release/eva"
+          $version = $env:RELEASE_TAG.TrimStart("v")
+          $sourceSha = git rev-parse HEAD
+          $environment = "github-actions-ubuntu-latest"
+
+          function Measure-EvaCommand([string]$component, [string]$metric, [int64]$budgetMs, [string[]]$commandArgs) {
+            $samples = @()
+            for ($i = 0; $i -lt 3; $i += 1) {
+              $elapsed = Measure-Command {
+                & $eva @commandArgs | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                  throw "benchmark command failed: $component"
+                }
+              }
+              $samples += [int64][Math]::Ceiling($elapsed.TotalMilliseconds)
+            }
+            $observed = [int64]($samples | Measure-Object -Maximum).Maximum
+            [ordered]@{
+              component = $component
+              metric = $metric
+              budget_ms = $budgetMs
+              observed_ms = $observed
+              sample_count = $samples.Count
+              command = "$eva $($commandArgs -join ' ')"
+              environment = $environment
+            }
+          }
+
+          $measurements = @(
+            (Measure-EvaCommand "release.version" "release binary version wall time" 2000 @("--version")),
+            (Measure-EvaCommand "release.check" "release check wall time" 5000 @("release", "check", "--output", "json"))
+          )
+          $hasRegression = @($measurements | Where-Object { $_.observed_ms -gt $_.budget_ms }).Count -gt 0
+          $benchmarkStatus = if ($hasRegression) { "failed" } else { "passed" }
+
+          $lines = New-Object System.Collections.Generic.List[string]
+          $lines.Add("format=eva.release.benchmark_evidence.v1")
+          $lines.Add("version=$version")
+          $lines.Add("source_tag=$env:RELEASE_TAG")
+          $lines.Add("source_commit=$sourceSha")
+          $lines.Add("benchmark_status=$benchmarkStatus")
+          for ($index = 0; $index -lt $measurements.Count; $index += 1) {
+            $measurement = $measurements[$index]
+            $lines.Add("measurement.$index.component=$($measurement.component)")
+            $lines.Add("measurement.$index.metric=$($measurement.metric)")
+            $lines.Add("measurement.$index.budget_ms=$($measurement.budget_ms)")
+            $lines.Add("measurement.$index.observed_ms=$($measurement.observed_ms)")
+            $lines.Add("measurement.$index.sample_count=$($measurement.sample_count)")
+            $lines.Add("measurement.$index.command=$($measurement.command)")
+            $lines.Add("measurement.$index.environment=$($measurement.environment)")
+          }
+          $lines | Set-Content -LiteralPath release-evidence/release-benchmark.evidence -Encoding utf8
+
       - name: Capture native artifact plan evidence
         shell: pwsh
         run: |
@@ -963,9 +1135,11 @@ jobs:
           $lines.Add("package.0.status=$dryRunStatus")
           $lines | Set-Content -LiteralPath release-evidence/release-distribution.evidence -Encoding utf8
 
-      - name: Verify distribution evidence gate
+      - name: Verify release evidence gates
         shell: pwsh
-        run: cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --output json | Tee-Object -FilePath release-evidence/release-check-distribution.json
+        run: |
+          cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --security-scan-evidence release-evidence/release-security-scan.evidence --benchmark-evidence release-evidence/release-benchmark.evidence --output json | Tee-Object -FilePath release-evidence/release-check-evidence.json
+          cargo run -- release perf --benchmark-evidence release-evidence/release-benchmark.evidence --output json | Tee-Object -FilePath release-evidence/release-perf-benchmark.json
 
       - name: Upload release evidence artifact
         uses: actions/upload-artifact@v4

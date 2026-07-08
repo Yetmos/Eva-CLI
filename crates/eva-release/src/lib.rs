@@ -1,15 +1,20 @@
 //! Release hardening, readiness, security, performance, and migration contracts.
 
 pub mod artifact;
+pub mod benchmark;
 pub mod checklist;
 pub mod distribution;
 pub mod migration;
 pub mod performance;
+pub mod scanner;
 pub mod security;
 
 pub use artifact::{
     ReleaseArtifactEvidence, ReleaseArtifactSignature, ReleaseArtifactSigningKey,
     ReleaseArtifactSubject, ReleaseArtifactVerificationReport, ReleaseProvenanceEvidence,
+};
+pub use benchmark::{
+    ReleaseBenchmarkEvidence, ReleaseBenchmarkMeasurement, ReleaseBenchmarkVerificationReport,
 };
 pub use checklist::{
     PlatformReadiness, ReleaseGate, ReleaseGateStatus, ReleaseHardeningService,
@@ -21,6 +26,9 @@ pub use distribution::{
 };
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 pub use performance::{PerformanceBaselineReport, PerformanceBudget};
+pub use scanner::{
+    ReleaseSecurityScanEvidence, ReleaseSecurityScanFinding, ReleaseSecurityScanVerificationReport,
+};
 pub use security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 
 /// Architectural responsibility for this module.
