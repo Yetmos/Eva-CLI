@@ -10,20 +10,20 @@ mod memory_cmd;
 mod observability_cmd;
 mod release_cmd;
 mod skill_cmd;
+mod snapshot_cmd;
 mod task_cmd;
 mod version_cmd;
 
 use crate::doctor::{doctor_project, CheckStatus, DoctorReport};
 use crate::inspect::{inspect_project, InspectReport};
 use adapter_cmd::AdapterCommand;
-use backup_cmd::{BackupCommand, BackupCreateOptions, BackupCreateResult};
+use backup_cmd::{BackupCommand, BackupCreateResult};
 use discovery_cmd::DiscoveryCommand;
 use eva_backup::{
     FileSystemRestoreApplyLockStore, MigrationPackageManifest, MigrationPackageService,
-    MigrationPreflight, PreRestoreBackupEvidence, ReleasePointerPlan, ReleaseSnapshot,
-    ReleaseSnapshotService, RestoreApplyCoordinator, RestoreApplyDryRunReport,
-    RestoreApplyHealthCheck, RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator,
-    RestorePlan, SnapshotRole,
+    MigrationPreflight, PreRestoreBackupEvidence, ReleaseSnapshot, ReleaseSnapshotService,
+    RestoreApplyCoordinator, RestoreApplyDryRunReport, RestoreApplyHealthCheck, RestoreApplyPlan,
+    RestoreApplyReport, RestoreApplyValidator, RestorePlan, SnapshotRole,
 };
 use eva_config::load_project_config;
 use eva_core::{CapabilityName, ErrorKind, EvaError, GenerationId, InvokeStatus, RequestId};
@@ -47,6 +47,7 @@ use memory_cmd::MemoryCommand;
 use observability_cmd::ObservabilityCommand;
 use release_cmd::ReleaseCommand;
 use skill_cmd::SkillCommand;
+use snapshot_cmd::{SnapshotCommand, SnapshotCreateOptions};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -195,7 +196,7 @@ where
         }
         Command::Hardware(command) => hardware_cmd::execute_hardware(command, stdout, stderr),
         Command::Backup(command) => backup_cmd::execute_backup(command, stdout, stderr),
-        Command::Snapshot(command) => execute_snapshot(command, stdout, stderr),
+        Command::Snapshot(command) => snapshot_cmd::execute_snapshot(command, stdout, stderr),
         Command::Restore(command) => execute_restore(command, stdout, stderr),
         Command::Upgrade(command) => execute_upgrade(command, stdout, stderr),
         Command::Release(command) => release_cmd::execute_release(command, stdout, stderr),
@@ -258,12 +259,6 @@ struct RunOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum SnapshotCommand {
-    Create(SnapshotCreateOptions),
-    Promote(SnapshotPromoteOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum RestoreCommand {
     Plan(RestorePlanOptions),
     Apply(RestoreApplyOptions),
@@ -273,26 +268,6 @@ enum RestoreCommand {
 enum UpgradeCommand {
     Check(UpgradeCheckOptions),
     Apply(UpgradeApplyOptions),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SnapshotCreateOptions {
-    common: CommonOptions,
-    snapshot_id: String,
-    request_id: String,
-    release_ref: String,
-    role: SnapshotRole,
-    artifact_store: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SnapshotPromoteOptions {
-    common: CommonOptions,
-    snapshot_id: String,
-    confirm: Option<String>,
-    request_id: String,
-    release_ref: String,
-    artifact_store: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,13 +329,6 @@ struct RestorePlanResult {
     backup: BackupCreateResult,
     snapshot: ReleaseSnapshot,
     plan: RestorePlan,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SnapshotPromoteResult {
-    backup: BackupCreateResult,
-    snapshot: ReleaseSnapshot,
-    pointer_plan: ReleasePointerPlan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -443,7 +411,9 @@ where
         "backup" => Ok(Command::Backup(backup_cmd::parse_backup_command(
             &args[1..],
         )?)),
-        "snapshot" => parse_snapshot_command(&args[1..]),
+        "snapshot" => Ok(Command::Snapshot(snapshot_cmd::parse_snapshot_command(
+            &args[1..],
+        )?)),
         "restore" => parse_restore_command(&args[1..]),
         "upgrade" => parse_upgrade_command(&args[1..]),
         "release" => Ok(Command::Release(release_cmd::parse_release_command(
@@ -520,123 +490,6 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
         cancel_requested,
         retry_attempts,
         replay_dead_letters,
-    })
-}
-
-fn parse_snapshot_command(args: &[String]) -> Result<Command, EvaError> {
-    let (subcommand, rest) = args
-        .split_first()
-        .ok_or_else(|| EvaError::invalid_argument("missing snapshot subcommand"))?;
-    match subcommand.as_str() {
-        "create" => Ok(Command::Snapshot(SnapshotCommand::Create(
-            parse_snapshot_create_options(rest)?,
-        ))),
-        "promote" => Ok(Command::Snapshot(SnapshotCommand::Promote(
-            parse_snapshot_promote_options(rest)?,
-        ))),
-        value => {
-            Err(EvaError::unsupported("unknown snapshot subcommand")
-                .with_context("subcommand", value))
-        }
-    }
-}
-
-fn parse_snapshot_create_options(args: &[String]) -> Result<SnapshotCreateOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut snapshot_id = "snapshot-v14".to_owned();
-    let mut request_id = "req-snapshot-1".to_owned();
-    let mut release_ref = "1.4.0".to_owned();
-    let mut role = SnapshotRole::PreRelease;
-    let mut artifact_store = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--snapshot" | "--snapshot-id" => {
-                index += 1;
-                snapshot_id = required_option(args, index, "snapshot option")?.clone();
-            }
-            "--request-id" | "--task-id" | "--task" => {
-                index += 1;
-                request_id = required_option(args, index, "request id option")?.clone();
-            }
-            "--release" | "--release-ref" => {
-                index += 1;
-                release_ref = required_option(args, index, "release option")?.clone();
-            }
-            "--role" => {
-                index += 1;
-                role = parse_snapshot_role(required_option(args, index, "role option")?)?;
-            }
-            "--artifact-store" | "--artifact-store-dir" => {
-                index += 1;
-                artifact_store = Some(PathBuf::from(required_option(
-                    args,
-                    index,
-                    "artifact store option",
-                )?));
-            }
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-    RequestId::parse(&request_id)?;
-    Ok(SnapshotCreateOptions {
-        common: parse_common_options(&passthrough)?,
-        snapshot_id,
-        request_id,
-        release_ref,
-        role,
-        artifact_store,
-    })
-}
-
-fn parse_snapshot_promote_options(args: &[String]) -> Result<SnapshotPromoteOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut snapshot_id = "snapshot-v14".to_owned();
-    let mut confirm = None;
-    let mut request_id = "req-snapshot-promote-1".to_owned();
-    let mut release_ref = "1.4.0".to_owned();
-    let mut artifact_store = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--snapshot-id" | "--snapshot" => {
-                index += 1;
-                snapshot_id = required_option(args, index, "snapshot option")?.clone();
-            }
-            "--confirm" => {
-                index += 1;
-                confirm =
-                    Some(required_option(args, index, "snapshot promote confirm option")?.clone());
-            }
-            "--request-id" | "--task-id" | "--task" => {
-                index += 1;
-                request_id = required_option(args, index, "request id option")?.clone();
-            }
-            "--release" | "--release-ref" => {
-                index += 1;
-                release_ref = required_option(args, index, "release option")?.clone();
-            }
-            "--artifact-store" | "--artifact-store-dir" => {
-                index += 1;
-                artifact_store = Some(PathBuf::from(required_option(
-                    args,
-                    index,
-                    "artifact store option",
-                )?));
-            }
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-    RequestId::parse(&request_id)?;
-    Ok(SnapshotPromoteOptions {
-        common: parse_common_options(&passthrough)?,
-        snapshot_id,
-        confirm,
-        request_id,
-        release_ref,
-        artifact_store,
     })
 }
 
@@ -929,14 +782,6 @@ fn parse_upgrade_apply_health(value: &str) -> Result<UpgradeApplyHealthOption, E
     }
 }
 
-fn parse_snapshot_role(value: &str) -> Result<SnapshotRole, EvaError> {
-    match value {
-        "pre_release" | "pre-release" | "pre" => Ok(SnapshotRole::PreRelease),
-        "post_release" | "post-release" | "post" => Ok(SnapshotRole::PostRelease),
-        _ => Err(EvaError::unsupported("unknown snapshot role").with_context("role", value)),
-    }
-}
-
 fn required_option<'a>(
     args: &'a [String],
     index: usize,
@@ -1121,57 +966,6 @@ where
     }
 }
 
-fn execute_snapshot<W, E>(
-    command: SnapshotCommand,
-    stdout: &mut W,
-    stderr: &mut E,
-) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match command {
-        SnapshotCommand::Create(options) => {
-            let trace = trace_for("cli.snapshot.create");
-            match create_snapshot_result(&options) {
-                Ok((backup, snapshot)) => {
-                    write_snapshot_create(
-                        stdout,
-                        options.common.output,
-                        &backup,
-                        &snapshot,
-                        &trace,
-                    )?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => write_command_error(
-                    stderr,
-                    options.common.output,
-                    "snapshot.create",
-                    &error,
-                    &trace,
-                ),
-            }
-        }
-        SnapshotCommand::Promote(options) => {
-            let trace = trace_for("cli.snapshot.promote");
-            match create_snapshot_promote(&options) {
-                Ok(result) => {
-                    write_snapshot_promote(stdout, options.common.output, &result, &trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => write_command_error(
-                    stderr,
-                    options.common.output,
-                    "snapshot.promote",
-                    &error,
-                    &trace,
-                ),
-            }
-        }
-    }
-}
-
 fn execute_restore<W, E>(
     command: RestoreCommand,
     stdout: &mut W,
@@ -1319,64 +1113,6 @@ struct LockStoreRef {
     path: Option<String>,
 }
 
-fn create_snapshot_result(
-    options: &SnapshotCreateOptions,
-) -> Result<(BackupCreateResult, ReleaseSnapshot), EvaError> {
-    let backup_options = BackupCreateOptions {
-        common: options.common.clone(),
-        artifact_id: format!("backup-for-{}", options.snapshot_id),
-        request_id: options.request_id.clone(),
-        project_id: "eva-cli".to_owned(),
-        reason: "snapshot capture requires verified backup artifact".to_owned(),
-        dry_run: false,
-        encrypt: false,
-        artifact_store: options.artifact_store.clone(),
-    };
-    let backup = backup_cmd::create_backup_result(&backup_options)?;
-    let snapshot = ReleaseSnapshotService.create(
-        options.snapshot_id.clone(),
-        options.role,
-        options.release_ref.clone(),
-        RequestId::parse(&options.request_id)?,
-        &backup.backup.manifest,
-        "healthy",
-    )?;
-    Ok((backup, snapshot))
-}
-
-fn create_snapshot_promote(
-    options: &SnapshotPromoteOptions,
-) -> Result<SnapshotPromoteResult, EvaError> {
-    let confirm = options.confirm.as_deref().ok_or_else(|| {
-        EvaError::invalid_argument("snapshot promote requires --confirm")
-            .with_context("required_option", "--confirm")
-    })?;
-    let backup = backup_cmd::create_backup_result(&BackupCreateOptions {
-        common: options.common.clone(),
-        artifact_id: format!("backup-for-{}", options.snapshot_id),
-        request_id: options.request_id.clone(),
-        project_id: "eva-cli".to_owned(),
-        reason: format!("snapshot promote {}", options.snapshot_id),
-        dry_run: false,
-        encrypt: false,
-        artifact_store: options.artifact_store.clone(),
-    })?;
-    let snapshot = ReleaseSnapshotService.create(
-        options.snapshot_id.clone(),
-        SnapshotRole::PostRelease,
-        options.release_ref.clone(),
-        RequestId::parse(&options.request_id)?,
-        &backup.backup.manifest,
-        "healthy",
-    )?;
-    let pointer_plan = ReleaseSnapshotService.release_pointer_plan(&snapshot, confirm)?;
-    Ok(SnapshotPromoteResult {
-        backup,
-        snapshot,
-        pointer_plan,
-    })
-}
-
 fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult, EvaError> {
     let snapshot_options = SnapshotCreateOptions {
         common: options.common.clone(),
@@ -1386,7 +1122,7 @@ fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult
         role: SnapshotRole::PreRelease,
         artifact_store: options.artifact_store.clone(),
     };
-    let (backup, snapshot) = create_snapshot_result(&snapshot_options)?;
+    let (backup, snapshot) = snapshot_cmd::create_snapshot_result(&snapshot_options)?;
     let plan = ReleaseSnapshotService.restore_plan(&snapshot);
     Ok(RestorePlanResult {
         backup,
@@ -2218,70 +1954,6 @@ fn durable_diagnostics_json(report: &DurableDiagnosticsReport) -> String {
     )
 }
 
-fn write_snapshot_create<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    backup: &BackupCreateResult,
-    snapshot: &ReleaseSnapshot,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Release snapshot created").map_err(write_error_kind)?;
-            writeln!(writer, "snapshot: {}", snapshot.snapshot_id).map_err(write_error_kind)?;
-            writeln!(writer, "backup: {}", backup.backup.manifest.artifact_id)
-                .map_err(write_error_kind)?;
-            writeln!(writer, "role: {}", snapshot.role.as_str()).map_err(write_error_kind)?;
-            write_artifact_store_ref(writer, &backup.artifact_store)
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope(
-                "snapshot.create",
-                EXIT_OK,
-                &snapshot_create_json(backup, snapshot),
-                trace
-            )
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn write_snapshot_promote<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    result: &SnapshotPromoteResult,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "Snapshot promote plan").map_err(write_error_kind)?;
-            writeln!(writer, "snapshot: {}", result.snapshot.snapshot_id)
-                .map_err(write_error_kind)?;
-            writeln!(writer, "status: {}", result.pointer_plan.status).map_err(write_error_kind)?;
-            writeln!(
-                writer,
-                "apply_allowed: {}",
-                result.pointer_plan.apply_allowed
-            )
-            .map_err(write_error_kind)?;
-            write_artifact_store_ref(writer, &result.backup.artifact_store)
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope(
-                "snapshot.promote",
-                EXIT_OK,
-                &snapshot_promote_json(result),
-                trace
-            )
-        )
-        .map_err(write_error_kind),
-    }
-}
-
 fn write_restore_plan<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -2470,53 +2142,6 @@ fn write_upgrade_apply<W: Write>(
     }
 }
 
-fn snapshot_json(snapshot: &ReleaseSnapshot) -> String {
-    format!(
-        "{{\"snapshot_id\":{},\"role\":{},\"release_ref\":{},\"request_id\":{},\"runtime_generation\":{},\"backup_artifact_id\":{},\"backup_digest\":{},\"health_status\":{},\"audit\":{}}}",
-        json_string(&snapshot.snapshot_id),
-        json_string(snapshot.role.as_str()),
-        json_string(&snapshot.release_ref),
-        json_string(snapshot.request_id.as_str()),
-        json_string(snapshot.runtime_generation.as_str()),
-        json_string(&snapshot.backup_artifact_id),
-        json_string(&snapshot.backup_digest),
-        json_string(&snapshot.health_status),
-        json_array(snapshot.audit.iter().map(|entry| json_string(entry)))
-    )
-}
-
-fn snapshot_create_json(backup: &BackupCreateResult, snapshot: &ReleaseSnapshot) -> String {
-    format!(
-        "{{\"snapshot\":{},\"backup\":{}}}",
-        snapshot_json(snapshot),
-        backup_cmd::backup_result_json(backup)
-    )
-}
-
-fn snapshot_promote_json(result: &SnapshotPromoteResult) -> String {
-    format!(
-        "{{\"snapshot\":{},\"backup\":{},\"release_pointer_plan\":{}}}",
-        snapshot_json(&result.snapshot),
-        backup_cmd::backup_result_json(&result.backup),
-        release_pointer_plan_json(&result.pointer_plan)
-    )
-}
-
-fn release_pointer_plan_json(plan: &ReleasePointerPlan) -> String {
-    format!(
-        "{{\"snapshot_id\":{},\"release_ref\":{},\"runtime_generation\":{},\"pointer_path\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
-        json_string(&plan.snapshot_id),
-        json_string(&plan.release_ref),
-        json_string(plan.runtime_generation.as_str()),
-        json_string(&plan.pointer_path),
-        json_string(&plan.status),
-        plan.apply_allowed,
-        json_array(plan.steps.iter().map(|step| json_string(step))),
-        json_array(plan.risks.iter().map(|risk| json_string(risk))),
-        json_array(plan.audit.iter().map(|entry| json_string(entry)))
-    )
-}
-
 fn artifact_store_ref_json(artifact_store: &ArtifactStoreRef) -> String {
     format!(
         "{{\"kind\":{},\"path\":{}}}",
@@ -2536,7 +2161,7 @@ fn lock_store_ref_json(lock_store: &LockStoreRef) -> String {
 fn restore_plan_json(result: &RestorePlanResult) -> String {
     format!(
         "{{\"snapshot\":{},\"backup\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
-        snapshot_json(&result.snapshot),
+        snapshot_cmd::snapshot_json(&result.snapshot),
         backup_cmd::backup_result_json(&result.backup),
         json_string(&result.plan.snapshot_id),
         json_string(&result.plan.status),
