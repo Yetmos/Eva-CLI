@@ -8,9 +8,12 @@ use crate::memory_service::{
     MemoryWrite,
 };
 use eva_core::{AgentId, EvaError, RequestId};
+use eva_observability::{AuditAction, AuditEvent, AuditOutcome, AuditSink, TraceFields};
 use eva_storage::{DurableBackendLayout, StateVersion};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "durable memory and rebuildable knowledge persistence";
@@ -25,6 +28,38 @@ pub struct FileSystemKnowledgeStore {
     root: PathBuf,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct DurableIndexLockGuard {
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryCompactionReport {
+    pub status: String,
+    pub lock_path: String,
+    pub checkpoint_path: String,
+    pub scanned_records: usize,
+    pub records_kept: usize,
+    pub expired_removed: usize,
+    pub recovered_checkpoint: bool,
+    pub audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeRebuildCheckpointReport {
+    pub status: String,
+    pub lock_path: String,
+    pub checkpoint_path: String,
+    pub items_indexed: usize,
+    pub recovered_checkpoint: bool,
+    pub audit: Vec<String>,
+}
+
+const INDEX_LOCK_FILE: &str = "index.lock";
+const MEMORY_GC_CHECKPOINT_FILE: &str = "memory-gc.checkpoint";
+const KNOWLEDGE_REBUILD_CHECKPOINT_FILE: &str = "knowledge-rebuild.checkpoint";
+const INDEX_LOCK_STALE_AFTER_MS: u128 = 60_000;
+
 impl FileSystemMemoryStore {
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
@@ -36,26 +71,126 @@ impl FileSystemMemoryStore {
         Self::new(layout.state_dir.join("memory"))
     }
 
+    pub fn try_acquire_index_lock(&self) -> Result<DurableIndexLockGuard, EvaError> {
+        DurableIndexLockGuard::acquire(&self.root)
+    }
+
     pub fn write(&mut self, write: MemoryWrite) -> Result<MemoryRecord, EvaError> {
-        let mut service = self.load()?;
+        let _lock = self.try_acquire_index_lock()?;
+        let mut service = self.load_unlocked()?;
         let record = service.write(write)?;
-        self.write_record(&record)?;
+        self.write_record_unlocked(&record)?;
         Ok(record)
     }
 
     pub fn write_record(&mut self, record: &MemoryRecord) -> Result<(), EvaError> {
-        let path = memory_record_path(&self.root, record)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                filesystem_error("failed to create durable memory directory", parent, error)
-            })?;
-        }
-        fs::write(&path, memory_record_to_storage(record)).map_err(|error| {
-            filesystem_error("failed to write durable memory record", &path, error)
-        })
+        let _lock = self.try_acquire_index_lock()?;
+        self.write_record_unlocked(record)
     }
 
     pub fn load(&self) -> Result<InMemoryMemoryService, EvaError> {
+        let _lock = self.try_acquire_index_lock()?;
+        self.load_unlocked()
+    }
+
+    pub fn compact_expired_at(
+        &mut self,
+        now_ms: u128,
+        audit_sink: &mut impl AuditSink,
+        trace: &TraceFields,
+    ) -> Result<MemoryCompactionReport, EvaError> {
+        let recovered_checkpoint = recover_interrupted_maintenance_lock(
+            &self.root,
+            &self.memory_checkpoint_path(),
+            now_ms,
+        )?;
+        let lock = self.try_acquire_index_lock()?;
+        write_memory_checkpoint(
+            &self.memory_checkpoint_path(),
+            now_ms,
+            "started",
+            0,
+            0,
+            0,
+            recovered_checkpoint,
+        )?;
+
+        let mut scanned_records = 0;
+        let mut records_kept = 0;
+        let mut expired_removed = 0;
+        for path in list_files_with_extension(&self.root, "memory")? {
+            let data = fs::read_to_string(&path).map_err(|error| {
+                filesystem_error("failed to read durable memory record", &path, error)
+            })?;
+            let record = memory_record_from_storage(&data)
+                .map_err(|error| error.with_context("path", path.display().to_string()))?;
+            scanned_records += 1;
+            if record.is_expired_at(now_ms) {
+                fs::remove_file(&path).map_err(|error| {
+                    filesystem_error(
+                        "failed to remove expired durable memory record",
+                        &path,
+                        error,
+                    )
+                })?;
+                expired_removed += 1;
+            } else {
+                records_kept += 1;
+            }
+        }
+
+        let report = MemoryCompactionReport {
+            status: "ready".to_owned(),
+            lock_path: display_path(lock.path()),
+            checkpoint_path: display_path(&self.memory_checkpoint_path()),
+            scanned_records,
+            records_kept,
+            expired_removed,
+            recovered_checkpoint,
+            audit: vec![
+                "memory.gc:index_lock_acquired".to_owned(),
+                format!("memory.gc:scanned:{scanned_records}"),
+                format!("memory.gc:expired_removed:{expired_removed}"),
+                "memory.gc:checkpoint_written".to_owned(),
+            ],
+        };
+        write_memory_checkpoint(
+            &self.memory_checkpoint_path(),
+            now_ms,
+            "completed",
+            scanned_records,
+            records_kept,
+            expired_removed,
+            recovered_checkpoint,
+        )?;
+        audit_sink.record(
+            AuditEvent::new(
+                AuditAction::MemoryMaintenance,
+                AuditOutcome::Ok,
+                trace.clone(),
+            )
+            .with_message("durable memory TTL GC completed")
+            .with_field("store", display_path(&self.root))
+            .with_field("scanned_records", scanned_records.to_string())
+            .with_field("expired_removed", expired_removed.to_string())
+            .with_field(
+                "checkpoint_path",
+                display_path(&self.memory_checkpoint_path()),
+            ),
+        )?;
+        Ok(report)
+    }
+
+    fn write_record_unlocked(&self, record: &MemoryRecord) -> Result<(), EvaError> {
+        let path = memory_record_path(&self.root, record)?;
+        write_text_atomically(
+            &path,
+            &memory_record_to_storage(record),
+            "failed to write durable memory record",
+        )
+    }
+
+    fn load_unlocked(&self) -> Result<InMemoryMemoryService, EvaError> {
         let mut service = InMemoryMemoryService::new();
         for path in list_files_with_extension(&self.root, "memory")? {
             let data = fs::read_to_string(&path).map_err(|error| {
@@ -71,6 +206,10 @@ impl FileSystemMemoryStore {
     pub fn root(&self) -> &Path {
         &self.root
     }
+
+    pub fn memory_checkpoint_path(&self) -> PathBuf {
+        self.root.join(MEMORY_GC_CHECKPOINT_FILE)
+    }
 }
 
 impl FileSystemKnowledgeStore {
@@ -84,23 +223,85 @@ impl FileSystemKnowledgeStore {
         Self::new(layout.state_dir.join("knowledge"))
     }
 
+    pub fn try_acquire_index_lock(&self) -> Result<DurableIndexLockGuard, EvaError> {
+        DurableIndexLockGuard::acquire(&self.root)
+    }
+
     pub fn write_item(&mut self, item: &KnowledgeItem) -> Result<(), EvaError> {
-        let path = self.root.join(format!("{}.knowledge", item.id.as_str()));
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                filesystem_error(
-                    "failed to create durable knowledge directory",
-                    parent,
-                    error,
-                )
-            })?;
-        }
-        fs::write(&path, knowledge_item_to_storage(item)).map_err(|error| {
-            filesystem_error("failed to write durable knowledge item", &path, error)
-        })
+        let _lock = self.try_acquire_index_lock()?;
+        self.write_item_unlocked(item)
     }
 
     pub fn load_index(&self) -> Result<InMemoryKnowledgeService, EvaError> {
+        let _lock = self.try_acquire_index_lock()?;
+        self.load_index_unlocked()
+    }
+
+    pub fn rebuild_checkpoint(
+        &mut self,
+        audit_sink: &mut impl AuditSink,
+        trace: &TraceFields,
+    ) -> Result<KnowledgeRebuildCheckpointReport, EvaError> {
+        let now_ms = current_time_ms();
+        let recovered_checkpoint = recover_interrupted_maintenance_lock(
+            &self.root,
+            &self.rebuild_checkpoint_path(),
+            now_ms,
+        )?;
+        let lock = self.try_acquire_index_lock()?;
+        write_knowledge_checkpoint(
+            &self.rebuild_checkpoint_path(),
+            "started",
+            0,
+            recovered_checkpoint,
+        )?;
+        let service = self.load_index_unlocked()?;
+        let items_indexed = service.len();
+        let report = KnowledgeRebuildCheckpointReport {
+            status: "ready".to_owned(),
+            lock_path: display_path(lock.path()),
+            checkpoint_path: display_path(&self.rebuild_checkpoint_path()),
+            items_indexed,
+            recovered_checkpoint,
+            audit: vec![
+                "knowledge.rebuild:index_lock_acquired".to_owned(),
+                format!("knowledge.rebuild:items_indexed:{items_indexed}"),
+                "knowledge.rebuild:checkpoint_written".to_owned(),
+            ],
+        };
+        write_knowledge_checkpoint(
+            &self.rebuild_checkpoint_path(),
+            "completed",
+            items_indexed,
+            recovered_checkpoint,
+        )?;
+        audit_sink.record(
+            AuditEvent::new(
+                AuditAction::MemoryMaintenance,
+                AuditOutcome::Ok,
+                trace.clone(),
+            )
+            .with_message("durable knowledge index rebuild checkpoint completed")
+            .with_field("store", display_path(&self.root))
+            .with_field("items_indexed", items_indexed.to_string())
+            .with_field(
+                "checkpoint_path",
+                display_path(&self.rebuild_checkpoint_path()),
+            ),
+        )?;
+        Ok(report)
+    }
+
+    fn write_item_unlocked(&self, item: &KnowledgeItem) -> Result<(), EvaError> {
+        let path = self.root.join(format!("{}.knowledge", item.id.as_str()));
+        write_text_atomically(
+            &path,
+            &knowledge_item_to_storage(item),
+            "failed to write durable knowledge item",
+        )
+    }
+
+    fn load_index_unlocked(&self) -> Result<InMemoryKnowledgeService, EvaError> {
         let mut items = Vec::new();
         for path in list_files_with_extension(&self.root, "knowledge")? {
             let data = fs::read_to_string(&path).map_err(|error| {
@@ -116,6 +317,54 @@ impl FileSystemKnowledgeStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn rebuild_checkpoint_path(&self) -> PathBuf {
+        self.root.join(KNOWLEDGE_REBUILD_CHECKPOINT_FILE)
+    }
+}
+
+impl DurableIndexLockGuard {
+    fn acquire(root: &Path) -> Result<Self, EvaError> {
+        fs::create_dir_all(root).map_err(|error| {
+            filesystem_error("failed to create durable index directory", root, error)
+        })?;
+        let path = root.join(INDEX_LOCK_FILE);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    EvaError::conflict("durable index lock already exists")
+                        .with_context("path", path.display().to_string())
+                } else {
+                    filesystem_error("failed to create durable index lock", &path, error)
+                }
+            })?;
+        file.write_all(
+            format!(
+                "format=eva.durable.index-lock.v1\npid={}\ncreated_at_ms={}\n",
+                std::process::id(),
+                current_time_ms()
+            )
+            .as_bytes(),
+        )
+        .map_err(|error| {
+            let _ = fs::remove_file(&path);
+            filesystem_error("failed to write durable index lock", &path, error)
+        })?;
+        Ok(Self { path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for DurableIndexLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -290,6 +539,146 @@ fn list_files_with_extension(root: &Path, extension: &str) -> Result<Vec<PathBuf
     Ok(paths)
 }
 
+fn write_text_atomically(path: &Path, data: &str, message: &str) -> Result<(), EvaError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            filesystem_error("failed to create durable storage directory", parent, error)
+        })?;
+    }
+    let temp_path =
+        path.with_extension(format!("tmp-{}-{}", std::process::id(), current_time_ms()));
+    fs::write(&temp_path, data).map_err(|error| filesystem_error(message, &temp_path, error))?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| filesystem_error(message, path, error))?;
+    }
+    fs::rename(&temp_path, path).map_err(|error| filesystem_error(message, path, error))
+}
+
+fn write_memory_checkpoint(
+    path: &Path,
+    now_ms: u128,
+    status: &str,
+    scanned_records: usize,
+    records_kept: usize,
+    expired_removed: usize,
+    recovered_checkpoint: bool,
+) -> Result<(), EvaError> {
+    write_text_atomically(
+        path,
+        &format!(
+            "format=eva.memory.gc-checkpoint.v1\nstatus={status}\nnow_ms={now_ms}\nscanned_records={scanned_records}\nrecords_kept={records_kept}\nexpired_removed={expired_removed}\nrecovered_checkpoint={recovered_checkpoint}\nupdated_at_ms={}\n",
+            current_time_ms()
+        ),
+        "failed to write durable memory GC checkpoint",
+    )
+}
+
+fn write_knowledge_checkpoint(
+    path: &Path,
+    status: &str,
+    items_indexed: usize,
+    recovered_checkpoint: bool,
+) -> Result<(), EvaError> {
+    write_text_atomically(
+        path,
+        &format!(
+            "format=eva.knowledge.rebuild-checkpoint.v1\nstatus={status}\nitems_indexed={items_indexed}\nrecovered_checkpoint={recovered_checkpoint}\nupdated_at_ms={}\n",
+            current_time_ms()
+        ),
+        "failed to write durable knowledge rebuild checkpoint",
+    )
+}
+
+fn recover_interrupted_maintenance_lock(
+    root: &Path,
+    checkpoint_path: &Path,
+    now_ms: u128,
+) -> Result<bool, EvaError> {
+    let Some(checkpoint_updated_at_ms) =
+        stale_started_checkpoint_updated_at(checkpoint_path, now_ms)?
+    else {
+        return Ok(false);
+    };
+    let lock_path = root.join(INDEX_LOCK_FILE);
+    if !lock_path.exists() {
+        return Ok(true);
+    }
+    if !maintenance_lock_belongs_to_checkpoint(&lock_path, checkpoint_updated_at_ms, now_ms)? {
+        return Ok(false);
+    }
+    fs::remove_file(&lock_path).map_err(|error| {
+        filesystem_error(
+            "failed to recover interrupted durable maintenance lock",
+            &lock_path,
+            error,
+        )
+    })?;
+    Ok(true)
+}
+
+fn stale_started_checkpoint_updated_at(
+    path: &Path,
+    now_ms: u128,
+) -> Result<Option<u128>, EvaError> {
+    let data = match fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(filesystem_error(
+                "failed to read durable maintenance checkpoint",
+                path,
+                error,
+            ))
+        }
+    };
+    let fields = parse_fields(&data)?;
+    if fields.get("status").map(String::as_str) != Some("started") {
+        return Ok(None);
+    }
+    let Some(updated_at_ms) = fields
+        .get("updated_at_ms")
+        .map(|value| parse_u128(value, "updated_at_ms"))
+        .transpose()?
+    else {
+        return Ok(None);
+    };
+    if now_ms.saturating_sub(updated_at_ms) >= INDEX_LOCK_STALE_AFTER_MS {
+        Ok(Some(updated_at_ms))
+    } else {
+        Ok(None)
+    }
+}
+
+fn maintenance_lock_belongs_to_checkpoint(
+    path: &Path,
+    checkpoint_updated_at_ms: u128,
+    now_ms: u128,
+) -> Result<bool, EvaError> {
+    let data = fs::read_to_string(path)
+        .map_err(|error| filesystem_error("failed to read durable index lock", path, error))?;
+    let fields = parse_fields(&data)?;
+    let Some(created_at_ms) = fields
+        .get("created_at_ms")
+        .map(|value| parse_u128(value, "created_at_ms"))
+        .transpose()?
+    else {
+        return Ok(false);
+    };
+    Ok(created_at_ms <= checkpoint_updated_at_ms
+        && now_ms.saturating_sub(created_at_ms) >= INDEX_LOCK_STALE_AFTER_MS)
+}
+
+fn current_time_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+fn display_path(path: &Path) -> String {
+    path.display().to_string()
+}
+
 fn parse_fields(data: &str) -> Result<std::collections::BTreeMap<String, String>, EvaError> {
     let mut fields = std::collections::BTreeMap::new();
     for line in data.lines().filter(|line| !line.trim().is_empty()) {
@@ -441,6 +830,7 @@ fn filesystem_error(message: &str, path: &Path, error: std::io::Error) -> EvaErr
 mod tests {
     use super::*;
     use crate::knowledge_service::KnowledgeSearch;
+    use eva_observability::{InMemoryAuditSink, TraceFields};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn agent(value: &str) -> AgentId {
@@ -502,6 +892,151 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].item.id.as_str(), "memory-plan");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn durable_index_lock_blocks_concurrent_memory_access_until_released() {
+        let root = temp_root("lock");
+        let store = FileSystemMemoryStore::new(&root);
+        let lock = store.try_acquire_index_lock().unwrap();
+
+        let error = store.load().unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert!(lock.path().is_file());
+        drop(lock);
+        assert!(!root.join(INDEX_LOCK_FILE).exists());
+        assert!(store.load().unwrap().is_empty());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn durable_memory_compaction_removes_expired_records_and_writes_audit_checkpoint() {
+        let root = temp_root("compact");
+        let mut store = FileSystemMemoryStore::new(&root);
+        let owner = agent("root-agent");
+        store
+            .write(MemoryWrite::private(owner.clone(), "fresh", "keep").with_ttl_ms(100, 100))
+            .unwrap();
+        store
+            .write(MemoryWrite::private(owner.clone(), "expired", "drop").with_ttl_ms(100, 1))
+            .unwrap();
+        fs::write(store.memory_checkpoint_path(), "status=started\n").unwrap();
+        let mut audit = InMemoryAuditSink::default();
+
+        let report = store
+            .compact_expired_at(150, &mut audit, &TraceFields::default())
+            .unwrap();
+        let loaded = store.load().unwrap();
+        let snapshot = loaded.snapshot_for_agent_at(&owner, 8, 8, 150);
+
+        assert_eq!(report.scanned_records, 2);
+        assert_eq!(report.records_kept, 1);
+        assert_eq!(report.expired_removed, 1);
+        assert!(!report.recovered_checkpoint);
+        assert!(store.memory_checkpoint_path().is_file());
+        assert_eq!(audit.events.len(), 1);
+        assert_eq!(audit.events[0].action, AuditAction::MemoryMaintenance);
+        assert_eq!(snapshot.private.len(), 1);
+        assert_eq!(snapshot.private[0].key, "fresh");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn durable_memory_compaction_recovers_stale_started_checkpoint_lock() {
+        let root = temp_root("stale-lock");
+        fs::create_dir_all(&root).unwrap();
+        let mut store = FileSystemMemoryStore::new(&root);
+        fs::write(
+            root.join(INDEX_LOCK_FILE),
+            "format=eva.durable.index-lock.v1\npid=999999\ncreated_at_ms=1\n",
+        )
+        .unwrap();
+        fs::write(
+            store.memory_checkpoint_path(),
+            "format=eva.memory.gc-checkpoint.v1\nstatus=started\nupdated_at_ms=1\n",
+        )
+        .unwrap();
+        let mut audit = InMemoryAuditSink::default();
+
+        let report = store
+            .compact_expired_at(
+                INDEX_LOCK_STALE_AFTER_MS + 2,
+                &mut audit,
+                &TraceFields::default(),
+            )
+            .unwrap();
+
+        assert!(report.recovered_checkpoint);
+        assert_eq!(report.status, "ready");
+        assert!(!root.join(INDEX_LOCK_FILE).exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn durable_memory_compaction_does_not_steal_newer_index_lock_for_stale_checkpoint() {
+        let root = temp_root("newer-lock");
+        fs::create_dir_all(&root).unwrap();
+        let mut store = FileSystemMemoryStore::new(&root);
+        fs::write(
+            root.join(INDEX_LOCK_FILE),
+            format!(
+                "format=eva.durable.index-lock.v1\npid=999999\ncreated_at_ms={}\n",
+                INDEX_LOCK_STALE_AFTER_MS + 10
+            ),
+        )
+        .unwrap();
+        fs::write(
+            store.memory_checkpoint_path(),
+            "format=eva.memory.gc-checkpoint.v1\nstatus=started\nupdated_at_ms=1\n",
+        )
+        .unwrap();
+        let mut audit = InMemoryAuditSink::default();
+
+        let error = store
+            .compact_expired_at(
+                INDEX_LOCK_STALE_AFTER_MS + 20,
+                &mut audit,
+                &TraceFields::default(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert!(root.join(INDEX_LOCK_FILE).exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn durable_knowledge_rebuild_checkpoint_records_item_count_and_recovery() {
+        let root = temp_root("knowledge-checkpoint");
+        let mut store = FileSystemKnowledgeStore::new(&root);
+        let item = KnowledgeItem::new(
+            KnowledgeId::parse("memory-plan").unwrap(),
+            KnowledgeSource::new("docs/memory.md", "Memory", b"durable memory"),
+            "Durable memory",
+            "Durable memory context index",
+        )
+        .unwrap();
+        store.write_item(&item).unwrap();
+        fs::write(
+            store.rebuild_checkpoint_path(),
+            "format=eva.knowledge.rebuild-checkpoint.v1\nstatus=started\nupdated_at_ms=1\n",
+        )
+        .unwrap();
+        let mut audit = InMemoryAuditSink::default();
+
+        let report = store
+            .rebuild_checkpoint(&mut audit, &TraceFields::default())
+            .unwrap();
+        let rebuilt = store.load_index().unwrap();
+
+        assert_eq!(report.items_indexed, 1);
+        assert!(report.recovered_checkpoint);
+        assert!(store.rebuild_checkpoint_path().is_file());
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(audit.events.len(), 1);
+        assert_eq!(audit.events[0].action, AuditAction::MemoryMaintenance);
         fs::remove_dir_all(root).ok();
     }
 }

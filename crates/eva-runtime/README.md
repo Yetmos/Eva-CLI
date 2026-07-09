@@ -19,6 +19,7 @@
 | V1.12.3 | durable task lifecycle | daemon submit/cancel 使用 `TaskStateSnapshot` lifecycle API：submit 写 `queued`，cancel 将非终态任务推进到 `cancelling` 并追加日志；recovery 会把 `queued`/`running`/`cancelling` 恢复为 `interrupted` 或 `recovering`。 |
 | V1.13.5 | provider execution recovery | daemon start 扫描 durable provider process table 和 task store；残留 active provider session 标记为 `interrupted`，关联 task 保留为 interrupted/recovering，只有显式 retryable restart policy 才生成 scheduler backoff 证据。 |
 | V1.15.4 | hardware hotplug subscriber | daemon start 运行 manifest snapshot hotplug subscriber，把逻辑设备状态写入 durable EventBus 和 `hardware-hotplug.state`，并在 report 中输出 `raw_handles_exposed:false`。 |
+| V1.15.6 | memory/knowledge maintenance smoke | daemon start 对 durable memory/knowledge store 执行一次 `index.lock` 保护的 TTL GC 和 knowledge rebuild checkpoint，输出 `memory_maintenance` report，并写 `memory.maintenance` audit。 |
 
 ## V1.0 Basic 闭环
 
@@ -52,6 +53,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
 | `RuntimeRecoveryCoordinator` | V1.6.4/V1.13.5 recovery coordinator；读取 task snapshots 和 provider process snapshots，持久化 interrupted/recovering 状态，可通过 durable EventBus 执行受控 redrive checkpoint，并可记录 `runtime.recovered` audit。 |
 | `DaemonStartOptions` | V1.12.1 daemon foreground/dev smoke 的 durable backend、state、lock、pid 和 observability 路径配置。 |
+| `DaemonMemoryMaintenanceReport` | V1.15.6 daemon start 中 memory TTL GC 与 knowledge rebuild checkpoint 的维护证据。 |
 | `DaemonControlRequest` | V1.12.2 本机 control mailbox 请求；封装 request id、trace id、operation、task/plan/generation 参数。 |
 
 ## V1.12 Daemon Boundary And Control Mailbox
@@ -66,6 +68,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 - JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
 - JSON/report 中新增 `recovery` 对象，包含 scanned/recovered task、provider process、backoff 和 skipped evidence。
 - JSON/report 中新增 `hardware_hotplug` 对象，包含 watcher kind、published typed events、`hardware-hotplug.state` 和 `raw_handles_exposed:false` evidence。
+- JSON/report 中新增 `memory_maintenance` 对象，包含 `memory_gc`、`knowledge_rebuild`、checkpoint path、stale checkpoint recovery 和 `memory.maintenance` audit evidence。
 - 已有 lock 会返回 conflict；坏 durable backend 会在写 daemon state 前失败。
 
 ## V1.6.4 Recovery Checkpoint
@@ -105,7 +108,7 @@ restart redrive 和 corrupt task store，`release check` 暴露
 
 ## 当前非目标
 
-- V1.12/V1.13.5/V1.15.4 只提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload mutation state、provider execution-state recovery 和 manifest snapshot hotplug subscriber；不提供生产后台 service manager、远程网络监听、OS provider process supervisor、真实 OS hotplug watcher 或完整生产 scheduler apply。
+- V1.12/V1.13.5/V1.15.4/V1.15.6 只提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload mutation state、provider execution-state recovery、manifest snapshot hotplug subscriber 和一次性 memory/knowledge maintenance smoke；不提供生产后台 service manager、远程网络监听、OS provider process supervisor、真实 OS hotplug watcher、长驻 memory scheduler 或完整生产 scheduler apply。
 - recovery checkpoint 已恢复 task/event/audit evidence 和 durable provider process snapshots，但不会重启或杀死真实 OS provider 进程；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
 - 不引入真实 Lua VM；`LuaGeneration` 是 generation marker，不是 VM swap 实现。
 - Adapter/MCP/Discovery/Memory/Hardware/Backup/Lifecycle 仍属于后续版本。
@@ -120,4 +123,4 @@ cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```
 
-已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit、corrupt-store smoke、V1.13.5 provider interrupted/backoff recovery 和 daemon start provider recovery smoke。
+已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit、corrupt-store smoke、V1.13.5 provider interrupted/backoff recovery、daemon start provider recovery smoke、V1.15.4 hotplug subscriber state 重启一致性和 V1.15.6 memory/knowledge maintenance smoke。

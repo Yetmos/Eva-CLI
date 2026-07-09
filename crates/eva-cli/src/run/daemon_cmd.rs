@@ -382,6 +382,14 @@ fn write_daemon_start<W: Write>(
                 report.hardware_hotplug.events_published.len(),
                 report.hardware_hotplug.raw_handles_exposed
             )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "memory_maintenance: status={} expired_removed={} knowledge_items_indexed={}",
+                report.memory_maintenance.status,
+                report.memory_maintenance.memory_gc.expired_removed,
+                report.memory_maintenance.knowledge_rebuild.items_indexed
+            )
             .map_err(write_error_kind)
         }
         OutputFormat::Json => writeln!(
@@ -430,7 +438,7 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
         .map(shutdown_json)
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"status\":{},\"mode\":{},\"pid\":{},\"generation_id\":{},\"project_root\":{},\"foreground\":{},\"dev_mode\":{},\"provider_processes_started\":{},\"paths\":{},\"durable_backend\":{},\"recovery\":{},\"policy\":{},\"observability\":{},\"hardware_hotplug\":{},\"shutdown\":{},\"audit\":{}}}",
+        "{{\"status\":{},\"mode\":{},\"pid\":{},\"generation_id\":{},\"project_root\":{},\"foreground\":{},\"dev_mode\":{},\"provider_processes_started\":{},\"paths\":{},\"durable_backend\":{},\"recovery\":{},\"policy\":{},\"observability\":{},\"hardware_hotplug\":{},\"memory_maintenance\":{},\"shutdown\":{},\"audit\":{}}}",
         json_string(&report.status),
         json_string(&report.mode),
         report.pid,
@@ -445,6 +453,7 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
         daemon_policy_json(&report.policy),
         observability_json(&report.observability),
         hardware_hotplug_json(&report.hardware_hotplug),
+        memory_maintenance_json(&report.memory_maintenance),
         shutdown,
         json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
@@ -615,6 +624,42 @@ fn hardware_hotplug_json(report: &eva_hardware::HardwareHotplugSubscriberReport)
         json_array(report.events_published.iter().map(hotplug_event_json)),
         json_array(report.state.iter().map(hotplug_state_json)),
         report.raw_handles_exposed,
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn memory_maintenance_json(report: &eva_runtime::DaemonMemoryMaintenanceReport) -> String {
+    format!(
+        "{{\"status\":{},\"memory_gc\":{},\"knowledge_rebuild\":{},\"audit\":{}}}",
+        json_string(&report.status),
+        memory_gc_json(&report.memory_gc),
+        knowledge_rebuild_json(&report.knowledge_rebuild),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn memory_gc_json(report: &eva_memory::MemoryCompactionReport) -> String {
+    format!(
+        "{{\"status\":{},\"lock_path\":{},\"checkpoint_path\":{},\"scanned_records\":{},\"records_kept\":{},\"expired_removed\":{},\"recovered_checkpoint\":{},\"audit\":{}}}",
+        json_string(&report.status),
+        json_string(&report.lock_path),
+        json_string(&report.checkpoint_path),
+        report.scanned_records,
+        report.records_kept,
+        report.expired_removed,
+        report.recovered_checkpoint,
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn knowledge_rebuild_json(report: &eva_memory::KnowledgeRebuildCheckpointReport) -> String {
+    format!(
+        "{{\"status\":{},\"lock_path\":{},\"checkpoint_path\":{},\"items_indexed\":{},\"recovered_checkpoint\":{},\"audit\":{}}}",
+        json_string(&report.status),
+        json_string(&report.lock_path),
+        json_string(&report.checkpoint_path),
+        report.items_indexed,
+        report.recovered_checkpoint,
         json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
 }

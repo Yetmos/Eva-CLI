@@ -14,6 +14,10 @@ use eva_hardware::{
 use eva_lifecycle::{
     DrainCoordinator, DrainPlan, GenerationController, GenerationState, RuntimeGeneration,
 };
+use eva_memory::{
+    FileSystemKnowledgeStore, FileSystemMemoryStore, KnowledgeRebuildCheckpointReport,
+    MemoryCompactionReport,
+};
 use eva_observability::{
     AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
     MetricLabels, MetricName, MetricPoint, MetricSink, ObservabilitySmokeReport, SpanId,
@@ -109,7 +113,16 @@ pub struct DaemonStartReport {
     pub policy: DaemonPolicyReport,
     pub observability: ObservabilitySmokeReport,
     pub hardware_hotplug: HardwareHotplugSubscriberReport,
+    pub memory_maintenance: DaemonMemoryMaintenanceReport,
     pub shutdown: Option<ShutdownReport>,
+    pub audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonMemoryMaintenanceReport {
+    pub status: String,
+    pub memory_gc: MemoryCompactionReport,
+    pub knowledge_rebuild: KnowledgeRebuildCheckpointReport,
     pub audit: Vec<String>,
 }
 
@@ -1058,6 +1071,7 @@ pub fn start_daemon(
     })?;
     ensure_control_dirs(&options)?;
     let hardware_hotplug = start_hardware_hotplug_subscriber(project, &options)?;
+    let memory_maintenance = run_memory_maintenance(&options, trace)?;
 
     let mut runtime = RuntimeBuilder::new().build(project)?;
     let (status, shutdown) = if options.shutdown_after_smoke {
@@ -1088,6 +1102,7 @@ pub fn start_daemon(
         policy,
         observability,
         hardware_hotplug,
+        memory_maintenance,
         shutdown,
         audit: vec![
             "daemon:v1.12.1:lock_acquired".to_owned(),
@@ -1099,6 +1114,7 @@ pub fn start_daemon(
             "daemon:v1.12.4:scheduler_retry_tick_ready".to_owned(),
             "daemon:v1.13.5:provider_recovery_scanned".to_owned(),
             "daemon:v1.15.4:hardware_hotplug_subscriber_ready".to_owned(),
+            "daemon:v1.15.6:memory_maintenance_ready".to_owned(),
         ],
     })
 }
@@ -1279,6 +1295,30 @@ fn start_hardware_hotplug_subscriber(
     )?;
     write_hardware_hotplug_state(options, &report.state)?;
     Ok(report)
+}
+
+fn run_memory_maintenance(
+    options: &DaemonStartOptions,
+    trace: &TraceFields,
+) -> Result<DaemonMemoryMaintenanceReport, EvaError> {
+    let durable_backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+        &options.durable_backend,
+    ))?;
+    let mut audit_sink = BestEffortObservabilityPipeline::open(&options.observability_backend);
+    let mut memory_store = FileSystemMemoryStore::from_durable_layout(durable_backend.layout());
+    let mut knowledge_store =
+        FileSystemKnowledgeStore::from_durable_layout(durable_backend.layout());
+    let memory_gc = memory_store.compact_expired_at(now_ms(), &mut audit_sink, trace)?;
+    let knowledge_rebuild = knowledge_store.rebuild_checkpoint(&mut audit_sink, trace)?;
+    Ok(DaemonMemoryMaintenanceReport {
+        status: "ready".to_owned(),
+        audit: vec![
+            "memory.maintenance:ttl_gc_completed".to_owned(),
+            "memory.maintenance:knowledge_rebuild_checkpoint_completed".to_owned(),
+        ],
+        memory_gc,
+        knowledge_rebuild,
+    })
 }
 
 fn handle_control_request(
@@ -2131,7 +2171,26 @@ mod tests {
         assert!(!report.hardware_hotplug.raw_handles_exposed);
         assert_eq!(report.hardware_hotplug.devices_seen, 1);
         assert_eq!(report.hardware_hotplug.events_published.len(), 1);
+        assert_eq!(report.memory_maintenance.status, "ready");
+        assert_eq!(report.memory_maintenance.memory_gc.expired_removed, 0);
+        assert_eq!(report.memory_maintenance.knowledge_rebuild.items_indexed, 0);
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "daemon:v1.15.6:memory_maintenance_ready"));
         assert!(hardware_hotplug_state_file(&options).is_file());
+        assert!(options
+            .durable_backend
+            .join("state")
+            .join("memory")
+            .join("memory-gc.checkpoint")
+            .is_file());
+        assert!(options
+            .durable_backend
+            .join("state")
+            .join("knowledge")
+            .join("knowledge-rebuild.checkpoint")
+            .is_file());
         assert!(report.shutdown.is_some());
         assert!(state_file(&options).is_file());
         assert!(!lock_file(&options).exists());
