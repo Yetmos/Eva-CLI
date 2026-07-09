@@ -673,6 +673,87 @@ mod tests {
             .contains(&"credential.session_token:redacted".to_owned()));
     }
 
+    #[test]
+    fn runtime_invokes_mcp_http_adapter_with_auth_headers() {
+        let env_name = "EVA_TEST_MCP_HTTP_SECRET_RUNTIME";
+        let secret = "mcp-http-runtime-secret";
+        std::env::set_var(env_name, secret);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server_secret = secret.to_owned();
+        let server = thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_http_request(&mut stream);
+                assert!(request.contains("Authorization: mcp-http-runtime-secret"));
+                assert!(request.contains(PROVIDER_SESSION_ID_HEADER));
+                assert!(request.contains(PROVIDER_SESSION_TOKEN_HEADER));
+                let session_token =
+                    http_header_value(&request, PROVIDER_SESSION_TOKEN_HEADER).unwrap_or_default();
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                let response_body = if body.contains("\"method\":\"initialize\"") {
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake-http\",\"version\":\"1\"}}}".to_owned()
+                } else if body.contains("notifications/initialized") {
+                    String::new()
+                } else if body.contains("\"method\":\"tools/list\"") {
+                    "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"list_issues\",\"inputSchema\":{\"type\":\"object\"}}]}}".to_owned()
+                } else if body.contains("\"method\":\"tools/call\"") {
+                    format!(
+                        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"ok {server_secret} {session_token}\"}}],\"isError\":false}}}}"
+                    )
+                } else {
+                    String::new()
+                };
+                let status = if body.contains("notifications/initialized") {
+                    202
+                } else {
+                    200
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        let runtime = runtime_with_handle(mcp_http_handle(
+            endpoint,
+            BTreeMap::from([("Authorization".to_owned(), format!("env:{env_name}"))]),
+        ));
+
+        let report = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-mcp-http-runtime").unwrap(),
+                    CapabilityName::parse("github.issue.list").unwrap(),
+                )
+                .with_provider(AdapterId::parse("mcp-http-test").unwrap())
+                .with_input("{\"owner\":\"eva\"}"),
+            )
+            .unwrap();
+        server.join().unwrap();
+        std::env::remove_var(env_name);
+
+        assert_eq!(report.status, "completed");
+        assert!(!report.output.contains(secret));
+        assert!(!report.output.contains("eva-provider-session:"));
+        assert!(report.output.contains("[REDACTED]"));
+        assert!(report.audit.contains(&format!(
+            "mcp.credential_header:Authorization:env:{env_name}:redacted"
+        )));
+        assert!(report
+            .audit
+            .contains(&"credential.session_token:redacted".to_owned()));
+        assert!(report
+            .audit
+            .contains(&"mcp.http.exchange_count:3".to_owned()));
+    }
+
     fn runtime_with_handle(handle: AdapterHandle) -> AdapterRuntime {
         AdapterRuntime::from_registry(registry_with_handle(handle))
     }
@@ -710,6 +791,34 @@ mod tests {
                 None
             }
         })
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let mut request_bytes = Vec::new();
+        let mut buffer = [0_u8; 512];
+        let header_end = loop {
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 {
+                panic!("HTTP test client closed before headers were complete");
+            }
+            request_bytes.extend_from_slice(&buffer[..read]);
+            if let Some(header_end) = http_header_end(&request_bytes) {
+                break header_end;
+            }
+        };
+        let header = String::from_utf8_lossy(&request_bytes[..header_end]);
+        let content_length = http_content_length(&header);
+        while request_bytes.len().saturating_sub(header_end + 4) < content_length {
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            request_bytes.extend_from_slice(&buffer[..read]);
+        }
+        String::from_utf8_lossy(&request_bytes).into_owned()
     }
 
     fn temp_root(name: &str) -> PathBuf {
@@ -801,6 +910,48 @@ mod tests {
             mcp_command: None,
             mcp_args: Vec::new(),
             mcp_tools: Vec::new(),
+            skill_id: None,
+            skill_kind: None,
+            skill_runtime_gate: None,
+            skill_path: None,
+            skill_entry_type: None,
+            skill_runner_command: None,
+            skill_runner_args: Vec::new(),
+            skill_artifact_root: None,
+            skill_input_schema: None,
+            hardware_logical_name: None,
+            hardware_device_class: None,
+            hardware_driver_id: None,
+            hardware_driver_kind: None,
+            bindings: Vec::new(),
+        }
+    }
+
+    fn mcp_http_handle(endpoint: String, headers: BTreeMap<String, String>) -> AdapterHandle {
+        AdapterHandle {
+            id: AdapterId::parse("mcp-http-test").unwrap(),
+            name: "MCP HTTP Test".to_owned(),
+            version: "1.0.0".to_owned(),
+            enabled: true,
+            transport: AdapterTransport::Mcp,
+            capabilities: vec![CapabilityName::parse("github.issue.list").unwrap()],
+            source_path: "test".to_owned(),
+            command: None,
+            args: Vec::new(),
+            endpoint: Some(endpoint),
+            method: None,
+            credential_env: Vec::new(),
+            timeout_ms: Some(5_000),
+            max_concurrency: None,
+            output_limit_bytes: Some(4096),
+            max_prompt_bytes: Some(4096),
+            rate_limit: None,
+            circuit_breaker: None,
+            headers,
+            mcp_server_transport: Some("http".to_owned()),
+            mcp_command: None,
+            mcp_args: Vec::new(),
+            mcp_tools: vec!["list_issues".to_owned()],
             skill_id: None,
             skill_kind: None,
             skill_runtime_gate: None,

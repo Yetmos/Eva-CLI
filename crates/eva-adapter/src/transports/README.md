@@ -12,7 +12,7 @@
 | --- | --- | --- | --- |
 | `mod.rs` | transport 模块导出 | 已完成 V1.1 | 统一导出具体 transport。 |
 | `builtin.rs` | builtin / EventBus / LuaCapability 风格本地能力 | 已完成 V1.1 | 返回本地 JSON envelope，无外部副作用。 |
-| `mcp.rs` | MCP tool/resource/prompt | 已完成 V1.13.4 | 使用 `eva-mcp::McpJsonRpcClient`，按 manifest MCP session config 启动 stdio JSON-RPC server，并在发送前执行 tool allowlist；runtime 调用时记录 provider credential session audit，provider admission gate 先于进程启动，result 以 stream summary 输出并写入 redacted artifact。 |
+| `mcp.rs` | MCP tool/resource/prompt | 已完成 V1.13.6 | 使用 `eva-mcp::McpJsonRpcClient`，按 manifest MCP session config 启动 stdio JSON-RPC server，或调用 manifest-selected `http://` MCP endpoint；发送前执行 tool allowlist、provider credential session/auth header gate、timeout/output-limit/error-object mapping，result 以 stream summary 输出并写入 redacted artifact。 |
 | `skill.rs` | workflow skill | 已完成 V1.13.4 | 校验固定 skill id、`kind == workflow_skill`、`runtime_gate == normal` 和 input schema；执行受控 workflow runner，保存 artifact evidence，并脱敏 credential/session token；provider admission gate 先于 runner 启动，stdout/stderr 以 stream summary 输出。 |
 | `hardware.rs` | hardware device | 已完成 V1.3 | 通过 `DeviceRegistry` lease 和 `SimulatedDriver`，audit 包含 `raw_io:false`。 |
 | `stdio.rs` | stdio command | 已完成 V1.13.4 | 已实现 command/args 分离、allowlist、timeout、stdout/stderr 限制、credential/session env 注入、脱敏、provider admission gate 和 stream artifact summary，并接入 AdapterRuntime。 |
@@ -25,10 +25,10 @@
 V1.1 已实现可在无外部副作用环境中验证的 transport：
 
 - `builtin.rs`：返回本地 JSON envelope，供内置/EventBus/LuaCapability 风格 transport 使用。
-- `mcp.rs`：选择映射的 MCP tool，在写入 JSON-RPC 前强制 `McpAllowlist`，并通过 stdio transport 执行 `initialize`、`tools/list`、`tools/call`。
+- `mcp.rs`：选择映射的 MCP tool，在写入 JSON-RPC 前强制 `McpAllowlist`，并通过 stdio transport 或受限 `http://` transport 执行 `initialize`、`tools/list`、`tools/call`；HTTP MCP 调用必须携带 provider session auth header。
 - `skill.rs`：V1.8.4 起检查 `skill.kind`、`skill.runtime_gate` 和 input schema，创建隔离 working directory，执行 manifest allowlist process runner 或受控 `codex_skill` runner，并保存 stdout/stderr/run-report/artifact evidence。
 
-这些实现证明 AdapterRuntime 的调用 envelope、trace、audit 和错误映射可以用 fake provider 和受控 runner 测试。V1.13.5 后 stdio/http、MCP JSON-RPC tool call 和 Skill workflow runner 已能通过 AdapterRuntime 进入 supervisor slot、credential session scope、concurrency/rate/circuit admission gate、bounded stream artifact 数据面和 durable provider process recovery evidence；MCP HTTP/auth/full streaming lifecycle、OS process supervisor、OS credential vault 和 Skill output schema 深度校验会在后续节点补齐。
+这些实现证明 AdapterRuntime 的调用 envelope、trace、audit 和错误映射可以用 fake provider 和受控 runner 测试。V1.13.6 后 stdio/http、MCP stdio/HTTP JSON-RPC tool call 和 Skill workflow runner 已能通过 AdapterRuntime 进入 supervisor slot、credential session scope、concurrency/rate/circuit admission gate、bounded stream artifact 数据面和 durable provider process recovery evidence；MCP full streaming/compatibility/TLS lifecycle、OS process supervisor、OS credential vault 和 Skill output schema 深度校验会在后续节点补齐。
 
 ## V1.3 hardware transport
 

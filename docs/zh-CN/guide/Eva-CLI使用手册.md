@@ -60,6 +60,10 @@ release: V1.11.5-alpha
 | 查看版本 | `cargo run -- --version` | 输出版本、release label 和 contract 列表。 |
 | 工作区诊断 | `cargo run -- doctor --output json` | 检查仓库根、配置根、schema、Lua host 和 runtime builder。 |
 | 配置校验 | `cargo run -- config validate --output json` | 加载 `config/eva.yaml` 和拆分 manifest，返回配置摘要。 |
+
+`--version` / `version --output json` 包含 `mcp_http_auth_v1.13.6` 时，表示
+runtime 已支持带 auth/session header 的受限 MCP `http://` JSON-RPC transport
+边界。
 | 查看运行时 | `cargo run -- inspect runtime --output json` | 输出 agents、adapters、capabilities、routes、policy 和 runtime 摘要。 |
 | 查看 durable backend | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | 输出 backend schema、migration status 和 pending redrive count。 |
 | 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |

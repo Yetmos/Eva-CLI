@@ -17,6 +17,21 @@
     },
     "capabilities": { "$comment": "Capabilities exposed through this adapter. / 通过此 Adapter 暴露的能力。", "type": "array", "items": { "type": "string" } },
     "permissions": { "$comment": "Permission boundary for adapter execution. / Adapter 执行权限边界。", "type": "object" },
+    "mcp": {
+      "$comment": "MCP server launch or HTTP endpoint settings. / MCP server 启动或 HTTP endpoint 设置。",
+      "type": "object",
+      "properties": {
+        "server_transport": { "type": "string", "enum": ["stdio", "http"] },
+        "command": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "endpoint": { "type": "string" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "tool_allowlist": { "type": "array", "items": { "type": "string" } },
+        "resource_allowlist": { "type": "array", "items": { "type": "string" } },
+        "prompt_allowlist": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
     "limits": { "$comment": "Runtime limits for this adapter. / 此 Adapter 的运行限制。", "type": "object" },
     "routing": { "$comment": "Routing preferences for capability selection. / 能力选择时的路由偏好。", "type": "object" }
   },

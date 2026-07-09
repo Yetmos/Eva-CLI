@@ -378,8 +378,8 @@ are not republished retroactively. The main remaining work is now narrower and m
 implementation-focused:
 
 - Production provider supervision beyond the current controlled stdio/http/MCP/Skill
-  runners, including OS process management, MCP HTTP/auth/full streaming lifecycle,
-  and OS credential vault integration.
+  runners, including OS process management, MCP streaming/compatibility, TLS HTTP
+  client coverage, and OS credential vault integration.
 - Durable Scheduler, runtime audit wiring, memory, and backup
   stores beyond the current durable EventBus/task snapshot/audit sink baseline
   and local diagnostic surfaces.

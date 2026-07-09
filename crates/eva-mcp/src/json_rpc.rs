@@ -3,7 +3,9 @@
 use crate::policy::McpAllowlist;
 use crate::session::{McpServerTransport, McpSessionConfig};
 use eva_core::{AdapterId, EvaError, InvokeOutput, RequestId};
-use std::io::{BufRead, BufReader, Write};
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -55,7 +57,12 @@ pub trait McpJsonRpcTransport {
         output_limit_bytes: usize,
     ) -> Result<String, EvaError>;
 
-    fn notify(&mut self, notification: &str) -> Result<(), EvaError>;
+    fn notify(
+        &mut self,
+        notification: &str,
+        timeout: Duration,
+        output_limit_bytes: usize,
+    ) -> Result<(), EvaError>;
 
     fn audit(&self) -> Vec<String> {
         Vec::new()
@@ -68,6 +75,15 @@ pub struct McpStdioJsonRpcTransport {
     stdin: ChildStdin,
     receiver: mpsc::Receiver<ReaderMessage>,
     audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpHttpJsonRpcTransport {
+    endpoint: String,
+    headers: BTreeMap<String, String>,
+    audit: Vec<String>,
+    exchange_count: usize,
+    notification_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +159,7 @@ impl McpJsonRpcClient {
         tool: &str,
         input: &str,
     ) -> Result<McpJsonRpcCallReport, EvaError> {
+        self.allowlist.require_tool(tool)?;
         match session_config.server_transport {
             McpServerTransport::Stdio => {
                 let mut transport = McpStdioJsonRpcTransport::start(session_config)?;
@@ -151,7 +168,25 @@ impl McpJsonRpcClient {
                 report.audit.extend(transport.shutdown());
                 Ok(report)
             }
+            McpServerTransport::Http => Err(EvaError::unsupported(
+                "use MCP HTTP JSON-RPC transport for HTTP server_transport",
+            )
+            .with_context("adapter_id", session_config.adapter_id.as_str())
+            .with_context("server_transport", session_config.server_transport.as_str())),
         }
+    }
+
+    pub fn call_http(
+        &self,
+        endpoint: &str,
+        headers: BTreeMap<String, String>,
+        request_id: RequestId,
+        tool: &str,
+        input: &str,
+    ) -> Result<McpJsonRpcCallReport, EvaError> {
+        self.allowlist.require_tool(tool)?;
+        let mut transport = McpHttpJsonRpcTransport::new(endpoint, headers)?;
+        self.call_tool_with_transport(&mut transport, request_id, tool, input)
     }
 
     pub fn call_tool_with_transport(
@@ -178,7 +213,11 @@ impl McpJsonRpcClient {
         enforce_response_limit(&initialize_response, self.config.output_limit_bytes)?;
         parse_json_rpc_response(&initialize_response, initialize_id)?;
 
-        transport.notify(&initialized_notification())?;
+        transport.notify(
+            &initialized_notification(),
+            timeout,
+            self.config.output_limit_bytes,
+        )?;
 
         let list_id = next_json_rpc_id(&mut next_id);
         let list_request = tools_list_request(list_id);
@@ -380,7 +419,12 @@ impl McpJsonRpcTransport for McpStdioJsonRpcTransport {
         }
     }
 
-    fn notify(&mut self, notification: &str) -> Result<(), EvaError> {
+    fn notify(
+        &mut self,
+        notification: &str,
+        _timeout: Duration,
+        _output_limit_bytes: usize,
+    ) -> Result<(), EvaError> {
         self.stdin
             .write_all(notification.as_bytes())
             .and_then(|_| self.stdin.write_all(b"\n"))
@@ -393,6 +437,122 @@ impl McpJsonRpcTransport for McpStdioJsonRpcTransport {
 
     fn audit(&self) -> Vec<String> {
         self.audit.clone()
+    }
+}
+
+impl McpHttpJsonRpcTransport {
+    pub fn new(
+        endpoint: impl Into<String>,
+        headers: BTreeMap<String, String>,
+    ) -> Result<Self, EvaError> {
+        let endpoint = endpoint.into();
+        let parsed = ParsedHttpUrl::parse(&endpoint)?;
+        if parsed.scheme != "http" {
+            return Err(EvaError::unsupported(
+                "MCP HTTP transport requires an http:// endpoint in this runtime",
+            )
+            .with_context("endpoint", &endpoint)
+            .with_context("scheme", parsed.scheme));
+        }
+        for (name, value) in &headers {
+            validate_http_header(name, value)?;
+        }
+        let mut audit = vec![
+            "mcp.http:client".to_owned(),
+            format!("mcp.http.origin:{}", parsed.origin),
+            "mcp.http.method:POST".to_owned(),
+        ];
+        for name in headers.keys() {
+            audit.push(format!("mcp.http.header:{name}:redacted"));
+        }
+        Ok(Self {
+            endpoint,
+            headers,
+            audit,
+            exchange_count: 0,
+            notification_count: 0,
+        })
+    }
+}
+
+impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
+    fn exchange(
+        &mut self,
+        expected_id: u64,
+        request: &str,
+        timeout: Duration,
+        output_limit_bytes: usize,
+    ) -> Result<String, EvaError> {
+        if output_limit_bytes == 0 {
+            return Err(EvaError::invalid_argument(
+                "MCP HTTP response output limit must be greater than zero",
+            ));
+        }
+        self.exchange_count = self.exchange_count.saturating_add(1);
+        let response = send_http_json_rpc_request(
+            &self.endpoint,
+            &self.headers,
+            request,
+            timeout,
+            output_limit_bytes,
+        )?;
+        if !(200..300).contains(&response.status_code) {
+            return Err(
+                EvaError::unavailable("MCP HTTP server returned non-success status")
+                    .with_provider_code("mcp_http_status")
+                    .with_context("json_rpc_id", expected_id.to_string())
+                    .with_context("status_code", response.status_code.to_string()),
+            );
+        }
+        if response.body_truncated {
+            return Err(
+                EvaError::conflict("MCP HTTP response exceeded output limit")
+                    .with_provider_code("mcp_response_too_large")
+                    .with_context("json_rpc_id", expected_id.to_string())
+                    .with_context("output_limit_bytes", output_limit_bytes.to_string()),
+            );
+        }
+        let text = String::from_utf8(response.body).map_err(|error| {
+            EvaError::unavailable("MCP HTTP response was not UTF-8")
+                .with_provider_code("mcp_protocol_error")
+                .with_context("utf8_error", error.to_string())
+        })?;
+        enforce_response_limit(&text, output_limit_bytes)?;
+        Ok(text)
+    }
+
+    fn notify(
+        &mut self,
+        notification: &str,
+        timeout: Duration,
+        output_limit_bytes: usize,
+    ) -> Result<(), EvaError> {
+        self.notification_count = self.notification_count.saturating_add(1);
+        let response = send_http_json_rpc_request(
+            &self.endpoint,
+            &self.headers,
+            notification,
+            timeout,
+            output_limit_bytes,
+        )?;
+        if !(200..300).contains(&response.status_code) {
+            return Err(
+                EvaError::unavailable("MCP HTTP notification returned non-success status")
+                    .with_provider_code("mcp_http_status")
+                    .with_context("status_code", response.status_code.to_string()),
+            );
+        }
+        Ok(())
+    }
+
+    fn audit(&self) -> Vec<String> {
+        let mut audit = self.audit.clone();
+        audit.push(format!("mcp.http.exchange_count:{}", self.exchange_count));
+        audit.push(format!(
+            "mcp.http.notification_count:{}",
+            self.notification_count
+        ));
+        audit
     }
 }
 
@@ -445,6 +605,282 @@ fn spawn_stdout_reader(
             }
         }
     });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HttpJsonRpcResponse {
+    status_code: u16,
+    body: Vec<u8>,
+    body_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedHttpUrl {
+    scheme: String,
+    host: String,
+    port: u16,
+    path: String,
+    authority: String,
+    origin: String,
+}
+
+impl ParsedHttpUrl {
+    fn parse(url: &str) -> Result<Self, EvaError> {
+        let (scheme, rest) = url
+            .split_once("://")
+            .ok_or_else(|| EvaError::invalid_argument("MCP HTTP URL must include a scheme"))?;
+        if !matches!(scheme, "http" | "https") {
+            return Err(
+                EvaError::invalid_argument("MCP HTTP URL scheme is unsupported")
+                    .with_context("url", url),
+            );
+        }
+        let authority = rest
+            .split(['/', '?', '#'])
+            .next()
+            .filter(|authority| !authority.trim().is_empty())
+            .ok_or_else(|| EvaError::invalid_argument("MCP HTTP URL must include a host"))?;
+        if authority.contains('@') {
+            return Err(
+                EvaError::invalid_argument("MCP HTTP URL must not include userinfo")
+                    .with_context("url", url),
+            );
+        }
+        let (host, port) = parse_http_authority(scheme, authority)?;
+        let path_start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let path = if path_start < rest.len() {
+            let value = &rest[path_start..];
+            if value.starts_with('?') || value.starts_with('#') {
+                format!("/{value}")
+            } else {
+                value.to_owned()
+            }
+        } else {
+            "/".to_owned()
+        };
+        Ok(Self {
+            scheme: scheme.to_owned(),
+            host,
+            port,
+            path,
+            authority: authority.to_owned(),
+            origin: format!("{scheme}://{authority}"),
+        })
+    }
+}
+
+fn parse_http_authority(scheme: &str, authority: &str) -> Result<(String, u16), EvaError> {
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    if let Some((host, port)) = authority.rsplit_once(':') {
+        if !host.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) {
+            let port = port.parse::<u16>().map_err(|error| {
+                EvaError::invalid_argument("MCP HTTP URL port is invalid")
+                    .with_context("port", port)
+                    .with_context("parse_error", error.to_string())
+            })?;
+            return Ok((host.to_owned(), port));
+        }
+    }
+    Ok((authority.to_owned(), default_port))
+}
+
+fn send_http_json_rpc_request(
+    endpoint: &str,
+    headers: &BTreeMap<String, String>,
+    body: &str,
+    timeout: Duration,
+    output_limit_bytes: usize,
+) -> Result<HttpJsonRpcResponse, EvaError> {
+    let parsed = ParsedHttpUrl::parse(endpoint)?;
+    if parsed.scheme != "http" {
+        return Err(EvaError::unsupported(
+            "MCP HTTP JSON-RPC execution requires a TLS client for https endpoints",
+        )
+        .with_context("endpoint", endpoint)
+        .with_context("scheme", parsed.scheme));
+    }
+    let mut addrs = (parsed.host.as_str(), parsed.port)
+        .to_socket_addrs()
+        .map_err(|error| {
+            EvaError::unavailable("failed to resolve MCP HTTP server")
+                .with_context("host", &parsed.host)
+                .with_context("io_error", error.to_string())
+        })?;
+    let addr = addrs.next().ok_or_else(|| {
+        EvaError::unavailable("MCP HTTP server host did not resolve")
+            .with_context("host", &parsed.host)
+    })?;
+    let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|error| {
+        EvaError::unavailable("failed to connect MCP HTTP server")
+            .with_context("origin", &parsed.origin)
+            .with_context("io_error", error.to_string())
+    })?;
+    if !timeout.is_zero() {
+        stream
+            .set_read_timeout(Some(timeout))
+            .and_then(|_| stream.set_write_timeout(Some(timeout)))
+            .map_err(|error| {
+                EvaError::unavailable("failed to configure MCP HTTP timeout")
+                    .with_context("origin", &parsed.origin)
+                    .with_context("io_error", error.to_string())
+            })?;
+    }
+
+    let mut request = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n",
+        parsed.path,
+        parsed.authority,
+        body.len()
+    );
+    for (name, value) in headers {
+        validate_http_header(name, value)?;
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    request.push_str("\r\n");
+    stream.write_all(request.as_bytes()).map_err(|error| {
+        EvaError::unavailable("failed to write MCP HTTP request")
+            .with_context("origin", &parsed.origin)
+            .with_context("io_error", error.to_string())
+    })?;
+    stream.write_all(body.as_bytes()).map_err(|error| {
+        EvaError::unavailable("failed to write MCP HTTP body")
+            .with_context("origin", &parsed.origin)
+            .with_context("io_error", error.to_string())
+    })?;
+
+    read_http_json_rpc_response(&mut stream, &parsed.origin, output_limit_bytes)
+}
+
+const HTTP_HEADER_LIMIT_BYTES: usize = 64 * 1024;
+
+fn read_http_json_rpc_response(
+    stream: &mut TcpStream,
+    origin: &str,
+    output_limit_bytes: usize,
+) -> Result<HttpJsonRpcResponse, EvaError> {
+    if output_limit_bytes == 0 {
+        return Err(EvaError::invalid_argument(
+            "MCP HTTP response output limit must be greater than zero",
+        ));
+    }
+    let mut header_bytes = Vec::new();
+    let mut status_code = None;
+    let mut body = Vec::new();
+    let mut body_truncated = false;
+    let mut buffer = [0_u8; 8192];
+
+    loop {
+        let read = stream.read(&mut buffer).map_err(|error| {
+            EvaError::unavailable("failed to read MCP HTTP response")
+                .with_context("origin", origin)
+                .with_context("io_error", error.to_string())
+        })?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buffer[..read];
+        if status_code.is_none() {
+            header_bytes.extend_from_slice(chunk);
+            if header_bytes.len() > HTTP_HEADER_LIMIT_BYTES {
+                return Err(
+                    EvaError::conflict("MCP HTTP response headers exceeded limit")
+                        .with_context("origin", origin)
+                        .with_context("header_limit_bytes", HTTP_HEADER_LIMIT_BYTES.to_string()),
+                );
+            }
+            if let Some(header_end) = http_header_end(&header_bytes) {
+                let head = String::from_utf8_lossy(&header_bytes[..header_end]).into_owned();
+                status_code = Some(parse_http_status_code(&head)?);
+                let body_start = header_end + 4;
+                append_http_body(
+                    &header_bytes[body_start..],
+                    output_limit_bytes,
+                    &mut body,
+                    &mut body_truncated,
+                );
+                header_bytes.clear();
+            }
+        } else {
+            append_http_body(chunk, output_limit_bytes, &mut body, &mut body_truncated);
+        }
+        if body_truncated {
+            break;
+        }
+    }
+
+    let status_code = status_code.ok_or_else(|| {
+        EvaError::unavailable("MCP HTTP server returned malformed response")
+            .with_context("response", "missing header terminator")
+    })?;
+    Ok(HttpJsonRpcResponse {
+        status_code,
+        body,
+        body_truncated,
+    })
+}
+
+fn append_http_body(
+    chunk: &[u8],
+    output_limit_bytes: usize,
+    body: &mut Vec<u8>,
+    body_truncated: &mut bool,
+) {
+    if chunk.is_empty() || *body_truncated {
+        return;
+    }
+    let remaining = output_limit_bytes.saturating_sub(body.len());
+    if chunk.len() > remaining {
+        body.extend_from_slice(&chunk[..remaining]);
+        *body_truncated = true;
+    } else {
+        body.extend_from_slice(chunk);
+    }
+}
+
+fn http_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_http_status_code(head: &str) -> Result<u16, EvaError> {
+    let status_line = head.lines().next().ok_or_else(|| {
+        EvaError::unavailable("MCP HTTP server returned malformed response")
+            .with_context("response", "missing status line")
+    })?;
+    status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| {
+            EvaError::unavailable("MCP HTTP server returned malformed response")
+                .with_context("response", "missing status code")
+        })?
+        .parse::<u16>()
+        .map_err(|error| {
+            EvaError::unavailable("MCP HTTP server returned invalid status code")
+                .with_context("parse_error", error.to_string())
+        })
+}
+
+fn validate_http_header(name: &str, value: &str) -> Result<(), EvaError> {
+    if name.trim().is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(
+            EvaError::invalid_argument("MCP HTTP header name is unsupported")
+                .with_context("header", name),
+        );
+    }
+    if value.contains('\r') || value.contains('\n') {
+        return Err(
+            EvaError::invalid_argument("MCP HTTP header value must not contain newlines")
+                .with_context("header", name),
+        );
+    }
+    Ok(())
 }
 
 fn validate_client_config(config: &McpJsonRpcClientConfig) -> Result<(), EvaError> {
@@ -820,6 +1256,9 @@ mod tests {
     use super::*;
     use eva_core::ErrorKind;
     use std::collections::VecDeque;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc::channel;
+    use std::thread;
 
     #[derive(Debug, Default)]
     struct FakeTransport {
@@ -860,7 +1299,12 @@ mod tests {
                 .unwrap_or_else(|| Err(EvaError::unavailable("fake response missing")))
         }
 
-        fn notify(&mut self, notification: &str) -> Result<(), EvaError> {
+        fn notify(
+            &mut self,
+            notification: &str,
+            _timeout: Duration,
+            _output_limit_bytes: usize,
+        ) -> Result<(), EvaError> {
             self.notifications.push(notification.to_owned());
             Ok(())
         }
@@ -898,6 +1342,78 @@ mod tests {
     }
 
     #[test]
+    fn json_rpc_client_calls_fake_http_mcp_server_with_auth_header() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let (sender, receiver) = channel();
+        let server = thread::spawn(move || {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_test_http_request(&mut stream);
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                let response = if body.contains("\"method\":\"initialize\"") {
+                    http_response(
+                        200,
+                        &response(1, "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake-http\",\"version\":\"1\"}}"),
+                    )
+                } else if body.contains("notifications/initialized") {
+                    http_response(202, "")
+                } else if body.contains("\"method\":\"tools/list\"") {
+                    http_response(
+                        200,
+                        &response(2, "{\"tools\":[{\"name\":\"list_issues\",\"inputSchema\":{\"type\":\"object\"}}]}"),
+                    )
+                } else if body.contains("\"method\":\"tools/call\"") {
+                    http_response(
+                        200,
+                        &response(
+                            3,
+                            "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"isError\":false}",
+                        ),
+                    )
+                } else {
+                    http_response(400, "")
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+                sender.send(request).unwrap();
+            }
+        });
+        let mut headers = BTreeMap::new();
+        headers.insert("Authorization".to_owned(), "Bearer test-token".to_owned());
+
+        let report = client(["list_issues"])
+            .call_http(
+                &endpoint,
+                headers,
+                RequestId::parse("req-mcp-http").unwrap(),
+                "list_issues",
+                "{\"owner\":\"eva\"}",
+            )
+            .unwrap();
+
+        assert_eq!(report.tool, "list_issues");
+        assert!(report
+            .audit
+            .contains(&"mcp.http.exchange_count:3".to_owned()));
+        assert!(report
+            .audit
+            .contains(&"mcp.http.notification_count:1".to_owned()));
+        let requests = (0..4)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(1)).unwrap())
+            .collect::<Vec<_>>();
+        server.join().unwrap();
+        assert!(requests
+            .iter()
+            .all(|request| request.contains("Authorization: Bearer test-token")));
+        assert!(requests
+            .iter()
+            .any(|request| request.contains("\"method\":\"tools/call\"")));
+    }
+
+    #[test]
     fn blocked_tool_does_not_send_rpc() {
         let client = client(["list_issues"]);
         let mut transport = FakeTransport::default();
@@ -914,6 +1430,21 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
         assert!(transport.requests.is_empty());
         assert!(transport.notifications.is_empty());
+    }
+
+    #[test]
+    fn blocked_http_tool_is_rejected_before_endpoint_validation() {
+        let error = client(["list_issues"])
+            .call_http(
+                "not-a-url",
+                BTreeMap::new(),
+                RequestId::parse("req-mcp-http-blocked").unwrap(),
+                "delete_repo",
+                "{}",
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     }
 
     #[test]
@@ -997,5 +1528,49 @@ mod tests {
 
     fn response(id: u64, result: &str) -> String {
         format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}")
+    }
+
+    fn http_response(status: u16, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn read_test_http_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 512];
+        loop {
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+            if let Some(header_end) = http_header_end(&bytes) {
+                let header = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
+                let content_length = header
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                let body_start = header_end + 4;
+                while bytes.len().saturating_sub(body_start) < content_length {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buffer[..read]);
+                }
+                break;
+            }
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 }

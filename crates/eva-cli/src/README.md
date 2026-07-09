@@ -30,6 +30,7 @@
 | `run/emit_cmd.rs` | V1.11.5.1 已实现 | `emit` parser、typed `eva-core::Event` 构造、in-memory/durable EventBus publish、text/JSON receipt formatter；支持 payload、target、request/generation 和 trace metadata。 |
 | `run/agent_cmd.rs` | V1.12.5 已更新 | `agent status/drain/reload` parser、AgentRuntime/AgentLifecycle/DrainCoordinator/GenerationController evidence 构造、text/JSON formatter；`drain/reload` 连接 running daemon 时通过 mailbox 写入 daemon mutation state，无 daemon 时保持 `mutation_executed:false` evidence。 |
 | `run/daemon_cmd.rs` | V1.13.5 已更新 | `daemon start/status/stop/shutdown/submit/cancel/drain/reload` parser、foreground daemon smoke/control mailbox writer；`start` JSON 新增 task/provider process recovery report。 |
+| `run/version_cmd.rs` runtime marker | V1.13.6 已更新 | `version` / `--version` 输出新增 `mcp_http_auth_v1.13.6`，用于标识 MCP HTTP/auth transport boundary。 |
 | `run/capability_cmd.rs` | V1.11.5.3 已实现 | `capability list/probe/call` parser、CapabilityRegistry/provider selection/permission gate/runtime policy/adapter-backed host evidence 构造、text/JSON formatter；`call` 默认 dry-run，确认后受控 invoke。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |

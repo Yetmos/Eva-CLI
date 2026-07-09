@@ -11,8 +11,8 @@ pub mod tool_mapping;
 
 pub use client::{InMemoryMcpClient, McpCallReport, McpProbeReport};
 pub use json_rpc::{
-    McpJsonRpcCallReport, McpJsonRpcClient, McpJsonRpcClientConfig, McpJsonRpcTool,
-    McpJsonRpcTransport, McpStdioJsonRpcTransport,
+    McpHttpJsonRpcTransport, McpJsonRpcCallReport, McpJsonRpcClient, McpJsonRpcClientConfig,
+    McpJsonRpcTool, McpJsonRpcTransport, McpStdioJsonRpcTransport,
 };
 pub use lifecycle::{
     McpOrphanCleanupReport, McpProcessInspector, McpRegisteredSession, McpSessionHealthReport,

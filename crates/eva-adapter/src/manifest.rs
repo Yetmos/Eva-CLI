@@ -116,7 +116,10 @@ impl AdapterHandle {
             source_path: manifest.path.display().to_string(),
             command: manifest.extra_string("command").map(str::to_owned),
             args: manifest.extra_string_list("args"),
-            endpoint: manifest.extra_string("endpoint").map(str::to_owned),
+            endpoint: manifest
+                .extra_string("endpoint")
+                .or_else(|| manifest.nested_extra_string("mcp", "endpoint"))
+                .map(str::to_owned),
             method: manifest.extra_string("method").map(str::to_owned),
             credential_env: manifest.nested_extra_string_list("permissions", "env"),
             timeout_ms: manifest.nested_extra_u64("limits", "timeout_ms"),
@@ -132,6 +135,7 @@ impl AdapterHandle {
             headers: {
                 let mut headers = manifest.extra_string_map("headers");
                 headers.extend(manifest.nested_extra_string_map("http", "headers"));
+                headers.extend(manifest.nested_extra_string_map("mcp", "headers"));
                 headers
             },
             mcp_server_transport: manifest
@@ -318,10 +322,22 @@ impl AdapterCapabilityBinding {
 mod tests {
     use super::*;
     use eva_config::load_project_config;
+    use eva_config::manifest::adapter::load_adapter_manifest;
     use std::path::{Path, PathBuf};
 
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "eva-adapter-manifest-{name}-{}-{now}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -362,6 +378,51 @@ mod tests {
             skill_handle.skill_input_schema.as_ref().unwrap().required,
             vec!["scope".to_owned()]
         );
+    }
+
+    #[test]
+    fn handle_reads_mcp_http_endpoint_and_headers() {
+        let root = temp_root("mcp-http");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("mcp-http.yaml");
+        std::fs::write(
+            &path,
+            r#"
+id: github-mcp-http
+name: GitHub MCP HTTP Adapter
+version: 1.0.0
+enabled: true
+transport: mcp
+mcp:
+  server_transport: http
+  endpoint: http://127.0.0.1:8765/mcp
+  headers:
+    Authorization: env:GITHUB_TOKEN
+  tool_allowlist:
+    - list_issues
+capabilities:
+  - github.issue.list
+permissions: {}
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+
+        let manifest = load_adapter_manifest(&path).unwrap();
+        let handle = AdapterHandle::from_manifest(&manifest);
+
+        assert_eq!(handle.mcp_server_transport.as_deref(), Some("http"));
+        assert_eq!(
+            handle.endpoint.as_deref(),
+            Some("http://127.0.0.1:8765/mcp")
+        );
+        assert_eq!(
+            handle.headers.get("Authorization").map(String::as_str),
+            Some("env:GITHUB_TOKEN")
+        );
+        assert_eq!(handle.mcp_tools, vec!["list_issues".to_owned()]);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

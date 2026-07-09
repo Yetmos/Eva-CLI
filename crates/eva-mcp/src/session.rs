@@ -12,6 +12,7 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpServerTransport {
     Stdio,
+    Http,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +97,7 @@ impl McpServerTransport {
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "stdio" => Ok(Self::Stdio),
+            "http" => Ok(Self::Http),
             _ => Err(EvaError::unsupported("unsupported MCP server transport")
                 .with_context("server_transport", value)),
         }
@@ -104,6 +106,7 @@ impl McpServerTransport {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Stdio => "stdio",
+            Self::Http => "http",
         }
     }
 }
@@ -230,6 +233,13 @@ impl McpSessionManager {
         config: McpSessionConfig,
     ) -> Result<McpSession, EvaError> {
         validate_config(&config)?;
+        if config.server_transport != McpServerTransport::Stdio {
+            return Err(EvaError::unsupported(
+                "MCP session manager only starts stdio process sessions",
+            )
+            .with_context("adapter_id", config.adapter_id.as_str())
+            .with_context("server_transport", config.server_transport.as_str()));
+        }
         let request = McpProcessStartRequest {
             adapter_id: config.adapter_id.clone(),
             server_transport: config.server_transport,

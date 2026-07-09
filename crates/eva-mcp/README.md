@@ -86,6 +86,7 @@ V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on
 
 V1.8.2 adds a controlled JSON-RPC stdio client transport. It sends `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` requests with generated request ids, blocks non-allowlisted tools before writing RPC, and maps timeout, protocol, JSON-RPC error object, and oversized-response failures into stable `EvaError`s. Streaming responses, authentication, compatibility matrices, and long-lived session supervision remain later work.
 V1.8.3 adds a session lifecycle registry around the existing supervisor contract. It records started sessions, reports health, removes sessions on shutdown, aborts controlled streams, cleans up missing-process orphans, and rejects non-explicit server tools such as unlimited Topic/event/state proxies with stable audit entries.
+V1.13.6 adds an MCP JSON-RPC HTTP client boundary for manifest-selected `http://` MCP endpoints. The client posts `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` over bounded HTTP requests, preserves timeout/output-limit/error-object mapping, sends configured auth headers, and still rejects non-allowlisted tools before any RPC is sent. HTTPS/TLS client support, full streaming lifecycle, and compatibility matrices remain follow-up work.
 
 ## P5 Session Boundary
 
@@ -122,7 +123,7 @@ V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on
 - `EvaMcpServerSurface::v11_minimal()` documents the first server-facing tool surface (`adapter.list`, `adapter.probe`) without opening a socket or stdio server.
 - `McpSchemaFamily` names the stable schema envelope families used by future compatibility tests.
 
-V1.8.3 adds a session lifecycle registry and explicit-tool server gate. Real OS process supervision, authentication, compatibility matrices, and the streaming data plane remain later work.
+V1.8.3 adds a session lifecycle registry and explicit-tool server gate. V1.13.6 adds the bounded HTTP JSON-RPC client/auth boundary for `http://` MCP endpoints. Real OS process supervision, HTTPS/TLS client coverage, compatibility matrices, and the full streaming data plane remain later work.
 
 ## V1.1 Verification
 

@@ -8,7 +8,8 @@ use crate::stream::{
 };
 use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::EvaError;
-use eva_mcp::{McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig};
+use eva_mcp::{McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig, McpServerTransport};
+use std::collections::BTreeMap;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "MCP transport with tool, resource, and prompt allowlists";
@@ -23,15 +24,16 @@ pub fn invoke(
             .with_context("capability", invocation.capability.as_str())
     })?;
     validate_input_size(handle, &invocation.input)?;
+    let server_transport =
+        McpServerTransport::parse(handle.mcp_server_transport.as_deref().unwrap_or("stdio"))?;
     let credential_scope = validate_credential_scope_for_provider(
         invocation.credential_scope(),
         &handle.id,
         &invocation.request_id,
         &invocation.capability,
-        false,
+        server_transport == McpServerTransport::Http,
     )?
     .cloned();
-    let session_config = handle.mcp_session_config()?;
     let request_id = invocation.request_id.clone();
     let capability = invocation.capability.clone();
     let trace = invocation.trace_for_adapter(&handle.id);
@@ -44,12 +46,44 @@ pub fn invoke(
             .with_request_timeout_ms(timeout_ms(handle))
             .with_output_limit_bytes(output_limit_bytes(handle)),
     );
-    let call = client.call_stdio(
-        &session_config,
-        invocation.request_id,
-        tool,
-        &invocation.input,
-    )?;
+    let mut sensitive_values = Vec::new();
+    let mut transport_audit = vec![format!(
+        "mcp.server_transport:{}",
+        server_transport.as_str()
+    )];
+    let call = match server_transport {
+        McpServerTransport::Stdio => {
+            let session_config = handle.mcp_session_config()?;
+            transport_audit.push(format!("mcp.command:{}", session_config.process.command));
+            client.call_stdio(
+                &session_config,
+                invocation.request_id,
+                tool,
+                &invocation.input,
+            )?
+        }
+        McpServerTransport::Http => {
+            let endpoint = handle.endpoint.as_deref().ok_or_else(|| {
+                EvaError::invalid_argument("MCP HTTP adapter is missing endpoint")
+                    .with_context("adapter_id", handle.id.as_str())
+            })?;
+            let mut header_plan = mcp_http_headers(handle)?;
+            if let Some(scope) = &credential_scope {
+                scope.apply_headers(&mut header_plan.headers);
+                sensitive_values.extend(scope.redaction_values());
+            }
+            sensitive_values.extend(header_plan.sensitive_values.clone());
+            transport_audit.push(format!("mcp.endpoint:{}", endpoint));
+            transport_audit.extend(header_plan.audit);
+            client.call_http(
+                endpoint,
+                header_plan.headers,
+                invocation.request_id,
+                tool,
+                &invocation.input,
+            )?
+        }
+    };
     let output = call.output.as_text().unwrap_or_default().to_owned();
     let output_stream = capture_provider_bytes(
         ProviderStreamConfig::new("result", output_limit_bytes(handle)).with_artifact(
@@ -65,17 +99,13 @@ pub fn invoke(
         output.into_bytes(),
         1,
         false,
-        &[],
+        &sensitive_values,
     )?;
     let mut audit = vec![
         format!("adapter.invoked:{}", handle.id.as_str()),
         format!("mcp.tool.call:{tool}"),
-        format!(
-            "mcp.server_transport:{}",
-            session_config.server_transport.as_str()
-        ),
-        format!("mcp.command:{}", session_config.process.command),
     ];
+    audit.extend(transport_audit);
     if let Some(scope) = &credential_scope {
         audit.extend(scope.audit_entries());
     }
@@ -111,6 +141,44 @@ fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaErr
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct McpHeaderPlan {
+    headers: BTreeMap<String, String>,
+    audit: Vec<String>,
+    sensitive_values: Vec<String>,
+}
+
+fn mcp_http_headers(handle: &AdapterHandle) -> Result<McpHeaderPlan, EvaError> {
+    let mut headers = BTreeMap::new();
+    let mut audit = Vec::new();
+    let mut sensitive_values = Vec::new();
+    for (name, value) in &handle.headers {
+        if let Some(env_name) = value.strip_prefix("env:") {
+            let env_value = std::env::var(env_name).map_err(|_| {
+                EvaError::permission_denied("MCP HTTP credential environment variable is missing")
+                    .with_provider_code("missing_credential")
+                    .with_context("adapter_id", handle.id.as_str())
+                    .with_context("env", env_name)
+            })?;
+            headers.insert(name.clone(), env_value.clone());
+            if !env_value.is_empty() {
+                sensitive_values.push(env_value);
+            }
+            audit.push(format!(
+                "mcp.credential_header:{name}:env:{env_name}:redacted"
+            ));
+        } else {
+            headers.insert(name.clone(), value.clone());
+            audit.push(format!("mcp.http.header:{name}:literal"));
+        }
+    }
+    Ok(McpHeaderPlan {
+        headers,
+        audit,
+        sensitive_values,
+    })
+}
+
 fn timeout_ms(handle: &AdapterHandle) -> u64 {
     handle.timeout_ms.unwrap_or(30_000)
 }
@@ -136,4 +204,100 @@ fn json_string(value: &str) -> String {
     }
     escaped.push('"');
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::supervisor::ProviderCredentialScope;
+    use eva_config::AdapterTransport;
+    use eva_core::{CapabilityName, ErrorKind, RequestId};
+
+    #[test]
+    fn http_mcp_requires_provider_credential_scope_before_rpc() {
+        let handle = http_mcp_handle(BTreeMap::new());
+        let error = invoke(
+            &handle,
+            AdapterInvocation::new(
+                RequestId::parse("req-mcp-missing-scope").unwrap(),
+                CapabilityName::parse("github.issue.list").unwrap(),
+            ),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(error.message().contains("credential session"));
+    }
+
+    #[test]
+    fn http_mcp_missing_auth_env_returns_policy_error() {
+        let env_name = "EVA_TEST_MCP_HTTP_MISSING_AUTH";
+        std::env::remove_var(env_name);
+        let handle = http_mcp_handle(BTreeMap::from([(
+            "Authorization".to_owned(),
+            format!("env:{env_name}"),
+        )]));
+        let request_id = RequestId::parse("req-mcp-missing-auth").unwrap();
+        let capability = CapabilityName::parse("github.issue.list").unwrap();
+        let scope = ProviderCredentialScope::new_for_session(
+            "session-mcp-auth",
+            handle.id.clone(),
+            request_id.clone(),
+            capability.clone(),
+        );
+
+        let error = invoke(
+            &handle,
+            AdapterInvocation::new(request_id, capability).with_credential_scope(scope),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("missing_credential")
+        );
+    }
+
+    fn http_mcp_handle(headers: BTreeMap<String, String>) -> AdapterHandle {
+        AdapterHandle {
+            id: eva_core::AdapterId::parse("mcp-http-test").unwrap(),
+            name: "MCP HTTP Test".to_owned(),
+            version: "1.0.0".to_owned(),
+            enabled: true,
+            transport: AdapterTransport::Mcp,
+            capabilities: vec![CapabilityName::parse("github.issue.list").unwrap()],
+            source_path: "test".to_owned(),
+            command: None,
+            args: Vec::new(),
+            endpoint: Some("http://127.0.0.1:1/mcp".to_owned()),
+            method: None,
+            credential_env: Vec::new(),
+            timeout_ms: Some(1_000),
+            max_concurrency: None,
+            output_limit_bytes: Some(4096),
+            max_prompt_bytes: Some(4096),
+            rate_limit: None,
+            circuit_breaker: None,
+            headers,
+            mcp_server_transport: Some("http".to_owned()),
+            mcp_command: None,
+            mcp_args: Vec::new(),
+            mcp_tools: vec!["list_issues".to_owned()],
+            skill_id: None,
+            skill_kind: None,
+            skill_runtime_gate: None,
+            skill_path: None,
+            skill_entry_type: None,
+            skill_runner_command: None,
+            skill_runner_args: Vec::new(),
+            skill_artifact_root: None,
+            skill_input_schema: None,
+            hardware_logical_name: None,
+            hardware_device_class: None,
+            hardware_driver_id: None,
+            hardware_driver_kind: None,
+            bindings: Vec::new(),
+        }
+    }
 }
