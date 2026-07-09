@@ -448,8 +448,8 @@ mod tests {
 
     fn evidence(status: &str, observed_ms: u64) -> ReleaseBenchmarkEvidence {
         ReleaseBenchmarkEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             COMMIT,
             status,
             vec![measurement(observed_ms)],

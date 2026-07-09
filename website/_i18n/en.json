@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source V1.7.4-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, Lua resource limits, and Lua hot-reload lifecycle evidence."
+    "description": "Eva-CLI is an open-source V1.11.4-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, Lua resource limits, Lua hot-reload lifecycle evidence, release distribution evidence, and CLI command module split coverage."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,24 +38,24 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "V1.7.4-alpha runs Lua on_event(ctx) inside a restricted mlua/Lua 5.4 boundary, keeps read-only ctx, ctx.host.log/audit, ctx.tools.call, and adds timeout, instruction-budget, memory-budget, shadow-load, route-gate, drain, and rollback-audit boundaries.",
+    "runtimePanelNote": "V1.11.4-alpha keeps the V1.7.4 Lua hot-reload lifecycle boundaries and adds the V1.8 to V1.11 release evidence line: adapter, MCP, Skill, policy, discovery, memory, observability, hardware apply gates, distribution checks, external scanner gates, benchmark evidence, and CLI command module split coverage.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
     "progressAction": "Development progress",
     "progressEyebrow": "Development progress",
-    "progressTitle": "From architecture scaffold to durable runtime and Lua VM execution",
+    "progressTitle": "From architecture scaffold to release evidence and command modules",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.7.4-alpha Lua hot-reload lifecycle is implemented",
-    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7.1 restricted Lua VM adapter, V1.7.2 host bindings, V1.7.3 resource limits, and V1.7.4 shadow-load health checks, scheduler generation route gating, generation drain evidence, and rollback audit evidence.",
+    "progressCurrentTitle": "V1.11.4-alpha CLI command module split is implemented",
+    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7 Lua execution and hot-reload lifecycle gates, the V1.8 to V1.10 runtime capability baselines, the V1.11 release distribution evidence gates, and V1.11.4 CLI command module split coverage.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Start V1.8 provider, MCP, and Skill runner execution behind policy, timeout, audit, and output limits.",
-      "Wire daemon-driven hot-reload orchestration on top of the current V1.7.4 shadow-load, route-gate, drain, and rollback-audit boundaries.",
-      "Keep signed installers, OS packages, provenance bundles, and destructive apply gates behind later V1.10/V1.11 milestones."
+      "Finish V1.11.5 runtime inspection commands for typed event emission, Agent lifecycle controls, and capability routing.",
+      "Keep every new command behind stable text/JSON envelopes, trace fields, policy gates, and dry-run or confirmation boundaries where mutation is possible.",
+      "Use the V1.11.4 split modules as the baseline for the final V1.x CLI command surface."
     ],
     "featuredBlogEyebrow": "Recommended reading",
     "featuredBlogTitle": "Latest design notes from the blog",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "Now",
-        "label": "V1.7.4-alpha Lua hot-reload lifecycle",
-        "description": "The V1.6 durable baseline is in place, V1.7.1 runs Lua on_event(ctx) through a restricted mlua/Lua 5.4 adapter, V1.7.2 adds host bindings, V1.7.3 adds resource limits, and V1.7.4 adds shadow-load health checks, generation route gates, drain evidence, and rollback audit evidence."
+        "label": "V1.11.4-alpha CLI command module split",
+        "description": "The V1.6 durable baseline, V1.7 Lua execution lifecycle, V1.8 to V1.10 runtime capability baselines, V1.11 release evidence gates, and V1.11.4 command module split coverage are in place."
       },
       {
         "status": "later",
@@ -163,6 +163,11 @@
         "id": "install-upgrade-uninstall",
         "title": "Install, Upgrade, And Uninstall",
         "description": "The V1.11.2 native archive install smoke path, upgrade and uninstall commands, release-distribution evidence, and package-manager dry-run gate."
+      },
+      {
+        "id": "release-notes-v1.11.4",
+        "title": "V1.11.4 Alpha Release Notes",
+        "description": "The alpha prerelease that fixes version metadata on the CLI module split checkpoint, adds release notes, and aligns release readiness evidence with the V1.11.4 tag."
       },
       {
         "id": "release-notes-v1.7.4",
@@ -373,6 +378,11 @@
         "description": "The JSON envelope, exit-code, command-surface, and deprecation guarantees for the V1.5 source release."
       },
       {
+        "id": "release-notes-v1.11.4",
+        "title": "V1.11.4 Alpha Release Notes",
+        "description": "The alpha prerelease that fixes version metadata on the CLI module split checkpoint, adds release notes, and aligns release readiness evidence with the V1.11.4 tag."
+      },
+      {
         "id": "release-notes-v1.7.4",
         "title": "V1.7.4 Alpha Release Notes",
         "description": "The alpha prerelease that adds Lua shadow-load health checks, generation route gating, drain evidence, rollback audit evidence, and the Lua hot-reload lifecycle release gate."
@@ -461,7 +471,7 @@
   "feedback": {
     "eyebrow": "Feedback",
     "title": "Feedback and suggestions",
-    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.7.4-alpha Lua hot-reload lifecycle checkpoint, so concrete reports about command output, docs, package pulls, Lua on_event(ctx), ctx.tools.call behavior, timeout/cancel behavior, backend diagnostics, generation route gates, rollback audit evidence, and future apply-path contracts are especially useful.",
+    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.11.4-alpha CLI command module split checkpoint, so concrete reports about command output, docs, package pulls, release evidence gates, backend diagnostics, generation route gates, rollback audit evidence, and the V1.11.5 runtime command surface are especially useful.",
     "contactLabel": "Contact email",
     "categoryLabel": "Feedback type",
     "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],

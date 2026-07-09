@@ -11,8 +11,8 @@ use crate::scanner::{ReleaseSecurityScanEvidence, ReleaseSecurityScanVerificatio
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
 
-const CURRENT_RELEASE_VERSION: &str = "1.7.4-alpha";
-const CURRENT_RELEASE_LABEL: &str = "V1.7.4-alpha";
+const CURRENT_RELEASE_VERSION: &str = "1.11.4-alpha";
+const CURRENT_RELEASE_LABEL: &str = "V1.11.4-alpha";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseGateStatus {
@@ -420,7 +420,7 @@ impl ReleaseHardeningService {
             ],
             compatibility_policy: CompatibilityPolicy::v15(),
             audit: vec![
-                "migration:v1.5.1_to_v1.7.4-alpha:no_breaking_changes".to_owned(),
+                "migration:v1.5.1_to_v1.11.4-alpha:no_breaking_changes".to_owned(),
                 "json_envelope_and_exit_codes_remain_stable".to_owned(),
                 "durable_task_audit_artifact_additive_alpha_baseline".to_owned(),
             ],
@@ -572,7 +572,7 @@ impl ReleaseHardeningService {
                     "docs/en/release/install-upgrade-uninstall.md".to_owned(),
                     "docs/en/release/v1.5-migration-guide.md".to_owned(),
                     "docs/en/release/v1.5-compatibility-policy.md".to_owned(),
-                    "docs/en/release/release-notes-v1.7.4.md".to_owned(),
+                    "docs/en/release/release-notes-v1.11.4.md".to_owned(),
                 ],
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },
@@ -587,7 +587,7 @@ fn release_audit(
     benchmark_report: Option<&ReleaseBenchmarkVerificationReport>,
 ) -> Vec<String> {
     let mut audit = vec![
-        "release:readiness:v1.7.4-alpha".to_owned(),
+        "release:readiness:v1.11.4-alpha".to_owned(),
         "no_unauthorized_destructive_restore_or_process_switch".to_owned(),
         "all_external_capability_checks_are_plan_or_probe_first".to_owned(),
         "durable_backend_layout_baseline_ready".to_owned(),
@@ -1051,7 +1051,7 @@ fn lua_hot_reload_lifecycle_gate() -> ReleaseGate {
         domain: "lua_hot_reload_lifecycle".to_owned(),
         status: ReleaseGateStatus::Pass,
         required: true,
-        summary: "V1.7.4 Lua shadow load, generation route gating, drain evidence, and rollback audit boundaries are implemented".to_owned(),
+        summary: "V1.7.4 Lua shadow load, generation route gating, drain evidence, and rollback audit boundaries remain implemented".to_owned(),
         evidence: vec![
             "crates/eva-lua-host/src/hot_reload.rs LuaShadowLoader".to_owned(),
             "crates/eva-scheduler/src/generation.rs GenerationRouteGate".to_owned(),
@@ -1155,7 +1155,7 @@ mod tests {
     fn artifact_evidence(signed: bool) -> ReleaseArtifactEvidence {
         let key = ReleaseArtifactSigningKey::local_development();
         let artifact = crate::artifact::ReleaseArtifactSubject::new(
-            "eva-cli-1.7.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
+            "eva-cli-1.11.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
             "x86_64-unknown-linux-gnu",
             "tar.gz",
             "eva",
@@ -1180,8 +1180,8 @@ mod tests {
         )
         .unwrap();
         let mut evidence = ReleaseArtifactEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             ARTIFACT_COMMIT,
             artifact,
             provenance,
@@ -1218,7 +1218,7 @@ mod tests {
             "ghcr",
             "ghcr.io/yetmos/eva-cli",
             "linux/amd64+linux/arm64",
-            "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:1.7.4-alpha",
+            "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:1.11.4-alpha",
             status,
         )
         .unwrap()
@@ -1228,8 +1228,8 @@ mod tests {
         package_status: &str,
     ) -> crate::distribution::ReleaseDistributionEvidence {
         crate::distribution::ReleaseDistributionEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             ARTIFACT_COMMIT,
             "docs/en/release/install-upgrade-uninstall.md",
             "docs/en/release/install-upgrade-uninstall.md",
@@ -1238,21 +1238,21 @@ mod tests {
                 install_smoke(
                     "windows",
                     "x86_64-pc-windows-msvc",
-                    "eva-cli-1.7.4-alpha-x86_64-pc-windows-msvc.zip",
+                    "eva-cli-1.11.4-alpha-x86_64-pc-windows-msvc.zip",
                     "zip",
                     "passed",
                 ),
                 install_smoke(
                     "linux",
                     "x86_64-unknown-linux-gnu",
-                    "eva-cli-1.7.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
+                    "eva-cli-1.11.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
                     "tar.gz",
                     "passed",
                 ),
                 install_smoke(
                     "macos",
                     "x86_64-apple-darwin",
-                    "eva-cli-1.7.4-alpha-x86_64-apple-darwin.tar.gz",
+                    "eva-cli-1.11.4-alpha-x86_64-apple-darwin.tar.gz",
                     "tar.gz",
                     "passed",
                 ),
@@ -1279,8 +1279,8 @@ mod tests {
         findings: Vec<crate::scanner::ReleaseSecurityScanFinding>,
     ) -> crate::scanner::ReleaseSecurityScanEvidence {
         crate::scanner::ReleaseSecurityScanEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             ARTIFACT_COMMIT,
             "cargo-audit",
             "1.0.0",
@@ -1309,8 +1309,8 @@ mod tests {
         observed_ms: u64,
     ) -> crate::benchmark::ReleaseBenchmarkEvidence {
         crate::benchmark::ReleaseBenchmarkEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             ARTIFACT_COMMIT,
             status,
             vec![benchmark_measurement(observed_ms)],

@@ -388,8 +388,8 @@ mod tests {
         findings: Vec<ReleaseSecurityScanFinding>,
     ) -> ReleaseSecurityScanEvidence {
         ReleaseSecurityScanEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             COMMIT,
             "cargo-audit",
             "1.0.0",

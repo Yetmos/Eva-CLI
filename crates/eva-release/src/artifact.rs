@@ -517,7 +517,7 @@ mod tests {
     fn signed_evidence() -> ReleaseArtifactEvidence {
         let key = ReleaseArtifactSigningKey::local_development();
         let artifact = ReleaseArtifactSubject::new(
-            "eva-cli-1.7.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
+            "eva-cli-1.11.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
             "x86_64-unknown-linux-gnu",
             "tar.gz",
             "eva",
@@ -539,8 +539,8 @@ mod tests {
             ReleaseArtifactSignature::new(key.key_id(), RELEASE_SIGNATURE_ALGORITHM, "pending")
                 .unwrap();
         let mut evidence = ReleaseArtifactEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             COMMIT,
             artifact,
             provenance,

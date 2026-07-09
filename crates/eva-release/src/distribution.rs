@@ -520,7 +520,7 @@ mod tests {
             "ghcr",
             "ghcr.io/yetmos/eva-cli",
             "linux/amd64+linux/arm64",
-            "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:1.7.4-alpha",
+            "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:1.11.4-alpha",
             status,
         )
         .unwrap()
@@ -528,8 +528,8 @@ mod tests {
 
     fn distribution_evidence() -> ReleaseDistributionEvidence {
         ReleaseDistributionEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             COMMIT,
             "docs/en/release/install-upgrade-uninstall.md",
             "docs/en/release/install-upgrade-uninstall.md",
@@ -538,21 +538,21 @@ mod tests {
                 smoke(
                     "windows",
                     "x86_64-pc-windows-msvc",
-                    "eva-cli-1.7.4-alpha-x86_64-pc-windows-msvc.zip",
+                    "eva-cli-1.11.4-alpha-x86_64-pc-windows-msvc.zip",
                     "zip",
                     "passed",
                 ),
                 smoke(
                     "linux",
                     "x86_64-unknown-linux-gnu",
-                    "eva-cli-1.7.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
+                    "eva-cli-1.11.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
                     "tar.gz",
                     "passed",
                 ),
                 smoke(
                     "macos",
                     "x86_64-apple-darwin",
-                    "eva-cli-1.7.4-alpha-x86_64-apple-darwin.tar.gz",
+                    "eva-cli-1.11.4-alpha-x86_64-apple-darwin.tar.gz",
                     "tar.gz",
                     "passed",
                 ),

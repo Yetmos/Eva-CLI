@@ -55,9 +55,9 @@ const EXIT_EXTERNAL_UNAVAILABLE: i32 = 5;
 const EXIT_USAGE: i32 = 64;
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
-const RELEASE_LABEL: &str = "V1.7.4-alpha";
+const RELEASE_LABEL: &str = "V1.11.4-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -82,6 +82,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "release security",
     "release perf",
     "release migration",
+    "cli command module split",
 ];
 
 /// Process entry point for the root binary shim.
@@ -1176,7 +1177,7 @@ mod tests {
         let commit = "0123456789abcdef0123456789abcdef01234567";
         let key = eva_release::ReleaseArtifactSigningKey::local_development();
         let artifact = eva_release::ReleaseArtifactSubject::new(
-            "eva-cli-1.7.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
+            "eva-cli-1.11.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
             "x86_64-unknown-linux-gnu",
             "tar.gz",
             "eva",
@@ -1201,8 +1202,8 @@ mod tests {
         )
         .unwrap();
         let mut evidence = eva_release::ReleaseArtifactEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             commit,
             artifact,
             provenance,
@@ -1241,13 +1242,13 @@ mod tests {
             "ghcr",
             "ghcr.io/yetmos/eva-cli",
             "linux/amd64+linux/arm64",
-            "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:1.7.4-alpha",
+            "docker buildx imagetools inspect ghcr.io/yetmos/eva-cli:1.11.4-alpha",
             package_status,
         )
         .unwrap();
         let evidence = eva_release::ReleaseDistributionEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             commit,
             install_doc,
             install_doc,
@@ -1256,19 +1257,19 @@ mod tests {
                 smoke(
                     "windows",
                     "x86_64-pc-windows-msvc",
-                    "eva-cli-1.7.4-alpha-x86_64-pc-windows-msvc.zip",
+                    "eva-cli-1.11.4-alpha-x86_64-pc-windows-msvc.zip",
                     "zip",
                 ),
                 smoke(
                     "linux",
                     "x86_64-unknown-linux-gnu",
-                    "eva-cli-1.7.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
+                    "eva-cli-1.11.4-alpha-x86_64-unknown-linux-gnu.tar.gz",
                     "tar.gz",
                 ),
                 smoke(
                     "macos",
                     "x86_64-apple-darwin",
-                    "eva-cli-1.7.4-alpha-x86_64-apple-darwin.tar.gz",
+                    "eva-cli-1.11.4-alpha-x86_64-apple-darwin.tar.gz",
                     "tar.gz",
                 ),
             ],
@@ -1302,8 +1303,8 @@ mod tests {
             })
             .unwrap_or_default();
         let evidence = eva_release::ReleaseSecurityScanEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             commit,
             "cargo-audit",
             "1.0.0",
@@ -1336,8 +1337,8 @@ mod tests {
         )
         .unwrap();
         let evidence = eva_release::ReleaseBenchmarkEvidence::new(
-            "1.7.4-alpha",
-            "v1.7.4-alpha",
+            "1.11.4-alpha",
+            "v1.11.4-alpha",
             commit,
             status,
             vec![measurement],
@@ -1675,18 +1676,18 @@ mod tests {
     }
 
     #[test]
-    fn version_text_and_json_report_v174_lua_hot_reload_lifecycle_alpha() {
+    fn version_text_and_json_report_v1114_cli_module_split_alpha() {
         let (text_exit, text_stdout, text_stderr) = run_cli(&["--version"]);
         assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
-        assert!(text_stdout.contains("eva 1.7.4-alpha"));
-        assert!(text_stdout.contains("V1.7.4-alpha"));
+        assert!(text_stdout.contains("eva 1.11.4-alpha"));
+        assert!(text_stdout.contains("V1.11.4-alpha"));
         assert!(text_stdout.contains("status: alpha"));
 
         let (json_exit, json_stdout, json_stderr) = run_cli(&["version", "--output", "json"]);
         assert_eq!(json_exit, EXIT_OK, "{json_stderr}");
         assert!(json_stdout.contains("\"command\":\"version\""));
-        assert!(json_stdout.contains("\"version\":\"1.7.4-alpha\""));
-        assert!(json_stdout.contains("\"release\":\"V1.7.4-alpha\""));
+        assert!(json_stdout.contains("\"version\":\"1.11.4-alpha\""));
+        assert!(json_stdout.contains("\"release\":\"V1.11.4-alpha\""));
         assert!(json_stdout.contains("\"status\":\"alpha\""));
         assert!(json_stdout.contains("release_v1.5"));
         assert!(json_stdout.contains("durable_backend_v1.6.1"));
@@ -1698,6 +1699,8 @@ mod tests {
         assert!(json_stdout.contains("lua_host_bindings_v1.7.2"));
         assert!(json_stdout.contains("lua_resource_limits_v1.7.3"));
         assert!(json_stdout.contains("lua_hot_reload_lifecycle_v1.7.4"));
+        assert!(json_stdout.contains("release_distribution_cli_split_v1.11.4"));
+        assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("restore apply"));
         assert!(json_stdout.contains("release check"));
     }
@@ -2363,7 +2366,7 @@ mod tests {
             "--confirm",
             "snapshot-promote",
             "--release",
-            "1.7.4-alpha",
+            "1.11.4-alpha",
             "--artifact-store",
             artifact_root.to_str().unwrap(),
             "--project",
@@ -3354,7 +3357,7 @@ mod tests {
             "json",
         ]);
         assert!(migration_stdout.contains("\"from_version\":\"1.5.1\""));
-        assert!(migration_stdout.contains("\"to_version\":\"1.7.4-alpha\""));
+        assert!(migration_stdout.contains("\"to_version\":\"1.11.4-alpha\""));
         assert!(migration_stdout.contains("\"breaking_changes\":[]"));
     }
 }
