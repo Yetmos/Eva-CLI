@@ -289,6 +289,7 @@ name = "eva-release"
 version = "1.11.5-alpha"
 dependencies = [
  "eva-core",
+ "eva-mcp",
  "eva-storage",
 ]
 

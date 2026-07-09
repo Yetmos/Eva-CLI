@@ -1,6 +1,7 @@
 //! MCP client/server boundary.
 
 pub mod client;
+pub mod compatibility;
 pub mod json_rpc;
 pub mod lifecycle;
 pub mod policy;
@@ -10,6 +11,10 @@ pub mod session;
 pub mod tool_mapping;
 
 pub use client::{InMemoryMcpClient, McpCallReport, McpProbeReport};
+pub use compatibility::{
+    McpCompatibilityMatrix, McpCompatibilityReport, McpServerSurfaceCompatibility,
+    McpStreamLifecycleCompatibility, McpToolSchemaCompatibility, McpTransportCompatibility,
+};
 pub use json_rpc::{
     McpHttpJsonRpcTransport, McpJsonRpcCallReport, McpJsonRpcClient, McpJsonRpcClientConfig,
     McpJsonRpcTool, McpJsonRpcTransport, McpStdioJsonRpcTransport,

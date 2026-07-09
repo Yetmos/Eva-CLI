@@ -378,8 +378,10 @@ are not republished retroactively. The main remaining work is now narrower and m
 implementation-focused:
 
 - Production provider supervision beyond the current controlled stdio/http/MCP/Skill
-  runners, including OS process management, MCP streaming/compatibility, TLS HTTP
-  client coverage, and OS credential vault integration.
+  runners, including OS process management, MCP production streaming/TLS HTTP
+  client coverage, external-server compatibility certification, and OS credential
+  vault integration. The repo-local MCP compatibility matrix and
+  `REL-MCP-COMPAT-001` release gate are present as V1.13.7 evidence.
 - Durable Scheduler, runtime audit wiring, memory, and backup
   stores beyond the current durable EventBus/task snapshot/audit sink baseline
   and local diagnostic surfaces.

@@ -65,9 +65,10 @@ Run this sequence from the repository root:
 | Doctor | `cargo run -- doctor --output json` | Checks workspace roots, schema files, Lua host boundary, and runtime builder. |
 | Config validation | `cargo run -- config validate --output json` | Loads `config/eva.yaml` and split manifests. |
 
-`--version` / `version --output json` includes `mcp_http_auth_v1.13.6` when the
-runtime supports bounded MCP JSON-RPC over `http://` endpoints with auth/session
-headers.
+`--version` / `version --output json` includes `mcp_http_auth_v1.13.6` and
+`mcp_compat_matrix_v1.13.7` when the runtime supports bounded MCP JSON-RPC over
+`http://` endpoints with auth/session headers and has the repo-local MCP
+compatibility matrix release gate.
 | Inspect runtime | `cargo run -- inspect runtime --output json` | Prints agents, adapters, capabilities, routes, policy, and runtime summary. |
 | Inspect durable | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | Reports backend schema, migration status, and pending redrive count. |
 | Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |

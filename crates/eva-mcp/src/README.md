@@ -8,12 +8,13 @@
 - `client.rs`: `InMemoryMcpClient` supports safe probe and controlled call envelopes.
 - `json_rpc.rs`: `McpJsonRpcClient` drives stdio and bounded `http://` JSON-RPC `initialize`, `tools/list`, and `tools/call` with allowlist, timeout, output-limit, auth-header, and protocol-error gates.
 - `lifecycle.rs`: `McpSessionRegistry` owns started sessions, health reports, stream aborts, shutdown removal, and orphan cleanup.
+- `compatibility.rs`: `McpCompatibilityMatrix` records repo-local stdio/HTTP transport, tool schema, stream lifecycle, and server-surface evidence for release readiness.
 - `tool_mapping.rs`: `McpToolMapping` and `McpToolRegistry` provide deterministic mapping and duplicate checks.
 - `server.rs`: `EvaMcpServerSurface::v11_minimal()` documents side-effect-free server tool exposure.
 - `schema.rs`: `McpSchemaFamily` names stable envelope families for later compatibility work.
 - `session.rs`: `McpSessionConfig`, `McpSessionManager`, and `McpSessionSupervisor` define explicit MCP process startup and shutdown requests.
 
-The V1.1/P5 MCP crate started as a protocol/control boundary. V1.8.2 adds a real stdio JSON-RPC client path for adapter invocation while keeping CLI probe side-effect-free. V1.8.3 adds a session registry and explicit-tool server gate. V1.13.6 adds the bounded HTTP JSON-RPC client/auth boundary for manifest-selected `http://` MCP endpoints; HTTPS/TLS client coverage, full streaming, compatibility matrices, and real OS process supervision remain later work.
+The V1.1/P5 MCP crate started as a protocol/control boundary. V1.8.2 adds a real stdio JSON-RPC client path for adapter invocation while keeping CLI probe side-effect-free. V1.8.3 adds a session registry and explicit-tool server gate. V1.13.6 adds the bounded HTTP JSON-RPC client/auth boundary for manifest-selected `http://` MCP endpoints. V1.13.7 adds the repo-local compatibility matrix consumed by `REL-MCP-COMPAT-001`; HTTPS/TLS client coverage, production streaming data plane, real external MCP server compatibility, and real OS process supervision remain later work.
 
 本目录承载 MCP client/server、tool mapping、policy helper 和 schema 边界。当前为骨架，V1.1 先实现受 allowlist 限制的 client/mapping 和受控 server surface。
 

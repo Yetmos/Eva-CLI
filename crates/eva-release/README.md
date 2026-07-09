@@ -1,6 +1,6 @@
 # eva-release / Release Hardening
 
-Updated: 2026-07-08
+Updated: 2026-07-09
 
 `eva-release` owns the V1.5 release-hardening boundary and later additive
 runtime-readiness gates. It turns the final 1.x readiness work into executable
@@ -14,7 +14,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 
 | Area | Public Type | Behavior |
 | --- | --- | --- |
-| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply gate, and supervisor handoff readiness. |
+| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply gate, supervisor handoff, daemon runtime, and MCP compatibility readiness. |
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
 | Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, hardware handle boundaries, and lifecycle apply risk. |
@@ -27,6 +27,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | Distribution evidence | `ReleaseDistributionEvidence`, `ReleaseDistributionVerificationReport` | Parses a V1.11.2 key/value evidence manifest for Windows/Linux/macOS install smoke, install/upgrade/uninstall docs, and package-manager dry-run status, then exposes a blocking release gate when evidence is supplied. |
 | Security scan evidence | `ReleaseSecurityScanEvidence`, `ReleaseSecurityScanVerificationReport` | Parses a V1.11.3 external scanner evidence manifest and blocks readiness when the scanner did not pass or any high/critical finding is present. |
 | Benchmark evidence | `ReleaseBenchmarkEvidence`, `ReleaseBenchmarkVerificationReport` | Parses V1.11.3 production benchmark measurements, converts them into the existing performance report shape, and blocks readiness when observed latency exceeds budget. |
+| MCP compatibility readiness | `ReleaseGate` | Records V1.13.7 stdio/HTTP transport, tool schema, stream lifecycle, dangling-session, and explicit server-surface fixture evidence as `REL-MCP-COMPAT-001`. |
 
 ## CLI Surface
 
@@ -69,6 +70,7 @@ runtime-unavailable exit code `4`.
 - expose signed backup archive, pre-restore evidence, restore apply gate, and supervisor handoff evidence as readiness gates;
 - expose signed artifact, distribution install smoke, and package-manager dry-run evidence as opt-in readiness gates;
 - expose external scanner and measured benchmark evidence as opt-in readiness gates;
+- expose the repo-local MCP compatibility matrix as a required readiness gate;
 - preserve known future risks as warnings instead of silently enabling apply paths.
 
 `eva-release` does not:
@@ -78,6 +80,7 @@ runtime-unavailable exit code `4`.
 - replace OS service-manager supervision;
 - run external security scanners directly;
 - execute benchmark commands directly;
+- certify external MCP servers or provide HTTPS/TLS transport;
 - replace `eva-backup`, `eva-lifecycle`, `eva-policy`, or CI.
 
 ## Verification
@@ -116,4 +119,7 @@ blocks both `release check` and `release perf --benchmark-evidence`. V1.12.6
 adds required daemon runtime readiness gate `REL-DAEMON-RUNTIME-001` for the
 local foreground/filesystem daemon boundary, mailbox control plane, durable task
 lifecycle, scheduler retry tick, and daemon-backed agent drain/reload mutation
-evidence without claiming production service-manager support.
+evidence without claiming production service-manager support. V1.13.7 adds
+required MCP compatibility gate `REL-MCP-COMPAT-001` for the repo-local
+compatibility matrix; it does not certify real external MCP servers, HTTPS/TLS,
+or production streaming.

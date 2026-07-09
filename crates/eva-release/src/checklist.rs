@@ -10,6 +10,7 @@ use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::scanner::{ReleaseSecurityScanEvidence, ReleaseSecurityScanVerificationReport};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
+use eva_mcp::{McpCompatibilityMatrix, McpCompatibilityReport};
 
 const CURRENT_RELEASE_VERSION: &str = "1.11.5-alpha";
 const CURRENT_RELEASE_LABEL: &str = "V1.11.5-alpha";
@@ -183,6 +184,10 @@ impl ReleaseHardeningService {
         gates.push(restore_apply_gate());
         gates.push(supervisor_handoff_gate());
         gates.push(daemon_runtime_gate());
+        let mcp_compatibility_report = McpCompatibilityMatrix::v1137_fixture().verify()?;
+        gates.push(mcp_compatibility_matrix_gate(Some(
+            &mcp_compatibility_report,
+        )));
         let artifact_report = artifact_evidence
             .map(|evidence| evidence.verify(&ReleaseArtifactSigningKey::local_development()));
         if let Some(report) = artifact_report.as_ref() {
@@ -604,6 +609,7 @@ fn release_audit(
         "restore_apply_gate_baseline_ready".to_owned(),
         "supervisor_handoff_baseline_ready".to_owned(),
         "daemon_runtime_readiness_gate_ready".to_owned(),
+        "mcp_compatibility_matrix_ready".to_owned(),
     ];
     if let Some(report) = artifact_report {
         if report.status == "verified" {
@@ -1161,6 +1167,53 @@ fn daemon_runtime_gate() -> ReleaseGate {
     }
 }
 
+fn mcp_compatibility_matrix_gate(report: Option<&McpCompatibilityReport>) -> ReleaseGate {
+    match report {
+        Some(report) => {
+            let status = if report.status == "compatible" {
+                ReleaseGateStatus::Pass
+            } else {
+                ReleaseGateStatus::Blocked
+            };
+            let mut evidence = report.audit.clone();
+            evidence.extend(
+                report
+                    .failures
+                    .iter()
+                    .map(|failure| format!("mcp.compat.failure:{failure}")),
+            );
+            ReleaseGate {
+                id: "REL-MCP-COMPAT-001".to_owned(),
+                domain: "mcp_compatibility".to_owned(),
+                status,
+                required: true,
+                summary: "MCP transport, schema, stream lifecycle, and server-surface compatibility matrix is present".to_owned(),
+                evidence,
+                remediation: if status.is_blocking() {
+                    vec![
+                        "provide a passing MCP compatibility matrix before release".to_owned(),
+                        "cover stdio/http JSON-RPC, stream abort/cleanup, schema support, and explicit-tool server gate".to_owned(),
+                    ]
+                } else {
+                    Vec::new()
+                },
+            }
+        }
+        None => ReleaseGate {
+            id: "REL-MCP-COMPAT-001".to_owned(),
+            domain: "mcp_compatibility".to_owned(),
+            status: ReleaseGateStatus::Blocked,
+            required: true,
+            summary: "MCP compatibility matrix is required before release".to_owned(),
+            evidence: vec!["mcp.compatibility_matrix:missing".to_owned()],
+            remediation: vec![
+                "generate or attach an MCP compatibility matrix fixture".to_owned(),
+                "verify stream abort/cleanup and explicit-tool server gate evidence".to_owned(),
+            ],
+        },
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -1414,6 +1467,15 @@ mod tests {
                     .iter()
                     .any(|item| item.contains("daemon_control_loop_ticks_scheduler_retry_once"))
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-MCP-COMPAT-001"
+                && gate.status == ReleaseGateStatus::Pass
+                && gate.domain == "mcp_compatibility"
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "mcp.transport_count:2")
+        }));
         assert!(report
             .audit
             .iter()
@@ -1450,6 +1512,22 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "daemon_runtime_readiness_gate_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "mcp_compatibility_matrix_ready"));
+    }
+
+    #[test]
+    fn mcp_compatibility_gate_blocks_missing_matrix() {
+        let gate = mcp_compatibility_matrix_gate(None);
+
+        assert_eq!(gate.id, "REL-MCP-COMPAT-001");
+        assert_eq!(gate.status, ReleaseGateStatus::Blocked);
+        assert!(gate.required);
+        assert!(gate
+            .evidence
+            .contains(&"mcp.compatibility_matrix:missing".to_owned()));
     }
 
     #[test]

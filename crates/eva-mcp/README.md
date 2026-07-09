@@ -1,6 +1,6 @@
 # eva-mcp / MCP 协议边界
 
-更新时间：2026-07-07
+更新时间：2026-07-09
 
 ![V1.x extension module flow](../assets/eva-extension-module-flow.svg)
 
@@ -15,6 +15,7 @@
 | Tool mapping | 骨架 | 将 MCP tool/resource/prompt 转成 Eva capability 或 adapter invocation。 |
 | Policy helper | 骨架 | 根据 client/server、tool name、schema、scope 生成 policy 检查输入。 |
 | Schema | 骨架 | 定义 MCP 输入输出 schema、错误 envelope 和版本兼容边界。 |
+| Compatibility matrix | 已完成 V1.13.7 | 提供 repo-local transport/schema/stream/server-surface fixture，供 release gate 验证。 |
 | Discovery 接入 | 未实现 | V1.1 由 `eva-discovery` 扫描候选，授权仍在 Adapter/MCP policy gate。 |
 
 ## 模块边界
@@ -52,14 +53,15 @@
 | --- | --- | --- | --- |
 | `src/lib.rs` | 模块导出 | 已完成 V1.8.2 | re-export client、JSON-RPC transport、server、mapping、policy、schema。 |
 | `src/client.rs` | in-memory MCP client | 已完成 V1.1 | 保留 CLI probe 和无副作用 envelope 测试。 |
-| `src/json_rpc.rs` | MCP JSON-RPC client transport | 已完成 V1.8.2 | 后续接真实 streaming 数据面、auth 和兼容性矩阵。 |
-| `src/lifecycle.rs` | MCP session registry 和 streaming 边界 | 已完成 V1.8.3 | 后续接真实 OS process supervisor、auth 和兼容性矩阵。 |
+| `src/json_rpc.rs` | MCP JSON-RPC client transport | 已完成 V1.13.6 | 保留 stdio/HTTP JSON-RPC、auth header、allowlist、timeout 和 output-limit 测试；后续接 HTTPS/TLS 和生产 streaming 数据面。 |
+| `src/lifecycle.rs` | MCP session registry 和 streaming 边界 | 已完成 V1.8.3 | 保留 stream abort/orphan cleanup 边界；后续接真实 OS process supervisor。 |
+| `src/compatibility.rs` | MCP compatibility matrix | 已完成 V1.13.7 | 维护 stdio/HTTP transport、tool schema、stream lifecycle 和 explicit-tool server gate fixture/report。 |
 | `src/server.rs` | 受控 MCP server | 已完成 V1.8.3 | 最小 server surface 和 explicit-tool gate 已覆盖；后续接真实 server 数据面。 |
 | `src/tool_mapping.rs` | tool/resource/prompt 映射 | `RESPONSIBILITY` 占位 | 定义 mapping table 和冲突处理。 |
 | `src/policy.rs` | MCP policy helper | `RESPONSIBILITY` 占位 | 定义 allowlist、scope、request gate 输入。 |
 | `src/schema.rs` | MCP schema 边界 | `RESPONSIBILITY` 占位 | 定义输入输出 schema 和错误 envelope。 |
 | `src/README.md` | 源码目录说明 | 简略 | 补充文件职责和进度。 |
-| 单元测试 | mapping/policy/schema/JSON-RPC/lifecycle | 已完成 V1.8.3 | 后续增加真实 OS supervisor、auth 和 compatibility matrix。 |
+| 单元测试 | mapping/policy/schema/JSON-RPC/lifecycle/compatibility | 已完成 V1.13.7 | 后续增加真实 OS supervisor、HTTPS/TLS 和外部 MCP server compatibility suite。 |
 
 ## 验证计划
 
@@ -69,6 +71,7 @@
 | V1.1 | `cargo test -p eva-adapter` | MCP transport 只调用 allowlist tool。 |
 | V1.8.2 | `cargo test -p eva-mcp -p eva-adapter` | JSON-RPC fake server、blocked tool、timeout、协议错误和 output limit 可测。 |
 | V1.8.3 | `cargo test -p eva-mcp -p eva-observability` | session stop 后 registry 无悬挂 session、streaming 可中止、orphan cleanup 和非法代理请求拒绝有稳定 audit。 |
+| V1.13.7 | `cargo test -p eva-mcp compatibility -- --nocapture` | compatibility matrix fixture 通过，缺失 cleanup/transport stream lifecycle/无限代理会阻断。 |
 
 ## English
 
@@ -86,7 +89,8 @@ V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on
 
 V1.8.2 adds a controlled JSON-RPC stdio client transport. It sends `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` requests with generated request ids, blocks non-allowlisted tools before writing RPC, and maps timeout, protocol, JSON-RPC error object, and oversized-response failures into stable `EvaError`s. Streaming responses, authentication, compatibility matrices, and long-lived session supervision remain later work.
 V1.8.3 adds a session lifecycle registry around the existing supervisor contract. It records started sessions, reports health, removes sessions on shutdown, aborts controlled streams, cleans up missing-process orphans, and rejects non-explicit server tools such as unlimited Topic/event/state proxies with stable audit entries.
-V1.13.6 adds an MCP JSON-RPC HTTP client boundary for manifest-selected `http://` MCP endpoints. The client posts `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` over bounded HTTP requests, preserves timeout/output-limit/error-object mapping, sends configured auth headers, and still rejects non-allowlisted tools before any RPC is sent. HTTPS/TLS client support, full streaming lifecycle, and compatibility matrices remain follow-up work.
+V1.13.6 adds an MCP JSON-RPC HTTP client boundary for manifest-selected `http://` MCP endpoints. The client posts `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` over bounded HTTP requests, preserves timeout/output-limit/error-object mapping, sends configured auth headers, and still rejects non-allowlisted tools before any RPC is sent.
+V1.13.7 adds `McpCompatibilityMatrix`, a repo-local fixture/report for stdio/HTTP transport, tool schema, stream lifecycle start/abort/cleanup, dangling sessions, and explicit-tool server-surface evidence. It feeds `REL-MCP-COMPAT-001` in `eva-release`. HTTPS/TLS client support, a production streaming data plane, and real external MCP server compatibility certification remain follow-up work.
 
 ## P5 Session Boundary
 
@@ -123,7 +127,7 @@ V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on
 - `EvaMcpServerSurface::v11_minimal()` documents the first server-facing tool surface (`adapter.list`, `adapter.probe`) without opening a socket or stdio server.
 - `McpSchemaFamily` names the stable schema envelope families used by future compatibility tests.
 
-V1.8.3 adds a session lifecycle registry and explicit-tool server gate. V1.13.6 adds the bounded HTTP JSON-RPC client/auth boundary for `http://` MCP endpoints. Real OS process supervision, HTTPS/TLS client coverage, compatibility matrices, and the full streaming data plane remain later work.
+V1.8.3 adds a session lifecycle registry and explicit-tool server gate. V1.13.6 adds the bounded HTTP JSON-RPC client/auth boundary for `http://` MCP endpoints. V1.13.7 adds the MCP compatibility matrix fixture and release gate evidence. Real OS process supervision, HTTPS/TLS client coverage, external-server compatibility certification, and the full production streaming data plane remain later work.
 
 ## V1.1 Verification
 
