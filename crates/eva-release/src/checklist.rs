@@ -288,6 +288,8 @@ impl ReleaseHardeningService {
                     vec![
                         "hardware candidates report handle_granted=false".to_owned(),
                         "hardware bind remains plan-first even with --apply".to_owned(),
+                        "V1.15.1 hardware bind reports platform OS permission evidence with remediation and raw_device_path_exposed=false".to_owned(),
+                        "PlatformOsPermissionProvider blocks driver start before lease claim when permission is missing".to_owned(),
                     ],
                 ),
                 SecurityFinding::tracked(

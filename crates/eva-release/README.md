@@ -17,7 +17,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, service-manager abstraction, daemon runtime, MCP compatibility, and provider supervision readiness. |
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
-| Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, hardware handle boundaries, and lifecycle apply risk. |
+| Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, V1.15.1 hardware OS permission diagnostics/raw-handle boundaries, and lifecycle apply risk. |
 | Performance baseline | `PerformanceBaselineReport`, `PerformanceBudget` | Defines source-release smoke budgets for EventBus, Scheduler, Adapter probe, memory context, backup, and release check. |
 | Migration and compatibility | `MigrationGuide`, `MigrationStep`, `CompatibilityPolicy` | Documents V1.4 -> V1.5 migration steps, compatibility guarantees, public CLI contracts, and deprecation policy. |
 | Backup archive readiness | `ReleaseGate` | Records V1.10.3 signed backup archive, optional sealing, remote target contract, and pre-restore evidence as release readiness evidence. |
@@ -71,6 +71,7 @@ runtime-unavailable exit code `4`.
 - document the migration and compatibility policy that V1.5 promises;
 - expose signed backup archive, pre-restore evidence, restore apply/rollback/operator confirmation, and supervisor handoff evidence as readiness gates;
 - expose the V1.14.5 service-manager abstraction and fake handoff/rollback evidence as a required readiness gate;
+- expose V1.15.1 hardware OS permission diagnostics through `SEC-HW-001` security evidence;
 - expose signed artifact, distribution install smoke, and package-manager dry-run evidence as opt-in readiness gates;
 - expose external scanner and measured benchmark evidence as opt-in readiness gates;
 - expose the repo-local MCP compatibility matrix as a required readiness gate;
@@ -106,7 +107,7 @@ cargo run -- release migration --output json
 
 The module tests assert that V1.5 readiness has no blocked required gates, the
 security review covers the required policy/sandbox/secret/MCP/hardware
-boundaries, all performance budgets are within threshold, and the V1.4 -> V1.5
+boundaries including OS permission remediation, all performance budgets are within threshold, and the V1.4 -> V1.5
 migration has no breaking changes. V1.10.3 adds a required signed backup
 archive gate. V1.10.4 adds a required restore apply gate for confirmation,
 policy approval, lock, health, rollback-required output, and staged mutation

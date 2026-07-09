@@ -4,7 +4,10 @@ use super::{
 };
 use eva_config::{load_project_config, ProjectConfig};
 use eva_core::{AdapterId, EvaError, RequestId};
-use eva_hardware::{discover_project_devices, DeviceCandidate, HardwareDiscoveryReport};
+use eva_hardware::{
+    discover_project_devices, DeviceCandidate, HardwareDiscoveryReport, OsPermissionCheck,
+    OsPermissionProvider, PlatformOsPermissionProvider, RegisteredDevice,
+};
 use eva_observability::TraceFields;
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use std::io::Write;
@@ -37,6 +40,7 @@ struct HardwareBindPlan {
     status: String,
     apply: bool,
     device: Option<DeviceCandidate>,
+    permission: Option<OsPermissionCheck>,
     steps: Vec<String>,
     risks: Vec<String>,
     audit: Vec<String>,
@@ -224,13 +228,15 @@ fn hardware_bind_plan(
         policy_request = policy_request.with_timeout_ms(timeout_ms);
     }
     let policy_decision = RuntimePolicyGate::from_project(project)?.decide(policy_request);
+    let permission = device.as_ref().map(hardware_permission_check).transpose()?;
+    let permission_denied = matches!(permission.as_ref(), Some(check) if !check.granted);
     let status = match &device {
         Some(candidate) if candidate.rejected_reason.is_none() && options.apply => "ready_to_apply",
         Some(candidate) if candidate.rejected_reason.is_none() => "planned",
         Some(_) => "blocked",
         None => "missing",
     };
-    let status = if options.apply && !policy_decision.allowed {
+    let status = if options.apply && (!policy_decision.allowed || permission_denied) {
         "blocked"
     } else {
         status
@@ -249,6 +255,21 @@ fn hardware_bind_plan(
             policy_decision.reason
         ));
     }
+    if let Some(permission) = &permission {
+        risks.push(format!(
+            "OS permission provider {} reports {} for {}",
+            permission.source,
+            if permission.granted {
+                "granted"
+            } else {
+                "denied"
+            },
+            permission.permission
+        ));
+        if !permission.granted {
+            risks.extend(permission.remediation.iter().cloned());
+        }
+    }
     if let Some(candidate) = &device {
         if let Some(reason) = &candidate.rejected_reason {
             risks.push(reason.clone());
@@ -260,10 +281,12 @@ fn hardware_bind_plan(
         status,
         apply: options.apply,
         device,
+        permission,
         steps: vec![
             "discover hardware manifest candidate".to_owned(),
             "verify adapter manifest and policy boundary".to_owned(),
             "evaluate runtime policy domain gate".to_owned(),
+            "evaluate OS permission provider before driver start".to_owned(),
             "create logical DeviceRegistry lease".to_owned(),
             "route invocation through AdapterRuntime hardware transport".to_owned(),
             "release logical lease and emit audit".to_owned(),
@@ -271,6 +294,17 @@ fn hardware_bind_plan(
         risks,
         audit: policy_decision.audit,
     })
+}
+
+fn hardware_permission_check(candidate: &DeviceCandidate) -> Result<OsPermissionCheck, EvaError> {
+    let provider = PlatformOsPermissionProvider::current_process();
+    let registered = RegisteredDevice {
+        identity: candidate.identity.clone(),
+        health: candidate.health,
+        source_path: candidate.source_path.clone(),
+        claimed_by: None,
+    };
+    provider.check(&registered)
 }
 
 fn write_hardware_list<W: Write>(
@@ -357,6 +391,14 @@ fn write_hardware_bind<W: Write>(
             writeln!(writer, "Hardware bind plan").map_err(write_error_kind)?;
             writeln!(writer, "adapter: {}", plan.adapter_id).map_err(write_error_kind)?;
             writeln!(writer, "status: {}", plan.status).map_err(write_error_kind)?;
+            if let Some(permission) = &plan.permission {
+                writeln!(
+                    writer,
+                    "permission: {} granted={} source={}",
+                    permission.permission, permission.granted, permission.source
+                )
+                .map_err(write_error_kind)?;
+            }
             writeln!(writer, "apply: {}", plan.apply).map_err(write_error_kind)
         }
         OutputFormat::Json => writeln!(
@@ -404,7 +446,7 @@ fn hardware_candidate_json(candidate: &DeviceCandidate) -> String {
 
 fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
     format!(
-        "{{\"adapter_id\":{},\"request_id\":{},\"status\":{},\"apply\":{},\"device\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
+        "{{\"adapter_id\":{},\"request_id\":{},\"status\":{},\"apply\":{},\"device\":{},\"permission\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
         json_string(plan.adapter_id.as_str()),
         json_string(plan.request_id.as_str()),
         json_string(&plan.status),
@@ -413,8 +455,28 @@ fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
             .as_ref()
             .map(hardware_candidate_json)
             .unwrap_or_else(|| "null".to_owned()),
+        plan.permission
+            .as_ref()
+            .map(hardware_permission_json)
+            .unwrap_or_else(|| "null".to_owned()),
         json_array(plan.steps.iter().map(|step| json_string(step))),
         json_array(plan.risks.iter().map(|risk| json_string(risk))),
         json_array(plan.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn hardware_permission_json(permission: &OsPermissionCheck) -> String {
+    format!(
+        "{{\"device_id\":{},\"bus\":{},\"permission\":{},\"granted\":{},\"os\":{},\"user\":{},\"source\":{},\"device_path\":{},\"raw_device_path_exposed\":{},\"remediation\":{}}}",
+        json_string(permission.device_id.as_str()),
+        json_string(&permission.bus),
+        json_string(&permission.permission),
+        permission.granted,
+        json_string(&permission.os),
+        json_string(&permission.user),
+        json_string(&permission.source),
+        json_string(&permission.device_path),
+        permission.raw_device_path_exposed,
+        json_array(permission.remediation.iter().map(|item| json_string(item)))
     )
 }

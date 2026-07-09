@@ -78,6 +78,9 @@ of CLI formatting so future release tooling can reuse the same data contracts.
   limits, stream artifacts, daemon recovery, and MCP compatibility readiness,
   but it does not replace OS process supervision, OS credential vaults, or user
   isolation.
+- The hardware security finding now records V1.15.1 OS permission diagnostics,
+  including remediation and `raw_device_path_exposed=false`; it does not certify
+  real USB, serial, BLE, socket, or vendor SDK driver I/O.
 - The release artifact evidence gate is opt-in until CI generates the key/value
   evidence manifest. When supplied, unsigned artifacts, signature mismatch, or
   provenance/source commit mismatch block readiness.
@@ -117,6 +120,8 @@ The module-level tests cover:
 - missing MCP compatibility matrix blocks the required gate.
 - provider supervision readiness records the current boundaries without
   claiming OS process supervision.
+- hardware security evidence includes OS permission remediation without raw
+  device path exposure.
 - signed artifact evidence passes when the keyed signature and provenance match,
   and blocks when the artifact is unsigned.
 - distribution evidence passes when three-platform install smoke and package

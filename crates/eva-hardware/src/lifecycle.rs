@@ -19,6 +19,12 @@ pub struct OsPermissionCheck {
     pub bus: String,
     pub permission: String,
     pub granted: bool,
+    pub os: String,
+    pub user: String,
+    pub source: String,
+    pub device_path: String,
+    pub remediation: Vec<String>,
+    pub raw_device_path_exposed: bool,
 }
 
 pub trait OsPermissionProvider {
@@ -29,6 +35,13 @@ pub trait OsPermissionProvider {
 pub struct StaticOsPermissionProvider {
     permission: String,
     granted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformOsPermissionProvider {
+    os: String,
+    user: String,
+    default_granted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +112,65 @@ impl OsPermissionProvider for StaticOsPermissionProvider {
             bus: device.identity.bus.as_str().to_owned(),
             permission: self.permission.clone(),
             granted: self.granted,
+            os: "test".to_owned(),
+            user: "test-user".to_owned(),
+            source: "static".to_owned(),
+            device_path: safe_device_locator(device),
+            remediation: permission_remediation(
+                "test",
+                device.identity.bus.as_str(),
+                "test-user",
+                &self.permission,
+            ),
+            raw_device_path_exposed: false,
+        })
+    }
+}
+
+impl PlatformOsPermissionProvider {
+    pub fn current_process() -> Self {
+        Self {
+            os: std::env::consts::OS.to_owned(),
+            user: current_user(),
+            default_granted: false,
+        }
+    }
+
+    pub fn new(os: impl Into<String>, user: impl Into<String>, default_granted: bool) -> Self {
+        Self {
+            os: os.into(),
+            user: user.into(),
+            default_granted,
+        }
+    }
+}
+
+impl Default for PlatformOsPermissionProvider {
+    fn default() -> Self {
+        Self::current_process()
+    }
+}
+
+impl OsPermissionProvider for PlatformOsPermissionProvider {
+    fn check(&self, device: &RegisteredDevice) -> Result<OsPermissionCheck, EvaError> {
+        let bus = device.identity.bus.as_str().to_owned();
+        let permission = permission_name_for_bus(device.identity.bus.as_str()).to_owned();
+        Ok(OsPermissionCheck {
+            device_id: device.identity.id.clone(),
+            bus,
+            permission: permission.clone(),
+            granted: self.default_granted,
+            os: self.os.clone(),
+            user: self.user.clone(),
+            source: permission_source(&self.os, device.identity.bus.as_str()),
+            device_path: safe_device_locator(device),
+            remediation: permission_remediation(
+                &self.os,
+                device.identity.bus.as_str(),
+                &self.user,
+                &permission,
+            ),
+            raw_device_path_exposed: false,
         })
     }
 }
@@ -350,9 +422,80 @@ fn ensure_os_permission(check: &OsPermissionCheck) -> Result<(), EvaError> {
             EvaError::permission_denied("hardware OS permission is missing")
                 .with_context("device_id", check.device_id.as_str())
                 .with_context("bus", &check.bus)
-                .with_context("permission", &check.permission),
+                .with_context("permission", &check.permission)
+                .with_context("os", &check.os)
+                .with_context("source", &check.source)
+                .with_context("remediation", check.remediation.join(" | ")),
         )
     }
+}
+
+fn current_user() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn permission_name_for_bus(bus: &str) -> &'static str {
+    match bus {
+        "usb" => "usb-device-access",
+        "serial" => "serial-port-access",
+        "ble" => "bluetooth-device-access",
+        "socket" | "network" => "network-socket-access",
+        "vendor_sdk" => "vendor-sdk-access",
+        _ => "hardware-device-access",
+    }
+}
+
+fn permission_source(os: &str, bus: &str) -> String {
+    match os {
+        "windows" => "Windows device interface ACL or driver installation".to_owned(),
+        "linux" if bus == "serial" => "Linux udev rule and dialout group".to_owned(),
+        "linux" => "Linux udev rule and device node permission".to_owned(),
+        "macos" if bus == "ble" => "macOS Bluetooth permission".to_owned(),
+        "macos" => "macOS device entitlement or device node permission".to_owned(),
+        _ => "platform hardware permission provider".to_owned(),
+    }
+}
+
+fn permission_remediation(os: &str, bus: &str, user: &str, permission: &str) -> Vec<String> {
+    let mut remediation = vec![format!(
+        "grant {permission} to user {user} before starting a hardware driver"
+    )];
+    match os {
+        "windows" => remediation.push(
+            "install the vendor driver and grant the service account access to the device interface"
+                .to_owned(),
+        ),
+        "linux" if bus == "serial" => remediation.push(
+            "add the service account to the serial device group and install a udev rule".to_owned(),
+        ),
+        "linux" => remediation.push(
+            "install a udev rule that matches the device identity and grants least-privilege access"
+                .to_owned(),
+        ),
+        "macos" if bus == "ble" => remediation.push(
+            "grant Bluetooth permission to the runtime process before enabling the driver".to_owned(),
+        ),
+        "macos" => remediation.push(
+            "grant device entitlement or device node access to the runtime process".to_owned(),
+        ),
+        _ => remediation.push(
+            "configure an explicit platform permission provider before enabling this driver"
+                .to_owned(),
+        ),
+    }
+    remediation
+}
+
+fn safe_device_locator(device: &RegisteredDevice) -> String {
+    format!(
+        "logical://hardware/{}/{}",
+        device.identity.bus.as_str(),
+        device.identity.id.as_str()
+    )
 }
 
 fn record_lifecycle_audit<S>(
@@ -458,6 +601,52 @@ hardware_policy:
             .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(
+            coordinator.registry().get(&device_id).unwrap().health,
+            DeviceHealth::Available
+        );
+        assert!(audit.events.is_empty());
+    }
+
+    #[test]
+    fn platform_permission_provider_reports_safe_diagnostics() {
+        let registry = registry();
+        let device = registry
+            .get(&DeviceId::parse("scale-main:main-scale").unwrap())
+            .unwrap();
+        let provider = PlatformOsPermissionProvider::new("linux", "eva", false);
+
+        let check = provider.check(device).unwrap();
+
+        assert!(!check.granted);
+        assert_eq!(check.os, "linux");
+        assert_eq!(check.user, "eva");
+        assert_eq!(check.permission, "usb-device-access");
+        assert!(check.source.contains("udev"));
+        assert!(check.device_path.starts_with("logical://hardware/usb/"));
+        assert!(!check.raw_device_path_exposed);
+        assert!(check.remediation.iter().any(|item| item.contains("udev")));
+    }
+
+    #[test]
+    fn platform_permission_denial_blocks_before_driver_claim() {
+        let mut coordinator = HardwareLifecycleCoordinator::new(
+            registry(),
+            PlatformOsPermissionProvider::new("windows", "eva-service", false),
+        );
+        let mut audit = InMemoryAuditSink::default();
+        let device_id = DeviceId::parse("scale-main:main-scale").unwrap();
+
+        let error = coordinator
+            .start_driver(start_request(), &policy_gate(), &mut audit)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "source" && value.contains("Windows")));
         assert_eq!(
             coordinator.registry().get(&device_id).unwrap().health,
             DeviceHealth::Available

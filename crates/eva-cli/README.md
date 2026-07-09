@@ -91,7 +91,7 @@ cargo run -- task status --task req-durable-1 --durable-backend .eva/durable --o
 
 ## V1.12 Daemon Boundary And Control Mailbox
 
-`eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` 固定本机 daemon 进程边界和控制面，但不启动生产后台守护进程，也不启动外部 provider。`start` 默认运行 foreground smoke：获取 `daemon.lock`，验证 durable backend，扫描 task/provider process recovery state，验证 policy domain 和 observability JSONL sink，写入 `daemon.state` / `daemon.pid`，随后执行 shutdown contract 并移除 lock/pid。显式传入 `--no-shutdown-after-smoke` 时，命令保持前台运行并处理 `state/control/requests` 到 `state/control/responses` 的本机 filesystem mailbox；每轮 control polling 前会执行 V1.12.4 scheduler retry tick，把 due dead-letter replay event 投递到 scheduler mailbox，并以 `scheduler-retry` consumer 更新 durable log ack/fail。V1.12.5 后，`eva agent drain/reload` 可连接该 daemon 并写入 `agent-control.state`，记录 drain gate 和 reload 后新 work generation；V1.13.5 会把残留 active provider session 标记为 interrupted 并在 `recovery` JSON 中报告；V1.14.5 的 `version` runtime marker 包含 `mcp_http_auth_v1.13.6`、`mcp_compat_matrix_v1.13.7`、`provider_supervision_release_gate_v1.13.8`、`restore_staged_mutation_planner_v1.14.1`、`restore_file_mutation_engine_v1.14.2`、`restore_rollback_apply_v1.14.3`、`restore_operator_confirmation_v1.14.4` 和 `service_manager_abstraction_v1.14.5`。daemon smoke 仍不启动 provider，也不是完整生产热更新 apply；V1.14.5 只证明 service-manager 抽象层与 fake adapter evidence，不执行平台 service-manager 命令。
+`eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` 固定本机 daemon 进程边界和控制面，但不启动生产后台守护进程，也不启动外部 provider。`start` 默认运行 foreground smoke：获取 `daemon.lock`，验证 durable backend，扫描 task/provider process recovery state，验证 policy domain 和 observability JSONL sink，写入 `daemon.state` / `daemon.pid`，随后执行 shutdown contract 并移除 lock/pid。显式传入 `--no-shutdown-after-smoke` 时，命令保持前台运行并处理 `state/control/requests` 到 `state/control/responses` 的本机 filesystem mailbox；每轮 control polling 前会执行 V1.12.4 scheduler retry tick，把 due dead-letter replay event 投递到 scheduler mailbox，并以 `scheduler-retry` consumer 更新 durable log ack/fail。V1.12.5 后，`eva agent drain/reload` 可连接该 daemon 并写入 `agent-control.state`，记录 drain gate 和 reload 后新 work generation；V1.13.5 会把残留 active provider session 标记为 interrupted 并在 `recovery` JSON 中报告；V1.15.1 的 `version` runtime marker 包含 `mcp_http_auth_v1.13.6`、`mcp_compat_matrix_v1.13.7`、`provider_supervision_release_gate_v1.13.8`、`restore_staged_mutation_planner_v1.14.1`、`restore_file_mutation_engine_v1.14.2`、`restore_rollback_apply_v1.14.3`、`restore_operator_confirmation_v1.14.4`、`service_manager_abstraction_v1.14.5` 和 `hardware_os_permission_provider_v1.15.1`。daemon smoke 仍不启动 provider，也不是完整生产热更新 apply；V1.14.5 只证明 service-manager 抽象层与 fake adapter evidence，V1.15.1 只证明硬件 OS permission provider 诊断，不执行平台 service-manager 命令或真实硬件 I/O。
 
 ```powershell
 cargo run -- daemon start --foreground --dev --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
@@ -181,8 +181,8 @@ cargo run -- hardware bind --adapter scale-main --apply --output json
 | --- | --- |
 | `hardware list` | 加载项目配置，调用 `eva_hardware::discover_project_devices`，输出所有 hardware candidates。 |
 | `hardware probe --adapter <id>` | 过滤单个 Adapter 的候选，仍不授予 handle。 |
-| `hardware bind --adapter <id>` | 生成绑定计划、风险提示、plan steps 和 V1.9.2 policy audit；disabled/rejected 设备返回 `blocked`。 |
-| `hardware bind --apply` | V1.3 只校验逻辑计划并保留 plan-first 输出；V1.9.2 追加 runtime policy gate 证据，不打开真实设备。 |
+| `hardware bind --adapter <id>` | 生成绑定计划、OS permission evidence、风险提示、plan steps 和 V1.9.2 policy audit；disabled/rejected 设备返回 `blocked`。 |
+| `hardware bind --apply` | V1.15.1 只校验逻辑计划、runtime policy 和平台权限诊断；权限缺失时 `blocked`，不 claim lease，不打开真实设备。 |
 
 `scale-main` 默认 disabled，因此 JSON 中会看到：
 
@@ -191,6 +191,7 @@ cargo run -- hardware bind --adapter scale-main --apply --output json
 - `handle_granted: false`
 - `rejected_reason: "hardware adapter manifest is disabled"`
 - `hardware bind` 的 `status: "blocked"`
+- `permission.raw_device_path_exposed:false`，且 permission remediation 不包含 raw device handle
 
 这条命令面验证硬件身份、发现、绑定计划和风险提示，但不执行 USB、串口、BLE、网络或 vendor SDK I/O。
 

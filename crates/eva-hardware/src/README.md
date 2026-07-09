@@ -1,10 +1,10 @@
 # eva-hardware/src / 硬件源码
 
-更新时间：2026-07-08
+更新时间：2026-07-10
 
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
-本目录承载硬件接入边界的源码。实现目标是让项目能够表达硬件设备、发现候选、注册可信设备、建立 request-scoped lease、通过受控 driver registry 和 driver lifecycle 调用硬件能力，并用 hotplug 状态机生成稳定事件 Topic。V1.10.2 不打开真实设备，也不暴露 raw I/O。
+本目录承载硬件接入边界的源码。实现目标是让项目能够表达硬件设备、发现候选、注册可信设备、建立 request-scoped lease、通过受控 driver registry 和 driver lifecycle 调用硬件能力，并用 hotplug 状态机生成稳定事件 Topic。V1.15.1 不打开真实设备，也不暴露 raw I/O；它新增平台 OS permission provider 诊断，先于 driver start 输出 remediation。
 
 ## 文件职责
 
@@ -15,7 +15,7 @@
 | `discovery.rs` | device discovery 和可信身份匹配 | 已完成 V1.10.1 | `discover_project_devices`、`DeviceCandidate`、`HardwareDiscoveryReport`；从 `eva-config` typed hardware config 读取 bus、identity、match、protocol。 |
 | `registry.rs` | claimed device registry | 已完成 | `DeviceRegistry`、`RegisteredDevice`、`DeviceLease`。 |
 | `driver.rs` | policy-controlled driver registry 和 binding | 已完成 V1.10.1 | `DriverBinding`、`DriverOperation`、`DriverOutput`、`HardwareDriver`、`HardwareDriverRegistry`、`SimulatedDriver`、`run_simulator_contract_suite`。 |
-| `lifecycle.rs` | driver lifecycle、OS permission、hotplug publish、audit | 已完成 V1.10.2 | `HardwareLifecycleCoordinator`、`StaticOsPermissionProvider`、`publish_hotplug_event`、`DriverLifecycleReport`。 |
+| `lifecycle.rs` | driver lifecycle、OS permission、hotplug publish、audit | 已完成 V1.15.1 | `HardwareLifecycleCoordinator`、`StaticOsPermissionProvider`、`PlatformOsPermissionProvider`、`publish_hotplug_event`、`DriverLifecycleReport`。 |
 | `hotplug.rs` | hotplug state machine | 已完成 | `HotplugAction`、`HotplugEvent`、`HotplugStateMachine`。 |
 
 ## 关键不变量
@@ -28,7 +28,7 @@
 - `SimulatedDriver` 只能返回模拟输出，audit 必须包含 `raw_io:false`。
 - `HardwareDriverRegistry` 只调用已注册 driver id，并拒绝重复 driver 注册。
 - simulator contract suite 必须证明无 raw handle 暴露、无 raw I/O、capability mismatch 被拒绝。
-- Driver lifecycle start 必须先通过 `RuntimePolicyGate` 和 OS permission check，再 claim lease 并进入 opened。
+- Driver lifecycle start 必须先通过 `RuntimePolicyGate` 和 OS permission check，再 claim lease 并进入 opened；权限失败必须带 remediation 且不暴露 raw device path。
 - Driver stop 必须使用匹配 request id；crash path 必须释放 lease 并写 failed audit。
 - Hotplug publish 必须通过 `EventBus` 发送 typed payload，并写 `hardware.hotplug.published` audit。
 - Hotplug Topic 只输出稳定公共路径：`/hardware/connected`、`/hardware/disconnected`、`/hardware/failed`。
@@ -60,7 +60,7 @@ CLI 的 `hardware list/probe/bind` 使用 discovery 输出作为诊断源；Adap
 | `discovery.rs` | 项目硬件 manifest 能生成候选，且所有候选都不授予 handle。 |
 | `registry.rs` | claim/release 改变健康状态；重复 claim 返回 `Conflict`。 |
 | `driver.rs` | capability 不匹配时 simulated driver 返回 `PermissionDenied`；driver registry 调用已注册 simulator；simulator contract suite 验证无 raw I/O/raw handle。 |
-| `lifecycle.rs` | policy/OS permission/claim/audit 顺序；OS permission 缺失不 claim；stop request id 必须匹配 lease；crash 释放 lease；hotplug publish 写入 EventBus。 |
+| `lifecycle.rs` | policy/OS permission/claim/audit 顺序；OS permission 缺失不 claim；平台 permission evidence 包含 OS/user/source/remediation 和安全 locator；stop request id 必须匹配 lease；crash 释放 lease；hotplug publish 写入 EventBus。 |
 | `hotplug.rs` | insert/remove/reconnect/fail 的状态迁移和 Topic 映射；available 状态下 reconnect 被拒绝。 |
 
 运行：

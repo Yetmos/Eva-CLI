@@ -1,12 +1,12 @@
 # eva-hardware / 硬件接入
 
-更新时间：2026-07-08
+更新时间：2026-07-10
 
 ![V1.x extension module flow](../assets/eva-extension-module-flow.svg)
 
 `eva-hardware` 是 V1.3 起的受控硬件接入层。它把硬件设备拆成“发现候选、可信身份、设备注册表、逻辑租约、driver registry、driver binding、hotplug 状态机”几个可测试边界，并明确禁止 Lua、Agent 或 CLI 直接持有系统设备句柄、串口、USB、BLE、socket 或 vendor SDK raw I/O。
 
-V1.10.2 继续保持不打开真实硬件：项目中的 `scale-main` 硬件 manifest 默认 `enabled: false`，CLI 可以发现、probe 和生成绑定计划，但不会打开设备文件。真实 USB/串口/BLE/socket/vendor SDK driver 只作为 typed config、driver kind 和 lifecycle 边界预留。
+V1.15.1 继续保持不打开真实硬件：项目中的 `scale-main` 硬件 manifest 默认 `enabled: false`，CLI 可以发现、probe 和生成绑定计划，但不会打开设备文件。真实 USB/串口/BLE/socket/vendor SDK driver 只作为 typed config、driver kind 和 lifecycle 边界预留；新增 `PlatformOsPermissionProvider` 负责输出 OS、用户、权限来源、安全逻辑 device locator 和 remediation，并在权限缺失时先于 lease claim/driver start 阻断。
 
 ## V1.3 已实现能力
 
@@ -17,7 +17,7 @@ V1.10.2 继续保持不打开真实硬件：项目中的 `scale-main` 硬件 man
 | Registry | 已完成 V1.3 | `DeviceRegistry` 支持从候选注册可信设备，拒绝 rejected candidate，提供 `claim`、`release`、`list`、`get`，并阻止重复 claim。 |
 | Driver binding | 已完成 V1.10.1 | `DriverBinding`、`DriverOperation`、`DriverOutput`、`HardwareDriver` 和 `SimulatedDriver` 把硬件能力封装成受控 trait。模拟 driver 的 audit 明确包含 `raw_io:false`。 |
 | Driver registry | 已完成 V1.10.1 | `HardwareDriverRegistry` 注册 trait object driver，按 driver id 调用；`run_simulator_contract_suite` 验证 simulator 不暴露 raw handle、不允许 raw I/O、拒绝 capability 绕过。 |
-| Driver lifecycle | 已完成 V1.10.2 | `HardwareLifecycleCoordinator` 在 driver start 前检查 runtime policy 和 OS permission，claim lease 后进入 opened 状态；stop 释放 lease 并写 audit；crash path 清理 lease 并写 failed audit。 |
+| Driver lifecycle | 已完成 V1.15.1 | `HardwareLifecycleCoordinator` 在 driver start 前检查 runtime policy 和 OS permission，claim lease 后进入 opened 状态；stop 释放 lease 并写 audit；crash path 清理 lease 并写 failed audit；`PlatformOsPermissionProvider` 提供平台权限诊断、remediation 和 `raw_device_path_exposed:false` evidence。 |
 | Hotplug | 已完成 V1.3 | `HotplugStateMachine` 将 insert/reconnect/remove/fail 转成稳定 Topic：`/hardware/connected`、`/hardware/disconnected`、`/hardware/failed`。 |
 | Hotplug publish | 已完成 V1.10.2 | `publish_hotplug_event` 将 typed hotplug event 发布到 `EventBus`，payload 包含 device/action/previous/next/reason，并写 `hardware.hotplug.published` audit。 |
 | Adapter bridge | 已完成 V1.10.1 | `eva-adapter` 的 hardware transport 通过 `DeviceRegistry` lease 和 `HardwareDriverRegistry` 调用 `SimulatedDriver`，完成后释放 lease，并输出 `transport:hardware`、`lease:released` 审计。 |
@@ -32,7 +32,7 @@ V1.3 的硬件路径是：
 3. CLI `hardware list/probe` 展示候选、信任级别、健康状态、match 字段和拒绝原因。
 4. `DeviceRegistry::from_candidates` 只注册非 rejected 候选。
 5. `DeviceRegistry::claim` 为一次 request 生成独占 `DeviceLease`。
-6. `HardwareLifecycleCoordinator` 在 driver start 前检查 `RuntimePolicyGate` 和 OS permission。
+6. `HardwareLifecycleCoordinator` 在 driver start 前检查 `RuntimePolicyGate` 和 OS permission；V1.15.1 的 `PlatformOsPermissionProvider` 输出 OS/user/source/remediation 和安全逻辑 device locator。
 7. `DeviceRegistry::claim` 生成 request-scoped lease 后，driver lifecycle 才进入 opened 状态。
 8. `HardwareDriverRegistry` 按 driver id 调用 `HardwareDriver` trait object。
 9. `SimulatedDriver` 通过 `HardwareDriver` trait 返回受控输出和审计记录。
@@ -56,6 +56,7 @@ V1.3 的硬件路径是：
 | `run_simulator_contract_suite` | V1.10.1 simulator 回归入口，验证 raw I/O、raw handle 和 capability mismatch 边界。 |
 | `HardwareLifecycleCoordinator` | V1.10.2 driver lifecycle 入口，负责 policy/OS permission、lease、opened/stopped/crashed 状态和 audit。 |
 | `StaticOsPermissionProvider` | 测试和本地 smoke 使用的 OS permission provider，可稳定模拟 granted/denied。 |
+| `PlatformOsPermissionProvider` | V1.15.1 平台权限诊断 provider，报告 OS、用户、权限来源、remediation 和安全 device locator，默认不授予真实设备权限。 |
 | `publish_hotplug_event` | 将 `HotplugEvent` 转为 EventBus typed event 并写 audit。 |
 | `HotplugStateMachine` | 将硬件动作转换成健康状态和稳定硬件 Topic。 |
 
@@ -74,7 +75,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 - `handle_granted: false`
 - `rejected_reason: hardware adapter manifest is disabled`
 
-`hardware bind --adapter scale-main` 会返回 `status: blocked`，并给出 plan steps 与风险提示。V1.3 即使传入 `--apply`，也只验证逻辑计划，不打开真实设备。
+`hardware bind --adapter scale-main` 会返回 `status: blocked`，并给出 plan steps、OS permission evidence 与风险提示。V1.15.1 即使传入 `--apply`，也只验证逻辑计划和权限诊断，不打开真实设备。
 
 ## 模块边界
 
@@ -85,7 +86,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 - 管理设备注册、claim、release 和 lease 冲突。
 - 提供 driver binding trait 和模拟 driver。
 - 提供 driver registry 和 simulator contract suite。
-- 提供 driver lifecycle coordinator、OS permission check 抽象和 hotplug publish helper。
+- 提供 driver lifecycle coordinator、OS permission check 抽象、平台权限诊断 provider 和 hotplug publish helper。
 - 将 hotplug 动作映射为稳定 Topic。
 - 为 AdapterRuntime 输出可审计的硬件调用边界。
 
@@ -95,7 +96,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 - 不保存业务状态。
 - 不绕过 AdapterRuntime 或 policy gate 调用硬件。
 - 不在 V1.3 打开真实设备文件或执行不可逆设备操作。
-- 不在 V1.10.2 启用真实 USB/串口/BLE/socket/vendor SDK driver。
+- 不在 V1.15.1 启用真实 USB/串口/BLE/socket/vendor SDK driver。
 - 不把 discovery candidate 当作授权 handle。
 
 ## 与其他模块的关系
@@ -131,13 +132,13 @@ cargo run -- hardware bind --adapter scale-main --output json
 - Adapter hardware transport 输出 `raw_io:false` 并释放 lease。
 - driver registry 只能调用已注册 driver。
 - simulator contract suite 验证无 raw handle、无 raw I/O 和 capability mismatch 拒绝。
-- lifecycle start 会先检查 policy 和 OS permission，再 claim lease；OS permission 缺失错误稳定。
+- lifecycle start 会先检查 policy 和 OS permission，再 claim lease；V1.15.1 权限缺失错误包含 OS、来源和 remediation，且不会暴露 raw device path。
 - stop 的 request id 必须匹配 lease；driver crash 会释放 lease。
 - hotplug event 可发布到 EventBus 并被订阅者读取。
 
 ## 后续范围
 
-V1.10.2 没有集成真实 USB/串口/BLE/socket/vendor SDK 设备，也没有打开 OS device handle。V1.10 后续会继续补真实 driver implementation、设备权限探测实现、热插拔事件接入常驻 runtime 和观测后端。
+V1.15.1 没有集成真实 USB/串口/BLE/socket/vendor SDK 设备，也没有打开 OS device handle。后续会继续补真实 driver implementation、真实/虚拟设备 fixture、热插拔事件接入常驻 runtime 和观测后端。
 
 ## English
 
