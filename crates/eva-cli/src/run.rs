@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -92,7 +92,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "release migration",
     "cli command module split",
     "emit",
-    "daemon start/status/stop",
+    "daemon start/status/stop/shutdown/submit/cancel/drain/reload",
     "agent status/drain/reload",
     "capability list/probe/call",
 ];
@@ -1032,9 +1032,12 @@ fn help_text() -> &'static str {
         "  eva inspect durable --durable-backend <path> [--redrive-ready-at-ms <ms>] [--output text|json]\n",
         "  eva run --example basic [--project <path>] [--task-id <id>] [--durable-backend <path>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n",
         "  eva emit <topic> [--event-id <id>] [--payload <text>|--payload-empty|--payload-bytes-hex <hex>] [--target-agent <id>|--target-capability <name>|--target-adapter <id>] [--request-id <id>] [--generation <id>] [--correlation-id <event_id>] [--causation-id <event_id>] [--durable-backend <path>] [--output text|json]\n",
-        "  eva daemon start [--foreground] [--dev] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--observability-backend <path>] [--project <path>] [--output text|json]\n",
-        "  eva daemon status [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--project <path>] [--output text|json]\n",
-        "  eva daemon stop [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--project <path>] [--output text|json]\n",
+        "  eva daemon start [--foreground] [--dev] [--no-shutdown-after-smoke] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--observability-backend <path>] [--project <path>] [--output text|json]\n",
+        "  eva daemon status [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
+        "  eva daemon shutdown|stop [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
+        "  eva daemon submit [--task <id>] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
+        "  eva daemon cancel --task <id> [--reason <text>] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
+        "  eva daemon drain|reload [--plan <id>] [--generation <id>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva agent status [--agent <id>] [--project <path>] [--output text|json]\n",
         "  eva agent drain --agent <id> [--generation <id>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva agent reload --agent <id> [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
@@ -1106,7 +1109,7 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -1132,6 +1135,22 @@ mod tests {
             std::env::temp_dir().join(format!("eva-cli-{name}-{}-{now}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    fn wait_for_daemon_files(state: &Path, locks: &Path, pids: &Path) {
+        for _ in 0..100 {
+            let state_running = fs::read_to_string(state.join("daemon.state"))
+                .map(|data| data.contains("status=running"))
+                .unwrap_or(false);
+            if state_running
+                && locks.join("daemon.lock").is_file()
+                && pids.join("daemon.pid").is_file()
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("daemon files did not become available");
     }
 
     fn copy_dir(from: &Path, to: &Path) {
@@ -1632,10 +1651,96 @@ mod tests {
             "json",
         ]);
 
+        assert_eq!(status_exit, EXIT_EXTERNAL_UNAVAILABLE);
+        assert!(status_stdout.is_empty());
+        assert!(status_stderr.contains("\"command\":\"daemon.status\""));
+        assert!(status_stderr.contains("\"kind\":\"unavailable\""));
+        assert!(status_stderr.contains("\"trace_id\",\"value\":\"request_id:req-daemon-status\""));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn daemon_control_status_and_shutdown_round_trip_via_cli() {
+        let project = workspace_root();
+        let root = test_temp_dir("daemon-control-cli");
+        let durable = root.join("durable");
+        let state = root.join("state");
+        let locks = root.join("locks");
+        let pids = root.join("pids");
+        let observability = root.join("observability");
+        let daemon_project = eva_config::load_project_config(&project).unwrap();
+        let daemon_options = eva_runtime::DaemonStartOptions {
+            durable_backend: durable.clone(),
+            state_dir: state.clone(),
+            lock_dir: locks.clone(),
+            pid_dir: pids.clone(),
+            observability_backend: observability.clone(),
+            foreground: true,
+            dev_mode: true,
+            shutdown_after_smoke: false,
+        };
+        let daemon = std::thread::spawn(move || {
+            eva_runtime::start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(eva_core::RequestId::parse("req-daemon-cli-loop").unwrap()),
+            )
+        });
+
+        wait_for_daemon_files(&state, &locks, &pids);
+
+        let (status_exit, status_stdout, status_stderr) = run_cli(&[
+            "daemon",
+            "status",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
         assert_eq!(status_exit, EXIT_OK, "{status_stderr}");
         assert!(status_stdout.contains("\"command\":\"daemon.status\""));
-        assert!(status_stdout.contains("\"available\":true"));
-        assert!(status_stdout.contains("\"status\":\"stopped\""));
+        assert!(status_stdout.contains("\"operation\":\"status\""));
+        assert!(status_stdout.contains("\"trace_id\":\"request_id:req-daemon-status\""));
+        assert!(status_stdout.contains("\"daemon_available\":true"));
+        assert!(status_stdout.contains("\"status\":\"running\""));
+        assert!(status_stdout.contains("\"response_file\""));
+        assert!(status_stderr.is_empty());
+
+        let (shutdown_exit, shutdown_stdout, shutdown_stderr) = run_cli(&[
+            "daemon",
+            "shutdown",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(shutdown_exit, EXIT_OK, "{shutdown_stderr}");
+        assert!(shutdown_stdout.contains("\"command\":\"daemon.shutdown\""));
+        assert!(shutdown_stdout.contains("\"operation\":\"shutdown\""));
+        assert!(shutdown_stdout.contains("\"mutation_executed\":true"));
+        assert!(shutdown_stdout.contains("\"shutdown\":{\"already_shutdown\":false"));
+        assert!(shutdown_stderr.is_empty());
+
+        let report = daemon.join().unwrap().unwrap();
+        assert_eq!(report.status, "stopped");
+        assert!(!locks.join("daemon.lock").exists());
+        assert!(!pids.join("daemon.pid").exists());
 
         fs::remove_dir_all(root).unwrap();
     }

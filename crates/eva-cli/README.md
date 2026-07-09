@@ -2,9 +2,9 @@
 
 更新时间：2026-07-09
 
-`eva-cli` 负责命令解析、文本/JSON 输出、trace 字段和 exit code 映射。当前命令面覆盖 V1.0 core runtime、V1.1 外部能力诊断、V1.2 request-scoped memory/knowledge context、V1.3 plan-first 硬件接入诊断、V1.4 backup/lifecycle planning、V1.5 release hardening、V1.6 durable task store 入口、V1.9.3 Discovery source report、V1.9.4 durable memory context、V1.9.5 observability smoke 输出，以及 V1.10.4 signed backup archive restore apply gate。V1.11.4 起 `version`、`doctor`、`config validate`、`inspect`、`task`、`adapter`、`mcp`、`skill`、`discovery`、`memory`、`observability`、`hardware`、`backup`、`snapshot`、`restore`、`upgrade` 和 `release` 命令实现迁移到 `run/` 子模块；V1.12.1 新增 `daemon start/status/stop` 本机进程边界 smoke，继续复用统一 JSON envelope 和 exit code helper。
+`eva-cli` 负责命令解析、文本/JSON 输出、trace 字段和 exit code 映射。当前命令面覆盖 V1.0 core runtime、V1.1 外部能力诊断、V1.2 request-scoped memory/knowledge context、V1.3 plan-first 硬件接入诊断、V1.4 backup/lifecycle planning、V1.5 release hardening、V1.6 durable task store 入口、V1.9.3 Discovery source report、V1.9.4 durable memory context、V1.9.5 observability smoke 输出，以及 V1.10.4 signed backup archive restore apply gate。V1.11.4 起 `version`、`doctor`、`config validate`、`inspect`、`task`、`adapter`、`mcp`、`skill`、`discovery`、`memory`、`observability`、`hardware`、`backup`、`snapshot`、`restore`、`upgrade` 和 `release` 命令实现迁移到 `run/` 子模块；V1.12.2 新增 `daemon` 本机 control mailbox 命令，继续复用统一 JSON envelope 和 exit code helper。
 
-CLI 不启动生产后台 daemon；V1.12.1 的 `daemon start` 只验证本机 pid/lock/state、durable backend、policy、observability 和 shutdown contract，并输出 `provider_processes_started:false`。`run --example basic` 同步执行后，默认把最新 task report 写入 `.eva/tasks`，供 `task status/logs/cancel` 跨命令读取。传入 `--durable-backend <path>` 时，run/task 命令改用 V1.6 durable backend 的 `tasks/` 目录。外部能力、记忆上下文、硬件、备份、生命周期和发布加固命令当前都以可验证诊断 surface 为主；V1.8 已允许 manifest-gated stdio/http、MCP JSON-RPC 和 Skill workflow runner 进入受控真实执行路径，但仍不打开 raw hardware I/O，也不执行 destructive restore 或真实进程升级。
+CLI 不启动生产后台 daemon；`daemon start` 默认只验证本机 pid/lock/state、durable backend、policy、observability 和 shutdown contract，并输出 `provider_processes_started:false`。显式传入 `--no-shutdown-after-smoke` 时会保持前台进程运行，通过受控 filesystem mailbox 支持 `status`、`shutdown`、`submit`、`cancel`、`drain` 和 `reload` 控制请求；没有 running daemon 时稳定返回 `unavailable`。`run --example basic` 同步执行后，默认把最新 task report 写入 `.eva/tasks`，供 `task status/logs/cancel` 跨命令读取。传入 `--durable-backend <path>` 时，run/task 命令改用 V1.6 durable backend 的 `tasks/` 目录。外部能力、记忆上下文、硬件、备份、生命周期和发布加固命令当前都以可验证诊断 surface 为主；V1.8 已允许 manifest-gated stdio/http、MCP JSON-RPC 和 Skill workflow runner 进入受控真实执行路径，但仍不打开 raw hardware I/O，也不执行 destructive restore 或真实进程升级。
 
 ## 当前命令
 
@@ -15,7 +15,7 @@ CLI 不启动生产后台 daemon；V1.12.1 的 `daemon start` 只验证本机 pi
 | `eva config validate` | 加载 `eva.yaml`、Agent/Adapter/Capability manifest、policy、routes，并输出摘要。 |
 | `eva inspect` | 输出 agents、adapters、capabilities、routes、policy domains 和 runtime service summary。 |
 | `eva run --example basic` | 执行 V1.0 in-memory basic event loop，并写入本地或 durable backend task report。 |
-| `eva daemon start/status/stop` | 验证 V1.12.1 本机 daemon pid/lock/state、durable backend、policy、observability 和 shutdown contract；不启动 provider 进程。 |
+| `eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` | 验证 V1.12 daemon pid/lock/state、durable backend、policy、observability、shutdown contract 和本机 filesystem mailbox 控制面；不启动 provider 进程。 |
 | `eva task status` | 读取 `.eva/tasks` 或 `--durable-backend` 中最新或指定 task 的状态、attempts、retry、取消和 dead-letter 摘要。 |
 | `eva task logs` | 读取 task logs。 |
 | `eva task cancel` | 对未终态 task 写入取消标记；对已终态 task 记录 cancel request 但不改变终态。 |
@@ -87,14 +87,16 @@ cargo run -- task status --task req-durable-1 --durable-backend .eva/durable --o
 
 未传 `--durable-backend` 时，V1.0 的 task 记录仍是本地诊断文件，不是 durable task database。目录已在 `.gitignore` 中排除。
 
-## V1.12.1 Daemon Boundary Smoke
+## V1.12 Daemon Boundary And Control Mailbox
 
-`eva daemon start/status/stop` 固定本机 daemon 进程边界，但不启动生产后台守护进程，也不启动外部 provider。`start` 默认运行 foreground smoke：获取 `daemon.lock`，验证 durable backend、policy domain 和 observability JSONL sink，写入 `daemon.state` / `daemon.pid`，随后执行 shutdown contract 并移除 lock/pid。
+`eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` 固定本机 daemon 进程边界和控制面，但不启动生产后台守护进程，也不启动外部 provider。`start` 默认运行 foreground smoke：获取 `daemon.lock`，验证 durable backend、policy domain 和 observability JSONL sink，写入 `daemon.state` / `daemon.pid`，随后执行 shutdown contract 并移除 lock/pid。显式传入 `--no-shutdown-after-smoke` 时，命令保持前台运行并处理 `state/control/requests` 到 `state/control/responses` 的本机 filesystem mailbox。
 
 ```powershell
 cargo run -- daemon start --foreground --dev --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
+cargo run -- daemon start --foreground --dev --no-shutdown-after-smoke --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
 cargo run -- daemon status --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
-cargo run -- daemon stop --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
+cargo run -- daemon submit --task req-daemon-task-1 --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
+cargo run -- daemon shutdown --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
 ```
 
 关键 JSON 字段：
@@ -106,6 +108,8 @@ cargo run -- daemon stop --state-dir .eva/daemon-state --lock-dir .eva/daemon-lo
 | `policy` | 从项目 policy documents 得到的 effective policy layer evidence。 |
 | `observability` | file JSONL backend 的 audit/metric/span smoke evidence。 |
 | `shutdown` | foreground smoke 结束时调用 `Runtime::shutdown()` 的幂等报告。 |
+| `trace_id` | control mailbox request/response 的链路标识；默认来自 CLI request id。 |
+| `request_file` / `response_file` | 本机 filesystem mailbox 的请求和响应文件路径。 |
 
 ## V1.1 External Capability Commands
 

@@ -15,6 +15,7 @@
 | V1.0 | core release loop | `RuntimeBuilder::in_memory_v10()` 复用 V0.5 diagnostics，并将 runtime mode/generation 固定为 `in_memory_v1.0` / `basic-v1.0`。 |
 | V1.6.4 | recovery checkpoint | `RuntimeRecoveryCoordinator` 扫描 durable task snapshots，把重启后残留的 `queued`/`running` task 标记为 `interrupted` 或 `recovering`；带 eventbus 的 checkpoint 可 redrive 未 ack 且已到期的 durable dead-letter，并把 recovery evidence 写入 durable audit。 |
 | V1.12.1 | daemon process boundary | `start_daemon` / `daemon_status` / `stop_daemon` 固定本机 daemon pid/lock/state、foreground/dev smoke、durable backend、policy、observability 和 shutdown contract；不启动 provider 进程。 |
+| V1.12.2 | daemon control mailbox | `send_daemon_control_request` 和 foreground control loop 定义受控 filesystem mailbox 协议，支持 status、shutdown、submit task、cancel task、drain 和 reload plan；request/response 均带 trace id，不暴露远程网络监听。 |
 
 ## V1.0 Basic 闭环
 
@@ -34,7 +35,7 @@
 ## 公开入口
 
 ```rust
-use eva_runtime::{BasicRunOptions, DaemonStartOptions, RuntimeBuilder, TaskReport};
+use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, RuntimeBuilder, TaskReport};
 ```
 
 关键类型：
@@ -48,13 +49,17 @@ use eva_runtime::{BasicRunOptions, DaemonStartOptions, RuntimeBuilder, TaskRepor
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
 | `RuntimeRecoveryCoordinator` | V1.6.4 recovery coordinator；读取 task snapshots，持久化 interrupted/recovering 状态，可通过 durable EventBus 执行受控 redrive checkpoint，并可记录 `runtime.recovered` audit。 |
 | `DaemonStartOptions` | V1.12.1 daemon foreground/dev smoke 的 durable backend、state、lock、pid 和 observability 路径配置。 |
+| `DaemonControlRequest` | V1.12.2 本机 control mailbox 请求；封装 request id、trace id、operation、task/plan/generation 参数。 |
 
-## V1.12.1 Daemon Process Boundary
+## V1.12 Daemon Boundary And Control Mailbox
 
 `eva-runtime::daemon` 提供本机 daemon 进程边界 smoke，而不是生产后台守护进程：
 
 - `start_daemon` 先获取 `daemon.lock`，再验证 durable backend、policy domain 和 file JSONL observability backend。
 - 成功后写入 `daemon.state` 和 `daemon.pid`，foreground smoke 会立即调用 `Runtime::shutdown()` 并移除 lock/pid。
+- 显式传入 `shutdown_after_smoke=false` 时进入前台 control loop，通过 `state/control/requests` 和 `state/control/responses` 处理本机 filesystem mailbox 请求。
+- control operation 覆盖 status、shutdown、submit task、cancel task、drain 和 reload plan；status/shutdown 作用于前台 daemon，submit/cancel 写 durable task store，drain/reload 当前只产生可追踪 evidence。
+- `send_daemon_control_request` 在没有 running state、lock 和 pid 时返回稳定 `Unavailable`，避免把 stopped smoke state 误读成 live daemon。
 - JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
 - 已有 lock 会返回 conflict；坏 durable backend 会在写 daemon state 前失败。
 
@@ -84,7 +89,7 @@ restart redrive 和 corrupt task store，`release check` 暴露
 
 ## 当前非目标
 
-- V1.12.1 只提供 daemon 进程边界 smoke，不提供本机控制 API/IPC、后台常驻循环或长生命周期任务调度。
+- V1.12.2 只提供本机 filesystem mailbox 控制面和前台 loop；不提供生产后台 service manager、远程网络监听、provider supervision 或 scheduler apply mutation。
 - recovery checkpoint 只恢复 task/event/audit evidence，不恢复 provider/runtime 执行态；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
 - 不引入真实 Lua VM；`LuaGeneration` 是 generation marker，不是 VM swap 实现。
 - Adapter/MCP/Discovery/Memory/Hardware/Backup/Lifecycle 仍属于后续版本。
@@ -93,6 +98,7 @@ restart redrive 和 corrupt task store，`release check` 暴露
 
 ```powershell
 cargo test -p eva-runtime
+cargo test -p eva-runtime daemon -- --nocapture
 cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```

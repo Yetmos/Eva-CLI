@@ -13,7 +13,8 @@ pub mod task;
 pub use basic::{BasicRunOptions, BasicRunReport};
 pub use builder::{RuntimeBuilder, RuntimeMode, RuntimeOptions};
 pub use daemon::{
-    daemon_status, start_daemon, stop_daemon, DaemonPathReport, DaemonPolicyReport,
+    daemon_status, send_daemon_control_request, start_daemon, stop_daemon, DaemonControlOperation,
+    DaemonControlRequest, DaemonControlResponse, DaemonPathReport, DaemonPolicyReport,
     DaemonStartOptions, DaemonStartReport, DaemonStateRecord, DaemonStatusReport, DaemonStopReport,
 };
 pub use diagnostics::{
