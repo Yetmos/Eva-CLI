@@ -628,7 +628,7 @@
         "path": "docs/zh-CN/planning/V1.x未完整实现功能清单.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "full-detail"
+      "sourceCoverage": "summary-or-entry"
     },
     {
       "id": "v1.x-real-runtime-implementation-plan",
