@@ -67,6 +67,7 @@ Run this sequence from the repository root:
 | Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
 | Emit event | `cargo run -- emit /input/user --payload hello --output json` | Publishes a typed Event to the in-memory EventBus boundary. |
 | Agent status | `cargo run -- agent status --agent root-agent --output json` | Reports Agent lifecycle and manifest evidence. |
+| Capability probe | `cargo run -- capability probe repo.analyze --output json` | Reports provider plan and permission gate evidence. |
 | Task status | `cargo run -- task status --output json` | Reads the latest task report. |
 | Release gate | `cargo run -- release check --output json` | Prints V1.11.4 release readiness. |
 
@@ -83,6 +84,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Runtime | `run --example basic` | Execute the V1.0 in-memory basic loop through the restricted Lua VM boundary. | Writes `.eva/tasks` or durable backend `tasks/` |
 | Emit | `emit <topic>` | Publish a typed Event to in-memory or durable EventBus. | Writes durable backend `events/log/` when `--durable-backend` is set |
 | Agent | `agent status/drain/reload` | Report Agent lifecycle, drain plans, and generation reload evidence. | No daemon mutation; reports `mutation_executed:false` |
+| Capability | `capability list/probe/call` | Report provider routing and run dry-run or confirmed controlled invokes. | `call` defaults to dry-run; confirmed invokes still report `mutation_executed:false` |
 | Task | `task status/logs/cancel` | Read or mark task diagnostics. | Writes task cancel marker |
 | Adapter | `adapter list/probe` | List or probe manifest-derived adapter handles. | No |
 | MCP | `mcp list/probe` | List or probe allowlisted MCP tools. | No |
@@ -139,6 +141,28 @@ cargo run -- agent reload --agent root-agent --from-generation gen-old --to-gene
 | `agent status` | `lifecycle`, `queued_events`, `subscriptions` | Manifest-backed Agent snapshot; enabled Agents report a locally-started `running` runtime boundary. |
 | `agent drain` | `drain.accepts_new_work:false`, `drain.status`, `mutation_executed:false` | Drain plan evidence for one Agent generation. |
 | `agent reload` | `active_generation`, `previous_generation`, `drain`, `audit`, `mutation_executed:false` | Generation promotion and old-generation drain evidence without daemon mutation. |
+
+## Capability Routing
+
+`capability list`, `capability probe`, and `capability call` expose the provider
+routing boundary used by Lua and Agent tool calls. The commands reuse
+capability manifests, provider selection plans, permission gates, runtime policy
+decisions, and the adapter-backed host. `capability call` defaults to dry-run;
+to execute, pass `--confirm <request-id>` matching the request id. Provider
+choices outside a capability manifest allowlist are rejected before invocation.
+
+```powershell
+cargo run -- capability list --output json
+cargo run -- capability probe repo.analyze --output json
+cargo run -- capability call config.lint --input config --request-id req-manual-cap --output json
+cargo run -- capability call config.lint --input config --request-id req-manual-cap --confirm req-manual-cap --output json
+```
+
+| Command | Key fields | Meaning |
+| --- | --- | --- |
+| `capability list` | `capabilities[].providers`, `required_adapter_capabilities` | Manifest-derived capability registry and provider selection metadata. |
+| `capability probe` | `provider_plan`, `providers`, `permission_gate` | Read-only provider route and adapter health evidence. |
+| `capability call` | `status`, `confirmed`, `invocation_executed`, `response` | Dry-run by default; confirmed calls execute through the builtin router or adapter-backed host. |
 
 ## Basic Runtime Loop
 

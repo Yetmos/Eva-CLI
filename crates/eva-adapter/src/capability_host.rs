@@ -45,15 +45,26 @@ impl AdapterBackedCapabilityHost {
 
 impl CapabilityHostApi for AdapterBackedCapabilityHost {
     fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
+        self.invoke_with_provider(request, None)
+    }
+}
+
+impl AdapterBackedCapabilityHost {
+    pub fn invoke_with_provider(
+        &self,
+        request: InvokeRequest,
+        explicit_provider: Option<AdapterId>,
+    ) -> Result<InvokeResponse, EvaError> {
         if !matches!(request.target(), InvokeTarget::Capability(_)) {
             return Err(EvaError::invalid_argument(
                 "adapter-backed capability host requires capability target",
             ));
         }
-        let plan = match self
-            .router
-            .authorized_provider_plan(&request, None, &self.permissions)
-        {
+        let plan = match self.router.authorized_provider_plan(
+            &request,
+            explicit_provider,
+            &self.permissions,
+        ) {
             Ok(plan) => plan,
             Err(error) => return Ok(response_from_error(request.request_id().clone(), error)),
         };

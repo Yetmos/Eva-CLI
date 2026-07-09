@@ -29,12 +29,13 @@
 | `run/release_cmd.rs` | V1.11.4 已实现 | `release check/security/perf/migration` 的 parser、artifact/distribution/security scan/benchmark evidence reader、文本/JSON writer 和 release report formatter；保持 V1.11.1-V1.11.3 release evidence gate 的公开 JSON shape 与 exit code 不变。 |
 | `run/emit_cmd.rs` | V1.11.5.1 已实现 | `emit` parser、typed `eva-core::Event` 构造、in-memory/durable EventBus publish、text/JSON receipt formatter；支持 payload、target、request/generation 和 trace metadata。 |
 | `run/agent_cmd.rs` | V1.11.5.2 已实现 | `agent status/drain/reload` parser、AgentRuntime/AgentLifecycle/DrainCoordinator/GenerationController evidence 构造、text/JSON formatter；保持 `mutation_executed:false`，不执行 daemon mutation。 |
+| `run/capability_cmd.rs` | V1.11.5.3 已实现 | `capability list/probe/call` parser、CapabilityRegistry/provider selection/permission gate/runtime policy/adapter-backed host evidence 构造、text/JSON formatter；`call` 默认 dry-run，确认后受控 invoke。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
 | `emit.rs` | 入口保留 | typed ingress event 命令的顶层占位；真实 CLI 行为由 `run/emit_cmd.rs` 承载。 |
 | `agent.rs` | 入口保留 | Agent lifecycle 命令的顶层占位；真实 CLI 行为由 `run/agent_cmd.rs` 承载。 |
 | `adapter.rs` | 边界保留 | 后续可从 `run.rs` 拆出 adapter 子命令。 |
-| `capability.rs` | 边界保留 | 后续 capability list/inspect/dry-run invoke。 |
+| `capability.rs` | 入口保留 | capability routing 命令的顶层占位；真实 CLI 行为由 `run/capability_cmd.rs` 承载。 |
 
 ## V1.0/V1.6.4 任务状态
 

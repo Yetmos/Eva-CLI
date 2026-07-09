@@ -166,6 +166,7 @@ dependencies = [
  "eva-adapter",
  "eva-agent",
  "eva-backup",
+ "eva-capability",
  "eva-config",
  "eva-core",
  "eva-discovery",

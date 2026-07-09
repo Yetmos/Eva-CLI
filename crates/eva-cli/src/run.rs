@@ -3,6 +3,7 @@
 mod adapter_cmd;
 mod agent_cmd;
 mod backup_cmd;
+mod capability_cmd;
 mod config_cmd;
 mod discovery_cmd;
 mod doctor_cmd;
@@ -23,6 +24,7 @@ mod version_cmd;
 use adapter_cmd::AdapterCommand;
 use agent_cmd::AgentCommand;
 use backup_cmd::BackupCommand;
+use capability_cmd::CapabilityCommand;
 use discovery_cmd::DiscoveryCommand;
 use emit_cmd::EmitCommand;
 use eva_config::load_project_config;
@@ -89,6 +91,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "cli command module split",
     "emit",
     "agent status/drain/reload",
+    "capability list/probe/call",
 ];
 
 /// Process entry point for the root binary shim.
@@ -169,6 +172,7 @@ where
         }
         Command::Emit(command) => emit_cmd::execute_emit(command, stdout, stderr),
         Command::Agent(command) => agent_cmd::execute_agent(command, stdout, stderr),
+        Command::Capability(command) => capability_cmd::execute_capability(command, stdout, stderr),
         Command::Task(command) => task_cmd::execute_task(command, stdout, stderr),
         Command::Adapter(command) => adapter_cmd::execute_adapter(command, stdout, stderr),
         Command::Mcp(command) => mcp_cmd::execute_mcp(command, stdout, stderr),
@@ -197,6 +201,7 @@ enum Command {
     Run(RunOptions),
     Emit(EmitCommand),
     Agent(AgentCommand),
+    Capability(CapabilityCommand),
     Task(TaskCommand),
     Adapter(AdapterCommand),
     Mcp(McpCommand),
@@ -279,6 +284,9 @@ where
         "run" => Ok(Command::Run(parse_run_options(&args[1..])?)),
         "emit" => Ok(Command::Emit(emit_cmd::parse_emit_command(&args[1..])?)),
         "agent" => Ok(Command::Agent(agent_cmd::parse_agent_command(&args[1..])?)),
+        "capability" => Ok(Command::Capability(
+            capability_cmd::parse_capability_command(&args[1..])?,
+        )),
         "task" => Ok(Command::Task(task_cmd::parse_task_command(&args[1..])?)),
         "adapter" => Ok(Command::Adapter(adapter_cmd::parse_adapter_command(
             &args[1..],
@@ -1019,6 +1027,9 @@ fn help_text() -> &'static str {
         "  eva agent status [--agent <id>] [--project <path>] [--output text|json]\n",
         "  eva agent drain --agent <id> [--generation <id>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva agent reload --agent <id> [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
+        "  eva capability list [--project <path>] [--output text|json]\n",
+        "  eva capability probe [<capability>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n",
+        "  eva capability call [<capability>|--capability <name>] [--provider <id>] [--input <text>] [--request-id <id>] [--dry-run|--confirm <request-id>] [--project <path>] [--output text|json]\n",
         "  eva task status [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
         "  eva task logs [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
         "  eva task cancel [--project <path>] [--task <id>] [--durable-backend <path>] [--reason <text>] [--output text|json]\n",
@@ -1053,6 +1064,7 @@ fn help_text() -> &'static str {
         "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks or a durable backend task store.\n",
         "  emit             Publish a typed Event to the in-memory or durable EventBus boundary.\n",
         "  agent            Report Agent lifecycle status, drain plans, and reload generation evidence without daemon mutation.\n",
+        "  capability       List, probe, and dry-run or confirmed-call capability provider routes.\n",
         "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
         "  adapter          List and probe authorized Adapter handles derived from manifests.\n",
         "  mcp              List and probe allowlisted MCP tools without starting external servers.\n",
@@ -1651,6 +1663,122 @@ mod tests {
         assert!(stdout.contains("generation:gen-old:draining_after_swap_to:gen-new"));
         assert!(stdout.contains("\"mutation_executed\":false"));
         assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn capability_list_and_probe_report_provider_plan_json() {
+        let root = workspace_root();
+        let (list_exit, list_stdout, list_stderr) = run_cli(&[
+            "capability",
+            "list",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(list_exit, EXIT_OK, "{list_stderr}");
+        assert!(list_stdout.contains("\"command\":\"capability.list\""));
+        assert!(list_stdout.contains("\"capability\":\"repo.analyze\""));
+        assert!(list_stdout.contains("\"provider\":\"codex-cli\""));
+        assert!(list_stdout.contains("\"source\":\"default_provider\""));
+        assert!(list_stderr.is_empty());
+
+        let (probe_exit, probe_stdout, probe_stderr) = run_cli(&[
+            "capability",
+            "probe",
+            "repo.analyze",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(probe_exit, EXIT_OK, "{probe_stderr}");
+        assert!(probe_stdout.contains("\"command\":\"capability.probe\""));
+        assert!(probe_stdout.contains("\"status\":\"ready\""));
+        assert!(probe_stdout.contains("\"capability\":\"repo.analyze\""));
+        assert!(probe_stdout.contains("\"manifest_allowed_providers\":[\"codex-cli\"]"));
+        assert!(probe_stdout.contains("\"permission_gate\":{\"allowed\":true"));
+        assert!(probe_stderr.is_empty());
+    }
+
+    #[test]
+    fn capability_call_dry_run_and_confirmed_builtin_paths() {
+        let root = workspace_root();
+        let (dry_exit, dry_stdout, dry_stderr) = run_cli(&[
+            "capability",
+            "call",
+            "config.lint",
+            "--input",
+            "config",
+            "--request-id",
+            "req-cap-dry",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(dry_exit, EXIT_OK, "{dry_stderr}");
+        assert!(dry_stdout.contains("\"command\":\"capability.call\""));
+        assert!(dry_stdout.contains("\"status\":\"dry_run\""));
+        assert!(dry_stdout.contains("\"confirmed\":false"));
+        assert!(dry_stdout.contains("\"invocation_executed\":false"));
+        assert!(dry_stdout.contains("\"mutation_executed\":false"));
+        assert!(dry_stdout.contains("\"response\":null"));
+        assert!(dry_stderr.is_empty());
+
+        let (run_exit, run_stdout, run_stderr) = run_cli(&[
+            "capability",
+            "call",
+            "config.lint",
+            "--input",
+            "config",
+            "--request-id",
+            "req-cap-run",
+            "--confirm",
+            "req-cap-run",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(run_exit, EXIT_OK, "{run_stderr}");
+        assert!(run_stdout.contains("\"status\":\"executed\""));
+        assert!(run_stdout.contains("\"confirmed\":true"));
+        assert!(run_stdout.contains("\"invocation_executed\":true"));
+        assert!(run_stdout.contains("\"mutation_executed\":false"));
+        assert!(run_stdout.contains("\"response\":{\"request_id\":\"req-cap-run\""));
+        assert!(run_stdout.contains("\"status\":\"completed\""));
+        assert!(run_stdout.contains("valid"));
+        assert!(run_stderr.is_empty());
+    }
+
+    #[test]
+    fn capability_call_rejects_provider_outside_manifest_allowlist() {
+        let root = workspace_root();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "capability",
+            "call",
+            "repo.analyze",
+            "--provider",
+            "claude-api",
+            "--request-id",
+            "req-cap-deny",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_POLICY);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"command\":\"capability.call\""));
+        assert!(stderr.contains("\"kind\":\"permission_denied\""));
+        assert!(stderr.contains("adapter provider is not explicitly allowed"));
+        assert!(stderr.contains("\"key\":\"gate\",\"value\":\"adapter\""));
     }
 
     #[test]

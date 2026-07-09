@@ -23,8 +23,9 @@ limits, plus V1.7.4 Lua shadow-load health checks, scheduler generation route
 gating, drain evidence, rollback audit evidence, V1.8 controlled provider/MCP/Skill
 execution, V1.9 policy/discovery/memory/observability hardening, V1.10 hardware
 and high-risk apply gates, V1.11 release evidence, and V1.11.4 CLI command
-module split evidence, plus V1.11.5.1 typed event `emit` publish evidence and
-V1.11.5.2 `agent status/drain/reload` lifecycle evidence.
+module split evidence, plus V1.11.5.1 typed event `emit` publish evidence,
+V1.11.5.2 `agent status/drain/reload` lifecycle evidence, and V1.11.5.3
+`capability list/probe/call` provider-routing evidence.
 
 Current managed project version: `V1.11.4-alpha` (`Cargo.toml` version
 `1.11.4-alpha`, prerelease Git tag form `v1.11.4-alpha`). Version policy is defined in
@@ -75,7 +76,7 @@ release gates.
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 20 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V1.11.5 in progress | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `emit`, `agent status/drain/reload`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `observability smoke`, `hardware list/probe/bind`, `backup create`, `snapshot create/promote`, `restore plan/apply`, `upgrade check/apply`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task/event store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, Lua host binding evidence, Lua resource-limit evidence, Lua hot-reload lifecycle evidence, artifact/distribution/scanner/benchmark evidence, command module split coverage, and exit-code mapping | Keep command contracts stable as future apply paths are added |
+| `eva-cli` | V1.11.5 in progress | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `emit`, `agent status/drain/reload`, `capability list/probe/call`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `observability smoke`, `hardware list/probe/bind`, `backup create`, `snapshot create/promote`, `restore plan/apply`, `upgrade check/apply`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task/event store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, Lua host binding evidence, Lua resource-limit evidence, Lua hot-reload lifecycle evidence, artifact/distribution/scanner/benchmark evidence, command module split coverage, and exit-code mapping | Keep command contracts stable as future apply paths are added |
 | Runtime composition | V1.0 core implemented | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, and idempotent shutdown | Durable/runtime lifecycle work remains later scope |
 | EventBus and Scheduler | V1.6.4 durable recovery baseline implemented | EventBus publish/ack/fail/dead-letter/replay diagnostics; durable EventLog records; queryable dead-letter store; redrive replay attempts; ack-safe recovery redrive checkpoint; Scheduler topic routing and mailbox delivery | Scheduler-driven delayed backoff and broader crash recovery remain later scope |
 | Agent and Lua host | V1.11.4 hot-reload lifecycle implemented | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, restricted `mlua` VM adapter, real `on_event` execution, read-only request/trace/memory tables, `ctx.host.log/audit`, `ctx.tools.call`, Lua wall-clock timeout, instruction budget, cancellation token, memory budget, static parser fallback, generation marker, shadow-load health checks, generation route gating, drain evidence, and rollback audit evidence | Daemon-driven hot-reload orchestration and real provider paths remain later scope |
@@ -125,6 +126,8 @@ cargo run -- inspect runtime --output json
 cargo run -- run --example basic --task-id req-readme-v10 --output json
 cargo run -- emit /input/user --event-id evt-readme-v1115 --payload hello --output json
 cargo run -- agent status --agent root-agent --output json
+cargo run -- capability probe repo.analyze --output json
+cargo run -- capability call config.lint --input config --request-id req-readme-cap --confirm req-readme-cap --output json
 cargo run -- task status --task req-readme-v10 --output json
 cargo run -- task logs --task req-readme-v10 --output json
 ```

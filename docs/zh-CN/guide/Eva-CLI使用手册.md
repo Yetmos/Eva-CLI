@@ -65,6 +65,7 @@ release: V1.11.4-alpha
 | 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |
 | 发布事件 | `cargo run -- emit /input/user --payload hello --output json` | 向 in-memory EventBus 边界发布 typed Event。 |
 | Agent 状态 | `cargo run -- agent status --agent root-agent --output json` | 输出 Agent lifecycle 和 manifest evidence。 |
+| Capability probe | `cargo run -- capability probe repo.analyze --output json` | 输出 provider plan 和 permission gate evidence。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
 | 发布门禁 | `cargo run -- release check --output json` | 输出 V1.11.4 release readiness。 |
 
@@ -82,6 +83,7 @@ release: V1.11.4-alpha
 | 运行 | `run --example basic` | 通过受限 Lua VM 边界执行 V1.0 in-memory basic loop。 | 写 `.eva/tasks` 或 durable backend `tasks/` |
 | 事件 | `emit <topic>` | 向 in-memory 或 durable EventBus 发布 typed Event。 | 传入 `--durable-backend` 时写 durable backend `events/log/` |
 | Agent | `agent status/drain/reload` | 输出 Agent lifecycle、drain plan 和 generation reload evidence。 | 不执行 daemon mutation；输出 `mutation_executed:false` |
+| Capability | `capability list/probe/call` | 输出 provider routing，并执行 dry-run 或确认后的受控 invoke。 | `call` 默认 dry-run；确认执行仍输出 `mutation_executed:false` |
 | 任务 | `task status/logs/cancel` | 读取或标记 task 诊断。 | 只写 task 取消标记 |
 | Adapter | `adapter list/probe` | 列出或探测 manifest 派生的 Adapter handle。 | 否 |
 | MCP | `mcp list/probe` | 列出或探测 allowlist 中的 MCP tool。 | 否 |
@@ -148,6 +150,23 @@ cargo run -- agent reload --agent root-agent --from-generation gen-old --to-gene
 | `agent status` | `lifecycle`、`queued_events`、`subscriptions` | manifest-backed Agent snapshot；enabled Agent 会输出本地启动后的 `running` runtime 边界。 |
 | `agent drain` | `drain.accepts_new_work:false`、`drain.status`、`mutation_executed:false` | 单 Agent generation 的 drain plan evidence。 |
 | `agent reload` | `active_generation`、`previous_generation`、`drain`、`audit`、`mutation_executed:false` | generation promotion 和旧 generation drain evidence，不执行 daemon mutation。 |
+
+## Capability routing
+
+`capability list`、`capability probe` 和 `capability call` 暴露 Lua 与 Agent 工具调用会使用的 provider routing 边界。命令复用 capability manifest、provider selection plan、permission gate、runtime policy decision 和 adapter-backed host。`capability call` 默认 dry-run；只有传入与 request id 匹配的 `--confirm <request-id>` 才执行。provider 超出 capability manifest allowlist 时会在调用前被拒绝。
+
+```powershell
+cargo run -- capability list --output json
+cargo run -- capability probe repo.analyze --output json
+cargo run -- capability call config.lint --input config --request-id req-manual-cap --output json
+cargo run -- capability call config.lint --input config --request-id req-manual-cap --confirm req-manual-cap --output json
+```
+
+| 命令 | 关键字段 | 说明 |
+| --- | --- | --- |
+| `capability list` | `capabilities[].providers`、`required_adapter_capabilities` | manifest-derived capability registry 和 provider selection metadata。 |
+| `capability probe` | `provider_plan`、`providers`、`permission_gate` | 只读 provider route 和 adapter health evidence。 |
+| `capability call` | `status`、`confirmed`、`invocation_executed`、`response` | 默认 dry-run；确认后通过 builtin router 或 adapter-backed host 执行。 |
 
 ## 运行 basic 示例
 
