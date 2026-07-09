@@ -1,17 +1,17 @@
 # eva-adapter/src / Adapter 源码
 
-更新时间：2026-07-09
+更新时间：2026-07-10
 
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
-本目录承载 Adapter runtime descriptor、registry、router、transport runtime、provider supervisor、adapter-backed capability host 和错误映射。V1.1 已经把外部能力做成 side-effect-safe 的受控 envelope；V1.3 新增 hardware transport，让硬件能力经由 `eva-hardware` 的 registry lease 和 driver binding 执行；V1.8.1 将 stdio/http runner 接入 `AdapterRuntime`，V1.8.2 将 MCP invoke 接到 JSON-RPC stdio client，V1.8.4 将 Skill transport 接到 schema-gated workflow runner，V1.8.5.4 将授权后的 capability provider plan 接到 `AdapterRuntime`，统一 `InvokeResponse`，并按 retryable 分类执行 fallback；V1.13.1 新增 provider supervisor slot 和 process table evidence；V1.13.2 新增 provider credential session scope；V1.13.3 新增 provider concurrency/rate/circuit admission gate；V1.13.4 新增 provider stream artifact 数据面；V1.13.5 新增 durable provider process table mirror 入口；V1.13.6 新增 MCP HTTP/auth transport boundary。
+本目录承载 Adapter runtime descriptor、registry、router、transport runtime、provider supervisor、adapter-backed capability host 和错误映射。V1.1 已经把外部能力做成 side-effect-safe 的受控 envelope；V1.3 新增 hardware transport，让硬件能力经由 `eva-hardware` 的 registry lease 和 driver binding 执行；V1.8.1 将 stdio/http runner 接入 `AdapterRuntime`，V1.8.2 将 MCP invoke 接到 JSON-RPC stdio client，V1.8.4 将 Skill transport 接到 schema-gated workflow runner，V1.8.5.4 将授权后的 capability provider plan 接到 `AdapterRuntime`，统一 `InvokeResponse`，并按 retryable 分类执行 fallback；V1.13.1 新增 provider supervisor slot 和 process table evidence；V1.13.2 新增 provider credential session scope；V1.13.3 新增 provider concurrency/rate/circuit admission gate；V1.13.4 新增 provider stream artifact 数据面；V1.13.5 新增 durable provider process table mirror 入口；V1.13.6 新增 MCP HTTP/auth transport boundary；V1.15.7 新增 trait-level explicit provider routing，供 memory retrieval 通过受监督 host 调用指定 provider。
 
 ## 文件职责
 
 | 文件/目录 | 职责 | 当前进度 | 说明 |
 | --- | --- | --- | --- |
 | `lib.rs` | 模块导出 | 已完成 V1.13.6 | 导出 manifest、registry、router、runtime、supervisor、error。 |
-| `capability_host.rs` | adapter-backed capability host | 已完成 V1.8.5.4 | 复用 capability authorized provider plan，调用 `AdapterRuntime`，把 `AdapterInvokeReport` 和 transport error 归一为 `InvokeResponse`，并只在 `EvaError::is_retryable()` 为 true 时继续 fallback。 |
+| `capability_host.rs` | adapter-backed capability host | 已完成 V1.15.7 | 复用 capability authorized provider plan，调用 `AdapterRuntime`，把 `AdapterInvokeReport` 和 transport error 归一为 `InvokeResponse`，只在 `EvaError::is_retryable()` 为 true 时继续 fallback，并实现 `CapabilityHostApi::invoke_with_provider` 显式 provider routing。 |
 | `manifest.rs` | Adapter manifest 的 runtime 表示 | 已完成 V1.8.4 | `AdapterHandle` 保留 MCP、Skill path/entry/schema/runner/artifact root、hardware identity 以及 stdio/http command、args、endpoint、env、headers、limits 扩展。 |
 | `registry.rs` | Adapter handle 和 capability index | 已完成 V1.1 | 支持按 id/capability 查询和重复检测。 |
 | `router.rs` | explicit provider 和 capability 路由 | 已完成 V1.1 | provider 优先，fallback 到 capability index。 |
@@ -42,6 +42,8 @@ V1.13.1 起 stdio、http、MCP 和 Skill transport 在 dispatch 前通过 `Provi
 V1.13.2 起 `ProviderCredentialScope` 将 session token 绑定到 provider/session/request/capability。`AdapterRuntime` 拒绝 caller-supplied scope，并通过 `provider.credential_session` policy decision 记录 allow/deny audit；stdio/HTTP/Skill 会注入 scoped env/header/token 并把 token 纳入 stdout/stderr/body/artifact redaction；跨 provider/session 复用会在 runner 启动前拒绝。该基线仍不等于 OS credential vault 或真实进程用户隔离。
 
 V1.13.3 起 `ProviderExecutionRequest` 携带 manifest concurrency/rate/circuit limit 和 policy retry backoff。`InMemoryProviderSupervisor` 在 acquire 前执行 admission：并发超限、rate window 耗尽和 circuit open 均返回 retryable `Unavailable` 且不启动新进程；失败达到阈值时 provider health 进入 `circuit_open`，恢复窗口后允许 half-open probe。
+
+V1.15.7 起 `AdapterBackedCapabilityHost` 通过 `CapabilityHostApi::invoke_with_provider` trait 入口接受显式 provider。memory retrieval 可在保持 policy gate、provider allowlist、supervisor slot、timeout/failure 映射和 retryable fallback 语义的前提下调用指定 provider；该入口仍不向 memory 层暴露 AdapterRuntime 或 raw process handle。
 
 ## V1.3 新增 surface
 
@@ -84,4 +86,4 @@ cargo run -- adapter probe --adapter github-mcp --output json
 cargo run -- hardware bind --adapter scale-main --output json
 ```
 
-当前测试覆盖 registry/router/runtime、adapter-backed capability host、retryable provider fallback、non-retryable provider stop、retryable rate-limit gate fallback、MCP allowlist、MCP JSON-RPC fake server call、blocked tool 不发 RPC、timeout/protocol/output-limit 错误、MCP HTTP fake server/auth header/session token、Skill schema gate/runner/artifact evidence/credential redaction、hardware identity 读取、hardware transport simulated audit、stdio runtime runner/redaction/disabled-provider gate、stdio runner denied command/timeout/output limit、HTTP URL allowlist、method denial、timeout、runtime fake provider、credential header redaction、V1.13.1 provider supervisor acquire/release、process table 查询和 failed provider slot release、V1.13.2 credential session token redaction 和跨 provider scope 拒绝、V1.13.3 concurrency/rate/circuit admission 和 half-open probe、V1.13.4 provider stream summary/artifact truncation，以及 V1.13.5 durable provider process table mirror。
+当前测试覆盖 registry/router/runtime、adapter-backed capability host、explicit provider trait routing、retryable provider fallback、non-retryable provider stop、retryable rate-limit gate fallback、MCP allowlist、MCP JSON-RPC fake server call、blocked tool 不发 RPC、timeout/protocol/output-limit 错误、MCP HTTP fake server/auth header/session token、Skill schema gate/runner/artifact evidence/credential redaction、hardware identity 读取、hardware transport simulated audit、stdio runtime runner/redaction/disabled-provider gate、stdio runner denied command/timeout/output limit、HTTP URL allowlist、method denial、timeout、runtime fake provider、credential header redaction、V1.13.1 provider supervisor acquire/release、process table 查询和 failed provider slot release、V1.13.2 credential session token redaction 和跨 provider scope 拒绝、V1.13.3 concurrency/rate/circuit admission 和 half-open probe、V1.13.4 provider stream summary/artifact truncation，以及 V1.13.5 durable provider process table mirror。

@@ -1,6 +1,6 @@
 //! Sensitive data redaction before context injection.
 
-use crate::knowledge_service::KnowledgeSearchResult;
+use crate::knowledge_service::{KnowledgeItem, KnowledgeSearchResult, KnowledgeSource};
 use crate::memory_service::MemoryRecord;
 
 /// Architectural responsibility for this module.
@@ -45,6 +45,28 @@ pub fn redact_knowledge_result(result: &KnowledgeSearchResult) -> (KnowledgeSear
     (
         result,
         summary.replacement_count + content.replacement_count,
+    )
+}
+
+pub fn redact_knowledge_item(item: &KnowledgeItem) -> (KnowledgeItem, usize) {
+    let source_uri = redact_sensitive_text(&item.source.uri);
+    let source_title = redact_sensitive_text(&item.source.title);
+    let summary = redact_sensitive_text(&item.summary);
+    let content = redact_sensitive_text(&item.content);
+    let mut item = item.clone();
+    item.source = KnowledgeSource::new(
+        source_uri.value,
+        source_title.value,
+        content.value.as_bytes(),
+    );
+    item.summary = summary.value;
+    item.content = content.value;
+    (
+        item,
+        source_uri.replacement_count
+            + source_title.replacement_count
+            + summary.replacement_count
+            + content.replacement_count,
     )
 }
 

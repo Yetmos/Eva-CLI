@@ -7,9 +7,11 @@ indexing, durable memory/knowledge files, and request-scoped context assembly.
 V1.9.4 adds a durable backend round-trip while preserving the original
 invariant: private memory is scoped by `agent_id`, and context construction does
 not grant service, provider, file, socket, or process handles. V1.15.6 adds a
-filesystem index-lock and maintenance baseline for durable stores.
+filesystem index-lock and maintenance baseline for durable stores, and V1.15.7
+adds supervised provider retrieval execution before indexing external
+knowledge.
 
-## V1.15.6 Capability Matrix
+## V1.15.7 Capability Matrix
 
 | Area | Public Types | Behavior |
 | --- | --- | --- |
@@ -24,7 +26,7 @@ filesystem index-lock and maintenance baseline for durable stores.
 | Durable knowledge | `FileSystemKnowledgeStore`, `rebuild_from_items` | Knowledge files under durable backend `state/knowledge` can rebuild a searchable index. |
 | Knowledge rebuild checkpoint | `KnowledgeRebuildCheckpointReport` | Durable knowledge reads/writes acquire `index.lock`; rebuild checkpoint writes `knowledge-rebuild.checkpoint` and reports indexed item count. |
 | Redaction | `redact_sensitive_text`, `ContextBuilder` | Context output redacts token/password/secret/API-key shaped values before Lua/context injection. |
-| External retrieval gate | `ExternalKnowledgeRetrievalRequest` | External retrieval must pass a `RuntimePolicyGate` provider decision before any future provider call. |
+| External retrieval provider | `ExternalKnowledgeRetrievalRequest`, `ExternalKnowledgeRetrievalReport`, `render_retrieval_item` | External retrieval passes `RuntimePolicyGate`, invokes a supervised `CapabilityHostApi` explicit provider, accepts only the retrieval schema, redacts sensitive results, and records source audit before indexing. |
 | Context assembly | `ContextBudget`, `ContextRequest`, `ContextBuilder`, `BuiltContext` | Request context combines current Agent private memory, global memory, and knowledge results under explicit budgets. |
 | Lua boundary | `LuaContextSnapshot` | Lua receives counts and audit summary only; it does not receive service handles or cross-Agent memory access. |
 
@@ -40,6 +42,7 @@ filesystem index-lock and maintenance baseline for durable stores.
 - Filter expired memory and redact sensitive values before context assembly.
 - Index traceable knowledge items with source URI, title, digest, summary, content, tags, and request id.
 - Rebuild knowledge indexes from durable items.
+- Execute provider-backed knowledge retrieval through a supervised capability host boundary, then validate schema, redact content, and record source audit before indexing.
 - Build request-level context from private memory, global memory, and knowledge search results.
 - Produce `LuaContextSnapshot` for downstream Lua host integration.
 
@@ -47,9 +50,9 @@ filesystem index-lock and maintenance baseline for durable stores.
 
 - Store EventBus delivery logs or scheduler state.
 - Grant Adapter, MCP, hardware, or filesystem authority.
-- Execute retrieval against external services.
+- Own production retrieval provider fleets or long-lived retrieval scheduling.
 - Allow Lua or Agents to request another Agent's private memory.
-- Provide production retrieval providers, policy-driven redaction configuration, or a long-lived background maintenance scheduler yet.
+- Provide policy-driven redaction configuration, full audit/metrics wiring, or a long-lived background maintenance scheduler yet.
 
 ## Verification
 
@@ -63,11 +66,13 @@ The CLI smoke proves the public envelope includes `memory`, `global_memory`,
 `knowledge`, `lua_context`, and `audit`. Durable smoke additionally proves
 `state/memory` and `state/knowledge` round trips, expiration filtering,
 compression metadata, redaction, durable index locks, TTL GC checkpointing, and
-knowledge rebuild checkpointing.
+knowledge rebuild checkpointing. Provider retrieval tests additionally prove
+policy denial, timeout/failure, schema rejection, redaction, and source audit do
+not pollute the knowledge index.
 
 ## Next Scope
 
-Next production work is provider-backed retrieval execution, configurable
-redaction policy, a long-lived maintenance scheduler, and broader audit/metrics
+Next production work is configurable redaction policy, a long-lived maintenance
+scheduler, and broader audit/metrics
 wiring. Those features must preserve the invariant that private memory is scoped
 by `agent_id` and request context is assembled through `ContextBuilder`.

@@ -47,6 +47,14 @@ impl CapabilityHostApi for AdapterBackedCapabilityHost {
     fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
         self.invoke_with_provider(request, None)
     }
+
+    fn invoke_with_provider(
+        &self,
+        request: InvokeRequest,
+        explicit_provider: Option<AdapterId>,
+    ) -> Result<InvokeResponse, EvaError> {
+        AdapterBackedCapabilityHost::invoke_with_provider(self, request, explicit_provider)
+    }
 }
 
 impl AdapterBackedCapabilityHost {
@@ -235,6 +243,29 @@ mod tests {
             .as_text()
             .unwrap()
             .contains("controlled-envelope"));
+    }
+
+    #[test]
+    fn adapter_backed_trait_invokes_explicit_provider() {
+        let host = host_with_builtin_adapter(true);
+        let request = InvokeRequest::new(
+            RequestId::parse("req-capability-explicit").unwrap(),
+            InvokeTarget::Capability(capability("repo.summary")),
+            InvokeInput::text("repo"),
+        );
+        let api: &dyn CapabilityHostApi = &host;
+
+        let response = api
+            .invoke_with_provider(request, Some(adapter("builtin-test")))
+            .unwrap();
+
+        assert_eq!(response.status(), InvokeStatus::Completed);
+        assert!(response
+            .output()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .contains("builtin-test"));
     }
 
     #[test]

@@ -1,12 +1,12 @@
 # eva-adapter / 外部能力适配
 
-更新时间：2026-07-09
+更新时间：2026-07-10
 
 ![V1.x extension module flow](../assets/eva-extension-module-flow.svg)
 
 `eva-adapter` 负责 Adapter manifest 的运行时表示、AdapterRegistry、AdapterRouter、transport runtime 和外部 provider 错误映射。它不做 Discovery 扫描，不授予权限，不改写 policy，只接收已验证配置和已计算边界，并按 transport 约束执行。
 
-V1.1 已实现外部能力的受控 envelope；V1.3 在此基础上实现 hardware transport，使硬件调用必须经由 `eva-hardware` 的 registry、lease 和 driver binding，不允许 Lua 直接访问 raw I/O。V1.8.1 将 stdio/http runner 接入 `AdapterRuntime`，V1.8.2 将 MCP invoke 接到受控 JSON-RPC stdio client，V1.8.4 将 Skill transport 升级为 schema-gated workflow runner；V1.8.5.3 增加 adapter-backed `CapabilityHostApi`，把授权后的 capability plan 接入 `AdapterRuntime` 并统一 `InvokeResponse`；V1.8.5.4 固定 retryable provider fallback 分类；V1.13.1 新增 provider supervisor slot 和 process table evidence；V1.13.2 将 credential env/header/session token 绑定到 provider session scope；V1.13.3 新增 provider concurrency/rate/circuit admission gate；V1.13.4 新增 bounded stream artifact 数据面；V1.13.5 允许 supervisor 将 process snapshot 镜像到 durable provider process table，供 daemon restart recovery 扫描；V1.13.6 增加 MCP `http://` JSON-RPC/auth header transport boundary；V1.13.7 增加 MCP compatibility matrix release gate；V1.13.8 增加 provider supervision release gate。外部 provider 可通过 manifest command/endpoint/env/limits 进入受控执行路径，但完整 OS process supervision、MCP 生产 streaming/TLS/真实外部 server compatibility 和 OS credential vault 仍是后续能力。
+V1.1 已实现外部能力的受控 envelope；V1.3 在此基础上实现 hardware transport，使硬件调用必须经由 `eva-hardware` 的 registry、lease 和 driver binding，不允许 Lua 直接访问 raw I/O。V1.8.1 将 stdio/http runner 接入 `AdapterRuntime`，V1.8.2 将 MCP invoke 接到受控 JSON-RPC stdio client，V1.8.4 将 Skill transport 升级为 schema-gated workflow runner；V1.8.5.3 增加 adapter-backed `CapabilityHostApi`，把授权后的 capability plan 接入 `AdapterRuntime` 并统一 `InvokeResponse`；V1.8.5.4 固定 retryable provider fallback 分类；V1.13.1 新增 provider supervisor slot 和 process table evidence；V1.13.2 将 credential env/header/session token 绑定到 provider session scope；V1.13.3 新增 provider concurrency/rate/circuit admission gate；V1.13.4 新增 bounded stream artifact 数据面；V1.13.5 允许 supervisor 将 process snapshot 镜像到 durable provider process table，供 daemon restart recovery 扫描；V1.13.6 增加 MCP `http://` JSON-RPC/auth header transport boundary；V1.13.7 增加 MCP compatibility matrix release gate；V1.13.8 增加 provider supervision release gate；V1.15.7 让 adapter-backed host 通过 `CapabilityHostApi::invoke_with_provider` 暴露显式 provider routing，供 memory retrieval 在受监督 host 边界内调用指定 provider。外部 provider 可通过 manifest command/endpoint/env/limits 进入受控执行路径，但完整 OS process supervision、MCP 生产 streaming/TLS/真实外部 server compatibility 和 OS credential vault 仍是后续能力。
 
 ## 当前模块功能说明
 
@@ -16,7 +16,7 @@ V1.1 已实现外部能力的受控 envelope；V1.3 在此基础上实现 hardwa
 | Registry | 已完成 V1.1 | `AdapterRegistry` 支持按 Adapter id 和 capability 查询，处理重复 provider 和禁用 Adapter。 |
 | Router | 已完成 V1.1 | `AdapterRouter` 支持 explicit provider 优先，再按 capability index fallback，并输出结构化错误。 |
 | Runtime | 已完成 V1.13.6 | `AdapterRuntime` 提供 list/probe/invoke；probe 无副作用；invoke 可执行 builtin/hardware envelope、受控 stdio/http runner、MCP JSON-RPC stdio/HTTP tool call，以及 Skill workflow runner；stdio/http/MCP/Skill 调用会先进入 provider supervisor slot，绑定 provider credential session scope，并在 acquire 前执行 concurrency/rate/circuit admission；需要 daemon recovery evidence 时可用 filesystem provider process table 镜像 slot acquire/release。 |
-| Capability host | 已完成 V1.8.5.4 | `AdapterBackedCapabilityHost` 复用 `CapabilityRouter::authorized_provider_plan()`，按 provider plan 调用 `AdapterRuntime`，把 report/error 归一为 `InvokeResponse`，并只在 `EvaError::is_retryable()` 为 true 时继续 fallback。 |
+| Capability host | 已完成 V1.15.7 | `AdapterBackedCapabilityHost` 复用 `CapabilityRouter::authorized_provider_plan()`，按 provider plan 调用 `AdapterRuntime`，把 report/error 归一为 `InvokeResponse`，只在 `EvaError::is_retryable()` 为 true 时继续 fallback，并通过 trait 入口支持显式 provider routing。 |
 | Provider supervisor | 已完成 V1.13.5 | `ProviderSupervisor` / `InMemoryProviderSupervisor` 记录 provider session/process id、manifest digest、start command、health、last error、restart policy 和 retry backoff hint；`ProviderCredentialScope` 绑定 session/request/capability/provider，跨 provider/session 复用会拒绝；transport 启动失败会释放 slot；并发/限流/熔断门禁会在启动前返回 retryable `Unavailable`，熔断状态进入 provider health；可选 `FileSystemProviderProcessTable` 镜像用于 restart recovery。 |
 | Builtin/EventBus/Lua transport | 已完成 V1.1 | 返回本地受控 envelope，不启动外部进程。 |
 | MCP transport | 已完成 V1.8.2 | 通过 `eva-mcp::McpJsonRpcClient` 校验 tool allowlist 后启动 manifest stdio server，执行 `initialize`、`tools/list` 和 `tools/call`。 |
@@ -64,7 +64,7 @@ V1.3 的 hardware transport 只证明边界：它不会打开真实 USB、串口
 | 文件/模块 | 具体功能 | 当前进度 | 下一步 |
 | --- | --- | --- | --- |
 | `src/lib.rs` | 模块导出 | 已完成 V1.1 | 后续按 transport 稳定性拆分公共 surface。 |
-| `src/capability_host.rs` | adapter-backed capability host | 已完成 V1.8.5.4 | 已接 authorized provider plan、AdapterRuntime 调用、InvokeResponse completed/failed/timeout 归一化和 retryable fallback 分类；后续补 generation handle 和 provider supervision。 |
+| `src/capability_host.rs` | adapter-backed capability host | 已完成 V1.15.7 | 已接 authorized provider plan、AdapterRuntime 调用、InvokeResponse completed/failed/timeout 归一化、retryable fallback 分类和 trait-level explicit provider routing；后续补 generation handle 和更完整生产 provider supervision。 |
 | `src/manifest.rs` | Adapter runtime 表示 | 已完成 V1.8.4 | 已包含 MCP session typed config、Skill path/entry/schema/runner/artifact root、hardware identity、stdio/http command/endpoint/env/headers/limits。 |
 | `src/registry.rs` | Adapter 注册和索引 | 已完成 V1.1 | 后续接更完整健康 probe；并发限制和熔断状态已由 supervisor admission 承接。 |
 | `src/router.rs` | provider 选择 | 已完成 V1.1 | 后续加入优先级和健康降级策略。 |
@@ -97,7 +97,7 @@ V1.3 关键测试覆盖：
 - V1.8.1 覆盖 stdio/http fake provider、disabled provider 不启动、credential env/header/stdout/stderr redaction。
 - V1.8.2 覆盖 MCP fake JSON-RPC server tool call、blocked tool 不发 RPC、timeout、协议错误和 oversized response。
 - V1.8.4 覆盖 Skill schema required/enum 拒绝、内置 `codex_skill` runner、manifest process runner 成功/失败/超时、artifact path 控制和 credential redaction。
-- V1.8.5.3 覆盖 adapter-backed capability host 成功调用、未授权 provider 归一为 failed response、disabled provider 归一为 failed response，以及 timeout report 保留 provider code/context。
+- V1.8.5.3/V1.15.7 覆盖 adapter-backed capability host 成功调用、未授权 provider 归一为 failed response、disabled provider 归一为 failed response、timeout report 保留 provider code/context，以及 trait-level explicit provider routing。
 - V1.8.5.4 覆盖 retryable provider report failure 后继续 fallback、不可重试配置错误立即停止，以及全部 provider 可重试失败时保留最后一个安全错误。
 - V1.13.1 覆盖 provider supervisor acquire/release、process table 查询、disabled provider acquire 前失败，以及 stdio provider 启动失败后释放 slot 并记录 failed audit。
 - V1.13.2 覆盖 provider credential session scope、session token env/header 注入、stdout/stderr/body/artifact token redaction、policy allow/deny audit，以及跨 provider scope 启动前拒绝。
@@ -117,4 +117,4 @@ the configured output limit instead of using `read_to_end`.
 
 ## English
 
-`eva-adapter` owns Adapter runtime descriptors, registry, routing, controlled transport execution, provider error mapping, adapter-backed capability host wiring, provider supervisor slots/process-table evidence, provider credential session scope, provider admission limits, bounded provider stream artifacts, and a durable provider process table mirror for restart recovery evidence. V1.13.6 adds MCP `http://` JSON-RPC/auth header dispatch, V1.13.7 adds the MCP compatibility matrix release gate through `eva-release`, and V1.13.8 adds the provider supervision release gate; full OS process supervision, MCP production streaming/TLS/external-server compatibility, and OS credential vault integration remain future work.
+`eva-adapter` owns Adapter runtime descriptors, registry, routing, controlled transport execution, provider error mapping, adapter-backed capability host wiring, provider supervisor slots/process-table evidence, provider credential session scope, provider admission limits, bounded provider stream artifacts, and a durable provider process table mirror for restart recovery evidence. V1.13.6 adds MCP `http://` JSON-RPC/auth header dispatch, V1.13.7 adds the MCP compatibility matrix release gate through `eva-release`, V1.13.8 adds the provider supervision release gate, and V1.15.7 exposes explicit provider routing through the `CapabilityHostApi` trait for supervised memory retrieval; full OS process supervision, MCP production streaming/TLS/external-server compatibility, and OS credential vault integration remain future work.

@@ -4,7 +4,7 @@
 
 Eva-CLI 是一个基于 Rust 的 CLI runtime，用于受控多 Agent 工作流、发布加固、诊断、配置校验、请求级记忆/知识上下文组装、硬件绑定计划、备份/生命周期检查和源码发布运维。
 
-Eva-CLI 当前已经推进到 V1.11.5-alpha 开发线。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载、V1.0 in-memory basic runtime、V1.1 外部能力诊断、V1.2 记忆/知识上下文、V1.3 硬件发现/probe/plan-first 绑定、V1.4 的 backup、snapshot、restore plan 和 upgrade check、V1.5 的 release check/security/perf/migration、V1.6 durable runtime/storage、V1.7 受限 Lua VM 与热更新生命周期、V1.8 外部 provider/MCP/Skill runner 受控真实执行、V1.9 policy/discovery/memory/observability 基线、V1.10 硬件与高风险 apply gate、V1.11 release evidence gate、V1.11.4 CLI 命令模块拆分基线、V1.11.5.1 typed event `emit` 发布边界、V1.11.5.2 `agent status/drain/reload` lifecycle evidence 边界、V1.11.5.3 `capability list/probe/call` provider-routing evidence 边界，以及 V1.12-V1.15 的 daemon 控制/恢复、provider supervision gate、destructive restore mutation/rollback、service-manager 抽象、hardware permission/hotplug safety gate 和 V1.15.6 durable memory/knowledge maintenance locks/checkpoint smoke evidence。
+Eva-CLI 当前已经推进到 V1.11.5-alpha 开发线。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载、V1.0 in-memory basic runtime、V1.1 外部能力诊断、V1.2 记忆/知识上下文、V1.3 硬件发现/probe/plan-first 绑定、V1.4 的 backup、snapshot、restore plan 和 upgrade check、V1.5 的 release check/security/perf/migration、V1.6 durable runtime/storage、V1.7 受限 Lua VM 与热更新生命周期、V1.8 外部 provider/MCP/Skill runner 受控真实执行、V1.9 policy/discovery/memory/observability 基线、V1.10 硬件与高风险 apply gate、V1.11 release evidence gate、V1.11.4 CLI 命令模块拆分基线、V1.11.5.1 typed event `emit` 发布边界、V1.11.5.2 `agent status/drain/reload` lifecycle evidence 边界、V1.11.5.3 `capability list/probe/call` provider-routing evidence 边界，以及 V1.12-V1.15 的 daemon 控制/恢复、provider supervision gate、destructive restore mutation/rollback、service-manager 抽象、hardware permission/hotplug safety gate、V1.15.6 durable memory/knowledge maintenance locks/checkpoint smoke evidence 和 V1.15.7 受监督 knowledge retrieval provider 执行基线。
 
 当前受管理项目版本：`V1.11.5-alpha`（`Cargo.toml` 版本 `1.11.5-alpha`，预发布 Git tag 形式 `v1.11.5-alpha`）。版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。
 
@@ -17,7 +17,7 @@ Canonical 官网：
 
 ## 当前进度
 
-Eva-CLI 已经完成 V0.1 到 V1.15.6 基线能力的阶段实现：
+Eva-CLI 已经完成 V0.1 到 V1.15.7 基线能力的阶段实现：
 
 1. Rust workspace 和 20 个 crate 边界已创建；
 2. `eva-core`、`eva-config`、`eva-policy`、`eva-observability` 已具备基础契约；
@@ -28,7 +28,7 @@ Eva-CLI 已经完成 V0.1 到 V1.15.6 基线能力的阶段实现：
 7. `eva-release` 已实现 V1.11.5 release readiness、security review、performance baseline、migration guide、compatibility policy、durable recovery smoke gate、durable diagnostics smoke gate、Lua VM execution gate、Lua host bindings gate、Lua resource limits gate、Lua hot reload lifecycle gate、artifact/distribution/scanner/benchmark evidence gate；
 8. `eva-storage`、`eva-eventbus` 与 `eva-runtime` 已实现 V1.6 durable backend manifest、migration lock、filesystem EventLog、DurableEventBus、queryable dead-letter store、redrive 基线、durable task snapshot adapter、durable audit sink、runtime recovery scanner、runtime recovered audit evidence、durable backend diagnostics report 和 artifact metadata hardening；
 9. `eva-lua-host` 已实现 V1.7.1 `mlua` VM adapter、受限标准库、真实 `on_event` 执行、稳定错误映射、旧静态 parser compatibility fallback、V1.7.2 只读 request/trace/memory、host observability 和 `ctx.tools.call` capability binding、V1.7.3 wall-clock timeout、instruction budget、cancellation token 和 memory budget，以及 V1.7.4 shadow load health gate；
-10. `eva-memory` 和 `eva-runtime` 已实现 V1.15.6 durable memory/knowledge filesystem `index.lock`、TTL GC、`memory-gc.checkpoint`、`knowledge-rebuild.checkpoint`、stale checkpoint recovery 和 daemon `memory_maintenance` smoke evidence。
+10. `eva-memory` 和 `eva-runtime` 已实现 V1.15.6 durable memory/knowledge filesystem `index.lock`、TTL GC、`memory-gc.checkpoint`、`knowledge-rebuild.checkpoint`、stale checkpoint recovery 和 daemon `memory_maintenance` smoke evidence；V1.15.7 新增受监督 retrieval provider invoke、line-based hex schema、脱敏入索引和 source audit evidence。
 
 完整阶段划分见 [从零到 1.0 版本路线图](docs/zh-CN/planning/从零到1.0版本路线图.md)。
 V1.5.0 的 GitHub 托管发版流程见 [V1.5 GitHub 发版计划](docs/zh-CN/release/V1.5-GitHub发版计划.md)。

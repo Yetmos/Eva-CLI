@@ -14,8 +14,9 @@ pub use durable::{
     KnowledgeRebuildCheckpointReport, MemoryCompactionReport,
 };
 pub use knowledge_service::{
-    ExternalKnowledgeRetrievalRequest, InMemoryKnowledgeService, KnowledgeId, KnowledgeItem,
-    KnowledgeSearch, KnowledgeSearchResult, KnowledgeSource,
+    render_retrieval_item, ExternalKnowledgeRetrievalReport, ExternalKnowledgeRetrievalRequest,
+    InMemoryKnowledgeService, KnowledgeId, KnowledgeItem, KnowledgeSearch, KnowledgeSearchResult,
+    KnowledgeSource,
 };
 pub use memory_service::{
     InMemoryMemoryService, MemoryCompression, MemoryReadRequest, MemoryRecord, MemoryRetention,

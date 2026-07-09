@@ -262,6 +262,7 @@ dependencies = [
 name = "eva-memory"
 version = "1.11.5-alpha"
 dependencies = [
+ "eva-capability",
  "eva-core",
  "eva-observability",
  "eva-policy",
