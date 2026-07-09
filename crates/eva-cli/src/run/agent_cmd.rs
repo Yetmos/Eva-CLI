@@ -5,13 +5,18 @@ use super::{
 };
 use eva_agent::{AgentLifecycle, AgentRuntime, AgentStateSnapshot};
 use eva_config::{load_project_config, manifest::agent::AgentManifest, ProjectConfig};
-use eva_core::{AgentId, EvaError, GenerationId};
+use eva_core::{AgentId, ErrorKind, EvaError, GenerationId, RequestId};
 use eva_lifecycle::{
     DrainCoordinator, DrainPlan, GenerationController, GenerationDrainEvidence, GenerationState,
     RuntimeGeneration,
 };
 use eva_observability::TraceFields;
+use eva_runtime::{
+    send_daemon_control_request, DaemonControlOperation, DaemonControlRequest,
+    DaemonControlResponse, DaemonStartOptions,
+};
 use std::io::Write;
+use std::path::PathBuf;
 
 const DEFAULT_QUEUE_CAPACITY: usize = 256;
 const DEFAULT_DRAIN_GENERATION: &str = "gen-v1115-agent";
@@ -41,6 +46,11 @@ pub(super) struct AgentDrainOptions {
     generation: String,
     inflight_tasks: usize,
     timeout_ms: u64,
+    durable_backend: Option<PathBuf>,
+    state_dir: Option<PathBuf>,
+    lock_dir: Option<PathBuf>,
+    pid_dir: Option<PathBuf>,
+    control_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +63,11 @@ pub(super) struct AgentReloadOptions {
     to_release: String,
     inflight_tasks: usize,
     timeout_ms: u64,
+    durable_backend: Option<PathBuf>,
+    state_dir: Option<PathBuf>,
+    lock_dir: Option<PathBuf>,
+    pid_dir: Option<PathBuf>,
+    control_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,9 +163,9 @@ where
         }
         AgentCommand::Drain(options) => {
             let trace = trace_for("cli.agent.drain");
-            match load_project_config(&options.common.project_root)
-                .and_then(|project| create_agent_drain(&project, &options))
-            {
+            match load_project_config(&options.common.project_root).and_then(|project| {
+                create_agent_drain_with_daemon_fallback(&project, &options, &trace)
+            }) {
                 Ok(report) => {
                     write_agent_drain(stdout, options.common.output, &report, &trace)?;
                     Ok(EXIT_OK)
@@ -166,9 +181,9 @@ where
         }
         AgentCommand::Reload(options) => {
             let trace = trace_for("cli.agent.reload");
-            match load_project_config(&options.common.project_root)
-                .and_then(|project| create_agent_reload(&project, &options))
-            {
+            match load_project_config(&options.common.project_root).and_then(|project| {
+                create_agent_reload_with_daemon_fallback(&project, &options, &trace)
+            }) {
                 Ok(report) => {
                     write_agent_reload(stdout, options.common.output, &report, &trace)?;
                     Ok(EXIT_OK)
@@ -216,6 +231,11 @@ fn parse_agent_drain_options(args: &[String]) -> Result<AgentDrainOptions, EvaEr
     let mut generation = DEFAULT_DRAIN_GENERATION.to_owned();
     let mut inflight_tasks = 0;
     let mut timeout_ms = DEFAULT_TIMEOUT_MS;
+    let mut durable_backend = None;
+    let mut state_dir = None;
+    let mut lock_dir = None;
+    let mut pid_dir = None;
+    let mut control_timeout_ms = 5_000;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -241,6 +261,45 @@ fn parse_agent_drain_options(args: &[String]) -> Result<AgentDrainOptions, EvaEr
                     required_option(args, index, "timeout option")?,
                 )?;
             }
+            "--durable-backend" | "--durable-backend-root" => {
+                index += 1;
+                durable_backend = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "durable backend option",
+                )?));
+            }
+            "--state-dir" | "--state-store" => {
+                index += 1;
+                state_dir = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "state dir option",
+                )?));
+            }
+            "--lock-dir" | "--lock-store" => {
+                index += 1;
+                lock_dir = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "lock dir option",
+                )?));
+            }
+            "--pid-dir" => {
+                index += 1;
+                pid_dir = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "pid dir option",
+                )?));
+            }
+            "--control-timeout-ms" => {
+                index += 1;
+                control_timeout_ms = parse_u64_option(
+                    "control_timeout_ms",
+                    required_option(args, index, "control timeout option")?,
+                )?;
+            }
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -259,6 +318,11 @@ fn parse_agent_drain_options(args: &[String]) -> Result<AgentDrainOptions, EvaEr
         generation,
         inflight_tasks,
         timeout_ms,
+        durable_backend,
+        state_dir,
+        lock_dir,
+        pid_dir,
+        control_timeout_ms,
     })
 }
 
@@ -271,6 +335,11 @@ fn parse_agent_reload_options(args: &[String]) -> Result<AgentReloadOptions, Eva
     let mut to_release = DEFAULT_TO_RELEASE.to_owned();
     let mut inflight_tasks = 0;
     let mut timeout_ms = DEFAULT_TIMEOUT_MS;
+    let mut durable_backend = None;
+    let mut state_dir = None;
+    let mut lock_dir = None;
+    let mut pid_dir = None;
+    let mut control_timeout_ms = 5_000;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -308,6 +377,45 @@ fn parse_agent_reload_options(args: &[String]) -> Result<AgentReloadOptions, Eva
                     required_option(args, index, "timeout option")?,
                 )?;
             }
+            "--durable-backend" | "--durable-backend-root" => {
+                index += 1;
+                durable_backend = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "durable backend option",
+                )?));
+            }
+            "--state-dir" | "--state-store" => {
+                index += 1;
+                state_dir = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "state dir option",
+                )?));
+            }
+            "--lock-dir" | "--lock-store" => {
+                index += 1;
+                lock_dir = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "lock dir option",
+                )?));
+            }
+            "--pid-dir" => {
+                index += 1;
+                pid_dir = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "pid dir option",
+                )?));
+            }
+            "--control-timeout-ms" => {
+                index += 1;
+                control_timeout_ms = parse_u64_option(
+                    "control_timeout_ms",
+                    required_option(args, index, "control timeout option")?,
+                )?;
+            }
             _ => passthrough.push(args[index].clone()),
         }
         index += 1;
@@ -330,6 +438,11 @@ fn parse_agent_reload_options(args: &[String]) -> Result<AgentReloadOptions, Eva
         to_release,
         inflight_tasks,
         timeout_ms,
+        durable_backend,
+        state_dir,
+        lock_dir,
+        pid_dir,
+        control_timeout_ms,
     })
 }
 
@@ -348,6 +461,34 @@ fn create_agent_status(
     }
     .to_owned();
     Ok(AgentStatusReport { status, agents })
+}
+
+fn create_agent_drain_with_daemon_fallback(
+    project: &ProjectConfig,
+    options: &AgentDrainOptions,
+    trace: &TraceFields,
+) -> Result<AgentDrainReport, EvaError> {
+    match create_agent_drain_via_daemon(project, options, trace) {
+        Ok(report) => Ok(report),
+        Err(error) if error.kind() == ErrorKind::Unavailable => {
+            create_agent_drain(project, options)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn create_agent_reload_with_daemon_fallback(
+    project: &ProjectConfig,
+    options: &AgentReloadOptions,
+    trace: &TraceFields,
+) -> Result<AgentReloadReport, EvaError> {
+    match create_agent_reload_via_daemon(project, options, trace) {
+        Ok(report) => Ok(report),
+        Err(error) if error.kind() == ErrorKind::Unavailable => {
+            create_agent_reload(project, options)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn create_agent_drain(
@@ -369,6 +510,48 @@ fn create_agent_drain(
         drain,
         mutation_executed: false,
         detail: "planned locally; no daemon process or scheduler state was mutated".to_owned(),
+    })
+}
+
+fn create_agent_drain_via_daemon(
+    project: &ProjectConfig,
+    options: &AgentDrainOptions,
+    trace: &TraceFields,
+) -> Result<AgentDrainReport, EvaError> {
+    let agent = find_agent(project, &options.agent_id)?;
+    let request_id = agent_control_request_id("drain", &options.agent_id)?;
+    let request = DaemonControlRequest::new(request_id, trace, DaemonControlOperation::Drain)
+        .with_agent_id(options.agent_id.clone())
+        .with_generation_id(options.generation.clone())
+        .with_inflight_tasks(options.inflight_tasks)
+        .with_timeout_ms(options.timeout_ms);
+    let response = send_daemon_control_request(
+        &daemon_options_from_agent_paths(
+            project,
+            options.durable_backend.as_ref(),
+            options.state_dir.as_ref(),
+            options.lock_dir.as_ref(),
+            options.pid_dir.as_ref(),
+        ),
+        request,
+        options.control_timeout_ms,
+    )?;
+    daemon_response_require_mutation(&response, DaemonControlOperation::Drain)?;
+
+    let snapshot = lifecycle_snapshot_for_drain(agent)?;
+    let drain = DrainCoordinator.plan(
+        GenerationId::parse(&options.generation)?,
+        options.inflight_tasks,
+        options.timeout_ms,
+    )?;
+    Ok(AgentDrainReport {
+        agent_id: agent.id.as_str().to_owned(),
+        status: if agent.enabled { "draining" } else { "blocked" }.to_owned(),
+        lifecycle: snapshot.lifecycle,
+        enabled: agent.enabled,
+        drain,
+        mutation_executed: true,
+        detail: response.message,
     })
 }
 
@@ -423,6 +606,94 @@ fn create_agent_reload(
         drain,
         audit,
     })
+}
+
+fn create_agent_reload_via_daemon(
+    project: &ProjectConfig,
+    options: &AgentReloadOptions,
+    trace: &TraceFields,
+) -> Result<AgentReloadReport, EvaError> {
+    let agent = find_agent(project, &options.agent_id)?;
+    let request_id = agent_control_request_id("reload", &options.agent_id)?;
+    let request = DaemonControlRequest::new(request_id, trace, DaemonControlOperation::ReloadPlan)
+        .with_agent_id(options.agent_id.clone())
+        .with_from_generation_id(options.from_generation.clone())
+        .with_to_generation_id(options.to_generation.clone())
+        .with_from_release(options.from_release.clone())
+        .with_to_release(options.to_release.clone())
+        .with_inflight_tasks(options.inflight_tasks)
+        .with_timeout_ms(options.timeout_ms);
+    let response = send_daemon_control_request(
+        &daemon_options_from_agent_paths(
+            project,
+            options.durable_backend.as_ref(),
+            options.state_dir.as_ref(),
+            options.lock_dir.as_ref(),
+            options.pid_dir.as_ref(),
+        ),
+        request,
+        options.control_timeout_ms,
+    )?;
+    daemon_response_require_mutation(&response, DaemonControlOperation::ReloadPlan)?;
+    let mut report = create_agent_reload(project, options)?;
+    report.status = if agent.enabled { "reloaded" } else { "blocked" }.to_owned();
+    report.lifecycle = lifecycle_snapshot_for_reload(agent)?.lifecycle;
+    report.mutation_executed = true;
+    report
+        .audit
+        .retain(|entry| entry != "agent:reload:planned_without_daemon_mutation");
+    report.audit.extend(response.audit);
+    report
+        .audit
+        .push("agent:reload:daemon_mutation_executed".to_owned());
+    Ok(report)
+}
+
+fn daemon_options_from_agent_paths(
+    project: &ProjectConfig,
+    durable_backend: Option<&PathBuf>,
+    state_dir: Option<&PathBuf>,
+    lock_dir: Option<&PathBuf>,
+    pid_dir: Option<&PathBuf>,
+) -> DaemonStartOptions {
+    let mut options = DaemonStartOptions::defaults(project);
+    if let Some(path) = durable_backend {
+        options.durable_backend = path.clone();
+    }
+    if let Some(path) = state_dir {
+        options.state_dir = path.clone();
+    }
+    if let Some(path) = lock_dir {
+        options.lock_dir = path.clone();
+    }
+    if let Some(path) = pid_dir {
+        options.pid_dir = path.clone();
+    }
+    options.resolve_against_project(&project.project_root)
+}
+
+fn daemon_response_require_mutation(
+    response: &DaemonControlResponse,
+    operation: DaemonControlOperation,
+) -> Result<(), EvaError> {
+    if response.operation != operation || !response.accepted || !response.mutation_executed {
+        return Err(
+            EvaError::conflict("daemon did not execute requested agent mutation")
+                .with_context("operation", operation.as_str())
+                .with_context("response_operation", response.operation.as_str())
+                .with_context("accepted", response.accepted.to_string())
+                .with_context("mutation_executed", response.mutation_executed.to_string()),
+        );
+    }
+    Ok(())
+}
+
+fn agent_control_request_id(operation: &str, agent_id: &str) -> Result<RequestId, EvaError> {
+    let mut suffix = String::new();
+    for ch in agent_id.chars().take(80) {
+        suffix.push(ch);
+    }
+    RequestId::parse(&format!("req-agent-{operation}-{suffix}"))
 }
 
 fn selected_agents<'a>(

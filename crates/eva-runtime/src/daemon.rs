@@ -5,14 +5,18 @@ use crate::{
     ShutdownReport,
 };
 use eva_config::ProjectConfig;
-use eva_core::{EvaError, RequestId};
+use eva_core::{AgentId, EvaError, GenerationId, RequestId};
 use eva_eventbus::DurableEventBus;
+use eva_lifecycle::{
+    DrainCoordinator, DrainPlan, GenerationController, GenerationState, RuntimeGeneration,
+};
 use eva_observability::{
     AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
     MetricLabels, MetricName, MetricPoint, MetricSink, ObservabilitySmokeReport, SpanId,
     TraceFields,
 };
 use eva_policy::PolicyDomainSet;
+use eva_scheduler::GenerationRouteGate;
 use eva_storage::{
     DurableBackend, DurableBackendOptions, DurableBackendReport, FileSystemDurableBackend,
     FileSystemTaskStateStore, TaskStateSnapshot, TaskStateStore,
@@ -32,6 +36,7 @@ const DAEMON_GENERATION: &str = "daemon-v1.12.4";
 const LOCK_FILE: &str = "daemon.lock";
 const PID_FILE: &str = "daemon.pid";
 const STATE_FILE: &str = "daemon.state";
+const AGENT_CONTROL_STATE_FILE: &str = "agent-control.state";
 const CONTROL_REQUEST_DIR: &str = "control/requests";
 const CONTROL_RESPONSE_DIR: &str = "control/responses";
 const CONTROL_REQUEST_EXT: &str = "request";
@@ -139,6 +144,13 @@ pub struct DaemonControlRequest {
     pub reason: Option<String>,
     pub plan_id: Option<String>,
     pub generation_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub from_generation_id: Option<String>,
+    pub to_generation_id: Option<String>,
+    pub from_release: Option<String>,
+    pub to_release: Option<String>,
+    pub inflight_tasks: Option<usize>,
+    pub timeout_ms: Option<u64>,
     pub created_at_ms: u128,
 }
 
@@ -160,6 +172,28 @@ pub struct DaemonControlResponse {
     pub message: String,
     pub shutdown: Option<ShutdownReport>,
     pub audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonAgentControlState {
+    agent_id: String,
+    operation: String,
+    lifecycle: String,
+    drain_generation_id: Option<String>,
+    drain_inflight_tasks: Option<usize>,
+    drain_timeout_ms: Option<u64>,
+    drain_accepts_new_work: Option<bool>,
+    drain_status: Option<String>,
+    active_generation: Option<String>,
+    previous_generation: Option<String>,
+    previous_generation_state: Option<String>,
+    selected_generation_for_new_work: Option<String>,
+    from_release: Option<String>,
+    to_release: Option<String>,
+    plan_id: Option<String>,
+    mutation_executed: bool,
+    updated_at_ms: u128,
+    audit: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -315,6 +349,184 @@ impl DaemonStateRecord {
     }
 }
 
+impl DaemonAgentControlState {
+    fn from_drain(
+        agent_id: String,
+        drain: &DrainPlan,
+        plan_id: Option<String>,
+        audit: Vec<String>,
+    ) -> Self {
+        Self {
+            agent_id,
+            operation: "drain".to_owned(),
+            lifecycle: "draining".to_owned(),
+            drain_generation_id: Some(drain.generation_id.as_str().to_owned()),
+            drain_inflight_tasks: Some(drain.inflight_tasks),
+            drain_timeout_ms: Some(drain.timeout_ms),
+            drain_accepts_new_work: Some(drain.accepts_new_work),
+            drain_status: Some(drain.status.as_str().to_owned()),
+            active_generation: None,
+            previous_generation: None,
+            previous_generation_state: None,
+            selected_generation_for_new_work: None,
+            from_release: None,
+            to_release: None,
+            plan_id,
+            mutation_executed: true,
+            updated_at_ms: now_ms(),
+            audit,
+        }
+    }
+
+    fn to_storage(&self) -> String {
+        format!(
+            "version=1\nagent_id={}\noperation={}\nlifecycle={}\ndrain_generation_id={}\ndrain_inflight_tasks={}\ndrain_timeout_ms={}\ndrain_accepts_new_work={}\ndrain_status={}\nactive_generation={}\nprevious_generation={}\nprevious_generation_state={}\nselected_generation_for_new_work={}\nfrom_release={}\nto_release={}\nplan_id={}\nmutation_executed={}\nupdated_at_ms={}\naudit={}\n",
+            encode_field(&self.agent_id),
+            encode_field(&self.operation),
+            encode_field(&self.lifecycle),
+            encode_optional_field(self.drain_generation_id.as_deref()),
+            self.drain_inflight_tasks
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            self.drain_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            self.drain_accepts_new_work
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            encode_optional_field(self.drain_status.as_deref()),
+            encode_optional_field(self.active_generation.as_deref()),
+            encode_optional_field(self.previous_generation.as_deref()),
+            encode_optional_field(self.previous_generation_state.as_deref()),
+            encode_optional_field(self.selected_generation_for_new_work.as_deref()),
+            encode_optional_field(self.from_release.as_deref()),
+            encode_optional_field(self.to_release.as_deref()),
+            encode_optional_field(self.plan_id.as_deref()),
+            self.mutation_executed,
+            self.updated_at_ms,
+            encode_audit(&self.audit)
+        )
+    }
+
+    #[cfg(test)]
+    fn from_storage(data: &str) -> Result<Self, EvaError> {
+        let mut agent_id = None;
+        let mut operation = None;
+        let mut lifecycle = None;
+        let mut drain_generation_id = None;
+        let mut drain_inflight_tasks = None;
+        let mut drain_timeout_ms = None;
+        let mut drain_accepts_new_work = None;
+        let mut drain_status = None;
+        let mut active_generation = None;
+        let mut previous_generation = None;
+        let mut previous_generation_state = None;
+        let mut selected_generation_for_new_work = None;
+        let mut from_release = None;
+        let mut to_release = None;
+        let mut plan_id = None;
+        let mut mutation_executed = None;
+        let mut updated_at_ms = None;
+        let mut audit = Vec::new();
+
+        for line in data.lines().filter(|line| !line.trim().is_empty()) {
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(EvaError::conflict("daemon agent control state is invalid"));
+            };
+            match key {
+                "version" => {
+                    if value != "1" {
+                        return Err(EvaError::conflict(
+                            "daemon agent control state version mismatch",
+                        )
+                        .with_context("version", value));
+                    }
+                }
+                "agent_id" => agent_id = Some(decode_field(value)?),
+                "operation" => operation = Some(decode_field(value)?),
+                "lifecycle" => lifecycle = Some(decode_field(value)?),
+                "drain_generation_id" => drain_generation_id = decode_optional_field(value)?,
+                "drain_inflight_tasks" => {
+                    drain_inflight_tasks = parse_optional_usize(
+                        value,
+                        "daemon agent control state drain_inflight_tasks is invalid",
+                    )?
+                }
+                "drain_timeout_ms" => {
+                    drain_timeout_ms = parse_optional_u64(
+                        value,
+                        "daemon agent control state drain_timeout_ms is invalid",
+                    )?
+                }
+                "drain_accepts_new_work" => {
+                    drain_accepts_new_work = if value.is_empty() {
+                        None
+                    } else {
+                        Some(parse_bool(value, "drain_accepts_new_work")?)
+                    }
+                }
+                "drain_status" => drain_status = decode_optional_field(value)?,
+                "active_generation" => active_generation = decode_optional_field(value)?,
+                "previous_generation" => previous_generation = decode_optional_field(value)?,
+                "previous_generation_state" => {
+                    previous_generation_state = decode_optional_field(value)?
+                }
+                "selected_generation_for_new_work" => {
+                    selected_generation_for_new_work = decode_optional_field(value)?
+                }
+                "from_release" => from_release = decode_optional_field(value)?,
+                "to_release" => to_release = decode_optional_field(value)?,
+                "plan_id" => plan_id = decode_optional_field(value)?,
+                "mutation_executed" => {
+                    mutation_executed = Some(parse_bool(value, "mutation_executed")?)
+                }
+                "updated_at_ms" => {
+                    updated_at_ms = Some(value.parse::<u128>().map_err(|_| {
+                        EvaError::conflict("daemon agent control state updated_at_ms is invalid")
+                    })?)
+                }
+                "audit" => audit = decode_audit(value)?,
+                _ => {
+                    return Err(
+                        EvaError::conflict("daemon agent control state has unknown field")
+                            .with_context("field", key),
+                    );
+                }
+            }
+        }
+
+        Ok(Self {
+            agent_id: agent_id
+                .ok_or_else(|| EvaError::conflict("daemon agent control state missing agent_id"))?,
+            operation: operation.ok_or_else(|| {
+                EvaError::conflict("daemon agent control state missing operation")
+            })?,
+            lifecycle: lifecycle.ok_or_else(|| {
+                EvaError::conflict("daemon agent control state missing lifecycle")
+            })?,
+            drain_generation_id,
+            drain_inflight_tasks,
+            drain_timeout_ms,
+            drain_accepts_new_work,
+            drain_status,
+            active_generation,
+            previous_generation,
+            previous_generation_state,
+            selected_generation_for_new_work,
+            from_release,
+            to_release,
+            plan_id,
+            mutation_executed: mutation_executed.ok_or_else(|| {
+                EvaError::conflict("daemon agent control state missing mutation_executed")
+            })?,
+            updated_at_ms: updated_at_ms.ok_or_else(|| {
+                EvaError::conflict("daemon agent control state missing updated_at_ms")
+            })?,
+            audit,
+        })
+    }
+}
+
 impl DaemonControlOperation {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -357,6 +569,13 @@ impl DaemonControlRequest {
             reason: None,
             plan_id: None,
             generation_id: None,
+            agent_id: None,
+            from_generation_id: None,
+            to_generation_id: None,
+            from_release: None,
+            to_release: None,
+            inflight_tasks: None,
+            timeout_ms: None,
             created_at_ms: now_ms(),
         }
     }
@@ -381,9 +600,44 @@ impl DaemonControlRequest {
         self
     }
 
+    pub fn with_agent_id(mut self, value: impl Into<String>) -> Self {
+        self.agent_id = Some(value.into());
+        self
+    }
+
+    pub fn with_from_generation_id(mut self, value: impl Into<String>) -> Self {
+        self.from_generation_id = Some(value.into());
+        self
+    }
+
+    pub fn with_to_generation_id(mut self, value: impl Into<String>) -> Self {
+        self.to_generation_id = Some(value.into());
+        self
+    }
+
+    pub fn with_from_release(mut self, value: impl Into<String>) -> Self {
+        self.from_release = Some(value.into());
+        self
+    }
+
+    pub fn with_to_release(mut self, value: impl Into<String>) -> Self {
+        self.to_release = Some(value.into());
+        self
+    }
+
+    pub fn with_inflight_tasks(mut self, value: usize) -> Self {
+        self.inflight_tasks = Some(value);
+        self
+    }
+
+    pub fn with_timeout_ms(mut self, value: u64) -> Self {
+        self.timeout_ms = Some(value);
+        self
+    }
+
     fn to_storage(&self) -> String {
         format!(
-            "version=1\nrequest_id={}\ntrace_id={}\noperation={}\ntask_id={}\nreason={}\nplan_id={}\ngeneration_id={}\ncreated_at_ms={}\n",
+            "version=1\nrequest_id={}\ntrace_id={}\noperation={}\ntask_id={}\nreason={}\nplan_id={}\ngeneration_id={}\nagent_id={}\nfrom_generation_id={}\nto_generation_id={}\nfrom_release={}\nto_release={}\ninflight_tasks={}\ntimeout_ms={}\ncreated_at_ms={}\n",
             self.request_id.as_str(),
             encode_field(&self.trace_id),
             self.operation.as_str(),
@@ -391,6 +645,17 @@ impl DaemonControlRequest {
             encode_optional_field(self.reason.as_deref()),
             encode_optional_field(self.plan_id.as_deref()),
             encode_optional_field(self.generation_id.as_deref()),
+            encode_optional_field(self.agent_id.as_deref()),
+            encode_optional_field(self.from_generation_id.as_deref()),
+            encode_optional_field(self.to_generation_id.as_deref()),
+            encode_optional_field(self.from_release.as_deref()),
+            encode_optional_field(self.to_release.as_deref()),
+            self.inflight_tasks
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            self.timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
             self.created_at_ms
         )
     }
@@ -403,6 +668,13 @@ impl DaemonControlRequest {
         let mut reason = None;
         let mut plan_id = None;
         let mut generation_id = None;
+        let mut agent_id = None;
+        let mut from_generation_id = None;
+        let mut to_generation_id = None;
+        let mut from_release = None;
+        let mut to_release = None;
+        let mut inflight_tasks = None;
+        let mut timeout_ms = None;
         let mut created_at_ms = None;
 
         for line in data.lines().filter(|line| !line.trim().is_empty()) {
@@ -425,6 +697,29 @@ impl DaemonControlRequest {
                 "reason" => reason = decode_optional_field(value)?,
                 "plan_id" => plan_id = decode_optional_field(value)?,
                 "generation_id" => generation_id = decode_optional_field(value)?,
+                "agent_id" => agent_id = decode_optional_field(value)?,
+                "from_generation_id" => from_generation_id = decode_optional_field(value)?,
+                "to_generation_id" => to_generation_id = decode_optional_field(value)?,
+                "from_release" => from_release = decode_optional_field(value)?,
+                "to_release" => to_release = decode_optional_field(value)?,
+                "inflight_tasks" => {
+                    inflight_tasks = if value.is_empty() {
+                        None
+                    } else {
+                        Some(value.parse::<usize>().map_err(|_| {
+                            EvaError::conflict("daemon control request inflight_tasks is invalid")
+                        })?)
+                    }
+                }
+                "timeout_ms" => {
+                    timeout_ms = if value.is_empty() {
+                        None
+                    } else {
+                        Some(value.parse::<u64>().map_err(|_| {
+                            EvaError::conflict("daemon control request timeout_ms is invalid")
+                        })?)
+                    }
+                }
                 "created_at_ms" => {
                     created_at_ms = Some(value.parse::<u128>().map_err(|_| {
                         EvaError::conflict("daemon control request created_at_ms is invalid")
@@ -450,6 +745,13 @@ impl DaemonControlRequest {
             reason,
             plan_id,
             generation_id,
+            agent_id,
+            from_generation_id,
+            to_generation_id,
+            from_release,
+            to_release,
+            inflight_tasks,
+            timeout_ms,
             created_at_ms: created_at_ms.ok_or_else(|| {
                 EvaError::conflict("daemon control request missing created_at_ms")
             })?,
@@ -989,22 +1291,24 @@ fn handle_control_request(
             audit.push("daemon:v1.12.2:task_cancel_requested".to_owned());
         }
         DaemonControlOperation::Drain => {
+            let applied = apply_agent_drain_control(options, &request)?;
+            task_id = Some(applied.agent_id.clone());
+            generation_id = Some(applied.generation_id);
+            plan_id = applied.plan_id;
+            mutation_executed = true;
             message =
-                "drain request accepted as control-plane evidence; scheduler mutation is V1.12.5"
-                    .to_owned();
-            audit.push("daemon:v1.12.2:drain_evidence_only".to_owned());
+                "agent drain mutation recorded through daemon scheduler gate state".to_owned();
+            audit.extend(applied.audit);
         }
         DaemonControlOperation::ReloadPlan => {
-            if plan_id.is_none() {
-                plan_id = Some(format!("reload:{}", request.request_id.as_str()));
-            }
-            if generation_id.is_none() {
-                generation_id = Some(DAEMON_GENERATION.to_owned());
-            }
+            let applied = apply_agent_reload_control(options, &request)?;
+            task_id = Some(applied.agent_id.clone());
+            plan_id = Some(applied.plan_id);
+            generation_id = Some(applied.active_generation);
+            mutation_executed = true;
             message =
-                "reload plan accepted as control-plane evidence; scheduler mutation is V1.12.5"
-                    .to_owned();
-            audit.push("daemon:v1.12.2:reload_plan_evidence_only".to_owned());
+                "agent reload mutation recorded through daemon generation route gate".to_owned();
+            audit.extend(applied.audit);
         }
     }
 
@@ -1069,6 +1373,174 @@ fn cancel_control_task(
         Ok(())
     })?;
     Ok(task_id.to_owned())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppliedAgentDrainControl {
+    agent_id: String,
+    generation_id: String,
+    plan_id: Option<String>,
+    audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppliedAgentReloadControl {
+    agent_id: String,
+    plan_id: String,
+    active_generation: String,
+    audit: Vec<String>,
+}
+
+fn apply_agent_drain_control(
+    options: &DaemonStartOptions,
+    request: &DaemonControlRequest,
+) -> Result<AppliedAgentDrainControl, EvaError> {
+    let agent_id = control_agent_id(request)?;
+    let generation_id = request
+        .generation_id
+        .clone()
+        .or_else(|| request.from_generation_id.clone())
+        .unwrap_or_else(|| DAEMON_GENERATION.to_owned());
+    let drain = DrainCoordinator.plan(
+        GenerationId::parse(&generation_id)?,
+        request.inflight_tasks.unwrap_or(0),
+        request.timeout_ms.unwrap_or(30_000),
+    )?;
+    let mut audit = vec!["daemon:v1.12.5:agent_drain_mutation".to_owned()];
+    audit.extend(drain.audit.iter().cloned());
+    audit.push(format!(
+        "scheduler:generation:{}:accepts_new_work:false",
+        drain.generation_id.as_str()
+    ));
+
+    let persisted = DaemonAgentControlState::from_drain(
+        agent_id.clone(),
+        &drain,
+        request.plan_id.clone(),
+        audit.clone(),
+    );
+    write_agent_control_state(options, &persisted)?;
+
+    Ok(AppliedAgentDrainControl {
+        agent_id,
+        generation_id,
+        plan_id: request.plan_id.clone(),
+        audit,
+    })
+}
+
+fn apply_agent_reload_control(
+    options: &DaemonStartOptions,
+    request: &DaemonControlRequest,
+) -> Result<AppliedAgentReloadControl, EvaError> {
+    let agent_id = control_agent_id(request)?;
+    let from_generation = request
+        .from_generation_id
+        .clone()
+        .unwrap_or_else(|| DAEMON_GENERATION.to_owned());
+    let mut to_generation = request
+        .to_generation_id
+        .clone()
+        .or_else(|| request.generation_id.clone())
+        .unwrap_or_else(|| format!("{}:candidate", request.request_id.as_str()));
+    if to_generation == from_generation {
+        to_generation = format!("{to_generation}:next");
+    }
+    let from_release = request
+        .from_release
+        .clone()
+        .unwrap_or_else(|| "current".to_owned());
+    let to_release = request
+        .to_release
+        .clone()
+        .unwrap_or_else(|| "next".to_owned());
+    let plan_id = request
+        .plan_id
+        .clone()
+        .unwrap_or_else(|| format!("reload:{}", request.request_id.as_str()));
+
+    let from_generation_id = GenerationId::parse(&from_generation)?;
+    let to_generation_id = GenerationId::parse(&to_generation)?;
+    let mut route_gate = GenerationRouteGate::new(from_generation_id.clone());
+    route_gate.start_candidate(to_generation_id.clone())?;
+    route_gate.mark_candidate_shadow_healthy(&to_generation_id)?;
+    let selected_generation_for_new_work = route_gate
+        .selected_generation_for_new_work()
+        .as_str()
+        .to_owned();
+
+    let active = RuntimeGeneration::new(
+        from_generation_id.clone(),
+        from_release.clone(),
+        GenerationState::Active,
+    )?;
+    let candidate = RuntimeGeneration::new(
+        to_generation_id.clone(),
+        to_release.clone(),
+        GenerationState::Pending,
+    )?;
+    let mut controller = GenerationController::new(active)?;
+    controller.start_candidate(candidate)?;
+    controller.promote_candidate()?;
+    let drain = DrainCoordinator.plan_generation_swap_drain(
+        from_generation_id,
+        to_generation_id,
+        request.inflight_tasks.unwrap_or(0),
+        request.timeout_ms.unwrap_or(30_000),
+    )?;
+    let previous = controller
+        .retired
+        .first()
+        .ok_or_else(|| EvaError::internal("generation promotion did not retain previous active"))?;
+
+    let mut audit = vec!["daemon:v1.12.5:agent_reload_mutation".to_owned()];
+    audit.extend(route_gate.audit().iter().cloned());
+    audit.extend(controller.audit.iter().cloned());
+    audit.extend(drain.audit.iter().cloned());
+    audit.push(format!(
+        "scheduler:new_work_generation:{}",
+        selected_generation_for_new_work
+    ));
+
+    let active_generation = controller.active.id.as_str().to_owned();
+    let persisted = DaemonAgentControlState {
+        agent_id: agent_id.clone(),
+        operation: "reload_plan".to_owned(),
+        lifecycle: "running".to_owned(),
+        drain_generation_id: Some(drain.plan.generation_id.as_str().to_owned()),
+        drain_inflight_tasks: Some(drain.plan.inflight_tasks),
+        drain_timeout_ms: Some(drain.plan.timeout_ms),
+        drain_accepts_new_work: Some(drain.plan.accepts_new_work),
+        drain_status: Some(drain.plan.status.as_str().to_owned()),
+        active_generation: Some(active_generation.clone()),
+        previous_generation: Some(previous.id.as_str().to_owned()),
+        previous_generation_state: Some(previous.state.as_str().to_owned()),
+        selected_generation_for_new_work: Some(selected_generation_for_new_work),
+        from_release: Some(from_release),
+        to_release: Some(to_release),
+        plan_id: Some(plan_id.clone()),
+        mutation_executed: true,
+        updated_at_ms: now_ms(),
+        audit: audit.clone(),
+    };
+    write_agent_control_state(options, &persisted)?;
+
+    Ok(AppliedAgentReloadControl {
+        agent_id,
+        plan_id,
+        active_generation,
+        audit,
+    })
+}
+
+fn control_agent_id(request: &DaemonControlRequest) -> Result<String, EvaError> {
+    let agent_id = request
+        .agent_id
+        .as_deref()
+        .or(request.task_id.as_deref())
+        .unwrap_or("daemon-agent");
+    AgentId::parse(agent_id)?;
+    Ok(agent_id.to_owned())
 }
 
 fn open_durable_task_store(
@@ -1276,6 +1748,22 @@ fn read_state(options: &DaemonStartOptions) -> Result<Option<DaemonStateRecord>,
     DaemonStateRecord::from_storage(&data).map(Some)
 }
 
+#[cfg(test)]
+fn read_agent_control_state(
+    options: &DaemonStartOptions,
+) -> Result<Option<DaemonAgentControlState>, EvaError> {
+    let path = agent_control_state_file(options);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = fs::read_to_string(&path).map_err(|error| {
+        EvaError::internal("failed to read daemon agent control state")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    DaemonAgentControlState::from_storage(&data).map(Some)
+}
+
 fn write_state(options: &DaemonStartOptions, state: &DaemonStateRecord) -> Result<(), EvaError> {
     fs::create_dir_all(&options.state_dir).map_err(|error| {
         EvaError::internal("failed to create daemon state directory")
@@ -1290,6 +1778,17 @@ fn write_state(options: &DaemonStartOptions, state: &DaemonStateRecord) -> Resul
     })
 }
 
+fn write_agent_control_state(
+    options: &DaemonStartOptions,
+    state: &DaemonAgentControlState,
+) -> Result<(), EvaError> {
+    write_atomic(
+        &agent_control_state_file(options),
+        &state.to_storage(),
+        "failed to write daemon agent control state",
+    )
+}
+
 fn remove_if_exists(path: &Path) -> Result<bool, EvaError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(true),
@@ -1302,6 +1801,10 @@ fn remove_if_exists(path: &Path) -> Result<bool, EvaError> {
 
 fn state_file(options: &DaemonStartOptions) -> PathBuf {
     options.state_dir.join(STATE_FILE)
+}
+
+fn agent_control_state_file(options: &DaemonStartOptions) -> PathBuf {
+    options.state_dir.join(AGENT_CONTROL_STATE_FILE)
 }
 
 fn lock_file(options: &DaemonStartOptions) -> PathBuf {
@@ -1366,6 +1869,30 @@ fn parse_bool(value: &str, field: &str) -> Result<bool, EvaError> {
                 .with_context("field", field)
                 .with_context("value", value),
         ),
+    }
+}
+
+#[cfg(test)]
+fn parse_optional_usize(value: &str, message: &'static str) -> Result<Option<usize>, EvaError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        value
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|_| EvaError::conflict(message))
+    }
+}
+
+#[cfg(test)]
+fn parse_optional_u64(value: &str, message: &'static str) -> Result<Option<u64>, EvaError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        value
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| EvaError::conflict(message))
     }
 }
 
@@ -1687,6 +2214,153 @@ mod tests {
             .any(|(key, value)| key == "trace_id"
                 && value == "request_id:req-daemon-control-missing"));
 
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_drain_mutates_agent_control_state() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("agent-drain");
+        let options = daemon_options(&root, false);
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-agent-drain-loop").unwrap()),
+            )
+        });
+
+        wait_for_daemon_available(&options);
+
+        let trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-agent-drain").unwrap());
+        let response = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-agent-drain").unwrap(),
+                &trace,
+                DaemonControlOperation::Drain,
+            )
+            .with_agent_id("root-agent")
+            .with_generation_id("gen-agent-old")
+            .with_inflight_tasks(2)
+            .with_timeout_ms(30_000),
+            2_000,
+        )
+        .unwrap();
+
+        assert_eq!(response.operation, DaemonControlOperation::Drain);
+        assert!(response.mutation_executed);
+        assert_eq!(response.task_id.as_deref(), Some("root-agent"));
+        assert_eq!(response.generation_id.as_deref(), Some("gen-agent-old"));
+        assert!(response
+            .audit
+            .iter()
+            .any(|item| item == "daemon:v1.12.5:agent_drain_mutation"));
+
+        let state = read_agent_control_state(&options).unwrap().unwrap();
+        assert_eq!(state.agent_id, "root-agent");
+        assert_eq!(state.operation, "drain");
+        assert_eq!(state.drain_generation_id.as_deref(), Some("gen-agent-old"));
+        assert_eq!(state.drain_accepts_new_work, Some(false));
+        assert_eq!(state.drain_status.as_deref(), Some("planned"));
+        assert!(state.mutation_executed);
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-agent-drain-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-agent-drain-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        daemon.join().unwrap().unwrap();
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_reload_mutates_generation_route_state() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("agent-reload");
+        let options = daemon_options(&root, false);
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-agent-reload-loop").unwrap()),
+            )
+        });
+
+        wait_for_daemon_available(&options);
+
+        let trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-agent-reload").unwrap());
+        let response = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-agent-reload").unwrap(),
+                &trace,
+                DaemonControlOperation::ReloadPlan,
+            )
+            .with_agent_id("root-agent")
+            .with_from_generation_id("gen-old")
+            .with_to_generation_id("gen-new")
+            .with_from_release("1.11.4-alpha")
+            .with_to_release("1.11.5-alpha")
+            .with_inflight_tasks(0)
+            .with_timeout_ms(30_000),
+            2_000,
+        )
+        .unwrap();
+
+        assert_eq!(response.operation, DaemonControlOperation::ReloadPlan);
+        assert!(response.mutation_executed);
+        assert_eq!(response.task_id.as_deref(), Some("root-agent"));
+        assert_eq!(response.generation_id.as_deref(), Some("gen-new"));
+        assert!(response
+            .audit
+            .iter()
+            .any(|item| item == "scheduler:new_work_generation:gen-new"));
+
+        let state = read_agent_control_state(&options).unwrap().unwrap();
+        assert_eq!(state.agent_id, "root-agent");
+        assert_eq!(state.operation, "reload_plan");
+        assert_eq!(state.active_generation.as_deref(), Some("gen-new"));
+        assert_eq!(state.previous_generation.as_deref(), Some("gen-old"));
+        assert_eq!(state.previous_generation_state.as_deref(), Some("draining"));
+        assert_eq!(
+            state.selected_generation_for_new_work.as_deref(),
+            Some("gen-new")
+        );
+        assert_eq!(state.drain_accepts_new_work, Some(false));
+        assert!(state
+            .audit
+            .iter()
+            .any(|item| item == "generation_route:gen-new:shadow_healthy"));
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-agent-reload-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-agent-reload-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        daemon.join().unwrap().unwrap();
         fs::remove_dir_all(root).ok();
     }
 }

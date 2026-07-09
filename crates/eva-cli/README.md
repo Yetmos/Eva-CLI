@@ -2,7 +2,7 @@
 
 更新时间：2026-07-09
 
-`eva-cli` 负责命令解析、文本/JSON 输出、trace 字段和 exit code 映射。当前命令面覆盖 V1.0 core runtime、V1.1 外部能力诊断、V1.2 request-scoped memory/knowledge context、V1.3 plan-first 硬件接入诊断、V1.4 backup/lifecycle planning、V1.5 release hardening、V1.6 durable task store 入口、V1.9.3 Discovery source report、V1.9.4 durable memory context、V1.9.5 observability smoke 输出，以及 V1.10.4 signed backup archive restore apply gate。V1.11.4 起 `version`、`doctor`、`config validate`、`inspect`、`task`、`adapter`、`mcp`、`skill`、`discovery`、`memory`、`observability`、`hardware`、`backup`、`snapshot`、`restore`、`upgrade` 和 `release` 命令实现迁移到 `run/` 子模块；V1.12.4 daemon 本机控制面已包含 durable task lifecycle 和 scheduler retry tick，继续复用统一 JSON envelope 和 exit code helper。
+`eva-cli` 负责命令解析、文本/JSON 输出、trace 字段和 exit code 映射。当前命令面覆盖 V1.0 core runtime、V1.1 外部能力诊断、V1.2 request-scoped memory/knowledge context、V1.3 plan-first 硬件接入诊断、V1.4 backup/lifecycle planning、V1.5 release hardening、V1.6 durable task store 入口、V1.9.3 Discovery source report、V1.9.4 durable memory context、V1.9.5 observability smoke 输出，以及 V1.10.4 signed backup archive restore apply gate。V1.11.4 起 `version`、`doctor`、`config validate`、`inspect`、`task`、`adapter`、`mcp`、`skill`、`discovery`、`memory`、`observability`、`hardware`、`backup`、`snapshot`、`restore`、`upgrade` 和 `release` 命令实现迁移到 `run/` 子模块；V1.12.5 daemon 本机控制面已包含 durable task lifecycle、scheduler retry tick 和 daemon-backed agent drain/reload mutation state，继续复用统一 JSON envelope 和 exit code helper。
 
 CLI 不启动生产后台 daemon；`daemon start` 默认只验证本机 pid/lock/state、durable backend、policy、observability 和 shutdown contract，并输出 `provider_processes_started:false`。显式传入 `--no-shutdown-after-smoke` 时会保持前台进程运行，通过受控 filesystem mailbox 支持 `status`、`shutdown`、`submit`、`cancel`、`drain` 和 `reload` 控制请求；没有 running daemon 时稳定返回 `unavailable`。`run --example basic` 同步执行后，默认把最新 task report 写入 `.eva/tasks`，供 `task status/logs/cancel` 跨命令读取。传入 `--durable-backend <path>` 时，run/task 命令改用 V1.6 durable backend 的 `tasks/` 目录。外部能力、记忆上下文、硬件、备份、生命周期和发布加固命令当前都以可验证诊断 surface 为主；V1.8 已允许 manifest-gated stdio/http、MCP JSON-RPC 和 Skill workflow runner 进入受控真实执行路径，但仍不打开 raw hardware I/O，也不执行 destructive restore 或真实进程升级。
 
@@ -16,6 +16,7 @@ CLI 不启动生产后台 daemon；`daemon start` 默认只验证本机 pid/lock
 | `eva inspect` | 输出 agents、adapters、capabilities、routes、policy domains 和 runtime service summary。 |
 | `eva run --example basic` | 执行 V1.0 in-memory basic event loop，并写入本地或 durable backend task report。 |
 | `eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` | 验证 V1.12 daemon pid/lock/state、durable backend、policy、observability、shutdown contract 和本机 filesystem mailbox 控制面；不启动 provider 进程。 |
+| `eva agent status/drain/reload` | 输出 Agent lifecycle evidence；连接 running daemon 时 `drain/reload` 写入 `agent-control.state`，无 daemon 时回退 `mutation_executed:false` evidence。 |
 | `eva task status` | 读取 `.eva/tasks` 或 `--durable-backend` 中最新或指定 task 的状态、attempts、retry、取消和 dead-letter 摘要。 |
 | `eva task logs` | 读取 task logs。 |
 | `eva task cancel` | 对未终态 task 写入取消标记；对已终态 task 记录 cancel request 但不改变终态。 |
@@ -89,7 +90,7 @@ cargo run -- task status --task req-durable-1 --durable-backend .eva/durable --o
 
 ## V1.12 Daemon Boundary And Control Mailbox
 
-`eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` 固定本机 daemon 进程边界和控制面，但不启动生产后台守护进程，也不启动外部 provider。`start` 默认运行 foreground smoke：获取 `daemon.lock`，验证 durable backend、policy domain 和 observability JSONL sink，写入 `daemon.state` / `daemon.pid`，随后执行 shutdown contract 并移除 lock/pid。显式传入 `--no-shutdown-after-smoke` 时，命令保持前台运行并处理 `state/control/requests` 到 `state/control/responses` 的本机 filesystem mailbox；每轮 control polling 前会执行 V1.12.4 scheduler retry tick，把 due dead-letter replay event 投递到 scheduler mailbox，并以 `scheduler-retry` consumer 更新 durable log ack/fail。
+`eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` 固定本机 daemon 进程边界和控制面，但不启动生产后台守护进程，也不启动外部 provider。`start` 默认运行 foreground smoke：获取 `daemon.lock`，验证 durable backend、policy domain 和 observability JSONL sink，写入 `daemon.state` / `daemon.pid`，随后执行 shutdown contract 并移除 lock/pid。显式传入 `--no-shutdown-after-smoke` 时，命令保持前台运行并处理 `state/control/requests` 到 `state/control/responses` 的本机 filesystem mailbox；每轮 control polling 前会执行 V1.12.4 scheduler retry tick，把 due dead-letter replay event 投递到 scheduler mailbox，并以 `scheduler-retry` consumer 更新 durable log ack/fail。V1.12.5 后，`eva agent drain/reload` 可连接该 daemon 并写入 `agent-control.state`，记录 drain gate 和 reload 后新 work generation；这仍不启动 provider，也不是完整生产热更新 apply。
 
 ```powershell
 cargo run -- daemon start --foreground --dev --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
@@ -320,4 +321,4 @@ cargo run -- release perf --benchmark-evidence release-evidence/release-benchmar
 cargo run -- release migration --output json
 ```
 
-当前测试覆盖 version text/JSON、config validate JSON、inspect text/durable diagnostics JSON、unknown command、JSON escaping、basic run JSON、cancelled basic run、daemon foreground smoke/lock conflict/bad durable backend、task status/logs/cancel、doctor sample project、V1.1 external capability commands、V1.2 memory context、V1.3 hardware command JSON、V1.4 backup/lifecycle command JSON、V1.5 release hardening command JSON、V1.9.5 observability smoke JSONL backend、V1.10.4 restore apply policy denial、lock conflict、health failure rollback 和 gated report contract，以及 V1.11.1 artifact evidence / V1.11.2 distribution evidence / V1.11.3 security scan and benchmark evidence release gates。
+当前测试覆盖 version text/JSON、config validate JSON、inspect text/durable diagnostics JSON、unknown command、JSON escaping、basic run JSON、cancelled basic run、daemon foreground smoke/lock conflict/bad durable backend、agent daemon drain/reload mutation fallback、task status/logs/cancel、doctor sample project、V1.1 external capability commands、V1.2 memory context、V1.3 hardware command JSON、V1.4 backup/lifecycle command JSON、V1.5 release hardening command JSON、V1.9.5 observability smoke JSONL backend、V1.10.4 restore apply policy denial、lock conflict、health failure rollback 和 gated report contract，以及 V1.11.1 artifact evidence / V1.11.2 distribution evidence / V1.11.3 security scan and benchmark evidence release gates。

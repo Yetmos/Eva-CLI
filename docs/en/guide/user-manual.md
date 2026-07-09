@@ -84,7 +84,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Inspect | `inspect`, `inspect durable` | Show project configuration, runtime summary, or durable backend diagnostics. | No |
 | Runtime | `run --example basic` | Execute the V1.0 in-memory basic loop through the restricted Lua VM boundary. | Writes `.eva/tasks` or durable backend `tasks/` |
 | Emit | `emit <topic>` | Publish a typed Event to in-memory or durable EventBus. | Writes durable backend `events/log/` when `--durable-backend` is set |
-| Agent | `agent status/drain/reload` | Report Agent lifecycle, drain plans, and generation reload evidence. | No daemon mutation; reports `mutation_executed:false` |
+| Agent | `agent status/drain/reload` | Report Agent lifecycle, drain plans, and generation reload evidence. | With a running daemon, `drain/reload` write daemon mutation state; without one they report `mutation_executed:false` |
 | Capability | `capability list/probe/call` | Report provider routing and run dry-run or confirmed controlled invokes. | `call` defaults to dry-run; confirmed invokes still report `mutation_executed:false` |
 | Task | `task status/logs/cancel` | Read or mark task diagnostics. | Writes task cancel marker |
 | Adapter | `adapter list/probe` | List or probe manifest-derived adapter handles. | No |
@@ -128,20 +128,25 @@ cargo run -- emit /input/user --event-id evt-manual-2 --payload-bytes-hex 68656c
 `agent status`, `agent drain`, and `agent reload` expose the current Agent
 manifest/runtime/lifecycle boundaries as operator evidence. They reuse
 `AgentRuntime`, `AgentLifecycle`, `DrainCoordinator`, and `GenerationController`
-to report lifecycle state, drain plans, and generation-swap evidence. They do
-not restart a daemon, mutate scheduler state, or apply a live hot reload.
+to report lifecycle state, drain plans, and generation-swap evidence. When a
+running daemon is available through the supplied state/lock/pid paths,
+`drain/reload` send mailbox requests and write daemon-side mutation state.
+Without a daemon they keep the evidence-only `mutation_executed:false` contract.
+They still do not restart providers or apply a production hot reload.
 
 ```powershell
 cargo run -- agent status --agent root-agent --output json
 cargo run -- agent drain --agent root-agent --generation gen-v1115-agent --output json
 cargo run -- agent reload --agent root-agent --from-generation gen-old --to-generation gen-new --from-release 1.11.4-alpha --to-release 1.11.5-alpha --output json
+cargo run -- agent drain --agent root-agent --generation gen-old --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --durable-backend .eva/daemon-durable --output json
+cargo run -- agent reload --agent root-agent --from-generation gen-old --to-generation gen-new --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --durable-backend .eva/daemon-durable --output json
 ```
 
 | Command | Key fields | Meaning |
 | --- | --- | --- |
 | `agent status` | `lifecycle`, `queued_events`, `subscriptions` | Manifest-backed Agent snapshot; enabled Agents report a locally-started `running` runtime boundary. |
-| `agent drain` | `drain.accepts_new_work:false`, `drain.status`, `mutation_executed:false` | Drain plan evidence for one Agent generation. |
-| `agent reload` | `active_generation`, `previous_generation`, `drain`, `audit`, `mutation_executed:false` | Generation promotion and old-generation drain evidence without daemon mutation. |
+| `agent drain` | `drain.accepts_new_work:false`, `drain.status`, `mutation_executed` | Drain plan evidence; with a running daemon, writes `agent-control.state` and returns `true`. |
+| `agent reload` | `active_generation`, `previous_generation`, `drain`, `audit`, `mutation_executed` | Generation promotion and old-generation drain evidence; with a running daemon, records new work routing to the target generation. |
 
 ## Capability Routing
 

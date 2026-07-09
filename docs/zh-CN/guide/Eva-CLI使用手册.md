@@ -85,7 +85,7 @@ release: V1.11.5-alpha
 | 运行 | `run --example basic` | 通过受限 Lua VM 边界执行 V1.0 in-memory basic loop。 | 写 `.eva/tasks` 或 durable backend `tasks/` |
 | 事件 | `emit <topic>` | 向 in-memory 或 durable EventBus 发布 typed Event。 | 传入 `--durable-backend` 时写 durable backend `events/log/` |
 | Daemon | `daemon start/status/stop/shutdown/submit/cancel/drain/reload` | 验证本机 daemon pid/lock/state、durable backend、policy、observability、shutdown contract 和 filesystem mailbox 控制面。 | 写入指定 daemon state/observability/control 目录；默认 smoke 会移除 lock/pid；显式前台 daemon 响应 control 请求 |
-| Agent | `agent status/drain/reload` | 输出 Agent lifecycle、drain plan 和 generation reload evidence。 | 不执行 daemon mutation；输出 `mutation_executed:false` |
+| Agent | `agent status/drain/reload` | 输出 Agent lifecycle、drain plan 和 generation reload evidence。 | 连接 running daemon 时 `drain/reload` 写入 daemon mutation state；无 daemon 时回退 `mutation_executed:false` evidence |
 | Capability | `capability list/probe/call` | 输出 provider routing，并执行 dry-run 或确认后的受控 invoke。 | `call` 默认 dry-run；确认执行仍输出 `mutation_executed:false` |
 | 任务 | `task status/logs/cancel` | 读取或标记 task 诊断。 | 只写 task 取消标记 |
 | Adapter | `adapter list/probe` | 列出或探测 manifest 派生的 Adapter handle。 | 否 |
@@ -140,7 +140,7 @@ cargo run -- emit /input/user --event-id evt-manual-2 --payload-bytes-hex 68656c
 
 ## Daemon process boundary and control mailbox
 
-`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 是 V1.12 的本机进程边界和控制面。它固定 pid、lock、state、durable backend、policy、observability 和 shutdown contract，但不启动生产后台守护进程，不启动 provider，也不执行 scheduler apply。显式前台 daemon 每轮 control polling 前会执行 V1.12.4 scheduler retry tick：读取 due dead-letter，生成 replay event，投递到 scheduler mailbox，并用 `scheduler-retry` consumer 写入 durable log ack/fail。
+`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 是 V1.12 的本机进程边界和控制面。它固定 pid、lock、state、durable backend、policy、observability 和 shutdown contract，但不启动生产后台守护进程，也不启动 provider。显式前台 daemon 每轮 control polling 前会执行 V1.12.4 scheduler retry tick：读取 due dead-letter，生成 replay event，投递到 scheduler mailbox，并用 `scheduler-retry` consumer 写入 durable log ack/fail。V1.12.5 后，`agent drain/reload` 连接该 daemon 时会写入 `agent-control.state`，记录 drain `accepts_new_work:false`、reload 后 `selected_generation_for_new_work` 和旧 generation `draining` 状态；这仍不是完整 provider restart 或生产热更新 apply。
 
 ```powershell
 cargo run -- daemon start --foreground --dev --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
@@ -177,19 +177,21 @@ cargo run -- daemon shutdown --state-dir .eva/daemon-state --lock-dir .eva/daemo
 
 ## Agent lifecycle evidence
 
-`agent status`、`agent drain` 和 `agent reload` 把当前 Agent manifest/runtime/lifecycle 边界暴露为 operator evidence。它们复用 `AgentRuntime`、`AgentLifecycle`、`DrainCoordinator` 和 `GenerationController` 输出 lifecycle 状态、drain 计划和 generation swap evidence；它们不会重启 daemon、不会修改 scheduler 状态，也不会执行真实热更新 apply。
+`agent status`、`agent drain` 和 `agent reload` 把当前 Agent manifest/runtime/lifecycle 边界暴露为 operator evidence。它们复用 `AgentRuntime`、`AgentLifecycle`、`DrainCoordinator` 和 `GenerationController` 输出 lifecycle 状态、drain 计划和 generation swap evidence；当指定的 daemon state/lock/pid 指向 running daemon 时，`drain/reload` 会通过 filesystem mailbox 写入 daemon-side mutation state。无 daemon 时仍回退为本地 evidence，不重启 daemon，也不执行完整 provider restart 或生产热更新 apply。
 
 ```powershell
 cargo run -- agent status --agent root-agent --output json
 cargo run -- agent drain --agent root-agent --generation gen-v1115-agent --output json
 cargo run -- agent reload --agent root-agent --from-generation gen-old --to-generation gen-new --from-release 1.11.4-alpha --to-release 1.11.5-alpha --output json
+cargo run -- agent drain --agent root-agent --generation gen-old --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --durable-backend .eva/daemon-durable --output json
+cargo run -- agent reload --agent root-agent --from-generation gen-old --to-generation gen-new --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --durable-backend .eva/daemon-durable --output json
 ```
 
 | 命令 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `agent status` | `lifecycle`、`queued_events`、`subscriptions` | manifest-backed Agent snapshot；enabled Agent 会输出本地启动后的 `running` runtime 边界。 |
-| `agent drain` | `drain.accepts_new_work:false`、`drain.status`、`mutation_executed:false` | 单 Agent generation 的 drain plan evidence。 |
-| `agent reload` | `active_generation`、`previous_generation`、`drain`、`audit`、`mutation_executed:false` | generation promotion 和旧 generation drain evidence，不执行 daemon mutation。 |
+| `agent drain` | `drain.accepts_new_work:false`、`drain.status`、`mutation_executed` | 单 Agent generation 的 drain plan；有 running daemon 时写入 `agent-control.state` 并返回 `true`，无 daemon 时返回 `false`。 |
+| `agent reload` | `active_generation`、`previous_generation`、`drain`、`audit`、`mutation_executed` | generation promotion 和旧 generation drain evidence；有 running daemon 时记录新 work 进入目标 generation，旧 generation draining。 |
 
 ## Capability routing
 
@@ -396,7 +398,7 @@ cargo run -- release migration --output json
 - destructive restore；
 - 真实 Supervisor 进程切换；
 - 完整 durable task 查询/恢复索引、runtime audit wiring/export、runtime crash recovery、durable memory 和 backup database；
-- 超出当前 daemon foreground/control mailbox、durable task lifecycle、scheduler retry dispatch、shadow load、route gate、drain evidence 和 rollback audit 边界的真实长任务执行器、provider supervision、scheduler apply 与常驻 daemon 热更新编排。
+- 超出当前 daemon foreground/control mailbox、durable task lifecycle、scheduler retry dispatch、agent drain/reload mutation state、shadow load、route gate、drain evidence 和 rollback audit 边界的真实长任务执行器、provider supervision 与生产热更新编排。
 
 这些能力需要后续版本在显式 apply gate、持久化存储、签名 artifact 和更强发布证据
 之后逐步接入。

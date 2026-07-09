@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -1078,7 +1078,7 @@ fn help_text() -> &'static str {
         "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks or a durable backend task store.\n",
         "  emit             Publish a typed Event to the in-memory or durable EventBus boundary.\n",
         "  daemon           Verify V1.12.1 local daemon config, lock, state, pid, durable backend, policy, observability, and shutdown boundaries.\n",
-        "  agent            Report Agent lifecycle status, drain plans, and reload generation evidence without daemon mutation.\n",
+        "  agent            Report Agent lifecycle status, drain plans, and daemon-backed reload/drain mutation when available.\n",
         "  capability       List, probe, and dry-run or confirmed-call capability provider routes.\n",
         "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
         "  adapter          List and probe authorized Adapter handles derived from manifests.\n",
@@ -1994,6 +1994,135 @@ mod tests {
     }
 
     #[test]
+    fn agent_drain_and_reload_use_daemon_mutation_when_available() {
+        let project = workspace_root();
+        let root = test_temp_dir("agent-daemon-mutation");
+        let durable = root.join("durable");
+        let state = root.join("state");
+        let locks = root.join("locks");
+        let pids = root.join("pids");
+        let observability = root.join("observability");
+        let daemon_project = eva_config::load_project_config(&project).unwrap();
+        let daemon_options = eva_runtime::DaemonStartOptions {
+            durable_backend: durable.clone(),
+            state_dir: state.clone(),
+            lock_dir: locks.clone(),
+            pid_dir: pids.clone(),
+            observability_backend: observability,
+            foreground: true,
+            dev_mode: true,
+            shutdown_after_smoke: false,
+        };
+        let daemon = std::thread::spawn(move || {
+            eva_runtime::start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(eva_core::RequestId::parse("req-agent-daemon-loop").unwrap()),
+            )
+        });
+
+        wait_for_daemon_files(&state, &locks, &pids);
+
+        let (drain_exit, drain_stdout, drain_stderr) = run_cli(&[
+            "agent",
+            "drain",
+            "--agent",
+            "root-agent",
+            "--generation",
+            "gen-agent-old",
+            "--inflight",
+            "1",
+            "--timeout-ms",
+            "30000",
+            "--durable-backend",
+            durable.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(drain_exit, EXIT_OK, "{drain_stderr}");
+        assert!(drain_stdout.contains("\"command\":\"agent.drain\""));
+        assert!(drain_stdout.contains("\"agent_id\":\"root-agent\""));
+        assert!(drain_stdout.contains("\"generation_id\":\"gen-agent-old\""));
+        assert!(drain_stdout.contains("\"accepts_new_work\":false"));
+        assert!(drain_stdout.contains("\"mutation_executed\":true"));
+        assert!(drain_stdout.contains("agent drain mutation recorded"));
+        assert!(drain_stderr.is_empty());
+
+        let (reload_exit, reload_stdout, reload_stderr) = run_cli(&[
+            "agent",
+            "reload",
+            "--agent",
+            "root-agent",
+            "--from-generation",
+            "gen-old",
+            "--to-generation",
+            "gen-new",
+            "--from-release",
+            "1.11.4-alpha",
+            "--to-release",
+            "1.11.5-alpha",
+            "--durable-backend",
+            durable.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(reload_exit, EXIT_OK, "{reload_stderr}");
+        assert!(reload_stdout.contains("\"command\":\"agent.reload\""));
+        assert!(reload_stdout.contains("\"status\":\"reloaded\""));
+        assert!(reload_stdout.contains("\"active_generation\":\"gen-new\""));
+        assert!(reload_stdout.contains("\"previous_generation\":\"gen-old\""));
+        assert!(reload_stdout.contains("\"previous_generation_state\":\"draining\""));
+        assert!(reload_stdout.contains("\"mutation_executed\":true"));
+        assert!(reload_stdout.contains("scheduler:new_work_generation:gen-new"));
+        assert!(!reload_stdout.contains("planned_without_daemon_mutation"));
+        assert!(reload_stderr.is_empty());
+
+        let control_state = fs::read_to_string(state.join("agent-control.state")).unwrap();
+        assert!(control_state.contains("mutation_executed=true"));
+        assert!(control_state.contains("drain_accepts_new_work=false"));
+
+        let (shutdown_exit, shutdown_stdout, shutdown_stderr) = run_cli(&[
+            "daemon",
+            "shutdown",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(shutdown_exit, EXIT_OK, "{shutdown_stderr}");
+        assert!(shutdown_stdout.contains("\"operation\":\"shutdown\""));
+        let report = daemon.join().unwrap().unwrap();
+        assert_eq!(report.status, "stopped");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn capability_list_and_probe_report_provider_plan_json() {
         let root = workspace_root();
         let (list_exit, list_stdout, list_stderr) = run_cli(&[
@@ -2373,6 +2502,7 @@ mod tests {
         assert!(json_stdout.contains("cli_runtime_commands_v1.11.5"));
         assert!(json_stdout.contains("durable_task_lifecycle_v1.12.3"));
         assert!(json_stdout.contains("scheduler_retry_dispatch_v1.12.4"));
+        assert!(json_stdout.contains("agent_daemon_drain_reload_v1.12.5"));
         assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));

@@ -59,7 +59,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 - `start_daemon` 先获取 `daemon.lock`，再验证 durable backend、policy domain 和 file JSONL observability backend。
 - 成功后写入 `daemon.state` 和 `daemon.pid`，foreground smoke 会立即调用 `Runtime::shutdown()` 并移除 lock/pid。
 - 显式传入 `shutdown_after_smoke=false` 时进入前台 control loop，通过 `state/control/requests` 和 `state/control/responses` 处理本机 filesystem mailbox 请求。
-- control operation 覆盖 status、shutdown、submit task、cancel task、drain 和 reload plan；status/shutdown 作用于前台 daemon，submit/cancel 写 durable task lifecycle store，drain/reload 当前只产生可追踪 evidence。
+- control operation 覆盖 status、shutdown、submit task、cancel task、drain 和 reload plan；status/shutdown 作用于前台 daemon，submit/cancel 写 durable task lifecycle store，drain/reload 会写入 `agent-control.state`，记录 drain gate、reload generation route 和旧 generation draining 状态。
 - `send_daemon_control_request` 在没有 running state、lock 和 pid 时返回稳定 `Unavailable`，避免把 stopped smoke state 误读成 live daemon。
 - JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
 - 已有 lock 会返回 conflict；坏 durable backend 会在写 daemon state 前失败。
@@ -90,7 +90,7 @@ restart redrive 和 corrupt task store，`release check` 暴露
 
 ## 当前非目标
 
-- V1.12.2 只提供本机 filesystem mailbox 控制面和前台 loop；不提供生产后台 service manager、远程网络监听、provider supervision 或 scheduler apply mutation。
+- V1.12.5 只提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick 和 agent drain/reload mutation state；不提供生产后台 service manager、远程网络监听、provider supervision 或完整生产 scheduler apply。
 - recovery checkpoint 只恢复 task/event/audit evidence，不恢复 provider/runtime 执行态；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
 - 不引入真实 Lua VM；`LuaGeneration` 是 generation marker，不是 VM swap 实现。
 - Adapter/MCP/Discovery/Memory/Hardware/Backup/Lifecycle 仍属于后续版本。
