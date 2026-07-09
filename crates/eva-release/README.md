@@ -112,4 +112,8 @@ missing install/upgrade/uninstall docs, or failed package-manager dry-run blocks
 `release check`. V1.11.3 adds opt-in required gates for supplied external
 security scan evidence and production benchmark evidence; scanner skipped or
 high/critical findings block `release check`, and benchmark evidence over budget
-blocks both `release check` and `release perf --benchmark-evidence`.
+blocks both `release check` and `release perf --benchmark-evidence`. V1.12.6
+adds required daemon runtime readiness gate `REL-DAEMON-RUNTIME-001` for the
+local foreground/filesystem daemon boundary, mailbox control plane, durable task
+lifecycle, scheduler retry tick, and daemon-backed agent drain/reload mutation
+evidence without claiming production service-manager support.

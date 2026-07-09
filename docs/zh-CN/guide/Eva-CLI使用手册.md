@@ -6,7 +6,7 @@
 
 本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
 V1.11.5-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
-EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、daemon process boundary smoke、daemon control mailbox、durable task lifecycle、scheduler retry dispatch、Agent lifecycle evidence 和 capability provider routing 命令已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
+EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、daemon process boundary smoke、daemon control mailbox、durable task lifecycle、scheduler retry dispatch、daemon-backed Agent drain/reload mutation、daemon runtime release gate、Agent lifecycle evidence 和 capability provider routing 命令已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
 
 ## 当前定位
 
@@ -16,7 +16,7 @@ EventBus redrive、可重启读取的 task snapshot、durable audit record、art
 | 运行时 | `run --example basic` 通过受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环；`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 提供 V1.12 本机 pid/lock/state、shutdown 边界 smoke、filesystem mailbox 控制面和 due dead-letter scheduler retry tick。 |
 | 外部能力 | Adapter、MCP、Skill、Discovery 当前提供受控诊断面，不启动真实 provider。 |
 | 风险动作 | 硬件绑定、恢复、升级和生命周期切换保持 plan-first，不执行 destructive apply。 |
-| 发布检查 | V1.11.5-alpha 提供 `release check/security/perf/migration` 可执行门禁，包含 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
+| 发布检查 | V1.12.6 已把 daemon runtime readiness 纳入 `release check`；`release check/security/perf/migration` 仍覆盖 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
 
 ![Eva-CLI 源码使用闭环](../../assets/eva-cli-user-manual-flow.zh-CN.svg)
 
@@ -69,7 +69,7 @@ release: V1.11.5-alpha
 | Agent 状态 | `cargo run -- agent status --agent root-agent --output json` | 输出 Agent lifecycle 和 manifest evidence。 |
 | Capability probe | `cargo run -- capability probe repo.analyze --output json` | 输出 provider plan 和 permission gate evidence。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
-| 发布门禁 | `cargo run -- release check --output json` | 输出 V1.11.5 release readiness。 |
+| 发布门禁 | `cargo run -- release check --output json` | 输出 release readiness，包含 `REL-DAEMON-RUNTIME-001`。 |
 
 文本输出适合人工查看，JSON 输出适合 CI 或脚本处理。需要稳定字段时加
 `--output json`。
@@ -98,7 +98,7 @@ release: V1.11.5-alpha
 | Snapshot | `snapshot create` | 创建绑定 backup manifest 的 release snapshot。 | 否 |
 | Restore | `restore plan` | 生成恢复计划，保持 `apply_allowed:false`。 | 否 |
 | Upgrade | `upgrade check` | 检查 generation、migration、drain 和 rollback readiness。 | 否 |
-| Release | `release check/security/perf/migration` | 执行 V1.11.5 发布准备、安全、性能和迁移门禁。 | 否 |
+| Release | `release check/security/perf/migration` | 执行发布准备、安全、性能和迁移门禁，`release check` 包含 daemon runtime readiness。 | 否 |
 
 ## 基本用法
 

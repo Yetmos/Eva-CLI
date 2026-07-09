@@ -182,6 +182,7 @@ impl ReleaseHardeningService {
         gates.push(signed_backup_archive_gate());
         gates.push(restore_apply_gate());
         gates.push(supervisor_handoff_gate());
+        gates.push(daemon_runtime_gate());
         let artifact_report = artifact_evidence
             .map(|evidence| evidence.verify(&ReleaseArtifactSigningKey::local_development()));
         if let Some(report) = artifact_report.as_ref() {
@@ -602,6 +603,7 @@ fn release_audit(
         "signed_backup_archive_baseline_ready".to_owned(),
         "restore_apply_gate_baseline_ready".to_owned(),
         "supervisor_handoff_baseline_ready".to_owned(),
+        "daemon_runtime_readiness_gate_ready".to_owned(),
     ];
     if let Some(report) = artifact_report {
         if report.status == "verified" {
@@ -1132,6 +1134,33 @@ fn supervisor_handoff_gate() -> ReleaseGate {
     }
 }
 
+fn daemon_runtime_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-DAEMON-RUNTIME-001".to_owned(),
+        domain: "daemon_runtime".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.12 daemon process boundary, filesystem mailbox control, durable task lifecycle, scheduler retry tick, and daemon-backed agent drain/reload mutation readiness are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-runtime/src/daemon.rs start_daemon and run_control_loop".to_owned(),
+            "crates/eva-runtime/src/scheduler_retry.rs run_scheduler_retry_tick".to_owned(),
+            "crates/eva-cli/src/run/daemon_cmd.rs daemon start/status/shutdown/submit/cancel/drain/reload".to_owned(),
+            "crates/eva-cli/src/run/agent_cmd.rs daemon-backed agent drain/reload fallback".to_owned(),
+            "cargo test -p eva-runtime daemon_control_status_and_shutdown_round_trip_has_trace_id".to_owned(),
+            "cargo test -p eva-runtime daemon_control_loop_ticks_scheduler_retry_once".to_owned(),
+            "cargo test -p eva-runtime daemon_drain_mutates_agent_control_state".to_owned(),
+            "cargo test -p eva-runtime daemon_reload_mutates_generation_route_state".to_owned(),
+            "cargo test -p eva-cli daemon_control_status_and_shutdown_round_trip_via_cli".to_owned(),
+            "cargo test -p eva-cli agent_drain_and_reload_use_daemon_mutation_when_available".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.12.6 Done".to_owned(),
+        ],
+        remediation: vec![
+            "keep daemon readiness limited to local foreground/filesystem control until OS service-manager adapters exist".to_owned(),
+            "do not claim production hot reload or provider supervision without provider execution-state recovery tests".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -1376,6 +1405,15 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-SUPERVISOR-HANDOFF-001" && gate.status == ReleaseGateStatus::Pass
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-DAEMON-RUNTIME-001"
+                && gate.status == ReleaseGateStatus::Pass
+                && gate.domain == "daemon_runtime"
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item.contains("daemon_control_loop_ticks_scheduler_retry_once"))
+        }));
         assert!(report
             .audit
             .iter()
@@ -1408,6 +1446,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "supervisor_handoff_baseline_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "daemon_runtime_readiness_gate_ready"));
     }
 
     #[test]

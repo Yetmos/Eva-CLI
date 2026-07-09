@@ -18,7 +18,7 @@ run in local development and CI.
 | `distribution.rs` | Defines V1.11.2 distribution evidence, Windows/Linux/macOS install smoke verification, package-manager dry-run verification, and key/value manifest parsing. |
 | `scanner.rs` | Defines V1.11.3 external security scanner evidence, finding severity normalization, high/critical blocking verification, and key/value manifest parsing. |
 | `benchmark.rs` | Defines V1.11.3 production benchmark evidence, measured budget verification, and conversion into the stable `PerformanceBaselineReport` shape. |
-| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, V1.10.4 restore apply gate, V1.10.5 supervisor handoff readiness, and V1.11 release evidence gates. |
+| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, V1.10.4 restore apply gate, V1.10.5 supervisor handoff readiness, V1.11 release evidence gates, and V1.12.6 daemon runtime readiness. |
 | `security.rs` | Defines security severity and findings for policy, sandbox, secret, MCP, hardware, and lifecycle boundaries. |
 | `performance.rs` | Defines source-release performance budgets and the baseline report. |
 | `migration.rs` | Defines migration steps and the V1.5 compatibility policy. |
@@ -62,6 +62,11 @@ of CLI formatting so future release tooling can reuse the same data contracts.
 - The supervisor handoff gate proves `upgrade apply --state-store` can commit a
   controlled local generation handoff and release pointer mutation, but it does
   not replace a production OS service manager.
+- The daemon runtime readiness gate proves the local foreground/filesystem
+  daemon boundary, mailbox control plane, durable task lifecycle, scheduler
+  retry tick, and daemon-backed agent drain/reload mutation evidence are present,
+  but it does not replace a production OS service manager or provider
+  supervision.
 - The release artifact evidence gate is opt-in until CI generates the key/value
   evidence manifest. When supplied, unsigned artifacts, signature mismatch, or
   provenance/source commit mismatch block readiness.
@@ -94,7 +99,8 @@ The module-level tests cover:
 - all performance budgets are within threshold;
 - V1.4 -> V1.5 migration remains compatible and includes the new release
   command surface;
-- signed backup archive, restore apply gate, and supervisor handoff readiness are present without creating a blocked release state.
+- signed backup archive, restore apply gate, supervisor handoff readiness, and
+  daemon runtime readiness are present without creating a blocked release state.
 - signed artifact evidence passes when the keyed signature and provenance match,
   and blocks when the artifact is unsigned.
 - distribution evidence passes when three-platform install smoke and package

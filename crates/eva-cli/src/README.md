@@ -131,7 +131,7 @@ It creates a release pointer plan with audit evidence, returns
 
 `run/release_cmd.rs` 实现 V1.5 发布加固命令：
 
-- `release check`：调用 `eva_release::ReleaseHardeningService::readiness`，输出跨平台、稳定性、文档、安全、性能、迁移、V1.6.4 durable recovery 和 V1.6.5 durable diagnostics 门禁。
+- `release check`：调用 `eva_release::ReleaseHardeningService::readiness`，输出跨平台、稳定性、文档、安全、性能、迁移、V1.6.4 durable recovery、V1.6.5 durable diagnostics 和 V1.12.6 daemon runtime readiness 门禁。
 - `release check --artifact-evidence <path>`：读取 V1.11.1 signed artifact/provenance evidence，失败时返回配置门禁 exit code `2`。
 - `release check --distribution-evidence <path>`：读取 V1.11.2 distribution evidence，校验 Windows/Linux/macOS install smoke、安装/升级/卸载文档路径和 package-manager dry-run，失败时返回配置门禁 exit code `2`。
 - `release check --security-scan-evidence <path>`：读取 V1.11.3 external scanner evidence；scanner skipped/failed 或 high/critical finding 会阻断并返回配置门禁 exit code `2`。

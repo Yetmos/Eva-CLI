@@ -40,6 +40,15 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace
 
+      - name: Daemon runtime smoke tests
+        run: |
+          cargo test -p eva-runtime daemon_control_status_and_shutdown_round_trip_has_trace_id
+          cargo test -p eva-runtime daemon_control_loop_ticks_scheduler_retry_once
+          cargo test -p eva-runtime daemon_drain_mutates_agent_control_state
+          cargo test -p eva-runtime daemon_reload_mutates_generation_route_state
+          cargo test -p eva-cli daemon_control_status_and_shutdown_round_trip_via_cli
+          cargo test -p eva-cli agent_drain_and_reload_use_daemon_mutation_when_available
+
       - name: Version management check
         shell: pwsh
         run: ./scripts/validate-version-management.ps1

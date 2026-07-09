@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -2503,6 +2503,7 @@ mod tests {
         assert!(json_stdout.contains("durable_task_lifecycle_v1.12.3"));
         assert!(json_stdout.contains("scheduler_retry_dispatch_v1.12.4"));
         assert!(json_stdout.contains("agent_daemon_drain_reload_v1.12.5"));
+        assert!(json_stdout.contains("daemon_release_gate_v1.12.6"));
         assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));
@@ -2549,6 +2550,12 @@ mod tests {
         assert!(stdout.contains("\"domain\":\"lua_hot_reload_lifecycle\""));
         assert!(stdout.contains("GenerationRouteGate"));
         assert!(stdout.contains("lua_hot_reload_lifecycle_ready"));
+        assert!(stdout.contains("\"id\":\"REL-DAEMON-RUNTIME-001\""));
+        assert!(stdout.contains("\"domain\":\"daemon_runtime\""));
+        assert!(stdout.contains("run_control_loop"));
+        assert!(stdout.contains("daemon_control_loop_ticks_scheduler_retry_once"));
+        assert!(stdout.contains("agent_drain_and_reload_use_daemon_mutation_when_available"));
+        assert!(stdout.contains("daemon_runtime_readiness_gate_ready"));
     }
 
     #[test]

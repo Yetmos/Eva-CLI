@@ -13,8 +13,9 @@ restricted Lua VM `on_event` execution, Lua host observability,
 `ctx.tools.call` capability binding, and Lua timeout/instruction/cancel/memory
 execution limits, shadow-load health checks, generation route gating, drain
 evidence, rollback audit evidence, release evidence gates, and CLI command
-module split coverage, typed event emission, Agent lifecycle evidence, and
-capability provider routing commands are in place, while risky paths remain
+module split coverage, typed event emission, daemon control, daemon-backed Agent
+drain/reload mutation, daemon runtime release gate, Agent lifecycle evidence,
+and capability provider routing commands are in place, while risky paths remain
 diagnostic or plan-first.
 
 ## Current Position
@@ -25,7 +26,7 @@ diagnostic or plan-first.
 | Runtime | `run --example basic` executes the V1.0 in-memory basic runtime loop through the restricted Lua VM, host binding, resource-limit, and hot-reload lifecycle boundary. |
 | External capabilities | Adapter, MCP, Skill, and Discovery commands expose controlled diagnostics, not real provider execution. |
 | Risky actions | Hardware binding, restore, upgrade, and lifecycle switching stay plan-first. |
-| Release checks | V1.11.5-alpha provides executable `release check/security/perf/migration` gates, including Lua VM, release evidence, CLI split readiness, and runtime command completion evidence. |
+| Release checks | V1.12.6 adds daemon runtime readiness to `release check`; `release check/security/perf/migration` still cover Lua VM, release evidence, CLI split readiness, and runtime command completion evidence. |
 
 ![Eva-CLI source workflow](../../assets/eva-cli-user-manual-flow.svg)
 
@@ -67,10 +68,11 @@ Run this sequence from the repository root:
 | Inspect durable | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | Reports backend schema, migration status, and pending redrive count. |
 | Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
 | Emit event | `cargo run -- emit /input/user --payload hello --output json` | Publishes a typed Event to the in-memory EventBus boundary. |
+| Daemon smoke | `cargo run -- daemon start --foreground --dev --output json` | Verifies local pid/lock/state, durable backend, policy, observability, and shutdown contract without starting providers. |
 | Agent status | `cargo run -- agent status --agent root-agent --output json` | Reports Agent lifecycle and manifest evidence. |
 | Capability probe | `cargo run -- capability probe repo.analyze --output json` | Reports provider plan and permission gate evidence. |
 | Task status | `cargo run -- task status --output json` | Reads the latest task report. |
-| Release gate | `cargo run -- release check --output json` | Prints V1.11.5 release readiness. |
+| Release gate | `cargo run -- release check --output json` | Prints release readiness including `REL-DAEMON-RUNTIME-001`. |
 
 Use text output for human inspection and `--output json` for scripts or CI.
 
@@ -84,6 +86,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Inspect | `inspect`, `inspect durable` | Show project configuration, runtime summary, or durable backend diagnostics. | No |
 | Runtime | `run --example basic` | Execute the V1.0 in-memory basic loop through the restricted Lua VM boundary. | Writes `.eva/tasks` or durable backend `tasks/` |
 | Emit | `emit <topic>` | Publish a typed Event to in-memory or durable EventBus. | Writes durable backend `events/log/` when `--durable-backend` is set |
+| Daemon | `daemon start/status/stop/shutdown/submit/cancel/drain/reload` | Verify the V1.12 local daemon pid/lock/state, durable backend, policy, observability, shutdown contract, and filesystem mailbox control plane. | Writes daemon state/observability/control directories; the default smoke removes lock/pid |
 | Agent | `agent status/drain/reload` | Report Agent lifecycle, drain plans, and generation reload evidence. | With a running daemon, `drain/reload` write daemon mutation state; without one they report `mutation_executed:false` |
 | Capability | `capability list/probe/call` | Report provider routing and run dry-run or confirmed controlled invokes. | `call` defaults to dry-run; confirmed invokes still report `mutation_executed:false` |
 | Task | `task status/logs/cancel` | Read or mark task diagnostics. | Writes task cancel marker |
@@ -97,7 +100,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Snapshot | `snapshot create` | Create a release snapshot linked to a backup manifest. | No |
 | Restore | `restore plan` | Produce a restore plan with `apply_allowed:false`. | No |
 | Upgrade | `upgrade check` | Check generation, migration, drain, and rollback readiness. | No |
-| Release | `release check/security/perf/migration` | Run V1.11.5 release readiness, security, performance, and migration gates. | No |
+| Release | `release check/security/perf/migration` | Run release readiness, security, performance, and migration gates; `release check` includes daemon runtime readiness. | No |
 
 ## Emit Typed Events
 
