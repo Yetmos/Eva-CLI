@@ -4,7 +4,7 @@
 
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
-本目录承载硬件接入边界的源码。实现目标是让项目能够表达硬件设备、发现候选、注册可信设备、建立 request-scoped lease、通过受控 driver registry 和 driver lifecycle 调用硬件能力，并用 hotplug 状态机生成稳定事件 Topic。V1.15.4 不打开真实设备，也不暴露 raw I/O；它在 V1.15.1 平台 OS permission provider 诊断之上，新增 daemon manifest snapshot hotplug subscriber 和重启一致性 state。
+本目录承载硬件接入边界的源码。实现目标是让项目能够表达硬件设备、发现候选、注册可信设备、建立 request-scoped lease、通过受控 driver registry 和 driver lifecycle 调用硬件能力，并用 hotplug 状态机生成稳定事件 Topic。V1.15.4 不打开真实设备，也不暴露 raw I/O；它在 V1.15.1 平台 OS permission provider 诊断之上，新增 daemon manifest snapshot hotplug subscriber 和重启一致性 state。V1.15.5 由 `eva-release` 汇总本目录的 simulator parity、permission denial、lease cleanup 和 hotplug smoke 测试证据，形成 alpha simulator-only hardware safety release gate。
 
 ## 文件职责
 

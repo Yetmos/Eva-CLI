@@ -144,7 +144,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 
 ## 后续范围
 
-V1.15.4 没有集成真实 USB/串口/BLE/socket/vendor SDK 设备，也没有打开 OS device handle 或接真实 OS hotplug notification。后续会继续补真实 driver implementation、真实/虚拟设备 fixture、平台 hotplug watcher 和硬件 safety release gate。
+V1.15.5 已由 `eva-release` 增加硬件 safety release gate，汇总 simulator parity、permission denial、lease cleanup 和 daemon hotplug smoke evidence；该 gate 在 alpha 阶段接受 simulator-only evidence。真实 USB/串口/BLE/socket/vendor SDK 设备、OS device handle、真实 OS hotplug notification、真实/虚拟设备 fixture 和平台 hotplug watcher 仍待后续补齐。
 
 ## English
 

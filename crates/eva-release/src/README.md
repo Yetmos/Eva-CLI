@@ -18,7 +18,7 @@ run in local development and CI.
 | `distribution.rs` | Defines V1.11.2 distribution evidence, Windows/Linux/macOS install smoke verification, package-manager dry-run verification, and key/value manifest parsing. |
 | `scanner.rs` | Defines V1.11.3 external security scanner evidence, finding severity normalization, high/critical blocking verification, and key/value manifest parsing. |
 | `benchmark.rs` | Defines V1.11.3 production benchmark evidence, measured budget verification, and conversion into the stable `PerformanceBaselineReport` shape. |
-| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, V1.10.4 restore apply gate, V1.14.2 staged file mutation, V1.14.3 rollback apply, V1.14.4 operator confirmation, V1.10.5 supervisor handoff readiness, V1.14.5 service-manager abstraction readiness, V1.11 release evidence gates, V1.12.6 daemon runtime readiness, V1.13.7 MCP compatibility readiness, and V1.13.8 provider supervision readiness. |
+| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, V1.10.4 restore apply gate, V1.14.2 staged file mutation, V1.14.3 rollback apply, V1.14.4 operator confirmation, V1.10.5 supervisor handoff readiness, V1.14.5 service-manager abstraction readiness, V1.11 release evidence gates, V1.12.6 daemon runtime readiness, V1.13.7 MCP compatibility readiness, V1.13.8 provider supervision readiness, and V1.15.5 hardware safety readiness. |
 | `security.rs` | Defines security severity and findings for policy, sandbox, secret, MCP, hardware, and lifecycle boundaries. |
 | `performance.rs` | Defines source-release performance budgets and the baseline report. |
 | `migration.rs` | Defines migration steps and the V1.5 compatibility policy. |
@@ -82,6 +82,10 @@ of CLI formatting so future release tooling can reuse the same data contracts.
   including remediation and `raw_device_path_exposed=false`, plus V1.15.4 daemon
   hotplug subscriber evidence; it does not certify real USB, serial, BLE,
   socket, vendor SDK driver I/O, or real OS hotplug notifications.
+- The hardware safety release gate records simulator parity, permission denial,
+  lease cleanup, and daemon hotplug smoke evidence as the alpha release contract.
+  Production releases still need real or virtual hardware fixture evidence
+  before claiming USB, serial, BLE, socket, or vendor SDK I/O.
 - The release artifact evidence gate is opt-in until CI generates the key/value
   evidence manifest. When supplied, unsigned artifacts, signature mismatch, or
   provenance/source commit mismatch block readiness.
@@ -116,13 +120,16 @@ The module-level tests cover:
   command surface;
 - signed backup archive, restore apply/rollback/operator confirmation gate,
   supervisor handoff readiness, service-manager abstraction readiness,
-  daemon runtime readiness, MCP compatibility readiness, and provider
-  supervision readiness are present without creating a blocked release state.
+  daemon runtime readiness, MCP compatibility readiness, provider supervision
+  readiness, and hardware safety readiness are present without creating a
+  blocked release state.
 - missing MCP compatibility matrix blocks the required gate.
 - provider supervision readiness records the current boundaries without
   claiming OS process supervision.
 - hardware security evidence includes OS permission remediation without raw
   device path exposure.
+- hardware safety readiness accepts simulator-only alpha evidence while keeping
+  real fixture evidence as a production requirement.
 - signed artifact evidence passes when the keyed signature and provenance match,
   and blocks when the artifact is unsigned.
 - distribution evidence passes when three-platform install smoke and package

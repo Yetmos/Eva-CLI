@@ -190,6 +190,7 @@ impl ReleaseHardeningService {
             &mcp_compatibility_report,
         )));
         gates.push(provider_supervision_gate());
+        gates.push(hardware_safety_release_gate());
         let artifact_report = artifact_evidence
             .map(|evidence| evidence.verify(&ReleaseArtifactSigningKey::local_development()));
         if let Some(report) = artifact_report.as_ref() {
@@ -292,6 +293,7 @@ impl ReleaseHardeningService {
                         "PlatformOsPermissionProvider blocks driver start before lease claim when permission is missing".to_owned(),
                         "V1.15.4 daemon hotplug subscriber publishes typed logical-state events and reports raw_handles_exposed=false".to_owned(),
                         "hotplug watcher crash path releases active hardware leases".to_owned(),
+                        "V1.15.5 release check records simulator parity, permission denial, lease cleanup, and hotplug smoke evidence".to_owned(),
                     ],
                 ),
                 SecurityFinding::tracked(
@@ -619,6 +621,7 @@ fn release_audit(
         "daemon_runtime_readiness_gate_ready".to_owned(),
         "mcp_compatibility_matrix_ready".to_owned(),
         "provider_supervision_readiness_gate_ready".to_owned(),
+        "hardware_safety_release_gate_ready".to_owned(),
     ];
     if let Some(report) = artifact_report {
         if report.status == "verified" {
@@ -1270,6 +1273,33 @@ fn provider_supervision_gate() -> ReleaseGate {
     }
 }
 
+fn hardware_safety_release_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-HARDWARE-SAFETY-001".to_owned(),
+        domain: "hardware_safety".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.15.5 hardware safety release gate records simulator parity, permission denial, lease cleanup, and hotplug smoke evidence for alpha".to_owned(),
+        evidence: vec![
+            "hardware.safety.release_mode:alpha_simulator_only".to_owned(),
+            "simulator_parity:run_simulator_contract_suite rejects raw I/O and capability bypass".to_owned(),
+            "permission_denial:PlatformOsPermissionProvider reports remediation and raw_device_path_exposed=false before lease claim".to_owned(),
+            "lease_cleanup:driver crash and hotplug watcher crash release active hardware leases".to_owned(),
+            "hotplug_smoke:daemon manifest snapshot subscriber publishes typed events, persists hardware-hotplug.state, and reports raw_handles_exposed=false".to_owned(),
+            "real_hardware_fixture:not_required_for_alpha".to_owned(),
+            "cargo test -p eva-hardware simulator_contract_suite_rejects_raw_io_and_capability_bypass".to_owned(),
+            "cargo test -p eva-hardware permission".to_owned(),
+            "cargo test -p eva-hardware hotplug".to_owned(),
+            "cargo test -p eva-runtime daemon_hotplug_subscriber_persists_state_across_restart".to_owned(),
+            "cargo test -p eva-cli daemon_start_foreground_smoke_reports_verified_boundaries".to_owned(),
+        ],
+        remediation: vec![
+            "production releases must attach real or virtual hardware fixture evidence before claiming real USB/serial/BLE/socket/vendor SDK I/O".to_owned(),
+            "do not remove permission denial, lease cleanup, raw handle suppression, or hotplug smoke checks when replacing simulator-only alpha evidence".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -1546,6 +1576,19 @@ mod tests {
                     .iter()
                     .any(|item| item == "provider.os_process_supervisor:not_claimed")
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-HARDWARE-SAFETY-001"
+                && gate.status == ReleaseGateStatus::Pass
+                && gate.domain == "hardware_safety"
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "hardware.safety.release_mode:alpha_simulator_only")
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "real_hardware_fixture:not_required_for_alpha")
+        }));
         assert!(report
             .audit
             .iter()
@@ -1594,6 +1637,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "provider_supervision_readiness_gate_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "hardware_safety_release_gate_ready"));
     }
 
     #[test]
@@ -1621,6 +1668,36 @@ mod tests {
         assert!(gate
             .evidence
             .contains(&"provider.os_process_supervisor:not_claimed".to_owned()));
+    }
+
+    #[test]
+    fn hardware_safety_release_gate_accepts_alpha_simulator_only_evidence() {
+        let gate = hardware_safety_release_gate();
+
+        assert_eq!(gate.id, "REL-HARDWARE-SAFETY-001");
+        assert_eq!(gate.status, ReleaseGateStatus::Pass);
+        assert!(gate.required);
+        assert_eq!(gate.domain, "hardware_safety");
+        assert!(gate
+            .evidence
+            .contains(&"hardware.safety.release_mode:alpha_simulator_only".to_owned()));
+        assert!(gate.evidence.iter().any(|item| {
+            item.contains("run_simulator_contract_suite") && item.contains("raw I/O")
+        }));
+        assert!(gate.evidence.iter().any(|item| {
+            item.contains("raw_device_path_exposed=false") && item.contains("before lease claim")
+        }));
+        assert!(gate.evidence.iter().any(|item| {
+            item.contains("hotplug watcher crash")
+                && item.contains("release active hardware leases")
+        }));
+        assert!(gate.evidence.iter().any(|item| {
+            item.contains("raw_handles_exposed=false") && item.contains("hardware-hotplug.state")
+        }));
+        assert!(gate.remediation.iter().any(|item| {
+            item.contains("real or virtual hardware fixture evidence")
+                && item.contains("claiming real USB")
+        }));
     }
 
     #[test]

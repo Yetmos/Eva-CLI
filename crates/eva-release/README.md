@@ -14,7 +14,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 
 | Area | Public Type | Behavior |
 | --- | --- | --- |
-| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, service-manager abstraction, daemon runtime, MCP compatibility, and provider supervision readiness. |
+| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, service-manager abstraction, daemon runtime, MCP compatibility, provider supervision, and hardware safety readiness. |
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
 | Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, V1.15.1 hardware OS permission diagnostics/raw-handle boundaries, and lifecycle apply risk. |
@@ -30,6 +30,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | Benchmark evidence | `ReleaseBenchmarkEvidence`, `ReleaseBenchmarkVerificationReport` | Parses V1.11.3 production benchmark measurements, converts them into the existing performance report shape, and blocks readiness when observed latency exceeds budget. |
 | MCP compatibility readiness | `ReleaseGate` | Records V1.13.7 stdio/HTTP transport, tool schema, stream lifecycle, dangling-session, and explicit server-surface fixture evidence as `REL-MCP-COMPAT-001`. |
 | Provider supervision readiness | `ReleaseGate` | Records V1.13.8 supervisor slot, process table, credential scope, admission, stream artifact, recovery, and MCP compatibility gate evidence as `REL-PROVIDER-SUPERVISION-001`. |
+| Hardware safety readiness | `ReleaseGate` | Records V1.15.5 simulator parity, permission denial, lease cleanup, and daemon hotplug smoke evidence as `REL-HARDWARE-SAFETY-001`, accepting simulator-only alpha evidence without claiming real device I/O. |
 
 ## CLI Surface
 
@@ -73,6 +74,7 @@ runtime-unavailable exit code `4`.
 - expose the V1.14.5 service-manager abstraction and fake handoff/rollback evidence as a required readiness gate;
 - expose V1.15.1 hardware OS permission diagnostics through `SEC-HW-001` security evidence;
 - expose V1.15.4 daemon hotplug subscriber and watcher crash lease-release evidence through `SEC-HW-001` security evidence;
+- expose V1.15.5 hardware safety evidence through the required `REL-HARDWARE-SAFETY-001` readiness gate;
 - expose signed artifact, distribution install smoke, and package-manager dry-run evidence as opt-in readiness gates;
 - expose external scanner and measured benchmark evidence as opt-in readiness gates;
 - expose the repo-local MCP compatibility matrix as a required readiness gate;
@@ -89,6 +91,7 @@ runtime-unavailable exit code `4`.
 - execute benchmark commands directly;
 - certify external MCP servers or provide HTTPS/TLS transport;
 - manage OS provider processes or claim user-isolated OS supervision;
+- claim real USB/serial/BLE/socket/vendor SDK I/O from simulator-only hardware safety evidence;
 - replace `eva-backup`, `eva-lifecycle`, `eva-policy`, or CI.
 
 ## Verification
@@ -138,6 +141,10 @@ compatibility matrix; it does not certify real external MCP servers, HTTPS/TLS,
 or production streaming. V1.13.8 adds required provider supervision gate
 `REL-PROVIDER-SUPERVISION-001` for the current controlled provider baseline; it
 does not claim OS process management, OS credential vaults, or user isolation.
+V1.15.5 adds required hardware safety gate `REL-HARDWARE-SAFETY-001` for
+simulator parity, OS permission denial, lease cleanup, and daemon hotplug smoke
+evidence; alpha accepts simulator-only evidence, while production releases must
+attach real or virtual hardware fixture evidence before claiming real device I/O.
 V1.14.5 adds required service-manager abstraction gate
 `REL-SERVICE-MANAGER-ABSTRACTION-001` for the adapter trait, fake handoff and
 rollback evidence, explicit config parsing, and docs/progress tracking; it does
