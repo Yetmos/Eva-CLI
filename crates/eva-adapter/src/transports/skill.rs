@@ -2,13 +2,19 @@
 
 use crate::manifest::{AdapterHandle, SkillInputSchema};
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
-use crate::supervisor::{redact_provider_session_tokens, validate_credential_scope_for_provider};
+use crate::stream::{
+    capture_provider_bytes, collect_provider_stream, provider_stream_audit, provider_stream_key,
+    provider_stream_summary_json, redact_provider_stream_bytes, ProviderStreamArtifact,
+    ProviderStreamCapture, ProviderStreamConfig, DEFAULT_STREAM_CHUNK_SIZE_BYTES,
+    DEFAULT_STREAM_PREVIEW_LIMIT_BYTES,
+};
+use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::{AdapterId, EvaError, RequestId};
 use eva_storage::{ArtifactRecord, FileSystemArtifactStore};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -24,6 +30,8 @@ pub struct SkillRunnerConfig {
     pub allowed_commands: BTreeSet<String>,
     pub timeout_ms: u64,
     pub output_limit_bytes: usize,
+    pub preview_limit_bytes: usize,
+    pub stream_chunk_size_bytes: usize,
     pub artifact_root: PathBuf,
     pub work_root: PathBuf,
 }
@@ -47,6 +55,8 @@ pub struct SkillRunReport {
     pub exit_code: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    pub stdout_stream: ProviderStreamCapture,
+    pub stderr_stream: ProviderStreamCapture,
     pub duration_ms: u128,
     pub working_dir: PathBuf,
     pub artifact_root: PathBuf,
@@ -87,6 +97,8 @@ struct RawSkillRunReport {
     exit_code: Option<i32>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    stdout_stream: ProviderStreamCapture,
+    stderr_stream: ProviderStreamCapture,
     duration_ms: u128,
     audit: Vec<String>,
 }
@@ -118,6 +130,8 @@ impl SkillRunnerConfig {
                 .collect::<BTreeSet<_>>(),
             timeout_ms,
             output_limit_bytes,
+            preview_limit_bytes: DEFAULT_STREAM_PREVIEW_LIMIT_BYTES,
+            stream_chunk_size_bytes: DEFAULT_STREAM_CHUNK_SIZE_BYTES,
             artifact_root: artifact_root.into(),
             work_root: work_root.into(),
         }
@@ -155,7 +169,21 @@ impl SkillRunner {
             .with_context("entry_type", invocation.entry_type)
             .with_context("skill_id", invocation.skill_id));
         };
-        let artifacts = persist_run_artifacts(&paths, &invocation, &raw)?;
+        let artifacts = persist_run_artifacts(&paths, &invocation, &raw, &sensitive_values)?;
+        let mut stdout_stream = raw.stdout_stream;
+        let mut stderr_stream = raw.stderr_stream;
+        if stdout_stream.artifact.is_none() {
+            stdout_stream.artifact = artifacts
+                .iter()
+                .find(|artifact| artifact.key.ends_with("/stdout"))
+                .map(provider_stream_artifact_from_skill_evidence);
+        }
+        if stderr_stream.artifact.is_none() {
+            stderr_stream.artifact = artifacts
+                .iter()
+                .find(|artifact| artifact.key.ends_with("/stderr"))
+                .map(provider_stream_artifact_from_skill_evidence);
+        }
 
         Ok(SkillRunReport {
             runner: raw.runner,
@@ -163,6 +191,8 @@ impl SkillRunner {
             exit_code: raw.exit_code,
             stdout: raw.stdout,
             stderr: raw.stderr,
+            stdout_stream,
+            stderr_stream,
             duration_ms: raw.duration_ms,
             working_dir: paths.working_dir,
             artifact_root: paths.artifact_root,
@@ -354,12 +384,22 @@ fn run_builtin_codex_skill(
             .with_context("path", result_path.display().to_string())
             .with_context("io_error", error.to_string())
     })?;
+    let stdout_stream = capture_provider_bytes(
+        ProviderStreamConfig::new("stdout", result.len().max(1)),
+        result.clone().into_bytes(),
+        1,
+        false,
+        &[],
+    )?;
+    let stderr_stream = ProviderStreamCapture::empty("stderr");
     Ok(RawSkillRunReport {
         runner: "builtin_codex_skill".to_owned(),
         status: SkillRunStatus::Completed,
         exit_code: Some(0),
-        stdout: result.into_bytes(),
+        stdout: stdout_stream.preview.clone(),
         stderr: Vec::new(),
+        stdout_stream,
+        stderr_stream,
         duration_ms: started_at.elapsed().as_millis(),
         audit: vec![
             "transport:skill".to_owned(),
@@ -432,12 +472,22 @@ fn run_process(
         EvaError::internal("skill runner stderr was not available").with_context("command", command)
     })?;
     let (sender, receiver) = mpsc::channel();
-    spawn_reader("stdout", stdout, config.output_limit_bytes, sender.clone());
-    spawn_reader("stderr", stderr, config.output_limit_bytes, sender);
+    spawn_reader(
+        skill_stream_config(config, invocation, "stdout"),
+        stdout,
+        sensitive_values.to_vec(),
+        sender.clone(),
+    );
+    spawn_reader(
+        skill_stream_config(config, invocation, "stderr"),
+        stderr,
+        sensitive_values.to_vec(),
+        sender,
+    );
 
     let timeout = Duration::from_millis(config.timeout_ms);
-    let mut stdout_bytes = Vec::new();
-    let mut stderr_bytes = Vec::new();
+    let mut stdout_capture = ProviderStreamCapture::empty("stdout");
+    let mut stderr_capture = ProviderStreamCapture::empty("stderr");
     let mut received_streams = 0;
     while received_streams < 2 {
         let message = if timeout.is_zero() {
@@ -450,39 +500,33 @@ fn run_process(
                     command,
                     SkillRunStatus::Timeout,
                     None,
-                    stdout_bytes,
-                    stderr_bytes,
+                    stdout_capture,
+                    stderr_capture,
                     started_at,
-                    sensitive_values,
                 ));
             }
             receiver.recv_timeout(timeout - elapsed)
         };
         match message {
-            Ok(ReaderMessage::Output { stream, bytes }) => {
+            Ok(ReaderMessage::Output { capture }) => {
                 received_streams += 1;
-                if stream == "stdout" {
-                    stdout_bytes = bytes;
+                let truncated = capture.truncated;
+                if capture.stream_name == "stdout" {
+                    stdout_capture = capture;
                 } else {
-                    stderr_bytes = bytes;
+                    stderr_capture = capture;
                 }
-            }
-            Ok(ReaderMessage::LimitExceeded { stream, bytes }) => {
-                kill_child(&mut child);
-                if stream == "stdout" {
-                    stdout_bytes = bytes;
-                } else {
-                    stderr_bytes = bytes;
+                if truncated {
+                    kill_child(&mut child);
+                    return Ok(raw_process_report(
+                        command,
+                        SkillRunStatus::OutputLimitExceeded,
+                        None,
+                        stdout_capture,
+                        stderr_capture,
+                        started_at,
+                    ));
                 }
-                return Ok(raw_process_report(
-                    command,
-                    SkillRunStatus::OutputLimitExceeded,
-                    None,
-                    stdout_bytes,
-                    stderr_bytes,
-                    started_at,
-                    sensitive_values,
-                ));
             }
             Ok(ReaderMessage::ReadError { stream, error }) => {
                 kill_child(&mut child);
@@ -497,10 +541,9 @@ fn run_process(
                     command,
                     SkillRunStatus::Timeout,
                     None,
-                    stdout_bytes,
-                    stderr_bytes,
+                    stdout_capture,
+                    stderr_capture,
                     started_at,
-                    sensitive_values,
                 ));
             }
         }
@@ -522,10 +565,9 @@ fn run_process(
                 command,
                 run_status,
                 exit_code,
-                stdout_bytes,
-                stderr_bytes,
+                stdout_capture,
+                stderr_capture,
                 started_at,
-                sensitive_values,
             ));
         }
         if !timeout.is_zero() && started_at.elapsed() >= timeout {
@@ -534,10 +576,9 @@ fn run_process(
                 command,
                 SkillRunStatus::Timeout,
                 None,
-                stdout_bytes,
-                stderr_bytes,
+                stdout_capture,
+                stderr_capture,
                 started_at,
-                sensitive_values,
             ));
         }
         thread::sleep(Duration::from_millis(5));
@@ -548,24 +589,30 @@ fn raw_process_report(
     command: &str,
     status: SkillRunStatus,
     exit_code: Option<i32>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    stdout_stream: ProviderStreamCapture,
+    stderr_stream: ProviderStreamCapture,
     started_at: Instant,
-    sensitive_values: &[String],
 ) -> RawSkillRunReport {
+    let stdout = stdout_stream.preview.clone();
+    let stderr = stderr_stream.preview.clone();
+    let mut audit = vec![
+        "transport:skill".to_owned(),
+        "skill.runner:process".to_owned(),
+        "shell:false".to_owned(),
+        format!("skill.command:{command}"),
+    ];
+    audit.extend(provider_stream_audit(&stdout_stream));
+    audit.extend(provider_stream_audit(&stderr_stream));
     RawSkillRunReport {
         runner: "process".to_owned(),
         status,
         exit_code,
-        stdout: redact_bytes(stdout, sensitive_values),
-        stderr: redact_bytes(stderr, sensitive_values),
+        stdout,
+        stderr,
+        stdout_stream,
+        stderr_stream,
         duration_ms: started_at.elapsed().as_millis(),
-        audit: vec![
-            "transport:skill".to_owned(),
-            "skill.runner:process".to_owned(),
-            "shell:false".to_owned(),
-            format!("skill.command:{command}"),
-        ],
+        audit,
     }
 }
 
@@ -573,6 +620,7 @@ fn persist_run_artifacts(
     paths: &RunPaths,
     invocation: &SkillRunnerInvocation,
     raw: &RawSkillRunReport,
+    sensitive_values: &[String],
 ) -> Result<Vec<SkillArtifactEvidence>, EvaError> {
     let mut store = FileSystemArtifactStore::new(&paths.artifact_root);
     let base_key = format!(
@@ -581,20 +629,28 @@ fn persist_run_artifacts(
         safe_segment(invocation.request_id.as_str())
     );
     let mut artifacts = Vec::new();
-    artifacts.push(evidence_from_record(store.put_bytes_with_metadata(
-        format!("{base_key}/stdout"),
-        raw.stdout.clone(),
-        "text/plain",
-        "retain",
-        None,
-    )?));
-    artifacts.push(evidence_from_record(store.put_bytes_with_metadata(
-        format!("{base_key}/stderr"),
-        raw.stderr.clone(),
-        "text/plain",
-        "retain",
-        None,
-    )?));
+    if let Some(artifact) = &raw.stdout_stream.artifact {
+        artifacts.push(evidence_from_stream_artifact(artifact));
+    } else {
+        artifacts.push(evidence_from_record(store.put_bytes_with_metadata(
+            format!("{base_key}/stdout"),
+            raw.stdout.clone(),
+            "text/plain",
+            "retain",
+            None,
+        )?));
+    }
+    if let Some(artifact) = &raw.stderr_stream.artifact {
+        artifacts.push(evidence_from_stream_artifact(artifact));
+    } else {
+        artifacts.push(evidence_from_record(store.put_bytes_with_metadata(
+            format!("{base_key}/stderr"),
+            raw.stderr.clone(),
+            "text/plain",
+            "retain",
+            None,
+        )?));
+    }
     artifacts.push(evidence_from_record(store.put_bytes_with_metadata(
         format!("{base_key}/run-report"),
         run_report_artifact_json(raw).into_bytes(),
@@ -609,6 +665,7 @@ fn persist_run_artifacts(
             &paths.artifact_dir,
             &paths.artifact_dir,
             &base_key,
+            sensitive_values,
             &mut artifacts,
         )?;
     }
@@ -620,6 +677,7 @@ fn collect_artifact_dir(
     root_dir: &Path,
     artifact_dir: &Path,
     base_key: &str,
+    sensitive_values: &[String],
     artifacts: &mut Vec<SkillArtifactEvidence>,
 ) -> Result<(), EvaError> {
     for entry in fs::read_dir(artifact_dir).map_err(|error| {
@@ -645,7 +703,14 @@ fn collect_artifact_dir(
             );
         }
         if metadata.is_dir() {
-            collect_artifact_dir(store, root_dir, &path, base_key, artifacts)?;
+            collect_artifact_dir(
+                store,
+                root_dir,
+                &path,
+                base_key,
+                sensitive_values,
+                artifacts,
+            )?;
         } else if metadata.is_file() {
             let relative = path.strip_prefix(root_dir).map_err(|error| {
                 EvaError::internal("failed to compute skill artifact relative path")
@@ -658,6 +723,7 @@ fn collect_artifact_dir(
                     .with_context("path", path.display().to_string())
                     .with_context("io_error", error.to_string())
             })?;
+            let bytes = redact_provider_stream_bytes(bytes, sensitive_values);
             artifacts.push(evidence_from_record(store.put_bytes_with_metadata(
                 format!("{base_key}/artifacts/{relative_key}"),
                 bytes,
@@ -710,6 +776,26 @@ fn evidence_from_record(record: ArtifactRecord) -> SkillArtifactEvidence {
         digest: record.digest,
         size_bytes: record.size_bytes,
         content_type: record.content_type,
+    }
+}
+
+fn evidence_from_stream_artifact(artifact: &ProviderStreamArtifact) -> SkillArtifactEvidence {
+    SkillArtifactEvidence {
+        key: artifact.key.clone(),
+        digest: artifact.digest.clone(),
+        size_bytes: artifact.size_bytes,
+        content_type: artifact.content_type.clone(),
+    }
+}
+
+fn provider_stream_artifact_from_skill_evidence(
+    evidence: &SkillArtifactEvidence,
+) -> ProviderStreamArtifact {
+    ProviderStreamArtifact {
+        key: evidence.key.clone(),
+        digest: evidence.digest.clone(),
+        size_bytes: evidence.size_bytes,
+        content_type: evidence.content_type.clone(),
     }
 }
 
@@ -960,61 +1046,50 @@ impl<'a> JsonObjectParser<'a> {
 }
 
 enum ReaderMessage {
-    Output {
-        stream: &'static str,
-        bytes: Vec<u8>,
-    },
-    LimitExceeded {
-        stream: &'static str,
-        bytes: Vec<u8>,
-    },
-    ReadError {
-        stream: &'static str,
-        error: String,
-    },
+    Output { capture: ProviderStreamCapture },
+    ReadError { stream: String, error: String },
 }
 
 fn spawn_reader(
-    stream: &'static str,
+    config: ProviderStreamConfig,
     reader: impl Read + Send + 'static,
-    limit: usize,
+    sensitive_values: Vec<String>,
     sender: mpsc::Sender<ReaderMessage>,
 ) {
     thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut reader = BufReader::new(reader);
-        loop {
-            let buffer = match reader.fill_buf() {
-                Ok(buffer) => buffer,
-                Err(error) => {
-                    let _ = sender.send(ReaderMessage::ReadError {
-                        stream,
-                        error: error.to_string(),
-                    });
-                    return;
-                }
-            };
-            if buffer.is_empty() {
-                let _ = sender.send(ReaderMessage::Output {
-                    stream,
-                    bytes: output,
-                });
-                return;
+        let stream = config.stream_name.clone();
+        match collect_provider_stream(reader, config, &sensitive_values) {
+            Ok(capture) => {
+                let _ = sender.send(ReaderMessage::Output { capture });
             }
-            let remaining = limit.saturating_sub(output.len());
-            if buffer.len() > remaining {
-                output.extend_from_slice(&buffer[..remaining]);
-                let _ = sender.send(ReaderMessage::LimitExceeded {
+            Err(error) => {
+                let _ = sender.send(ReaderMessage::ReadError {
                     stream,
-                    bytes: output,
+                    error: error.to_string(),
                 });
-                return;
             }
-            let consumed = buffer.len();
-            output.extend_from_slice(buffer);
-            reader.consume(consumed);
         }
     });
+}
+
+fn skill_stream_config(
+    config: &SkillRunnerConfig,
+    invocation: &SkillRunnerInvocation,
+    stream_name: &str,
+) -> ProviderStreamConfig {
+    ProviderStreamConfig::new(stream_name, config.output_limit_bytes)
+        .with_preview_limit(config.preview_limit_bytes)
+        .with_chunk_size(config.stream_chunk_size_bytes)
+        .with_artifact(
+            config.artifact_root.clone(),
+            provider_stream_key(
+                "skill",
+                invocation.adapter_id.as_str(),
+                invocation.request_id.as_str(),
+                stream_name,
+            ),
+            "text/plain",
+        )
 }
 
 fn kill_child(child: &mut std::process::Child) {
@@ -1096,18 +1171,6 @@ fn sensitive_values<'a>(values: impl IntoIterator<Item = &'a String>) -> Vec<Str
         .collect()
 }
 
-fn redact_bytes(bytes: Vec<u8>, sensitive_values: &[String]) -> Vec<u8> {
-    if sensitive_values.is_empty() {
-        return bytes;
-    }
-    let mut text = String::from_utf8_lossy(&bytes).into_owned();
-    for value in sensitive_values {
-        text = text.replace(value, "[REDACTED]");
-    }
-    text = redact_provider_session_tokens(&text);
-    text.into_bytes()
-}
-
 fn safe_segment(value: &str) -> String {
     let mut segment = value
         .bytes()
@@ -1134,8 +1197,8 @@ fn skill_output_json(skill: &str, run: &SkillRunReport) -> String {
         run.exit_code
             .map(|code| code.to_string())
             .unwrap_or_else(|| "null".to_owned()),
-        json_string(&String::from_utf8_lossy(&run.stdout)),
-        json_string(&String::from_utf8_lossy(&run.stderr)),
+        provider_stream_summary_json(&run.stdout_stream),
+        provider_stream_summary_json(&run.stderr_stream),
         run.duration_ms,
         json_string(&run.working_dir.display().to_string()),
         json_string(&run.artifact_root.display().to_string()),
@@ -1155,13 +1218,15 @@ fn artifact_json(artifact: &SkillArtifactEvidence) -> String {
 
 fn run_report_artifact_json(raw: &RawSkillRunReport) -> String {
     format!(
-        "{{\"runner\":{},\"status\":{},\"exit_code\":{},\"duration_ms\":{},\"audit\":{}}}",
+        "{{\"runner\":{},\"status\":{},\"exit_code\":{},\"duration_ms\":{},\"stdout\":{},\"stderr\":{},\"audit\":{}}}",
         json_string(&raw.runner),
         json_string(raw.status.as_str()),
         raw.exit_code
             .map(|code| code.to_string())
             .unwrap_or_else(|| "null".to_owned()),
         raw.duration_ms,
+        provider_stream_summary_json(&raw.stdout_stream),
+        provider_stream_summary_json(&raw.stderr_stream),
         json_array(raw.audit.iter().map(|entry| json_string(entry)))
     )
 }
@@ -1282,6 +1347,13 @@ mod tests {
         assert!(report
             .audit
             .contains(&"credential.session_token:redacted".to_owned()));
+        let artifact = fs::read_to_string(root.path.join(
+            "objects/skill/code-review-skill/req-skill-process/artifacts/result.txt.artifact",
+        ))
+        .unwrap();
+        assert!(!artifact.contains(secret));
+        assert!(!artifact.contains("eva-provider-session:"));
+        assert!(artifact.contains("[REDACTED]"));
     }
 
     #[test]
@@ -1304,7 +1376,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.status, "failed");
-        assert!(report.output.contains("\"stderr\":\"failure\""));
+        assert!(report.output.contains("\"stderr\":{\"stream\":\"stderr\""));
+        assert!(report.output.contains("\"preview\":\"failure\""));
         assert!(report
             .output
             .contains("skill/code-review-skill/req-skill-failure/run-report"));
@@ -1488,7 +1561,7 @@ mod tests {
             "-NoProfile".to_owned(),
             "-Command".to_owned(),
             format!(
-                "$dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'result.txt') -Value 'artifact-ok'; [Console]::Out.Write('{secret}'); [Console]::Out.Write($env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Error.Write('stderr-ok'); [Console]::Error.Write($env:{PROVIDER_SESSION_TOKEN_ENV})"
+                "$dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'result.txt') -Value ('artifact-' + '{secret}' + $env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Out.Write('{secret}'); [Console]::Out.Write($env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Error.Write('stderr-ok'); [Console]::Error.Write($env:{PROVIDER_SESSION_TOKEN_ENV})"
             ),
         ]
     }
@@ -1498,7 +1571,7 @@ mod tests {
         vec![
             "-c".to_owned(),
             format!(
-                "mkdir -p \"$EVA_SKILL_ARTIFACT_DIR\"; printf artifact-ok > \"$EVA_SKILL_ARTIFACT_DIR/result.txt\"; printf '{secret}'; printf \"${PROVIDER_SESSION_TOKEN_ENV}\"; printf stderr-ok >&2; printf \"${PROVIDER_SESSION_TOKEN_ENV}\" >&2"
+                "mkdir -p \"$EVA_SKILL_ARTIFACT_DIR\"; printf 'artifact-{secret}' > \"$EVA_SKILL_ARTIFACT_DIR/result.txt\"; printf \"${PROVIDER_SESSION_TOKEN_ENV}\" >> \"$EVA_SKILL_ARTIFACT_DIR/result.txt\"; printf '{secret}'; printf \"${PROVIDER_SESSION_TOKEN_ENV}\"; printf stderr-ok >&2; printf \"${PROVIDER_SESSION_TOKEN_ENV}\" >&2"
             ),
         ]
     }

@@ -5,11 +5,17 @@ pub const RESPONSIBILITY: &str = "stdio command transport with separated command
 
 use crate::manifest::AdapterHandle;
 use crate::runtime::{AdapterInvocation as RuntimeAdapterInvocation, AdapterInvokeReport};
-use crate::supervisor::{redact_provider_session_tokens, validate_credential_scope_for_provider};
+use crate::stream::{
+    collect_provider_stream, default_provider_artifact_root, provider_stream_audit,
+    provider_stream_key, provider_stream_summary_json, ProviderStreamCapture, ProviderStreamConfig,
+    DEFAULT_STREAM_CHUNK_SIZE_BYTES, DEFAULT_STREAM_PREVIEW_LIMIT_BYTES,
+};
+use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -20,6 +26,10 @@ pub struct StdioRunnerConfig {
     pub allowed_commands: BTreeSet<String>,
     pub timeout_ms: u64,
     pub output_limit_bytes: usize,
+    pub preview_limit_bytes: usize,
+    pub stream_chunk_size_bytes: usize,
+    pub artifact_root: Option<PathBuf>,
+    pub artifact_key_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +48,8 @@ pub struct StdioRunReport {
     pub exit_code: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    pub stdout_stream: ProviderStreamCapture,
+    pub stderr_stream: ProviderStreamCapture,
     pub duration_ms: u128,
     pub audit: Vec<String>,
 }
@@ -64,7 +76,21 @@ impl StdioRunnerConfig {
                 .collect::<BTreeSet<_>>(),
             timeout_ms,
             output_limit_bytes,
+            preview_limit_bytes: DEFAULT_STREAM_PREVIEW_LIMIT_BYTES,
+            stream_chunk_size_bytes: DEFAULT_STREAM_CHUNK_SIZE_BYTES,
+            artifact_root: None,
+            artifact_key_prefix: None,
         }
+    }
+
+    pub fn with_artifact_sink(
+        mut self,
+        artifact_root: impl Into<PathBuf>,
+        artifact_key_prefix: impl Into<String>,
+    ) -> Self {
+        self.artifact_root = Some(artifact_root.into());
+        self.artifact_key_prefix = Some(artifact_key_prefix.into());
+        self
     }
 }
 
@@ -148,8 +174,18 @@ impl StdioRunner {
                 .with_context("command", &invocation.command)
         })?;
         let (sender, receiver) = mpsc::channel();
-        spawn_reader("stdout", stdout, config.output_limit_bytes, sender.clone());
-        spawn_reader("stderr", stderr, config.output_limit_bytes, sender);
+        spawn_reader(
+            stream_config(config, "stdout"),
+            stdout,
+            sensitive_values.clone(),
+            sender.clone(),
+        );
+        spawn_reader(
+            stream_config(config, "stderr"),
+            stderr,
+            sensitive_values.clone(),
+            sender,
+        );
 
         let timeout = Duration::from_millis(config.timeout_ms);
         let output_deadline = if timeout.is_zero() {
@@ -157,8 +193,8 @@ impl StdioRunner {
         } else {
             Some(started_at + timeout)
         };
-        let mut stdout_bytes = Vec::new();
-        let mut stderr_bytes = Vec::new();
+        let mut stdout_capture = ProviderStreamCapture::empty("stdout");
+        let mut stderr_capture = ProviderStreamCapture::empty("stderr");
         for _ in 0..2 {
             let message = match output_deadline {
                 Some(deadline) => {
@@ -181,32 +217,31 @@ impl StdioRunner {
             })?;
 
             match message {
-                ReaderMessage::Output { stream, bytes } => match stream {
-                    "stdout" => stdout_bytes = bytes,
-                    "stderr" => stderr_bytes = bytes,
-                    _ => {}
-                },
-                ReaderMessage::LimitExceeded { stream, bytes } => {
-                    kill_child(&mut child);
-                    let (stdout, stderr) = if stream == "stdout" {
-                        (bytes, stderr_bytes)
+                ReaderMessage::Output { capture } => {
+                    let truncated = capture.truncated;
+                    let stream = capture.stream_name.clone();
+                    if stream == "stdout" {
+                        stdout_capture = capture;
                     } else {
-                        (stdout_bytes, bytes)
-                    };
-                    return Ok(StdioRunReport {
-                        command: invocation.command,
-                        args: invocation.args,
-                        status: StdioRunStatus::OutputLimitExceeded,
-                        exit_code: None,
-                        stdout: redact_bytes(stdout, &sensitive_values),
-                        stderr: redact_bytes(stderr, &sensitive_values),
-                        duration_ms: started_at.elapsed().as_millis(),
-                        audit: vec![
-                            "transport:stdio".to_owned(),
-                            format!("output_limit_bytes:{}", config.output_limit_bytes),
-                            format!("stream:{stream}"),
-                        ],
-                    });
+                        stderr_capture = capture;
+                    }
+                    if truncated {
+                        kill_child(&mut child);
+                        let audit =
+                            stdio_audit(config, &stdout_capture, &stderr_capture, Some(&stream));
+                        return Ok(StdioRunReport {
+                            command: invocation.command,
+                            args: invocation.args,
+                            status: StdioRunStatus::OutputLimitExceeded,
+                            exit_code: None,
+                            stdout: stdout_capture.preview.clone(),
+                            stderr: stderr_capture.preview.clone(),
+                            stdout_stream: stdout_capture,
+                            stderr_stream: stderr_capture,
+                            duration_ms: started_at.elapsed().as_millis(),
+                            audit,
+                        });
+                    }
                 }
                 ReaderMessage::ReadError { stream, error } => {
                     kill_child(&mut child);
@@ -231,14 +266,21 @@ impl StdioRunner {
                     args: invocation.args,
                     status: StdioRunStatus::Completed,
                     exit_code: status.code(),
-                    stdout: redact_bytes(stdout_bytes, &sensitive_values),
-                    stderr: redact_bytes(stderr_bytes, &sensitive_values),
+                    stdout: stdout_capture.preview.clone(),
+                    stderr: stderr_capture.preview.clone(),
+                    stdout_stream: stdout_capture.clone(),
+                    stderr_stream: stderr_capture.clone(),
                     duration_ms: started_at.elapsed().as_millis(),
-                    audit: vec![
-                        "transport:stdio".to_owned(),
-                        "shell:false".to_owned(),
-                        "stdio:completed".to_owned(),
-                    ],
+                    audit: {
+                        let mut audit = vec![
+                            "transport:stdio".to_owned(),
+                            "shell:false".to_owned(),
+                            "stdio:completed".to_owned(),
+                        ];
+                        audit.extend(provider_stream_audit(&stdout_capture));
+                        audit.extend(provider_stream_audit(&stderr_capture));
+                        audit
+                    },
                 });
             }
             if !timeout.is_zero() && started_at.elapsed() >= timeout {
@@ -277,11 +319,15 @@ pub fn invoke(
     if let Some(scope) = &credential_scope {
         scope.apply_env(&mut credential_env.values);
     }
+    let artifact_root = default_provider_artifact_root(&handle.source_path);
+    let artifact_key_prefix =
+        provider_stream_key("provider", handle.id.as_str(), request_id.as_str(), "stdio");
     let config = StdioRunnerConfig::new(
         [command.to_owned()],
         timeout_ms(handle),
         output_limit_bytes(handle),
-    );
+    )
+    .with_artifact_sink(artifact_root, artifact_key_prefix);
     let run = StdioRunner.run(
         &config,
         StdioInvocation::new(command)
@@ -320,8 +366,8 @@ pub fn invoke(
             run.exit_code
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "null".to_owned()),
-            escape_json(&String::from_utf8_lossy(&run.stdout)),
-            escape_json(&String::from_utf8_lossy(&run.stderr)),
+            provider_stream_summary_json(&run.stdout_stream),
+            provider_stream_summary_json(&run.stderr_stream),
             run.duration_ms
         ),
         audit,
@@ -330,18 +376,8 @@ pub fn invoke(
 }
 
 enum ReaderMessage {
-    Output {
-        stream: &'static str,
-        bytes: Vec<u8>,
-    },
-    LimitExceeded {
-        stream: &'static str,
-        bytes: Vec<u8>,
-    },
-    ReadError {
-        stream: &'static str,
-        error: String,
-    },
+    Output { capture: ProviderStreamCapture },
+    ReadError { stream: String, error: String },
 }
 
 fn validate_invocation(
@@ -366,46 +402,57 @@ fn validate_invocation(
 }
 
 fn spawn_reader(
-    stream: &'static str,
+    config: ProviderStreamConfig,
     reader: impl Read + Send + 'static,
-    limit: usize,
+    sensitive_values: Vec<String>,
     sender: mpsc::Sender<ReaderMessage>,
 ) {
     thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut reader = BufReader::new(reader);
-        loop {
-            let buffer = match reader.fill_buf() {
-                Ok(buffer) => buffer,
-                Err(error) => {
-                    let _ = sender.send(ReaderMessage::ReadError {
-                        stream,
-                        error: error.to_string(),
-                    });
-                    return;
-                }
-            };
-            if buffer.is_empty() {
-                let _ = sender.send(ReaderMessage::Output {
-                    stream,
-                    bytes: output,
-                });
-                return;
+        let stream = config.stream_name.clone();
+        match collect_provider_stream(reader, config, &sensitive_values) {
+            Ok(capture) => {
+                let _ = sender.send(ReaderMessage::Output { capture });
             }
-            let remaining = limit.saturating_sub(output.len());
-            if buffer.len() > remaining {
-                output.extend_from_slice(&buffer[..remaining]);
-                let _ = sender.send(ReaderMessage::LimitExceeded {
+            Err(error) => {
+                let _ = sender.send(ReaderMessage::ReadError {
                     stream,
-                    bytes: output,
+                    error: error.to_string(),
                 });
-                return;
             }
-            let consumed = buffer.len();
-            output.extend_from_slice(buffer);
-            reader.consume(consumed);
         }
     });
+}
+
+fn stream_config(config: &StdioRunnerConfig, stream_name: &str) -> ProviderStreamConfig {
+    let mut stream_config = ProviderStreamConfig::new(stream_name, config.output_limit_bytes)
+        .with_preview_limit(config.preview_limit_bytes)
+        .with_chunk_size(config.stream_chunk_size_bytes);
+    if let (Some(root), Some(prefix)) = (&config.artifact_root, &config.artifact_key_prefix) {
+        stream_config = stream_config.with_artifact(
+            root.clone(),
+            format!("{prefix}/{stream_name}"),
+            "text/plain",
+        );
+    }
+    stream_config
+}
+
+fn stdio_audit(
+    config: &StdioRunnerConfig,
+    stdout: &ProviderStreamCapture,
+    stderr: &ProviderStreamCapture,
+    limit_stream: Option<&str>,
+) -> Vec<String> {
+    let mut audit = vec![
+        "transport:stdio".to_owned(),
+        format!("output_limit_bytes:{}", config.output_limit_bytes),
+    ];
+    if let Some(stream) = limit_stream {
+        audit.push(format!("stream:{stream}"));
+    }
+    audit.extend(provider_stream_audit(stdout));
+    audit.extend(provider_stream_audit(stderr));
+    audit
 }
 
 fn kill_child(child: &mut std::process::Child) {
@@ -465,18 +512,6 @@ fn sensitive_values<'a>(values: impl IntoIterator<Item = &'a String>) -> Vec<Str
         .filter(|value| !value.is_empty())
         .cloned()
         .collect()
-}
-
-fn redact_bytes(bytes: Vec<u8>, sensitive_values: &[String]) -> Vec<u8> {
-    if sensitive_values.is_empty() {
-        return bytes;
-    }
-    let mut text = String::from_utf8_lossy(&bytes).into_owned();
-    for value in sensitive_values {
-        text = text.replace(value, "[REDACTED]");
-    }
-    text = redact_provider_session_tokens(&text);
-    text.into_bytes()
 }
 
 fn escape_json(value: &str) -> String {

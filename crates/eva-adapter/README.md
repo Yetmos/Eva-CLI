@@ -103,6 +103,16 @@ V1.3 关键测试覆盖：
 - V1.13.2 覆盖 provider credential session scope、session token env/header 注入、stdout/stderr/body/artifact token redaction、policy allow/deny audit，以及跨 provider scope 启动前拒绝。
 - V1.13.3 覆盖 manifest `max_concurrency`、`rate_limit`、`circuit_breaker` 读取，supervisor admission gate、熔断 health、half-open probe、retryable gate fallback 和 scheduler backoff decision。
 
+## V1.13.4 Provider Stream Data Plane
+
+V1.13.4 adds `src/stream.rs` as the shared bounded stream capture path for
+stdio, HTTP, MCP, and Skill provider output. Transport JSON now carries
+`preview`, byte/chunk counts, truncation state, and artifact metadata instead
+of embedding the full stream. The full bounded stream is written through the
+controlled `FileSystemArtifactStore` key path after credential/session-token
+redaction. The HTTP TCP client reads headers and body in chunks and stops at
+the configured output limit instead of using `read_to_end`.
+
 ## English
 
-`eva-adapter` owns Adapter runtime descriptors, registry, routing, controlled transport execution, provider error mapping, adapter-backed capability host wiring, provider supervisor slots/process-table evidence, provider credential session scope, and provider admission limits. V1.13.3 enforces manifest-derived concurrency, rate-limit, and circuit-breaker gates before stdio/http/MCP/Skill provider startup; full OS process supervision and OS credential vault integration remain future work.
+`eva-adapter` owns Adapter runtime descriptors, registry, routing, controlled transport execution, provider error mapping, adapter-backed capability host wiring, provider supervisor slots/process-table evidence, provider credential session scope, provider admission limits, and bounded provider stream artifacts. V1.13.4 adds stream summaries, truncation, redacted artifact sinks, and chunked HTTP response reads; full OS process supervision, MCP HTTP/auth/full streaming lifecycle, and OS credential vault integration remain future work.

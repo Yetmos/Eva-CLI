@@ -85,6 +85,14 @@ optional retain-until timestamp. Reads continue to accept legacy metadata
 without a version field, then normalize missing content type and retention
 fields to defaults while still returning stable conflicts for corrupt metadata.
 
+## V1.13.4 Provider Stream Artifacts
+
+Provider stream capture remains owned by `eva-adapter`, while
+`FileSystemArtifactStore` is the controlled sink for redacted bounded stream
+bytes. The store continues to enforce stable relative keys, SHA-256 digest
+metadata, size checks, content type, and retention metadata for stdout/stderr,
+HTTP body, Skill output, and MCP result artifacts.
+
 ## V1.12.3 Durable Task Lifecycle
 
 `TaskStateSnapshot` now carries the durable lifecycle fields needed by daemon

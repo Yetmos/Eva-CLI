@@ -5,7 +5,12 @@ pub const RESPONSIBILITY: &str = "HTTP transport with env allowlist-based creden
 
 use crate::manifest::AdapterHandle;
 use crate::runtime::{AdapterInvocation as RuntimeAdapterInvocation, AdapterInvokeReport};
-use crate::supervisor::{redact_provider_session_tokens, validate_credential_scope_for_provider};
+use crate::stream::{
+    capture_provider_bytes, default_provider_artifact_root, provider_stream_audit,
+    provider_stream_key, provider_stream_summary_json, ProviderStreamCapture, ProviderStreamConfig,
+    DEFAULT_STREAM_CHUNK_SIZE_BYTES, DEFAULT_STREAM_PREVIEW_LIMIT_BYTES,
+};
+use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -18,6 +23,11 @@ pub struct HttpRunnerConfig {
     pub allowed_methods: BTreeSet<HttpMethod>,
     pub timeout_ms: u64,
     pub output_limit_bytes: usize,
+    pub preview_limit_bytes: usize,
+    pub stream_chunk_size_bytes: usize,
+    pub artifact_root: Option<std::path::PathBuf>,
+    pub artifact_key: Option<String>,
+    pub sensitive_values: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +44,7 @@ pub struct HttpRunReport {
     pub url: String,
     pub status_code: u16,
     pub body: Vec<u8>,
+    pub body_stream: ProviderStreamCapture,
     pub duration_ms: u128,
     pub audit: Vec<String>,
 }
@@ -52,6 +63,7 @@ pub trait HttpClient {
         &self,
         invocation: &HttpInvocation,
         timeout: Duration,
+        output_limit_bytes: usize,
     ) -> Result<HttpClientResponse, EvaError>;
 }
 
@@ -59,6 +71,8 @@ pub trait HttpClient {
 pub struct HttpClientResponse {
     pub status_code: u16,
     pub body: Vec<u8>,
+    pub body_truncated: bool,
+    pub body_chunk_count: usize,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -82,7 +96,27 @@ impl HttpRunnerConfig {
             allowed_methods: allowed_methods.into_iter().collect::<BTreeSet<_>>(),
             timeout_ms,
             output_limit_bytes,
+            preview_limit_bytes: DEFAULT_STREAM_PREVIEW_LIMIT_BYTES,
+            stream_chunk_size_bytes: DEFAULT_STREAM_CHUNK_SIZE_BYTES,
+            artifact_root: None,
+            artifact_key: None,
+            sensitive_values: Vec::new(),
         }
+    }
+
+    pub fn with_artifact_sink(
+        mut self,
+        artifact_root: impl Into<std::path::PathBuf>,
+        artifact_key: impl Into<String>,
+    ) -> Self {
+        self.artifact_root = Some(artifact_root.into());
+        self.artifact_key = Some(artifact_key.into());
+        self
+    }
+
+    pub fn with_sensitive_values(mut self, sensitive_values: Vec<String>) -> Self {
+        self.sensitive_values = sensitive_values;
+        self
     }
 }
 
@@ -133,6 +167,19 @@ impl HttpMethod {
     }
 }
 
+impl HttpClientResponse {
+    pub fn new(status_code: u16, body: impl Into<Vec<u8>>) -> Self {
+        let body = body.into();
+        let body_chunk_count = usize::from(!body.is_empty());
+        Self {
+            status_code,
+            body,
+            body_truncated: false,
+            body_chunk_count,
+        }
+    }
+}
+
 impl HttpRunner {
     pub fn run(
         &self,
@@ -143,13 +190,17 @@ impl HttpRunner {
         validate_invocation(config, &invocation)?;
         let timeout = Duration::from_millis(config.timeout_ms);
         let started_at = Instant::now();
-        let response = client.send(&invocation, timeout)?;
-        if response.body.len() > config.output_limit_bytes {
-            return Err(EvaError::conflict("HTTP provider output exceeded limit")
-                .with_context("url", &invocation.url)
-                .with_context("output_limit_bytes", config.output_limit_bytes.to_string())
-                .with_context("actual_bytes", response.body.len().to_string()));
-        }
+        let response = client.send(&invocation, timeout, config.output_limit_bytes)?;
+        let status_code = response.status_code;
+        let body_chunk_count = response.body_chunk_count;
+        let body_truncated = response.body_truncated;
+        let body_stream = capture_provider_bytes(
+            body_stream_config(config),
+            response.body,
+            body_chunk_count,
+            body_truncated,
+            &config.sensitive_values,
+        )?;
         if !timeout.is_zero() && started_at.elapsed() >= timeout {
             return Err(EvaError::timeout("HTTP provider timed out")
                 .with_context("url", &invocation.url)
@@ -158,14 +209,19 @@ impl HttpRunner {
         Ok(HttpRunReport {
             method: invocation.method,
             url: invocation.url,
-            status_code: response.status_code,
-            body: response.body,
+            status_code,
+            body: body_stream.preview.clone(),
+            body_stream: body_stream.clone(),
             duration_ms: started_at.elapsed().as_millis(),
-            audit: vec![
-                "transport:http".to_owned(),
-                format!("method:{}", invocation.method.as_str()),
-                "url_allowlist:passed".to_owned(),
-            ],
+            audit: {
+                let mut audit = vec![
+                    "transport:http".to_owned(),
+                    format!("method:{}", invocation.method.as_str()),
+                    "url_allowlist:passed".to_owned(),
+                ];
+                audit.extend(provider_stream_audit(&body_stream));
+                audit
+            },
         })
     }
 }
@@ -175,6 +231,7 @@ impl HttpClient for TcpHttpClient {
         &self,
         invocation: &HttpInvocation,
         timeout: Duration,
+        output_limit_bytes: usize,
     ) -> Result<HttpClientResponse, EvaError> {
         let parsed = ParsedHttpUrl::parse(&invocation.url)?;
         if parsed.scheme != "http" {
@@ -239,17 +296,7 @@ impl HttpClient for TcpHttpClient {
             })?;
         }
 
-        let mut response = Vec::new();
-        if let Err(error) = stream.read_to_end(&mut response) {
-            if response.is_empty() {
-                return Err(
-                    EvaError::unavailable("failed to read HTTP provider response")
-                        .with_context("origin", &parsed.origin)
-                        .with_context("io_error", error.to_string()),
-                );
-            }
-        }
-        parse_http_response(&response)
+        read_http_response(&mut stream, &parsed.origin, output_limit_bytes)
     }
 }
 
@@ -270,6 +317,9 @@ pub fn invoke_with_client(
             .with_context("adapter_id", handle.id.as_str())
     })?;
     validate_input_size(handle, &invocation.input)?;
+    let trace = invocation.trace_for_adapter(&handle.id);
+    let request_id = invocation.request_id.clone();
+    let capability = invocation.capability.clone();
     let credential_scope = validate_credential_scope_for_provider(
         invocation.credential_scope(),
         &handle.id,
@@ -289,12 +339,21 @@ pub fn invoke_with_client(
     if let Some(scope) = &credential_scope {
         scope.apply_headers(&mut headers);
     }
+    let artifact_root = default_provider_artifact_root(&handle.source_path);
+    let artifact_key = provider_stream_key(
+        "provider",
+        handle.id.as_str(),
+        request_id.as_str(),
+        "http-body",
+    );
     let config = HttpRunnerConfig::new(
         [url_origin(endpoint)?],
         [method],
         timeout_ms(handle),
         output_limit_bytes(handle),
-    );
+    )
+    .with_sensitive_values(sensitive_values)
+    .with_artifact_sink(artifact_root, artifact_key);
     let run = HttpRunner.run(
         &config,
         client,
@@ -303,10 +362,9 @@ pub fn invoke_with_client(
             .with_body(invocation.input.as_bytes().to_vec()),
     )?;
 
-    let trace = invocation.trace_for_adapter(&handle.id);
-    let request_id = invocation.request_id;
-    let capability = invocation.capability;
-    let status = if (200..400).contains(&run.status_code) {
+    let status = if run.body_stream.truncated {
+        "output_limit_exceeded"
+    } else if (200..400).contains(&run.status_code) {
         "completed"
     } else {
         "failed"
@@ -319,8 +377,6 @@ pub fn invoke_with_client(
     if let Some(scope) = &credential_scope {
         audit.extend(scope.audit_entries());
     }
-    let body = redact_text(&String::from_utf8_lossy(&run.body), &sensitive_values);
-
     Ok(AdapterInvokeReport {
         request_id,
         adapter_id: handle.id.clone(),
@@ -332,7 +388,7 @@ pub fn invoke_with_client(
             escape_json(run.method.as_str()),
             escape_json(&run.url),
             run.status_code,
-            escape_json(&body),
+            provider_stream_summary_json(&run.body_stream),
             run.duration_ms
         ),
         audit,
@@ -375,6 +431,16 @@ fn validate_invocation(
         );
     }
     Ok(())
+}
+
+fn body_stream_config(config: &HttpRunnerConfig) -> ProviderStreamConfig {
+    let mut stream_config = ProviderStreamConfig::new("body", config.output_limit_bytes)
+        .with_preview_limit(config.preview_limit_bytes)
+        .with_chunk_size(config.stream_chunk_size_bytes);
+    if let (Some(root), Some(key)) = (&config.artifact_root, &config.artifact_key) {
+        stream_config = stream_config.with_artifact(root.clone(), key.clone(), "application/json");
+    }
+    stream_config
 }
 
 impl HttpInvocation {
@@ -476,12 +542,109 @@ fn parse_authority(scheme: &str, authority: &str) -> Result<(String, u16), EvaEr
     Ok((authority.to_owned(), default_port))
 }
 
-fn parse_http_response(response: &[u8]) -> Result<HttpClientResponse, EvaError> {
-    let text = String::from_utf8_lossy(response);
-    let (head, body) = text.split_once("\r\n\r\n").ok_or_else(|| {
+const HTTP_HEADER_LIMIT_BYTES: usize = 64 * 1024;
+
+fn read_http_response(
+    stream: &mut TcpStream,
+    origin: &str,
+    output_limit_bytes: usize,
+) -> Result<HttpClientResponse, EvaError> {
+    if output_limit_bytes == 0 {
+        return Err(EvaError::invalid_argument(
+            "HTTP output limit must be greater than zero",
+        ));
+    }
+    let mut header_bytes = Vec::new();
+    let mut status_code = None;
+    let mut body = Vec::new();
+    let mut body_truncated = false;
+    let mut body_chunk_count = 0_usize;
+    let mut buffer = vec![0_u8; DEFAULT_STREAM_CHUNK_SIZE_BYTES];
+
+    loop {
+        let read = stream.read(&mut buffer).map_err(|error| {
+            EvaError::unavailable("failed to read HTTP provider response")
+                .with_context("origin", origin)
+                .with_context("io_error", error.to_string())
+        })?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buffer[..read];
+        if status_code.is_none() {
+            header_bytes.extend_from_slice(chunk);
+            if header_bytes.len() > HTTP_HEADER_LIMIT_BYTES {
+                return Err(
+                    EvaError::conflict("HTTP provider response headers exceeded limit")
+                        .with_context("origin", origin)
+                        .with_context("header_limit_bytes", HTTP_HEADER_LIMIT_BYTES.to_string()),
+                );
+            }
+            if let Some(header_end) = http_header_end(&header_bytes) {
+                let head = String::from_utf8_lossy(&header_bytes[..header_end]).into_owned();
+                status_code = Some(parse_http_status_code(&head)?);
+                let body_start = header_end + 4;
+                let pending_body = header_bytes[body_start..].to_vec();
+                append_http_body_chunk(
+                    &pending_body,
+                    output_limit_bytes,
+                    &mut body,
+                    &mut body_chunk_count,
+                    &mut body_truncated,
+                );
+                header_bytes.clear();
+            }
+        } else {
+            append_http_body_chunk(
+                chunk,
+                output_limit_bytes,
+                &mut body,
+                &mut body_chunk_count,
+                &mut body_truncated,
+            );
+        }
+        if body_truncated {
+            break;
+        }
+    }
+
+    let status_code = status_code.ok_or_else(|| {
         EvaError::unavailable("HTTP provider returned malformed response")
             .with_context("response", "missing header terminator")
     })?;
+    Ok(HttpClientResponse {
+        status_code,
+        body,
+        body_truncated,
+        body_chunk_count,
+    })
+}
+
+fn append_http_body_chunk(
+    chunk: &[u8],
+    output_limit_bytes: usize,
+    body: &mut Vec<u8>,
+    body_chunk_count: &mut usize,
+    body_truncated: &mut bool,
+) {
+    if chunk.is_empty() || *body_truncated {
+        return;
+    }
+    *body_chunk_count = (*body_chunk_count).saturating_add(1);
+    let remaining = output_limit_bytes.saturating_sub(body.len());
+    if chunk.len() > remaining {
+        body.extend_from_slice(&chunk[..remaining]);
+        *body_truncated = true;
+        return;
+    }
+    body.extend_from_slice(chunk);
+}
+
+fn http_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_http_status_code(head: &str) -> Result<u16, EvaError> {
     let status_line = head.lines().next().ok_or_else(|| {
         EvaError::unavailable("HTTP provider returned malformed response")
             .with_context("response", "missing status line")
@@ -498,10 +661,7 @@ fn parse_http_response(response: &[u8]) -> Result<HttpClientResponse, EvaError> 
             EvaError::unavailable("HTTP provider returned invalid status code")
                 .with_context("parse_error", error.to_string())
         })?;
-    Ok(HttpClientResponse {
-        status_code,
-        body: body.as_bytes().to_vec(),
-    })
+    Ok(status_code)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -595,16 +755,6 @@ fn output_limit_bytes(handle: &AdapterHandle) -> usize {
         .unwrap_or(64 * 1024)
 }
 
-fn redact_text(value: &str, sensitive_values: &[String]) -> String {
-    let mut redacted = value.to_owned();
-    for sensitive in sensitive_values {
-        if !sensitive.is_empty() {
-            redacted = redacted.replace(sensitive, "[REDACTED]");
-        }
-    }
-    redact_provider_session_tokens(&redacted)
-}
-
 fn escape_json(value: &str) -> String {
     let mut escaped = String::from("\"");
     for character in value.chars() {
@@ -636,6 +786,7 @@ mod tests {
             &self,
             _invocation: &HttpInvocation,
             _timeout: Duration,
+            _output_limit_bytes: usize,
         ) -> Result<HttpClientResponse, EvaError> {
             self.response.clone()
         }
@@ -681,17 +832,18 @@ mod tests {
     }
 
     #[test]
-    fn runner_rejects_oversized_output() {
+    fn runner_truncates_oversized_output() {
         let config =
             HttpRunnerConfig::new(["https://api.example.test"], [HttpMethod::Post], 1_000, 2);
         let invocation =
             HttpInvocation::new(HttpMethod::Post, "https://api.example.test/v1/messages");
 
-        let error = HttpRunner
+        let report = HttpRunner
             .run(&config, &client_with_body("too-large"), invocation)
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(error.kind(), ErrorKind::Conflict);
+        assert!(report.body_stream.truncated);
+        assert_eq!(report.body, b"to");
     }
 
     #[test]
@@ -723,10 +875,7 @@ mod tests {
 
     fn client_with_body(body: &str) -> FakeHttpClient {
         FakeHttpClient {
-            response: Ok(HttpClientResponse {
-                status_code: 200,
-                body: body.as_bytes().to_vec(),
-            }),
+            response: Ok(HttpClientResponse::new(200, body.as_bytes())),
         }
     }
 }

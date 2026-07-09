@@ -2,6 +2,10 @@
 
 use crate::manifest::AdapterHandle;
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
+use crate::stream::{
+    capture_provider_bytes, default_provider_artifact_root, provider_stream_audit,
+    provider_stream_key, provider_stream_summary_json, ProviderStreamConfig,
+};
 use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::EvaError;
 use eva_mcp::{McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig};
@@ -47,6 +51,22 @@ pub fn invoke(
         &invocation.input,
     )?;
     let output = call.output.as_text().unwrap_or_default().to_owned();
+    let output_stream = capture_provider_bytes(
+        ProviderStreamConfig::new("result", output_limit_bytes(handle)).with_artifact(
+            default_provider_artifact_root(&handle.source_path),
+            provider_stream_key(
+                "provider",
+                handle.id.as_str(),
+                request_id.as_str(),
+                "mcp-result",
+            ),
+            "application/json",
+        ),
+        output.into_bytes(),
+        1,
+        false,
+        &[],
+    )?;
     let mut audit = vec![
         format!("adapter.invoked:{}", handle.id.as_str()),
         format!("mcp.tool.call:{tool}"),
@@ -60,13 +80,18 @@ pub fn invoke(
         audit.extend(scope.audit_entries());
     }
     audit.extend(call.audit);
+    audit.extend(provider_stream_audit(&output_stream));
     Ok(AdapterInvokeReport {
         request_id,
         adapter_id: handle.id.clone(),
         transport: handle.transport,
         capability,
         status: "completed".to_owned(),
-        output,
+        output: format!(
+            "{{\"transport\":\"mcp\",\"tool\":{},\"result\":{}}}",
+            json_string(tool),
+            provider_stream_summary_json(&output_stream)
+        ),
         audit,
         trace,
     })
@@ -95,4 +120,20 @@ fn output_limit_bytes(handle: &AdapterHandle) -> usize {
         .output_limit_bytes
         .or(handle.max_prompt_bytes)
         .unwrap_or(64 * 1024)
+}
+
+fn json_string(value: &str) -> String {
+    let mut escaped = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            value => escaped.push(value),
+        }
+    }
+    escaped.push('"');
+    escaped
 }
