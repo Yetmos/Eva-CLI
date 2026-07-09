@@ -14,9 +14,11 @@ pub use driver::{
 };
 pub use hotplug::{HotplugAction, HotplugEvent, HotplugStateMachine};
 pub use lifecycle::{
-    publish_hotplug_event, ActiveDriverSession, DriverLifecycleReport, DriverLifecycleState,
-    DriverStartRequest, HardwareLifecycleCoordinator, HotplugPublishReport, OsPermissionCheck,
-    OsPermissionProvider, PlatformOsPermissionProvider, StaticOsPermissionProvider,
+    parse_hotplug_subscriber_state, publish_hotplug_event, render_hotplug_subscriber_state,
+    run_hotplug_subscriber_once, ActiveDriverSession, DriverLifecycleReport, DriverLifecycleState,
+    DriverStartRequest, HardwareHotplugDeviceState, HardwareHotplugSubscriberReport,
+    HardwareLifecycleCoordinator, HotplugPublishReport, OsPermissionCheck, OsPermissionProvider,
+    PlatformOsPermissionProvider, StaticOsPermissionProvider,
 };
 pub use registry::{DeviceLease, DeviceRegistry, RegisteredDevice};
 pub use state::{DeviceBus, DeviceHealth, DeviceId, DeviceIdentity, DeviceTrust};

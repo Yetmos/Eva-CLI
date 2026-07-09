@@ -79,8 +79,9 @@ of CLI formatting so future release tooling can reuse the same data contracts.
   but it does not replace OS process supervision, OS credential vaults, or user
   isolation.
 - The hardware security finding now records V1.15.1 OS permission diagnostics,
-  including remediation and `raw_device_path_exposed=false`; it does not certify
-  real USB, serial, BLE, socket, or vendor SDK driver I/O.
+  including remediation and `raw_device_path_exposed=false`, plus V1.15.4 daemon
+  hotplug subscriber evidence; it does not certify real USB, serial, BLE,
+  socket, vendor SDK driver I/O, or real OS hotplug notifications.
 - The release artifact evidence gate is opt-in until CI generates the key/value
   evidence manifest. When supplied, unsigned artifacts, signature mismatch, or
   provenance/source commit mismatch block readiness.

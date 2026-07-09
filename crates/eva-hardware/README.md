@@ -6,7 +6,7 @@
 
 `eva-hardware` 是 V1.3 起的受控硬件接入层。它把硬件设备拆成“发现候选、可信身份、设备注册表、逻辑租约、driver registry、driver binding、hotplug 状态机”几个可测试边界，并明确禁止 Lua、Agent 或 CLI 直接持有系统设备句柄、串口、USB、BLE、socket 或 vendor SDK raw I/O。
 
-V1.15.1 继续保持不打开真实硬件：项目中的 `scale-main` 硬件 manifest 默认 `enabled: false`，CLI 可以发现、probe 和生成绑定计划，但不会打开设备文件。真实 USB/串口/BLE/socket/vendor SDK driver 只作为 typed config、driver kind 和 lifecycle 边界预留；新增 `PlatformOsPermissionProvider` 负责输出 OS、用户、权限来源、安全逻辑 device locator 和 remediation，并在权限缺失时先于 lease claim/driver start 阻断。
+V1.15.1 继续保持不打开真实硬件：项目中的 `scale-main` 硬件 manifest 默认 `enabled: false`，CLI 可以发现、probe 和生成绑定计划，但不会打开设备文件。真实 USB/串口/BLE/socket/vendor SDK driver 只作为 typed config、driver kind 和 lifecycle 边界预留；新增 `PlatformOsPermissionProvider` 负责输出 OS、用户、权限来源、安全逻辑 device locator 和 remediation，并在权限缺失时先于 lease claim/driver start 阻断。V1.15.4 新增 daemon hotplug subscriber 基线：从 manifest snapshot 生成逻辑 insert/remove/reconnect/fail EventBus 事件，持久化 `hardware-hotplug.state`，并固定 `raw_handles_exposed:false`，但仍不接真实 OS hotplug notification。
 
 ## V1.3 已实现能力
 
@@ -17,9 +17,10 @@ V1.15.1 继续保持不打开真实硬件：项目中的 `scale-main` 硬件 man
 | Registry | 已完成 V1.3 | `DeviceRegistry` 支持从候选注册可信设备，拒绝 rejected candidate，提供 `claim`、`release`、`list`、`get`，并阻止重复 claim。 |
 | Driver binding | 已完成 V1.10.1 | `DriverBinding`、`DriverOperation`、`DriverOutput`、`HardwareDriver` 和 `SimulatedDriver` 把硬件能力封装成受控 trait。模拟 driver 的 audit 明确包含 `raw_io:false`。 |
 | Driver registry | 已完成 V1.10.1 | `HardwareDriverRegistry` 注册 trait object driver，按 driver id 调用；`run_simulator_contract_suite` 验证 simulator 不暴露 raw handle、不允许 raw I/O、拒绝 capability 绕过。 |
-| Driver lifecycle | 已完成 V1.15.1 | `HardwareLifecycleCoordinator` 在 driver start 前检查 runtime policy 和 OS permission，claim lease 后进入 opened 状态；stop 释放 lease 并写 audit；crash path 清理 lease 并写 failed audit；`PlatformOsPermissionProvider` 提供平台权限诊断、remediation 和 `raw_device_path_exposed:false` evidence。 |
+| Driver lifecycle | 已完成 V1.15.4 | `HardwareLifecycleCoordinator` 在 driver start 前检查 runtime policy 和 OS permission，claim lease 后进入 opened 状态；stop 释放 lease 并写 audit；driver/watch hotplug crash path 清理 lease 并写 failed audit；`PlatformOsPermissionProvider` 提供平台权限诊断、remediation 和 `raw_device_path_exposed:false` evidence。 |
 | Hotplug | 已完成 V1.3 | `HotplugStateMachine` 将 insert/reconnect/remove/fail 转成稳定 Topic：`/hardware/connected`、`/hardware/disconnected`、`/hardware/failed`。 |
 | Hotplug publish | 已完成 V1.10.2 | `publish_hotplug_event` 将 typed hotplug event 发布到 `EventBus`，payload 包含 device/action/previous/next/reason，并写 `hardware.hotplug.published` audit。 |
+| Hotplug subscriber | 已完成 V1.15.4 | `run_hotplug_subscriber_once` 从 manifest snapshot 生成逻辑 hotplug event、输出 `HardwareHotplugSubscriberReport`、持久化 subscriber state，并证明不暴露 raw handle。 |
 | Adapter bridge | 已完成 V1.10.1 | `eva-adapter` 的 hardware transport 通过 `DeviceRegistry` lease 和 `HardwareDriverRegistry` 调用 `SimulatedDriver`，完成后释放 lease，并输出 `transport:hardware`、`lease:released` 审计。 |
 | CLI | 已完成 V1.3 | `eva hardware list/probe/bind` 可诊断硬件候选；`bind` 是 plan-first，`--apply` 在 V1.3 只校验逻辑计划，不打开 raw I/O。 |
 
@@ -37,7 +38,8 @@ V1.3 的硬件路径是：
 8. `HardwareDriverRegistry` 按 driver id 调用 `HardwareDriver` trait object。
 9. `SimulatedDriver` 通过 `HardwareDriver` trait 返回受控输出和审计记录。
 10. Adapter hardware transport 释放 lease 后返回 `AdapterInvokeReport`。
-11. 后续真实硬件 driver 必须复用同一条 policy + OS permission + device registry + lease + driver registry + driver binding 路径。
+11. V1.15.4 daemon hotplug subscriber 读取 manifest snapshot，把逻辑状态变化写入 durable EventBus，并持久化 `hardware-hotplug.state`。
+12. 后续真实硬件 driver 必须复用同一条 policy + OS permission + device registry + lease + driver registry + driver binding 路径。
 
 ## Public API
 
@@ -58,6 +60,8 @@ V1.3 的硬件路径是：
 | `StaticOsPermissionProvider` | 测试和本地 smoke 使用的 OS permission provider，可稳定模拟 granted/denied。 |
 | `PlatformOsPermissionProvider` | V1.15.1 平台权限诊断 provider，报告 OS、用户、权限来源、remediation 和安全 device locator，默认不授予真实设备权限。 |
 | `publish_hotplug_event` | 将 `HotplugEvent` 转为 EventBus typed event 并写 audit。 |
+| `run_hotplug_subscriber_once` | V1.15.4 daemon subscriber helper，从 manifest snapshot 发布逻辑 hotplug events 并返回 state/report。 |
+| `HardwareHotplugSubscriberReport` | subscriber evidence，包含 watcher kind、published events、state、`raw_handles_exposed:false` 和 audit。 |
 | `HotplugStateMachine` | 将硬件动作转换成健康状态和稳定硬件 Topic。 |
 
 ## CLI 验证入口
@@ -86,7 +90,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 - 管理设备注册、claim、release 和 lease 冲突。
 - 提供 driver binding trait 和模拟 driver。
 - 提供 driver registry 和 simulator contract suite。
-- 提供 driver lifecycle coordinator、OS permission check 抽象、平台权限诊断 provider 和 hotplug publish helper。
+- 提供 driver lifecycle coordinator、OS permission check 抽象、平台权限诊断 provider、hotplug publish helper 和 manifest snapshot subscriber。
 - 将 hotplug 动作映射为稳定 Topic。
 - 为 AdapterRuntime 输出可审计的硬件调用边界。
 
@@ -97,6 +101,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 - 不绕过 AdapterRuntime 或 policy gate 调用硬件。
 - 不在 V1.3 打开真实设备文件或执行不可逆设备操作。
 - 不在 V1.15.1 启用真实 USB/串口/BLE/socket/vendor SDK driver。
+- 不把 V1.15.4 manifest snapshot subscriber 声称为真实 OS hotplug notification。
 - 不把 discovery candidate 当作授权 handle。
 
 ## 与其他模块的关系
@@ -108,6 +113,7 @@ cargo run -- hardware bind --adapter scale-main --output json
 | `eva-cli` | 暴露 `hardware list/probe/bind` 诊断和 plan-first 绑定命令。 |
 | `eva-policy` | 后续版本继续扩展 raw I/O、设备路径、vendor SDK 权限约束。 |
 | `eva-eventbus` | V1.10.2 起 `publish_hotplug_event` 可把 `HotplugEvent.topic` 发布到运行时事件流。 |
+| `eva-runtime` | V1.15.4 起 daemon start 运行 hotplug subscriber smoke，写 durable EventBus 和 `hardware-hotplug.state`。 |
 | `eva-observability` | V1.10.2 起记录 hardware driver lifecycle 和 hotplug publish audit action。 |
 
 ## 验证计划
@@ -134,12 +140,12 @@ cargo run -- hardware bind --adapter scale-main --output json
 - simulator contract suite 验证无 raw handle、无 raw I/O 和 capability mismatch 拒绝。
 - lifecycle start 会先检查 policy 和 OS permission，再 claim lease；V1.15.1 权限缺失错误包含 OS、来源和 remediation，且不会暴露 raw device path。
 - stop 的 request id 必须匹配 lease；driver crash 会释放 lease。
-- hotplug event 可发布到 EventBus 并被订阅者读取。
+- hotplug event 可发布到 EventBus 并被订阅者读取；V1.15.4 subscriber state 可重启后复用，避免重复发布相同逻辑状态。
 
 ## 后续范围
 
-V1.15.1 没有集成真实 USB/串口/BLE/socket/vendor SDK 设备，也没有打开 OS device handle。后续会继续补真实 driver implementation、真实/虚拟设备 fixture、热插拔事件接入常驻 runtime 和观测后端。
+V1.15.4 没有集成真实 USB/串口/BLE/socket/vendor SDK 设备，也没有打开 OS device handle 或接真实 OS hotplug notification。后续会继续补真实 driver implementation、真实/虚拟设备 fixture、平台 hotplug watcher 和硬件 safety release gate。
 
 ## English
 
-`eva-hardware` owns the controlled hardware boundary: discovery candidates, trusted identities, registry leases, driver registry, driver lifecycle, hotplug publish, and simulated driver invocation. Raw hardware I/O is not exposed to Lua, Agents, or CLI commands.
+`eva-hardware` owns the controlled hardware boundary: discovery candidates, trusted identities, registry leases, driver registry, driver lifecycle, hotplug publish/subscriber, and simulated driver invocation. Raw hardware I/O is not exposed to Lua, Agents, CLI commands, or daemon hotplug reports.

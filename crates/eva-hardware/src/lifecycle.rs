@@ -1,13 +1,14 @@
 //! Hardware driver lifecycle coordination.
 
+use crate::discovery::DeviceCandidate;
 use crate::registry::{DeviceLease, DeviceRegistry, RegisteredDevice};
-use crate::state::DeviceId;
+use crate::state::{DeviceHealth, DeviceId};
 use crate::{HotplugAction, HotplugEvent, HotplugStateMachine};
 use eva_core::{CapabilityName, EvaError, Event, EventId, EventPayload, RequestId, TraceContext};
 use eva_eventbus::{EventBus, EventReceipt};
 use eva_observability::{AuditAction, AuditEvent, AuditOutcome, AuditSink, TraceFields};
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
@@ -80,6 +81,25 @@ pub struct ActiveDriverSession {
 pub struct HotplugPublishReport {
     pub event: HotplugEvent,
     pub receipt: EventReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareHotplugDeviceState {
+    pub device_id: DeviceId,
+    pub bus: String,
+    pub health: DeviceHealth,
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareHotplugSubscriberReport {
+    pub status: String,
+    pub watcher_kind: String,
+    pub devices_seen: usize,
+    pub events_published: Vec<HotplugPublishReport>,
+    pub state: Vec<HardwareHotplugDeviceState>,
+    pub raw_handles_exposed: bool,
+    pub audit: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -342,6 +362,31 @@ where
     where
         S: AuditSink,
     {
+        self.record_crash(device_id, reason, "driver", audit_sink)
+    }
+
+    pub fn record_hotplug_watcher_crash<S>(
+        &mut self,
+        device_id: &DeviceId,
+        reason: impl Into<String>,
+        audit_sink: &mut S,
+    ) -> Result<DriverLifecycleReport, EvaError>
+    where
+        S: AuditSink,
+    {
+        self.record_crash(device_id, reason, "hotplug_watcher", audit_sink)
+    }
+
+    fn record_crash<S>(
+        &mut self,
+        device_id: &DeviceId,
+        reason: impl Into<String>,
+        source: &'static str,
+        audit_sink: &mut S,
+    ) -> Result<DriverLifecycleReport, EvaError>
+    where
+        S: AuditSink,
+    {
         let reason = reason.into();
         let session = self.active.remove(device_id).ok_or_else(|| {
             EvaError::not_found("hardware driver is not active")
@@ -354,7 +399,7 @@ where
             driver_id: session.driver_id,
             state: DriverLifecycleState::Crashed,
             audit: vec![
-                format!("driver:crashed:{reason}"),
+                format!("{source}:crashed:{reason}"),
                 "lease:released".to_owned(),
             ],
         };
@@ -412,6 +457,241 @@ where
         .with_field("action", event.action.as_str()),
     )?;
     Ok(HotplugPublishReport { event, receipt })
+}
+
+pub fn run_hotplug_subscriber_once<B, S>(
+    candidates: &[DeviceCandidate],
+    previous_state: &[HardwareHotplugDeviceState],
+    bus: &mut B,
+    request_id_prefix: &str,
+    audit_sink: &mut S,
+) -> Result<HardwareHotplugSubscriberReport, EvaError>
+where
+    B: EventBus,
+    S: AuditSink,
+{
+    RequestId::parse(request_id_prefix)?;
+    let previous_by_id = previous_state
+        .iter()
+        .map(|state| (state.device_id.clone(), state))
+        .collect::<BTreeMap<_, _>>();
+    let mut sorted_candidates = candidates.to_vec();
+    sorted_candidates.sort_by(|left, right| left.identity.id.cmp(&right.identity.id));
+
+    let mut seen = BTreeSet::new();
+    let mut state = Vec::new();
+    let mut events_published = Vec::new();
+
+    for candidate in &sorted_candidates {
+        let device_id = candidate.identity.id.clone();
+        let previous = previous_by_id.get(&device_id).copied();
+        let previous_health = previous
+            .map(|entry| entry.health)
+            .unwrap_or(DeviceHealth::Disconnected);
+        let current_health = candidate.health;
+        seen.insert(device_id.clone());
+        state.push(HardwareHotplugDeviceState {
+            device_id: device_id.clone(),
+            bus: candidate.identity.bus.as_str().to_owned(),
+            health: current_health,
+            source_path: candidate.source_path.clone(),
+        });
+
+        if let Some(action) =
+            hotplug_action_for_transition(previous.is_some(), previous_health, current_health)
+        {
+            publish_subscriber_event(
+                SubscriberEventInput {
+                    device_id: &device_id,
+                    previous_health,
+                    action,
+                    reason: transition_reason(previous_health, current_health),
+                    request_id_prefix,
+                },
+                &mut events_published,
+                bus,
+                audit_sink,
+            )?;
+        }
+    }
+
+    for previous in previous_state {
+        if seen.contains(&previous.device_id) {
+            continue;
+        }
+        state.push(HardwareHotplugDeviceState {
+            device_id: previous.device_id.clone(),
+            bus: previous.bus.clone(),
+            health: DeviceHealth::Disconnected,
+            source_path: previous.source_path.clone(),
+        });
+        if previous.health != DeviceHealth::Disconnected {
+            publish_subscriber_event(
+                SubscriberEventInput {
+                    device_id: &previous.device_id,
+                    previous_health: previous.health,
+                    action: HotplugAction::Remove,
+                    reason: "manifest candidate removed".to_owned(),
+                    request_id_prefix,
+                },
+                &mut events_published,
+                bus,
+                audit_sink,
+            )?;
+        }
+    }
+
+    state.sort_by(|left, right| left.device_id.cmp(&right.device_id));
+    let event_count = events_published.len();
+    Ok(HardwareHotplugSubscriberReport {
+        status: "ready".to_owned(),
+        watcher_kind: "manifest_snapshot".to_owned(),
+        devices_seen: candidates.len(),
+        events_published,
+        state,
+        raw_handles_exposed: false,
+        audit: vec![
+            "hardware_hotplug:subscriber_scan".to_owned(),
+            format!("hardware_hotplug:events_published:{event_count}"),
+            "hardware_hotplug:raw_handles_not_exposed".to_owned(),
+        ],
+    })
+}
+
+pub fn render_hotplug_subscriber_state(states: &[HardwareHotplugDeviceState]) -> String {
+    let mut states = states.to_vec();
+    states.sort_by(|left, right| left.device_id.cmp(&right.device_id));
+    let mut output = String::from("version=1\n");
+    for state in states {
+        output.push_str(&format!(
+            "device\t{}\t{}\t{}\t{}\n",
+            encode_field(state.device_id.as_str()),
+            state.health.as_str(),
+            encode_field(&state.bus),
+            encode_field(&state.source_path)
+        ));
+    }
+    output
+}
+
+pub fn parse_hotplug_subscriber_state(
+    data: &str,
+) -> Result<Vec<HardwareHotplugDeviceState>, EvaError> {
+    let mut version_seen = false;
+    let mut states = Vec::new();
+    for (index, line) in data.lines().enumerate() {
+        let line_no = index + 1;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line == "version=1" {
+            version_seen = true;
+            continue;
+        }
+        if !version_seen {
+            return Err(EvaError::conflict("hardware hotplug state missing version")
+                .with_context("line", line_no.to_string()));
+        }
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 5 || fields[0] != "device" {
+            return Err(
+                EvaError::conflict("hardware hotplug state record is invalid")
+                    .with_context("line", line_no.to_string()),
+            );
+        }
+        let device_id = DeviceId::parse(&decode_field(fields[1])?)
+            .map_err(|error| error.with_context("line", line_no.to_string()))?;
+        let health = DeviceHealth::parse(fields[2])
+            .map_err(|error| error.with_context("line", line_no.to_string()))?;
+        let bus = decode_field(fields[3])?;
+        let source_path = decode_field(fields[4])?;
+        states.push(HardwareHotplugDeviceState {
+            device_id,
+            bus,
+            health,
+            source_path,
+        });
+    }
+    if !version_seen && !data.trim().is_empty() {
+        return Err(EvaError::conflict("hardware hotplug state missing version"));
+    }
+    states.sort_by(|left, right| left.device_id.cmp(&right.device_id));
+    Ok(states)
+}
+
+struct SubscriberEventInput<'a> {
+    device_id: &'a DeviceId,
+    previous_health: DeviceHealth,
+    action: HotplugAction,
+    reason: String,
+    request_id_prefix: &'a str,
+}
+
+fn publish_subscriber_event<B, S>(
+    input: SubscriberEventInput<'_>,
+    events_published: &mut Vec<HotplugPublishReport>,
+    bus: &mut B,
+    audit_sink: &mut S,
+) -> Result<(), EvaError>
+where
+    B: EventBus,
+    S: AuditSink,
+{
+    let request_id = RequestId::parse(&format!(
+        "{}-{}",
+        input.request_id_prefix,
+        events_published.len() + 1
+    ))?;
+    let mut machine = HotplugStateMachine::new(input.device_id.clone());
+    machine.health = input.previous_health;
+    let report = publish_hotplug_event(
+        &mut machine,
+        bus,
+        input.action,
+        input.reason,
+        request_id,
+        audit_sink,
+    )?;
+    events_published.push(report);
+    Ok(())
+}
+
+fn hotplug_action_for_transition(
+    has_previous: bool,
+    previous: DeviceHealth,
+    current: DeviceHealth,
+) -> Option<HotplugAction> {
+    if !has_previous {
+        return match current {
+            DeviceHealth::Available | DeviceHealth::Candidate => Some(HotplugAction::Insert),
+            DeviceHealth::Disconnected => Some(HotplugAction::Remove),
+            DeviceHealth::Failed => Some(HotplugAction::Fail),
+            DeviceHealth::Claimed => None,
+        };
+    }
+    if previous == current {
+        return None;
+    }
+    match current {
+        DeviceHealth::Available | DeviceHealth::Candidate => {
+            if matches!(previous, DeviceHealth::Disconnected | DeviceHealth::Failed) {
+                Some(HotplugAction::Reconnect)
+            } else {
+                Some(HotplugAction::Insert)
+            }
+        }
+        DeviceHealth::Disconnected => Some(HotplugAction::Remove),
+        DeviceHealth::Failed => Some(HotplugAction::Fail),
+        DeviceHealth::Claimed => None,
+    }
+}
+
+fn transition_reason(previous: DeviceHealth, current: DeviceHealth) -> String {
+    format!(
+        "manifest snapshot {} -> {}",
+        previous.as_str(),
+        current.as_str()
+    )
 }
 
 fn ensure_os_permission(check: &OsPermissionCheck) -> Result<(), EvaError> {
@@ -519,6 +799,36 @@ where
 
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn encode_field(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn decode_field(value: &str) -> Result<String, EvaError> {
+    if !value.len().is_multiple_of(2) {
+        return Err(EvaError::conflict(
+            "hardware hotplug encoded field has odd length",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for index in (0..value.len()).step_by(2) {
+        let byte = u8::from_str_radix(&value[index..index + 2], 16).map_err(|_| {
+            EvaError::conflict("hardware hotplug encoded field is not hex")
+                .with_context("offset", index.to_string())
+        })?;
+        bytes.push(byte);
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        EvaError::conflict("hardware hotplug encoded field is not utf-8")
+            .with_context("utf8_error", error.to_string())
+    })
 }
 
 #[cfg(test)]
@@ -737,6 +1047,148 @@ hardware_policy:
         assert_eq!(
             audit.events[0].action,
             AuditAction::HardwareHotplugPublished
+        );
+    }
+
+    #[test]
+    fn hotplug_subscriber_publishes_logical_state_without_raw_handles() {
+        let mut bus = InMemoryEventBus::new();
+        let mut audit = InMemoryAuditSink::default();
+        let candidate =
+            DeviceCandidate::for_adapter(AdapterId::parse("scale-main").unwrap(), "main-scale")
+                .unwrap();
+
+        let report = run_hotplug_subscriber_once(
+            std::slice::from_ref(&candidate),
+            &[],
+            &mut bus,
+            "req-hotplug-scan",
+            &mut audit,
+        )
+        .unwrap();
+
+        assert_eq!(report.status, "ready");
+        assert!(!report.raw_handles_exposed);
+        assert_eq!(report.devices_seen, 1);
+        assert_eq!(report.events_published.len(), 1);
+        assert_eq!(
+            report.events_published[0].event.action,
+            HotplugAction::Insert
+        );
+        assert_eq!(bus.receipts().len(), 1);
+        assert_eq!(bus.receipts()[0].topic.as_str(), "/hardware/connected");
+        assert!(audit
+            .events
+            .iter()
+            .any(|event| event.action == AuditAction::HardwareHotplugPublished));
+
+        let rerun = run_hotplug_subscriber_once(
+            &[candidate],
+            &report.state,
+            &mut bus,
+            "req-hotplug-rerun",
+            &mut audit,
+        )
+        .unwrap();
+
+        assert!(rerun.events_published.is_empty());
+        assert_eq!(bus.receipts().len(), 1);
+    }
+
+    #[test]
+    fn hotplug_subscriber_reports_remove_reconnect_and_fail_transitions() {
+        let mut bus = InMemoryEventBus::new();
+        let mut audit = InMemoryAuditSink::default();
+        let mut candidate =
+            DeviceCandidate::for_adapter(AdapterId::parse("scale-main").unwrap(), "main-scale")
+                .unwrap();
+        let previous = vec![HardwareHotplugDeviceState {
+            device_id: candidate.identity.id.clone(),
+            bus: candidate.identity.bus.as_str().to_owned(),
+            health: DeviceHealth::Available,
+            source_path: candidate.source_path.clone(),
+        }];
+
+        candidate.health = DeviceHealth::Disconnected;
+        let removed = run_hotplug_subscriber_once(
+            &[candidate.clone()],
+            &previous,
+            &mut bus,
+            "req-hotplug-remove",
+            &mut audit,
+        )
+        .unwrap();
+        assert_eq!(
+            removed.events_published[0].event.action,
+            HotplugAction::Remove
+        );
+
+        candidate.health = DeviceHealth::Available;
+        let reconnected = run_hotplug_subscriber_once(
+            &[candidate.clone()],
+            &removed.state,
+            &mut bus,
+            "req-hotplug-reconnect",
+            &mut audit,
+        )
+        .unwrap();
+        assert_eq!(
+            reconnected.events_published[0].event.action,
+            HotplugAction::Reconnect
+        );
+
+        candidate.health = DeviceHealth::Failed;
+        let failed = run_hotplug_subscriber_once(
+            &[candidate],
+            &reconnected.state,
+            &mut bus,
+            "req-hotplug-fail",
+            &mut audit,
+        )
+        .unwrap();
+        assert_eq!(failed.events_published[0].event.action, HotplugAction::Fail);
+    }
+
+    #[test]
+    fn hotplug_subscriber_state_round_trips() {
+        let state = vec![HardwareHotplugDeviceState {
+            device_id: DeviceId::parse("scale-main:main-scale").unwrap(),
+            bus: "usb".to_owned(),
+            health: DeviceHealth::Disconnected,
+            source_path: "C:\\tmp\\scale-main.yaml".to_owned(),
+        }];
+
+        let rendered = render_hotplug_subscriber_state(&state);
+        let parsed = parse_hotplug_subscriber_state(&rendered).unwrap();
+
+        assert_eq!(parsed, state);
+    }
+
+    #[test]
+    fn hotplug_watcher_crash_releases_active_lease() {
+        let mut coordinator = HardwareLifecycleCoordinator::new(
+            registry(),
+            StaticOsPermissionProvider::granted("usb-device-access"),
+        );
+        let mut audit = InMemoryAuditSink::default();
+        let device_id = DeviceId::parse("scale-main:main-scale").unwrap();
+        coordinator
+            .start_driver(start_request(), &policy_gate(), &mut audit)
+            .unwrap();
+
+        let crashed = coordinator
+            .record_hotplug_watcher_crash(&device_id, "watcher channel closed", &mut audit)
+            .unwrap();
+
+        assert_eq!(crashed.state, DriverLifecycleState::Crashed);
+        assert!(crashed
+            .audit
+            .iter()
+            .any(|entry| entry == "hotplug_watcher:crashed:watcher channel closed"));
+        assert!(coordinator.active_session(&device_id).is_none());
+        assert_eq!(
+            coordinator.registry().get(&device_id).unwrap().health,
+            DeviceHealth::Available
         );
     }
 }

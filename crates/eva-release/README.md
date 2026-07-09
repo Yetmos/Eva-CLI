@@ -72,6 +72,7 @@ runtime-unavailable exit code `4`.
 - expose signed backup archive, pre-restore evidence, restore apply/rollback/operator confirmation, and supervisor handoff evidence as readiness gates;
 - expose the V1.14.5 service-manager abstraction and fake handoff/rollback evidence as a required readiness gate;
 - expose V1.15.1 hardware OS permission diagnostics through `SEC-HW-001` security evidence;
+- expose V1.15.4 daemon hotplug subscriber and watcher crash lease-release evidence through `SEC-HW-001` security evidence;
 - expose signed artifact, distribution install smoke, and package-manager dry-run evidence as opt-in readiness gates;
 - expose external scanner and measured benchmark evidence as opt-in readiness gates;
 - expose the repo-local MCP compatibility matrix as a required readiness gate;

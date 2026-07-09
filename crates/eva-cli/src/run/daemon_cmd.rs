@@ -372,6 +372,16 @@ fn write_daemon_start<W: Write>(
                 "observability_backend: {}",
                 report.observability.backend_root
             )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "hardware_hotplug: status={} watcher={} devices_seen={} events_published={} raw_handles_exposed={}",
+                report.hardware_hotplug.status,
+                report.hardware_hotplug.watcher_kind,
+                report.hardware_hotplug.devices_seen,
+                report.hardware_hotplug.events_published.len(),
+                report.hardware_hotplug.raw_handles_exposed
+            )
             .map_err(write_error_kind)
         }
         OutputFormat::Json => writeln!(
@@ -420,7 +430,7 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
         .map(shutdown_json)
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"status\":{},\"mode\":{},\"pid\":{},\"generation_id\":{},\"project_root\":{},\"foreground\":{},\"dev_mode\":{},\"provider_processes_started\":{},\"paths\":{},\"durable_backend\":{},\"recovery\":{},\"policy\":{},\"observability\":{},\"shutdown\":{},\"audit\":{}}}",
+        "{{\"status\":{},\"mode\":{},\"pid\":{},\"generation_id\":{},\"project_root\":{},\"foreground\":{},\"dev_mode\":{},\"provider_processes_started\":{},\"paths\":{},\"durable_backend\":{},\"recovery\":{},\"policy\":{},\"observability\":{},\"hardware_hotplug\":{},\"shutdown\":{},\"audit\":{}}}",
         json_string(&report.status),
         json_string(&report.mode),
         report.pid,
@@ -434,6 +444,7 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
         recovery_json(&report.recovery),
         daemon_policy_json(&report.policy),
         observability_json(&report.observability),
+        hardware_hotplug_json(&report.hardware_hotplug),
         shutdown,
         json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
@@ -580,7 +591,7 @@ fn daemon_control_json(report: &DaemonControlResponse) -> String {
 
 fn daemon_paths_json(paths: &DaemonPathReport) -> String {
     format!(
-        "{{\"durable_backend_root\":{},\"observability_backend_root\":{},\"state_dir\":{},\"lock_dir\":{},\"pid_dir\":{},\"control_request_dir\":{},\"control_response_dir\":{},\"state_file\":{},\"lock_file\":{},\"pid_file\":{}}}",
+        "{{\"durable_backend_root\":{},\"observability_backend_root\":{},\"state_dir\":{},\"lock_dir\":{},\"pid_dir\":{},\"control_request_dir\":{},\"control_response_dir\":{},\"state_file\":{},\"hardware_hotplug_state_file\":{},\"lock_file\":{},\"pid_file\":{}}}",
         json_string(&paths.durable_backend_root),
         json_string(&paths.observability_backend_root),
         json_string(&paths.state_dir),
@@ -589,8 +600,46 @@ fn daemon_paths_json(paths: &DaemonPathReport) -> String {
         json_string(&paths.control_request_dir),
         json_string(&paths.control_response_dir),
         json_string(&paths.state_file),
+        json_string(&paths.hardware_hotplug_state_file),
         json_string(&paths.lock_file),
         json_string(&paths.pid_file)
+    )
+}
+
+fn hardware_hotplug_json(report: &eva_hardware::HardwareHotplugSubscriberReport) -> String {
+    format!(
+        "{{\"status\":{},\"watcher_kind\":{},\"devices_seen\":{},\"events_published\":{},\"state\":{},\"raw_handles_exposed\":{},\"audit\":{}}}",
+        json_string(&report.status),
+        json_string(&report.watcher_kind),
+        report.devices_seen,
+        json_array(report.events_published.iter().map(hotplug_event_json)),
+        json_array(report.state.iter().map(hotplug_state_json)),
+        report.raw_handles_exposed,
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn hotplug_event_json(report: &eva_hardware::HotplugPublishReport) -> String {
+    format!(
+        "{{\"event_id\":{},\"sequence\":{},\"topic\":{},\"device_id\":{},\"action\":{},\"previous\":{},\"next\":{},\"reason\":{}}}",
+        json_string(report.receipt.event_id.as_str()),
+        report.receipt.sequence,
+        json_string(report.receipt.topic.as_str()),
+        json_string(report.event.device_id.as_str()),
+        json_string(report.event.action.as_str()),
+        json_string(report.event.previous.as_str()),
+        json_string(report.event.next.as_str()),
+        json_string(&report.event.reason)
+    )
+}
+
+fn hotplug_state_json(state: &eva_hardware::HardwareHotplugDeviceState) -> String {
+    format!(
+        "{{\"device_id\":{},\"bus\":{},\"health\":{},\"source_path\":{}}}",
+        json_string(state.device_id.as_str()),
+        json_string(&state.bus),
+        json_string(state.health.as_str()),
+        json_string(&state.source_path)
     )
 }
 

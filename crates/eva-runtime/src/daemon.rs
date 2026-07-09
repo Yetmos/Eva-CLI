@@ -7,6 +7,10 @@ use crate::{
 use eva_config::ProjectConfig;
 use eva_core::{AgentId, EvaError, GenerationId, RequestId};
 use eva_eventbus::DurableEventBus;
+use eva_hardware::{
+    discover_project_devices, parse_hotplug_subscriber_state, render_hotplug_subscriber_state,
+    run_hotplug_subscriber_once, HardwareHotplugDeviceState, HardwareHotplugSubscriberReport,
+};
 use eva_lifecycle::{
     DrainCoordinator, DrainPlan, GenerationController, GenerationState, RuntimeGeneration,
 };
@@ -37,6 +41,7 @@ const LOCK_FILE: &str = "daemon.lock";
 const PID_FILE: &str = "daemon.pid";
 const STATE_FILE: &str = "daemon.state";
 const AGENT_CONTROL_STATE_FILE: &str = "agent-control.state";
+const HARDWARE_HOTPLUG_STATE_FILE: &str = "hardware-hotplug.state";
 const CONTROL_REQUEST_DIR: &str = "control/requests";
 const CONTROL_RESPONSE_DIR: &str = "control/responses";
 const CONTROL_REQUEST_EXT: &str = "request";
@@ -65,6 +70,7 @@ pub struct DaemonPathReport {
     pub control_request_dir: String,
     pub control_response_dir: String,
     pub state_file: String,
+    pub hardware_hotplug_state_file: String,
     pub lock_file: String,
     pub pid_file: String,
 }
@@ -102,6 +108,7 @@ pub struct DaemonStartReport {
     pub recovery: RuntimeRecoveryReport,
     pub policy: DaemonPolicyReport,
     pub observability: ObservabilitySmokeReport,
+    pub hardware_hotplug: HardwareHotplugSubscriberReport,
     pub shutdown: Option<ShutdownReport>,
     pub audit: Vec<String>,
 }
@@ -246,6 +253,7 @@ impl DaemonPathReport {
             control_request_dir: display_path(&control_request_dir(options)),
             control_response_dir: display_path(&control_response_dir(options)),
             state_file: display_path(&state_file(options)),
+            hardware_hotplug_state_file: display_path(&hardware_hotplug_state_file(options)),
             lock_file: display_path(&lock_file(options)),
             pid_file: display_path(&pid_file(options)),
         }
@@ -1049,6 +1057,7 @@ pub fn start_daemon(
             .with_context("io_error", error.to_string())
     })?;
     ensure_control_dirs(&options)?;
+    let hardware_hotplug = start_hardware_hotplug_subscriber(project, &options)?;
 
     let mut runtime = RuntimeBuilder::new().build(project)?;
     let (status, shutdown) = if options.shutdown_after_smoke {
@@ -1078,6 +1087,7 @@ pub fn start_daemon(
         recovery,
         policy,
         observability,
+        hardware_hotplug,
         shutdown,
         audit: vec![
             "daemon:v1.12.1:lock_acquired".to_owned(),
@@ -1088,6 +1098,7 @@ pub fn start_daemon(
             "daemon:v1.12.2:control_mailbox_ready".to_owned(),
             "daemon:v1.12.4:scheduler_retry_tick_ready".to_owned(),
             "daemon:v1.13.5:provider_recovery_scanned".to_owned(),
+            "daemon:v1.15.4:hardware_hotplug_subscriber_ready".to_owned(),
         ],
     })
 }
@@ -1245,6 +1256,29 @@ fn run_daemon_scheduler_tick(
             ..SchedulerRetryTickOptions::default()
         },
     )
+}
+
+fn start_hardware_hotplug_subscriber(
+    project: &ProjectConfig,
+    options: &DaemonStartOptions,
+) -> Result<HardwareHotplugSubscriberReport, EvaError> {
+    let previous_state = read_hardware_hotplug_state(options)?;
+    let discovery = discover_project_devices(project)?;
+    let durable_backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+        &options.durable_backend,
+    ))?;
+    let mut bus = DurableEventBus::open(durable_backend.layout())?;
+    let mut audit_sink = BestEffortObservabilityPipeline::open(&options.observability_backend);
+    let request_id_prefix = format!("req-daemon-hotplug-{}", now_ms());
+    let report = run_hotplug_subscriber_once(
+        &discovery.candidates,
+        &previous_state,
+        &mut bus,
+        &request_id_prefix,
+        &mut audit_sink,
+    )?;
+    write_hardware_hotplug_state(options, &report.state)?;
+    Ok(report)
 }
 
 fn handle_control_request(
@@ -1772,6 +1806,21 @@ fn read_agent_control_state(
     DaemonAgentControlState::from_storage(&data).map(Some)
 }
 
+fn read_hardware_hotplug_state(
+    options: &DaemonStartOptions,
+) -> Result<Vec<HardwareHotplugDeviceState>, EvaError> {
+    let path = hardware_hotplug_state_file(options);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read_to_string(&path).map_err(|error| {
+        EvaError::internal("failed to read hardware hotplug state")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    parse_hotplug_subscriber_state(&data)
+}
+
 fn write_state(options: &DaemonStartOptions, state: &DaemonStateRecord) -> Result<(), EvaError> {
     fs::create_dir_all(&options.state_dir).map_err(|error| {
         EvaError::internal("failed to create daemon state directory")
@@ -1797,6 +1846,17 @@ fn write_agent_control_state(
     )
 }
 
+fn write_hardware_hotplug_state(
+    options: &DaemonStartOptions,
+    states: &[HardwareHotplugDeviceState],
+) -> Result<(), EvaError> {
+    write_atomic(
+        &hardware_hotplug_state_file(options),
+        &render_hotplug_subscriber_state(states),
+        "failed to write hardware hotplug state",
+    )
+}
+
 fn remove_if_exists(path: &Path) -> Result<bool, EvaError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(true),
@@ -1813,6 +1873,10 @@ fn state_file(options: &DaemonStartOptions) -> PathBuf {
 
 fn agent_control_state_file(options: &DaemonStartOptions) -> PathBuf {
     options.state_dir.join(AGENT_CONTROL_STATE_FILE)
+}
+
+fn hardware_hotplug_state_file(options: &DaemonStartOptions) -> PathBuf {
+    options.state_dir.join(HARDWARE_HOTPLUG_STATE_FILE)
 }
 
 fn lock_file(options: &DaemonStartOptions) -> PathBuf {
@@ -2063,10 +2127,47 @@ mod tests {
 
         assert_eq!(report.status, "stopped");
         assert!(!report.provider_processes_started);
+        assert_eq!(report.hardware_hotplug.status, "ready");
+        assert!(!report.hardware_hotplug.raw_handles_exposed);
+        assert_eq!(report.hardware_hotplug.devices_seen, 1);
+        assert_eq!(report.hardware_hotplug.events_published.len(), 1);
+        assert!(hardware_hotplug_state_file(&options).is_file());
         assert!(report.shutdown.is_some());
         assert!(state_file(&options).is_file());
         assert!(!lock_file(&options).exists());
         assert!(!pid_file(&options).exists());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_hotplug_subscriber_persists_state_across_restart() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("hotplug-subscriber");
+        let options = daemon_options(&root, true);
+
+        let first = start_daemon(&project, options.clone(), &TraceFields::default()).unwrap();
+        assert_eq!(first.hardware_hotplug.events_published.len(), 1);
+        let state = read_hardware_hotplug_state(&options).unwrap();
+        assert_eq!(state.len(), 1);
+
+        let second = start_daemon(&project, options.clone(), &TraceFields::default()).unwrap();
+        assert!(second.hardware_hotplug.events_published.is_empty());
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let bus = DurableEventBus::open_read_only(backend.layout()).unwrap();
+
+        assert_eq!(bus.log().records().len(), 1);
+        assert_eq!(
+            bus.log().records()[0].event.topic().as_str(),
+            "/hardware/disconnected"
+        );
+        assert_eq!(
+            bus.log().records()[0].event.payload().as_text(),
+            Some("{\"device_id\":\"scale-main:main-scale\",\"action\":\"remove\",\"previous\":\"disconnected\",\"next\":\"disconnected\",\"reason\":\"manifest snapshot disconnected -> disconnected\"}")
+        );
 
         fs::remove_dir_all(root).ok();
     }
@@ -2255,7 +2356,14 @@ mod tests {
         .unwrap();
         let bus = DurableEventBus::open_read_only(backend.layout()).unwrap();
         assert_eq!(bus.dead_letters()[0].replay_count, 1);
-        assert_eq!(bus.log().records().len(), 2);
+        assert_eq!(
+            bus.log()
+                .records()
+                .iter()
+                .filter(|record| record.event.topic().as_str() != "/hardware/disconnected")
+                .count(),
+            2
+        );
         assert_eq!(
             bus.event_log_status(&EventId::parse("evt-daemon-retry:replay-1").unwrap()),
             Some(eva_storage::EventLogStatus::Acked)

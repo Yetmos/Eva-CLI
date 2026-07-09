@@ -1,6 +1,6 @@
 # eva-runtime / 运行时组合根
 
-更新时间：2026-07-09
+更新时间：2026-07-10
 
 `eva-runtime` 是 Eva-CLI 的 composition root。下层 crate 不反向依赖 runtime；跨模块服务装配、运行闭环、V0.5 任务诊断和 V1.0 core 发布标识都由本 crate 统一组合。
 
@@ -18,6 +18,7 @@
 | V1.12.2 | daemon control mailbox | `send_daemon_control_request` 和 foreground control loop 定义受控 filesystem mailbox 协议，支持 status、shutdown、submit task、cancel task、drain 和 reload plan；request/response 均带 trace id，不暴露远程网络监听。 |
 | V1.12.3 | durable task lifecycle | daemon submit/cancel 使用 `TaskStateSnapshot` lifecycle API：submit 写 `queued`，cancel 将非终态任务推进到 `cancelling` 并追加日志；recovery 会把 `queued`/`running`/`cancelling` 恢复为 `interrupted` 或 `recovering`。 |
 | V1.13.5 | provider execution recovery | daemon start 扫描 durable provider process table 和 task store；残留 active provider session 标记为 `interrupted`，关联 task 保留为 interrupted/recovering，只有显式 retryable restart policy 才生成 scheduler backoff 证据。 |
+| V1.15.4 | hardware hotplug subscriber | daemon start 运行 manifest snapshot hotplug subscriber，把逻辑设备状态写入 durable EventBus 和 `hardware-hotplug.state`，并在 report 中输出 `raw_handles_exposed:false`。 |
 
 ## V1.0 Basic 闭环
 
@@ -64,6 +65,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 - `send_daemon_control_request` 在没有 running state、lock 和 pid 时返回稳定 `Unavailable`，避免把 stopped smoke state 误读成 live daemon。
 - JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
 - JSON/report 中新增 `recovery` 对象，包含 scanned/recovered task、provider process、backoff 和 skipped evidence。
+- JSON/report 中新增 `hardware_hotplug` 对象，包含 watcher kind、published typed events、`hardware-hotplug.state` 和 `raw_handles_exposed:false` evidence。
 - 已有 lock 会返回 conflict；坏 durable backend 会在写 daemon state 前失败。
 
 ## V1.6.4 Recovery Checkpoint
@@ -103,7 +105,7 @@ restart redrive 和 corrupt task store，`release check` 暴露
 
 ## 当前非目标
 
-- V1.12/V1.13.5 只提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload mutation state 和 provider execution-state recovery；不提供生产后台 service manager、远程网络监听、OS provider process supervisor 或完整生产 scheduler apply。
+- V1.12/V1.13.5/V1.15.4 只提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload mutation state、provider execution-state recovery 和 manifest snapshot hotplug subscriber；不提供生产后台 service manager、远程网络监听、OS provider process supervisor、真实 OS hotplug watcher 或完整生产 scheduler apply。
 - recovery checkpoint 已恢复 task/event/audit evidence 和 durable provider process snapshots，但不会重启或杀死真实 OS provider 进程；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
 - 不引入真实 Lua VM；`LuaGeneration` 是 generation marker，不是 VM swap 实现。
 - Adapter/MCP/Discovery/Memory/Hardware/Backup/Lifecycle 仍属于后续版本。

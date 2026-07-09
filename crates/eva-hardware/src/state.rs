@@ -80,6 +80,20 @@ impl DeviceTrust {
 }
 
 impl DeviceHealth {
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "candidate" => Ok(Self::Candidate),
+            "available" => Ok(Self::Available),
+            "claimed" => Ok(Self::Claimed),
+            "disconnected" => Ok(Self::Disconnected),
+            "failed" => Ok(Self::Failed),
+            _ => {
+                Err(EvaError::unsupported("unsupported device health")
+                    .with_context("health", value))
+            }
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Candidate => "candidate",

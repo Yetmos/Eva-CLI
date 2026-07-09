@@ -290,6 +290,8 @@ impl ReleaseHardeningService {
                         "hardware bind remains plan-first even with --apply".to_owned(),
                         "V1.15.1 hardware bind reports platform OS permission evidence with remediation and raw_device_path_exposed=false".to_owned(),
                         "PlatformOsPermissionProvider blocks driver start before lease claim when permission is missing".to_owned(),
+                        "V1.15.4 daemon hotplug subscriber publishes typed logical-state events and reports raw_handles_exposed=false".to_owned(),
+                        "hotplug watcher crash path releases active hardware leases".to_owned(),
                     ],
                 ),
                 SecurityFinding::tracked(
