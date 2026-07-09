@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -1135,6 +1135,14 @@ mod tests {
             std::env::temp_dir().join(format!("eva-cli-{name}-{}-{now}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    fn extract_json_value(data: &str, prefix: &str) -> String {
+        let start = data.find(prefix).expect("json value prefix should exist") + prefix.len();
+        let end = data[start..]
+            .find('"')
+            .expect("json string value should terminate");
+        data[start..start + end].to_owned()
     }
 
     fn wait_for_daemon_files(state: &Path, locks: &Path, pids: &Path) {
@@ -2514,6 +2522,7 @@ mod tests {
         assert!(json_stdout.contains("mcp_http_auth_v1.13.6"));
         assert!(json_stdout.contains("mcp_compat_matrix_v1.13.7"));
         assert!(json_stdout.contains("provider_supervision_release_gate_v1.13.8"));
+        assert!(json_stdout.contains("restore_staged_mutation_planner_v1.14.1"));
         assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));
@@ -3860,6 +3869,106 @@ mod tests {
         assert!(stdout.contains("\"apply_allowed\":false"));
         assert!(stdout.contains("\"backup_artifact_key\":\"backup/apply-ok\""));
         assert!(stdout.contains("\"pre_restore_backup_artifact_key\":\"backup/pre-apply-ok\""));
+
+        fs::remove_dir_all(artifact_root).unwrap();
+    }
+
+    #[test]
+    fn restore_apply_dry_run_reports_staged_mutation_plan() {
+        let root = workspace_root();
+        let artifact_root = test_temp_dir("restore-apply-staged");
+        let plan_path = artifact_root.join("restore.plan");
+        let mut store = FileSystemArtifactStore::new(&artifact_root);
+        let artifact = store
+            .put_bytes("backup/apply-staged", b"ok".as_slice())
+            .unwrap();
+        let pre_restore = store
+            .put_bytes("backup/pre-apply-staged", b"before".as_slice())
+            .unwrap();
+        let copy = store
+            .put_bytes("backup/staged-config", b"config".as_slice())
+            .unwrap();
+        let replace = store
+            .put_bytes("backup/staged-binary", b"binary".as_slice())
+            .unwrap();
+        let old_binary = store
+            .put_bytes("backup/pre-binary", b"old-binary".as_slice())
+            .unwrap();
+        let old_log = store
+            .put_bytes("backup/pre-log", b"old-log".as_slice())
+            .unwrap();
+        fs::write(
+            &plan_path,
+            format!(
+                "plan_id=plan-staged\nbackup_artifact_id=apply-staged\nbackup_digest={}\npre_restore_backup_artifact_id=pre-apply-staged\npre_restore_backup_digest={}\nrestore_target_root=workspace\nmutation_step=copy|config/eva.yaml|backup/staged-config|{}|none|file\nmutation_step=replace|bin/eva|backup/staged-binary|{}|{}|file\nmutation_step=delete|logs/old.log|none|none|{}|file\n",
+                artifact.digest,
+                pre_restore.digest,
+                copy.digest,
+                replace.digest,
+                old_binary.digest,
+                old_log.digest
+            ),
+        )
+        .unwrap();
+
+        let (first_exit, first_stdout, first_stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--dry-run",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-staged",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        let (second_exit, second_stdout, second_stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--dry-run",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-staged",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(first_exit, EXIT_OK, "{first_stderr}");
+        assert_eq!(second_exit, EXIT_OK, "{second_stderr}");
+        assert!(
+            first_stdout.contains("\"mutation_plan\":{"),
+            "{first_stdout}"
+        );
+        assert!(
+            first_stdout.contains("\"mutation_planned\":true"),
+            "{first_stdout}"
+        );
+        assert!(
+            first_stdout.contains("\"mutation_executed\":false"),
+            "{first_stdout}"
+        );
+        assert!(first_stdout.contains("\"target_root\":\"workspace\""));
+        assert!(first_stdout.contains("\"operation\":\"copy\""));
+        assert!(first_stdout.contains("\"operation\":\"replace\""));
+        assert!(first_stdout.contains("\"operation\":\"delete\""));
+        assert!(first_stdout
+            .contains("\"affected_paths\":[\"bin/eva\",\"config/eva.yaml\",\"logs/old.log\"]"));
+        assert!(first_stdout.contains("\"rollback_manifest\":["));
+        assert!(first_stdout.contains("\"action\":\"restore_pre_restore_digest\""));
+        assert!(first_stdout.contains("\"preflight_hash\":\"sha256:"));
+        assert_eq!(
+            extract_json_value(&first_stdout, "\"preflight_hash\":\""),
+            extract_json_value(&second_stdout, "\"preflight_hash\":\"")
+        );
 
         fs::remove_dir_all(artifact_root).unwrap();
     }

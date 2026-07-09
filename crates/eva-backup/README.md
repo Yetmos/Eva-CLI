@@ -1,12 +1,12 @@
 # eva-backup / 备份迁移
 
-更新时间：2026-07-08
+更新时间：2026-07-09
 
 ![V1.x extension module flow](../assets/eva-extension-module-flow.svg)
 
 `eva-backup` 是 V1.4/V1.10 的备份、迁移包、ReleaseSnapshot 和 restore evidence 可信执行边界。它把高风险恢复能力拆成 signed backup archive、manifest verification、migration preflight、release snapshot、restore plan、pre-restore evidence 和 restore apply gate，保证恢复与升级先计划、先校验、先审计，再交给 lifecycle 执行。
 
-V1.10.4 之后，backup artifact 是稳定 archive payload，带 checksum、manifest signature、可选 sealed archive metadata 和 remote target typed contract。`restore apply` 可以在 confirmation、pre-restore evidence、policy approval、apply lock 和 health check 都通过后产出 gated report，但仍不会执行 destructive file mutation、移动 release pointer 或启动 supervisor handoff；JSON 中以 `mutation_executed:false` 明确标记这一点。
+V1.10.4 之后，backup artifact 是稳定 archive payload，带 checksum、manifest signature、可选 sealed archive metadata 和 remote target typed contract。`restore apply` 可以在 confirmation、pre-restore evidence、policy approval、apply lock 和 health check 都通过后产出 gated report。V1.14.1 进一步允许 plan 文件声明 plan-only staged mutation steps，并生成 preview、affected paths、preflight hash 和 rollback manifest；当前仍不会执行 destructive file mutation、移动 release pointer 或启动 supervisor handoff，JSON 中以 `mutation_executed:false` 明确标记这一点。
 
 ## 已实现能力
 
@@ -16,6 +16,7 @@ V1.10.4 之后，backup artifact 是稳定 archive payload，带 checksum、mani
 | Signed archive | 已完成 V1.10.3 | `BackupArchiveCodec` 生成稳定 archive bytes，计算 sealed/plaintext checksum，写入 keyed SHA-256 signature，并支持可选 sealed archive。 |
 | Artifact verification | 已完成 V1.10.3 | `ManifestVerifier::verify_artifact` 复算 artifact bytes digest；`verify_backup_archive` 同时校验 artifact key、checksum 和 signature，mismatch 返回结构化 `Conflict`。 |
 | Restore apply gate | 已完成 V1.10.4 | `RestoreApplyValidator` 验证 durable backup artifact 和 pre-restore backup evidence 的 key/digest；`RestoreApplyCoordinator` 要求 policy approval、apply lock 和 health check 后返回 gated/blocked report，不执行破坏性恢复。 |
+| Restore staged mutation planner | 已完成 V1.14.1 | `RestoreStagedMutationPlanner` 校验 copy/delete/replace steps，拒绝 path traversal、Windows prefix/backslash 和 symlink target kind，并生成 deterministic `preflight_hash`、preview、affected paths 与 rollback manifest。 |
 | Remote target contract | 已完成 V1.10.3 | `RemoteBackupTarget` 以 typed contract 记录 filesystem/object-store/S3-compatible 灾备目标；当前只记录和签名，不执行远端上传。 |
 | MigrationPackage | 已完成 V1.4 | `MigrationPackageManifest` 声明 source/target、affected sections、reversible 和 checksum；`MigrationPackageService::verify_preflight` 输出 ready/planned/blocked。 |
 | ReleaseSnapshot | 已完成 V1.4 | `ReleaseSnapshotService::create` 将 snapshot 绑定到已验证 backup manifest、release ref、generation 和 health status。 |
@@ -37,6 +38,8 @@ V1.10.4 之后，backup artifact 是稳定 archive payload，带 checksum、mani
 | `ManifestVerifier::verify_backup_archive` | 校验 archive artifact key、checksum 和 signature。 |
 | `RestoreApplyValidator::dry_run` | 校验 restore apply plan 指向的 backup artifact 和 pre-restore evidence key/digest；输出 `apply_allowed:false`。 |
 | `RestoreApplyCoordinator::apply` | 在 dry-run evidence、policy approval、apply lock 和 health check 之后输出 gated/blocked report；当前保持 `mutation_executed:false`。 |
+| `RestoreMutationStep` / `RestoreStagedMutationPlanner` | 把 restore target 拆成 copy/delete/replace file steps，生成 plan-only `mutation_plan` evidence。 |
+| `RestoreStagedMutationPlan` / `RestoreRollbackEntry` | 暴露 `affected_paths`、`preview`、`preflight_hash` 和 rollback manifest，供后续 mutation engine/rollback apply 使用。 |
 | `RestoreApplyLock` / `RestoreApplyLockStore` | 表达 restore apply 独占锁；filesystem store 写入 `{plan_id}.restore.lock`，冲突返回稳定 `Conflict`。 |
 | `RestoreApplyHealthCheck` | 表达 pre-apply health gate；失败时阻断 apply 并要求 rollback plan。 |
 | `InMemoryRestoreApplyLockStore` / `FileSystemRestoreApplyLockStore` | 分别用于单元测试和 CLI 持久锁目录。 |
@@ -71,6 +74,15 @@ pre_restore_backup_artifact_id=pre-restore-plan-123
 pre_restore_backup_digest=sha256:<hex>
 ```
 
+V1.14.1 起，plan 文件还可以追加 staged mutation preview 字段；这些字段只生成 `mutation_plan`，不会写盘：
+
+```text
+restore_target_root=workspace
+mutation_step=copy|config/eva.yaml|backup/config|sha256:<hex>|none|file
+mutation_step=replace|bin/eva|backup/bin|sha256:<hex>|sha256:<old>|file
+mutation_step=delete|logs/old.log|none|none|sha256:<old>|file
+```
+
 ## 模块边界
 
 `eva-backup` 做：
@@ -79,6 +91,7 @@ pre_restore_backup_digest=sha256:<hex>
 - 与 `eva-storage::ArtifactStore` 集成保存 artifact。
 - 生成 signed archive、可选 sealed archive 和 remote target typed contract。
 - 在 restore apply dry-run 和 apply gate 前强制验证 pre-restore backup evidence。
+- 生成 plan-only staged mutation preview、affected paths、preflight hash 和 rollback manifest。
 - 输出 restore/apply 的风险摘要、apply lock、health gate 和审计字段。
 - 为 `eva-lifecycle` 提供可验证的 restore plan。
 
@@ -114,13 +127,14 @@ cargo run -- restore plan --output json
 - apply lock 冲突返回稳定 `Conflict`。
 - health check 失败时返回 `blocked`、`apply_allowed:false`，并由 CLI 输出 rollback plan。
 - gated restore apply report 保持 `mutation_executed:false`。
+- staged mutation planner 拒绝 path traversal/symlink target，并保证 preview/preflight hash 可复算。
 - digest mismatch 返回 `Conflict`。
 - migration source version mismatch 返回 blocked preflight。
 - release snapshot restore plan 保持 plan-first。
 
 ## English
 
-`eva-backup` owns signed backup archives, migration package preflight, release snapshots, manifest verification, pre-restore evidence, and restore apply gates. It verifies artifacts and can produce a gated apply report, but it does not execute destructive restore, move release pointers, or start supervisor handoff.
+`eva-backup` owns signed backup archives, migration package preflight, release snapshots, manifest verification, pre-restore evidence, restore apply gates, and plan-only staged mutation plans. It verifies artifacts and can produce a gated apply report, but it does not execute destructive restore, move release pointers, or start supervisor handoff.
 
 P6-004 adds `ReleasePointerPlan` through
 `ReleaseSnapshotService::release_pointer_plan`. The plan validates snapshot

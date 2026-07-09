@@ -10,7 +10,8 @@ use eva_backup::{
     FileSystemRestoreApplyLockStore, PreRestoreBackupEvidence, ReleaseSnapshot,
     ReleaseSnapshotService, RestoreApplyCoordinator, RestoreApplyDryRunReport,
     RestoreApplyHealthCheck, RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator,
-    RestorePlan, SnapshotRole,
+    RestoreMutationOperation, RestoreMutationStep, RestoreMutationTargetKind, RestorePlan,
+    RestoreRollbackEntry, RestoreStagedMutationPlan, SnapshotRole,
 };
 use eva_config::load_project_config;
 use eva_core::{EvaError, GenerationId, RequestId};
@@ -425,6 +426,8 @@ pub(super) fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, E
     let mut backup_digest = None;
     let mut pre_restore_backup_artifact_id = None;
     let mut pre_restore_backup_digest = None;
+    let mut mutation_target_root = None;
+    let mut mutation_steps = Vec::new();
     for line in data.lines() {
         let line = line.trim_start_matches('\u{feff}');
         let trimmed = line.trim();
@@ -444,6 +447,10 @@ pub(super) fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, E
                 pre_restore_backup_artifact_id = Some(value.to_owned())
             }
             "pre_restore_backup_digest" => pre_restore_backup_digest = Some(value.to_owned()),
+            "restore_target_root" | "mutation_target_root" => {
+                mutation_target_root = Some(value.to_owned())
+            }
+            "mutation_step" => mutation_steps.push(parse_restore_mutation_step(value)?),
             _ => {
                 return Err(EvaError::invalid_argument(
                     "restore apply plan contains unsupported field",
@@ -461,14 +468,48 @@ pub(super) fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, E
             EvaError::invalid_argument("restore apply plan missing backup_digest")
         })?,
     )?;
-    match (pre_restore_backup_artifact_id, pre_restore_backup_digest) {
+    let mut plan = match (pre_restore_backup_artifact_id, pre_restore_backup_digest) {
         (Some(artifact_id), Some(digest)) => {
-            Ok(plan.with_pre_restore_backup(PreRestoreBackupEvidence::new(artifact_id, digest)?))
+            plan.with_pre_restore_backup(PreRestoreBackupEvidence::new(artifact_id, digest)?)
         }
-        (None, None) => Ok(plan),
+        (None, None) => plan,
         _ => Err(EvaError::invalid_argument(
             "restore apply plan pre-restore backup evidence must include artifact id and digest",
-        )),
+        ))?,
+    };
+    if let Some(target_root) = mutation_target_root {
+        plan = plan.with_mutation_target_root(target_root)?;
+    }
+    if !mutation_steps.is_empty() {
+        plan = plan.with_mutation_steps(mutation_steps);
+    }
+    Ok(plan)
+}
+
+fn parse_restore_mutation_step(value: &str) -> Result<RestoreMutationStep, EvaError> {
+    let parts = value.split('|').collect::<Vec<_>>();
+    if parts.len() != 6 {
+        return Err(EvaError::invalid_argument(
+            "restore mutation_step must use operation|relative_path|source_artifact_key|expected_digest|pre_restore_digest|target_kind format",
+        )
+        .with_context("mutation_step", value));
+    }
+    let operation = RestoreMutationOperation::parse(parts[0])?;
+    let target_kind = RestoreMutationTargetKind::parse(parts[5])?;
+    RestoreMutationStep::new(
+        operation,
+        parts[1],
+        optional_mutation_field(parts[2]),
+        optional_mutation_field(parts[3]),
+        optional_mutation_field(parts[4]),
+        target_kind,
+    )
+}
+
+fn optional_mutation_field(value: &str) -> Option<String> {
+    match value {
+        "" | "-" | "none" | "null" => None,
+        _ => Some(value.to_owned()),
     }
 }
 
@@ -512,6 +553,24 @@ fn write_restore_apply_dry_run<W: Write>(
                 .map_err(write_error_kind)?;
             writeln!(
                 writer,
+                "mutation_planned: {}",
+                result.report.mutation_plan.mutation_planned
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "affected_paths: {}",
+                result.report.mutation_plan.affected_paths.len()
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "preflight_hash: {}",
+                result.report.mutation_plan.preflight_hash
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
                 "pre_restore_backup: {}",
                 result.report.pre_restore_backup_artifact_key
             )
@@ -550,6 +609,18 @@ fn write_restore_apply<W: Write>(
                 writer,
                 "mutation_executed: {}",
                 result.report.mutation_executed
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "mutation_planned: {}",
+                result.report.mutation_plan.mutation_planned
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "preflight_hash: {}",
+                result.report.mutation_plan.preflight_hash
             )
             .map_err(write_error_kind)?;
             writeln!(writer, "lock: {}", result.report.lock.lock_id).map_err(write_error_kind)?;
@@ -598,7 +669,7 @@ fn restore_apply_dry_run_report_json(
     artifact_store: &ArtifactStoreRef,
 ) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"pre_restore_backup_artifact_key\":{},\"pre_restore_expected_digest\":{},\"pre_restore_actual_digest\":{},\"artifact_store\":{},\"audit\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"pre_restore_backup_artifact_key\":{},\"pre_restore_expected_digest\":{},\"pre_restore_actual_digest\":{},\"mutation_plan\":{},\"artifact_store\":{},\"audit\":{}}}",
         json_string(&report.plan_id),
         json_string(&report.status),
         report.apply_allowed,
@@ -608,6 +679,7 @@ fn restore_apply_dry_run_report_json(
         json_string(&report.pre_restore_backup_artifact_key),
         json_string(&report.pre_restore_expected_digest),
         json_string(&report.pre_restore_actual_digest),
+        restore_mutation_plan_json(&report.mutation_plan),
         artifact_store_ref_json(artifact_store),
         json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
@@ -615,11 +687,12 @@ fn restore_apply_dry_run_report_json(
 
 fn restore_apply_json(result: &RestoreApplyResult) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"backup_artifact_key\":{},\"pre_restore_backup_artifact_key\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"steps\":{},\"risks\":{},\"audit\":{},\"rollback_plan\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"mutation_plan\":{},\"backup_artifact_key\":{},\"pre_restore_backup_artifact_key\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"steps\":{},\"risks\":{},\"audit\":{},\"rollback_plan\":{}}}",
         json_string(&result.report.plan_id),
         json_string(&result.report.status),
         result.report.apply_allowed,
         result.report.mutation_executed,
+        restore_mutation_plan_json(&result.report.mutation_plan),
         json_string(&result.report.backup_artifact_key),
         json_string(&result.report.pre_restore_backup_artifact_key),
         restore_apply_lock_json(&result.report.lock),
@@ -637,6 +710,47 @@ fn restore_apply_json(result: &RestoreApplyResult) -> String {
             .map(rollback_plan_json)
             .unwrap_or_else(|| "null".to_owned())
     )
+}
+
+fn restore_mutation_plan_json(plan: &RestoreStagedMutationPlan) -> String {
+    format!(
+        "{{\"plan_id\":{},\"target_root\":{},\"mutation_planned\":{},\"mutation_executed\":{},\"steps\":{},\"affected_paths\":{},\"preview\":{},\"preflight_hash\":{},\"rollback_manifest\":{},\"audit\":{}}}",
+        json_string(&plan.plan_id),
+        json_string(&plan.target_root),
+        plan.mutation_planned,
+        plan.mutation_executed,
+        json_array(plan.steps.iter().map(restore_mutation_step_json)),
+        json_array(plan.affected_paths.iter().map(|path| json_string(path))),
+        json_array(plan.preview.iter().map(|entry| json_string(entry))),
+        json_string(&plan.preflight_hash),
+        json_array(plan.rollback_manifest.iter().map(restore_rollback_entry_json)),
+        json_array(plan.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn restore_mutation_step_json(step: &RestoreMutationStep) -> String {
+    format!(
+        "{{\"operation\":{},\"relative_path\":{},\"source_artifact_key\":{},\"expected_digest\":{},\"pre_restore_digest\":{},\"target_kind\":{}}}",
+        json_string(step.operation.as_str()),
+        json_string(&step.relative_path),
+        option_json(step.source_artifact_key.as_deref()),
+        option_json(step.expected_digest.as_deref()),
+        option_json(step.pre_restore_digest.as_deref()),
+        json_string(step.target_kind.as_str())
+    )
+}
+
+fn restore_rollback_entry_json(entry: &RestoreRollbackEntry) -> String {
+    format!(
+        "{{\"relative_path\":{},\"action\":{},\"pre_restore_digest\":{}}}",
+        json_string(&entry.relative_path),
+        json_string(&entry.action),
+        option_json(entry.pre_restore_digest.as_deref())
+    )
+}
+
+fn option_json(value: Option<&str>) -> String {
+    value.map(json_string).unwrap_or_else(|| "null".to_owned())
 }
 
 fn restore_apply_lock_json(lock: &eva_backup::RestoreApplyLock) -> String {

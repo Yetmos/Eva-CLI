@@ -27,4 +27,6 @@ pub use restore_apply::{
     FileSystemRestoreApplyLockStore, InMemoryRestoreApplyLockStore, PreRestoreBackupEvidence,
     RestoreApplyCoordinator, RestoreApplyDryRunReport, RestoreApplyHealthCheck, RestoreApplyLock,
     RestoreApplyLockStore, RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator,
+    RestoreMutationOperation, RestoreMutationStep, RestoreMutationTargetKind, RestoreRollbackEntry,
+    RestoreStagedMutationPlan, RestoreStagedMutationPlanner,
 };

@@ -1,13 +1,14 @@
-//! Restore apply validation, lock, policy, and health gate boundaries.
+//! Restore apply validation, staged mutation planning, lock, policy, and health gate boundaries.
 
+use crate::archive::digest_bytes;
 use crate::manifest_verifier::ManifestVerifier;
 use eva_core::EvaError;
 use eva_policy::PolicyDecision;
 use eva_storage::ArtifactRecord;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
@@ -25,6 +26,8 @@ pub struct RestoreApplyPlan {
     pub backup_artifact_id: String,
     pub backup_digest: String,
     pub pre_restore_backup: Option<PreRestoreBackupEvidence>,
+    pub mutation_target_root: String,
+    pub mutation_steps: Vec<RestoreMutationStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +41,50 @@ pub struct RestoreApplyDryRunReport {
     pub pre_restore_actual_digest: String,
     pub status: String,
     pub apply_allowed: bool,
+    pub mutation_plan: RestoreStagedMutationPlan,
+    pub audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreMutationOperation {
+    Copy,
+    Delete,
+    Replace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreMutationTargetKind {
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreMutationStep {
+    pub operation: RestoreMutationOperation,
+    pub relative_path: String,
+    pub source_artifact_key: Option<String>,
+    pub expected_digest: Option<String>,
+    pub pre_restore_digest: Option<String>,
+    pub target_kind: RestoreMutationTargetKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreRollbackEntry {
+    pub relative_path: String,
+    pub action: String,
+    pub pre_restore_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreStagedMutationPlan {
+    pub plan_id: String,
+    pub target_root: String,
+    pub mutation_planned: bool,
+    pub mutation_executed: bool,
+    pub steps: Vec<RestoreMutationStep>,
+    pub affected_paths: Vec<String>,
+    pub preview: Vec<String>,
+    pub preflight_hash: String,
+    pub rollback_manifest: Vec<RestoreRollbackEntry>,
     pub audit: Vec<String>,
 }
 
@@ -62,6 +109,7 @@ pub struct RestoreApplyReport {
     pub status: String,
     pub apply_allowed: bool,
     pub mutation_executed: bool,
+    pub mutation_plan: RestoreStagedMutationPlan,
     pub lock: RestoreApplyLock,
     pub health: RestoreApplyHealthCheck,
     pub backup_artifact_key: String,
@@ -95,6 +143,9 @@ pub struct RestoreApplyValidator;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RestoreApplyCoordinator;
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RestoreStagedMutationPlanner;
+
 impl RestoreApplyPlan {
     pub fn new(
         plan_id: impl Into<String>,
@@ -116,6 +167,8 @@ impl RestoreApplyPlan {
             backup_artifact_id,
             backup_digest,
             pre_restore_backup: None,
+            mutation_target_root: ".".to_owned(),
+            mutation_steps: Vec::new(),
         })
     }
 
@@ -129,6 +182,19 @@ impl RestoreApplyPlan {
 
     pub fn with_pre_restore_backup(mut self, evidence: PreRestoreBackupEvidence) -> Self {
         self.pre_restore_backup = Some(evidence);
+        self
+    }
+
+    pub fn with_mutation_target_root(
+        mut self,
+        target_root: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        self.mutation_target_root = validate_restore_target_root(target_root.into())?;
+        Ok(self)
+    }
+
+    pub fn with_mutation_steps(mut self, steps: Vec<RestoreMutationStep>) -> Self {
+        self.mutation_steps = steps;
         self
     }
 }
@@ -177,6 +243,184 @@ impl RestoreApplyHealthCheck {
         Ok(Self {
             healthy: false,
             message,
+        })
+    }
+}
+
+impl RestoreMutationOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Delete => "delete",
+            Self::Replace => "replace",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "copy" => Ok(Self::Copy),
+            "delete" => Ok(Self::Delete),
+            "replace" => Ok(Self::Replace),
+            _ => Err(EvaError::invalid_argument(
+                "restore mutation operation must be copy, delete, or replace",
+            )
+            .with_context("operation", value)),
+        }
+    }
+}
+
+impl RestoreMutationTargetKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "file" => Ok(Self::File),
+            "symlink" => Err(EvaError::invalid_argument(
+                "restore mutation plan rejects symlink targets",
+            )
+            .with_context("target_kind", value)),
+            _ => Err(
+                EvaError::invalid_argument("restore mutation target kind must be file")
+                    .with_context("target_kind", value),
+            ),
+        }
+    }
+}
+
+impl RestoreMutationStep {
+    pub fn copy_file(
+        relative_path: impl Into<String>,
+        source_artifact_key: impl Into<String>,
+        expected_digest: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        Self::new(
+            RestoreMutationOperation::Copy,
+            relative_path,
+            Some(source_artifact_key.into()),
+            Some(expected_digest.into()),
+            None,
+            RestoreMutationTargetKind::File,
+        )
+    }
+
+    pub fn delete_file(
+        relative_path: impl Into<String>,
+        pre_restore_digest: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        Self::new(
+            RestoreMutationOperation::Delete,
+            relative_path,
+            None,
+            None,
+            Some(pre_restore_digest.into()),
+            RestoreMutationTargetKind::File,
+        )
+    }
+
+    pub fn replace_file(
+        relative_path: impl Into<String>,
+        source_artifact_key: impl Into<String>,
+        expected_digest: impl Into<String>,
+        pre_restore_digest: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        Self::new(
+            RestoreMutationOperation::Replace,
+            relative_path,
+            Some(source_artifact_key.into()),
+            Some(expected_digest.into()),
+            Some(pre_restore_digest.into()),
+            RestoreMutationTargetKind::File,
+        )
+    }
+
+    pub fn new(
+        operation: RestoreMutationOperation,
+        relative_path: impl Into<String>,
+        source_artifact_key: Option<String>,
+        expected_digest: Option<String>,
+        pre_restore_digest: Option<String>,
+        target_kind: RestoreMutationTargetKind,
+    ) -> Result<Self, EvaError> {
+        let relative_path = validate_restore_relative_path("relative_path", relative_path.into())?;
+        let source_artifact_key = match source_artifact_key {
+            Some(value) => Some(validate_restore_artifact_key(value)?),
+            None => None,
+        };
+        let expected_digest = match expected_digest {
+            Some(value) => Some(validate_restore_digest("expected_digest", value)?),
+            None => None,
+        };
+        let pre_restore_digest = match pre_restore_digest {
+            Some(value) => Some(validate_restore_digest("pre_restore_digest", value)?),
+            None => None,
+        };
+        match operation {
+            RestoreMutationOperation::Copy => {
+                require_some(
+                    "source_artifact_key",
+                    source_artifact_key.as_deref(),
+                    operation,
+                    &relative_path,
+                )?;
+                require_some(
+                    "expected_digest",
+                    expected_digest.as_deref(),
+                    operation,
+                    &relative_path,
+                )?;
+                if pre_restore_digest.is_some() {
+                    return Err(EvaError::invalid_argument(
+                        "restore copy mutation cannot include a pre-restore digest",
+                    )
+                    .with_context("relative_path", &relative_path));
+                }
+            }
+            RestoreMutationOperation::Replace => {
+                require_some(
+                    "source_artifact_key",
+                    source_artifact_key.as_deref(),
+                    operation,
+                    &relative_path,
+                )?;
+                require_some(
+                    "expected_digest",
+                    expected_digest.as_deref(),
+                    operation,
+                    &relative_path,
+                )?;
+                require_some(
+                    "pre_restore_digest",
+                    pre_restore_digest.as_deref(),
+                    operation,
+                    &relative_path,
+                )?;
+            }
+            RestoreMutationOperation::Delete => {
+                if source_artifact_key.is_some() || expected_digest.is_some() {
+                    return Err(EvaError::invalid_argument(
+                        "restore delete mutation cannot include source artifact or expected digest",
+                    )
+                    .with_context("relative_path", &relative_path));
+                }
+                require_some(
+                    "pre_restore_digest",
+                    pre_restore_digest.as_deref(),
+                    operation,
+                    &relative_path,
+                )?;
+            }
+        }
+        Ok(Self {
+            operation,
+            relative_path,
+            source_artifact_key,
+            expected_digest,
+            pre_restore_digest,
+            target_kind,
         })
     }
 }
@@ -289,6 +533,19 @@ impl RestoreApplyValidator {
         let verification = ManifestVerifier::verify_artifact(artifact, &plan.backup_digest)?;
         let pre_restore_verification =
             ManifestVerifier::verify_artifact(pre_restore_artifact, &pre_restore.backup_digest)?;
+        let mutation_plan = RestoreStagedMutationPlanner.plan(plan)?;
+        let mut audit = vec![
+            "restore.apply:dry_run".to_owned(),
+            "backup:verified".to_owned(),
+            "pre_restore_backup:verified".to_owned(),
+            "apply_allowed:false".to_owned(),
+        ];
+        audit.extend(
+            mutation_plan
+                .audit
+                .iter()
+                .map(|entry| format!("mutation:{entry}")),
+        );
         Ok(RestoreApplyDryRunReport {
             plan_id: plan.plan_id.clone(),
             backup_artifact_key: artifact.key.clone(),
@@ -299,12 +556,56 @@ impl RestoreApplyValidator {
             pre_restore_actual_digest: pre_restore_verification.actual_digest,
             status: "dry_run_validated".to_owned(),
             apply_allowed: false,
-            audit: vec![
-                "restore.apply:dry_run".to_owned(),
-                "backup:verified".to_owned(),
-                "pre_restore_backup:verified".to_owned(),
-                "apply_allowed:false".to_owned(),
-            ],
+            mutation_plan,
+            audit,
+        })
+    }
+}
+
+impl RestoreStagedMutationPlanner {
+    pub fn plan(&self, plan: &RestoreApplyPlan) -> Result<RestoreStagedMutationPlan, EvaError> {
+        let target_root = validate_restore_target_root(plan.mutation_target_root.clone())?;
+        let mut affected_paths = BTreeSet::new();
+        let mut preview = Vec::new();
+        let mut rollback_manifest = Vec::new();
+        for step in &plan.mutation_steps {
+            affected_paths.insert(step.relative_path.clone());
+            preview.push(mutation_preview(step));
+            rollback_manifest.push(rollback_entry(step));
+        }
+        let affected_paths = affected_paths.into_iter().collect::<Vec<_>>();
+        let preflight_hash = digest_bytes(
+            canonical_mutation_plan_payload(
+                plan,
+                &target_root,
+                &affected_paths,
+                &rollback_manifest,
+            )
+            .as_bytes(),
+        );
+        let mutation_planned = !plan.mutation_steps.is_empty();
+        let mut audit = vec!["restore.mutation:plan_only".to_owned()];
+        if mutation_planned {
+            audit.push("restore.mutation:staged_steps_validated".to_owned());
+            audit.push(format!(
+                "restore.mutation:affected_paths={}",
+                affected_paths.len()
+            ));
+            audit.push("mutation_executed:false".to_owned());
+        } else {
+            audit.push("restore.mutation:no_steps_declared".to_owned());
+        }
+        Ok(RestoreStagedMutationPlan {
+            plan_id: plan.plan_id.clone(),
+            target_root,
+            mutation_planned,
+            mutation_executed: false,
+            steps: plan.mutation_steps.clone(),
+            affected_paths,
+            preview,
+            preflight_hash,
+            rollback_manifest,
+            audit,
         })
     }
 }
@@ -342,6 +643,7 @@ impl RestoreApplyCoordinator {
                 status: "gated".to_owned(),
                 apply_allowed: true,
                 mutation_executed: false,
+                mutation_plan: dry_run.mutation_plan.clone(),
                 lock,
                 health,
                 backup_artifact_key: dry_run.backup_artifact_key.clone(),
@@ -362,6 +664,7 @@ impl RestoreApplyCoordinator {
                 status: "blocked".to_owned(),
                 apply_allowed: false,
                 mutation_executed: false,
+                mutation_plan: dry_run.mutation_plan.clone(),
                 lock,
                 health,
                 backup_artifact_key: dry_run.backup_artifact_key.clone(),
@@ -393,6 +696,179 @@ fn validate_token(field: &'static str, value: String) -> Result<String, EvaError
         );
     }
     Ok(value)
+}
+
+fn validate_restore_target_root(value: String) -> Result<String, EvaError> {
+    if value.trim().is_empty() || value.trim() != value || value.contains('\0') {
+        return Err(EvaError::invalid_argument(
+            "restore mutation target root must be non-empty and trimmed",
+        )
+        .with_context("target_root", value));
+    }
+    if value.contains("..") {
+        return Err(EvaError::invalid_argument(
+            "restore mutation target root cannot contain parent traversal",
+        )
+        .with_context("target_root", value));
+    }
+    Ok(value)
+}
+
+fn validate_restore_relative_path(field: &'static str, value: String) -> Result<String, EvaError> {
+    if value.trim().is_empty() || value.trim() != value || value.contains('\0') {
+        return Err(EvaError::invalid_argument(
+            "restore mutation path must be non-empty and trimmed",
+        )
+        .with_context("field", field)
+        .with_context("path", value));
+    }
+    if value.contains('\\') || value.contains(':') || value.contains('|') {
+        return Err(EvaError::invalid_argument(
+            "restore mutation path must be a stable forward-slash relative path",
+        )
+        .with_context("field", field)
+        .with_context("path", value));
+    }
+    if value.split('/').any(|segment| segment.is_empty()) {
+        return Err(EvaError::invalid_argument(
+            "restore mutation path cannot contain empty components",
+        )
+        .with_context("field", field)
+        .with_context("path", value));
+    }
+    for component in Path::new(&value).components() {
+        match component {
+            Component::Normal(_) => {}
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return Err(EvaError::invalid_argument(
+                    "restore mutation path must stay inside target root",
+                )
+                .with_context("field", field)
+                .with_context("path", value));
+            }
+        }
+    }
+    Ok(value)
+}
+
+fn validate_restore_artifact_key(value: String) -> Result<String, EvaError> {
+    validate_restore_relative_path("source_artifact_key", value)
+}
+
+fn validate_restore_digest(field: &'static str, value: String) -> Result<String, EvaError> {
+    if !value.starts_with("sha256:") || value.trim() != value {
+        return Err(
+            EvaError::invalid_argument("restore mutation digest must be sha256")
+                .with_context("field", field)
+                .with_context("digest", value),
+        );
+    }
+    Ok(value)
+}
+
+fn require_some(
+    field: &'static str,
+    value: Option<&str>,
+    operation: RestoreMutationOperation,
+    relative_path: &str,
+) -> Result<(), EvaError> {
+    if value.is_some() {
+        return Ok(());
+    }
+    Err(
+        EvaError::invalid_argument("restore mutation step is missing a required field")
+            .with_context("field", field)
+            .with_context("operation", operation.as_str())
+            .with_context("relative_path", relative_path),
+    )
+}
+
+fn mutation_preview(step: &RestoreMutationStep) -> String {
+    match step.operation {
+        RestoreMutationOperation::Copy => format!(
+            "copy {} from {} expecting {}",
+            step.relative_path,
+            step.source_artifact_key.as_deref().unwrap_or("<missing>"),
+            step.expected_digest.as_deref().unwrap_or("<missing>")
+        ),
+        RestoreMutationOperation::Delete => format!(
+            "delete {} after verifying pre-restore {}",
+            step.relative_path,
+            step.pre_restore_digest.as_deref().unwrap_or("<missing>")
+        ),
+        RestoreMutationOperation::Replace => format!(
+            "replace {} from {} expecting {} after pre-restore {}",
+            step.relative_path,
+            step.source_artifact_key.as_deref().unwrap_or("<missing>"),
+            step.expected_digest.as_deref().unwrap_or("<missing>"),
+            step.pre_restore_digest.as_deref().unwrap_or("<missing>")
+        ),
+    }
+}
+
+fn rollback_entry(step: &RestoreMutationStep) -> RestoreRollbackEntry {
+    match step.operation {
+        RestoreMutationOperation::Copy => RestoreRollbackEntry {
+            relative_path: step.relative_path.clone(),
+            action: "delete_restored_path".to_owned(),
+            pre_restore_digest: None,
+        },
+        RestoreMutationOperation::Delete | RestoreMutationOperation::Replace => {
+            RestoreRollbackEntry {
+                relative_path: step.relative_path.clone(),
+                action: "restore_pre_restore_digest".to_owned(),
+                pre_restore_digest: step.pre_restore_digest.clone(),
+            }
+        }
+    }
+}
+
+fn canonical_mutation_plan_payload(
+    plan: &RestoreApplyPlan,
+    target_root: &str,
+    affected_paths: &[String],
+    rollback_manifest: &[RestoreRollbackEntry],
+) -> String {
+    let mut payload = format!(
+        "restore-mutation-plan:v1\nplan_id={}\ntarget_root={}\nbackup_artifact_key={}\npre_restore_backup_artifact_key={}\n",
+        plan.plan_id,
+        target_root,
+        plan.backup_artifact_key(),
+        plan.pre_restore_backup
+            .as_ref()
+            .map(PreRestoreBackupEvidence::backup_artifact_key)
+            .unwrap_or_else(|| "<missing>".to_owned())
+    );
+    payload.push_str(&format!("steps={}\n", plan.mutation_steps.len()));
+    for (index, step) in plan.mutation_steps.iter().enumerate() {
+        payload.push_str(&format!(
+            "step[{index}]={}|{}|{}|{}|{}|{}\n",
+            step.operation.as_str(),
+            step.relative_path,
+            step.source_artifact_key.as_deref().unwrap_or("none"),
+            step.expected_digest.as_deref().unwrap_or("none"),
+            step.pre_restore_digest.as_deref().unwrap_or("none"),
+            step.target_kind.as_str()
+        ));
+    }
+    payload.push_str(&format!("affected_paths={}\n", affected_paths.len()));
+    for path in affected_paths {
+        payload.push_str(&format!("affected={path}\n"));
+    }
+    payload.push_str(&format!("rollback_entries={}\n", rollback_manifest.len()));
+    for (index, entry) in rollback_manifest.iter().enumerate() {
+        payload.push_str(&format!(
+            "rollback[{index}]={}|{}|{}\n",
+            entry.relative_path,
+            entry.action,
+            entry.pre_restore_digest.as_deref().unwrap_or("none")
+        ));
+    }
+    payload.push_str("mutation_executed=false\n");
+    payload
 }
 
 fn build_restore_lock(plan: &RestoreApplyPlan, owner: &str) -> Result<RestoreApplyLock, EvaError> {
@@ -529,6 +1005,92 @@ mod tests {
             report.pre_restore_backup_artifact_key,
             "backup/pre-restore-1"
         );
+        assert!(!report.mutation_plan.mutation_executed);
+        assert_eq!(report.mutation_plan.audit[0], "restore.mutation:plan_only");
+    }
+
+    #[test]
+    fn staged_mutation_planner_builds_reproducible_preview_and_rollback_manifest() {
+        let artifact = ArtifactRecord::new("backup/backup-1", b"archive".as_slice());
+        let pre_restore = ArtifactRecord::new("backup/pre-restore-1", b"before".as_slice());
+        let copy_digest = ArtifactRecord::new("backup/config", b"config".as_slice()).digest;
+        let replace_digest = ArtifactRecord::new("backup/bin", b"binary".as_slice()).digest;
+        let delete_digest = ArtifactRecord::new("backup/log", b"log".as_slice()).digest;
+        let replaced_digest =
+            ArtifactRecord::new("backup/old-bin", b"old-binary".as_slice()).digest;
+        let plan = RestoreApplyPlan::new("plan-1", "backup-1", artifact.digest)
+            .unwrap()
+            .with_pre_restore_backup(
+                PreRestoreBackupEvidence::new("pre-restore-1", pre_restore.digest).unwrap(),
+            )
+            .with_mutation_target_root("workspace")
+            .unwrap()
+            .with_mutation_steps(vec![
+                RestoreMutationStep::copy_file(
+                    "config/eva.yaml",
+                    "backup/config",
+                    copy_digest.clone(),
+                )
+                .unwrap(),
+                RestoreMutationStep::delete_file("logs/old.log", delete_digest.clone()).unwrap(),
+                RestoreMutationStep::replace_file(
+                    "bin/eva",
+                    "backup/bin",
+                    replace_digest.clone(),
+                    replaced_digest.clone(),
+                )
+                .unwrap(),
+            ]);
+
+        let staged = RestoreStagedMutationPlanner.plan(&plan).unwrap();
+        let staged_again = RestoreStagedMutationPlanner.plan(&plan).unwrap();
+
+        assert!(staged.mutation_planned);
+        assert!(!staged.mutation_executed);
+        assert_eq!(staged.preflight_hash, staged_again.preflight_hash);
+        assert_eq!(
+            staged.affected_paths,
+            vec![
+                "bin/eva".to_owned(),
+                "config/eva.yaml".to_owned(),
+                "logs/old.log".to_owned()
+            ]
+        );
+        assert_eq!(staged.preview.len(), 3);
+        assert!(staged.preview[0].contains("copy config/eva.yaml"));
+        assert_eq!(staged.rollback_manifest[0].action, "delete_restored_path");
+        assert_eq!(
+            staged.rollback_manifest[1].pre_restore_digest.as_deref(),
+            Some(delete_digest.as_str())
+        );
+        assert_eq!(
+            staged.rollback_manifest[2].pre_restore_digest.as_deref(),
+            Some(replaced_digest.as_str())
+        );
+    }
+
+    #[test]
+    fn staged_mutation_planner_rejects_path_escape_and_symlink_targets() {
+        let digest = ArtifactRecord::new("backup/config", b"config".as_slice()).digest;
+
+        let traversal =
+            RestoreMutationStep::copy_file("../secret", "backup/config", digest.clone())
+                .unwrap_err();
+        assert_eq!(traversal.kind(), eva_core::ErrorKind::InvalidArgument);
+
+        let absolute =
+            RestoreMutationStep::copy_file("/tmp/secret", "backup/config", digest).unwrap_err();
+        assert_eq!(absolute.kind(), eva_core::ErrorKind::InvalidArgument);
+
+        let windows_prefix = RestoreMutationStep::delete_file(
+            "C:/eva/secret",
+            ArtifactRecord::new("backup/secret", b"secret".as_slice()).digest,
+        )
+        .unwrap_err();
+        assert_eq!(windows_prefix.kind(), eva_core::ErrorKind::InvalidArgument);
+
+        let symlink = RestoreMutationTargetKind::parse("symlink").unwrap_err();
+        assert_eq!(symlink.kind(), eva_core::ErrorKind::InvalidArgument);
     }
 
     #[test]
