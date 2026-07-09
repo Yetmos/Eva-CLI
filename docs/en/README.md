@@ -4,7 +4,7 @@
 > Published default: docs/en/README.md
 > Current detail authority: [简体中文](../zh-CN/中文文档入口.md)
 
-Eva-CLI has reached the V1.11.4-alpha CLI command module split checkpoint. The repository now
+Eva-CLI has reached the V1.11.5-alpha CLI runtime command completion checkpoint. The repository now
 contains a compileable Rust workspace, executable CLI surfaces, configuration
 validation, an in-memory basic runtime loop, local task diagnostics, controlled
 Adapter/MCP/Skill/Discovery surfaces, request-scoped memory and knowledge
@@ -22,8 +22,8 @@ distribution install-smoke/package dry-run release evidence, external scanner
 release evidence, measured benchmark release evidence, and command module split
 coverage for the public CLI surface.
 
-Current managed project version: `V1.11.4-alpha` (`Cargo.toml` version
-`1.11.4-alpha`, prerelease Git tag form `v1.11.4-alpha`). See
+Current managed project version: `V1.11.5-alpha` (`Cargo.toml` version
+`1.11.5-alpha`, prerelease Git tag form `v1.11.5-alpha`). See
 [Eva-CLI Version Management Plan](release/version-management-plan.md).
 
 Important source rule: English documents currently provide the default public
@@ -87,6 +87,7 @@ migration policy.
 - [Eva-CLI V1.5 Release Hardening](release/v1.5-release-hardening.md)
 - [Eva-CLI V1.5 Migration Guide](release/v1.5-migration-guide.md)
 - [Eva-CLI V1.5 Compatibility Policy](release/v1.5-compatibility-policy.md)
+- [Eva-CLI V1.11.5 Alpha Release Notes](release/release-notes-v1.11.5.md)
 - [Eva-CLI V1.11.4 Alpha Release Notes](release/release-notes-v1.11.4.md)
 - [Eva-CLI V1.7.3 Alpha Release Notes](release/release-notes-v1.7.3.md)
 - [Eva-CLI V1.7.2 Alpha Release Notes](release/release-notes-v1.7.2.md)

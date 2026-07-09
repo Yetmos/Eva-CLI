@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | 多 Agent 运行时",
-    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.11.4-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付、durable evidence、recovery checkpoint、backend diagnostics、受限 Lua VM 执行、受控 Lua host binding、Lua resource limit、Lua hot-reload lifecycle evidence、release distribution evidence 和 CLI command module split coverage 组织运行时能力。"
+    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.11.5-alpha CLI runtime，通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、GHCR package 交付、durable evidence、recovery checkpoint、backend diagnostics、受限 Lua VM 执行、受控 Lua host binding、Lua resource limit、Lua hot-reload lifecycle evidence、release distribution evidence、CLI command module split coverage 和 runtime command completion 组织运行时能力。"
   },
   "brand": {
     "tagline": "多 Agent 运行时"
@@ -38,24 +38,24 @@
         "description": "通过权限边界接入 CLI、MCP、HTTP、Skill 与硬件。"
       }
     ],
-    "runtimePanelNote": "V1.11.4-alpha 保留 V1.7.4 Lua hot-reload lifecycle 边界，并补齐 V1.8 到 V1.11 的发布证据线：adapter、MCP、Skill、policy、discovery、memory、observability、hardware apply gate、distribution check、external scanner gate、benchmark evidence 和 CLI 命令模块拆分覆盖。",
+    "runtimePanelNote": "V1.11.5-alpha 保留 V1.7.4 Lua hot-reload lifecycle 边界，并补齐 V1.8 到 V1.11.5 的证据线：adapter、MCP、Skill、policy、discovery、memory、observability、hardware apply gate、distribution check、external scanner gate、benchmark evidence、CLI 命令模块拆分、typed event emission、Agent lifecycle evidence 和 capability routing。",
     "actionsLabel": "项目入口",
     "primaryAction": "阅读文档",
     "secondaryAction": "总体架构",
     "progressAction": "开发进度",
     "progressEyebrow": "开发进度",
-    "progressTitle": "从架构骨架走向发布证据与命令模块化",
+    "progressTitle": "从架构骨架走向发布证据与 runtime 命令面",
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
-    "progressCurrentTitle": "V1.11.4-alpha CLI 命令模块拆分已经落地",
-    "progressCurrentBody": "仓库现在拥有 V1.5 发布加固与 GHCR 交付面、V1.6 durable backend 契约、filesystem EventLog、DurableEventBus、可重启读取的 task snapshot、durable audit record、artifact metadata hardening、runtime recovery scanning、ack-safe redrive、recovery audit smoke、inspect.durable diagnostics、V1.7 Lua 执行与热更新生命周期门禁、V1.8 到 V1.10 runtime capability 基线、V1.11 release distribution evidence gate，以及 V1.11.4 CLI command module split coverage。",
+    "progressCurrentTitle": "V1.11.5-alpha CLI runtime 命令补齐已经落地",
+    "progressCurrentBody": "仓库现在拥有 V1.5 发布加固与 GHCR 交付面、V1.6 durable backend 契约、filesystem EventLog、DurableEventBus、可重启读取的 task snapshot、durable audit record、artifact metadata hardening、runtime recovery scanning、ack-safe redrive、recovery audit smoke、inspect.durable diagnostics、V1.7 Lua 执行与热更新生命周期门禁、V1.8 到 V1.10 runtime capability 基线、V1.11 release distribution evidence gate、V1.11.4 CLI command module split coverage，以及 V1.11.5 emit、Agent lifecycle 和 capability routing 命令证据。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
-      "完成 V1.11.5 runtime inspection 命令：typed event emission、Agent lifecycle controls 和 capability routing。",
-      "所有新增命令继续保持稳定 text/JSON envelope、trace fields、policy gate，以及涉及 mutation 时的 dry-run 或 confirm 边界。",
-      "以 V1.11.4 的拆分模块作为最终 V1.x CLI 命令面的基线。"
+      "在后续 daemon-backed apply 路径扩展前继续保持 runtime 命令契约稳定。",
+      "在扩大外部副作用前补齐 provider supervision、durable audit wiring 和生产级 policy gate。",
+      "restore、upgrade、hardware 和 lifecycle 等高风险路径继续保留显式 evidence 与 confirmation gate。"
     ],
     "featuredBlogEyebrow": "推荐阅读",
     "featuredBlogTitle": "来自博客的最新设计笔记",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "当前",
-        "label": "V1.11.4-alpha CLI 命令模块拆分",
-        "description": "V1.6 durable 基线、V1.7 Lua 执行生命周期、V1.8 到 V1.10 runtime capability 基线、V1.11 release evidence gate 和 V1.11.4 命令模块拆分覆盖已经就位。"
+        "label": "V1.11.5-alpha CLI runtime 命令补齐",
+        "description": "V1.6 durable 基线、V1.7 Lua 执行生命周期、V1.8 到 V1.10 runtime capability 基线、V1.11 release evidence gate、V1.11.4 命令模块拆分和 V1.11.5 runtime 命令证据已经就位。"
       },
       {
         "status": "later",
@@ -163,6 +163,11 @@
         "id": "install-upgrade-uninstall",
         "title": "安装、升级和卸载",
         "description": "V1.11.2 native archive install smoke 路径、升级/卸载命令、release-distribution evidence 和 package-manager dry-run 门禁。"
+      },
+      {
+        "id": "release-notes-v1.11.5",
+        "title": "V1.11.5 Alpha 发布说明",
+        "description": "补齐 typed event emission、Agent lifecycle evidence 命令和带 dry-run/confirm gate 的 capability provider-routing 命令的 alpha 预发布。"
       },
       {
         "id": "release-notes-v1.11.4",
@@ -378,6 +383,11 @@
         "description": "V1.5 源码发布面的 JSON envelope、exit code、命令面和废弃窗口承诺。"
       },
       {
+        "id": "release-notes-v1.11.5",
+        "title": "V1.11.5 Alpha 发布说明",
+        "description": "补齐 typed event emission、Agent lifecycle evidence 命令和带 dry-run/confirm gate 的 capability provider-routing 命令的 alpha 预发布。"
+      },
+      {
         "id": "release-notes-v1.11.4",
         "title": "V1.11.4 Alpha 发布说明",
         "description": "在 CLI 命令模块拆分检查点上固定版本元数据、补入发布说明，并让 release readiness evidence 与 V1.11.4 tag 对齐的 alpha 预发布。"
@@ -471,7 +481,7 @@
   "feedback": {
     "eyebrow": "反馈",
     "title": "反馈和建议",
-    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.11.4-alpha CLI 命令模块拆分检查点；关于命令输出、文档、package 拉取、release evidence gate、backend diagnostics、generation route gate、rollback audit evidence 和 V1.11.5 runtime 命令面的具体反馈尤其有价值。",
+    "body": "可以通过邮件反馈文档、架构、发布门禁、兼容性、package 或使用场景建议。Eva-CLI 当前处于 V1.11.5-alpha CLI runtime 命令补齐检查点；关于命令输出、文档、package 拉取、release evidence gate、backend diagnostics、generation route gate、rollback audit evidence、typed event emission、Agent lifecycle evidence 和 capability routing 的具体反馈尤其有价值。",
     "contactLabel": "联系邮箱",
     "categoryLabel": "反馈类型",
     "categoryOptions": ["功能建议", "问题反馈", "文档建议", "合作交流", "其他"],

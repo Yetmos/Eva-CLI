@@ -27,8 +27,8 @@ module split evidence, plus V1.11.5.1 typed event `emit` publish evidence,
 V1.11.5.2 `agent status/drain/reload` lifecycle evidence, and V1.11.5.3
 `capability list/probe/call` provider-routing evidence.
 
-Current managed project version: `V1.11.4-alpha` (`Cargo.toml` version
-`1.11.4-alpha`, prerelease Git tag form `v1.11.4-alpha`). Version policy is defined in
+Current managed project version: `V1.11.5-alpha` (`Cargo.toml` version
+`1.11.5-alpha`, prerelease Git tag form `v1.11.5-alpha`). Version policy is defined in
 [Version Management Plan](docs/en/release/version-management-plan.md).
 
 The website uses English as the default public entry with stable
@@ -46,10 +46,10 @@ maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
 
 ## Current Project Progress
 
-Updated: 2026-07-07
+Updated: 2026-07-09
 
-Eva-CLI has moved past a design-only repository and now has a V1.11.4-alpha
-CLI module-split runtime surface. It includes a compileable Rust workspace, configuration examples and
+Eva-CLI has moved past a design-only repository and now has a V1.11.5-alpha
+CLI runtime command surface. It includes a compileable Rust workspace, configuration examples and
 schemas, implemented foundation contracts, project configuration loading, a
 V1.0 CLI quickstart, the `in_memory_v1.0` basic runtime composition root, local
 `.eva/tasks` diagnostics, Adapter/MCP/Skill/Discovery diagnostics,
@@ -226,6 +226,7 @@ The release-hardening docs are:
 - [V1.5 Release Hardening](docs/en/release/v1.5-release-hardening.md)
 - [V1.5 Migration Guide](docs/en/release/v1.5-migration-guide.md)
 - [V1.5 Compatibility Policy](docs/en/release/v1.5-compatibility-policy.md)
+- [V1.11.5 Alpha Release Notes](docs/en/release/release-notes-v1.11.5.md)
 - [V1.11.4 Alpha Release Notes](docs/en/release/release-notes-v1.11.4.md)
 - [V1.7.3 Alpha Release Notes](docs/en/release/release-notes-v1.7.3.md)
 - [V1.7.2 Alpha Release Notes](docs/en/release/release-notes-v1.7.2.md)
@@ -368,8 +369,9 @@ Core boundaries:
 
 ## Remaining V1.x Gaps
 
-V1.11.4-alpha is a source alpha and CLI module split checkpoint with V1.11.3
-release evidence gates. Later release tags that
+V1.11.5-alpha is a source alpha and CLI runtime command completion checkpoint
+with V1.11.4 module split evidence and V1.11.5 `emit`, `agent`, and
+`capability` command evidence. Later release tags that
 contain package support publish the GHCR container image `ghcr.io/yetmos/eva-cli`,
 native archive metadata, and install-smoke/package dry-run evidence; old tags
 are not republished retroactively. The main remaining work is now narrower and more

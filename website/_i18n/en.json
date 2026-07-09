@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source V1.11.4-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, Lua resource limits, Lua hot-reload lifecycle evidence, release distribution evidence, and CLI command module split coverage."
+    "description": "Eva-CLI is an open-source V1.11.5-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, Lua resource limits, Lua hot-reload lifecycle evidence, release distribution evidence, CLI command module split coverage, and runtime command completion."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,24 +38,24 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "V1.11.4-alpha keeps the V1.7.4 Lua hot-reload lifecycle boundaries and adds the V1.8 to V1.11 release evidence line: adapter, MCP, Skill, policy, discovery, memory, observability, hardware apply gates, distribution checks, external scanner gates, benchmark evidence, and CLI command module split coverage.",
+    "runtimePanelNote": "V1.11.5-alpha keeps the V1.7.4 Lua hot-reload lifecycle boundaries and adds the V1.8 to V1.11.5 evidence line: adapter, MCP, Skill, policy, discovery, memory, observability, hardware apply gates, distribution checks, external scanner gates, benchmark evidence, CLI command module split coverage, typed event emission, Agent lifecycle evidence, and capability routing.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
     "progressAction": "Development progress",
     "progressEyebrow": "Development progress",
-    "progressTitle": "From architecture scaffold to release evidence and command modules",
+    "progressTitle": "From architecture scaffold to release evidence and runtime commands",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.11.4-alpha CLI command module split is implemented",
-    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7 Lua execution and hot-reload lifecycle gates, the V1.8 to V1.10 runtime capability baselines, the V1.11 release distribution evidence gates, and V1.11.4 CLI command module split coverage.",
+    "progressCurrentTitle": "V1.11.5-alpha CLI runtime commands are implemented",
+    "progressCurrentBody": "The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7 Lua execution and hot-reload lifecycle gates, the V1.8 to V1.10 runtime capability baselines, the V1.11 release distribution evidence gates, V1.11.4 CLI command module split coverage, and V1.11.5 emit, Agent lifecycle, and capability routing command evidence.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Finish V1.11.5 runtime inspection commands for typed event emission, Agent lifecycle controls, and capability routing.",
-      "Keep every new command behind stable text/JSON envelopes, trace fields, policy gates, and dry-run or confirmation boundaries where mutation is possible.",
-      "Use the V1.11.4 split modules as the baseline for the final V1.x CLI command surface."
+      "Keep runtime command contracts stable while widening future daemon-backed apply paths.",
+      "Add provider supervision, durable audit wiring, and production policy gates before enabling broader external side effects.",
+      "Keep high-risk restore, upgrade, hardware, and lifecycle paths behind explicit evidence and confirmation gates."
     ],
     "featuredBlogEyebrow": "Recommended reading",
     "featuredBlogTitle": "Latest design notes from the blog",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "Now",
-        "label": "V1.11.4-alpha CLI command module split",
-        "description": "The V1.6 durable baseline, V1.7 Lua execution lifecycle, V1.8 to V1.10 runtime capability baselines, V1.11 release evidence gates, and V1.11.4 command module split coverage are in place."
+        "label": "V1.11.5-alpha CLI runtime command completion",
+        "description": "The V1.6 durable baseline, V1.7 Lua execution lifecycle, V1.8 to V1.10 runtime capability baselines, V1.11 release evidence gates, V1.11.4 command module split coverage, and V1.11.5 runtime command evidence are in place."
       },
       {
         "status": "later",
@@ -163,6 +163,11 @@
         "id": "install-upgrade-uninstall",
         "title": "Install, Upgrade, And Uninstall",
         "description": "The V1.11.2 native archive install smoke path, upgrade and uninstall commands, release-distribution evidence, and package-manager dry-run gate."
+      },
+      {
+        "id": "release-notes-v1.11.5",
+        "title": "V1.11.5 Alpha Release Notes",
+        "description": "The alpha prerelease that adds typed event emission, Agent lifecycle evidence commands, and capability provider-routing commands with dry-run and confirmation gates."
       },
       {
         "id": "release-notes-v1.11.4",
@@ -378,6 +383,11 @@
         "description": "The JSON envelope, exit-code, command-surface, and deprecation guarantees for the V1.5 source release."
       },
       {
+        "id": "release-notes-v1.11.5",
+        "title": "V1.11.5 Alpha Release Notes",
+        "description": "The alpha prerelease that adds typed event emission, Agent lifecycle evidence commands, and capability provider-routing commands with dry-run and confirmation gates."
+      },
+      {
         "id": "release-notes-v1.11.4",
         "title": "V1.11.4 Alpha Release Notes",
         "description": "The alpha prerelease that fixes version metadata on the CLI module split checkpoint, adds release notes, and aligns release readiness evidence with the V1.11.4 tag."
@@ -471,7 +481,7 @@
   "feedback": {
     "eyebrow": "Feedback",
     "title": "Feedback and suggestions",
-    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.11.4-alpha CLI command module split checkpoint, so concrete reports about command output, docs, package pulls, release evidence gates, backend diagnostics, generation route gates, rollback audit evidence, and the V1.11.5 runtime command surface are especially useful.",
+    "body": "Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.11.5-alpha CLI runtime command completion checkpoint, so concrete reports about command output, docs, package pulls, release evidence gates, backend diagnostics, generation route gates, rollback audit evidence, typed event emission, Agent lifecycle evidence, and capability routing are especially useful.",
     "contactLabel": "Contact email",
     "categoryLabel": "Feedback type",
     "categoryOptions": ["Feature suggestion", "Issue report", "Documentation suggestion", "Collaboration", "Other"],

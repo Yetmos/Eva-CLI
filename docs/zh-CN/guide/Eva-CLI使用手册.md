@@ -1,12 +1,12 @@
 # Eva-CLI 使用手册
 
-更新时间：2026-07-07
+更新时间：2026-07-09
 
-适用版本：Eva-CLI `1.11.4-alpha`
+适用版本：Eva-CLI `1.11.5-alpha`
 
 本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
-V1.11.4-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
-EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates 和 CLI 命令模块拆分已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
+V1.11.5-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
+EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、Agent lifecycle evidence 和 capability provider routing 命令已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
 
 ## 当前定位
 
@@ -16,7 +16,7 @@ EventBus redrive、可重启读取的 task snapshot、durable audit record、art
 | 运行时 | `run --example basic` 通过受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环。 |
 | 外部能力 | Adapter、MCP、Skill、Discovery 当前提供受控诊断面，不启动真实 provider。 |
 | 风险动作 | 硬件绑定、恢复、升级和生命周期切换保持 plan-first，不执行 destructive apply。 |
-| 发布检查 | V1.11.4-alpha 提供 `release check/security/perf/migration` 可执行门禁，包含 Lua VM、release evidence 和 CLI split readiness。 |
+| 发布检查 | V1.11.5-alpha 提供 `release check/security/perf/migration` 可执行门禁，包含 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
 
 ![Eva-CLI 源码使用闭环](../../assets/eva-cli-user-manual-flow.zh-CN.svg)
 
@@ -47,8 +47,8 @@ cargo run -- --version
 预期版本输出包含：
 
 ```text
-eva 1.11.4-alpha
-release: V1.11.4-alpha
+eva 1.11.5-alpha
+release: V1.11.5-alpha
 ```
 
 ## 快速开始
@@ -67,7 +67,7 @@ release: V1.11.4-alpha
 | Agent 状态 | `cargo run -- agent status --agent root-agent --output json` | 输出 Agent lifecycle 和 manifest evidence。 |
 | Capability probe | `cargo run -- capability probe repo.analyze --output json` | 输出 provider plan 和 permission gate evidence。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
-| 发布门禁 | `cargo run -- release check --output json` | 输出 V1.11.4 release readiness。 |
+| 发布门禁 | `cargo run -- release check --output json` | 输出 V1.11.5 release readiness。 |
 
 文本输出适合人工查看，JSON 输出适合 CI 或脚本处理。需要稳定字段时加
 `--output json`。
@@ -95,7 +95,7 @@ release: V1.11.4-alpha
 | Snapshot | `snapshot create` | 创建绑定 backup manifest 的 release snapshot。 | 否 |
 | Restore | `restore plan` | 生成恢复计划，保持 `apply_allowed:false`。 | 否 |
 | Upgrade | `upgrade check` | 检查 generation、migration、drain 和 rollback readiness。 | 否 |
-| Release | `release check/security/perf/migration` | 执行 V1.11.4 发布准备、安全、性能和迁移门禁。 | 否 |
+| Release | `release check/security/perf/migration` | 执行 V1.11.5 发布准备、安全、性能和迁移门禁。 | 否 |
 
 ## 基本用法
 
@@ -279,7 +279,7 @@ cargo run -- release migration --output json
 | `release check` | 跨平台、稳定性、文档、安全、性能、迁移和兼容门禁汇总。 |
 | `release security` | policy、Lua sandbox、secret redaction、MCP allowlist、hardware 和 lifecycle 风险。 |
 | `release perf` | EventBus、Scheduler、Adapter、memory、backup 和 release check 预算。 |
-| `release migration` | V1.5.1 到 V1.11.4-alpha 的迁移步骤和兼容性策略。 |
+| `release migration` | V1.5.1 到 V1.11.5-alpha 的迁移步骤和兼容性策略。 |
 
 ## 项目结构和配置位置
 
@@ -348,10 +348,10 @@ cargo run -- release migration --output json
 
 ## 当前非目标
 
-当前 V1.11.4-alpha 不提供以下能力：
+当前 V1.11.5-alpha 不提供以下能力：
 
-- 打包安装器和签名 release artifact；
-- 真实 MCP server 或外部 provider 进程管理；
+- 打包安装器和生产 signing credential；
+- 完整 provider supervision；
 - 真实硬件 raw I/O；
 - destructive restore；
 - 真实 Supervisor 进程切换；

@@ -154,7 +154,7 @@ fn parse_release_perf_options(args: &[String]) -> Result<ReleasePerfOptions, Eva
 fn parse_release_migration_options(args: &[String]) -> Result<ReleaseMigrationOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut from_version = "1.5.1".to_owned();
-    let mut to_version = "1.11.4-alpha".to_owned();
+    let mut to_version = "1.11.5-alpha".to_owned();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {

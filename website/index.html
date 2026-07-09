@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Eva-CLI | Multi-Agent Runtime</title>
-    <meta name="description" content="Eva-CLI is an open-source V1.11.4-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, Lua resource limits, Lua hot-reload lifecycle evidence, release distribution evidence, and CLI command module split coverage.">
+    <meta name="description" content="Eva-CLI is an open-source V1.11.5-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, Lua resource limits, Lua hot-reload lifecycle evidence, release distribution evidence, CLI command module split coverage, and runtime command completion.">
     <meta name="author" content="Yetmos">
     <meta property="og:title" content="Eva-CLI | Multi-Agent Runtime">
-    <meta property="og:description" content="Eva-CLI is an open-source V1.11.4-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, Lua resource limits, Lua hot-reload lifecycle evidence, release distribution evidence, and CLI command module split coverage.">
+    <meta property="og:description" content="Eva-CLI is an open-source V1.11.5-alpha CLI runtime for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, GHCR package delivery, durable evidence, recovery checkpoints, backend diagnostics, restricted Lua VM execution, controlled Lua host bindings, Lua resource limits, Lua hot-reload lifecycle evidence, release distribution evidence, CLI command module split coverage, and runtime command completion.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://www.eva-cli.com/">
     <meta name="twitter:card" content="summary">
@@ -84,7 +84,7 @@
               <span>Routes CLI, MCP, HTTP, skills, and hardware through permissions.</span>
             </li>
           </ol>
-          <p class="stage-note">V1.11.4-alpha keeps the V1.7.4 Lua hot-reload lifecycle boundaries and adds the V1.8 to V1.11 release evidence line: adapter, MCP, Skill, policy, discovery, memory, observability, hardware apply gates, distribution checks, external scanner gates, benchmark evidence, and CLI command module split coverage.</p>
+          <p class="stage-note">V1.11.5-alpha keeps the V1.7.4 Lua hot-reload lifecycle boundaries and adds the V1.8 to V1.11.5 evidence line: adapter, MCP, Skill, policy, discovery, memory, observability, hardware apply gates, distribution checks, external scanner gates, benchmark evidence, CLI command module split coverage, typed event emission, Agent lifecycle evidence, and capability routing.</p>
         </aside>
       </section>
 
@@ -92,15 +92,15 @@
         <div class="section-heading progress-heading">
           <div>
             <p class="eyebrow">Development progress</p>
-            <h2 id="development-progress-title">From architecture scaffold to release evidence and command modules</h2>
+            <h2 id="development-progress-title">From architecture scaffold to release evidence and runtime commands</h2>
           </div>
           <a class="secondary-action progress-roadmap-link" href="docs/en/planning/zero-to-one-roadmap.md">Open roadmap</a>
         </div>
         <div class="progress-layout">
           <article class="progress-current" aria-label="Current development stage">
             <span class="status-label">Current stage</span>
-            <h3>V1.11.4-alpha CLI command module split is implemented</h3>
-            <p>The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7 Lua execution and hot-reload lifecycle gates, the V1.8 to V1.10 runtime capability baselines, the V1.11 release distribution evidence gates, and V1.11.4 CLI command module split coverage.</p>
+            <h3>V1.11.5-alpha CLI runtime commands are implemented</h3>
+            <p>The repository now has the V1.5 release-hardening and GHCR delivery surface, the V1.6 durable backend contract, filesystem EventLog, DurableEventBus, task snapshots, audit records, artifact metadata hardening, runtime recovery scanning, ack-safe redrive, recovery audit smoke, inspect.durable diagnostics, the V1.7 Lua execution and hot-reload lifecycle gates, the V1.8 to V1.10 runtime capability baselines, the V1.11 release distribution evidence gates, V1.11.4 CLI command module split coverage, and V1.11.5 emit, Agent lifecycle, and capability routing command evidence.</p>
           </article>
           <ol class="progress-timeline" aria-label="Release progress stages">
             <li class="progress-stage progress-stage-complete">
@@ -127,8 +127,8 @@
             <li class="progress-stage progress-stage-current">
               <span class="progress-marker">Now</span>
               <div>
-                <strong>V1.11.4-alpha CLI command module split</strong>
-                <p>The V1.6 durable baseline, V1.7 Lua execution lifecycle, V1.8 to V1.10 runtime capability baselines, V1.11 release evidence gates, and V1.11.4 command module split coverage are in place.</p>
+                <strong>V1.11.5-alpha CLI runtime command completion</strong>
+                <p>The V1.6 durable baseline, V1.7 Lua execution lifecycle, V1.8 to V1.10 runtime capability baselines, V1.11 release evidence gates, V1.11.4 command module split coverage, and V1.11.5 runtime command evidence are in place.</p>
               </div>
             </li>
             <li class="progress-stage progress-stage-later">
@@ -143,9 +143,9 @@
         <div class="progress-next">
           <strong>Next implementation work</strong>
           <ul>
-            <li>Finish V1.11.5 runtime inspection commands for typed event emission, Agent lifecycle controls, and capability routing.</li>
-            <li>Keep every new command behind stable text/JSON envelopes, trace fields, policy gates, and dry-run or confirmation boundaries where mutation is possible.</li>
-            <li>Use the V1.11.4 split modules as the baseline for the final V1.x CLI command surface.</li>
+            <li>Keep runtime command contracts stable while widening future daemon-backed apply paths.</li>
+            <li>Add provider supervision, durable audit wiring, and production policy gates before enabling broader external side effects.</li>
+            <li>Keep high-risk restore, upgrade, hardware, and lifecycle paths behind explicit evidence and confirmation gates.</li>
           </ul>
         </div>
       </section>
@@ -258,6 +258,10 @@
             <span>Install, Upgrade, And Uninstall</span>
             <small>The V1.11.2 native archive install smoke path, upgrade and uninstall commands, release-distribution evidence, and package-manager dry-run gate.</small>
           </a>
+          <a class="doc-link" href="docs/en/release/release-notes-v1.11.5.md">
+            <span>V1.11.5 Alpha Release Notes</span>
+            <small>The alpha prerelease that adds typed event emission, Agent lifecycle evidence commands, and capability provider-routing commands with dry-run and confirmation gates.</small>
+          </a>
           <a class="doc-link" href="docs/en/release/release-notes-v1.11.4.md">
             <span>V1.11.4 Alpha Release Notes</span>
             <small>The alpha prerelease that fixes version metadata on the CLI module split checkpoint, adds release notes, and aligns release readiness evidence with the V1.11.4 tag.</small>
@@ -337,7 +341,7 @@
         <div class="feedback-copy">
           <p class="eyebrow">Feedback</p>
           <h2 id="feedback-title">Feedback and suggestions</h2>
-          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.11.4-alpha CLI command module split checkpoint, so concrete reports about command output, docs, package pulls, release evidence gates, backend diagnostics, generation route gates, rollback audit evidence, and the V1.11.5 runtime command surface are especially useful.</p>
+          <p class="section-copy">Send documentation, architecture, release-gate, compatibility, package, or use-case feedback by email. Eva-CLI is at the V1.11.5-alpha CLI runtime command completion checkpoint, so concrete reports about command output, docs, package pulls, release evidence gates, backend diagnostics, generation route gates, rollback audit evidence, typed event emission, Agent lifecycle evidence, and capability routing are especially useful.</p>
           <p class="contact-line">
             <span>Contact email</span>
             <a href="mailto:iyetmos@gmail.com">iyetmos@gmail.com</a>
