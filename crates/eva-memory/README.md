@@ -52,7 +52,7 @@ knowledge.
 - Grant Adapter, MCP, hardware, or filesystem authority.
 - Own production retrieval provider fleets or long-lived retrieval scheduling.
 - Allow Lua or Agents to request another Agent's private memory.
-- Provide policy-driven redaction configuration, full audit/metrics wiring, or a long-lived background maintenance scheduler yet.
+- Provide policy-driven redaction configuration, memory read/write/search/context audit wiring, or a long-lived background maintenance scheduler yet.
 
 ## Verification
 
@@ -72,7 +72,7 @@ not pollute the knowledge index.
 
 ## Next Scope
 
-Next production work is configurable redaction policy, a long-lived maintenance
-scheduler, and broader audit/metrics
-wiring. Those features must preserve the invariant that private memory is scoped
+Next production work is configurable redaction policy, memory-specific
+read/write/search/context audit wiring, and a long-lived maintenance scheduler.
+Those features must preserve the invariant that private memory is scoped
 by `agent_id` and request context is assembled through `ContextBuilder`.

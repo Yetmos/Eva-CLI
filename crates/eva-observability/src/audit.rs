@@ -12,13 +12,19 @@ pub enum AuditAction {
     PolicyEvaluated,
     RuntimeStarted,
     RuntimeRecovered,
+    RuntimeControl,
     RuntimeStopped,
+    RestoreApply,
+    RestoreRollback,
+    SchedulerRetry,
     EventAccepted,
     EventDelivered,
+    TaskLifecycle,
     LuaHostLog,
     LuaHostAudit,
     CapabilityInvoked,
     AdapterInvoked,
+    ProviderSupervised,
     ProviderCredentialSession,
     SkillRunStarted,
     SkillRunCompleted,
@@ -73,13 +79,19 @@ impl AuditAction {
             Self::PolicyEvaluated => "policy.evaluated",
             Self::RuntimeStarted => "runtime.started",
             Self::RuntimeRecovered => "runtime.recovered",
+            Self::RuntimeControl => "runtime.control",
             Self::RuntimeStopped => "runtime.stopped",
+            Self::RestoreApply => "restore.apply",
+            Self::RestoreRollback => "restore.rollback",
+            Self::SchedulerRetry => "scheduler.retry",
             Self::EventAccepted => "event.accepted",
             Self::EventDelivered => "event.delivered",
+            Self::TaskLifecycle => "task.lifecycle",
             Self::LuaHostLog => "lua.host.log",
             Self::LuaHostAudit => "lua.host.audit",
             Self::CapabilityInvoked => "capability.invoked",
             Self::AdapterInvoked => "adapter.invoked",
+            Self::ProviderSupervised => "provider.supervised",
             Self::ProviderCredentialSession => "provider.credential_session",
             Self::SkillRunStarted => "skill.run.started",
             Self::SkillRunCompleted => "skill.run.completed",
@@ -147,8 +159,17 @@ mod tests {
     fn audit_action_spelling_is_stable() {
         assert_eq!(AuditAction::ConfigValidated.as_str(), "config.validated");
         assert_eq!(AuditAction::RuntimeRecovered.as_str(), "runtime.recovered");
+        assert_eq!(AuditAction::RuntimeControl.as_str(), "runtime.control");
+        assert_eq!(AuditAction::RestoreApply.as_str(), "restore.apply");
+        assert_eq!(AuditAction::RestoreRollback.as_str(), "restore.rollback");
+        assert_eq!(AuditAction::SchedulerRetry.as_str(), "scheduler.retry");
+        assert_eq!(AuditAction::TaskLifecycle.as_str(), "task.lifecycle");
         assert_eq!(AuditAction::LuaHostLog.as_str(), "lua.host.log");
         assert_eq!(AuditAction::LuaHostAudit.as_str(), "lua.host.audit");
+        assert_eq!(
+            AuditAction::ProviderSupervised.as_str(),
+            "provider.supervised"
+        );
         assert_eq!(
             AuditAction::ProviderCredentialSession.as_str(),
             "provider.credential_session"

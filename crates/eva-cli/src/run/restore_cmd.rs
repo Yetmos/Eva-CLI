@@ -15,10 +15,13 @@ use eva_backup::{
     RestorePreRestoreArchive, RestoreRollbackApplyReport, RestoreRollbackEngine,
     RestoreRollbackEntry, RestoreStagedMutationPlan, SnapshotRole,
 };
-use eva_config::load_project_config;
+use eva_config::{load_project_config, ProjectConfig};
 use eva_core::{EvaError, GenerationId, RequestId};
 use eva_lifecycle::{RollbackCoordinator, RollbackPlan};
-use eva_observability::TraceFields;
+use eva_observability::{
+    AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
+    MetricLabels, MetricName, MetricPoint, MetricSink, SpanId, TraceFields,
+};
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use eva_storage::FileSystemArtifactStore;
 use std::collections::BTreeMap;
@@ -202,7 +205,7 @@ where
                     ),
                 }
             } else {
-                match create_restore_apply(&options) {
+                match create_restore_apply(&options, &trace) {
                     Ok(result) => {
                         let exit_code = if result
                             .mutation_apply
@@ -236,7 +239,7 @@ where
         }
         RestoreCommand::Rollback(options) => {
             let trace = trace_for("cli.restore.rollback");
-            match create_restore_rollback(&options) {
+            match create_restore_rollback(&options, &trace) {
                 Ok(result) => {
                     let exit_code = if result.rollback.status == "rolled_back" {
                         EXIT_OK
@@ -524,7 +527,10 @@ fn create_restore_apply_dry_run(
     })
 }
 
-fn create_restore_apply(options: &RestoreApplyOptions) -> Result<RestoreApplyResult, EvaError> {
+fn create_restore_apply(
+    options: &RestoreApplyOptions,
+    trace: &TraceFields,
+) -> Result<RestoreApplyResult, EvaError> {
     let lock_store_path = options.lock_store.as_ref().ok_or_else(|| {
         EvaError::invalid_argument("restore apply requires --lock-store")
             .with_context("required_option", "--lock-store")
@@ -602,6 +608,23 @@ fn create_restore_apply(options: &RestoreApplyOptions) -> Result<RestoreApplyRes
             None,
         )?)
     };
+    let rollback_required = mutation_apply
+        .as_ref()
+        .map(|report| report.rollback_required)
+        .unwrap_or(false);
+    record_restore_observability(
+        &project,
+        trace,
+        RestoreObservabilityRecord {
+            command: "restore.apply",
+            plan_id: &report.plan_id,
+            status: &report.status,
+            apply_allowed: report.apply_allowed,
+            mutation_executed: report.mutation_executed,
+            rollback_required,
+            rollback_executed: false,
+        },
+    );
 
     Ok(RestoreApplyResult {
         report,
@@ -615,6 +638,7 @@ fn create_restore_apply(options: &RestoreApplyOptions) -> Result<RestoreApplyRes
 
 fn create_restore_rollback(
     options: &RestoreRollbackOptions,
+    trace: &TraceFields,
 ) -> Result<RestoreRollbackResult, EvaError> {
     let lock_store_path = options.lock_store.as_ref().ok_or_else(|| {
         EvaError::invalid_argument("restore rollback requires --lock-store")
@@ -709,6 +733,19 @@ fn create_restore_rollback(
             .iter()
             .map(|entry| format!("rollback:{entry}")),
     );
+    record_restore_observability(
+        &project,
+        trace,
+        RestoreObservabilityRecord {
+            command: "restore.rollback",
+            plan_id: &dry_run.plan.plan_id,
+            status: &rollback.status,
+            apply_allowed: true,
+            mutation_executed: false,
+            rollback_required: rollback.status != "rolled_back",
+            rollback_executed: rollback.rollback_executed,
+        },
+    );
     Ok(RestoreRollbackResult {
         plan: dry_run.plan,
         dry_run: dry_run.report,
@@ -719,6 +756,88 @@ fn create_restore_rollback(
         lock_store: lock_store_ref(Some(lock_store_path)),
         audit,
     })
+}
+
+struct RestoreObservabilityRecord<'a> {
+    command: &'a str,
+    plan_id: &'a str,
+    status: &'a str,
+    apply_allowed: bool,
+    mutation_executed: bool,
+    rollback_required: bool,
+    rollback_executed: bool,
+}
+
+fn record_restore_observability(
+    project: &ProjectConfig,
+    trace: &TraceFields,
+    record: RestoreObservabilityRecord<'_>,
+) {
+    let backend = restore_observability_backend(project);
+    let (action, span_name) = if record.command == "restore.rollback" {
+        (AuditAction::RestoreRollback, "runtime.restore.rollback")
+    } else {
+        (AuditAction::RestoreApply, "runtime.restore.apply")
+    };
+    let Ok(span_id) = SpanId::parse(span_name) else {
+        return;
+    };
+    let mut pipeline = BestEffortObservabilityPipeline::open(backend);
+    let observed_trace = trace.child_span(span_id);
+    let outcome = if record.rollback_required || record.status == "rollback_failed" {
+        AuditOutcome::Failed
+    } else if !record.apply_allowed && !record.rollback_executed {
+        AuditOutcome::Blocked
+    } else {
+        AuditOutcome::Ok
+    };
+    let _ = AuditSink::record(
+        &mut pipeline,
+        AuditEvent::new(action, outcome, observed_trace.clone())
+            .with_message("restore boundary observed")
+            .with_field("command", record.command)
+            .with_field("plan_id", record.plan_id)
+            .with_field("status", record.status)
+            .with_field("apply_allowed", record.apply_allowed.to_string())
+            .with_field("mutation_executed", record.mutation_executed.to_string())
+            .with_field("rollback_required", record.rollback_required.to_string())
+            .with_field("rollback_executed", record.rollback_executed.to_string()),
+    );
+    if let Ok(name) = MetricName::parse(span_name) {
+        let _ = MetricSink::record(
+            &mut pipeline,
+            MetricPoint::new(name, MetricKind::Counter, 1.0).with_labels(
+                MetricLabels::runtime("cli_restore_v1.16.1", "restore")
+                    .with("command", record.command)
+                    .with("status", record.status)
+                    .with("mutation_executed", record.mutation_executed.to_string())
+                    .with("rollback_executed", record.rollback_executed.to_string()),
+            ),
+        );
+    }
+    let _ = pipeline.export_span(
+        span_name,
+        &observed_trace,
+        &[
+            ("component", "cli"),
+            ("command", record.command),
+            ("status", record.status),
+        ],
+    );
+}
+
+fn restore_observability_backend(project: &ProjectConfig) -> PathBuf {
+    let data_dir = project
+        .eva
+        .runtime
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(".eva/data"));
+    if data_dir.is_absolute() {
+        data_dir.join("observability")
+    } else {
+        project.project_root.join(data_dir).join("observability")
+    }
 }
 
 fn resolve_restore_mutation_target_root(project_root: &Path, target_root: &str) -> PathBuf {

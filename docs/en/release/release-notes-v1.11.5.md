@@ -35,10 +35,12 @@ restart a daemon, mutate a live scheduler, or apply a real hot reload. Confirmed
 capability calls remain controlled CLI invokes and still report
 `mutation_executed:false`.
 
-This is still an alpha checkpoint. Full runtime audit wiring, provider
-supervision, real hardware access, destructive restore mutation, daemon-driven
-hot-reload orchestration, signed installers, OS package repositories, and
-production signing or attestation credentials remain future release scope.
+This is still an alpha checkpoint. Tracing/OTel export, retention/rotation, OS
+provider supervision, real hardware access, production daemon-driven hot-reload
+orchestration, signed installers, OS package repositories, and production
+signing or attestation credentials remain future release scope. V1.16.1 only
+adds JSONL best-effort runtime audit wiring; it is not a production telemetry
+backend.
 
 ## Verification
 

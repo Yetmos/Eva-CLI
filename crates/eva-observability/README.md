@@ -15,7 +15,7 @@
 | `TraceFields` | 已完成 V1.9.5 | 聚合 event、request、topic、agent、adapter、capability、provider、correlation、causation、generation、span；支持 provider invocation trace builder、child span 和 continuity key |
 | `SpanId` | 已完成 | 稳定 span identifier，限制为跨平台 ASCII 字符 |
 | `TraceFields::from_event` | 已完成 | 从 `eva-core::Event` 提取不含 payload 的链路字段 |
-| `AuditAction` | 已完成 V1.15.6 | 定义配置、policy、runtime、event、Lua host log/audit、capability、adapter、provider credential session、MCP session/stream/proxy、hardware driver/hotplug、memory maintenance、安全拒绝等稳定动作 |
+| `AuditAction` | 已完成 V1.16.1 | 定义配置、policy、runtime、event、Lua host log/audit、capability、adapter、provider credential session/supervision、MCP session/stream/proxy、restore apply/rollback、scheduler retry、task lifecycle、hardware driver/hotplug、memory maintenance、安全拒绝等稳定动作 |
 | `AuditOutcome` | 已完成 | `ok`、`planned`、`blocked`、`failed` |
 | `AuditEvent` | 已完成 | 记录动作、结果、trace、消息、扩展字段和时间 |
 | `AuditSink` | 已完成 | 抽象审计写入 trait |
@@ -25,7 +25,7 @@
 | `MetricPoint` | 已完成 | 表示一个 counter/gauge/histogram 数据点 |
 | `FileObservabilitySink` | 已完成 V1.9.5 | 写入 `audit.jsonl`、`metrics.jsonl` 和 `otel-spans.jsonl`，不引入外部 SDK 依赖 |
 | `BestEffortObservabilityPipeline` | 已完成 V1.9.5 | 后端不可用或写入失败时降级到 in-memory audit/metrics，并记录 degraded reason |
-| 具体后端 | 部分实现 V1.9.5 | `eva-storage::FileSystemAuditSink` 可写 durable backend `audit/`；本 crate 提供 JSONL 后端和 OTel-style span export；真实 tracing subscriber、OpenTelemetry SDK exporter、db sink、retention/rotation 和完整 runtime wiring 仍是后续范围 |
+| 具体后端 | 部分实现 V1.16.1 | `eva-storage::FileSystemAuditSink` 可写 durable backend `audit/`；本 crate 提供 JSONL 后端和 OTel-style span export；V1.16.1 已把 daemon/provider/task/restore 关键路径接入 best-effort pipeline；真实 tracing subscriber、OpenTelemetry SDK exporter、db sink、retention/rotation 仍是后续范围 |
 
 ### 公开 API
 
@@ -121,9 +121,9 @@ data payload as the top-level CLI envelope uses for command-level trace.
 | 3 | V0.2 | 定义 `MetricName`、`MetricLabels`、`MetricPoint`。 | 标准库 `BTreeMap` | 标签顺序稳定。 |
 | 4 | V0.3 | 接 CLI 输出 envelope 和诊断 trace 字段。 | `eva-cli` | human/json 输出共享同一 trace 字段。 |
 | 5 | V0.4 | 接 runtime、eventbus、scheduler、agent 的 audit/metrics。 | runtime 主链路 | 事件闭环每个阶段有 trace。 |
-| 6 | V1.1+ | 接 adapter、MCP、discovery、hardware、memory、backup、lifecycle 审计动作。 | 扩展模块 | 外部能力和高风险操作可审计；V1.8.3 已加入 MCP session/stream/proxy 动作，V1.13.2 已加入 provider credential session 动作，V1.15.6 已加入 memory maintenance 动作。 |
+| 6 | V1.1+ | 接 adapter、MCP、discovery、hardware、memory、backup、lifecycle 审计动作。 | 扩展模块 | 外部能力和高风险操作可审计；V1.8.3 已加入 MCP session/stream/proxy 动作，V1.13.2 已加入 provider credential session 动作，V1.15.6 已加入 memory maintenance 动作，V1.16.1 已加入 runtime control、task lifecycle、scheduler retry、provider supervised 和 restore apply/rollback 动作。 |
 | 7 | V1.9.5 | 接 file JSONL backend、OTel-style span export 和 best-effort pipeline。 | 发布阶段选型 | 后端不改变公共字段契约，后端不可用时不阻塞核心任务。 |
-| 8 | 后续 | 接真实 tracing subscriber、OpenTelemetry SDK exporter、db sink、retention/rotation 和 runtime wiring。 | 常驻 runtime | 生产 runtime 事件、指标和 span 全量接入观测后端。 |
+| 8 | 后续 | 接真实 tracing subscriber、OpenTelemetry SDK exporter、db sink、retention/rotation。 | 常驻 runtime | 生产 runtime 事件、指标和 span 可进入外部观测后端并有保留策略。 |
 
 ### 详细开发进度表
 
@@ -131,12 +131,12 @@ data payload as the top-level CLI envelope uses for command-level trace.
 | --- | --- | --- | --- |
 | `src/lib.rs` | 公共导出 | 已完成 | 随新观测动作扩展 re-export。 |
 | `src/trace.rs` | trace 字段、span id、event 提取、child span、continuity key | 已完成 V1.9.5 | V0.4 接 runtime/eventbus/agent span。 |
-| `src/audit.rs` | audit action/outcome/event/sink | 已完成 V1.15.6 | 已包含 provider credential session、hardware 和 memory maintenance 动作；后续继续追加高风险 apply 和分发动作。 |
+| `src/audit.rs` | audit action/outcome/event/sink | 已完成 V1.16.1 | 已包含 provider credential session/supervision、restore apply/rollback、scheduler retry、task lifecycle、hardware 和 memory maintenance 动作；后续继续追加分发动作。 |
 | `src/metrics.rs` | metric name、labels、point、runtime/provider/task labels | 已完成 V1.9.5 | V0.4 定义 runtime/eventbus 指标命名。 |
-| `src/backend.rs` | file JSONL backend、OTel-style span export、best-effort degradation、smoke report | 已完成 V1.9.5 | 接真实 OpenTelemetry SDK exporter、db sink、retention/rotation 和 runtime wiring。 |
+| `src/backend.rs` | file JSONL backend、OTel-style span export、best-effort degradation、smoke report | 已完成 V1.16.1 | 已由 runtime/provider/task/restore 路径使用；后续接真实 OpenTelemetry SDK exporter、db sink、retention/rotation。 |
 | `src/README.md` | 源码目录说明 | 已更新 V1.9.5 | 随后端与 runtime wiring 继续同步。 |
-| concrete backend | tracing/OpenTelemetry SDK/db/rotation | 部分实现 V1.9.5 | 后续独立选型并接入 runtime。 |
+| concrete backend | tracing/OpenTelemetry SDK/db/rotation | 部分实现 V1.16.1 | JSONL runtime wiring 已完成；后续独立选型并接入 exporter/retention。 |
 
 ## English
 
-`eva-observability` defines shared trace, audit, and metrics contracts. V1.9.5 adds a best-effort file JSONL backend, OTel-style span JSONL export, runtime/provider/task label helpers, and trace continuity helpers. It does not install a tracing subscriber, call the OpenTelemetry SDK, route business logic, or authorize requests.
+`eva-observability` defines shared trace, audit, and metrics contracts. V1.9.5 adds a best-effort file JSONL backend, OTel-style span JSONL export, runtime/provider/task label helpers, and trace continuity helpers. V1.16.1 adds stable actions and runtime/provider/task/restore JSONL wiring over that backend. It does not install a tracing subscriber, call the OpenTelemetry SDK, route business logic, or authorize requests.

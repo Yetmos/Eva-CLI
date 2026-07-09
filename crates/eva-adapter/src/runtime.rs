@@ -1,5 +1,6 @@
 //! Authorized Adapter runtime probes and controlled invocation envelopes.
 
+use crate::manifest::AdapterHandle;
 use crate::registry::AdapterRegistry;
 use crate::router::{AdapterRouteRequest, AdapterRouter};
 use crate::supervisor::{
@@ -9,10 +10,14 @@ use crate::supervisor::{
 use crate::transports;
 use eva_config::{AdapterTransport, ProjectConfig};
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
-use eva_observability::{SpanId, TraceFields};
+use eva_observability::{
+    AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
+    MetricLabels, MetricName, MetricPoint, MetricSink, SpanId, TraceFields,
+};
 use eva_policy::{HighRiskAction, PolicyDomainSet, RuntimePolicyGate, RuntimePolicyRequest};
 use eva_storage::{FileSystemProviderProcessTable, ProviderProcessSnapshot};
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "authorized transport execution with timeout and audit";
@@ -53,6 +58,7 @@ pub struct AdapterRuntime {
     router: AdapterRouter,
     supervisor: RefCell<InMemoryProviderSupervisor>,
     policy_gate: RuntimePolicyGate,
+    observability_backend: Option<PathBuf>,
 }
 
 impl AdapterInvocation {
@@ -128,13 +134,15 @@ impl AdapterRuntime {
             router,
             supervisor: RefCell::new(supervisor),
             policy_gate,
+            observability_backend: None,
         }
     }
 
     pub fn from_project(project: &ProjectConfig) -> Result<Self, EvaError> {
         let registry = AdapterRegistry::from_project(project)?;
         let policy_gate = RuntimePolicyGate::from_project(project)?;
-        Ok(Self::from_registry_with_policy(registry, policy_gate))
+        Ok(Self::from_registry_with_policy(registry, policy_gate)
+            .with_observability_backend(default_observability_backend(project)))
     }
 
     pub fn from_project_with_provider_process_table(
@@ -147,7 +155,8 @@ impl AdapterRuntime {
             registry,
             policy_gate,
             InMemoryProviderSupervisor::with_process_table(process_table),
-        ))
+        )
+        .with_observability_backend(default_observability_backend(project)))
     }
 
     pub fn from_registry_with_provider_process_table(
@@ -175,6 +184,11 @@ impl AdapterRuntime {
 
     pub fn provider_processes(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError> {
         self.supervisor.borrow().processes()
+    }
+
+    pub fn with_observability_backend(mut self, root: impl Into<PathBuf>) -> Self {
+        self.observability_backend = Some(root.into());
+        self
     }
 
     pub fn probe_adapter(&self, adapter_id: &AdapterId) -> Result<AdapterProbeReport, EvaError> {
@@ -232,12 +246,26 @@ impl AdapterRuntime {
         handle: crate::manifest::AdapterHandle,
         invocation: AdapterInvocation,
     ) -> Result<AdapterInvokeReport, EvaError> {
+        let provider_trace = invocation.trace_for_adapter(&handle.id);
         let execution_request = ProviderExecutionRequest::from_handle(&handle, &invocation)
             .with_retry_backoff_ms(
                 self.policy_gate
                     .adapter_retry_backoff_ms(&invocation.capability),
             );
-        let slot = self.supervisor.borrow_mut().acquire(execution_request)?;
+        let slot = match self.supervisor.borrow_mut().acquire(execution_request) {
+            Ok(slot) => slot,
+            Err(error) => {
+                self.record_provider_observability(
+                    &handle,
+                    &provider_trace,
+                    "admission_failed",
+                    AuditOutcome::Blocked,
+                    Some(&error),
+                    None,
+                );
+                return Err(error);
+            }
+        };
         let credential_scope =
             ProviderCredentialScope::from_slot(&slot, invocation.capability.clone());
         let policy_decision = self.policy_gate.decide(
@@ -248,7 +276,7 @@ impl AdapterRuntime {
         );
         let policy_audit = policy_decision.audit.clone();
         if !policy_decision.allowed {
-            self.supervisor.borrow_mut().complete(
+            let snapshot = self.supervisor.borrow_mut().complete(
                 &slot,
                 ProviderExecutionOutcome {
                     health: "failed".to_owned(),
@@ -258,6 +286,14 @@ impl AdapterRuntime {
             let error = policy_decision
                 .ensure_allowed()
                 .expect_err("denied provider credential session returns an error");
+            self.record_provider_observability(
+                &handle,
+                &provider_trace,
+                "policy_denied",
+                AuditOutcome::Blocked,
+                Some(&error),
+                Some(&snapshot),
+            );
             return Err(error);
         }
         let result =
@@ -270,15 +306,121 @@ impl AdapterRuntime {
                     .complete(&slot, ProviderExecutionOutcome::completed(&report.status))?;
                 report.audit.extend(policy_audit);
                 append_supervisor_audit(&mut report.audit, &snapshot);
+                let outcome = if report.status == "completed" {
+                    AuditOutcome::Ok
+                } else {
+                    AuditOutcome::Failed
+                };
+                self.record_provider_observability(
+                    &handle,
+                    &report.trace,
+                    &report.status,
+                    outcome,
+                    None,
+                    Some(&snapshot),
+                );
                 Ok(report)
             }
             Err(error) => {
-                self.supervisor
+                let snapshot = self
+                    .supervisor
                     .borrow_mut()
                     .complete(&slot, ProviderExecutionOutcome::failed(&error))?;
+                self.record_provider_observability(
+                    &handle,
+                    &provider_trace,
+                    "failed",
+                    AuditOutcome::Failed,
+                    Some(&error),
+                    Some(&snapshot),
+                );
                 Err(error)
             }
         }
+    }
+
+    fn record_provider_observability(
+        &self,
+        handle: &AdapterHandle,
+        trace: &TraceFields,
+        status: &str,
+        outcome: AuditOutcome,
+        error: Option<&EvaError>,
+        snapshot: Option<&ProviderProcessSnapshot>,
+    ) {
+        let Some(root) = &self.observability_backend else {
+            return;
+        };
+        let Ok(span_id) = SpanId::parse("provider.supervisor.invoke") else {
+            return;
+        };
+        let mut pipeline = BestEffortObservabilityPipeline::open(root);
+        let observed_trace = trace.child_span(span_id);
+        let mut event = AuditEvent::new(
+            AuditAction::ProviderSupervised,
+            outcome,
+            observed_trace.clone(),
+        )
+        .with_message("provider supervisor invocation observed")
+        .with_field("adapter_id", handle.id.as_str())
+        .with_field("transport", handle.transport.as_str())
+        .with_field("status", status);
+        if let Some(capability) = &trace.capability {
+            event = event.with_field("capability", capability.as_str());
+        }
+        if let Some(snapshot) = snapshot {
+            event = event
+                .with_field("session_id", snapshot.session_id.as_str())
+                .with_field("provider_process_id", snapshot.provider_process_id.as_str())
+                .with_field("provider_health", snapshot.health.as_str());
+        }
+        if let Some(error) = error {
+            event = event
+                .with_field("error_kind", error.kind().as_str())
+                .with_field("error", error.message());
+        }
+        let _ = AuditSink::record(&mut pipeline, event);
+
+        if let Ok(name) = MetricName::parse("provider.supervisor.invocations") {
+            let capability = trace
+                .capability
+                .as_ref()
+                .map(|value| value.as_str())
+                .unwrap_or("unknown");
+            let _ = MetricSink::record(
+                &mut pipeline,
+                MetricPoint::new(name, MetricKind::Counter, 1.0).with_labels(
+                    MetricLabels::provider(handle.id.as_str(), capability, handle.id.as_str())
+                        .with("transport", handle.transport.as_str())
+                        .with("status", status)
+                        .with("supervised", "true"),
+                ),
+            );
+        }
+
+        let _ = pipeline.export_span(
+            "provider.supervisor.invoke",
+            &observed_trace,
+            &[
+                ("component", "adapter"),
+                ("transport", handle.transport.as_str()),
+                ("status", status),
+            ],
+        );
+    }
+}
+
+fn default_observability_backend(project: &ProjectConfig) -> PathBuf {
+    let data_dir = project
+        .eva
+        .runtime
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(".eva/data"));
+    if data_dir.is_absolute() {
+        data_dir.join("observability")
+    } else {
+        project.project_root.join(data_dir).join("observability")
     }
 }
 
@@ -429,6 +571,38 @@ mod tests {
             .audit
             .contains(&"policy.action:provider.credential_session".to_owned()));
         assert!(report.audit.contains(&"shell:false".to_owned()));
+    }
+
+    #[test]
+    fn runtime_writes_provider_observability_when_backend_is_configured() {
+        let root = temp_root("provider-observability");
+        let observability = root.join("observability");
+        let runtime =
+            runtime_with_handle(stdio_handle(true, test_command(), ok_args(), Vec::new()))
+                .with_observability_backend(&observability);
+
+        let report = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-provider-observability").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap();
+
+        assert_eq!(report.status, "completed");
+        let audit = std::fs::read_to_string(observability.join("audit.jsonl")).unwrap();
+        let metrics = std::fs::read_to_string(observability.join("metrics.jsonl")).unwrap();
+        let spans = std::fs::read_to_string(observability.join("otel-spans.jsonl")).unwrap();
+        assert!(audit.contains("\"action\":\"provider.supervised\""));
+        assert!(audit.contains("\"request_id\":\"req-provider-observability\""));
+        assert!(audit.contains("\"status\":\"completed\""));
+        assert!(metrics.contains("\"name\":\"provider.supervisor.invocations\""));
+        assert!(metrics.contains("\"surface\":\"provider\""));
+        assert!(spans.contains("\"name\":\"provider.supervisor.invoke\""));
+
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -998,5 +1172,19 @@ mod tests {
                 "printf \"${env_name}\"; printf \"${PROVIDER_SESSION_TOKEN_ENV}\"; printf \"${env_name}\" >&2; printf \"${PROVIDER_SESSION_TOKEN_ENV}\" >&2"
             ),
         ]
+    }
+
+    #[cfg(windows)]
+    fn ok_args() -> Vec<String> {
+        vec![
+            "-NoProfile".to_owned(),
+            "-Command".to_owned(),
+            "[Console]::Out.Write('ok')".to_owned(),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn ok_args() -> Vec<String> {
+        vec!["-c".to_owned(), "printf ok".to_owned()]
     }
 }

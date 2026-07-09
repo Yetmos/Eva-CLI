@@ -287,10 +287,10 @@ Error JSON output uses `ok`, `command`, `exit_code`, `error`, and `trace`.
 ## Non-Goals in V1.11.5 Alpha
 
 V1.11.5-alpha does not provide packaged installers, production signing
-credentials, full provider supervision, raw hardware I/O, destructive restore,
-production Supervisor handoff, full durable task query/recovery indexes,
-runtime audit wiring/export, durable memory/backup databases, or daemon-driven
-hot-reload orchestration.
+credentials, full provider supervision, raw hardware I/O,
+production service-manager/daemon handoff, full durable task query/recovery indexes,
+tracing/OTel export and retention, durable memory/backup databases, or
+daemon-driven hot-reload orchestration beyond the current JSONL audit wiring.
 
 ## Recommended Verification
 

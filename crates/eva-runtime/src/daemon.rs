@@ -1048,6 +1048,7 @@ pub fn start_daemon(
     let recovery = RuntimeRecoveryCoordinator
         .recover_task_store_with_provider_processes(&mut task_store, &mut provider_process_table)?;
     drop(durable_backend);
+    record_daemon_recovery_observability(&options, trace, &recovery);
     let policy = verify_policy(project)?;
     let observability = verify_observability(&options, trace)?;
 
@@ -1264,14 +1265,16 @@ fn run_daemon_scheduler_tick(
         &options.durable_backend,
     ))?;
     let mut bus = DurableEventBus::open(durable_backend.layout())?;
-    run_scheduler_retry_tick(
+    let report = run_scheduler_retry_tick(
         project,
         &mut bus,
         SchedulerRetryTickOptions {
             redrive_ready_at_ms: now_ms() as u64,
             ..SchedulerRetryTickOptions::default()
         },
-    )
+    )?;
+    record_scheduler_retry_observability(options, &report);
+    Ok(report)
 }
 
 fn start_hardware_hotplug_subscriber(
@@ -1319,6 +1322,231 @@ fn run_memory_maintenance(
         memory_gc,
         knowledge_rebuild,
     })
+}
+
+fn record_daemon_recovery_observability(
+    options: &DaemonStartOptions,
+    trace: &TraceFields,
+    report: &RuntimeRecoveryReport,
+) {
+    let Ok(span_id) = SpanId::parse("runtime.daemon.recovery") else {
+        return;
+    };
+    let mut pipeline = BestEffortObservabilityPipeline::open(&options.observability_backend);
+    let recovery_trace = trace.child_span(span_id);
+    let _ = RuntimeRecoveryCoordinator.record_recovery_audit(
+        &mut pipeline,
+        recovery_trace.clone(),
+        report,
+    );
+    if let Ok(name) = MetricName::parse("runtime.daemon.recovery") {
+        let _ = MetricSink::record(
+            &mut pipeline,
+            MetricPoint::new(name, MetricKind::Counter, 1.0).with_labels(
+                MetricLabels::runtime("daemon_v1.16.1", DAEMON_GENERATION)
+                    .with("recovered_tasks", report.recovered_tasks.len().to_string())
+                    .with(
+                        "recovered_provider_processes",
+                        report.recovered_provider_processes.len().to_string(),
+                    ),
+            ),
+        );
+    }
+    let recovered_tasks = report.recovered_tasks.len().to_string();
+    let recovered_provider_processes = report.recovered_provider_processes.len().to_string();
+    let _ = pipeline.export_span(
+        "runtime.daemon.recovery",
+        &recovery_trace,
+        &[
+            ("component", "runtime"),
+            ("recovered_tasks", recovered_tasks.as_str()),
+            (
+                "recovered_provider_processes",
+                recovered_provider_processes.as_str(),
+            ),
+        ],
+    );
+}
+
+fn record_scheduler_retry_observability(
+    options: &DaemonStartOptions,
+    report: &SchedulerRetryTickReport,
+) {
+    if report.dispatched_events.is_empty() && report.failed_events.is_empty() {
+        return;
+    }
+    let Ok(span_id) = SpanId::parse("runtime.scheduler.retry") else {
+        return;
+    };
+    let trace = TraceFields::default().with_span_id(span_id);
+    let mut pipeline = BestEffortObservabilityPipeline::open(&options.observability_backend);
+    let outcome = if report.failed_events.is_empty() {
+        AuditOutcome::Ok
+    } else {
+        AuditOutcome::Failed
+    };
+    let _ = AuditSink::record(
+        &mut pipeline,
+        AuditEvent::new(AuditAction::SchedulerRetry, outcome, trace.clone())
+            .with_message("daemon scheduler retry tick observed")
+            .with_field(
+                "scanned_dead_letters",
+                report.scanned_dead_letters.to_string(),
+            )
+            .with_field("due_dead_letters", report.due_dead_letters.to_string())
+            .with_field(
+                "dispatched_events",
+                report.dispatched_events.len().to_string(),
+            )
+            .with_field("failed_events", report.failed_events.len().to_string())
+            .with_field("skipped_events", report.skipped_events.len().to_string()),
+    );
+    if let Ok(name) = MetricName::parse("runtime.scheduler.retry") {
+        let _ = MetricSink::record(
+            &mut pipeline,
+            MetricPoint::new(name, MetricKind::Counter, 1.0).with_labels(
+                MetricLabels::runtime("daemon_v1.16.1", DAEMON_GENERATION)
+                    .with(
+                        "dispatched_events",
+                        report.dispatched_events.len().to_string(),
+                    )
+                    .with("failed_events", report.failed_events.len().to_string()),
+            ),
+        );
+    }
+    let dispatched_events = report.dispatched_events.len().to_string();
+    let failed_events = report.failed_events.len().to_string();
+    let _ = pipeline.export_span(
+        "runtime.scheduler.retry",
+        &trace,
+        &[
+            ("component", "runtime"),
+            ("dispatched_events", dispatched_events.as_str()),
+            ("failed_events", failed_events.as_str()),
+        ],
+    );
+}
+
+fn record_daemon_control_observability(
+    options: &DaemonStartOptions,
+    request: &DaemonControlRequest,
+    response: &DaemonControlResponse,
+) {
+    let Ok(span_id) = SpanId::parse(&format!(
+        "runtime.daemon.control.{}",
+        request.operation.as_str()
+    )) else {
+        return;
+    };
+    let mut trace = TraceFields::default()
+        .with_request_id(request.request_id.clone())
+        .with_span_id(span_id);
+    if let Some(agent_id) = request
+        .agent_id
+        .as_deref()
+        .and_then(|value| AgentId::parse(value).ok())
+    {
+        trace = trace.with_agent_id(agent_id);
+    }
+    if let Some(generation_id) = response
+        .generation_id
+        .as_deref()
+        .and_then(|value| GenerationId::parse(value).ok())
+    {
+        trace.generation_id = Some(generation_id);
+    }
+
+    let mut pipeline = BestEffortObservabilityPipeline::open(&options.observability_backend);
+    let outcome = if response.accepted {
+        AuditOutcome::Ok
+    } else {
+        AuditOutcome::Blocked
+    };
+    let mut event = AuditEvent::new(AuditAction::RuntimeControl, outcome, trace.clone())
+        .with_message("daemon control request observed")
+        .with_field("operation", request.operation.as_str())
+        .with_field("status", response.status.as_str())
+        .with_field("mutation_executed", response.mutation_executed.to_string())
+        .with_field("trace_id", response.trace_id.as_str());
+    if let Some(task_id) = response.task_id.as_deref() {
+        event = event.with_field("task_id", task_id);
+    }
+    if let Some(plan_id) = response.plan_id.as_deref() {
+        event = event.with_field("plan_id", plan_id);
+    }
+    let _ = AuditSink::record(&mut pipeline, event);
+
+    if let Ok(name) = MetricName::parse("runtime.daemon.control") {
+        let _ = MetricSink::record(
+            &mut pipeline,
+            MetricPoint::new(name, MetricKind::Counter, 1.0).with_labels(
+                MetricLabels::runtime("daemon_v1.16.1", DAEMON_GENERATION)
+                    .with("operation", request.operation.as_str())
+                    .with("status", response.status.as_str())
+                    .with("mutation_executed", response.mutation_executed.to_string()),
+            ),
+        );
+    }
+    let _ = pipeline.export_span(
+        "runtime.daemon.control",
+        &trace,
+        &[
+            ("component", "runtime"),
+            ("operation", request.operation.as_str()),
+            ("status", response.status.as_str()),
+        ],
+    );
+
+    record_task_lifecycle_observability(&mut pipeline, request, response, &trace);
+}
+
+fn record_task_lifecycle_observability(
+    pipeline: &mut BestEffortObservabilityPipeline,
+    request: &DaemonControlRequest,
+    response: &DaemonControlResponse,
+    parent_trace: &TraceFields,
+) {
+    let lifecycle_status = match request.operation {
+        DaemonControlOperation::SubmitTask if response.mutation_executed => "queued",
+        DaemonControlOperation::CancelTask if response.mutation_executed => "cancelling",
+        _ => return,
+    };
+    let Some(task_id) = response.task_id.as_deref() else {
+        return;
+    };
+    let Ok(span_id) = SpanId::parse("runtime.task.lifecycle") else {
+        return;
+    };
+    let trace = parent_trace.child_span(span_id);
+    let agent_id = request.agent_id.as_deref().unwrap_or("daemon-control");
+    let _ = AuditSink::record(
+        pipeline,
+        AuditEvent::new(AuditAction::TaskLifecycle, AuditOutcome::Ok, trace.clone())
+            .with_message("daemon task lifecycle mutation observed")
+            .with_field("operation", request.operation.as_str())
+            .with_field("task_id", task_id)
+            .with_field("task_status", lifecycle_status)
+            .with_field("agent_id", agent_id),
+    );
+    if let Ok(name) = MetricName::parse("runtime.task.lifecycle") {
+        let _ = MetricSink::record(
+            pipeline,
+            MetricPoint::new(name, MetricKind::Counter, 1.0).with_labels(
+                MetricLabels::task(lifecycle_status, agent_id)
+                    .with("operation", request.operation.as_str())
+                    .with("task_id", task_id),
+            ),
+        );
+    }
+    let _ = pipeline.export_span(
+        "runtime.task.lifecycle",
+        &trace,
+        &[
+            ("component", "runtime"),
+            ("operation", request.operation.as_str()),
+            ("task_status", lifecycle_status),
+        ],
+    );
 }
 
 fn handle_control_request(
@@ -1394,9 +1622,9 @@ fn handle_control_request(
         }
     }
 
-    Ok(DaemonControlResponse {
-        request_id: request.request_id,
-        trace_id: request.trace_id,
+    let response = DaemonControlResponse {
+        request_id: request.request_id.clone(),
+        trace_id: request.trace_id.clone(),
         operation: request.operation,
         accepted,
         daemon_available: true,
@@ -1411,7 +1639,9 @@ fn handle_control_request(
         message,
         shutdown,
         audit,
-    })
+    };
+    record_daemon_control_observability(options, &request, &response);
+    Ok(response)
 }
 
 fn submit_control_task(
@@ -2364,6 +2594,142 @@ mod tests {
     }
 
     #[test]
+    fn daemon_control_submit_cancel_writes_observability_pipeline() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("control-observability");
+        let options = daemon_options(&root, false);
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-observed-loop").unwrap()),
+            )
+        });
+
+        wait_for_daemon_available(&options);
+
+        let submit_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-observed-submit").unwrap());
+        let submit = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-observed-submit").unwrap(),
+                &submit_trace,
+                DaemonControlOperation::SubmitTask,
+            )
+            .with_task_id("req-daemon-observed-task")
+            .with_agent_id("root-agent"),
+            2_000,
+        )
+        .unwrap();
+        assert!(submit.mutation_executed);
+        assert_eq!(submit.task_id.as_deref(), Some("req-daemon-observed-task"));
+
+        let cancel_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-observed-cancel").unwrap());
+        let cancel = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-observed-cancel").unwrap(),
+                &cancel_trace,
+                DaemonControlOperation::CancelTask,
+            )
+            .with_task_id("req-daemon-observed-task")
+            .with_agent_id("root-agent")
+            .with_reason("observability test cancel"),
+            2_000,
+        )
+        .unwrap();
+        assert!(cancel.mutation_executed);
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-observed-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-observed-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        daemon.join().unwrap().unwrap();
+
+        let audit = fs::read_to_string(options.observability_backend.join("audit.jsonl")).unwrap();
+        let metrics =
+            fs::read_to_string(options.observability_backend.join("metrics.jsonl")).unwrap();
+        let spans =
+            fs::read_to_string(options.observability_backend.join("otel-spans.jsonl")).unwrap();
+        assert!(audit.contains("\"action\":\"runtime.control\""));
+        assert!(audit.contains("\"action\":\"task.lifecycle\""));
+        assert!(audit.contains("\"request_id\":\"req-daemon-observed-submit\""));
+        assert!(audit.contains("\"task_id\":\"req-daemon-observed-task\""));
+        assert!(metrics.contains("\"name\":\"runtime.daemon.control\""));
+        assert!(metrics.contains("\"name\":\"runtime.task.lifecycle\""));
+        assert!(metrics.contains("\"surface\":\"task\""));
+        assert!(spans.contains("\"name\":\"runtime.daemon.control\""));
+        assert!(spans.contains("\"name\":\"runtime.task.lifecycle\""));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_control_observability_degrades_without_blocking_control_flow() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("control-observability-degraded");
+        let options = daemon_options(&root, false);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&options.observability_backend, "not a directory").unwrap();
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-degraded-loop").unwrap()),
+            )
+        });
+
+        wait_for_daemon_available(&options);
+        let status_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-degraded-status").unwrap());
+        let status = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-degraded-status").unwrap(),
+                &status_trace,
+                DaemonControlOperation::Status,
+            ),
+            2_000,
+        )
+        .unwrap();
+        assert!(status.accepted);
+        assert_eq!(status.status, "running");
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-degraded-shutdown").unwrap());
+        let shutdown = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-degraded-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(shutdown.status, "stopped");
+        daemon.join().unwrap().unwrap();
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn daemon_control_loop_ticks_scheduler_retry_once() {
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("scheduler-retry");
@@ -2427,6 +2793,15 @@ mod tests {
             bus.event_log_status(&EventId::parse("evt-daemon-retry:replay-1").unwrap()),
             Some(eva_storage::EventLogStatus::Acked)
         );
+        let audit = fs::read_to_string(options.observability_backend.join("audit.jsonl")).unwrap();
+        let metrics =
+            fs::read_to_string(options.observability_backend.join("metrics.jsonl")).unwrap();
+        let spans =
+            fs::read_to_string(options.observability_backend.join("otel-spans.jsonl")).unwrap();
+        assert!(audit.contains("\"action\":\"scheduler.retry\""));
+        assert!(audit.contains("\"dispatched_events\":\"1\""));
+        assert!(metrics.contains("\"name\":\"runtime.scheduler.retry\""));
+        assert!(spans.contains("\"name\":\"runtime.scheduler.retry\""));
 
         fs::remove_dir_all(root).ok();
     }

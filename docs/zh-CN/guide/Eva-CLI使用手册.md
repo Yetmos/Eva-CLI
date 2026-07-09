@@ -403,10 +403,10 @@ cargo run -- release migration --output json
 - 打包安装器和生产 signing credential；
 - 完整 provider supervision；
 - 真实硬件 raw I/O；
-- destructive restore；
+- 生产 service-manager/daemon handoff；
 - 真实 Supervisor 进程切换；
-- 完整 durable task 查询/恢复索引、runtime audit wiring/export、runtime crash recovery、durable memory 和 backup database；
-- 超出当前 daemon foreground/control mailbox、durable task lifecycle、scheduler retry dispatch、agent drain/reload mutation state、shadow load、route gate、drain evidence 和 rollback audit 边界的真实长任务执行器、provider supervision 与生产热更新编排。
+- 完整 durable task 查询/恢复索引、tracing/OTel exporter、retention/rotation、runtime crash recovery、durable memory 和 backup database；
+- 超出当前 daemon foreground/control mailbox、durable task lifecycle、scheduler retry dispatch、agent drain/reload mutation state、V1.16.1 JSONL audit wiring、shadow load、route gate、drain evidence 和 rollback audit 边界的真实长任务执行器、OS provider supervision 与生产热更新编排。
 
 这些能力需要后续版本在显式 apply gate、持久化存储、签名 artifact 和更强发布证据
 之后逐步接入。
