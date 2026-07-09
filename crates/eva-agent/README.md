@@ -1,10 +1,10 @@
 # eva-agent / Agent 运行边界
 
-更新时间：2026-07-03
+更新时间：2026-07-09
 
 ![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
 
-`eva-agent` 负责 Agent 生命周期、私有队列和事件处理边界。V0.5 在 V0.4 同步 `AgentRuntime` 上增加 `AgentRunControl`，让 timeout、cancel 和 retry 在 Agent 边界形成统一 `AgentRunRecord`。
+`eva-agent` 负责 Agent 生命周期、私有队列和事件处理边界。V0.5 在 V0.4 同步 `AgentRuntime` 上增加 `AgentRunControl`，让 timeout、cancel 和 retry 在 Agent 边界形成统一 `AgentRunRecord`。V1.12.3 让 `AgentRunControl` 可携带 cancel token 和 deadline evidence，供 durable task lifecycle 串联。
 
 ## 当前实现
 
@@ -14,7 +14,7 @@
 | 私有队列 | `AgentQueue` | bounded FIFO；容量为 0 无效，队列满返回 `Unavailable`。 |
 | AgentRuntime | `AgentRuntime` | start 后才能 accept 事件；同步 drain queue 并调用注入 handler。 |
 | Handler 输出 | `AgentHandlerOutput` | 保存 handler status 和可选文本 output。 |
-| 执行控制 | `AgentRunControl` | 保存 timeout budget、cancel flag、retry attempt 上限。 |
+| 执行控制 | `AgentRunControl` | 保存 timeout budget、cancel flag、cancel token、deadline 和 retry attempt 上限。 |
 | 执行记录 | `AgentRunRecord`、`AgentRunStatus` | 保存 agent id、event id、topic、status、attempts、handler status、output/error。 |
 | 状态快照 | `AgentStateSnapshot` | 为后续更完整 status/report 预留轻量状态报告。 |
 
@@ -23,6 +23,7 @@
 - `run_next` 仍是默认单次同步执行入口。
 - `run_next_with_control` 支持 V0.5 诊断控制：
   - `cancel_requested=true` 时 handler 不会被调用，返回 `cancelled`。
+  - 取消时会把可选 `cancel_token` 和 `deadline_at_ms` 放入安全错误上下文，便于和 durable task lifecycle 对齐。
   - `timeout=0ms` 时 handler 不会被调用，返回 retryable `timeout` 错误。
   - retry 只在 handler 返回 retryable `EvaError` 时继续尝试。
 - AgentRuntime 不创建线程、不执行计时器、不持久化任务状态；这些仍由 runtime/CLI 上层组合。
@@ -43,11 +44,12 @@ use eva_agent::{AgentRunControl, AgentRuntime, AgentHandlerOutput, AgentRunStatu
 cargo test -p eva-agent
 ```
 
-已覆盖：未运行状态拒绝 accept、start 后接收事件、handler 执行记录、bounded queue overflow、cancelled run、timeout run、retryable error retry。
+已覆盖：未运行状态拒绝 accept、start 后接收事件、handler 执行记录、bounded queue overflow、cancelled run、cancel token/deadline context、timeout run、retryable error retry。
 
 ## 后续计划
 
 | 版本 | 计划 |
 | --- | --- |
 | V1.0 | 已将 task status/logs/cancel、timeout、cancel 和 retry 诊断整理进 quickstart、known limitations 和 release notes。 |
+| V1.12.3 | `AgentRunControl` 已支持 cancel token 和 deadline evidence，供长任务状态机记录取消上下文。 |
 | V1.2 | 接入 memory/context API。 |

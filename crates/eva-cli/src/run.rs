@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -1715,6 +1715,62 @@ mod tests {
         assert!(status_stdout.contains("\"response_file\""));
         assert!(status_stderr.is_empty());
 
+        let (submit_exit, submit_stdout, submit_stderr) = run_cli(&[
+            "daemon",
+            "submit",
+            "--task",
+            "req-daemon-cli-task",
+            "--durable-backend",
+            durable.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(submit_exit, EXIT_OK, "{submit_stderr}");
+        assert!(submit_stdout.contains("\"command\":\"daemon.submit\""));
+        assert!(submit_stdout.contains("\"operation\":\"submit_task\""));
+        assert!(submit_stdout.contains("\"task_id\":\"req-daemon-cli-task\""));
+        assert!(submit_stderr.is_empty());
+
+        let (cancel_exit, cancel_stdout, cancel_stderr) = run_cli(&[
+            "daemon",
+            "cancel",
+            "--task",
+            "req-daemon-cli-task",
+            "--reason",
+            "operator stop",
+            "--durable-backend",
+            durable.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(cancel_exit, EXIT_OK, "{cancel_stderr}");
+        assert!(cancel_stdout.contains("\"command\":\"daemon.cancel\""));
+        assert!(cancel_stdout.contains("\"operation\":\"cancel_task\""));
+        assert!(cancel_stdout.contains("\"task_id\":\"req-daemon-cli-task\""));
+        assert!(cancel_stderr.is_empty());
+        let task_state =
+            fs::read_to_string(durable.join("tasks").join("req-daemon-cli-task.task")).unwrap();
+        assert!(task_state.contains("status=cancelling"));
+        assert!(task_state.contains("cancel_requested=true"));
+
         let (shutdown_exit, shutdown_stdout, shutdown_stderr) = run_cli(&[
             "daemon",
             "shutdown",
@@ -2315,6 +2371,7 @@ mod tests {
         assert!(json_stdout.contains("lua_hot_reload_lifecycle_v1.7.4"));
         assert!(json_stdout.contains("release_distribution_cli_split_v1.11.4"));
         assert!(json_stdout.contains("cli_runtime_commands_v1.11.5"));
+        assert!(json_stdout.contains("durable_task_lifecycle_v1.12.3"));
         assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));

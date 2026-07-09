@@ -212,6 +212,10 @@ impl From<&TaskReport> for TaskStateSnapshot {
             cancel_requested: report.cancellation.requested,
             cancel_accepted: report.cancellation.accepted,
             cancel_reason: report.cancellation.reason.clone(),
+            heartbeat_at_ms: None,
+            deadline_at_ms: None,
+            cancel_token: None,
+            interrupted_reason: None,
             error_kind: report
                 .error
                 .as_ref()

@@ -16,6 +16,7 @@
 | V1.6.4 | recovery checkpoint | `RuntimeRecoveryCoordinator` 扫描 durable task snapshots，把重启后残留的 `queued`/`running` task 标记为 `interrupted` 或 `recovering`；带 eventbus 的 checkpoint 可 redrive 未 ack 且已到期的 durable dead-letter，并把 recovery evidence 写入 durable audit。 |
 | V1.12.1 | daemon process boundary | `start_daemon` / `daemon_status` / `stop_daemon` 固定本机 daemon pid/lock/state、foreground/dev smoke、durable backend、policy、observability 和 shutdown contract；不启动 provider 进程。 |
 | V1.12.2 | daemon control mailbox | `send_daemon_control_request` 和 foreground control loop 定义受控 filesystem mailbox 协议，支持 status、shutdown、submit task、cancel task、drain 和 reload plan；request/response 均带 trace id，不暴露远程网络监听。 |
+| V1.12.3 | durable task lifecycle | daemon submit/cancel 使用 `TaskStateSnapshot` lifecycle API：submit 写 `queued`，cancel 将非终态任务推进到 `cancelling` 并追加日志；recovery 会把 `queued`/`running`/`cancelling` 恢复为 `interrupted` 或 `recovering`。 |
 
 ## V1.0 Basic 闭环
 
@@ -58,7 +59,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 - `start_daemon` 先获取 `daemon.lock`，再验证 durable backend、policy domain 和 file JSONL observability backend。
 - 成功后写入 `daemon.state` 和 `daemon.pid`，foreground smoke 会立即调用 `Runtime::shutdown()` 并移除 lock/pid。
 - 显式传入 `shutdown_after_smoke=false` 时进入前台 control loop，通过 `state/control/requests` 和 `state/control/responses` 处理本机 filesystem mailbox 请求。
-- control operation 覆盖 status、shutdown、submit task、cancel task、drain 和 reload plan；status/shutdown 作用于前台 daemon，submit/cancel 写 durable task store，drain/reload 当前只产生可追踪 evidence。
+- control operation 覆盖 status、shutdown、submit task、cancel task、drain 和 reload plan；status/shutdown 作用于前台 daemon，submit/cancel 写 durable task lifecycle store，drain/reload 当前只产生可追踪 evidence。
 - `send_daemon_control_request` 在没有 running state、lock 和 pid 时返回稳定 `Unavailable`，避免把 stopped smoke state 误读成 live daemon。
 - JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
 - 已有 lock 会返回 conflict；坏 durable backend 会在写 daemon state 前失败。
@@ -69,8 +70,8 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 `eva-storage::FileSystemTaskStateStore::list_snapshots()` 枚举 task snapshots。
 task-only 入口只负责确定性状态修复：
 
-- `queued` / `running` 且无 dead-letter 证据的 task 标记为 `interrupted`。
-- `queued` / `running` 且已有 dead-letter 证据的 task 标记为 `recovering`。
+- `queued` / `running` / `cancelling` 且无 dead-letter 证据的 task 标记为 `interrupted`。
+- `queued` / `running` / `cancelling` 且已有 dead-letter 证据的 task 标记为 `recovering`。
 - terminal task 不会被重写，避免重复处理已完成、失败、取消或超时的任务。
 
 `RuntimeRecoveryCoordinator::recover_task_store_with_redrive` 额外接入
@@ -99,6 +100,7 @@ restart redrive 和 corrupt task store，`release check` 暴露
 ```powershell
 cargo test -p eva-runtime
 cargo test -p eva-runtime daemon -- --nocapture
+cargo test -p eva-runtime recovery -- --nocapture
 cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```

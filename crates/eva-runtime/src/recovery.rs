@@ -162,8 +162,10 @@ impl RuntimeRecoveryCoordinator {
 
 fn recovery_status(snapshot: &TaskStateSnapshot) -> Option<&'static str> {
     match snapshot.status.as_str() {
-        "queued" | "running" if !snapshot.dead_letters.is_empty() => Some("recovering"),
-        "queued" | "running" => Some("interrupted"),
+        "queued" | "running" | "cancelling" if !snapshot.dead_letters.is_empty() => {
+            Some("recovering")
+        }
+        "queued" | "running" | "cancelling" => Some("interrupted"),
         _ => None,
     }
 }
@@ -360,6 +362,18 @@ mod tests {
             .logs
             .iter()
             .any(|entry| entry.message.contains("after restart")));
+    }
+
+    #[test]
+    fn recovery_marks_cancelling_tasks_as_interrupted() {
+        let coordinator = RuntimeRecoveryCoordinator;
+        let report =
+            coordinator.recover_snapshots(vec![snapshot("req-recovery-cancelling", "cancelling")]);
+
+        assert_eq!(report.scanned_tasks, 1);
+        assert_eq!(report.recovered_tasks[0].task_id, "req-recovery-cancelling");
+        assert_eq!(report.recovered_tasks[0].status, "interrupted");
+        assert_eq!(report.recovered_snapshots[0].status, "interrupted");
     }
 
     #[test]
@@ -680,6 +694,10 @@ mod tests {
             cancel_requested: false,
             cancel_accepted: false,
             cancel_reason: None,
+            heartbeat_at_ms: None,
+            deadline_at_ms: None,
+            cancel_token: None,
+            interrupted_reason: None,
             error_kind: None,
             error_message: None,
             logs: vec![TaskStateLogSnapshot {

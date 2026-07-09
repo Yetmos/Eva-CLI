@@ -11,7 +11,7 @@ use eva_observability::{
 use eva_policy::PolicyDomainSet;
 use eva_storage::{
     DurableBackend, DurableBackendOptions, DurableBackendReport, FileSystemDurableBackend,
-    FileSystemTaskStateStore, TaskStateLogSnapshot, TaskStateSnapshot, TaskStateStore,
+    FileSystemTaskStateStore, TaskStateSnapshot, TaskStateStore,
 };
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -1015,27 +1015,14 @@ fn submit_control_task(
         .unwrap_or_else(|| request.request_id.as_str().to_owned());
     RequestId::parse(&task_id)?;
     let mut store = open_durable_task_store(options)?;
-    let snapshot = TaskStateSnapshot {
-        task_id: task_id.clone(),
-        status: "queued".to_owned(),
-        attempts: 0,
-        retry_max_attempts: 1,
-        cancel_requested: false,
-        cancel_accepted: false,
-        cancel_reason: None,
-        error_kind: None,
-        error_message: None,
-        logs: vec![TaskStateLogSnapshot {
-            sequence: 1,
-            level: "info".to_owned(),
-            message: format!(
-                "submitted through daemon control mailbox for project {}",
-                display_path(&project.project_root)
-            ),
-        }],
-        dead_letters: Vec::new(),
-        replayed_events: Vec::new(),
-    };
+    let mut snapshot = TaskStateSnapshot::queued(task_id.clone())?;
+    snapshot.push_log(
+        "info",
+        format!(
+            "submitted through daemon control mailbox for project {}",
+            display_path(&project.project_root)
+        ),
+    );
     store.write(&snapshot)?;
     Ok(task_id)
 }
@@ -1048,27 +1035,15 @@ fn cancel_control_task(
         EvaError::invalid_argument("daemon cancel task request requires a task id")
     })?;
     RequestId::parse(task_id)?;
+    let reason = request
+        .reason
+        .clone()
+        .unwrap_or_else(|| "cancel requested by daemon control API".to_owned());
     let mut store = open_durable_task_store(options)?;
-    let mut snapshot = store.read(Some(task_id))?;
-    snapshot.cancel_requested = true;
-    snapshot.cancel_reason = Some(
-        request
-            .reason
-            .clone()
-            .unwrap_or_else(|| "cancel requested by daemon control API".to_owned()),
-    );
-    if snapshot.is_terminal() {
-        snapshot.cancel_accepted = false;
-        snapshot.push_log(
-            "warning",
-            "daemon control cancel requested after task reached a terminal state",
-        );
-    } else {
-        snapshot.cancel_accepted = true;
-        snapshot.status = "cancelled".to_owned();
-        snapshot.push_log("warning", "daemon control cancel accepted");
-    }
-    store.write(&snapshot)?;
+    store.update_snapshot(task_id, |snapshot| {
+        snapshot.request_cancel(reason);
+        Ok(())
+    })?;
     Ok(task_id.to_owned())
 }
 

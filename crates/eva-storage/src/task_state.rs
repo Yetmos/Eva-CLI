@@ -18,6 +18,10 @@ pub struct TaskStateSnapshot {
     pub cancel_requested: bool,
     pub cancel_accepted: bool,
     pub cancel_reason: Option<String>,
+    pub heartbeat_at_ms: Option<u128>,
+    pub deadline_at_ms: Option<u128>,
+    pub cancel_token: Option<String>,
+    pub interrupted_reason: Option<String>,
     pub error_kind: Option<String>,
     pub error_message: Option<String>,
     pub logs: Vec<TaskStateLogSnapshot>,
@@ -65,6 +69,29 @@ pub struct FileSystemTaskStateStore {
 }
 
 impl TaskStateSnapshot {
+    pub fn queued(task_id: impl Into<String>) -> Result<Self, EvaError> {
+        let task_id = task_id.into();
+        RequestId::parse(&task_id)?;
+        Ok(Self {
+            task_id,
+            status: "queued".to_owned(),
+            attempts: 0,
+            retry_max_attempts: 1,
+            cancel_requested: false,
+            cancel_accepted: false,
+            cancel_reason: None,
+            heartbeat_at_ms: None,
+            deadline_at_ms: None,
+            cancel_token: None,
+            interrupted_reason: None,
+            error_kind: None,
+            error_message: None,
+            logs: Vec::new(),
+            dead_letters: Vec::new(),
+            replayed_events: Vec::new(),
+        })
+    }
+
     pub fn to_storage(&self) -> String {
         let mut lines = vec![
             format!("task_id={}", encode_field(&self.task_id)),
@@ -76,6 +103,32 @@ impl TaskStateSnapshot {
             format!(
                 "cancel_reason={}",
                 self.cancel_reason
+                    .as_ref()
+                    .map(|value| encode_field(value))
+                    .unwrap_or_default()
+            ),
+            format!(
+                "heartbeat_at_ms={}",
+                self.heartbeat_at_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            ),
+            format!(
+                "deadline_at_ms={}",
+                self.deadline_at_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            ),
+            format!(
+                "cancel_token={}",
+                self.cancel_token
+                    .as_ref()
+                    .map(|value| encode_field(value))
+                    .unwrap_or_default()
+            ),
+            format!(
+                "interrupted_reason={}",
+                self.interrupted_reason
                     .as_ref()
                     .map(|value| encode_field(value))
                     .unwrap_or_default()
@@ -134,6 +187,10 @@ impl TaskStateSnapshot {
             cancel_requested: false,
             cancel_accepted: false,
             cancel_reason: None,
+            heartbeat_at_ms: None,
+            deadline_at_ms: None,
+            cancel_token: None,
+            interrupted_reason: None,
             error_kind: None,
             error_message: None,
             logs: Vec::new(),
@@ -156,6 +213,14 @@ impl TaskStateSnapshot {
                 snapshot.cancel_accepted = value == "true";
             } else if let Some(value) = line.strip_prefix("cancel_reason=") {
                 snapshot.cancel_reason = decode_optional_field(value);
+            } else if let Some(value) = line.strip_prefix("heartbeat_at_ms=") {
+                snapshot.heartbeat_at_ms = parse_optional_stored_u128("heartbeat_at_ms", value)?;
+            } else if let Some(value) = line.strip_prefix("deadline_at_ms=") {
+                snapshot.deadline_at_ms = parse_optional_stored_u128("deadline_at_ms", value)?;
+            } else if let Some(value) = line.strip_prefix("cancel_token=") {
+                snapshot.cancel_token = decode_optional_field(value);
+            } else if let Some(value) = line.strip_prefix("interrupted_reason=") {
+                snapshot.interrupted_reason = decode_optional_field(value);
             } else if let Some(value) = line.strip_prefix("error_kind=") {
                 snapshot.error_kind = decode_optional_field(value);
             } else if let Some(value) = line.strip_prefix("error_message=") {
@@ -198,6 +263,97 @@ impl TaskStateSnapshot {
             level: level.into(),
             message: message.into(),
         });
+    }
+
+    pub fn mark_running(
+        &mut self,
+        heartbeat_at_ms: u128,
+        deadline_at_ms: Option<u128>,
+        cancel_token: impl Into<String>,
+    ) {
+        self.status = "running".to_owned();
+        self.heartbeat_at_ms = Some(heartbeat_at_ms);
+        self.deadline_at_ms = deadline_at_ms;
+        self.cancel_token = Some(cancel_token.into());
+        self.push_log("info", "task marked running");
+    }
+
+    pub fn record_heartbeat(&mut self, heartbeat_at_ms: u128) {
+        self.heartbeat_at_ms = Some(heartbeat_at_ms);
+        self.push_log("info", format!("task heartbeat at {heartbeat_at_ms}"));
+    }
+
+    pub fn request_cancel(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.cancel_requested = true;
+        self.cancel_reason = Some(reason.clone());
+        if self.is_terminal() {
+            self.cancel_accepted = false;
+            self.push_log(
+                "warning",
+                "cancel requested after task reached a terminal state",
+            );
+        } else {
+            self.cancel_accepted = true;
+            self.status = "cancelling".to_owned();
+            self.push_log("warning", format!("cancel requested: {reason}"));
+        }
+    }
+
+    pub fn mark_cancelled(&mut self) {
+        self.status = "cancelled".to_owned();
+        self.cancel_requested = true;
+        self.cancel_accepted = true;
+        self.push_log("warning", "task marked cancelled");
+    }
+
+    pub fn mark_timed_out(&mut self, now_ms: u128) {
+        self.status = "timed_out".to_owned();
+        self.heartbeat_at_ms = Some(now_ms);
+        self.error_kind = Some("timeout".to_owned());
+        self.error_message = Some("task deadline exceeded".to_owned());
+        self.push_log("error", format!("task timed out at {now_ms}"));
+    }
+
+    pub fn mark_completed(&mut self, attempts: usize) {
+        self.status = "completed".to_owned();
+        self.attempts = attempts;
+        self.error_kind = None;
+        self.error_message = None;
+        self.push_log("info", "task completed");
+    }
+
+    pub fn mark_failed(
+        &mut self,
+        attempts: usize,
+        error_kind: impl Into<String>,
+        error_message: impl Into<String>,
+    ) {
+        self.status = "failed".to_owned();
+        self.attempts = attempts;
+        self.error_kind = Some(error_kind.into());
+        self.error_message = Some(error_message.into());
+        self.push_log("error", "task failed");
+    }
+
+    pub fn mark_interrupted(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.status = "interrupted".to_owned();
+        self.interrupted_reason = Some(reason.clone());
+        self.push_log("warning", format!("task interrupted: {reason}"));
+    }
+
+    pub fn mark_recovering(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.status = "recovering".to_owned();
+        self.interrupted_reason = Some(reason.clone());
+        self.push_log("warning", format!("task recovering: {reason}"));
+    }
+
+    pub fn deadline_expired(&self, now_ms: u128) -> bool {
+        self.deadline_at_ms
+            .map(|deadline| now_ms >= deadline)
+            .unwrap_or(false)
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -276,6 +432,20 @@ impl FileSystemTaskStateStore {
             .collect()
     }
 
+    pub fn update_snapshot<F>(
+        &mut self,
+        task_id: &str,
+        update: F,
+    ) -> Result<TaskStateSnapshot, EvaError>
+    where
+        F: FnOnce(&mut TaskStateSnapshot) -> Result<(), EvaError>,
+    {
+        let mut snapshot = self.read(Some(task_id))?;
+        update(&mut snapshot)?;
+        self.write(&snapshot)?;
+        Ok(snapshot)
+    }
+
     fn latest_task_path(&self) -> PathBuf {
         self.task_dir().join("latest-basic.task")
     }
@@ -350,6 +520,17 @@ fn parse_stored_usize(name: &'static str, value: &str) -> Result<usize, EvaError
 
 fn parse_stored_u64(name: &'static str, value: &str) -> Result<u64, EvaError> {
     value.parse::<u64>().map_err(|_| {
+        EvaError::invalid_argument("stored task field is not an unsigned integer")
+            .with_context("field", name)
+            .with_context("value", value)
+    })
+}
+
+fn parse_optional_stored_u128(name: &'static str, value: &str) -> Result<Option<u128>, EvaError> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value.parse::<u128>().map(Some).map_err(|_| {
         EvaError::invalid_argument("stored task field is not an unsigned integer")
             .with_context("field", name)
             .with_context("value", value)
@@ -505,6 +686,53 @@ mod tests {
         assert!(snapshot.is_terminal());
     }
 
+    #[test]
+    fn task_lifecycle_tracks_heartbeat_deadline_cancel_and_timeout() {
+        let mut snapshot = TaskStateSnapshot::queued("req-task-lifecycle").unwrap();
+
+        snapshot.mark_running(100, Some(200), "cancel-token-1");
+        snapshot.record_heartbeat(150);
+        snapshot.request_cancel("operator requested stop");
+
+        assert_eq!(snapshot.status, "cancelling");
+        assert_eq!(snapshot.heartbeat_at_ms, Some(150));
+        assert_eq!(snapshot.deadline_at_ms, Some(200));
+        assert_eq!(snapshot.cancel_token.as_deref(), Some("cancel-token-1"));
+        assert!(snapshot.cancel_requested);
+        assert!(snapshot.cancel_accepted);
+        assert!(!snapshot.deadline_expired(199));
+        assert!(snapshot.deadline_expired(200));
+
+        snapshot.mark_timed_out(250);
+
+        assert_eq!(snapshot.status, "timed_out");
+        assert!(snapshot.is_terminal());
+        assert_eq!(snapshot.error_kind.as_deref(), Some("timeout"));
+        assert!(snapshot.logs.iter().any(|entry| entry.level == "error"));
+    }
+
+    #[test]
+    fn filesystem_task_state_update_appends_lifecycle_log() {
+        let root = test_root("lifecycle-update");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        let mut snapshot = TaskStateSnapshot::queued("req-task-lifecycle-store").unwrap();
+        snapshot.mark_running(10, Some(20), "cancel-token-store");
+        store.write(&snapshot).unwrap();
+
+        let updated = store
+            .update_snapshot("req-task-lifecycle-store", |snapshot| {
+                snapshot.request_cancel("operator cancel");
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(updated.status, "cancelling");
+        assert_eq!(updated.logs.len(), 2);
+        let reread = store.read(Some("req-task-lifecycle-store")).unwrap();
+        assert_eq!(reread.status, "cancelling");
+        assert_eq!(reread.cancel_reason.as_deref(), Some("operator cancel"));
+    }
+
     fn sample_snapshot(task_id: &str) -> TaskStateSnapshot {
         TaskStateSnapshot {
             task_id: task_id.to_owned(),
@@ -514,6 +742,10 @@ mod tests {
             cancel_requested: false,
             cancel_accepted: false,
             cancel_reason: None,
+            heartbeat_at_ms: None,
+            deadline_at_ms: None,
+            cancel_token: None,
+            interrupted_reason: None,
             error_kind: None,
             error_message: None,
             logs: vec![TaskStateLogSnapshot {

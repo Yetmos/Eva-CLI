@@ -110,6 +110,7 @@ cargo run -- daemon shutdown --state-dir .eva/daemon-state --lock-dir .eva/daemo
 | `shutdown` | foreground smoke 结束时调用 `Runtime::shutdown()` 的幂等报告。 |
 | `trace_id` | control mailbox request/response 的链路标识；默认来自 CLI request id。 |
 | `request_file` / `response_file` | 本机 filesystem mailbox 的请求和响应文件路径。 |
+| daemon `submit` / `cancel` | `submit` 写入 durable `queued` task lifecycle；`cancel` 将非终态 task 推进到 `cancelling` 并追加日志。 |
 
 ## V1.1 External Capability Commands
 

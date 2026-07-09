@@ -33,6 +33,8 @@ pub struct AgentRunRecord {
 pub struct AgentRunControl {
     pub timeout: Option<Duration>,
     pub cancel_requested: bool,
+    pub cancel_token: Option<String>,
+    pub deadline_at_ms: Option<u128>,
     pub max_attempts: usize,
 }
 
@@ -78,6 +80,8 @@ impl Default for AgentRunControl {
         Self {
             timeout: None,
             cancel_requested: false,
+            cancel_token: None,
+            deadline_at_ms: None,
             max_attempts: 1,
         }
     }
@@ -91,6 +95,16 @@ impl AgentRunControl {
 
     pub fn with_cancel_requested(mut self, cancel_requested: bool) -> Self {
         self.cancel_requested = cancel_requested;
+        self
+    }
+
+    pub fn with_cancel_token(mut self, cancel_token: impl Into<String>) -> Self {
+        self.cancel_token = Some(cancel_token.into());
+        self
+    }
+
+    pub fn with_deadline_at_ms(mut self, deadline_at_ms: u128) -> Self {
+        self.deadline_at_ms = Some(deadline_at_ms);
         self
     }
 
@@ -150,6 +164,15 @@ impl AgentRuntime {
         let topic = event.topic().clone();
 
         if control.cancel_requested {
+            let mut error = EvaError::conflict("agent run was cancelled")
+                .with_context("agent_id", self.agent_id.as_str())
+                .with_retryable(false);
+            if let Some(cancel_token) = &control.cancel_token {
+                error = error.with_context("cancel_token", cancel_token);
+            }
+            if let Some(deadline_at_ms) = control.deadline_at_ms {
+                error = error.with_context("deadline_at_ms", deadline_at_ms.to_string());
+            }
             return Some(AgentRunRecord {
                 agent_id: self.agent_id.clone(),
                 event_id,
@@ -158,11 +181,7 @@ impl AgentRuntime {
                 attempts: 0,
                 handler_status: None,
                 output: None,
-                error: Some(
-                    EvaError::conflict("agent run was cancelled")
-                        .with_context("agent_id", self.agent_id.as_str())
-                        .with_retryable(false),
-                ),
+                error: Some(error),
             });
         }
 
@@ -303,6 +322,35 @@ mod tests {
         assert_eq!(record.status, AgentRunStatus::Cancelled);
         assert_eq!(record.attempts, 0);
         assert_eq!(record.error.unwrap().kind(), eva_core::ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn runtime_records_cancel_token_and_deadline_on_cancel() {
+        let mut runtime = AgentRuntime::new(AgentId::parse("root-agent").unwrap(), 2).unwrap();
+        runtime.start().unwrap();
+        runtime.accept(event("evt-1")).unwrap();
+
+        let record = runtime
+            .run_next_with_control(
+                AgentRunControl::default()
+                    .with_cancel_requested(true)
+                    .with_cancel_token("cancel-token-1")
+                    .with_deadline_at_ms(123),
+                |_agent_id, _event| Ok(AgentHandlerOutput::new("unreachable", None)),
+            )
+            .unwrap();
+        assert_eq!(record.status, AgentRunStatus::Cancelled);
+        let error = record.error.unwrap();
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "cancel_token" && value == "cancel-token-1"));
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "deadline_at_ms" && value == "123"));
     }
 
     #[test]
