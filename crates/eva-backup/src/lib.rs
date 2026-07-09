@@ -29,5 +29,7 @@ pub use restore_apply::{
     RestoreApplyLockStore, RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator,
     RestoreMutationApplyReport, RestoreMutationEngine, RestoreMutationOperation,
     RestoreMutationStep, RestoreMutationTargetKind, RestoreMutationTransactionEntry,
-    RestoreRollbackEntry, RestoreStagedMutationPlan, RestoreStagedMutationPlanner,
+    RestorePreRestoreArchive, RestorePreRestoreArchiveEntry, RestoreRollbackApplyReport,
+    RestoreRollbackEngine, RestoreRollbackEntry, RestoreStagedMutationPlan,
+    RestoreStagedMutationPlanner,
 };

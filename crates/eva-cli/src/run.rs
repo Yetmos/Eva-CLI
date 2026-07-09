@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -84,6 +84,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "snapshot promote",
     "restore plan",
     "restore apply",
+    "restore rollback",
     "upgrade check",
     "upgrade apply",
     "release check",
@@ -1064,6 +1065,7 @@ fn help_text() -> &'static str {
         "  eva snapshot promote --snapshot-id <id> --confirm <snapshot_id> [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
         "  eva restore plan [--snapshot-id <id>] [--release <ref>] [--artifact-store <path>] [--project <path>] [--output text|json]\n",
         "  eva restore apply --plan <path> --confirm <plan_id> --artifact-store <path> --lock-store <path> [--dry-run] [--owner <id>] [--health healthy|failed] [--project <path>] [--output text|json]\n",
+        "  eva restore rollback --plan <path> --confirm <plan_id> --artifact-store <path> --lock-store <path> [--transaction-log <path>] [--owner <id>] [--health healthy|failed] [--project <path>] [--output text|json]\n",
         "  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n",
         "  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--state-store <path>] [--runtime-binary <path>] [--health healthy|failed|unavailable] [--owner <id>] [--project <path>] [--output text|json]\n",
         "  eva release check [--target all|windows|linux|macos] [--artifact-evidence <path>] [--distribution-evidence <path>] [--security-scan-evidence <path>] [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
@@ -1089,7 +1091,7 @@ fn help_text() -> &'static str {
         "  hardware         List, probe, and plan hardware bindings without opening raw I/O.\n",
         "  backup           Create and verify a V1.4 backup artifact, optionally in a filesystem ArtifactStore.\n",
         "  snapshot         Capture or plan promotion for a release snapshot without moving release pointer.\n",
-        "  restore          Produce a plan-first restore plan; no destructive mutation is executed.\n",
+        "  restore          Produce restore plans, apply staged mutations, or rollback failed staged mutations under explicit gates.\n",
         "  upgrade          Check, lock, or commit policy-gated generation handoff state.\n",
         "  release          Run V1.5 cross-platform, security, performance, migration, and compatibility release gates.\n\n",
         "Exit codes:\n",
@@ -2524,11 +2526,13 @@ mod tests {
         assert!(json_stdout.contains("provider_supervision_release_gate_v1.13.8"));
         assert!(json_stdout.contains("restore_staged_mutation_planner_v1.14.1"));
         assert!(json_stdout.contains("restore_file_mutation_engine_v1.14.2"));
+        assert!(json_stdout.contains("restore_rollback_apply_v1.14.3"));
         assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));
         assert!(json_stdout.contains("capability list/probe/call"));
         assert!(json_stdout.contains("restore apply"));
+        assert!(json_stdout.contains("restore rollback"));
         assert!(json_stdout.contains("release check"));
     }
 
@@ -3461,6 +3465,98 @@ mod tests {
         let transaction_log = fs::read_to_string(lock_root.join("plan-mutation.restore.txn"))
             .expect("transaction log should be written");
         assert!(transaction_log.contains("status=applied"));
+
+        fs::remove_dir_all(project).unwrap();
+        fs::remove_dir_all(artifact_root).unwrap();
+        fs::remove_dir_all(target_root).unwrap();
+        fs::remove_dir_all(lock_root).unwrap();
+    }
+
+    #[test]
+    fn restore_rollback_restores_failed_staged_mutation_from_transaction_log() {
+        let project = project_with_restore_apply_allowed("restore-rollback-project");
+        let artifact_root = test_temp_dir("restore-rollback-artifacts");
+        let target_root = test_temp_dir("restore-rollback-target");
+        let lock_root = test_temp_dir("restore-rollback-lock");
+        let plan_path = artifact_root.join("restore.plan");
+        fs::create_dir_all(target_root.join("bin")).unwrap();
+        let mut store = FileSystemArtifactStore::new(&artifact_root);
+        let artifact = store
+            .put_bytes("backup/rollback-apply", b"ok".as_slice())
+            .unwrap();
+        let pre_restore = store
+            .put_bytes(
+                "backup/pre-rollback-apply",
+                b"eva-backup-archive:v1\nentry.path=bin/eva\nentry.size=10\nentry.redacted=false\nentry.bytes.hex=6f6c642d62696e617279\n"
+                    .as_slice(),
+            )
+            .unwrap();
+        let binary = store
+            .put_bytes("backup/rollback-binary", b"binary".as_slice())
+            .unwrap();
+        let old_binary_digest = eva_backup::archive::digest_bytes(b"old-binary");
+        fs::write(
+            &plan_path,
+            format!(
+                "plan_id=plan-rollback\nbackup_artifact_id=rollback-apply\nbackup_digest={}\npre_restore_backup_artifact_id=pre-rollback-apply\npre_restore_backup_digest={}\nrestore_target_root={}\nmutation_step=replace|bin/eva|backup/rollback-binary|{}|{}|file\n",
+                artifact.digest,
+                pre_restore.digest,
+                target_root.display(),
+                binary.digest,
+                old_binary_digest
+            ),
+        )
+        .unwrap();
+        fs::write(target_root.join("bin/eva"), b"binary").unwrap();
+        let plan = restore_cmd::parse_restore_apply_plan(&fs::read_to_string(&plan_path).unwrap())
+            .unwrap();
+        let staged = eva_backup::RestoreStagedMutationPlanner
+            .plan(&plan)
+            .unwrap();
+        fs::create_dir_all(&lock_root).unwrap();
+        fs::write(
+            lock_root.join("plan-rollback.restore.txn"),
+            format!(
+                "restore-mutation-transaction:v1\nplan_id=plan-rollback\ntarget_root={}\npreflight_hash={}\nstep=0|replace|bin/eva|committed|{}|none\nstep=0|replace|bin/eva|failed|none|post-commit health failed\nstatus=rollback_required\nmutation_executed=true\n",
+                target_root.display(),
+                staged.preflight_hash,
+                binary.digest
+            ),
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "restore",
+            "rollback",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-rollback",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--lock-store",
+            lock_root.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"restore.rollback\""));
+        assert!(stdout.contains("\"status\":\"rolled_back\""));
+        assert!(stdout.contains("\"rollback_executed\":true"));
+        assert!(stdout.contains("\"transaction_status\":\"rollback_required\""));
+        assert!(lock_root
+            .join("plan-rollback.restore.rollback.lock")
+            .exists());
+        assert!(lock_root
+            .join("plan-rollback.restore.rollback.txn")
+            .exists());
+        assert_eq!(
+            fs::read(target_root.join("bin/eva")).unwrap(),
+            b"old-binary"
+        );
 
         fs::remove_dir_all(project).unwrap();
         fs::remove_dir_all(artifact_root).unwrap();

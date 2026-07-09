@@ -12,6 +12,7 @@ use eva_backup::{
     RestoreApplyHealthCheck, RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator,
     RestoreMutationApplyReport, RestoreMutationEngine, RestoreMutationOperation,
     RestoreMutationStep, RestoreMutationTargetKind, RestoreMutationTransactionEntry, RestorePlan,
+    RestorePreRestoreArchive, RestoreRollbackApplyReport, RestoreRollbackEngine,
     RestoreRollbackEntry, RestoreStagedMutationPlan, SnapshotRole,
 };
 use eva_config::load_project_config;
@@ -29,6 +30,7 @@ use std::path::{Path, PathBuf};
 pub(super) enum RestoreCommand {
     Plan(RestorePlanOptions),
     Apply(RestoreApplyOptions),
+    Rollback(RestoreRollbackOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +50,18 @@ pub(super) struct RestoreApplyOptions {
     artifact_store: Option<PathBuf>,
     lock_store: Option<PathBuf>,
     dry_run: bool,
+    owner: String,
+    health: RestoreApplyHealthOption,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RestoreRollbackOptions {
+    common: CommonOptions,
+    plan: Option<PathBuf>,
+    confirm: Option<String>,
+    artifact_store: Option<PathBuf>,
+    lock_store: Option<PathBuf>,
+    transaction_log: Option<PathBuf>,
     owner: String,
     health: RestoreApplyHealthOption,
 }
@@ -77,6 +91,18 @@ struct RestoreApplyResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreRollbackResult {
+    plan: RestoreApplyPlan,
+    dry_run: RestoreApplyDryRunReport,
+    rollback: RestoreRollbackApplyReport,
+    lock: eva_backup::RestoreApplyLock,
+    health: RestoreApplyHealthCheck,
+    artifact_store: ArtifactStoreRef,
+    lock_store: LockStoreRef,
+    audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RestoreApplyHealthOption {
     Healthy,
     Failed(String),
@@ -89,6 +115,9 @@ pub(super) fn parse_restore_command(args: &[String]) -> Result<RestoreCommand, E
     match subcommand.as_str() {
         "plan" => Ok(RestoreCommand::Plan(parse_restore_plan_options(rest)?)),
         "apply" => Ok(RestoreCommand::Apply(parse_restore_apply_options(rest)?)),
+        "rollback" => Ok(RestoreCommand::Rollback(parse_restore_rollback_options(
+            rest,
+        )?)),
         value => {
             Err(EvaError::unsupported("unknown restore subcommand")
                 .with_context("subcommand", value))
@@ -174,6 +203,33 @@ where
                         &trace,
                     ),
                 }
+            }
+        }
+        RestoreCommand::Rollback(options) => {
+            let trace = trace_for("cli.restore.rollback");
+            match create_restore_rollback(&options) {
+                Ok(result) => {
+                    let exit_code = if result.rollback.status == "rolled_back" {
+                        EXIT_OK
+                    } else {
+                        EXIT_RUNTIME_UNAVAILABLE
+                    };
+                    write_restore_rollback(
+                        stdout,
+                        options.common.output,
+                        exit_code,
+                        &result,
+                        &trace,
+                    )?;
+                    Ok(exit_code)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "restore.rollback",
+                    &error,
+                    &trace,
+                ),
             }
         }
     }
@@ -281,6 +337,75 @@ fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, E
         artifact_store,
         lock_store,
         dry_run,
+        owner,
+        health,
+    })
+}
+
+fn parse_restore_rollback_options(args: &[String]) -> Result<RestoreRollbackOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut plan = None;
+    let mut confirm = None;
+    let mut artifact_store = None;
+    let mut lock_store = None;
+    let mut transaction_log = None;
+    let mut owner = "cli".to_owned();
+    let mut health = RestoreApplyHealthOption::Healthy;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--plan" => {
+                index += 1;
+                plan = Some(PathBuf::from(required_option(args, index, "plan option")?));
+            }
+            "--confirm" => {
+                index += 1;
+                confirm = Some(required_option(args, index, "confirm option")?.clone());
+            }
+            "--artifact-store" | "--artifact-store-dir" => {
+                index += 1;
+                artifact_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "artifact store option",
+                )?));
+            }
+            "--lock-store" | "--lock-store-dir" => {
+                index += 1;
+                lock_store = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "lock store option",
+                )?));
+            }
+            "--transaction-log" | "--txn" => {
+                index += 1;
+                transaction_log = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "transaction log option",
+                )?));
+            }
+            "--owner" => {
+                index += 1;
+                owner = required_option(args, index, "owner option")?.clone();
+            }
+            "--health" | "--health-check" => {
+                index += 1;
+                health =
+                    parse_restore_apply_health(required_option(args, index, "health option")?)?;
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    Ok(RestoreRollbackOptions {
+        common: parse_common_options(&passthrough)?,
+        plan,
+        confirm,
+        artifact_store,
+        lock_store,
+        transaction_log,
         owner,
         health,
     })
@@ -456,6 +581,114 @@ fn create_restore_apply(options: &RestoreApplyOptions) -> Result<RestoreApplyRes
         lock_store: lock_store_ref(Some(lock_store_path)),
         mutation_apply,
         rollback_plan,
+    })
+}
+
+fn create_restore_rollback(
+    options: &RestoreRollbackOptions,
+) -> Result<RestoreRollbackResult, EvaError> {
+    let lock_store_path = options.lock_store.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore rollback requires --lock-store")
+            .with_context("required_option", "--lock-store")
+    })?;
+    let dry_run = create_restore_apply_dry_run(&RestoreApplyOptions {
+        common: options.common.clone(),
+        plan: options.plan.clone(),
+        confirm: options.confirm.clone(),
+        artifact_store: options.artifact_store.clone(),
+        lock_store: options.lock_store.clone(),
+        dry_run: true,
+        owner: options.owner.clone(),
+        health: options.health.clone(),
+    })?;
+    let project = load_project_config(&options.common.project_root)?;
+    let policy_decision = RuntimePolicyGate::from_project(&project)?
+        .decide(RuntimePolicyRequest::new(HighRiskAction::RestoreApply));
+    policy_decision.ensure_allowed()?;
+    let health = match &options.health {
+        RestoreApplyHealthOption::Healthy => RestoreApplyHealthCheck::healthy(),
+        RestoreApplyHealthOption::Failed(message) => {
+            RestoreApplyHealthCheck::failed(message.clone())?
+        }
+    };
+    if !health.healthy {
+        return Err(
+            EvaError::unavailable("restore rollback health check failed")
+                .with_context("health", health.message.clone()),
+        );
+    }
+    let mut lock_store = FileSystemRestoreApplyLockStore::new(lock_store_path);
+    let lock = lock_store.acquire_rollback_lock(&dry_run.plan, &options.owner)?;
+    let artifact_store_path = options.artifact_store.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore rollback requires --artifact-store")
+            .with_context("required_option", "--artifact-store")
+    })?;
+    let pre_restore = dry_run.plan.pre_restore_backup.as_ref().ok_or_else(|| {
+        EvaError::invalid_argument("restore rollback requires pre-restore backup evidence")
+            .with_context("plan_id", &dry_run.plan.plan_id)
+    })?;
+    let artifact_store = FileSystemArtifactStore::new(artifact_store_path);
+    let pre_restore_artifact = artifact_store
+        .try_get_bytes(&pre_restore.backup_artifact_key())?
+        .ok_or_else(|| {
+            EvaError::not_found("restore rollback pre-restore backup artifact is missing")
+                .with_context("artifact_key", pre_restore.backup_artifact_key())
+                .with_context("artifact_store", artifact_store_path.display().to_string())
+        })?;
+    let pre_restore_archive =
+        RestorePreRestoreArchive::parse(&pre_restore_artifact, &pre_restore.backup_digest)?;
+    let target_root = resolve_restore_mutation_target_root(
+        &options.common.project_root,
+        &dry_run.report.mutation_plan.target_root,
+    );
+    let transaction_log_path = options
+        .transaction_log
+        .clone()
+        .unwrap_or_else(|| lock_store_path.join(format!("{}.restore.txn", dry_run.plan.plan_id)));
+    let rollback_log_path =
+        lock_store_path.join(format!("{}.restore.rollback.txn", dry_run.plan.plan_id));
+    let rollback = RestoreRollbackEngine.apply(
+        &dry_run.report.mutation_plan,
+        &target_root,
+        &transaction_log_path,
+        &rollback_log_path,
+        &pre_restore_archive,
+    )?;
+    let mut audit = vec![
+        "restore.rollback:plan_parsed".to_owned(),
+        "restore.rollback:confirmation_matched".to_owned(),
+        "restore.rollback:backup_evidence_verified".to_owned(),
+        "restore.rollback:policy_allowed".to_owned(),
+        "restore.rollback:lock_acquired".to_owned(),
+        "restore.rollback:health_check_passed".to_owned(),
+    ];
+    audit.extend(
+        policy_decision
+            .audit
+            .iter()
+            .map(|entry| format!("policy:{entry}")),
+    );
+    audit.extend(
+        pre_restore_archive
+            .audit
+            .iter()
+            .map(|entry| format!("pre_restore:{entry}")),
+    );
+    audit.extend(
+        rollback
+            .audit
+            .iter()
+            .map(|entry| format!("rollback:{entry}")),
+    );
+    Ok(RestoreRollbackResult {
+        plan: dry_run.plan,
+        dry_run: dry_run.report,
+        rollback,
+        lock,
+        health,
+        artifact_store: dry_run.artifact_store,
+        lock_store: lock_store_ref(Some(lock_store_path)),
+        audit,
     })
 }
 
@@ -748,6 +981,54 @@ fn write_restore_apply<W: Write>(
     }
 }
 
+fn write_restore_rollback<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    exit_code: i32,
+    result: &RestoreRollbackResult,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Restore rollback apply").map_err(write_error_kind)?;
+            writeln!(writer, "plan: {}", result.plan.plan_id).map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", result.rollback.status).map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "rollback_executed: {}",
+                result.rollback.rollback_executed
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "transaction_log: {}",
+                result.rollback.transaction_log_path
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "rollback_log: {}",
+                result.rollback.rollback_log_path
+            )
+            .map_err(write_error_kind)?;
+            writeln!(writer, "lock: {}", result.lock.lock_id).map_err(write_error_kind)?;
+            write_artifact_store_ref(writer, &result.artifact_store)?;
+            write_lock_store_ref(writer, &result.lock_store)
+        }
+        OutputFormat::Json => writeln!(
+            writer,
+            "{}",
+            success_envelope(
+                "restore.rollback",
+                exit_code,
+                &restore_rollback_json(result),
+                trace
+            )
+        )
+        .map_err(write_error_kind),
+    }
+}
+
 fn restore_plan_json(result: &RestorePlanResult) -> String {
     format!(
         "{{\"snapshot\":{},\"backup\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
@@ -816,6 +1097,42 @@ fn restore_apply_json(result: &RestoreApplyResult) -> String {
             .as_ref()
             .map(rollback_plan_json)
             .unwrap_or_else(|| "null".to_owned())
+    )
+}
+
+fn restore_rollback_json(result: &RestoreRollbackResult) -> String {
+    format!(
+        "{{\"plan_id\":{},\"status\":{},\"rollback_executed\":{},\"rollback\":{},\"mutation_plan\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"audit\":{}}}",
+        json_string(&result.plan.plan_id),
+        json_string(&result.rollback.status),
+        result.rollback.rollback_executed,
+        restore_rollback_apply_json(&result.rollback),
+        restore_mutation_plan_json(&result.dry_run.mutation_plan),
+        restore_apply_lock_json(&result.lock),
+        result.health.healthy,
+        json_string(&result.health.message),
+        artifact_store_ref_json(&result.artifact_store),
+        lock_store_ref_json(&result.lock_store),
+        restore_apply_dry_run_report_json(&result.dry_run, &result.artifact_store),
+        json_array(result.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn restore_rollback_apply_json(report: &RestoreRollbackApplyReport) -> String {
+    format!(
+        "{{\"plan_id\":{},\"target_root\":{},\"status\":{},\"rollback_executed\":{},\"completed_steps\":{},\"failed_step\":{},\"transaction_log_path\":{},\"rollback_log_path\":{},\"transaction_status\":{},\"transaction_log\":{},\"rollback_log\":{},\"audit\":{}}}",
+        json_string(&report.plan_id),
+        json_string(&report.target_root),
+        json_string(&report.status),
+        report.rollback_executed,
+        report.completed_steps,
+        option_json(report.failed_step.as_deref()),
+        json_string(&report.transaction_log_path),
+        json_string(&report.rollback_log_path),
+        json_string(&report.transaction_status),
+        json_array(report.transaction_log.iter().map(restore_transaction_entry_json)),
+        json_array(report.rollback_log.iter().map(restore_transaction_entry_json)),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
 }
 

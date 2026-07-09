@@ -14,7 +14,7 @@
 | `archive.rs` | signed/sealed archive contract | 已完成 V1.10.3 | `BackupArchiveCodec`、`BackupSigningKey`、`BackupEncryptionKey`、`RemoteBackupTarget`、`BackupArchiveVerifier`。 |
 | `backup_service.rs` | backup plan 和 artifact 生成 | 已完成 V1.10.3 | `BackupEntry`、`BackupScope`、`BackupPlan`、`BackupManifest`、`BackupService::create`。 |
 | `manifest_verifier.rs` | artifact/manifest integrity verification | 已完成 V1.10.3 | `ManifestVerifier::verify_artifact`、`ManifestVerifier::verify_backup_archive`、`VerificationReport`。 |
-| `restore_apply.rs` | restore apply validation, staged mutation planning/execution, lock, policy and health gate | 已完成 V1.14.2 | `RestoreApplyPlan`、`PreRestoreBackupEvidence`、`RestoreMutationStep`、`RestoreStagedMutationPlanner`、`RestoreMutationEngine`、`RestoreApplyValidator`、`RestoreApplyCoordinator`、`RestoreApplyLockStore`、`RestoreApplyHealthCheck`，验证 durable artifact 和 pre-restore evidence，生成 mutation preview/preflight hash/rollback manifest，在 gate 后执行 staged file mutation 并写 transaction log。 |
+| `restore_apply.rs` | restore apply validation, staged mutation planning/execution/rollback, lock, policy and health gate | 已完成 V1.14.3 | `RestoreApplyPlan`、`PreRestoreBackupEvidence`、`RestoreMutationStep`、`RestoreStagedMutationPlanner`、`RestoreMutationEngine`、`RestoreRollbackEngine`、`RestoreApplyValidator`、`RestoreApplyCoordinator`、`RestoreApplyLockStore`、`RestoreApplyHealthCheck`，验证 durable artifact 和 pre-restore evidence，生成 mutation preview/preflight hash/rollback manifest，在 gate 后执行 staged file mutation 并写 transaction log；rollback apply 只接受 rollback-required transaction log，并用 pre-restore archive entry 恢复已提交步骤。 |
 | `migration_package.rs` | 迁移包 manifest 和兼容性 | 已完成 | `MigrationPackageManifest`、`MigrationPackageService::verify_preflight`。 |
 | `release_snapshot.rs` | release snapshot 和 restore plan | 已完成 | `ReleaseSnapshot`、`SnapshotRole`、`RestorePlan`、`ReleaseSnapshotService`。 |
 
@@ -33,7 +33,8 @@
 - Restore apply health check 失败必须返回 `blocked`、`apply_allowed:false` 并要求 rollback plan。
 - Restore staged mutation planner 必须拒绝 path traversal、Windows prefix/backslash 和 symlink target kind；preview 与 `preflight_hash` 必须可复算。
 - Restore mutation engine 必须先验证 source artifact digest 和 target pre-restore digest；每步写 transaction log；失败时停止并输出 `rollback_required`。
-- V1.14.2 no-step gated report 保持 `mutation_executed:false`；带 staged steps 的 apply 只有成功写入后才输出 `mutation_executed:true`，且不能移动 release pointer 或启动 supervisor handoff。
+- Restore rollback engine 必须先验证 transaction log、preflight hash、pre-restore archive entry digest、当前 target digest 和 rollback lock；失败时停止并写二级 rollback evidence。
+- V1.14.2/V1.14.3 no-step gated report 保持 `mutation_executed:false`；带 staged steps 的 apply 只有成功写入后才输出 `mutation_executed:true`，rollback apply 只有 transaction log 与 pre-restore archive 通过后才输出 `rollback_executed:true`，且不能移动 release pointer 或启动 supervisor handoff。
 - Migration package preflight 不执行迁移逻辑，只输出 ready/planned/blocked。
 - Restore plan 在 V1.4 永远 `apply_allowed:false`。
 

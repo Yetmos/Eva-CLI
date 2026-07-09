@@ -6,7 +6,7 @@
 
 `eva-backup` 是 V1.4/V1.10 的备份、迁移包、ReleaseSnapshot 和 restore evidence 可信执行边界。它把高风险恢复能力拆成 signed backup archive、manifest verification、migration preflight、release snapshot、restore plan、pre-restore evidence 和 restore apply gate，保证恢复与升级先计划、先校验、先审计，再交给 lifecycle 执行。
 
-V1.10.4 之后，backup artifact 是稳定 archive payload，带 checksum、manifest signature、可选 sealed archive metadata 和 remote target typed contract。`restore apply` 可以在 confirmation、pre-restore evidence、policy approval、apply lock 和 health check 都通过后产出 gated report。V1.14.1 允许 plan 文件声明 staged mutation steps，并生成 preview、affected paths、preflight hash 和 rollback manifest；V1.14.2 在这些 gate 全部通过且 plan 声明 mutation steps 时执行 copy/delete/replace file mutation，并为每一步写 transaction log。旧 no-step plan 仍只产出 gated report；rollback apply、release pointer 和 supervisor handoff 仍是后续边界。
+V1.10.4 之后，backup artifact 是稳定 archive payload，带 checksum、manifest signature、可选 sealed archive metadata 和 remote target typed contract。`restore apply` 可以在 confirmation、pre-restore evidence、policy approval、apply lock 和 health check 都通过后产出 gated report。V1.14.1 允许 plan 文件声明 staged mutation steps，并生成 preview、affected paths、preflight hash 和 rollback manifest；V1.14.2 在这些 gate 全部通过且 plan 声明 mutation steps 时执行 copy/delete/replace file mutation，并为每一步写 transaction log；V1.14.3 可基于 rollback-required transaction log 与 pre-restore archive entry 执行反向文件恢复。旧 no-step plan 仍只产出 gated report；release pointer 和 supervisor handoff 仍是后续边界。
 
 ## 已实现能力
 
@@ -18,6 +18,7 @@ V1.10.4 之后，backup artifact 是稳定 archive payload，带 checksum、mani
 | Restore apply gate | 已完成 V1.10.4 | `RestoreApplyValidator` 验证 durable backup artifact 和 pre-restore backup evidence 的 key/digest；`RestoreApplyCoordinator` 要求 policy approval、apply lock 和 health check 后返回 gated/blocked report，不执行破坏性恢复。 |
 | Restore staged mutation planner | 已完成 V1.14.1 | `RestoreStagedMutationPlanner` 校验 copy/delete/replace steps，拒绝 path traversal、Windows prefix/backslash 和 symlink target kind，并生成 deterministic `preflight_hash`、preview、affected paths 与 rollback manifest。 |
 | Restore mutation engine | 已完成 V1.14.2 | `RestoreMutationEngine` 在 source artifact digest、target pre-restore digest 和 safe target path 都通过后执行 staged file mutation；每步写 transaction log，失败时停止并输出 `rollback_required`。 |
+| Restore rollback engine | 已完成 V1.14.3 | `RestoreRollbackEngine` 只接受 `rollback_required` transaction log，按已提交步骤倒序回滚，使用 pre-restore archive entry 恢复 delete/replace，拒绝当前 digest 漂移并写 rollback transaction log。 |
 | Remote target contract | 已完成 V1.10.3 | `RemoteBackupTarget` 以 typed contract 记录 filesystem/object-store/S3-compatible 灾备目标；当前只记录和签名，不执行远端上传。 |
 | MigrationPackage | 已完成 V1.4 | `MigrationPackageManifest` 声明 source/target、affected sections、reversible 和 checksum；`MigrationPackageService::verify_preflight` 输出 ready/planned/blocked。 |
 | ReleaseSnapshot | 已完成 V1.4 | `ReleaseSnapshotService::create` 将 snapshot 绑定到已验证 backup manifest、release ref、generation 和 health status。 |
@@ -106,7 +107,7 @@ mutation_step=delete|logs/old.log|none|none|sha256:<old>|file
 - 不静默忽略 digest 或 manifest mismatch。
 - 不执行远端灾备上传。
 - 不绕过 signed archive、pre-restore evidence、policy、lock、health、staged plan 或 transaction log 执行 mutation。
-- 不移动 release pointer，不启动 supervisor handoff，不执行真实 rollback apply。
+- 不移动 release pointer，不启动 supervisor handoff；rollback apply 只覆盖 staged file mutation，不替代生产 service-manager rollback。
 
 ## 验证计划
 

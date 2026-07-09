@@ -113,6 +113,39 @@ pub struct RestoreMutationApplyReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreRollbackApplyReport {
+    pub plan_id: String,
+    pub target_root: String,
+    pub status: String,
+    pub rollback_executed: bool,
+    pub completed_steps: usize,
+    pub failed_step: Option<String>,
+    pub transaction_log_path: String,
+    pub rollback_log_path: String,
+    pub transaction_status: String,
+    pub transaction_log: Vec<RestoreMutationTransactionEntry>,
+    pub rollback_log: Vec<RestoreMutationTransactionEntry>,
+    pub audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestorePreRestoreArchiveEntry {
+    pub relative_path: String,
+    pub bytes: Vec<u8>,
+    pub digest: String,
+    pub redacted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestorePreRestoreArchive {
+    pub artifact_key: String,
+    pub expected_digest: String,
+    pub actual_digest: String,
+    pub entries: BTreeMap<String, RestorePreRestoreArchiveEntry>,
+    pub audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreApplyLock {
     pub lock_id: String,
     pub plan_id: String,
@@ -172,6 +205,9 @@ pub struct RestoreStagedMutationPlanner;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RestoreMutationEngine;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RestoreRollbackEngine;
 
 impl RestoreApplyPlan {
     pub fn new(
@@ -466,6 +502,44 @@ impl FileSystemRestoreApplyLockStore {
     pub fn root(&self) -> &Path {
         &self.root
     }
+
+    pub fn acquire_rollback_lock(
+        &mut self,
+        plan: &RestoreApplyPlan,
+        owner: &str,
+    ) -> Result<RestoreApplyLock, EvaError> {
+        let mut lock = build_restore_lock(plan, owner)?;
+        lock.lock_id = format!("restore-rollback-{}", plan.plan_id);
+        lock.audit.push("lock:rollback".to_owned());
+        fs::create_dir_all(&self.root).map_err(|error| {
+            EvaError::internal("failed to create restore rollback lock store")
+                .with_context("lock_store", self.root.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        let lock_path = restore_rollback_lock_path(&self.root, &plan.plan_id);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    restore_rollback_lock_conflict(&plan.plan_id, &lock_path)
+                } else {
+                    EvaError::internal("failed to create restore rollback lock")
+                        .with_context("plan_id", &plan.plan_id)
+                        .with_context("lock_path", lock_path.display().to_string())
+                        .with_context("io_error", error.to_string())
+                }
+            })?;
+        file.write_all(restore_lock_payload(plan, &lock).as_bytes())
+            .map_err(|error| {
+                EvaError::internal("failed to write restore rollback lock")
+                    .with_context("plan_id", &plan.plan_id)
+                    .with_context("lock_path", lock_path.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+        Ok(lock)
+    }
 }
 
 impl RestoreApplyLockStore for InMemoryRestoreApplyLockStore {
@@ -752,6 +826,163 @@ impl RestoreMutationEngine {
             audit: vec![
                 "restore.mutation:transaction_applied".to_owned(),
                 "mutation_executed:true".to_owned(),
+            ],
+        })
+    }
+}
+
+impl RestoreRollbackEngine {
+    pub fn apply(
+        &self,
+        plan: &RestoreStagedMutationPlan,
+        target_root: impl AsRef<Path>,
+        transaction_log_path: impl AsRef<Path>,
+        rollback_log_path: impl AsRef<Path>,
+        pre_restore_archive: &RestorePreRestoreArchive,
+    ) -> Result<RestoreRollbackApplyReport, EvaError> {
+        let target_root = target_root.as_ref();
+        let transaction_log_path = transaction_log_path.as_ref();
+        let rollback_log_path = rollback_log_path.as_ref();
+        let transaction = parse_restore_transaction_log(transaction_log_path)?;
+        if transaction.plan_id != plan.plan_id {
+            return Err(
+                EvaError::conflict("restore rollback transaction plan mismatch")
+                    .with_context("plan_id", &plan.plan_id)
+                    .with_context("transaction_plan_id", transaction.plan_id),
+            );
+        }
+        if transaction.preflight_hash != plan.preflight_hash {
+            return Err(
+                EvaError::conflict("restore rollback preflight hash mismatch")
+                    .with_context("plan_id", &plan.plan_id)
+                    .with_context("expected_preflight_hash", &plan.preflight_hash)
+                    .with_context("transaction_preflight_hash", transaction.preflight_hash),
+            );
+        }
+        if transaction.status != "rollback_required" {
+            return Err(EvaError::conflict(
+                "restore rollback requires a rollback_required transaction log",
+            )
+            .with_context("plan_id", &plan.plan_id)
+            .with_context("transaction_status", &transaction.status));
+        }
+        if !transaction.mutation_executed {
+            return Err(EvaError::conflict(
+                "restore rollback transaction has no executed mutation",
+            )
+            .with_context("plan_id", &plan.plan_id));
+        }
+
+        let root_canonical = fs::canonicalize(target_root).map_err(|error| {
+            EvaError::internal("failed to canonicalize restore rollback target root")
+                .with_context("target_root", target_root.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        if let Some(parent) = rollback_log_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                EvaError::internal("failed to create restore rollback log directory")
+                    .with_context("rollback_log", rollback_log_path.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+        }
+        fs::write(
+            rollback_log_path,
+            format!(
+                "restore-rollback-transaction:v1\nplan_id={}\ntarget_root={}\npreflight_hash={}\nsource_transaction={}\n",
+                plan.plan_id,
+                root_canonical.display(),
+                plan.preflight_hash,
+                transaction_log_path.display()
+            ),
+        )
+        .map_err(|error| {
+            EvaError::internal("failed to initialize restore rollback log")
+                .with_context("rollback_log", rollback_log_path.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+
+        let rollback_candidates = rollback_candidates(plan, &transaction)?;
+        let mut rollback_log = Vec::new();
+        let mut rollback_executed = false;
+        for (index, candidate) in rollback_candidates.iter().enumerate() {
+            let step = &candidate.step;
+            append_restore_transaction_log(
+                rollback_log_path,
+                &RestoreMutationTransactionEntry {
+                    sequence: index,
+                    operation: rollback_operation_name(step).to_owned(),
+                    relative_path: step.relative_path.clone(),
+                    status: "started".to_owned(),
+                    digest: None,
+                    message: None,
+                },
+            )?;
+            match apply_restore_rollback_step(
+                index,
+                &root_canonical,
+                candidate,
+                pre_restore_archive,
+            ) {
+                Ok(entry) => {
+                    rollback_executed = true;
+                    append_restore_transaction_log(rollback_log_path, &entry)?;
+                    rollback_log.push(entry);
+                }
+                Err(error) => {
+                    let failed_entry = RestoreMutationTransactionEntry {
+                        sequence: index,
+                        operation: rollback_operation_name(step).to_owned(),
+                        relative_path: step.relative_path.clone(),
+                        status: "failed".to_owned(),
+                        digest: None,
+                        message: Some(error.to_string()),
+                    };
+                    append_restore_transaction_log(rollback_log_path, &failed_entry)?;
+                    rollback_log.push(failed_entry);
+                    append_restore_transaction_status(
+                        rollback_log_path,
+                        "rollback_failed",
+                        rollback_executed,
+                    )?;
+                    return Ok(RestoreRollbackApplyReport {
+                        plan_id: plan.plan_id.clone(),
+                        target_root: root_canonical.display().to_string(),
+                        status: "rollback_failed".to_owned(),
+                        rollback_executed,
+                        completed_steps: rollback_log
+                            .iter()
+                            .filter(|entry| entry.status == "committed")
+                            .count(),
+                        failed_step: Some(step.relative_path.clone()),
+                        transaction_log_path: transaction_log_path.display().to_string(),
+                        rollback_log_path: rollback_log_path.display().to_string(),
+                        transaction_status: transaction.status,
+                        transaction_log: transaction.entries,
+                        rollback_log,
+                        audit: vec![
+                            "restore.rollback:transaction_failed".to_owned(),
+                            "restore.rollback:manual_recovery_required".to_owned(),
+                        ],
+                    });
+                }
+            }
+        }
+        append_restore_transaction_status(rollback_log_path, "rolled_back", rollback_executed)?;
+        Ok(RestoreRollbackApplyReport {
+            plan_id: plan.plan_id.clone(),
+            target_root: root_canonical.display().to_string(),
+            status: "rolled_back".to_owned(),
+            rollback_executed,
+            completed_steps: rollback_log.len(),
+            failed_step: None,
+            transaction_log_path: transaction_log_path.display().to_string(),
+            rollback_log_path: rollback_log_path.display().to_string(),
+            transaction_status: transaction.status,
+            transaction_log: transaction.entries,
+            rollback_log,
+            audit: vec![
+                "restore.rollback:transaction_rolled_back".to_owned(),
+                "rollback_executed:true".to_owned(),
             ],
         })
     }
@@ -1084,6 +1315,507 @@ fn apply_restore_mutation_step(
     }
 }
 
+impl RestorePreRestoreArchive {
+    pub fn parse(record: &ArtifactRecord, expected_digest: &str) -> Result<Self, EvaError> {
+        let verification = ManifestVerifier::verify_artifact(record, expected_digest)?;
+        let payload = std::str::from_utf8(&record.bytes).map_err(|error| {
+            EvaError::conflict("pre-restore backup archive is not utf-8")
+                .with_context("artifact_key", &record.key)
+                .with_context("utf8_error", error.to_string())
+        })?;
+        let mut lines = payload.lines();
+        match lines.next() {
+            Some("eva-backup-archive:v1") => {}
+            _ => {
+                return Err(
+                    EvaError::unsupported("unsupported pre-restore backup archive format")
+                        .with_context("artifact_key", &record.key),
+                );
+            }
+        }
+        let mut entries = BTreeMap::new();
+        let mut current = PendingArchiveEntry::default();
+        for line in lines {
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(
+                    EvaError::conflict("pre-restore archive line must use key=value")
+                        .with_context("artifact_key", &record.key)
+                        .with_context("line", line),
+                );
+            };
+            match key {
+                "entry.path" => {
+                    if current.has_any_field() {
+                        let entry = std::mem::take(&mut current).finish(&record.key)?;
+                        entries.insert(entry.relative_path.clone(), entry);
+                    }
+                    current.path = Some(value.to_owned());
+                }
+                "entry.size" => current.size = Some(parse_archive_entry_size(value, &record.key)?),
+                "entry.redacted" => {
+                    current.redacted = Some(match value {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(EvaError::conflict(
+                                "pre-restore archive redacted flag must be boolean",
+                            )
+                            .with_context("artifact_key", &record.key)
+                            .with_context("redacted", value));
+                        }
+                    })
+                }
+                "entry.bytes.hex" => current.bytes = Some(hex_decode(value)?),
+                _ => {}
+            }
+        }
+        if current.has_any_field() {
+            let entry = current.finish(&record.key)?;
+            entries.insert(entry.relative_path.clone(), entry);
+        }
+        let entry_count = entries.len();
+        Ok(Self {
+            artifact_key: record.key.clone(),
+            expected_digest: verification.expected_digest,
+            actual_digest: verification.actual_digest,
+            entries,
+            audit: vec![
+                "pre_restore.archive:verified".to_owned(),
+                format!("pre_restore.archive:entries={entry_count}"),
+            ],
+        })
+    }
+
+    pub fn entry(&self, relative_path: &str) -> Option<&RestorePreRestoreArchiveEntry> {
+        self.entries.get(relative_path)
+    }
+}
+
+#[derive(Debug, Default)]
+struct PendingArchiveEntry {
+    path: Option<String>,
+    size: Option<usize>,
+    redacted: Option<bool>,
+    bytes: Option<Vec<u8>>,
+}
+
+impl PendingArchiveEntry {
+    fn has_any_field(&self) -> bool {
+        self.path.is_some()
+            || self.size.is_some()
+            || self.redacted.is_some()
+            || self.bytes.is_some()
+    }
+
+    fn finish(self, artifact_key: &str) -> Result<RestorePreRestoreArchiveEntry, EvaError> {
+        let relative_path = validate_restore_relative_path(
+            "pre_restore_archive_entry_path",
+            self.path.ok_or_else(|| {
+                EvaError::conflict("pre-restore archive entry missing path")
+                    .with_context("artifact_key", artifact_key)
+            })?,
+        )?;
+        let bytes = self.bytes.ok_or_else(|| {
+            EvaError::conflict("pre-restore archive entry missing bytes")
+                .with_context("artifact_key", artifact_key)
+                .with_context("relative_path", &relative_path)
+        })?;
+        let size = self.size.ok_or_else(|| {
+            EvaError::conflict("pre-restore archive entry missing size")
+                .with_context("artifact_key", artifact_key)
+                .with_context("relative_path", &relative_path)
+        })?;
+        if bytes.len() != size {
+            return Err(
+                EvaError::conflict("pre-restore archive entry size mismatch")
+                    .with_context("artifact_key", artifact_key)
+                    .with_context("relative_path", &relative_path)
+                    .with_context("expected_size", size.to_string())
+                    .with_context("actual_size", bytes.len().to_string()),
+            );
+        }
+        Ok(RestorePreRestoreArchiveEntry {
+            relative_path,
+            digest: digest_bytes(&bytes),
+            bytes,
+            redacted: self.redacted.unwrap_or(false),
+        })
+    }
+}
+
+struct ParsedRestoreTransactionLog {
+    plan_id: String,
+    preflight_hash: String,
+    status: String,
+    mutation_executed: bool,
+    entries: Vec<RestoreMutationTransactionEntry>,
+}
+
+fn parse_restore_transaction_log(path: &Path) -> Result<ParsedRestoreTransactionLog, EvaError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            "restore mutation transaction log is missing"
+        } else {
+            "failed to read restore mutation transaction log"
+        };
+        EvaError::not_found(message)
+            .with_context("transaction_log", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    let mut plan_id = None;
+    let mut preflight_hash = None;
+    let mut status = None;
+    let mut mutation_executed = None;
+    let mut entries = Vec::new();
+    for line in data.lines() {
+        if line == "restore-mutation-transaction:v1" || line.trim().is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(
+                EvaError::conflict("restore transaction log line must use key=value")
+                    .with_context("transaction_log", path.display().to_string())
+                    .with_context("line", line),
+            );
+        };
+        match key {
+            "plan_id" => plan_id = Some(value.to_owned()),
+            "preflight_hash" => preflight_hash = Some(value.to_owned()),
+            "status" => status = Some(value.to_owned()),
+            "mutation_executed" => {
+                mutation_executed = Some(match value {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        return Err(EvaError::conflict(
+                            "restore transaction mutation_executed must be boolean",
+                        )
+                        .with_context("transaction_log", path.display().to_string())
+                        .with_context("mutation_executed", value));
+                    }
+                })
+            }
+            "step" => entries.push(parse_restore_transaction_step(value, path)?),
+            _ => {}
+        }
+    }
+    Ok(ParsedRestoreTransactionLog {
+        plan_id: plan_id.ok_or_else(|| {
+            EvaError::conflict("restore transaction log missing plan_id")
+                .with_context("transaction_log", path.display().to_string())
+        })?,
+        preflight_hash: preflight_hash.ok_or_else(|| {
+            EvaError::conflict("restore transaction log missing preflight_hash")
+                .with_context("transaction_log", path.display().to_string())
+        })?,
+        status: status.ok_or_else(|| {
+            EvaError::conflict("restore transaction log missing status")
+                .with_context("transaction_log", path.display().to_string())
+        })?,
+        mutation_executed: mutation_executed.ok_or_else(|| {
+            EvaError::conflict("restore transaction log missing mutation_executed")
+                .with_context("transaction_log", path.display().to_string())
+        })?,
+        entries,
+    })
+}
+
+fn parse_restore_transaction_step(
+    value: &str,
+    path: &Path,
+) -> Result<RestoreMutationTransactionEntry, EvaError> {
+    let parts = value.split('|').collect::<Vec<_>>();
+    if parts.len() != 6 {
+        return Err(
+            EvaError::conflict("restore transaction step must have six fields")
+                .with_context("transaction_log", path.display().to_string())
+                .with_context("step", value),
+        );
+    }
+    let sequence = parts[0].parse::<usize>().map_err(|error| {
+        EvaError::conflict("restore transaction step sequence is invalid")
+            .with_context("transaction_log", path.display().to_string())
+            .with_context("sequence", parts[0])
+            .with_context("parse_error", error.to_string())
+    })?;
+    Ok(RestoreMutationTransactionEntry {
+        sequence,
+        operation: parts[1].to_owned(),
+        relative_path: validate_restore_relative_path(
+            "transaction_relative_path",
+            parts[2].to_owned(),
+        )?,
+        status: parts[3].to_owned(),
+        digest: match parts[4] {
+            "none" => None,
+            value => Some(validate_restore_digest(
+                "transaction_digest",
+                value.to_owned(),
+            )?),
+        },
+        message: match parts[5] {
+            "none" => None,
+            value => Some(value.to_owned()),
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreRollbackCandidate {
+    step: RestoreMutationStep,
+    failed_replace: bool,
+}
+
+fn rollback_candidates(
+    plan: &RestoreStagedMutationPlan,
+    transaction: &ParsedRestoreTransactionLog,
+) -> Result<Vec<RestoreRollbackCandidate>, EvaError> {
+    let mut candidates = Vec::new();
+    for entry in transaction.entries.iter().rev() {
+        let step = plan.steps.get(entry.sequence).ok_or_else(|| {
+            EvaError::conflict("restore transaction references unknown mutation step")
+                .with_context("plan_id", &plan.plan_id)
+                .with_context("sequence", entry.sequence.to_string())
+        })?;
+        if step.relative_path != entry.relative_path || step.operation.as_str() != entry.operation {
+            return Err(
+                EvaError::conflict("restore transaction step does not match staged plan")
+                    .with_context("plan_id", &plan.plan_id)
+                    .with_context("sequence", entry.sequence.to_string())
+                    .with_context("transaction_relative_path", &entry.relative_path)
+                    .with_context("plan_relative_path", &step.relative_path),
+            );
+        }
+        if entry.status == "committed" {
+            candidates.push(RestoreRollbackCandidate {
+                step: step.clone(),
+                failed_replace: false,
+            });
+        } else if entry.status == "failed"
+            && transaction.mutation_executed
+            && step.operation == RestoreMutationOperation::Replace
+        {
+            candidates.push(RestoreRollbackCandidate {
+                step: step.clone(),
+                failed_replace: true,
+            });
+        }
+    }
+    if candidates.is_empty() {
+        return Err(
+            EvaError::conflict("restore rollback has no committed mutation steps")
+                .with_context("plan_id", &plan.plan_id),
+        );
+    }
+    Ok(candidates)
+}
+
+fn rollback_operation_name(step: &RestoreMutationStep) -> &'static str {
+    match step.operation {
+        RestoreMutationOperation::Copy => "rollback_delete",
+        RestoreMutationOperation::Delete | RestoreMutationOperation::Replace => "rollback_restore",
+    }
+}
+
+fn apply_restore_rollback_step(
+    sequence: usize,
+    root: &Path,
+    candidate: &RestoreRollbackCandidate,
+    pre_restore_archive: &RestorePreRestoreArchive,
+) -> Result<RestoreMutationTransactionEntry, EvaError> {
+    let step = &candidate.step;
+    let target_path = checked_restore_target_path(root, &step.relative_path)?;
+    match step.operation {
+        RestoreMutationOperation::Copy => {
+            verify_current_digest_for_rollback(
+                &target_path,
+                step.expected_digest.as_deref(),
+                step,
+            )?;
+            fs::remove_file(&target_path).map_err(|error| {
+                EvaError::internal("failed to delete copied restore target during rollback")
+                    .with_context("relative_path", &step.relative_path)
+                    .with_context("target_path", target_path.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+            Ok(rollback_committed_entry(sequence, step, None))
+        }
+        RestoreMutationOperation::Delete | RestoreMutationOperation::Replace => {
+            let entry = pre_restore_archive
+                .entry(&step.relative_path)
+                .ok_or_else(|| {
+                    EvaError::not_found("pre-restore archive entry is missing for rollback")
+                        .with_context("relative_path", &step.relative_path)
+                        .with_context("artifact_key", &pre_restore_archive.artifact_key)
+                })?;
+            let expected_digest = step.pre_restore_digest.as_deref().ok_or_else(|| {
+                EvaError::invalid_argument("restore rollback pre-restore digest is required")
+                    .with_context("relative_path", &step.relative_path)
+            })?;
+            if entry.digest != expected_digest {
+                return Err(
+                    EvaError::conflict("pre-restore archive entry digest mismatch")
+                        .with_context("relative_path", &step.relative_path)
+                        .with_context("expected_digest", expected_digest)
+                        .with_context("actual_digest", &entry.digest),
+                );
+            }
+            verify_restore_rollback_restore_target(
+                &target_path,
+                step,
+                expected_digest,
+                candidate.failed_replace,
+            )?;
+            write_restore_bytes_atomically(
+                &target_path,
+                &step.relative_path,
+                sequence,
+                &entry.bytes,
+            )?;
+            Ok(rollback_committed_entry(
+                sequence,
+                step,
+                Some(entry.digest.clone()),
+            ))
+        }
+    }
+}
+
+fn verify_current_digest_for_rollback(
+    target_path: &Path,
+    expected_digest: Option<&str>,
+    step: &RestoreMutationStep,
+) -> Result<(), EvaError> {
+    let expected_digest = expected_digest.ok_or_else(|| {
+        EvaError::invalid_argument("restore rollback expected digest is required")
+            .with_context("relative_path", &step.relative_path)
+    })?;
+    let bytes = fs::read(target_path).map_err(|error| {
+        EvaError::conflict("restore rollback target is missing or unreadable")
+            .with_context("relative_path", &step.relative_path)
+            .with_context("target_path", target_path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    let actual_digest = digest_bytes(&bytes);
+    if actual_digest != expected_digest {
+        return Err(
+            EvaError::conflict("restore rollback target digest mismatch")
+                .with_context("relative_path", &step.relative_path)
+                .with_context("expected_digest", expected_digest)
+                .with_context("actual_digest", actual_digest),
+        );
+    }
+    Ok(())
+}
+
+fn verify_restore_rollback_restore_target(
+    target_path: &Path,
+    step: &RestoreMutationStep,
+    pre_restore_digest: &str,
+    failed_replace: bool,
+) -> Result<(), EvaError> {
+    let current = fs::read(target_path);
+    match (step.operation, current) {
+        (RestoreMutationOperation::Delete, Err(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(())
+        }
+        (RestoreMutationOperation::Delete, Ok(bytes)) => {
+            let actual = digest_bytes(&bytes);
+            if actual == pre_restore_digest {
+                Ok(())
+            } else {
+                Err(
+                    EvaError::conflict("restore rollback delete target was recreated")
+                        .with_context("relative_path", &step.relative_path)
+                        .with_context("expected_digest", pre_restore_digest)
+                        .with_context("actual_digest", actual),
+                )
+            }
+        }
+        (RestoreMutationOperation::Replace, Err(error))
+            if error.kind() == std::io::ErrorKind::NotFound && failed_replace =>
+        {
+            Ok(())
+        }
+        (RestoreMutationOperation::Replace, Ok(bytes)) => {
+            let actual = digest_bytes(&bytes);
+            let expected_new = step.expected_digest.as_deref().ok_or_else(|| {
+                EvaError::invalid_argument("restore rollback expected digest is required")
+                    .with_context("relative_path", &step.relative_path)
+            })?;
+            if actual == expected_new || actual == pre_restore_digest {
+                Ok(())
+            } else {
+                Err(
+                    EvaError::conflict("restore rollback replace target digest mismatch")
+                        .with_context("relative_path", &step.relative_path)
+                        .with_context("expected_digest", expected_new)
+                        .with_context("pre_restore_digest", pre_restore_digest)
+                        .with_context("actual_digest", actual),
+                )
+            }
+        }
+        (_, Err(error)) => Err(EvaError::conflict(
+            "restore rollback target is missing or unreadable",
+        )
+        .with_context("relative_path", &step.relative_path)
+        .with_context("target_path", target_path.display().to_string())
+        .with_context("io_error", error.to_string())),
+        _ => Ok(()),
+    }
+}
+
+fn rollback_committed_entry(
+    sequence: usize,
+    step: &RestoreMutationStep,
+    digest: Option<String>,
+) -> RestoreMutationTransactionEntry {
+    RestoreMutationTransactionEntry {
+        sequence,
+        operation: rollback_operation_name(step).to_owned(),
+        relative_path: step.relative_path.clone(),
+        status: "committed".to_owned(),
+        digest,
+        message: None,
+    }
+}
+
+fn parse_archive_entry_size(value: &str, artifact_key: &str) -> Result<usize, EvaError> {
+    value.parse::<usize>().map_err(|error| {
+        EvaError::conflict("pre-restore archive entry size is invalid")
+            .with_context("artifact_key", artifact_key)
+            .with_context("size", value)
+            .with_context("parse_error", error.to_string())
+    })
+}
+
+fn hex_decode(value: &str) -> Result<Vec<u8>, EvaError> {
+    if !value.len().is_multiple_of(2) {
+        return Err(EvaError::conflict("hex payload length must be even"));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for chunk in value.as_bytes().chunks_exact(2) {
+        let high = hex_nibble(chunk[0])?;
+        let low = hex_nibble(chunk[1])?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, EvaError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(
+            EvaError::conflict("hex payload contains an invalid character")
+                .with_context("byte", char::from(byte).to_string()),
+        ),
+    }
+}
+
 fn step_error(error: EvaError) -> RestoreMutationStepFailure {
     RestoreMutationStepFailure {
         error,
@@ -1364,6 +2096,10 @@ fn restore_lock_path(root: &Path, plan_id: &str) -> PathBuf {
     root.join(format!("{plan_id}.restore.lock"))
 }
 
+fn restore_rollback_lock_path(root: &Path, plan_id: &str) -> PathBuf {
+    root.join(format!("{plan_id}.restore.rollback.lock"))
+}
+
 fn restore_lock_payload(plan: &RestoreApplyPlan, lock: &RestoreApplyLock) -> String {
     let pre_restore = plan
         .pre_restore_backup
@@ -1388,6 +2124,12 @@ fn restore_lock_conflict(plan_id: &str, lock_path: Option<&Path>) -> EvaError {
         error = error.with_context("lock_path", lock_path.display().to_string());
     }
     error
+}
+
+fn restore_rollback_lock_conflict(plan_id: &str, lock_path: &Path) -> EvaError {
+    EvaError::conflict("restore rollback lock already exists")
+        .with_context("plan_id", plan_id)
+        .with_context("lock_path", lock_path.display().to_string())
 }
 
 fn restore_apply_steps(health_passed: bool) -> Vec<String> {
@@ -1695,6 +2437,146 @@ mod tests {
         let transaction_log = fs::read_to_string(transaction_log_path).unwrap();
         assert!(transaction_log.contains("status=rollback_required"));
         assert!(transaction_log.contains("logs/old.log|failed"));
+
+        fs::remove_dir_all(target_root).unwrap();
+    }
+
+    #[test]
+    fn rollback_engine_restores_committed_steps_from_pre_restore_archive() {
+        let target_root = test_temp_dir("rollback-apply");
+        fs::create_dir_all(target_root.join("bin")).unwrap();
+        fs::create_dir_all(target_root.join("logs")).unwrap();
+        let backup = ArtifactRecord::new("backup/backup-1", b"archive".as_slice());
+        let pre_restore = ArtifactRecord::new(
+            "backup/pre-restore-1",
+            b"eva-backup-archive:v1\nentry.path=bin/eva\nentry.size=10\nentry.redacted=false\nentry.bytes.hex=6f6c642d62696e617279\nentry.path=logs/old.log\nentry.size=7\nentry.redacted=false\nentry.bytes.hex=6f6c642d6c6f67\n"
+                .as_slice(),
+        );
+        let binary = ArtifactRecord::new("backup/bin", b"binary".as_slice());
+        let old_binary_digest = digest_bytes(b"old-binary");
+        let old_log_digest = digest_bytes(b"old-log");
+        let plan = RestoreApplyPlan::new("plan-rollback", "backup-1", backup.digest)
+            .unwrap()
+            .with_pre_restore_backup(
+                PreRestoreBackupEvidence::new("pre-restore-1", pre_restore.digest.clone()).unwrap(),
+            )
+            .with_mutation_target_root(target_root.display().to_string())
+            .unwrap()
+            .with_mutation_steps(vec![
+                RestoreMutationStep::replace_file(
+                    "bin/eva",
+                    "backup/bin",
+                    binary.digest.clone(),
+                    old_binary_digest,
+                )
+                .unwrap(),
+                RestoreMutationStep::delete_file("logs/old.log", old_log_digest).unwrap(),
+            ]);
+        let staged = RestoreStagedMutationPlanner.plan(&plan).unwrap();
+        fs::write(target_root.join("bin/eva"), b"binary").unwrap();
+        let transaction_log_path = target_root.join(".eva/plan-rollback.restore.txn");
+        fs::create_dir_all(transaction_log_path.parent().unwrap()).unwrap();
+        fs::write(
+            &transaction_log_path,
+            format!(
+                "restore-mutation-transaction:v1\nplan_id=plan-rollback\ntarget_root={}\npreflight_hash={}\nstep=0|replace|bin/eva|committed|{}|none\nstep=1|delete|logs/old.log|committed|{}|none\nstep=1|delete|logs/old.log|failed|none|digest mismatch\nstatus=rollback_required\nmutation_executed=true\n",
+                target_root.display(),
+                staged.preflight_hash,
+                binary.digest,
+                digest_bytes(b"old-log")
+            ),
+        )
+        .unwrap();
+        let pre_restore_archive =
+            RestorePreRestoreArchive::parse(&pre_restore, &pre_restore.digest).unwrap();
+
+        let report = RestoreRollbackEngine
+            .apply(
+                &staged,
+                &target_root,
+                &transaction_log_path,
+                target_root.join(".eva/plan-rollback.restore.rollback.txn"),
+                &pre_restore_archive,
+            )
+            .unwrap();
+
+        assert_eq!(report.status, "rolled_back");
+        assert!(report.rollback_executed);
+        assert_eq!(report.completed_steps, 2);
+        assert_eq!(
+            fs::read(target_root.join("bin/eva")).unwrap(),
+            b"old-binary"
+        );
+        assert_eq!(
+            fs::read(target_root.join("logs/old.log")).unwrap(),
+            b"old-log"
+        );
+        let rollback_log = fs::read_to_string(report.rollback_log_path).unwrap();
+        assert!(rollback_log.contains("status=rolled_back"));
+
+        fs::remove_dir_all(target_root).unwrap();
+    }
+
+    #[test]
+    fn rollback_engine_rejects_current_digest_drift() {
+        let target_root = test_temp_dir("rollback-drift");
+        fs::create_dir_all(target_root.join("bin")).unwrap();
+        fs::write(target_root.join("bin/eva"), b"operator-edit").unwrap();
+        let backup = ArtifactRecord::new("backup/backup-1", b"archive".as_slice());
+        let pre_restore = ArtifactRecord::new(
+            "backup/pre-restore-1",
+            b"eva-backup-archive:v1\nentry.path=bin/eva\nentry.size=10\nentry.redacted=false\nentry.bytes.hex=6f6c642d62696e617279\n"
+                .as_slice(),
+        );
+        let binary = ArtifactRecord::new("backup/bin", b"binary".as_slice());
+        let old_binary_digest = digest_bytes(b"old-binary");
+        let plan = RestoreApplyPlan::new("plan-drift", "backup-1", backup.digest)
+            .unwrap()
+            .with_pre_restore_backup(
+                PreRestoreBackupEvidence::new("pre-restore-1", pre_restore.digest.clone()).unwrap(),
+            )
+            .with_mutation_target_root(target_root.display().to_string())
+            .unwrap()
+            .with_mutation_steps(vec![RestoreMutationStep::replace_file(
+                "bin/eva",
+                "backup/bin",
+                binary.digest.clone(),
+                old_binary_digest,
+            )
+            .unwrap()]);
+        let staged = RestoreStagedMutationPlanner.plan(&plan).unwrap();
+        let transaction_log_path = target_root.join(".eva/plan-drift.restore.txn");
+        fs::create_dir_all(transaction_log_path.parent().unwrap()).unwrap();
+        fs::write(
+            &transaction_log_path,
+            format!(
+                "restore-mutation-transaction:v1\nplan_id=plan-drift\ntarget_root={}\npreflight_hash={}\nstep=0|replace|bin/eva|committed|{}|none\nstatus=rollback_required\nmutation_executed=true\n",
+                target_root.display(),
+                staged.preflight_hash,
+                binary.digest
+            ),
+        )
+        .unwrap();
+        let pre_restore_archive =
+            RestorePreRestoreArchive::parse(&pre_restore, &pre_restore.digest).unwrap();
+
+        let report = RestoreRollbackEngine
+            .apply(
+                &staged,
+                &target_root,
+                &transaction_log_path,
+                target_root.join(".eva/plan-drift.restore.rollback.txn"),
+                &pre_restore_archive,
+            )
+            .unwrap();
+
+        assert_eq!(report.status, "rollback_failed");
+        assert!(!report.rollback_executed);
+        assert_eq!(report.failed_step.as_deref(), Some("bin/eva"));
+        assert_eq!(
+            fs::read(target_root.join("bin/eva")).unwrap(),
+            b"operator-edit"
+        );
 
         fs::remove_dir_all(target_root).unwrap();
     }
