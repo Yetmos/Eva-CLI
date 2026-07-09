@@ -63,6 +63,7 @@ release: V1.11.4-alpha
 | 查看运行时 | `cargo run -- inspect runtime --output json` | 输出 agents、adapters、capabilities、routes、policy 和 runtime 摘要。 |
 | 查看 durable backend | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | 输出 backend schema、migration status 和 pending redrive count。 |
 | 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |
+| 发布事件 | `cargo run -- emit /input/user --payload hello --output json` | 向 in-memory EventBus 边界发布 typed Event。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
 | 发布门禁 | `cargo run -- release check --output json` | 输出 V1.11.4 release readiness。 |
 
@@ -78,6 +79,7 @@ release: V1.11.4-alpha
 | 配置 | `config validate` | 校验 `eva.yaml`、manifest、policy、routes 和 schema。 | 否 |
 | 查看 | `inspect`、`inspect durable` | 查看项目配置、路由、策略、runtime 摘要或 durable backend 诊断。 | 否 |
 | 运行 | `run --example basic` | 通过受限 Lua VM 边界执行 V1.0 in-memory basic loop。 | 写 `.eva/tasks` 或 durable backend `tasks/` |
+| 事件 | `emit <topic>` | 向 in-memory 或 durable EventBus 发布 typed Event。 | 传入 `--durable-backend` 时写 durable backend `events/log/` |
 | 任务 | `task status/logs/cancel` | 读取或标记 task 诊断。 | 只写 task 取消标记 |
 | Adapter | `adapter list/probe` | 列出或探测 manifest 派生的 Adapter handle。 | 否 |
 | MCP | `mcp list/probe` | 列出或探测 allowlist 中的 MCP tool。 | 否 |
@@ -108,6 +110,26 @@ cargo run -- doctor --project C:\path\to\Eva-CLI --output json
 | `--output text` | 输出适合人读的文本摘要；多数命令默认使用文本。 |
 | `--output json` | 输出稳定 JSON envelope，适合脚本和 CI。 |
 | `--help` 或 `-h` | 显示完整命令帮助。 |
+
+## 发布 typed event
+
+`emit` 会构造 `eva-core::Event` 并通过 runtime 使用的同一套 EventBus contract 发布事件。未传 `--durable-backend` 时，命令发布到 in-memory bus 并返回 receipt；传入 `--durable-backend <path>` 时，会打开 V1.6 durable backend，并把 event record 写入 `events/log/`。
+
+```powershell
+cargo run -- emit /input/user --event-id evt-manual-1 --payload hello --output json
+cargo run -- emit /input/user --event-id evt-manual-2 --payload-bytes-hex 68656c6c6f --target-agent root-agent --durable-backend .eva/durable --output json
+```
+
+| 选项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `<topic>` 或 `--topic <topic>` | 必填 | 具体事件 topic，例如 `/input/user`。 |
+| `--event-id <id>` | 自动生成 | 稳定 event id；自动生成时使用 `evt-cli-emit-*` 前缀。 |
+| `--payload <text>` | Empty | UTF-8 文本 payload；JSON 文本会按 text 透传，不做结构化解析。 |
+| `--payload-empty` | Empty | 显式空 payload。 |
+| `--payload-bytes-hex <hex>` | Empty | 以 hex 编码的二进制 payload。 |
+| `--target-agent`、`--target-capability`、`--target-adapter` | Broadcast | 定向投递目标。 |
+| `--request-id`、`--generation`、`--correlation-id`、`--causation-id` | 未设置 | 写入事件 metadata 的可选链路字段。 |
+| `--durable-backend <path>` | 未启用 | 通过 durable EventBus log 持久化发布。 |
 
 ## 运行 basic 示例
 

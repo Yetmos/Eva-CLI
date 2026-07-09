@@ -168,6 +168,7 @@ dependencies = [
  "eva-config",
  "eva-core",
  "eva-discovery",
+ "eva-eventbus",
  "eva-hardware",
  "eva-lifecycle",
  "eva-mcp",

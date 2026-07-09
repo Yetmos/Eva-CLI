@@ -5,6 +5,7 @@ mod backup_cmd;
 mod config_cmd;
 mod discovery_cmd;
 mod doctor_cmd;
+mod emit_cmd;
 mod hardware_cmd;
 mod inspect_cmd;
 mod mcp_cmd;
@@ -21,6 +22,7 @@ mod version_cmd;
 use adapter_cmd::AdapterCommand;
 use backup_cmd::BackupCommand;
 use discovery_cmd::DiscoveryCommand;
+use emit_cmd::EmitCommand;
 use eva_config::load_project_config;
 use eva_core::{CapabilityName, ErrorKind, EvaError, InvokeStatus};
 use eva_lifecycle::RollbackPlan;
@@ -83,6 +85,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "release perf",
     "release migration",
     "cli command module split",
+    "emit",
 ];
 
 /// Process entry point for the root binary shim.
@@ -161,6 +164,7 @@ where
                 }
             }
         }
+        Command::Emit(command) => emit_cmd::execute_emit(command, stdout, stderr),
         Command::Task(command) => task_cmd::execute_task(command, stdout, stderr),
         Command::Adapter(command) => adapter_cmd::execute_adapter(command, stdout, stderr),
         Command::Mcp(command) => mcp_cmd::execute_mcp(command, stdout, stderr),
@@ -187,6 +191,7 @@ enum Command {
     ConfigValidate(CommonOptions),
     Inspect(InspectOptions),
     Run(RunOptions),
+    Emit(EmitCommand),
     Task(TaskCommand),
     Adapter(AdapterCommand),
     Mcp(McpCommand),
@@ -267,6 +272,7 @@ where
             &args[1..],
         )?)),
         "run" => Ok(Command::Run(parse_run_options(&args[1..])?)),
+        "emit" => Ok(Command::Emit(emit_cmd::parse_emit_command(&args[1..])?)),
         "task" => Ok(Command::Task(task_cmd::parse_task_command(&args[1..])?)),
         "adapter" => Ok(Command::Adapter(adapter_cmd::parse_adapter_command(
             &args[1..],
@@ -1003,6 +1009,7 @@ fn help_text() -> &'static str {
         "  eva inspect [all|config|runtime] [--project <path>] [--output text|json]\n",
         "  eva inspect durable --durable-backend <path> [--redrive-ready-at-ms <ms>] [--output text|json]\n",
         "  eva run --example basic [--project <path>] [--task-id <id>] [--durable-backend <path>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n",
+        "  eva emit <topic> [--event-id <id>] [--payload <text>|--payload-empty|--payload-bytes-hex <hex>] [--target-agent <id>|--target-capability <name>|--target-adapter <id>] [--request-id <id>] [--generation <id>] [--correlation-id <event_id>] [--causation-id <event_id>] [--durable-backend <path>] [--output text|json]\n",
         "  eva task status [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
         "  eva task logs [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
         "  eva task cancel [--project <path>] [--task <id>] [--durable-backend <path>] [--reason <text>] [--output text|json]\n",
@@ -1035,6 +1042,7 @@ fn help_text() -> &'static str {
         "  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n",
         "  inspect          Show project surfaces or durable backend diagnostics without mutating runtime state.\n",
         "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks or a durable backend task store.\n",
+        "  emit             Publish a typed Event to the in-memory or durable EventBus boundary.\n",
         "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
         "  adapter          List and probe authorized Adapter handles derived from manifests.\n",
         "  mcp              List and probe allowlisted MCP tools without starting external servers.\n",
@@ -1437,6 +1445,96 @@ mod tests {
 
         assert_eq!(exit_code, EXIT_USAGE);
         assert!(stderr.contains("unknown command"));
+    }
+
+    #[test]
+    fn emit_text_and_json_publish_typed_event() {
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "emit",
+            "/input/user",
+            "--event-id",
+            "evt-cli-text",
+            "--payload",
+            "hello",
+            "--target-agent",
+            "root-agent",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("Event emitted"));
+        assert!(stdout.contains("event: evt-cli-text"));
+        assert!(stdout.contains("topic: /input/user"));
+        assert!(stdout.contains("target: agent:root-agent"));
+        assert!(stderr.is_empty());
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "emit",
+            "--topic",
+            "/input/user",
+            "--event-id",
+            "evt-cli-json",
+            "--payload",
+            r#"{"kind":"demo"}"#,
+            "--target-capability",
+            "repo.summary",
+            "--request-id",
+            "req-emit-1",
+            "--generation",
+            "gen-emit-1",
+            "--correlation-id",
+            "evt-root",
+            "--causation-id",
+            "evt-parent",
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"emit\""));
+        assert!(stdout.contains("\"status\":\"published\""));
+        assert!(stdout.contains("\"event_id\":\"evt-cli-json\""));
+        assert!(stdout.contains("\"topic\":\"/input/user\""));
+        assert!(stdout.contains("\"kind\":\"capability\""));
+        assert!(stdout.contains("\"value\":\"repo.summary\""));
+        assert!(stdout.contains("\"payload\":{\"kind\":\"text\""));
+        assert!(stdout.contains("\"request_id\":\"req-emit-1\""));
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn emit_can_publish_to_durable_backend() {
+        let root = test_temp_dir("emit-durable");
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "emit",
+            "/input/user",
+            "--event-id",
+            "evt-durable",
+            "--payload-bytes-hex",
+            "68656c6c6f",
+            "--target-adapter",
+            "adapter-cli",
+            "--durable-backend",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"backend\":{\"kind\":\"durable\""));
+        assert!(stdout.contains("\"event_id\":\"evt-durable\""));
+        assert!(stdout.contains("\"payload\":{\"kind\":\"bytes\",\"size\":5}"));
+        assert!(root.join("backend.manifest").is_file());
+        let event_path = root.join("events/log/00000000000000000001.event");
+        assert!(event_path.is_file());
+        let event_data = fs::read_to_string(&event_path).unwrap();
+        assert!(event_data.contains("sequence=1"));
+        assert!(event_data.contains("topic=2f696e7075742f75736572"));
+        assert!(event_data.contains("target_kind=adapter"));
+        assert!(event_data.contains("payload_kind=bytes"));
+        assert!(event_data.contains("payload_value=68656c6c6f"));
+        assert!(stderr.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

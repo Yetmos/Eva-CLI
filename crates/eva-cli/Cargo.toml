@@ -10,6 +10,7 @@ eva-backup = { path = "../eva-backup" }
 eva-config = { path = "../eva-config" }
 eva-core = { path = "../eva-core" }
 eva-discovery = { path = "../eva-discovery" }
+eva-eventbus = { path = "../eva-eventbus" }
 eva-hardware = { path = "../eva-hardware" }
 eva-lifecycle = { path = "../eva-lifecycle" }
 eva-memory = { path = "../eva-memory" }

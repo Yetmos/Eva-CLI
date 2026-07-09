@@ -65,6 +65,7 @@ Run this sequence from the repository root:
 | Inspect runtime | `cargo run -- inspect runtime --output json` | Prints agents, adapters, capabilities, routes, policy, and runtime summary. |
 | Inspect durable | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | Reports backend schema, migration status, and pending redrive count. |
 | Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
+| Emit event | `cargo run -- emit /input/user --payload hello --output json` | Publishes a typed Event to the in-memory EventBus boundary. |
 | Task status | `cargo run -- task status --output json` | Reads the latest task report. |
 | Release gate | `cargo run -- release check --output json` | Prints V1.11.4 release readiness. |
 
@@ -79,6 +80,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Config | `config validate` | Validate `eva.yaml`, manifests, policies, routes, and schemas. | No |
 | Inspect | `inspect`, `inspect durable` | Show project configuration, runtime summary, or durable backend diagnostics. | No |
 | Runtime | `run --example basic` | Execute the V1.0 in-memory basic loop through the restricted Lua VM boundary. | Writes `.eva/tasks` or durable backend `tasks/` |
+| Emit | `emit <topic>` | Publish a typed Event to in-memory or durable EventBus. | Writes durable backend `events/log/` when `--durable-backend` is set |
 | Task | `task status/logs/cancel` | Read or mark task diagnostics. | Writes task cancel marker |
 | Adapter | `adapter list/probe` | List or probe manifest-derived adapter handles. | No |
 | MCP | `mcp list/probe` | List or probe allowlisted MCP tools. | No |
@@ -91,6 +93,30 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Restore | `restore plan` | Produce a restore plan with `apply_allowed:false`. | No |
 | Upgrade | `upgrade check` | Check generation, migration, drain, and rollback readiness. | No |
 | Release | `release check/security/perf/migration` | Run V1.11.4 release readiness, security, performance, and migration gates. | No |
+
+## Emit Typed Events
+
+`emit` constructs an `eva-core::Event` and publishes it through the same
+EventBus contract used by the runtime. Without `--durable-backend`, the event is
+published to an in-memory bus and the command returns the publish receipt. With
+`--durable-backend <path>`, the command opens the V1.6 durable backend and writes
+the event record under `events/log/`.
+
+```powershell
+cargo run -- emit /input/user --event-id evt-manual-1 --payload hello --output json
+cargo run -- emit /input/user --event-id evt-manual-2 --payload-bytes-hex 68656c6c6f --target-agent root-agent --durable-backend .eva/durable --output json
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `<topic>` or `--topic <topic>` | Required | Concrete event topic, such as `/input/user`. |
+| `--event-id <id>` | Generated | Stable event id; generated ids use the `evt-cli-emit-*` prefix. |
+| `--payload <text>` | Empty | UTF-8 text payload. JSON text is carried as text, not parsed. |
+| `--payload-empty` | Empty | Explicit empty payload. |
+| `--payload-bytes-hex <hex>` | Empty | Binary payload encoded as hex. |
+| `--target-agent`, `--target-capability`, `--target-adapter` | Broadcast | Directed delivery target. |
+| `--request-id`, `--generation`, `--correlation-id`, `--causation-id` | unset | Optional metadata carried on the event. |
+| `--durable-backend <path>` | unset | Persist through the durable EventBus log. |
 
 ## Basic Runtime Loop
 

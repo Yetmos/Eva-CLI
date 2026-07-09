@@ -27,9 +27,10 @@
 | `run/restore_cmd.rs` | V1.11.4 已实现 | `restore plan/apply` parser、restore apply dry-run、filesystem artifact/lock gate、policy/health/rollback writer 和 restore JSON formatter；保持 staged `mutation_executed:false` contract 不变。 |
 | `run/upgrade_cmd.rs` | V1.11.4 已实现 | `upgrade check/apply` parser、apply lock、state-store supervisor handoff、runtime binary smoke、release pointer mutation 和 rollback formatter；保持 lock-only 与 handoff JSON contract 不变。 |
 | `run/release_cmd.rs` | V1.11.4 已实现 | `release check/security/perf/migration` 的 parser、artifact/distribution/security scan/benchmark evidence reader、文本/JSON writer 和 release report formatter；保持 V1.11.1-V1.11.3 release evidence gate 的公开 JSON shape 与 exit code 不变。 |
+| `run/emit_cmd.rs` | V1.11.5.1 已实现 | `emit` parser、typed `eva-core::Event` 构造、in-memory/durable EventBus publish、text/JSON receipt formatter；支持 payload、target、request/generation 和 trace metadata。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |
-| `emit.rs` | 边界保留 | 后续 typed ingress event 命令。 |
+| `emit.rs` | 入口保留 | typed ingress event 命令的顶层占位；真实 CLI 行为由 `run/emit_cmd.rs` 承载。 |
 | `agent.rs` | 边界保留 | 后续 Agent list/status/cancel 的更完整命令面。 |
 | `adapter.rs` | 边界保留 | 后续可从 `run.rs` 拆出 adapter 子命令。 |
 | `capability.rs` | 边界保留 | 后续 capability list/inspect/dry-run invoke。 |
