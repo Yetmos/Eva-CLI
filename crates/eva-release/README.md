@@ -14,14 +14,14 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 
 | Area | Public Type | Behavior |
 | --- | --- | --- |
-| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply gate, supervisor handoff, daemon runtime, MCP compatibility, and provider supervision readiness. |
+| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, daemon runtime, MCP compatibility, and provider supervision readiness. |
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
 | Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, hardware handle boundaries, and lifecycle apply risk. |
 | Performance baseline | `PerformanceBaselineReport`, `PerformanceBudget` | Defines source-release smoke budgets for EventBus, Scheduler, Adapter probe, memory context, backup, and release check. |
 | Migration and compatibility | `MigrationGuide`, `MigrationStep`, `CompatibilityPolicy` | Documents V1.4 -> V1.5 migration steps, compatibility guarantees, public CLI contracts, and deprecation policy. |
 | Backup archive readiness | `ReleaseGate` | Records V1.10.3 signed backup archive, optional sealing, remote target contract, and pre-restore evidence as release readiness evidence. |
-| Restore apply gate readiness | `ReleaseGate` | Records V1.10.4 confirmation, policy approval, filesystem lock, health gate, rollback-required plan, and `mutation_executed:false` staged boundary evidence. |
+| Restore apply gate readiness | `ReleaseGate` | Records V1.10.4 confirmation, policy approval, filesystem lock and health gate, V1.14.2 staged file mutation evidence, V1.14.3 rollback apply evidence, and V1.14.4 operator confirmation output. |
 | Supervisor handoff readiness | `ReleaseGate` | Records V1.10.5 blue-green handoff, release pointer mutation, persisted state, and rollback-on-health-failure evidence. |
 | Release artifact evidence | `ReleaseArtifactEvidence`, `ReleaseArtifactVerificationReport` | Parses a V1.11.1 key/value evidence manifest, verifies a SHA-256 keyed signature, source commit provenance, SBOM marker, and scan status, then exposes a blocking release gate when evidence is supplied. |
 | Distribution evidence | `ReleaseDistributionEvidence`, `ReleaseDistributionVerificationReport` | Parses a V1.11.2 key/value evidence manifest for Windows/Linux/macOS install smoke, install/upgrade/uninstall docs, and package-manager dry-run status, then exposes a blocking release gate when evidence is supplied. |
@@ -68,7 +68,7 @@ runtime-unavailable exit code `4`.
 - keep security findings explicit and auditable;
 - define performance budgets as release-smoke contracts;
 - document the migration and compatibility policy that V1.5 promises;
-- expose signed backup archive, pre-restore evidence, restore apply gate, and supervisor handoff evidence as readiness gates;
+- expose signed backup archive, pre-restore evidence, restore apply/rollback/operator confirmation, and supervisor handoff evidence as readiness gates;
 - expose signed artifact, distribution install smoke, and package-manager dry-run evidence as opt-in readiness gates;
 - expose external scanner and measured benchmark evidence as opt-in readiness gates;
 - expose the repo-local MCP compatibility matrix as a required readiness gate;
@@ -110,7 +110,9 @@ policy approval, lock, health, rollback-required output, and staged mutation
 evidence; V1.14.2 extends that evidence with gated staged file mutation,
 transaction logs, and `mutation_executed:true` only after a staged commit;
 V1.14.3 adds rollback apply from the staged transaction log and pre-restore
-archive entries. V1.10.5 adds a
+archive entries; V1.14.4 adds operator confirmation output with confirm token,
+target root, affected count, state flags, irreversible warning, and next action.
+V1.10.5 adds a
 required supervisor handoff gate for controlled local release pointer mutation
 and persisted handoff state while production service-manager integration remains
 future work. V1.11.1 adds an opt-in required gate for supplied signed release

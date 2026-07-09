@@ -299,6 +299,7 @@ impl ReleaseHardeningService {
                         "restore apply gate verifies confirmation, archive evidence, policy approval, lock, and health before reporting apply_allowed=true".to_owned(),
                         "restore apply keeps no-step plans mutation_executed=false and reports mutation_executed=true only after staged file mutation commits".to_owned(),
                         "restore rollback apply verifies pre-restore archive entries and transaction log before reverse mutation".to_owned(),
+                        "restore apply and rollback expose operator confirmation with confirm token, target root, affected count, state flags, and irreversible warning".to_owned(),
                         "upgrade apply can commit a controlled supervisor handoff and release pointer mutation inside the configured state store after policy approval".to_owned(),
                     ],
                     vec![
@@ -1105,14 +1106,14 @@ fn restore_apply_gate() -> ReleaseGate {
         domain: "restore_apply_gate".to_owned(),
         status: ReleaseGateStatus::Pass,
         required: true,
-        summary: "V1.10.4/V1.14.3 restore apply confirmation, policy approval, filesystem lock, health gate, staged file mutation, rollback-required transaction evidence, and rollback apply are implemented".to_owned(),
+        summary: "V1.10.4/V1.14.4 restore apply confirmation, policy approval, filesystem lock, health gate, staged file mutation, rollback-required transaction evidence, rollback apply, and operator confirmation are implemented".to_owned(),
         evidence: vec![
             "crates/eva-backup/src/restore_apply.rs RestoreApplyCoordinator, RestoreMutationEngine, and RestoreRollbackEngine".to_owned(),
             "crates/eva-cli/src/run.rs restore apply/rollback --lock-store policy, health, and mutation gate".to_owned(),
             "cargo test -p eva-backup restore_apply".to_owned(),
             "cargo test -p eva-cli restore_apply".to_owned(),
             "cargo test -p eva-cli restore_rollback".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.14.3 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.14.4 Done".to_owned(),
         ],
         remediation: vec![
             "do not execute restore rollback apply unless confirmation, evidence, policy, rollback lock, health, staged plan, transaction log, and pre-restore archive entries still pass".to_owned(),

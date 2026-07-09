@@ -103,6 +103,35 @@ struct RestoreRollbackResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreOperatorConfirmation {
+    command: String,
+    plan_id: String,
+    confirm_token: String,
+    target_root: String,
+    affected_count: usize,
+    apply_allowed: bool,
+    mutation_planned: bool,
+    mutation_executed: bool,
+    rollback_required: bool,
+    rollback_executed: bool,
+    irreversible_warning: String,
+    next_action: String,
+}
+
+struct RestoreOperatorConfirmationInput<'a> {
+    command: &'a str,
+    plan_id: &'a str,
+    target_root: &'a str,
+    affected_count: usize,
+    apply_allowed: bool,
+    mutation_planned: bool,
+    mutation_executed: bool,
+    rollback_required: bool,
+    rollback_executed: bool,
+    next_action: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RestoreApplyHealthOption {
     Healthy,
     Failed(String),
@@ -894,6 +923,10 @@ fn write_restore_apply_dry_run<W: Write>(
                 result.report.pre_restore_backup_artifact_key
             )
             .map_err(write_error_kind)?;
+            write_restore_operator_confirmation_text(
+                writer,
+                &restore_apply_dry_run_operator_confirmation(result),
+            )?;
             write_artifact_store_ref(writer, &result.artifact_store)
         }
         OutputFormat::Json => writeln!(
@@ -964,6 +997,10 @@ fn write_restore_apply<W: Write>(
             if let Some(rollback) = &result.rollback_plan {
                 writeln!(writer, "rollback: {}", rollback.status).map_err(write_error_kind)?;
             }
+            write_restore_operator_confirmation_text(
+                writer,
+                &restore_apply_operator_confirmation(result),
+            )?;
             write_artifact_store_ref(writer, &result.artifact_store)?;
             write_lock_store_ref(writer, &result.lock_store)
         }
@@ -1012,6 +1049,10 @@ fn write_restore_rollback<W: Write>(
             )
             .map_err(write_error_kind)?;
             writeln!(writer, "lock: {}", result.lock.lock_id).map_err(write_error_kind)?;
+            write_restore_operator_confirmation_text(
+                writer,
+                &restore_rollback_operator_confirmation(result),
+            )?;
             write_artifact_store_ref(writer, &result.artifact_store)?;
             write_lock_store_ref(writer, &result.lock_store)
         }
@@ -1052,7 +1093,7 @@ fn restore_apply_dry_run_report_json(
     artifact_store: &ArtifactStoreRef,
 ) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"pre_restore_backup_artifact_key\":{},\"pre_restore_expected_digest\":{},\"pre_restore_actual_digest\":{},\"mutation_plan\":{},\"artifact_store\":{},\"audit\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"pre_restore_backup_artifact_key\":{},\"pre_restore_expected_digest\":{},\"pre_restore_actual_digest\":{},\"mutation_plan\":{},\"operator_confirmation\":{},\"artifact_store\":{},\"audit\":{}}}",
         json_string(&report.plan_id),
         json_string(&report.status),
         report.apply_allowed,
@@ -1063,6 +1104,9 @@ fn restore_apply_dry_run_report_json(
         json_string(&report.pre_restore_expected_digest),
         json_string(&report.pre_restore_actual_digest),
         restore_mutation_plan_json(&report.mutation_plan),
+        restore_operator_confirmation_json(&restore_apply_dry_run_report_operator_confirmation(
+            report,
+        )),
         artifact_store_ref_json(artifact_store),
         json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
@@ -1070,7 +1114,7 @@ fn restore_apply_dry_run_report_json(
 
 fn restore_apply_json(result: &RestoreApplyResult) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"mutation_plan\":{},\"mutation_apply\":{},\"backup_artifact_key\":{},\"pre_restore_backup_artifact_key\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"steps\":{},\"risks\":{},\"audit\":{},\"rollback_plan\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"mutation_plan\":{},\"mutation_apply\":{},\"operator_confirmation\":{},\"backup_artifact_key\":{},\"pre_restore_backup_artifact_key\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"steps\":{},\"risks\":{},\"audit\":{},\"rollback_plan\":{}}}",
         json_string(&result.report.plan_id),
         json_string(&result.report.status),
         result.report.apply_allowed,
@@ -1081,6 +1125,7 @@ fn restore_apply_json(result: &RestoreApplyResult) -> String {
             .as_ref()
             .map(restore_mutation_apply_json)
             .unwrap_or_else(|| "null".to_owned()),
+        restore_operator_confirmation_json(&restore_apply_operator_confirmation(result)),
         json_string(&result.report.backup_artifact_key),
         json_string(&result.report.pre_restore_backup_artifact_key),
         restore_apply_lock_json(&result.report.lock),
@@ -1102,12 +1147,13 @@ fn restore_apply_json(result: &RestoreApplyResult) -> String {
 
 fn restore_rollback_json(result: &RestoreRollbackResult) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"rollback_executed\":{},\"rollback\":{},\"mutation_plan\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"audit\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"rollback_executed\":{},\"rollback\":{},\"mutation_plan\":{},\"operator_confirmation\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"audit\":{}}}",
         json_string(&result.plan.plan_id),
         json_string(&result.rollback.status),
         result.rollback.rollback_executed,
         restore_rollback_apply_json(&result.rollback),
         restore_mutation_plan_json(&result.dry_run.mutation_plan),
+        restore_operator_confirmation_json(&restore_rollback_operator_confirmation(result)),
         restore_apply_lock_json(&result.lock),
         result.health.healthy,
         json_string(&result.health.message),
@@ -1134,6 +1180,164 @@ fn restore_rollback_apply_json(report: &RestoreRollbackApplyReport) -> String {
         json_array(report.rollback_log.iter().map(restore_transaction_entry_json)),
         json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
+}
+
+fn restore_apply_dry_run_operator_confirmation(
+    result: &RestoreApplyDryRunResult,
+) -> RestoreOperatorConfirmation {
+    restore_apply_dry_run_report_operator_confirmation(&result.report)
+}
+
+fn restore_apply_dry_run_report_operator_confirmation(
+    report: &RestoreApplyDryRunReport,
+) -> RestoreOperatorConfirmation {
+    restore_operator_confirmation(RestoreOperatorConfirmationInput {
+        command: "restore.apply.dry_run",
+        plan_id: &report.plan_id,
+        target_root: &report.mutation_plan.target_root,
+        affected_count: report.mutation_plan.affected_paths.len(),
+        apply_allowed: report.apply_allowed,
+        mutation_planned: report.mutation_plan.mutation_planned,
+        mutation_executed: false,
+        rollback_required: false,
+        rollback_executed: false,
+        next_action:
+            "dry-run only; rerun restore apply with matching --confirm after reviewing affected paths",
+    })
+}
+
+fn restore_apply_operator_confirmation(result: &RestoreApplyResult) -> RestoreOperatorConfirmation {
+    let rollback_required = result
+        .mutation_apply
+        .as_ref()
+        .map(|report| report.rollback_required)
+        .unwrap_or(!result.report.health.healthy);
+    let next_action = if rollback_required {
+        "run restore rollback with the same plan id after inspecting the transaction log"
+    } else if result.report.mutation_executed {
+        "verify restored files and keep the transaction log for audit"
+    } else if result.report.apply_allowed && result.report.mutation_plan.mutation_planned {
+        "review staged mutation plan before enabling destructive execution"
+    } else {
+        "no file mutation executed; review mutation_plan before retrying with staged steps"
+    };
+    restore_operator_confirmation(RestoreOperatorConfirmationInput {
+        command: "restore.apply",
+        plan_id: &result.report.plan_id,
+        target_root: &result.report.mutation_plan.target_root,
+        affected_count: result.report.mutation_plan.affected_paths.len(),
+        apply_allowed: result.report.apply_allowed,
+        mutation_planned: result.report.mutation_plan.mutation_planned,
+        mutation_executed: result.report.mutation_executed,
+        rollback_required,
+        rollback_executed: false,
+        next_action,
+    })
+}
+
+fn restore_rollback_operator_confirmation(
+    result: &RestoreRollbackResult,
+) -> RestoreOperatorConfirmation {
+    let next_action = if result.rollback.rollback_executed {
+        "verify restored pre-restore bytes and keep rollback log for audit"
+    } else {
+        "inspect rollback log and resolve manual recovery before retrying"
+    };
+    restore_operator_confirmation(RestoreOperatorConfirmationInput {
+        command: "restore.rollback",
+        plan_id: &result.plan.plan_id,
+        target_root: &result.dry_run.mutation_plan.target_root,
+        affected_count: result.dry_run.mutation_plan.affected_paths.len(),
+        apply_allowed: true,
+        mutation_planned: result.dry_run.mutation_plan.mutation_planned,
+        mutation_executed: false,
+        rollback_required: result.rollback.status != "rolled_back",
+        rollback_executed: result.rollback.rollback_executed,
+        next_action,
+    })
+}
+
+fn restore_operator_confirmation(
+    input: RestoreOperatorConfirmationInput<'_>,
+) -> RestoreOperatorConfirmation {
+    RestoreOperatorConfirmation {
+        command: input.command.to_owned(),
+        plan_id: input.plan_id.to_owned(),
+        confirm_token: input.plan_id.to_owned(),
+        target_root: input.target_root.to_owned(),
+        affected_count: input.affected_count,
+        apply_allowed: input.apply_allowed,
+        mutation_planned: input.mutation_planned,
+        mutation_executed: input.mutation_executed,
+        rollback_required: input.rollback_required,
+        rollback_executed: input.rollback_executed,
+        irreversible_warning:
+            "destructive restore can overwrite or delete files; proceed only after reviewing plan id, target root, affected count, and rollback evidence".to_owned(),
+        next_action: input.next_action.to_owned(),
+    }
+}
+
+fn restore_operator_confirmation_json(confirmation: &RestoreOperatorConfirmation) -> String {
+    format!(
+        "{{\"command\":{},\"plan_id\":{},\"confirm_token\":{},\"target_root\":{},\"affected_count\":{},\"apply_allowed\":{},\"mutation_planned\":{},\"mutation_executed\":{},\"rollback_required\":{},\"rollback_executed\":{},\"irreversible_warning\":{},\"next_action\":{}}}",
+        json_string(&confirmation.command),
+        json_string(&confirmation.plan_id),
+        json_string(&confirmation.confirm_token),
+        json_string(&confirmation.target_root),
+        confirmation.affected_count,
+        confirmation.apply_allowed,
+        confirmation.mutation_planned,
+        confirmation.mutation_executed,
+        confirmation.rollback_required,
+        confirmation.rollback_executed,
+        json_string(&confirmation.irreversible_warning),
+        json_string(&confirmation.next_action)
+    )
+}
+
+fn write_restore_operator_confirmation_text<W: Write>(
+    writer: &mut W,
+    confirmation: &RestoreOperatorConfirmation,
+) -> Result<(), EvaError> {
+    writeln!(writer, "operator_confirmation: {}", confirmation.command)
+        .map_err(write_error_kind)?;
+    writeln!(writer, "plan_id: {}", confirmation.plan_id).map_err(write_error_kind)?;
+    writeln!(writer, "confirm_token: {}", confirmation.confirm_token).map_err(write_error_kind)?;
+    writeln!(writer, "target_root: {}", confirmation.target_root).map_err(write_error_kind)?;
+    writeln!(writer, "affected_count: {}", confirmation.affected_count)
+        .map_err(write_error_kind)?;
+    writeln!(writer, "apply_allowed: {}", confirmation.apply_allowed).map_err(write_error_kind)?;
+    writeln!(
+        writer,
+        "mutation_planned: {}",
+        confirmation.mutation_planned
+    )
+    .map_err(write_error_kind)?;
+    writeln!(
+        writer,
+        "mutation_executed: {}",
+        confirmation.mutation_executed
+    )
+    .map_err(write_error_kind)?;
+    writeln!(
+        writer,
+        "rollback_required: {}",
+        confirmation.rollback_required
+    )
+    .map_err(write_error_kind)?;
+    writeln!(
+        writer,
+        "rollback_executed: {}",
+        confirmation.rollback_executed
+    )
+    .map_err(write_error_kind)?;
+    writeln!(
+        writer,
+        "irreversible_warning: {}",
+        confirmation.irreversible_warning
+    )
+    .map_err(write_error_kind)?;
+    writeln!(writer, "next_action: {}", confirmation.next_action).map_err(write_error_kind)
 }
 
 fn restore_mutation_apply_json(report: &RestoreMutationApplyReport) -> String {

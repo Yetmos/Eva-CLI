@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -2527,6 +2527,7 @@ mod tests {
         assert!(json_stdout.contains("restore_staged_mutation_planner_v1.14.1"));
         assert!(json_stdout.contains("restore_file_mutation_engine_v1.14.2"));
         assert!(json_stdout.contains("restore_rollback_apply_v1.14.3"));
+        assert!(json_stdout.contains("restore_operator_confirmation_v1.14.4"));
         assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));
@@ -3455,6 +3456,11 @@ mod tests {
         assert!(stdout.contains("\"mutation_apply\":{"));
         assert!(stdout.contains("\"rollback_required\":false"));
         assert!(stdout.contains("\"completed_steps\":3"));
+        assert!(stdout.contains("\"operator_confirmation\":{"));
+        assert!(stdout.contains("\"confirm_token\":\"plan-mutation\""));
+        assert!(stdout.contains("\"affected_count\":3"));
+        assert!(stdout.contains("\"mutation_planned\":true"));
+        assert!(stdout.contains("\"irreversible_warning\":"));
         assert_eq!(
             fs::read(target_root.join("config/eva.yaml")).unwrap(),
             b"config"
@@ -3547,6 +3553,11 @@ mod tests {
         assert!(stdout.contains("\"status\":\"rolled_back\""));
         assert!(stdout.contains("\"rollback_executed\":true"));
         assert!(stdout.contains("\"transaction_status\":\"rollback_required\""));
+        assert!(stdout.contains("\"operator_confirmation\":{"));
+        assert!(stdout.contains("\"confirm_token\":\"plan-rollback\""));
+        assert!(stdout.contains("\"target_root\":"));
+        assert!(stdout.contains("\"affected_count\":1"));
+        assert!(stdout.contains("\"irreversible_warning\":"));
         assert!(lock_root
             .join("plan-rollback.restore.rollback.lock")
             .exists());
@@ -4121,9 +4132,25 @@ mod tests {
             "--output",
             "json",
         ]);
+        let (text_exit, text_stdout, text_stderr) = run_cli(&[
+            "restore",
+            "apply",
+            "--dry-run",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-staged",
+            "--artifact-store",
+            artifact_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "text",
+        ]);
 
         assert_eq!(first_exit, EXIT_OK, "{first_stderr}");
         assert_eq!(second_exit, EXIT_OK, "{second_stderr}");
+        assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
         assert!(
             first_stdout.contains("\"mutation_plan\":{"),
             "{first_stdout}"
@@ -4145,6 +4172,22 @@ mod tests {
         assert!(first_stdout.contains("\"rollback_manifest\":["));
         assert!(first_stdout.contains("\"action\":\"restore_pre_restore_digest\""));
         assert!(first_stdout.contains("\"preflight_hash\":\"sha256:"));
+        assert!(first_stdout.contains("\"operator_confirmation\":{"));
+        assert!(first_stdout.contains("\"confirm_token\":\"plan-staged\""));
+        assert!(first_stdout.contains("\"affected_count\":3"));
+        assert!(first_stdout.contains("\"irreversible_warning\":"));
+        assert!(text_stdout.contains("operator_confirmation: restore.apply.dry_run"));
+        assert!(text_stdout.contains("plan_id: plan-staged"));
+        assert!(text_stdout.contains("confirm_token: plan-staged"));
+        assert!(text_stdout.contains("target_root: workspace"));
+        assert!(text_stdout.contains("affected_count: 3"));
+        assert!(text_stdout.contains("apply_allowed: false"));
+        assert!(text_stdout.contains("mutation_planned: true"));
+        assert!(text_stdout.contains("mutation_executed: false"));
+        assert!(text_stdout.contains("rollback_required: false"));
+        assert!(text_stdout.contains("rollback_executed: false"));
+        assert!(text_stdout.contains("irreversible_warning:"));
+        assert!(text_stdout.contains("next_action:"));
         assert_eq!(
             extract_json_value(&first_stdout, "\"preflight_hash\":\""),
             extract_json_value(&second_stdout, "\"preflight_hash\":\"")

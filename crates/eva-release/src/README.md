@@ -18,7 +18,7 @@ run in local development and CI.
 | `distribution.rs` | Defines V1.11.2 distribution evidence, Windows/Linux/macOS install smoke verification, package-manager dry-run verification, and key/value manifest parsing. |
 | `scanner.rs` | Defines V1.11.3 external security scanner evidence, finding severity normalization, high/critical blocking verification, and key/value manifest parsing. |
 | `benchmark.rs` | Defines V1.11.3 production benchmark evidence, measured budget verification, and conversion into the stable `PerformanceBaselineReport` shape. |
-| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, V1.10.4 restore apply gate, V1.10.5 supervisor handoff readiness, V1.11 release evidence gates, V1.12.6 daemon runtime readiness, V1.13.7 MCP compatibility readiness, and V1.13.8 provider supervision readiness. |
+| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, V1.10.4 restore apply gate, V1.14.2 staged file mutation, V1.14.3 rollback apply, V1.14.4 operator confirmation, V1.10.5 supervisor handoff readiness, V1.11 release evidence gates, V1.12.6 daemon runtime readiness, V1.13.7 MCP compatibility readiness, and V1.13.8 provider supervision readiness. |
 | `security.rs` | Defines security severity and findings for policy, sandbox, secret, MCP, hardware, and lifecycle boundaries. |
 | `performance.rs` | Defines source-release performance budgets and the baseline report. |
 | `migration.rs` | Defines migration steps and the V1.5 compatibility policy. |
@@ -50,15 +50,14 @@ of CLI formatting so future release tooling can reuse the same data contracts.
 
 ## Design Notes
 
-- Warning findings are intentionally preserved. For example, destructive file
-  mutation and production service-manager handoff are tracked as future risks
-  instead of being hidden because the current CLI keeps them staged behind
-  gates.
+- Warning findings are intentionally preserved. Production service-manager
+  handoff remains tracked as a future risk instead of being hidden behind the
+  current local state-store handoff evidence.
 - The signed backup archive gate proves archive signature and pre-restore
   evidence checks exist, but it does not enable destructive restore.
 - The restore apply gate proves confirmation, policy approval, filesystem lock,
-  health check, rollback-required output, and `mutation_executed:false` evidence
-  exist, but it does not execute workspace mutation.
+  health check, staged file mutation, rollback apply, and operator confirmation
+  evidence exist, but it does not replace a production service-manager handoff.
 - The supervisor handoff gate proves `upgrade apply --state-store` can commit a
   controlled local generation handoff and release pointer mutation, but it does
   not replace a production OS service manager.
@@ -108,7 +107,8 @@ The module-level tests cover:
 - all performance budgets are within threshold;
 - V1.4 -> V1.5 migration remains compatible and includes the new release
   command surface;
-- signed backup archive, restore apply gate, supervisor handoff readiness,
+- signed backup archive, restore apply/rollback/operator confirmation gate,
+  supervisor handoff readiness,
   daemon runtime readiness, MCP compatibility readiness, and provider
   supervision readiness are present without creating a blocked release state.
 - missing MCP compatibility matrix blocks the required gate.
