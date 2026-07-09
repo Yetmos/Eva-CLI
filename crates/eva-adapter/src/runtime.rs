@@ -2,10 +2,16 @@
 
 use crate::registry::AdapterRegistry;
 use crate::router::{AdapterRouteRequest, AdapterRouter};
+use crate::supervisor::{
+    InMemoryProviderSupervisor, ProviderExecutionOutcome, ProviderExecutionRequest,
+    ProviderSupervisor,
+};
 use crate::transports;
 use eva_config::{AdapterTransport, ProjectConfig};
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
 use eva_observability::{SpanId, TraceFields};
+use eva_storage::ProviderProcessSnapshot;
+use std::cell::RefCell;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "authorized transport execution with timeout and audit";
@@ -43,6 +49,7 @@ pub struct AdapterInvokeReport {
 pub struct AdapterRuntime {
     registry: AdapterRegistry,
     router: AdapterRouter,
+    supervisor: RefCell<InMemoryProviderSupervisor>,
 }
 
 impl AdapterInvocation {
@@ -81,7 +88,11 @@ impl AdapterInvocation {
 impl AdapterRuntime {
     pub fn from_registry(registry: AdapterRegistry) -> Self {
         let router = AdapterRouter::new(registry.clone());
-        Self { registry, router }
+        Self {
+            registry,
+            router,
+            supervisor: RefCell::new(InMemoryProviderSupervisor::new()),
+        }
     }
 
     pub fn from_project(project: &ProjectConfig) -> Result<Self, EvaError> {
@@ -99,6 +110,10 @@ impl AdapterRuntime {
 
     pub fn list(&self) -> Vec<&crate::manifest::AdapterHandle> {
         self.registry.list()
+    }
+
+    pub fn provider_processes(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError> {
+        self.supervisor.borrow().processes()
     }
 
     pub fn probe_adapter(&self, adapter_id: &AdapterId) -> Result<AdapterProbeReport, EvaError> {
@@ -140,17 +155,76 @@ impl AdapterRuntime {
         let route = self.router.route(&request)?;
         let handle = route.handle;
 
-        match handle.transport {
-            AdapterTransport::Mcp => transports::mcp::invoke(&handle, invocation),
-            AdapterTransport::Skill => transports::skill::invoke(&handle, invocation),
-            AdapterTransport::Builtin
-            | AdapterTransport::LuaCapability
-            | AdapterTransport::Eventbus => transports::builtin::invoke(&handle, invocation),
-            AdapterTransport::Hardware => transports::hardware::invoke(&handle, invocation),
-            AdapterTransport::Stdio => transports::stdio::invoke(&handle, invocation),
-            AdapterTransport::Http => transports::http::invoke(&handle, invocation),
+        if should_supervise(handle.transport) {
+            return self.invoke_supervised(handle, invocation);
+        }
+        dispatch_transport(&handle, invocation)
+    }
+
+    fn invoke_supervised(
+        &self,
+        handle: crate::manifest::AdapterHandle,
+        invocation: AdapterInvocation,
+    ) -> Result<AdapterInvokeReport, EvaError> {
+        let slot = self
+            .supervisor
+            .borrow_mut()
+            .acquire(ProviderExecutionRequest::from_handle(&handle, &invocation))?;
+        let result = dispatch_transport(&handle, invocation);
+        match result {
+            Ok(mut report) => {
+                let snapshot = self
+                    .supervisor
+                    .borrow_mut()
+                    .complete(&slot, ProviderExecutionOutcome::completed(&report.status))?;
+                append_supervisor_audit(&mut report.audit, &snapshot);
+                Ok(report)
+            }
+            Err(error) => {
+                self.supervisor
+                    .borrow_mut()
+                    .complete(&slot, ProviderExecutionOutcome::failed(&error))?;
+                Err(error)
+            }
         }
     }
+}
+
+fn dispatch_transport(
+    handle: &crate::manifest::AdapterHandle,
+    invocation: AdapterInvocation,
+) -> Result<AdapterInvokeReport, EvaError> {
+    match handle.transport {
+        AdapterTransport::Mcp => transports::mcp::invoke(handle, invocation),
+        AdapterTransport::Skill => transports::skill::invoke(handle, invocation),
+        AdapterTransport::Builtin
+        | AdapterTransport::LuaCapability
+        | AdapterTransport::Eventbus => transports::builtin::invoke(handle, invocation),
+        AdapterTransport::Hardware => transports::hardware::invoke(handle, invocation),
+        AdapterTransport::Stdio => transports::stdio::invoke(handle, invocation),
+        AdapterTransport::Http => transports::http::invoke(handle, invocation),
+    }
+}
+
+fn should_supervise(transport: AdapterTransport) -> bool {
+    matches!(
+        transport,
+        AdapterTransport::Mcp
+            | AdapterTransport::Skill
+            | AdapterTransport::Stdio
+            | AdapterTransport::Http
+    )
+}
+
+fn append_supervisor_audit(audit: &mut Vec<String>, snapshot: &ProviderProcessSnapshot) {
+    audit.push(format!("provider.session:{}", snapshot.session_id));
+    audit.push(format!("provider.process:{}", snapshot.provider_process_id));
+    audit.push(format!(
+        "provider.manifest_digest:{}",
+        snapshot.manifest_digest
+    ));
+    audit.push(format!("provider.health:{}", snapshot.health));
+    audit.push("provider.slot:released".to_owned());
 }
 
 #[cfg(test)]
@@ -203,6 +277,19 @@ mod tests {
                 .map(|capability| capability.as_str()),
             Some("workflow.code_review")
         );
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry.starts_with("provider.session:")));
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "provider.health:completed"));
+        let processes = runtime.provider_processes().unwrap();
+        assert_eq!(processes.len(), 1);
+        assert!(!processes[0].active);
+        assert_eq!(processes[0].health, "completed");
+        assert_eq!(processes[0].adapter_id.as_str(), "code-review-skill");
     }
 
     #[test]
@@ -257,6 +344,42 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(runtime.provider_processes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_releases_provider_slot_when_stdio_start_fails() {
+        let runtime = runtime_with_handle(stdio_handle(
+            true,
+            "definitely-not-started",
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        let error = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-stdio-start-fail").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Unavailable);
+        let processes = runtime.provider_processes().unwrap();
+        assert_eq!(processes.len(), 1);
+        assert!(!processes[0].active);
+        assert_eq!(processes[0].health, "failed");
+        assert!(processes[0]
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("failed to start stdio provider"));
+        assert!(processes[0]
+            .audit
+            .iter()
+            .any(|entry| entry == "provider.supervisor.failed"));
     }
 
     #[test]
@@ -332,10 +455,7 @@ mod tests {
     fn runtime_with_handle(handle: AdapterHandle) -> AdapterRuntime {
         let mut registry = AdapterRegistry::new();
         registry.register(handle).unwrap();
-        AdapterRuntime {
-            router: AdapterRouter::new(registry.clone()),
-            registry,
-        }
+        AdapterRuntime::from_registry(registry)
     }
 
     fn http_header_end(bytes: &[u8]) -> Option<usize> {

@@ -4,7 +4,7 @@
 
 ![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
 
-`eva-storage` 负责 Eva-CLI 的状态、事件日志、task snapshot、audit record 和 artifact 存储契约。事件日志同时提供 in-memory 和 V1.6.2 filesystem durable 版本；task snapshot 已可使用 `.eva/tasks` 或 V1.6 durable backend 的 `tasks/` 布局，并在 V1.12.3 增加 heartbeat、deadline、cancel token、cancelling/recovering/interrupted 等长任务 lifecycle 字段；audit record 可写入 durable backend 的 `audit/` 目录；artifact 已提供 local filesystem backend，用于跨进程 CLI 查询、备份、发布和后续 apply evidence 的持久化边界。
+`eva-storage` 负责 Eva-CLI 的状态、事件日志、task snapshot、audit record、artifact 和 provider process snapshot 存储契约。事件日志同时提供 in-memory 和 V1.6.2 filesystem durable 版本；task snapshot 已可使用 `.eva/tasks` 或 V1.6 durable backend 的 `tasks/` 布局，并在 V1.12.3 增加 heartbeat、deadline、cancel token、cancelling/recovering/interrupted 等长任务 lifecycle 字段；audit record 可写入 durable backend 的 `audit/` 目录；artifact 已提供 local filesystem backend；V1.13.1 新增 in-memory provider process table，用于记录受监督 provider execution slot 的 session/process evidence。
 
 ## V0.4 当前实现
 
@@ -17,6 +17,7 @@
 | TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 默认保存 `.eva/tasks` task snapshot，也可通过 `DurableBackendLayout` 使用 durable backend 的 `tasks/` 目录；支持按 task id、latest 或 snapshot 列表跨进程读取，并支持 task lifecycle 更新和日志追加。 |
 | AuditSink | `FileSystemAuditSink`、`AuditRecord` | 将 `AuditEvent` 写入 durable backend `audit/` 目录，保存 action/outcome/trace/message/fields，并支持按 trace id 查询。 |
 | ArtifactStore | `ArtifactStore`、`ArtifactRecord`、`InMemoryArtifactStore`、`FileSystemArtifactStore` | 保存 bytes，并生成可重复 SHA-256 digest；filesystem backend 会落盘 bytes 和 v2 metadata，记录 size、content type、retention policy 和 retain-until timestamp，并在读取时重新校验 key、size 和 digest。 |
+| ProviderProcessTable | `ProviderProcessTable`、`ProviderProcessSnapshot`、`InMemoryProviderProcessTable` | 记录 provider session/process id、manifest digest、start command、health、last error、restart policy 和 audit；当前是 V1.13.1 supervisor 的 in-memory process table。 |
 | SQLite | `sqlite.rs` | 仍是 durable backend 边界占位，V0.4 不引入 SQLite 依赖。 |
 
 ## 模块边界
@@ -29,12 +30,12 @@
 
 ```rust
 use eva_storage::{
-    EventLog, FileSystemEventLog, FileSystemTaskStateStore, InMemoryEventLog, InMemoryStateStore,
-    StateStore,
+    EventLog, FileSystemEventLog, FileSystemTaskStateStore, InMemoryEventLog,
+    InMemoryProviderProcessTable, InMemoryStateStore, ProviderProcessTable, StateStore,
 };
 ```
 
-主要 re-export 位于 `src/lib.rs`，下游 crate 不需要直接引用子模块路径。需要 durable event log 时使用 `FileSystemEventLog::open(backend.layout())`；需要兼容本地 task state 时使用 `FileSystemTaskStateStore::new(project_root)`；需要 durable backend task state 时使用 `FileSystemTaskStateStore::from_durable_layout(backend.layout())`；需要 durable artifact evidence 时使用 `FileSystemArtifactStore::new(path)`。
+主要 re-export 位于 `src/lib.rs`，下游 crate 不需要直接引用子模块路径。需要 durable event log 时使用 `FileSystemEventLog::open(backend.layout())`；需要兼容本地 task state 时使用 `FileSystemTaskStateStore::new(project_root)`；需要 durable backend task state 时使用 `FileSystemTaskStateStore::from_durable_layout(backend.layout())`；需要 durable artifact evidence 时使用 `FileSystemArtifactStore::new(path)`；需要 provider supervisor process table 时使用 `InMemoryProviderProcessTable::new()`。
 
 ## 验证
 
@@ -44,7 +45,7 @@ use eva_storage::{
 cargo test -p eva-storage
 ```
 
-已覆盖：事件 append/watermark、ack consumer、fail structured error、replay cursor、filesystem EventLog 跨 reopen、StateStore 版本冲突、TaskStateStore 跨 store 读写、snapshot 列表扫描、长任务 lifecycle 状态迁移、ArtifactStore digest round trip、filesystem artifact missing/tamper checks、legacy metadata 兼容和 corrupt metadata 稳定错误。
+已覆盖：事件 append/watermark、ack consumer、fail structured error、replay cursor、filesystem EventLog 跨 reopen、StateStore 版本冲突、TaskStateStore 跨 store 读写、snapshot 列表扫描、长任务 lifecycle 状态迁移、ArtifactStore digest round trip、filesystem artifact missing/tamper checks、legacy metadata 兼容、corrupt metadata 稳定错误，以及 ProviderProcessTable upsert/list/release。
 
 ## V1.6.1 Durable Backend Baseline
 
@@ -100,11 +101,26 @@ default to `None`. `daemon submit` creates a queued lifecycle snapshot, and
 `daemon cancel` moves non-terminal tasks to `cancelling` rather than pretending
 the long-running work has already stopped.
 
+## V1.13.1 Provider Process Table
+
+`ProviderProcessSnapshot` records the process/session boundary used by the
+provider supervisor baseline:
+
+- adapter/capability/request identifiers;
+- provider session id and process id;
+- manifest digest, start command, health, restart policy, active flag, and last error;
+- append-only audit entries for acquire, completed, and failed release.
+
+`InMemoryProviderProcessTable` is intentionally process-local for V1.13.1. It
+supports querying active sessions by adapter and gives `eva-adapter` a stable
+contract before later persistent recovery work.
+
 ## 后续计划
 
 | 版本 | 计划 |
 | --- | --- |
 | V0.5 | 为 dead-letter 和任务日志增加查询索引。 |
+| V1.13.1 | 已新增 provider process table baseline，覆盖 supervisor slot acquire/release evidence。 |
 | V1.12.3 | 已将 task snapshot 升级为 durable task lifecycle，覆盖 heartbeat、deadline、cancel token 和 task log append。 |
 | V1.6.3 | 已将 task snapshot、audit record 和 artifact metadata hardening 接入 durable backend 相关布局。 |
 | V1.6.2 | 已新增 filesystem durable event log，供 `eva-eventbus::DurableEventBus` 使用。 |

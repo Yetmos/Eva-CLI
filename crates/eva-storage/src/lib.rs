@@ -4,6 +4,7 @@ pub mod artifact_store;
 pub mod audit_store;
 pub mod durable_backend;
 pub mod event_log;
+pub mod provider_process;
 pub mod sqlite;
 pub mod state_store;
 pub mod task_state;
@@ -19,6 +20,9 @@ pub use durable_backend::{
 };
 pub use event_log::{
     EventLog, EventLogRecord, EventLogStatus, FileSystemEventLog, InMemoryEventLog,
+};
+pub use provider_process::{
+    InMemoryProviderProcessTable, ProviderProcessSnapshot, ProviderProcessTable,
 };
 pub use state_store::{InMemoryStateStore, StateRecord, StateStore, StateVersion};
 pub use task_state::{
