@@ -28,7 +28,7 @@ V1.1 已实现可在无外部副作用环境中验证的 transport：
 - `mcp.rs`：选择映射的 MCP tool，在写入 JSON-RPC 前强制 `McpAllowlist`，并通过 stdio transport 或受限 `http://` transport 执行 `initialize`、`tools/list`、`tools/call`；HTTP MCP 调用必须携带 provider session auth header。
 - `skill.rs`：V1.8.4 起检查 `skill.kind`、`skill.runtime_gate` 和 input schema，创建隔离 working directory，执行 manifest allowlist process runner 或受控 `codex_skill` runner，并保存 stdout/stderr/run-report/artifact evidence。
 
-这些实现证明 AdapterRuntime 的调用 envelope、trace、audit 和错误映射可以用 fake provider 和受控 runner 测试。V1.13.7 后 stdio/http、MCP stdio/HTTP JSON-RPC tool call 和 Skill workflow runner 已能通过 AdapterRuntime 进入 supervisor slot、credential session scope、concurrency/rate/circuit admission gate、bounded stream artifact 数据面、durable provider process recovery evidence 和 MCP compatibility matrix release gate；MCP 生产 streaming/TLS/真实外部 server compatibility、OS process supervisor、OS credential vault 和 Skill output schema 深度校验会在后续节点补齐。
+这些实现证明 AdapterRuntime 的调用 envelope、trace、audit 和错误映射可以用 fake provider 和受控 runner 测试。V1.13.8 后 stdio/http、MCP stdio/HTTP JSON-RPC tool call 和 Skill workflow runner 已能通过 AdapterRuntime 进入 supervisor slot、credential session scope、concurrency/rate/circuit admission gate、bounded stream artifact 数据面、durable provider process recovery evidence、MCP compatibility matrix release gate 和 provider supervision release gate；MCP 生产 streaming/TLS/真实外部 server compatibility、OS process supervisor、OS credential vault 和 Skill output schema 深度校验会在后续节点补齐。
 
 ## V1.3 hardware transport
 

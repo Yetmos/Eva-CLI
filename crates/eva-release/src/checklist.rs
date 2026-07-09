@@ -188,6 +188,7 @@ impl ReleaseHardeningService {
         gates.push(mcp_compatibility_matrix_gate(Some(
             &mcp_compatibility_report,
         )));
+        gates.push(provider_supervision_gate());
         let artifact_report = artifact_evidence
             .map(|evidence| evidence.verify(&ReleaseArtifactSigningKey::local_development()));
         if let Some(report) = artifact_report.as_ref() {
@@ -610,6 +611,7 @@ fn release_audit(
         "supervisor_handoff_baseline_ready".to_owned(),
         "daemon_runtime_readiness_gate_ready".to_owned(),
         "mcp_compatibility_matrix_ready".to_owned(),
+        "provider_supervision_readiness_gate_ready".to_owned(),
     ];
     if let Some(report) = artifact_report {
         if report.status == "verified" {
@@ -1214,6 +1216,31 @@ fn mcp_compatibility_matrix_gate(report: Option<&McpCompatibilityReport>) -> Rel
     }
 }
 
+fn provider_supervision_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-PROVIDER-SUPERVISION-001".to_owned(),
+        domain: "provider_supervision".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "Provider stdio/http/MCP/Skill supervision, credential scope, admission limits, stream artifacts, recovery, and MCP compatibility gates are present".to_owned(),
+        evidence: vec![
+            "provider.supervisor_slot:stdio,http,mcp,skill".to_owned(),
+            "provider.process_table:in_memory_snapshot_and_durable_mirror".to_owned(),
+            "provider.credential_session:scoped_env_header_token_redaction".to_owned(),
+            "provider.admission:concurrency_rate_circuit_backoff".to_owned(),
+            "provider.stream_artifact:bounded_redacted_summary".to_owned(),
+            "provider.recovery:daemon_restart_interrupted_backoff_evidence".to_owned(),
+            "provider.mcp_compatibility_gate:REL-MCP-COMPAT-001".to_owned(),
+            "provider.os_process_supervisor:not_claimed".to_owned(),
+            "cargo test -p eva-adapter supervisor runtime::tests stream::tests".to_owned(),
+            "cargo test -p eva-runtime recovery".to_owned(),
+            "cargo test -p eva-storage provider_process".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.13.8 Done".to_owned(),
+        ],
+        remediation: Vec::new(),
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -1476,6 +1503,15 @@ mod tests {
                     .iter()
                     .any(|item| item == "mcp.transport_count:2")
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-PROVIDER-SUPERVISION-001"
+                && gate.status == ReleaseGateStatus::Pass
+                && gate.domain == "provider_supervision"
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "provider.os_process_supervisor:not_claimed")
+        }));
         assert!(report
             .audit
             .iter()
@@ -1516,6 +1552,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "mcp_compatibility_matrix_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "provider_supervision_readiness_gate_ready"));
     }
 
     #[test]
@@ -1528,6 +1568,21 @@ mod tests {
         assert!(gate
             .evidence
             .contains(&"mcp.compatibility_matrix:missing".to_owned()));
+    }
+
+    #[test]
+    fn provider_supervision_gate_records_current_boundaries() {
+        let gate = provider_supervision_gate();
+
+        assert_eq!(gate.id, "REL-PROVIDER-SUPERVISION-001");
+        assert_eq!(gate.status, ReleaseGateStatus::Pass);
+        assert!(gate.required);
+        assert!(gate
+            .evidence
+            .contains(&"provider.mcp_compatibility_gate:REL-MCP-COMPAT-001".to_owned()));
+        assert!(gate
+            .evidence
+            .contains(&"provider.os_process_supervisor:not_claimed".to_owned()));
     }
 
     #[test]

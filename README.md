@@ -381,7 +381,9 @@ implementation-focused:
   runners, including OS process management, MCP production streaming/TLS HTTP
   client coverage, external-server compatibility certification, and OS credential
   vault integration. The repo-local MCP compatibility matrix and
-  `REL-MCP-COMPAT-001` release gate are present as V1.13.7 evidence.
+  `REL-MCP-COMPAT-001` release gate are present as V1.13.7 evidence, and
+  `REL-PROVIDER-SUPERVISION-001` records the current controlled provider
+  supervision baseline as V1.13.8 evidence.
 - Durable Scheduler, runtime audit wiring, memory, and backup
   stores beyond the current durable EventBus/task snapshot/audit sink baseline
   and local diagnostic surfaces.

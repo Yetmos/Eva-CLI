@@ -14,7 +14,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 
 | Area | Public Type | Behavior |
 | --- | --- | --- |
-| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply gate, supervisor handoff, daemon runtime, and MCP compatibility readiness. |
+| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply gate, supervisor handoff, daemon runtime, MCP compatibility, and provider supervision readiness. |
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
 | Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, hardware handle boundaries, and lifecycle apply risk. |
@@ -28,6 +28,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | Security scan evidence | `ReleaseSecurityScanEvidence`, `ReleaseSecurityScanVerificationReport` | Parses a V1.11.3 external scanner evidence manifest and blocks readiness when the scanner did not pass or any high/critical finding is present. |
 | Benchmark evidence | `ReleaseBenchmarkEvidence`, `ReleaseBenchmarkVerificationReport` | Parses V1.11.3 production benchmark measurements, converts them into the existing performance report shape, and blocks readiness when observed latency exceeds budget. |
 | MCP compatibility readiness | `ReleaseGate` | Records V1.13.7 stdio/HTTP transport, tool schema, stream lifecycle, dangling-session, and explicit server-surface fixture evidence as `REL-MCP-COMPAT-001`. |
+| Provider supervision readiness | `ReleaseGate` | Records V1.13.8 supervisor slot, process table, credential scope, admission, stream artifact, recovery, and MCP compatibility gate evidence as `REL-PROVIDER-SUPERVISION-001`. |
 
 ## CLI Surface
 
@@ -71,6 +72,7 @@ runtime-unavailable exit code `4`.
 - expose signed artifact, distribution install smoke, and package-manager dry-run evidence as opt-in readiness gates;
 - expose external scanner and measured benchmark evidence as opt-in readiness gates;
 - expose the repo-local MCP compatibility matrix as a required readiness gate;
+- expose the current provider supervision baseline as a required readiness gate;
 - preserve known future risks as warnings instead of silently enabling apply paths.
 
 `eva-release` does not:
@@ -81,6 +83,7 @@ runtime-unavailable exit code `4`.
 - run external security scanners directly;
 - execute benchmark commands directly;
 - certify external MCP servers or provide HTTPS/TLS transport;
+- manage OS provider processes or claim user-isolated OS supervision;
 - replace `eva-backup`, `eva-lifecycle`, `eva-policy`, or CI.
 
 ## Verification
@@ -122,4 +125,6 @@ lifecycle, scheduler retry tick, and daemon-backed agent drain/reload mutation
 evidence without claiming production service-manager support. V1.13.7 adds
 required MCP compatibility gate `REL-MCP-COMPAT-001` for the repo-local
 compatibility matrix; it does not certify real external MCP servers, HTTPS/TLS,
-or production streaming.
+or production streaming. V1.13.8 adds required provider supervision gate
+`REL-PROVIDER-SUPERVISION-001` for the current controlled provider baseline; it
+does not claim OS process management, OS credential vaults, or user isolation.
