@@ -1,6 +1,6 @@
 //! Durable runtime diagnostics for V1.6.5 smoke gates.
 
-use eva_core::{EvaError, EventId};
+use eva_core::EvaError;
 use eva_eventbus::DurableEventBus;
 use eva_storage::{
     DurableBackend, DurableBackendOptions, EventLogStatus, FileSystemDurableBackend,
@@ -42,9 +42,10 @@ pub fn inspect_durable_backend(
         .filter(|record| {
             record.redrive.next_attempt_after_ms <= options.redrive_ready_at_ms
                 && matches!(
-                    event_log_status(&bus, record.event_id()),
+                    bus.event_log_status(record.event_id()),
                     Some(EventLogStatus::Appended | EventLogStatus::Failed)
                 )
+                && bus.latest_replay_record(record.event_id()).is_none()
         })
         .count();
 
@@ -59,14 +60,6 @@ pub fn inspect_durable_backend(
         dead_letter_count: bus.dead_letters().len(),
         pending_redrive_count,
     })
-}
-
-fn event_log_status(bus: &DurableEventBus, event_id: &EventId) -> Option<EventLogStatus> {
-    bus.log()
-        .records()
-        .iter()
-        .find(|record| record.event.event_id() == event_id)
-        .map(|record| record.status)
 }
 
 #[cfg(test)]
@@ -121,6 +114,7 @@ mod tests {
             let due = event("evt-diagnostics-due");
             let acked = event("evt-diagnostics-acked");
             let not_due = event("evt-diagnostics-not-due");
+            let already_redriven = event("evt-diagnostics-already-redriven");
 
             bus.publish(due.clone()).unwrap();
             bus.dead_letter(due, EvaError::timeout("handler timeout"))
@@ -143,6 +137,21 @@ mod tests {
                 },
             )
             .unwrap();
+
+            bus.publish(already_redriven.clone()).unwrap();
+            bus.dead_letter(
+                already_redriven.clone(),
+                EvaError::timeout("handler timeout"),
+            )
+            .unwrap();
+            let receipt = bus
+                .redrive_dead_letter(already_redriven.event_id())
+                .unwrap();
+            bus.ack(
+                &receipt.event_id,
+                AgentId::parse("scheduler-retry").unwrap(),
+            )
+            .unwrap();
         }
 
         let report = inspect_durable_backend(
@@ -153,8 +162,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(report.event_log_records, 3);
-        assert_eq!(report.dead_letter_count, 3);
+        assert_eq!(report.event_log_records, 5);
+        assert_eq!(report.dead_letter_count, 4);
         assert_eq!(report.pending_redrive_count, 1);
     }
 

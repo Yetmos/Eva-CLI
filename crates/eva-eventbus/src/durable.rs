@@ -6,7 +6,9 @@ use eva_core::{
     AgentId, ErrorKind, EvaError, Event, EventId, EventMetadata, EventPayload, EventTarget,
     GenerationId, RequestId, Topic, TraceContext,
 };
-use eva_storage::{DurableBackendLayout, EventLog, EventLogRecord, FileSystemEventLog};
+use eva_storage::{
+    DurableBackendLayout, EventLog, EventLogRecord, EventLogStatus, FileSystemEventLog,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -61,6 +63,34 @@ impl DurableEventBus {
 
     pub fn dead_letters(&self) -> &[DeadLetterRecord] {
         self.dead_letter_store.records()
+    }
+
+    pub fn due_dead_letters(&self, ready_at_ms: u64) -> Vec<DeadLetterRecord> {
+        self.dead_letters()
+            .iter()
+            .filter(|record| record.redrive.next_attempt_after_ms <= ready_at_ms)
+            .cloned()
+            .collect()
+    }
+
+    pub fn event_log_record(&self, event_id: &EventId) -> Option<&EventLogRecord> {
+        self.log
+            .records()
+            .iter()
+            .find(|record| record.event.event_id() == event_id)
+    }
+
+    pub fn event_log_status(&self, event_id: &EventId) -> Option<EventLogStatus> {
+        self.event_log_record(event_id).map(|record| record.status)
+    }
+
+    pub fn latest_replay_record(&self, original_event_id: &EventId) -> Option<&EventLogRecord> {
+        let replay_prefix = format!("{}:replay-", original_event_id.as_str());
+        self.log
+            .records()
+            .iter()
+            .rev()
+            .find(|record| record.event.event_id().as_str().starts_with(&replay_prefix))
     }
 
     pub fn dead_letter(
@@ -848,6 +878,48 @@ mod tests {
                 "evt-1"
             );
         }
+    }
+
+    #[test]
+    fn due_dead_letters_and_latest_replay_status_are_queryable() {
+        let root = test_root("due-redrive-query");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+        let due = event("evt-due");
+        let future = event("evt-future");
+
+        bus.publish(due.clone()).unwrap();
+        bus.dead_letter(due.clone(), EvaError::timeout("handler timeout"))
+            .unwrap();
+        bus.publish(future.clone()).unwrap();
+        bus.dead_letter(future.clone(), EvaError::timeout("handler timeout"))
+            .unwrap();
+        bus.set_dead_letter_redrive_policy(
+            future.event_id(),
+            RedrivePolicy {
+                retry_delay_ms: 1_000,
+                next_attempt_after_ms: 5_000,
+            },
+        )
+        .unwrap();
+
+        let due_records = bus.due_dead_letters(1_000);
+        assert_eq!(due_records.len(), 1);
+        assert_eq!(due_records[0].event_id().as_str(), "evt-due");
+        assert!(bus.latest_replay_record(due.event_id()).is_none());
+
+        let receipt = bus.redrive_dead_letter(due.event_id()).unwrap();
+        bus.ack(&receipt.event_id, AgentId::parse("agent-a").unwrap())
+            .unwrap();
+
+        let replay = bus.latest_replay_record(due.event_id()).unwrap();
+        assert_eq!(replay.event.event_id().as_str(), "evt-due:replay-1");
+        assert_eq!(replay.status, eva_storage::EventLogStatus::Acked);
+        assert_eq!(
+            bus.event_log_status(&receipt.event_id),
+            Some(eva_storage::EventLogStatus::Acked)
+        );
     }
 
     #[test]

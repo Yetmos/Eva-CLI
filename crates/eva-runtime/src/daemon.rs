@@ -1,8 +1,12 @@
 //! Local daemon process-boundary and control-plane contracts for V1.12.
 
-use crate::{RuntimeBuilder, ShutdownReport};
+use crate::{
+    run_scheduler_retry_tick, RuntimeBuilder, SchedulerRetryTickOptions, SchedulerRetryTickReport,
+    ShutdownReport,
+};
 use eva_config::ProjectConfig;
 use eva_core::{EvaError, RequestId};
+use eva_eventbus::DurableEventBus;
 use eva_observability::{
     AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
     MetricLabels, MetricName, MetricPoint, MetricSink, ObservabilitySmokeReport, SpanId,
@@ -24,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const RESPONSIBILITY: &str =
     "define the local daemon process and control boundary without starting providers";
 
-const DAEMON_GENERATION: &str = "daemon-v1.12.2";
+const DAEMON_GENERATION: &str = "daemon-v1.12.4";
 const LOCK_FILE: &str = "daemon.lock";
 const PID_FILE: &str = "daemon.pid";
 const STATE_FILE: &str = "daemon.state";
@@ -773,6 +777,7 @@ pub fn start_daemon(
             "daemon:v1.12.1:observability_verified".to_owned(),
             "daemon:v1.12.1:provider_processes_not_started".to_owned(),
             "daemon:v1.12.2:control_mailbox_ready".to_owned(),
+            "daemon:v1.12.4:scheduler_retry_tick_ready".to_owned(),
         ],
     })
 }
@@ -886,6 +891,7 @@ fn run_control_loop(
     running_state: DaemonStateRecord,
 ) -> Result<DaemonControlLoopReport, EvaError> {
     loop {
+        let _tick = run_daemon_scheduler_tick(project, options)?;
         for request_path in pending_control_requests(options)? {
             let request = read_control_request(&request_path)?;
             let response_path = control_response_file(options, &request.request_id);
@@ -911,6 +917,24 @@ fn run_control_loop(
         }
         thread::sleep(Duration::from_millis(CONTROL_POLL_INTERVAL_MS));
     }
+}
+
+fn run_daemon_scheduler_tick(
+    project: &ProjectConfig,
+    options: &DaemonStartOptions,
+) -> Result<SchedulerRetryTickReport, EvaError> {
+    let durable_backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+        &options.durable_backend,
+    ))?;
+    let mut bus = DurableEventBus::open(durable_backend.layout())?;
+    run_scheduler_retry_tick(
+        project,
+        &mut bus,
+        SchedulerRetryTickOptions {
+            redrive_ready_at_ms: now_ms() as u64,
+            ..SchedulerRetryTickOptions::default()
+        },
+    )
 }
 
 fn handle_control_request(
@@ -1406,6 +1430,8 @@ fn decode_field(value: &str) -> Result<String, EvaError> {
 mod tests {
     use super::*;
     use eva_config::load_project_config;
+    use eva_core::{Event, EventId, EventPayload, Topic};
+    use eva_eventbus::EventBus;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace_root() -> PathBuf {
@@ -1449,6 +1475,30 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("daemon did not become available");
+    }
+
+    fn wait_for_scheduler_retry_ack(options: &DaemonStartOptions, event_id: &str) {
+        let replay_id = EventId::parse(&format!("{event_id}:replay-1")).unwrap();
+        for _ in 0..100 {
+            let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
+                &options.durable_backend,
+            ))
+            .unwrap();
+            let bus = DurableEventBus::open_read_only(backend.layout()).unwrap();
+            if bus.event_log_status(&replay_id) == Some(eva_storage::EventLogStatus::Acked) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("scheduler retry did not ack replay event");
+    }
+
+    fn durable_event(event_id: &str, topic: &str) -> Event {
+        Event::new(
+            EventId::parse(event_id).unwrap(),
+            Topic::parse(topic).unwrap(),
+            EventPayload::empty(),
+        )
     }
 
     #[test]
@@ -1546,6 +1596,67 @@ mod tests {
         assert!(report.shutdown.is_some());
         assert!(!lock_file(&options).exists());
         assert!(!pid_file(&options).exists());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_control_loop_ticks_scheduler_retry_once() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("scheduler-retry");
+        let options = daemon_options(&root, false);
+        {
+            let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+                &options.durable_backend,
+            ))
+            .unwrap();
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let event = durable_event("evt-daemon-retry", "/input/user");
+            bus.publish(event.clone()).unwrap();
+            bus.dead_letter(event, EvaError::timeout("handler timeout"))
+                .unwrap();
+        }
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-retry-loop").unwrap()),
+            )
+        });
+
+        wait_for_daemon_available(&options);
+        wait_for_scheduler_retry_ack(&options, "evt-daemon-retry");
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-retry-shutdown").unwrap());
+        let shutdown = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-retry-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(shutdown.status, "stopped");
+        let report = daemon.join().unwrap().unwrap();
+        assert_eq!(report.status, "stopped");
+
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let bus = DurableEventBus::open_read_only(backend.layout()).unwrap();
+        assert_eq!(bus.dead_letters()[0].replay_count, 1);
+        assert_eq!(bus.log().records().len(), 2);
+        assert_eq!(
+            bus.event_log_status(&EventId::parse("evt-daemon-retry:replay-1").unwrap()),
+            Some(eva_storage::EventLogStatus::Acked)
+        );
 
         fs::remove_dir_all(root).ok();
     }

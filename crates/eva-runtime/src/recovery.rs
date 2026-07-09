@@ -237,7 +237,7 @@ fn redrive_recovered_events(
                 continue;
             }
 
-            match event_log_status(bus, &event_id) {
+            match bus.event_log_status(&event_id) {
                 Some(EventLogStatus::Acked) => {
                     skip_redrive(
                         &mut skipped_redrive_events,
@@ -257,6 +257,20 @@ fn redrive_recovered_events(
                     );
                     continue;
                 }
+            }
+            if let Some(replay) = bus.latest_replay_record(&event_id) {
+                let reason = match replay.status {
+                    EventLogStatus::Acked => "already_redriven",
+                    EventLogStatus::Appended => "replay_in_flight",
+                    EventLogStatus::Failed => "replay_failed",
+                };
+                skip_redrive(
+                    &mut skipped_redrive_events,
+                    task_id.clone(),
+                    event_id.as_str().to_owned(),
+                    reason,
+                );
+                continue;
             }
 
             let receipt = bus.redrive_dead_letter(&event_id)?;
@@ -307,14 +321,6 @@ fn skip_redrive(
         event_id,
         reason: reason.to_owned(),
     });
-}
-
-fn event_log_status(bus: &DurableEventBus, event_id: &EventId) -> Option<EventLogStatus> {
-    bus.log()
-        .records()
-        .iter()
-        .find(|record| record.event.event_id() == event_id)
-        .map(|record| record.status)
 }
 
 fn recovery_audit_event(trace: TraceFields, report: &RuntimeRecoveryReport) -> AuditEvent {
@@ -663,6 +669,58 @@ mod tests {
             assert_eq!(report.skipped_redrive_events[0].reason, "redrive_not_due");
             assert_eq!(bus.dead_letters()[0].replay_count, 0);
             assert_eq!(bus.log().records().len(), 1);
+        }
+    }
+
+    #[test]
+    fn recovery_skips_dead_letter_after_scheduler_retry_dispatched_replay() {
+        let root = test_root("redrive-already-dispatched");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let event = event("evt-recovery-already-redriven");
+
+            bus.publish(event.clone()).unwrap();
+            bus.dead_letter(event.clone(), EvaError::timeout("handler timeout"))
+                .unwrap();
+            let receipt = bus.redrive_dead_letter(event.event_id()).unwrap();
+            bus.ack(
+                &receipt.event_id,
+                AgentId::parse("scheduler-retry").unwrap(),
+            )
+            .unwrap();
+            let mut pending = snapshot("req-recovery-already-redriven", "running");
+            pending
+                .dead_letters
+                .push(dead_letter("evt-recovery-already-redriven"));
+            store.write(&pending).unwrap();
+        }
+
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+
+            let report = RuntimeRecoveryCoordinator
+                .recover_task_store_with_redrive(
+                    &mut store,
+                    &mut bus,
+                    RuntimeRecoveryOptions::default(),
+                )
+                .unwrap();
+            let recovered = store.read(Some("req-recovery-already-redriven")).unwrap();
+
+            assert!(report.redriven_events.is_empty());
+            assert_eq!(report.skipped_redrive_events.len(), 1);
+            assert_eq!(report.skipped_redrive_events[0].reason, "already_redriven");
+            assert!(recovered.replayed_events.is_empty());
+            assert_eq!(bus.dead_letters()[0].replay_count, 1);
+            assert_eq!(bus.log().records().len(), 2);
         }
     }
 

@@ -11,6 +11,7 @@
 | `subscription.rs` | 已实现 | `SubscriptionTable`、`DeliveryPlan`，支持 direct target、fanout、compete-first。 |
 | `mailbox.rs` | 已实现 | `AgentMailbox` bounded FIFO。 |
 | `registry.rs` | 已实现 | `MailboxRegistry` 注册、投递、drain_one。 |
+| `retry.rs` | V1.12.4 已实现 | `dispatch_retry_event` 将 durable redrive replay event 投递到 scheduler mailbox，并返回 delivery evidence。 |
 | `lib.rs` | 已实现 | re-export V0.4 公开类型。 |
 
 验证：`cargo test -p eva-scheduler`。

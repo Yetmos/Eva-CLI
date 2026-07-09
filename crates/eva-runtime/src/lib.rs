@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod diagnostics;
 pub mod recovery;
 pub mod runtime;
+pub mod scheduler_retry;
 pub mod services;
 pub mod shutdown;
 pub mod task;
@@ -25,6 +26,10 @@ pub use recovery::{
     RuntimeRecoveryReport, SkippedRedriveEvent,
 };
 pub use runtime::{Runtime, RuntimeStatus, RuntimeSummary};
+pub use scheduler_retry::{
+    run_scheduler_retry_tick, SchedulerRetryDispatchedEvent, SchedulerRetryFailedEvent,
+    SchedulerRetrySkippedEvent, SchedulerRetryTickOptions, SchedulerRetryTickReport,
+};
 pub use services::{RuntimeServices, ServiceState, ServiceSummary};
 pub use shutdown::{ShutdownReport, ShutdownState};
 pub use task::{

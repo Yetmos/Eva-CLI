@@ -6,14 +6,14 @@
 
 本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
 V1.11.5-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
-EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、daemon process boundary smoke、daemon control mailbox、Agent lifecycle evidence 和 capability provider routing 命令已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
+EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、daemon process boundary smoke、daemon control mailbox、durable task lifecycle、scheduler retry dispatch、Agent lifecycle evidence 和 capability provider routing 命令已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
 
 ## 当前定位
 
 | 项目 | 当前状态 |
 | --- | --- |
 | 发布形态 | 源码发布；从 Git 仓库和 Rust 工具链运行。 |
-| 运行时 | `run --example basic` 通过受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环；`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 提供 V1.12 本机 pid/lock/state、shutdown 边界 smoke 和 filesystem mailbox 控制面。 |
+| 运行时 | `run --example basic` 通过受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环；`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 提供 V1.12 本机 pid/lock/state、shutdown 边界 smoke、filesystem mailbox 控制面和 due dead-letter scheduler retry tick。 |
 | 外部能力 | Adapter、MCP、Skill、Discovery 当前提供受控诊断面，不启动真实 provider。 |
 | 风险动作 | 硬件绑定、恢复、升级和生命周期切换保持 plan-first，不执行 destructive apply。 |
 | 发布检查 | V1.11.5-alpha 提供 `release check/security/perf/migration` 可执行门禁，包含 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
@@ -140,7 +140,7 @@ cargo run -- emit /input/user --event-id evt-manual-2 --payload-bytes-hex 68656c
 
 ## Daemon process boundary and control mailbox
 
-`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 是 V1.12 的本机进程边界和控制面。它固定 pid、lock、state、durable backend、policy、observability 和 shutdown contract，但不启动生产后台守护进程，不启动 provider，也不执行 scheduler apply。
+`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 是 V1.12 的本机进程边界和控制面。它固定 pid、lock、state、durable backend、policy、observability 和 shutdown contract，但不启动生产后台守护进程，不启动 provider，也不执行 scheduler apply。显式前台 daemon 每轮 control polling 前会执行 V1.12.4 scheduler retry tick：读取 due dead-letter，生成 replay event，投递到 scheduler mailbox，并用 `scheduler-retry` consumer 写入 durable log ack/fail。
 
 ```powershell
 cargo run -- daemon start --foreground --dev --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
@@ -173,6 +173,7 @@ cargo run -- daemon shutdown --state-dir .eva/daemon-state --lock-dir .eva/daemo
 | `trace_id` | control mailbox request/response 的链路标识。 |
 | `request_file` / `response_file` | 受控 filesystem mailbox 文件路径。 |
 | daemon `submit` / `cancel` | `submit` 创建 durable `queued` task lifecycle；`cancel` 将非终态 task 置为 `cancelling` 并追加日志，不伪装成已经完成停止。 |
+| scheduler retry tick | 只确认 replay event 已进入 scheduler mailbox；不启动 provider，也不声明真实 agent handler 已执行。 |
 
 ## Agent lifecycle evidence
 
@@ -395,7 +396,7 @@ cargo run -- release migration --output json
 - destructive restore；
 - 真实 Supervisor 进程切换；
 - 完整 durable task 查询/恢复索引、runtime audit wiring/export、runtime crash recovery、durable memory 和 backup database；
-- 超出当前 daemon process boundary smoke、shadow load、route gate、drain evidence 和 rollback audit 边界的控制 API/IPC、长任务调度、scheduler apply 与常驻 daemon 热更新编排。
+- 超出当前 daemon foreground/control mailbox、durable task lifecycle、scheduler retry dispatch、shadow load、route gate、drain evidence 和 rollback audit 边界的真实长任务执行器、provider supervision、scheduler apply 与常驻 daemon 热更新编排。
 
 这些能力需要后续版本在显式 apply gate、持久化存储、签名 artifact 和更强发布证据
 之后逐步接入。

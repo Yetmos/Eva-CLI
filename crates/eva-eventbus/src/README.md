@@ -17,4 +17,12 @@
 
 `replay_dead_letters` 会创建带 `:replay-N` 后缀的新事件 ID，并重新写入同一个 EventLog。`DurableEventBus` 使用 `events/log` 保存事件日志，使用 `events/dead_letters` 保存可重启查询的死信记录。`RedrivePolicy` 当前默认值为 0ms，字段已序列化但不在本层执行延迟调度。
 
+## V1.12.4 更新
+
+`DurableEventBus` now exposes due dead-letter selection and replay-state queries:
+`due_dead_letters`, `event_log_status`, `event_log_record`, and
+`latest_replay_record`. Runtime scheduler ticks and recovery checkpoints use
+these queries to avoid duplicate redrive after a replay event has already been
+published, acked, or failed.
+
 验证：`cargo test -p eva-eventbus`。
