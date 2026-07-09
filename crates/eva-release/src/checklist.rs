@@ -297,11 +297,11 @@ impl ReleaseHardeningService {
                     vec![
                         "restore plan reports apply_allowed=false".to_owned(),
                         "restore apply gate verifies confirmation, archive evidence, policy approval, lock, and health before reporting apply_allowed=true".to_owned(),
-                        "restore apply reports mutation_executed=false until destructive file mutation exists".to_owned(),
+                        "restore apply keeps no-step plans mutation_executed=false and reports mutation_executed=true only after staged file mutation commits".to_owned(),
                         "upgrade apply can commit a controlled supervisor handoff and release pointer mutation inside the configured state store after policy approval".to_owned(),
                     ],
                     vec![
-                        "require destructive restore file mutation to stay behind the existing restore apply gate".to_owned(),
+                        "require restore rollback apply to stay behind the existing restore apply gate and transaction log".to_owned(),
                         "replace the local supervisor adapter smoke with a real service-manager adapter before daemonized production handoff".to_owned(),
                     ],
                 ),
@@ -1105,17 +1105,17 @@ fn restore_apply_gate() -> ReleaseGate {
         domain: "restore_apply_gate".to_owned(),
         status: ReleaseGateStatus::Pass,
         required: true,
-        summary: "V1.10.4 restore apply confirmation, policy approval, filesystem lock, health gate, rollback-required plan, and staged mutation boundary are implemented".to_owned(),
+        summary: "V1.10.4/V1.14.2 restore apply confirmation, policy approval, filesystem lock, health gate, staged file mutation, and rollback-required transaction evidence are implemented".to_owned(),
         evidence: vec![
-            "crates/eva-backup/src/restore_apply.rs RestoreApplyCoordinator".to_owned(),
-            "crates/eva-cli/src/run.rs restore apply --lock-store policy and health gate".to_owned(),
+            "crates/eva-backup/src/restore_apply.rs RestoreApplyCoordinator and RestoreMutationEngine".to_owned(),
+            "crates/eva-cli/src/run.rs restore apply --lock-store policy, health, and mutation gate".to_owned(),
             "cargo test -p eva-backup restore_apply".to_owned(),
             "cargo test -p eva-cli restore_apply".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.10.4 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.14.2 Done".to_owned(),
         ],
         remediation: vec![
-            "do not execute destructive file mutation unless confirmation, evidence, policy, lock, and health gates still pass".to_owned(),
-            "keep mutation_executed explicit until restore apply performs real workspace mutation".to_owned(),
+            "do not execute restore rollback apply unless confirmation, evidence, policy, lock, health, staged plan, and transaction log still pass".to_owned(),
+            "keep mutation_executed explicit: false for no-step plans, true only after staged mutation commits".to_owned(),
         ],
     }
 }

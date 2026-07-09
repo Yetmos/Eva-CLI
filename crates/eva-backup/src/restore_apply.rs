@@ -89,6 +89,30 @@ pub struct RestoreStagedMutationPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreMutationTransactionEntry {
+    pub sequence: usize,
+    pub operation: String,
+    pub relative_path: String,
+    pub status: String,
+    pub digest: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreMutationApplyReport {
+    pub plan_id: String,
+    pub target_root: String,
+    pub status: String,
+    pub mutation_executed: bool,
+    pub rollback_required: bool,
+    pub completed_steps: usize,
+    pub failed_step: Option<String>,
+    pub transaction_log_path: String,
+    pub transaction_log: Vec<RestoreMutationTransactionEntry>,
+    pub audit: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreApplyLock {
     pub lock_id: String,
     pub plan_id: String,
@@ -145,6 +169,9 @@ pub struct RestoreApplyCoordinator;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RestoreStagedMutationPlanner;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RestoreMutationEngine;
 
 impl RestoreApplyPlan {
     pub fn new(
@@ -610,6 +637,126 @@ impl RestoreStagedMutationPlanner {
     }
 }
 
+impl RestoreMutationEngine {
+    pub fn apply(
+        &self,
+        plan: &RestoreStagedMutationPlan,
+        target_root: impl AsRef<Path>,
+        transaction_log_path: impl AsRef<Path>,
+        source_artifacts: &BTreeMap<String, ArtifactRecord>,
+    ) -> Result<RestoreMutationApplyReport, EvaError> {
+        let target_root = target_root.as_ref();
+        let transaction_log_path = transaction_log_path.as_ref();
+        fs::create_dir_all(target_root).map_err(|error| {
+            EvaError::internal("failed to create restore mutation target root")
+                .with_context("target_root", target_root.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        let root_canonical = fs::canonicalize(target_root).map_err(|error| {
+            EvaError::internal("failed to canonicalize restore mutation target root")
+                .with_context("target_root", target_root.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        if let Some(parent) = transaction_log_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                EvaError::internal("failed to create restore mutation transaction log directory")
+                    .with_context(
+                        "transaction_log",
+                        transaction_log_path.display().to_string(),
+                    )
+                    .with_context("io_error", error.to_string())
+            })?;
+        }
+        fs::write(
+            transaction_log_path,
+            restore_transaction_log_header(plan, &root_canonical),
+        )
+        .map_err(|error| {
+            EvaError::internal("failed to initialize restore mutation transaction log")
+                .with_context(
+                    "transaction_log",
+                    transaction_log_path.display().to_string(),
+                )
+                .with_context("io_error", error.to_string())
+        })?;
+
+        let mut transaction_log = Vec::new();
+        let mut mutation_executed = false;
+        for (sequence, step) in plan.steps.iter().enumerate() {
+            append_restore_transaction_log(
+                transaction_log_path,
+                &RestoreMutationTransactionEntry {
+                    sequence,
+                    operation: step.operation.as_str().to_owned(),
+                    relative_path: step.relative_path.clone(),
+                    status: "started".to_owned(),
+                    digest: None,
+                    message: None,
+                },
+            )?;
+            match apply_restore_mutation_step(sequence, &root_canonical, step, source_artifacts) {
+                Ok(entry) => {
+                    mutation_executed = true;
+                    append_restore_transaction_log(transaction_log_path, &entry)?;
+                    transaction_log.push(entry);
+                }
+                Err(failure) => {
+                    mutation_executed |= failure.mutation_executed;
+                    let failed_entry = RestoreMutationTransactionEntry {
+                        sequence,
+                        operation: step.operation.as_str().to_owned(),
+                        relative_path: step.relative_path.clone(),
+                        status: "failed".to_owned(),
+                        digest: None,
+                        message: Some(failure.error.to_string()),
+                    };
+                    append_restore_transaction_log(transaction_log_path, &failed_entry)?;
+                    transaction_log.push(failed_entry);
+                    append_restore_transaction_status(
+                        transaction_log_path,
+                        "rollback_required",
+                        mutation_executed,
+                    )?;
+                    return Ok(RestoreMutationApplyReport {
+                        plan_id: plan.plan_id.clone(),
+                        target_root: root_canonical.display().to_string(),
+                        status: "rollback_required".to_owned(),
+                        mutation_executed,
+                        rollback_required: true,
+                        completed_steps: transaction_log
+                            .iter()
+                            .filter(|entry| entry.status == "committed")
+                            .count(),
+                        failed_step: Some(step.relative_path.clone()),
+                        transaction_log_path: transaction_log_path.display().to_string(),
+                        transaction_log,
+                        audit: vec![
+                            "restore.mutation:transaction_failed".to_owned(),
+                            "restore.mutation:rollback_required".to_owned(),
+                        ],
+                    });
+                }
+            }
+        }
+        append_restore_transaction_status(transaction_log_path, "applied", mutation_executed)?;
+        Ok(RestoreMutationApplyReport {
+            plan_id: plan.plan_id.clone(),
+            target_root: root_canonical.display().to_string(),
+            status: "applied".to_owned(),
+            mutation_executed,
+            rollback_required: false,
+            completed_steps: transaction_log.len(),
+            failed_step: None,
+            transaction_log_path: transaction_log_path.display().to_string(),
+            transaction_log,
+            audit: vec![
+                "restore.mutation:transaction_applied".to_owned(),
+                "mutation_executed:true".to_owned(),
+            ],
+        })
+    }
+}
+
 impl RestoreApplyCoordinator {
     pub fn apply<S: RestoreApplyLockStore>(
         &self,
@@ -871,6 +1018,333 @@ fn canonical_mutation_plan_payload(
     payload
 }
 
+#[derive(Debug)]
+struct RestoreMutationStepFailure {
+    error: EvaError,
+    mutation_executed: bool,
+}
+
+fn restore_transaction_log_header(plan: &RestoreStagedMutationPlan, root: &Path) -> String {
+    format!(
+        "restore-mutation-transaction:v1\nplan_id={}\ntarget_root={}\npreflight_hash={}\n",
+        plan.plan_id,
+        root.display(),
+        plan.preflight_hash
+    )
+}
+
+fn apply_restore_mutation_step(
+    sequence: usize,
+    root: &Path,
+    step: &RestoreMutationStep,
+    source_artifacts: &BTreeMap<String, ArtifactRecord>,
+) -> Result<RestoreMutationTransactionEntry, RestoreMutationStepFailure> {
+    let target_path = checked_restore_target_path(root, &step.relative_path).map_err(step_error)?;
+    match step.operation {
+        RestoreMutationOperation::Copy => {
+            if target_path.exists() {
+                return Err(step_error(
+                    EvaError::conflict("restore copy target already exists")
+                        .with_context("relative_path", &step.relative_path),
+                ));
+            }
+            let source =
+                checked_restore_source_artifact(step, source_artifacts).map_err(step_error)?;
+            write_restore_bytes_atomically(&target_path, &step.relative_path, sequence, source)
+                .map_err(step_error)?;
+            Ok(committed_entry(sequence, step, Some(digest_bytes(source))))
+        }
+        RestoreMutationOperation::Delete => {
+            verify_existing_target_digest(&target_path, step).map_err(step_error)?;
+            fs::remove_file(&target_path).map_err(|error| {
+                step_error(
+                    EvaError::internal("failed to delete restore target")
+                        .with_context("relative_path", &step.relative_path)
+                        .with_context("target_path", target_path.display().to_string())
+                        .with_context("io_error", error.to_string()),
+                )
+            })?;
+            Ok(committed_entry(
+                sequence,
+                step,
+                step.pre_restore_digest.clone(),
+            ))
+        }
+        RestoreMutationOperation::Replace => {
+            verify_existing_target_digest(&target_path, step).map_err(step_error)?;
+            let source =
+                checked_restore_source_artifact(step, source_artifacts).map_err(step_error)?;
+            replace_restore_target_atomically(&target_path, &step.relative_path, sequence, source)
+                .map_err(|failure| RestoreMutationStepFailure {
+                    error: failure.error,
+                    mutation_executed: failure.mutation_executed,
+                })?;
+            Ok(committed_entry(sequence, step, Some(digest_bytes(source))))
+        }
+    }
+}
+
+fn step_error(error: EvaError) -> RestoreMutationStepFailure {
+    RestoreMutationStepFailure {
+        error,
+        mutation_executed: false,
+    }
+}
+
+fn checked_restore_target_path(root: &Path, relative_path: &str) -> Result<PathBuf, EvaError> {
+    let mut cursor = root.to_path_buf();
+    for segment in relative_path.split('/') {
+        cursor.push(segment);
+        if let Ok(metadata) = fs::symlink_metadata(&cursor) {
+            if metadata.file_type().is_symlink() {
+                return Err(EvaError::permission_denied(
+                    "restore mutation target path cannot traverse symlinks",
+                )
+                .with_context("relative_path", relative_path)
+                .with_context("target_path", cursor.display().to_string()));
+            }
+        }
+    }
+    Ok(cursor)
+}
+
+fn checked_restore_source_artifact<'a>(
+    step: &RestoreMutationStep,
+    source_artifacts: &'a BTreeMap<String, ArtifactRecord>,
+) -> Result<&'a [u8], EvaError> {
+    let source_key = step.source_artifact_key.as_deref().ok_or_else(|| {
+        EvaError::invalid_argument("restore mutation source artifact is required")
+            .with_context("relative_path", &step.relative_path)
+    })?;
+    let artifact = source_artifacts.get(source_key).ok_or_else(|| {
+        EvaError::not_found("restore mutation source artifact is missing")
+            .with_context("artifact_key", source_key)
+            .with_context("relative_path", &step.relative_path)
+    })?;
+    let expected_digest = step.expected_digest.as_deref().ok_or_else(|| {
+        EvaError::invalid_argument("restore mutation expected digest is required")
+            .with_context("relative_path", &step.relative_path)
+    })?;
+    let actual_digest = digest_bytes(&artifact.bytes);
+    if actual_digest != artifact.digest || artifact.digest != expected_digest {
+        return Err(
+            EvaError::conflict("restore mutation source artifact digest mismatch")
+                .with_context("artifact_key", source_key)
+                .with_context("expected_digest", expected_digest)
+                .with_context("actual_digest", actual_digest)
+                .with_context("record_digest", &artifact.digest),
+        );
+    }
+    Ok(&artifact.bytes)
+}
+
+fn verify_existing_target_digest(
+    target_path: &Path,
+    step: &RestoreMutationStep,
+) -> Result<(), EvaError> {
+    let expected = step.pre_restore_digest.as_deref().ok_or_else(|| {
+        EvaError::invalid_argument("restore mutation pre-restore digest is required")
+            .with_context("relative_path", &step.relative_path)
+    })?;
+    let bytes = fs::read(target_path).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            "restore mutation target is missing"
+        } else {
+            "failed to read restore mutation target"
+        };
+        EvaError::conflict(message)
+            .with_context("relative_path", &step.relative_path)
+            .with_context("target_path", target_path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    let actual = digest_bytes(&bytes);
+    if actual != expected {
+        return Err(
+            EvaError::conflict("restore mutation target pre-restore digest mismatch")
+                .with_context("relative_path", &step.relative_path)
+                .with_context("expected_digest", expected)
+                .with_context("actual_digest", actual),
+        );
+    }
+    Ok(())
+}
+
+fn write_restore_bytes_atomically(
+    target_path: &Path,
+    relative_path: &str,
+    sequence: usize,
+    bytes: &[u8],
+) -> Result<(), EvaError> {
+    let parent = target_path.parent().ok_or_else(|| {
+        EvaError::invalid_argument("restore mutation target must have a parent directory")
+            .with_context("relative_path", relative_path)
+    })?;
+    fs::create_dir_all(parent).map_err(|error| {
+        EvaError::internal("failed to create restore mutation target directory")
+            .with_context("relative_path", relative_path)
+            .with_context("target_path", target_path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    let temp_path = parent.join(format!(".eva-restore-{sequence}.tmp"));
+    if temp_path.exists() {
+        fs::remove_file(&temp_path).map_err(|error| {
+            EvaError::internal("failed to clear stale restore mutation temp file")
+                .with_context("temp_path", temp_path.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+    }
+    fs::write(&temp_path, bytes).map_err(|error| {
+        EvaError::internal("failed to write restore mutation temp file")
+            .with_context("relative_path", relative_path)
+            .with_context("temp_path", temp_path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    fs::rename(&temp_path, target_path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        EvaError::internal("failed to commit restore mutation target")
+            .with_context("relative_path", relative_path)
+            .with_context("target_path", target_path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })
+}
+
+struct ReplaceFailure {
+    error: EvaError,
+    mutation_executed: bool,
+}
+
+fn replace_restore_target_atomically(
+    target_path: &Path,
+    relative_path: &str,
+    sequence: usize,
+    bytes: &[u8],
+) -> Result<(), ReplaceFailure> {
+    let parent = target_path.parent().ok_or_else(|| ReplaceFailure {
+        error: EvaError::invalid_argument("restore mutation target must have a parent directory")
+            .with_context("relative_path", relative_path),
+        mutation_executed: false,
+    })?;
+    let temp_path = parent.join(format!(".eva-restore-{sequence}.tmp"));
+    if temp_path.exists() {
+        fs::remove_file(&temp_path).map_err(|error| ReplaceFailure {
+            error: EvaError::internal("failed to clear stale restore mutation temp file")
+                .with_context("temp_path", temp_path.display().to_string())
+                .with_context("io_error", error.to_string()),
+            mutation_executed: false,
+        })?;
+    }
+    fs::write(&temp_path, bytes).map_err(|error| ReplaceFailure {
+        error: EvaError::internal("failed to write restore mutation temp file")
+            .with_context("relative_path", relative_path)
+            .with_context("temp_path", temp_path.display().to_string())
+            .with_context("io_error", error.to_string()),
+        mutation_executed: false,
+    })?;
+    fs::remove_file(target_path).map_err(|error| ReplaceFailure {
+        error: EvaError::internal("failed to remove existing restore target")
+            .with_context("relative_path", relative_path)
+            .with_context("target_path", target_path.display().to_string())
+            .with_context("io_error", error.to_string()),
+        mutation_executed: false,
+    })?;
+    fs::rename(&temp_path, target_path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        ReplaceFailure {
+            error: EvaError::internal("failed to commit replacement restore target")
+                .with_context("relative_path", relative_path)
+                .with_context("target_path", target_path.display().to_string())
+                .with_context("io_error", error.to_string()),
+            mutation_executed: true,
+        }
+    })
+}
+
+fn committed_entry(
+    sequence: usize,
+    step: &RestoreMutationStep,
+    digest: Option<String>,
+) -> RestoreMutationTransactionEntry {
+    RestoreMutationTransactionEntry {
+        sequence,
+        operation: step.operation.as_str().to_owned(),
+        relative_path: step.relative_path.clone(),
+        status: "committed".to_owned(),
+        digest,
+        message: None,
+    }
+}
+
+fn append_restore_transaction_log(
+    path: &Path,
+    entry: &RestoreMutationTransactionEntry,
+) -> Result<(), EvaError> {
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(|error| {
+            EvaError::internal("failed to open restore mutation transaction log")
+                .with_context("transaction_log", path.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+    writeln!(
+        file,
+        "step={}|{}|{}|{}|{}|{}",
+        entry.sequence,
+        stable_log_value(&entry.operation),
+        stable_log_value(&entry.relative_path),
+        stable_log_value(&entry.status),
+        entry.digest.as_deref().unwrap_or("none"),
+        entry
+            .message
+            .as_deref()
+            .map(stable_log_value)
+            .unwrap_or_else(|| "none".to_owned())
+    )
+    .map_err(|error| {
+        EvaError::internal("failed to write restore mutation transaction log")
+            .with_context("transaction_log", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })
+}
+
+fn append_restore_transaction_status(
+    path: &Path,
+    status: &str,
+    mutation_executed: bool,
+) -> Result<(), EvaError> {
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(|error| {
+            EvaError::internal("failed to open restore mutation transaction log")
+                .with_context("transaction_log", path.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+    writeln!(
+        file,
+        "status={}\nmutation_executed={}",
+        stable_log_value(status),
+        mutation_executed
+    )
+    .map_err(|error| {
+        EvaError::internal("failed to write restore mutation transaction status")
+            .with_context("transaction_log", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })
+}
+
+fn stable_log_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '\n' | '\r' | '|' => '_',
+            _ => character,
+        })
+        .collect()
+}
+
 fn build_restore_lock(plan: &RestoreApplyPlan, owner: &str) -> Result<RestoreApplyLock, EvaError> {
     let owner = validate_token("owner", owner.to_owned())?;
     Ok(RestoreApplyLock {
@@ -938,6 +1412,20 @@ fn restore_apply_steps(health_passed: bool) -> Vec<String> {
 mod tests {
     use super::*;
     use eva_policy::{HighRiskAction, PolicyDecision};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_temp_dir(name: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("eva-backup-{name}-{}-{now}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        path
+    }
 
     fn allowed_policy() -> PolicyDecision {
         PolicyDecision {
@@ -1091,6 +1579,124 @@ mod tests {
 
         let symlink = RestoreMutationTargetKind::parse("symlink").unwrap_err();
         assert_eq!(symlink.kind(), eva_core::ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn mutation_engine_applies_staged_copy_delete_replace_with_transaction_log() {
+        let target_root = test_temp_dir("mutation-apply");
+        fs::create_dir_all(target_root.join("bin")).unwrap();
+        fs::create_dir_all(target_root.join("logs")).unwrap();
+        fs::write(target_root.join("bin/eva"), b"old-binary").unwrap();
+        fs::write(target_root.join("logs/old.log"), b"old-log").unwrap();
+        let backup = ArtifactRecord::new("backup/backup-1", b"archive".as_slice());
+        let pre_restore = ArtifactRecord::new("backup/pre-restore-1", b"before".as_slice());
+        let config = ArtifactRecord::new("backup/config", b"config".as_slice());
+        let binary = ArtifactRecord::new("backup/bin", b"binary".as_slice());
+        let old_binary_digest = digest_bytes(b"old-binary");
+        let old_log_digest = digest_bytes(b"old-log");
+        let plan = RestoreApplyPlan::new("plan-apply", "backup-1", backup.digest)
+            .unwrap()
+            .with_pre_restore_backup(
+                PreRestoreBackupEvidence::new("pre-restore-1", pre_restore.digest).unwrap(),
+            )
+            .with_mutation_target_root(target_root.display().to_string())
+            .unwrap()
+            .with_mutation_steps(vec![
+                RestoreMutationStep::copy_file(
+                    "config/eva.yaml",
+                    "backup/config",
+                    config.digest.clone(),
+                )
+                .unwrap(),
+                RestoreMutationStep::replace_file(
+                    "bin/eva",
+                    "backup/bin",
+                    binary.digest.clone(),
+                    old_binary_digest,
+                )
+                .unwrap(),
+                RestoreMutationStep::delete_file("logs/old.log", old_log_digest).unwrap(),
+            ]);
+        let staged = RestoreStagedMutationPlanner.plan(&plan).unwrap();
+        let transaction_log_path = target_root.join(".eva/plan-apply.restore.txn");
+        let mut sources = BTreeMap::new();
+        sources.insert(config.key.clone(), config);
+        sources.insert(binary.key.clone(), binary);
+
+        let report = RestoreMutationEngine
+            .apply(&staged, &target_root, &transaction_log_path, &sources)
+            .unwrap();
+
+        assert_eq!(report.status, "applied");
+        assert!(report.mutation_executed);
+        assert!(!report.rollback_required);
+        assert_eq!(report.completed_steps, 3);
+        assert_eq!(
+            fs::read(target_root.join("config/eva.yaml")).unwrap(),
+            b"config"
+        );
+        assert_eq!(fs::read(target_root.join("bin/eva")).unwrap(), b"binary");
+        assert!(!target_root.join("logs/old.log").exists());
+        let transaction_log = fs::read_to_string(transaction_log_path).unwrap();
+        assert!(transaction_log.contains("status=applied"));
+        assert!(transaction_log.contains("step=0|copy|config/eva.yaml|committed"));
+
+        fs::remove_dir_all(target_root).unwrap();
+    }
+
+    #[test]
+    fn mutation_engine_stops_on_failure_and_marks_rollback_required() {
+        let target_root = test_temp_dir("mutation-failure");
+        fs::create_dir_all(target_root.join("bin")).unwrap();
+        fs::create_dir_all(target_root.join("logs")).unwrap();
+        fs::write(target_root.join("bin/eva"), b"old-binary").unwrap();
+        fs::write(target_root.join("logs/old.log"), b"unexpected-log").unwrap();
+        let backup = ArtifactRecord::new("backup/backup-1", b"archive".as_slice());
+        let pre_restore = ArtifactRecord::new("backup/pre-restore-1", b"before".as_slice());
+        let binary = ArtifactRecord::new("backup/bin", b"binary".as_slice());
+        let old_binary_digest = digest_bytes(b"old-binary");
+        let old_log_digest = digest_bytes(b"old-log");
+        let plan = RestoreApplyPlan::new("plan-failure", "backup-1", backup.digest)
+            .unwrap()
+            .with_pre_restore_backup(
+                PreRestoreBackupEvidence::new("pre-restore-1", pre_restore.digest).unwrap(),
+            )
+            .with_mutation_target_root(target_root.display().to_string())
+            .unwrap()
+            .with_mutation_steps(vec![
+                RestoreMutationStep::replace_file(
+                    "bin/eva",
+                    "backup/bin",
+                    binary.digest.clone(),
+                    old_binary_digest,
+                )
+                .unwrap(),
+                RestoreMutationStep::delete_file("logs/old.log", old_log_digest).unwrap(),
+            ]);
+        let staged = RestoreStagedMutationPlanner.plan(&plan).unwrap();
+        let transaction_log_path = target_root.join(".eva/plan-failure.restore.txn");
+        let mut sources = BTreeMap::new();
+        sources.insert(binary.key.clone(), binary);
+
+        let report = RestoreMutationEngine
+            .apply(&staged, &target_root, &transaction_log_path, &sources)
+            .unwrap();
+
+        assert_eq!(report.status, "rollback_required");
+        assert!(report.mutation_executed);
+        assert!(report.rollback_required);
+        assert_eq!(report.completed_steps, 1);
+        assert_eq!(report.failed_step.as_deref(), Some("logs/old.log"));
+        assert_eq!(fs::read(target_root.join("bin/eva")).unwrap(), b"binary");
+        assert_eq!(
+            fs::read(target_root.join("logs/old.log")).unwrap(),
+            b"unexpected-log"
+        );
+        let transaction_log = fs::read_to_string(transaction_log_path).unwrap();
+        assert!(transaction_log.contains("status=rollback_required"));
+        assert!(transaction_log.contains("logs/old.log|failed"));
+
+        fs::remove_dir_all(target_root).unwrap();
     }
 
     #[test]

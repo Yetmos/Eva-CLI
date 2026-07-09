@@ -10,7 +10,8 @@ use eva_backup::{
     FileSystemRestoreApplyLockStore, PreRestoreBackupEvidence, ReleaseSnapshot,
     ReleaseSnapshotService, RestoreApplyCoordinator, RestoreApplyDryRunReport,
     RestoreApplyHealthCheck, RestoreApplyPlan, RestoreApplyReport, RestoreApplyValidator,
-    RestoreMutationOperation, RestoreMutationStep, RestoreMutationTargetKind, RestorePlan,
+    RestoreMutationApplyReport, RestoreMutationEngine, RestoreMutationOperation,
+    RestoreMutationStep, RestoreMutationTargetKind, RestoreMutationTransactionEntry, RestorePlan,
     RestoreRollbackEntry, RestoreStagedMutationPlan, SnapshotRole,
 };
 use eva_config::load_project_config;
@@ -19,6 +20,7 @@ use eva_lifecycle::{RollbackCoordinator, RollbackPlan};
 use eva_observability::TraceFields;
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use eva_storage::FileSystemArtifactStore;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -70,6 +72,7 @@ struct RestoreApplyResult {
     dry_run: RestoreApplyDryRunReport,
     artifact_store: ArtifactStoreRef,
     lock_store: LockStoreRef,
+    mutation_apply: Option<RestoreMutationApplyReport>,
     rollback_plan: Option<RollbackPlan>,
 }
 
@@ -143,10 +146,16 @@ where
             } else {
                 match create_restore_apply(&options) {
                     Ok(result) => {
-                        let exit_code = if result.report.apply_allowed {
-                            EXIT_OK
-                        } else {
+                        let exit_code = if result
+                            .mutation_apply
+                            .as_ref()
+                            .map(|report| report.rollback_required)
+                            .unwrap_or(false)
+                            || !result.report.apply_allowed
+                        {
                             EXIT_RUNTIME_UNAVAILABLE
+                        } else {
+                            EXIT_OK
                         };
                         write_restore_apply(
                             stdout,
@@ -377,7 +386,7 @@ fn create_restore_apply(options: &RestoreApplyOptions) -> Result<RestoreApplyRes
         }
     };
     let mut lock_store = FileSystemRestoreApplyLockStore::new(lock_store_path);
-    let report = RestoreApplyCoordinator.apply(
+    let mut report = RestoreApplyCoordinator.apply(
         &mut lock_store,
         &dry_run.plan,
         &dry_run.report,
@@ -385,6 +394,50 @@ fn create_restore_apply(options: &RestoreApplyOptions) -> Result<RestoreApplyRes
         health,
         &options.owner,
     )?;
+    let mutation_apply = if report.apply_allowed && report.mutation_plan.mutation_planned {
+        let artifact_store_path = options.artifact_store.as_ref().ok_or_else(|| {
+            EvaError::invalid_argument("restore mutation apply requires --artifact-store")
+                .with_context("required_option", "--artifact-store")
+        })?;
+        let target_root = resolve_restore_mutation_target_root(
+            &options.common.project_root,
+            &report.mutation_plan.target_root,
+        );
+        let transaction_log_path = lock_store_path.join(format!("{}.restore.txn", report.plan_id));
+        let sources = load_restore_mutation_sources(&dry_run.plan, artifact_store_path)?;
+        let apply_report = RestoreMutationEngine.apply(
+            &report.mutation_plan,
+            &target_root,
+            &transaction_log_path,
+            &sources,
+        )?;
+        report.mutation_executed = apply_report.mutation_executed;
+        if apply_report.rollback_required {
+            report.status = "rollback_required".to_owned();
+            report.apply_allowed = false;
+            report.audit.extend(
+                apply_report
+                    .audit
+                    .iter()
+                    .map(|entry| format!("mutation:{entry}")),
+            );
+            report
+                .risks
+                .push("restore mutation stopped and requires rollback apply".to_owned());
+        } else {
+            report.status = "applied".to_owned();
+            report.audit.extend(
+                apply_report
+                    .audit
+                    .iter()
+                    .map(|entry| format!("mutation:{entry}")),
+            );
+            report.steps.push("execute staged file mutation".to_owned());
+        }
+        Some(apply_report)
+    } else {
+        None
+    };
     let rollback_plan = if report.health.healthy {
         None
     } else {
@@ -401,8 +454,41 @@ fn create_restore_apply(options: &RestoreApplyOptions) -> Result<RestoreApplyRes
         dry_run: dry_run.report,
         artifact_store: dry_run.artifact_store,
         lock_store: lock_store_ref(Some(lock_store_path)),
+        mutation_apply,
         rollback_plan,
     })
+}
+
+fn resolve_restore_mutation_target_root(project_root: &Path, target_root: &str) -> PathBuf {
+    let target = PathBuf::from(target_root);
+    if target.is_absolute() {
+        target
+    } else {
+        project_root.join(target)
+    }
+}
+
+fn load_restore_mutation_sources(
+    plan: &RestoreApplyPlan,
+    artifact_store_path: &Path,
+) -> Result<BTreeMap<String, eva_storage::ArtifactRecord>, EvaError> {
+    let store = FileSystemArtifactStore::new(artifact_store_path);
+    let mut sources = BTreeMap::new();
+    for step in &plan.mutation_steps {
+        let Some(key) = &step.source_artifact_key else {
+            continue;
+        };
+        if sources.contains_key(key) {
+            continue;
+        }
+        let artifact = store.try_get_bytes(key)?.ok_or_else(|| {
+            EvaError::not_found("restore mutation source artifact is missing")
+                .with_context("artifact_key", key)
+                .with_context("artifact_store", artifact_store_path.display().to_string())
+        })?;
+        sources.insert(key.clone(), artifact);
+    }
+    Ok(sources)
 }
 
 fn read_restore_apply_plan(path: &Path) -> Result<RestoreApplyPlan, EvaError> {
@@ -623,6 +709,22 @@ fn write_restore_apply<W: Write>(
                 result.report.mutation_plan.preflight_hash
             )
             .map_err(write_error_kind)?;
+            if let Some(mutation_apply) = &result.mutation_apply {
+                writeln!(writer, "mutation_status: {}", mutation_apply.status)
+                    .map_err(write_error_kind)?;
+                writeln!(
+                    writer,
+                    "rollback_required: {}",
+                    mutation_apply.rollback_required
+                )
+                .map_err(write_error_kind)?;
+                writeln!(
+                    writer,
+                    "transaction_log: {}",
+                    mutation_apply.transaction_log_path
+                )
+                .map_err(write_error_kind)?;
+            }
             writeln!(writer, "lock: {}", result.report.lock.lock_id).map_err(write_error_kind)?;
             writeln!(writer, "health: {}", result.report.health.message)
                 .map_err(write_error_kind)?;
@@ -687,12 +789,17 @@ fn restore_apply_dry_run_report_json(
 
 fn restore_apply_json(result: &RestoreApplyResult) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"mutation_plan\":{},\"backup_artifact_key\":{},\"pre_restore_backup_artifact_key\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"steps\":{},\"risks\":{},\"audit\":{},\"rollback_plan\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"mutation_plan\":{},\"mutation_apply\":{},\"backup_artifact_key\":{},\"pre_restore_backup_artifact_key\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"steps\":{},\"risks\":{},\"audit\":{},\"rollback_plan\":{}}}",
         json_string(&result.report.plan_id),
         json_string(&result.report.status),
         result.report.apply_allowed,
         result.report.mutation_executed,
         restore_mutation_plan_json(&result.report.mutation_plan),
+        result
+            .mutation_apply
+            .as_ref()
+            .map(restore_mutation_apply_json)
+            .unwrap_or_else(|| "null".to_owned()),
         json_string(&result.report.backup_artifact_key),
         json_string(&result.report.pre_restore_backup_artifact_key),
         restore_apply_lock_json(&result.report.lock),
@@ -709,6 +816,34 @@ fn restore_apply_json(result: &RestoreApplyResult) -> String {
             .as_ref()
             .map(rollback_plan_json)
             .unwrap_or_else(|| "null".to_owned())
+    )
+}
+
+fn restore_mutation_apply_json(report: &RestoreMutationApplyReport) -> String {
+    format!(
+        "{{\"plan_id\":{},\"target_root\":{},\"status\":{},\"mutation_executed\":{},\"rollback_required\":{},\"completed_steps\":{},\"failed_step\":{},\"transaction_log_path\":{},\"transaction_log\":{},\"audit\":{}}}",
+        json_string(&report.plan_id),
+        json_string(&report.target_root),
+        json_string(&report.status),
+        report.mutation_executed,
+        report.rollback_required,
+        report.completed_steps,
+        option_json(report.failed_step.as_deref()),
+        json_string(&report.transaction_log_path),
+        json_array(report.transaction_log.iter().map(restore_transaction_entry_json)),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn restore_transaction_entry_json(entry: &RestoreMutationTransactionEntry) -> String {
+    format!(
+        "{{\"sequence\":{},\"operation\":{},\"relative_path\":{},\"status\":{},\"digest\":{},\"message\":{}}}",
+        entry.sequence,
+        json_string(&entry.operation),
+        json_string(&entry.relative_path),
+        json_string(&entry.status),
+        option_json(entry.digest.as_deref()),
+        option_json(entry.message.as_deref())
     )
 }
 

@@ -30,7 +30,7 @@ CLI 不启动生产后台 daemon；`daemon start` 默认验证本机 pid/lock/st
 | `eva backup create` | 创建并校验 signed backup archive；`--encrypt` 生成 sealed archive metadata。 |
 | `eva snapshot create` | 创建绑定到 backup manifest 的 release snapshot。 |
 | `eva restore plan` | 生成 restore plan；V1.4 保持 `apply_allowed:false`。 |
-| `eva restore apply` | `--dry-run` 校验 backup artifact 与 pre-restore backup evidence，并可输出 V1.14.1 plan-only `mutation_plan`；非 dry-run 还要求 `--lock-store`、policy allow 和 health check，输出 gated/blocked report 且 `mutation_executed:false`。 |
+| `eva restore apply` | `--dry-run` 校验 backup artifact 与 pre-restore backup evidence，并可输出 V1.14.1 `mutation_plan`；非 dry-run 还要求 `--lock-store`、policy allow 和 health check。无 mutation steps 时输出 gated report 且 `mutation_executed:false`；有 staged steps 且全部 gate 通过时执行 V1.14.2 file mutation 并输出 `mutation_executed:true`。 |
 | `eva upgrade check` | 诊断 generation、migration、drain、rollback readiness，不启动真实进程。 |
 | `eva release check` | 聚合跨平台、稳定性、文档、安全、性能、迁移和 daemon runtime readiness 门禁；可读取 V1.11 artifact、distribution、security scan 和 benchmark evidence，输出 release readiness。 |
 | `eva release security` | 输出 policy、sandbox、secret、MCP、hardware 和 lifecycle apply 风险的安全评审。 |
@@ -90,7 +90,7 @@ cargo run -- task status --task req-durable-1 --durable-backend .eva/durable --o
 
 ## V1.12 Daemon Boundary And Control Mailbox
 
-`eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` 固定本机 daemon 进程边界和控制面，但不启动生产后台守护进程，也不启动外部 provider。`start` 默认运行 foreground smoke：获取 `daemon.lock`，验证 durable backend，扫描 task/provider process recovery state，验证 policy domain 和 observability JSONL sink，写入 `daemon.state` / `daemon.pid`，随后执行 shutdown contract 并移除 lock/pid。显式传入 `--no-shutdown-after-smoke` 时，命令保持前台运行并处理 `state/control/requests` 到 `state/control/responses` 的本机 filesystem mailbox；每轮 control polling 前会执行 V1.12.4 scheduler retry tick，把 due dead-letter replay event 投递到 scheduler mailbox，并以 `scheduler-retry` consumer 更新 durable log ack/fail。V1.12.5 后，`eva agent drain/reload` 可连接该 daemon 并写入 `agent-control.state`，记录 drain gate 和 reload 后新 work generation；V1.13.5 会把残留 active provider session 标记为 interrupted 并在 `recovery` JSON 中报告；V1.14.1 的 `version` runtime marker 包含 `mcp_http_auth_v1.13.6`、`mcp_compat_matrix_v1.13.7`、`provider_supervision_release_gate_v1.13.8` 和 `restore_staged_mutation_planner_v1.14.1`。daemon smoke 仍不启动 provider，也不是完整生产热更新 apply。
+`eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` 固定本机 daemon 进程边界和控制面，但不启动生产后台守护进程，也不启动外部 provider。`start` 默认运行 foreground smoke：获取 `daemon.lock`，验证 durable backend，扫描 task/provider process recovery state，验证 policy domain 和 observability JSONL sink，写入 `daemon.state` / `daemon.pid`，随后执行 shutdown contract 并移除 lock/pid。显式传入 `--no-shutdown-after-smoke` 时，命令保持前台运行并处理 `state/control/requests` 到 `state/control/responses` 的本机 filesystem mailbox；每轮 control polling 前会执行 V1.12.4 scheduler retry tick，把 due dead-letter replay event 投递到 scheduler mailbox，并以 `scheduler-retry` consumer 更新 durable log ack/fail。V1.12.5 后，`eva agent drain/reload` 可连接该 daemon 并写入 `agent-control.state`，记录 drain gate 和 reload 后新 work generation；V1.13.5 会把残留 active provider session 标记为 interrupted 并在 `recovery` JSON 中报告；V1.14.2 的 `version` runtime marker 包含 `mcp_http_auth_v1.13.6`、`mcp_compat_matrix_v1.13.7`、`provider_supervision_release_gate_v1.13.8`、`restore_staged_mutation_planner_v1.14.1` 和 `restore_file_mutation_engine_v1.14.2`。daemon smoke 仍不启动 provider，也不是完整生产热更新 apply。
 
 ```powershell
 cargo run -- daemon start --foreground --dev --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
@@ -218,7 +218,7 @@ cargo run -- upgrade apply --plan upgrade-plan.txt --confirm plan-upgrade --lock
 | `backup create` | 构造 `BackupPlan`，默认写入 in-memory `ArtifactStore`；传入 `--artifact-store <path>` 时写入 filesystem artifact store，生成 signed archive `BackupManifest`，并立即校验 digest/signature；`--encrypt` 使用本地开发 key 生成 sealed archive。 |
 | `snapshot create` | 创建 pre/post release snapshot，并关联已验证 backup artifact；传入 `--artifact-store <path>` 时同步落盘 snapshot 依赖的 backup artifact。 |
 | `restore plan` | 输出 restore steps、risks、audit，且 `apply_allowed:false`；传入 `--artifact-store <path>` 时使用同一 filesystem artifact store 生成可追溯 backup evidence。 |
-| `restore apply` | `--dry-run` 读取 plan 文件并验证 filesystem artifact store 中的 backup digest 和 pre-restore backup evidence，保持 `apply_allowed:false`，并在 plan 声明 staged mutation steps 时输出 `mutation_plan`；非 dry-run 必须提供 `--lock-store`，默认 project policy 会拒绝 `restore.apply`，显式 allow 后才获取 `{plan_id}.restore.lock` 并运行 health gate，成功返回 `status:"gated"`、`apply_allowed:true`、`mutation_executed:false`，health 失败返回 rollback plan。 |
+| `restore apply` | `--dry-run` 读取 plan 文件并验证 filesystem artifact store 中的 backup digest 和 pre-restore backup evidence，保持 `apply_allowed:false`，并在 plan 声明 staged mutation steps 时输出 `mutation_plan`；非 dry-run 必须提供 `--lock-store`，默认 project policy 会拒绝 `restore.apply`，显式 allow 后才获取 `{plan_id}.restore.lock` 并运行 health gate。无 mutation steps 时返回 `status:"gated"`、`mutation_executed:false`；有 staged steps 时执行 file mutation、写 `{plan_id}.restore.txn`，成功返回 `status:"applied"`、`mutation_executed:true`，失败返回 `rollback_required`。 |
 | `upgrade check` | 输出 supervisor candidate、migration preflight、drain plan 和 rollback plan。 |
 | `upgrade apply` | 未传 `--state-store` 时保持 lock-only 输出；传入 `--state-store` 且 project policy 同时允许 `supervisor.handoff` 和 `release.pointer_mutation` 时，会提交本地 blue-green handoff、写 `state/release-pointer`、持久化 `handoff.prepared` / `handoff.committed`，health 失败时输出 rollback plan 且不写 pointer。 |
 
@@ -241,9 +241,9 @@ mutation_step=replace|bin/eva|backup/bin|sha256:<hex>|sha256:<old>|file
 mutation_step=delete|logs/old.log|none|none|sha256:<old>|file
 ```
 
-这些字段只生成 `mutation_plan`（`preview`、`affected_paths`、`preflight_hash`、`rollback_manifest`），不执行写盘。
+这些字段在 `--dry-run` 中只生成 `mutation_plan`（`preview`、`affected_paths`、`preflight_hash`、`rollback_manifest`）。非 dry-run 且 confirmation、artifact evidence、policy、lock 和 health gate 全部通过后，会执行 staged file mutation 并写 transaction log。
 
-V1.10.4/V1.14.1 `restore apply` 只完成受控 destructive apply gate 和 plan-only staged mutation preview：confirmation、artifact evidence、policy approval、apply lock 和 health check 都通过后仍只产出 staged report。它不执行 destructive file mutation，不移动 release pointer，不启动真实 Supervisor/Runtime 进程；JSON 中 `mutation_executed:false` 是固定证据。
+V1.10.4/V1.14.1/V1.14.2 `restore apply` 只完成受控 destructive apply gate、staged mutation preview 和 staged file mutation engine：confirmation、artifact evidence、policy approval、apply lock 和 health check 都通过后，只有 plan 声明 mutation steps 时才写目标文件；旧 no-step plan 仍只产出 gated report。它不移动 release pointer，不启动真实 Supervisor/Runtime 进程；rollback apply 仍待 V1.14.3。
 
 `upgrade apply` 不传 `--state-store` 时只创建 filesystem lock 并保持
 `apply_allowed:false`，用于兼容旧的 plan-first lock path。V1.10.5 开始，传入
@@ -333,4 +333,4 @@ cargo run -- release perf --benchmark-evidence release-evidence/release-benchmar
 cargo run -- release migration --output json
 ```
 
-当前测试覆盖 version text/JSON、config validate JSON、inspect text/durable diagnostics JSON、unknown command、JSON escaping、basic run JSON、cancelled basic run、daemon foreground smoke/lock conflict/bad durable backend、agent daemon drain/reload mutation fallback、task status/logs/cancel、doctor sample project、V1.1 external capability commands、V1.2 memory context、V1.3 hardware command JSON、V1.4 backup/lifecycle command JSON、V1.5 release hardening command JSON、V1.9.5 observability smoke JSONL backend、V1.10.4 restore apply policy denial、lock conflict、health failure rollback、gated report contract 和 V1.14.1 staged mutation plan preview/digest contract，以及 V1.11.1 artifact evidence / V1.11.2 distribution evidence / V1.11.3 security scan and benchmark evidence release gates。
+当前测试覆盖 version text/JSON、config validate JSON、inspect text/durable diagnostics JSON、unknown command、JSON escaping、basic run JSON、cancelled basic run、daemon foreground smoke/lock conflict/bad durable backend、agent daemon drain/reload mutation fallback、task status/logs/cancel、doctor sample project、V1.1 external capability commands、V1.2 memory context、V1.3 hardware command JSON、V1.4 backup/lifecycle command JSON、V1.5 release hardening command JSON、V1.9.5 observability smoke JSONL backend、V1.10.4 restore apply policy denial、lock conflict、health failure rollback、gated report contract、V1.14.1 staged mutation plan preview/digest contract 和 V1.14.2 staged mutation apply contract，以及 V1.11.1 artifact evidence / V1.11.2 distribution evidence / V1.11.3 security scan and benchmark evidence release gates。

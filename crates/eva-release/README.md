@@ -107,7 +107,8 @@ boundaries, all performance budgets are within threshold, and the V1.4 -> V1.5
 migration has no breaking changes. V1.10.3 adds a required signed backup
 archive gate. V1.10.4 adds a required restore apply gate for confirmation,
 policy approval, lock, health, rollback-required output, and staged mutation
-evidence while destructive file mutation remains disabled. V1.10.5 adds a
+evidence; V1.14.2 extends that evidence with gated staged file mutation,
+transaction logs, and `mutation_executed:true` only after a staged commit. V1.10.5 adds a
 required supervisor handoff gate for controlled local release pointer mutation
 and persisted handoff state while production service-manager integration remains
 future work. V1.11.1 adds an opt-in required gate for supplied signed release
