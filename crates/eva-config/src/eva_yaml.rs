@@ -1,6 +1,9 @@
 //! Main `eva.yaml` loading and normalization.
 
-use crate::{read_yaml_file, require_non_empty, require_non_empty_path, EvaError};
+use crate::{
+    invalid_config, read_yaml_file, require_non_empty, require_non_empty_path, with_field_context,
+    EvaError,
+};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
 use std::path::{Path, PathBuf};
@@ -17,6 +20,8 @@ pub struct EvaConfig {
     pub path: PathBuf,
     /// Runtime path and hot-reload settings.
     pub runtime: RuntimeConfig,
+    /// Optional service-manager integration settings.
+    pub service_manager: Option<ServiceManagerConfig>,
     /// Split configuration roots.
     pub config: ConfigRoots,
     /// Additional top-level objects owned by downstream crates.
@@ -32,6 +37,26 @@ pub struct RuntimeConfig {
     pub script_dir: Option<PathBuf>,
     pub adapter_dir: Option<PathBuf>,
     pub hot_reload: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceManagerConfig {
+    pub enabled: bool,
+    pub kind: ServiceManagerKind,
+    pub service_name: String,
+    pub unit_name: Option<String>,
+    pub runtime_binary: Option<PathBuf>,
+    pub candidate_runtime_binary: Option<PathBuf>,
+    pub start_on_boot: bool,
+    pub restart_supervisor: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceManagerKind {
+    Fake,
+    WindowsService,
+    Systemd,
+    Launchd,
 }
 
 /// Paths to split configuration files and directories.
@@ -55,10 +80,15 @@ pub fn load_eva_config(path: impl AsRef<Path>) -> Result<EvaConfig, EvaError> {
 impl EvaConfig {
     fn try_from_raw(path: PathBuf, raw: RawEvaConfig) -> Result<Self, EvaError> {
         let runtime = RuntimeConfig::try_from_raw(&path, raw.runtime)?;
+        let service_manager = raw
+            .service_manager
+            .map(|config| ServiceManagerConfig::try_from_raw(&path, config))
+            .transpose()?;
         let config = ConfigRoots::try_from_raw(&path, raw.config)?;
         Ok(Self {
             path,
             runtime,
+            service_manager,
             config,
             extra: raw.extra,
         })
@@ -79,6 +109,88 @@ impl RuntimeConfig {
             adapter_dir: raw.adapter_dir,
             hot_reload: raw.hot_reload,
         })
+    }
+}
+
+impl ServiceManagerConfig {
+    fn try_from_raw(path: &Path, raw: RawServiceManagerConfig) -> Result<Self, EvaError> {
+        let enabled = raw.enabled;
+        let kind = if let Some(kind) = raw.kind {
+            ServiceManagerKind::parse(&kind).map_err(|error| {
+                with_field_context(error, CONFIG_TYPE, path, "service_manager.kind")
+            })?
+        } else if enabled {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "service_manager.kind",
+                "enabled service manager requires kind",
+            ));
+        } else {
+            ServiceManagerKind::Fake
+        };
+
+        let service_name = if let Some(service_name) = raw.service_name {
+            require_non_empty(
+                service_name,
+                CONFIG_TYPE,
+                path,
+                "service_manager.service_name",
+            )?
+        } else if enabled {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "service_manager.service_name",
+                "enabled service manager requires service_name",
+            ));
+        } else {
+            "disabled".to_owned()
+        };
+
+        let unit_name = raw
+            .unit_name
+            .map(|value| require_non_empty(value, CONFIG_TYPE, path, "service_manager.unit_name"))
+            .transpose()?;
+
+        Ok(Self {
+            enabled,
+            kind,
+            service_name,
+            unit_name,
+            runtime_binary: raw.runtime_binary,
+            candidate_runtime_binary: raw.candidate_runtime_binary,
+            start_on_boot: raw.start_on_boot.unwrap_or(false),
+            restart_supervisor: raw.restart_supervisor.unwrap_or(false),
+        })
+    }
+}
+
+impl ServiceManagerKind {
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "fake" => Ok(Self::Fake),
+            "windows_service" | "windows-service" | "windows" => Ok(Self::WindowsService),
+            "systemd" => Ok(Self::Systemd),
+            "launchd" => Ok(Self::Launchd),
+            _ => Err(
+                EvaError::invalid_argument("unsupported service manager kind")
+                    .with_context("kind", value),
+            ),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fake => "fake",
+            Self::WindowsService => "windows_service",
+            Self::Systemd => "systemd",
+            Self::Launchd => "launchd",
+        }
+    }
+
+    pub fn production_adapter(self) -> bool {
+        !matches!(self, Self::Fake)
     }
 }
 
@@ -148,6 +260,8 @@ fn resolve_path(root: &Path, path: &Path) -> PathBuf {
 #[derive(Debug, Deserialize)]
 struct RawEvaConfig {
     runtime: RawRuntimeConfig,
+    #[serde(default)]
+    service_manager: Option<RawServiceManagerConfig>,
     config: RawConfigRoots,
     #[serde(flatten)]
     extra: Mapping,
@@ -161,6 +275,18 @@ struct RawRuntimeConfig {
     script_dir: Option<PathBuf>,
     adapter_dir: Option<PathBuf>,
     hot_reload: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawServiceManagerConfig {
+    enabled: bool,
+    kind: Option<String>,
+    service_name: Option<String>,
+    unit_name: Option<String>,
+    runtime_binary: Option<PathBuf>,
+    candidate_runtime_binary: Option<PathBuf>,
+    start_on_boot: Option<bool>,
+    restart_supervisor: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,6 +326,13 @@ mod tests {
         let config = load_eva_config(workspace_root().join("config").join("eva.yaml")).unwrap();
 
         assert_eq!(config.runtime.env, "dev");
+        let service_manager = config
+            .service_manager
+            .as_ref()
+            .expect("sample config should declare service manager boundary");
+        assert!(service_manager.enabled);
+        assert_eq!(service_manager.kind, ServiceManagerKind::Fake);
+        assert_eq!(service_manager.service_name, "eva-dev");
         assert_eq!(config.config.agent_dir, PathBuf::from("config/agents"));
         assert!(config
             .extra
@@ -223,6 +356,68 @@ config:
 
         let error = EvaConfig::try_from(value).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn service_manager_requires_kind_and_name_when_enabled() {
+        let value = serde_yaml::from_str::<Value>(
+            r#"
+runtime:
+  env: dev
+  workspace: .
+  hot_reload: true
+service_manager:
+  enabled: true
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas
+"#,
+        )
+        .unwrap();
+
+        let error = EvaConfig::try_from(value).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "field" && value == "service_manager.kind"));
+    }
+
+    #[test]
+    fn service_manager_rejects_unknown_kind() {
+        let value = serde_yaml::from_str::<Value>(
+            r#"
+runtime:
+  env: dev
+  workspace: .
+  hot_reload: true
+service_manager:
+  enabled: true
+  kind: smf
+  service_name: eva-prod
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas
+"#,
+        )
+        .unwrap();
+
+        let error = EvaConfig::try_from(value).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "kind" && value == "smf"));
     }
 
     #[test]

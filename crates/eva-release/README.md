@@ -1,6 +1,6 @@
 # eva-release / Release Hardening
 
-Updated: 2026-07-09
+Updated: 2026-07-10
 
 `eva-release` owns the V1.5 release-hardening boundary and later additive
 runtime-readiness gates. It turns the final 1.x readiness work into executable
@@ -14,7 +14,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 
 | Area | Public Type | Behavior |
 | --- | --- | --- |
-| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, daemon runtime, MCP compatibility, and provider supervision readiness. |
+| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, service-manager abstraction, daemon runtime, MCP compatibility, and provider supervision readiness. |
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
 | Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, hardware handle boundaries, and lifecycle apply risk. |
@@ -23,6 +23,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | Backup archive readiness | `ReleaseGate` | Records V1.10.3 signed backup archive, optional sealing, remote target contract, and pre-restore evidence as release readiness evidence. |
 | Restore apply gate readiness | `ReleaseGate` | Records V1.10.4 confirmation, policy approval, filesystem lock and health gate, V1.14.2 staged file mutation evidence, V1.14.3 rollback apply evidence, and V1.14.4 operator confirmation output. |
 | Supervisor handoff readiness | `ReleaseGate` | Records V1.10.5 blue-green handoff, release pointer mutation, persisted state, and rollback-on-health-failure evidence. |
+| Service-manager abstraction readiness | `ReleaseGate` | Records V1.14.5 `ServiceManagerAdapter`, fake handoff/rollback evidence, explicit `service_manager` config, and the warning boundary before platform adapters exist. |
 | Release artifact evidence | `ReleaseArtifactEvidence`, `ReleaseArtifactVerificationReport` | Parses a V1.11.1 key/value evidence manifest, verifies a SHA-256 keyed signature, source commit provenance, SBOM marker, and scan status, then exposes a blocking release gate when evidence is supplied. |
 | Distribution evidence | `ReleaseDistributionEvidence`, `ReleaseDistributionVerificationReport` | Parses a V1.11.2 key/value evidence manifest for Windows/Linux/macOS install smoke, install/upgrade/uninstall docs, and package-manager dry-run status, then exposes a blocking release gate when evidence is supplied. |
 | Security scan evidence | `ReleaseSecurityScanEvidence`, `ReleaseSecurityScanVerificationReport` | Parses a V1.11.3 external scanner evidence manifest and blocks readiness when the scanner did not pass or any high/critical finding is present. |
@@ -69,6 +70,7 @@ runtime-unavailable exit code `4`.
 - define performance budgets as release-smoke contracts;
 - document the migration and compatibility policy that V1.5 promises;
 - expose signed backup archive, pre-restore evidence, restore apply/rollback/operator confirmation, and supervisor handoff evidence as readiness gates;
+- expose the V1.14.5 service-manager abstraction and fake handoff/rollback evidence as a required readiness gate;
 - expose signed artifact, distribution install smoke, and package-manager dry-run evidence as opt-in readiness gates;
 - expose external scanner and measured benchmark evidence as opt-in readiness gates;
 - expose the repo-local MCP compatibility matrix as a required readiness gate;
@@ -80,6 +82,7 @@ runtime-unavailable exit code `4`.
 - run package signing services or artifact publishing;
 - execute destructive restore;
 - replace OS service-manager supervision;
+- claim Windows Service, systemd, or launchd handoff support from the fake adapter gate;
 - run external security scanners directly;
 - execute benchmark commands directly;
 - certify external MCP servers or provide HTTPS/TLS transport;
@@ -133,3 +136,7 @@ compatibility matrix; it does not certify real external MCP servers, HTTPS/TLS,
 or production streaming. V1.13.8 adds required provider supervision gate
 `REL-PROVIDER-SUPERVISION-001` for the current controlled provider baseline; it
 does not claim OS process management, OS credential vaults, or user isolation.
+V1.14.5 adds required service-manager abstraction gate
+`REL-SERVICE-MANAGER-ABSTRACTION-001` for the adapter trait, fake handoff and
+rollback evidence, explicit config parsing, and docs/progress tracking; it does
+not execute Windows Service, systemd, or launchd commands.

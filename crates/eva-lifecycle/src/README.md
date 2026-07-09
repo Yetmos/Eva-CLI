@@ -4,7 +4,7 @@
 
 ![V1.x extension module flow](../../assets/eva-extension-module-flow.svg)
 
-本目录承载 V1.4/V1.10 supervisor、runtime generation、drain、rollback、upgrade apply lock 和 blue-green handoff 源码。实现重点是可测试状态机、policy-gated mutation、持久 handoff evidence 和 rollback coordination；V1.10.5 仍不替代真实 OS service manager。
+本目录承载 V1.4/V1.10 supervisor、runtime generation、drain、rollback、upgrade apply lock、blue-green handoff 和 V1.14.5 service-manager abstraction 源码。实现重点是可测试状态机、policy-gated mutation、持久 handoff evidence、service-manager fake adapter evidence 和 rollback coordination；V1.14.5 仍不替代真实 OS service manager。
 
 ## 文件职责
 
@@ -17,6 +17,7 @@
 | `supervisor.rs` | supervisor process/runtime ownership | 已完成 | `InMemorySupervisor`、`RuntimeHealth`、`SupervisorReport`。 |
 | `apply_lock.rs` | upgrade apply lock acquisition boundary | 已完成 V1.10.3 | `UpgradeApplyPlan`、`UpgradeApplyCoordinator`、filesystem/in-memory lock store。 |
 | `handoff.rs` | blue-green supervisor handoff and release pointer mutation | 已完成 V1.10.5 | `SupervisorHandoffCoordinator`、`RuntimeBinaryProbe`、`FileSystemSupervisorStateStore`、`SupervisorHandoffReport`。 |
+| `service_manager.rs` | OS service-manager adapter abstraction | 已完成 V1.14.5 | `ServiceManagerAdapter`、`ServiceManagerKind`、`ServiceManagerDefinition`、`FakeServiceManagerAdapter`、handoff/rollback reports。 |
 
 ## 关键不变量
 
@@ -30,12 +31,15 @@
 - release pointer 只能在 lock、runtime binary smoke、candidate health 和 old generation drain 之后写入。
 - health failure 必须保持 previous generation active，不写 `state/release-pointer`，并输出 rollback plan。
 - filesystem state store 必须至少写入 `handoff.prepared`，成功 handoff 还必须写入 `handoff.committed` 和 `state/release-pointer`。
+- service-manager platform kind 只能通过显式 config 请求；fake adapter 不执行 Windows Service/systemd/launchd 命令。
+- fake service-manager handoff 必须记录 candidate start、health pass/fail、handoff commit 或 rollback audit。
 
 ## 验证
 
 ```powershell
 cargo test -p eva-lifecycle
 cargo test -p eva-lifecycle handoff
+cargo test -p eva-lifecycle service_manager
 ```
 
 ## P6-003 Upgrade Apply Lock Model
@@ -52,3 +56,11 @@ It uses the existing generation controller and in-memory supervisor semantics,
 then persists handoff state and release pointer evidence to a filesystem store.
 This is a real local state mutation, but not a daemonized OS service-manager
 handoff.
+
+## V1.14.5 Service-Manager Abstraction
+
+`service_manager.rs` owns the platform-neutral adapter trait and typed evidence
+for service-manager status, handoff, and rollback. It declares fake, Windows
+Service, systemd, and launchd kinds, but only `FakeServiceManagerAdapter` is
+implemented in this slice. Platform adapters remain blocked until V1.14.6 has
+controlled service test environments.

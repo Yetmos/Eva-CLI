@@ -6,7 +6,7 @@
 
 `eva-lifecycle` 是 V1.4/V1.10 的 Supervisor、runtime generation、drain、rollback、upgrade apply lock 和 blue-green handoff 边界。它管理运行时代际切换和失败恢复，不承载 Lua 业务决策，不生成 backup artifact，也不绕过 `eva-backup` 的 snapshot/restore plan 校验。
 
-V1.10.5 之后，`upgrade apply --state-store <path>` 可以在 confirmation、apply lock、`supervisor.handoff` policy、`release.pointer_mutation` policy、runtime binary smoke 和 candidate health 都通过后提交 blue-green handoff，并在 state store 中写入 `state/release-pointer`。它仍是本地 supervisor adapter smoke，不是 daemonized service-manager integration。
+V1.10.5 之后，`upgrade apply --state-store <path>` 可以在 confirmation、apply lock、`supervisor.handoff` policy、`release.pointer_mutation` policy、runtime binary smoke 和 candidate health 都通过后提交 blue-green handoff，并在 state store 中写入 `state/release-pointer`。V1.14.5 已新增 OS service-manager 抽象和 fake adapter 测试边界，但它仍不是 daemonized service-manager integration。
 
 ## 已实现能力
 
@@ -18,6 +18,7 @@ V1.10.5 之后，`upgrade apply --state-store <path>` 可以在 confirmation、a
 | Supervisor | 已完成 V1.4 | `InMemorySupervisor` 支持 start candidate、commit healthy candidate 和 structured report。 |
 | Upgrade apply lock | 已完成 V1.10.3 | `UpgradeApplyCoordinator` 获取 filesystem lock，冲突返回稳定 `Conflict`。 |
 | Blue-green handoff | 已完成 V1.10.5 | `SupervisorHandoffCoordinator` 验证 policy、lock、runtime binary smoke 和 health，提交 candidate generation、drain 旧 generation、写 release pointer，并持久化 handoff state。 |
+| Service-manager abstraction | 已完成 V1.14.5 | `ServiceManagerAdapter` 定义 fake/Windows Service/systemd/launchd 最小边界；`FakeServiceManagerAdapter` 覆盖本地 handoff/rollback evidence。 |
 | Backup integration | 已完成 V1.4 | rollback 可携带 `eva-backup::RestorePlan` 的 snapshot/risk 信息。 |
 | CLI | 已完成 V1.10.5 | `eva upgrade check` 输出 readiness；`upgrade apply --state-store` 可提交受控 handoff/pointer mutation。 |
 
@@ -37,6 +38,8 @@ V1.10.5 之后，`upgrade apply --state-store <path>` 可以在 confirmation、a
 | `RuntimeBinaryProbe` | runtime binary smoke 结果；CLI 默认使用 managed-by-cli simulated probe，也可传 `--runtime-binary <path>`。 |
 | `FileSystemSupervisorStateStore` | 将 `handoff.prepared`、`handoff.committed` 和 `state/release-pointer` 写入本地 state store。 |
 | `SupervisorHandoffReport` | handoff 状态、apply/mutation 标记、runtime binary、release pointer、rollback、steps/risks/audit。 |
+| `ServiceManagerAdapter` | OS service-manager 最小 adapter trait；平台 adapter 只在后续 V1.14.6 显式实现。 |
+| `FakeServiceManagerAdapter` | 本地测试用 fake adapter，验证 candidate handoff、health failure block 和 rollback audit。 |
 
 ## CLI 验证入口
 
@@ -69,6 +72,7 @@ cargo run -- upgrade apply --plan upgrade.plan --confirm plan-upgrade --lock-sto
 - 管理 runtime generation 的创建、激活、drain、回滚计划。
 - 协调高风险 apply/restore 的执行前状态。
 - 在显式 policy approval 后提交本地 blue-green handoff state 和 release pointer mutation。
+- 定义 OS service-manager adapter trait，并用 fake adapter 固定 handoff/rollback evidence。
 - 记录 lifecycle audit、trace 和失败原因。
 
 `eva-lifecycle` 不做：
@@ -77,7 +81,7 @@ cargo run -- upgrade apply --plan upgrade.plan --confirm plan-upgrade --lock-sto
 - 不执行 Lua 业务逻辑。
 - 不决定 Adapter 或 capability 的业务路由。
 - 不静默执行不可逆 mutation，所有高风险路径必须先有 plan。
-- 不替代 OS service manager；V1.10.5 的 runtime binary 启动仍是本地 smoke/adapter 边界，不是常驻 daemon supervisor。
+- 不替代 OS service manager；V1.14.5 只有抽象和 fake adapter，Windows Service/systemd/launchd 真实命令仍留给 V1.14.6。
 
 ## 验证计划
 
@@ -95,6 +99,7 @@ cargo run -- upgrade check --output json
 - handoff 在 policy、lock、health 通过后写入 release pointer 和 committed state。
 - candidate health 失败时不写 pointer，并输出 rollback plan。
 - filesystem state store 可恢复 `handoff.prepared` / `handoff.committed` / `state/release-pointer` 证据。
+- service-manager fake adapter 可提交 healthy candidate、阻断 failed candidate，并执行 rollback audit。
 
 ## English
 
@@ -106,4 +111,6 @@ real generation promotion remains behind later destructive apply gates.
 
 V1.10.5 adds `SupervisorHandoffCoordinator` and filesystem state persistence.
 The CLI can commit a controlled handoff with `--state-store`, while production
-service-manager integration remains future work.
+service-manager integration remains future work. V1.14.5 adds the
+`ServiceManagerAdapter` abstraction and fake adapter tests, but not platform
+service-manager commands.

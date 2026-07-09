@@ -5,6 +5,7 @@ pub mod drain;
 pub mod generation;
 pub mod handoff;
 pub mod rollback;
+pub mod service_manager;
 pub mod supervisor;
 
 pub use apply_lock::{
@@ -19,4 +20,10 @@ pub use handoff::{
     SupervisorHandoffRequest, SupervisorStateStore,
 };
 pub use rollback::{RollbackCoordinator, RollbackPlan};
+pub use service_manager::{
+    FakeServiceManagerAdapter, ServiceManagerAdapter, ServiceManagerDefinition,
+    ServiceManagerHandoffReport, ServiceManagerHandoffRequest, ServiceManagerInspectRequest,
+    ServiceManagerKind, ServiceManagerRollbackReport, ServiceManagerRollbackRequest,
+    ServiceManagerStatusReport,
+};
 pub use supervisor::{InMemorySupervisor, RuntimeHealth, SupervisorReport};

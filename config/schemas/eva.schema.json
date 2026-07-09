@@ -20,6 +20,22 @@
       },
       "additionalProperties": true
     },
+    "service_manager": {
+      "$comment": "Optional V1.14.5 service-manager abstraction config. Platform adapters require explicit kind and service name. / 可选 V1.14.5 服务管理器抽象配置。平台 adapter 必须显式指定 kind 和服务名。",
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "kind": { "type": "string", "enum": ["fake", "windows_service", "windows-service", "windows", "systemd", "launchd"] },
+        "service_name": { "type": "string" },
+        "unit_name": { "type": "string" },
+        "runtime_binary": { "type": "string" },
+        "candidate_runtime_binary": { "type": "string" },
+        "start_on_boot": { "type": "boolean" },
+        "restart_supervisor": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
     "eventbus": { "$comment": "EventBus publication, recovery, and dead-letter settings. / EventBus 发布、恢复和死信设置。", "type": "object" },
     "scheduler": { "$comment": "Default topic scheduling and delivery behavior. / Topic 调度与投递默认行为。", "type": "object" },
     "observability": { "$comment": "Logging, tracing, metrics, and audit settings. / 日志、追踪、指标和审计设置。", "type": "object" },

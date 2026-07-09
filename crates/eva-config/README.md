@@ -1,6 +1,6 @@
 # eva-config / 配置加载与归一化
 
-更新时间：2026-07-08
+更新时间：2026-07-10
 
 ![eva-config validation flow](assets/eva-config-validation-flow.svg)
 
@@ -16,7 +16,7 @@
 
 ### 当前实现状态
 
-第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。V0.3 起 `eva-cli` 已通过 `eva config validate` 暴露文本/JSON 校验报告，V0.5 task diagnostics basic loop 也复用同一份 `ProjectConfig` 作为组合输入。V1.9.1 起，加载项目配置会先按 schema 文件验证 `eva.yaml`、Agent/Adapter/Capability manifest、policy 和 routes，错误上下文包含文件、字段 path、schema rule 和修复建议。V1.10.1 起，hardware Adapter manifest 会额外解析为 typed hardware config，预留 USB、串口、BLE、socket 和 vendor SDK driver 配置。
+第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。V0.3 起 `eva-cli` 已通过 `eva config validate` 暴露文本/JSON 校验报告，V0.5 task diagnostics basic loop 也复用同一份 `ProjectConfig` 作为组合输入。V1.9.1 起，加载项目配置会先按 schema 文件验证 `eva.yaml`、Agent/Adapter/Capability manifest、policy 和 routes，错误上下文包含文件、字段 path、schema rule 和修复建议。V1.10.1 起，hardware Adapter manifest 会额外解析为 typed hardware config，预留 USB、串口、BLE、socket 和 vendor SDK driver 配置。V1.14.5 起，顶层 `service_manager` 会解析为 typed config；启用时必须显式声明 kind 和 service name，防止把 fake/local 配置误读成生产 service-manager handoff。
 
 ```text
 project root
@@ -38,6 +38,7 @@ project root
 | Capability manifest | 已完成 | 校验 `CapabilityId`、`kind`、runtime `CapabilityName` 和 provider 引用格式 |
 | Policy document | 已完成 | 加载 `config/policies/*.yaml` 为 extensible domain map，最终解释留给 `eva-policy` |
 | Routes 配置 | 已完成 | 加载 `config/routes/topics.yaml`，校验 `TopicPattern`、delivery 和目标 Agent ID |
+| Service-manager 配置 | 已完成 V1.14.5 | 解析顶层 `service_manager`，支持 fake、Windows Service、systemd 和 launchd kind；`enabled:true` 要求显式 kind 和 service name |
 | 项目级聚合 | 已完成 | `load_project_config` 汇总主配置、三类 manifest、policy 文档和 routes |
 | 跨文件一致性 | 已完成 V1.10.1 | 检查重复 ID、Agent 父子引用、Agent 脚本文件、Capability provider Adapter、Route target Agent 和 hardware typed config |
 | schema 辅助 | 已完成 V1.9.1 | 暴露 schema 路径和当前支持的枚举值，包括 route delivery |
@@ -64,8 +65,9 @@ project root
 
 | 类型 | 文件 | 关键字段 | 当前职责 |
 | --- | --- | --- | --- |
-| `EvaConfig` | `src/eva_yaml.rs` | `runtime`、`config`、`extra` | 主配置根对象，保留后续模块字段 |
+| `EvaConfig` | `src/eva_yaml.rs` | `runtime`、`service_manager`、`config`、`extra` | 主配置根对象，保留后续模块字段 |
 | `RuntimeConfig` | `src/eva_yaml.rs` | `env`、`workspace`、`data_dir`、`script_dir`、`adapter_dir`、`hot_reload` | Runtime builder 的启动前输入 |
+| `ServiceManagerConfig` | `src/eva_yaml.rs` | `enabled`、`kind`、`service_name`、`unit_name`、`runtime_binary`、`candidate_runtime_binary`、`start_on_boot`、`restart_supervisor` | V1.14.5 OS service-manager 抽象层的显式配置输入 |
 | `ConfigRoots` | `src/eva_yaml.rs` | `agent_dir`、`adapter_dir`、`capability_dir`、`policy_dir`、`route_file`、`schema_dir` | 拆分配置发现入口 |
 | `AgentManifest` | `src/manifest/agent.rs` | `id`、`enabled`、`parent`、`children`、`script`、`subscriptions`、`permissions` | Agent 注册前配置契约 |
 | `AdapterManifest` | `src/manifest/adapter.rs` | `id`、`name`、`version`、`enabled`、`transport`、`capabilities` | Adapter 注册前配置契约 |
@@ -107,6 +109,8 @@ project root
 | ID、TopicPattern、CapabilityName 非法 | `InvalidArgument` | 原始 `eva-core` 错误上下文 + 字段上下文 |
 | Adapter transport 不支持 | `Unsupported` | `transport` |
 | hardware bus/protocol/claim/driver kind 不支持 | `Unsupported` | `field`、`path`、具体值 |
+| service-manager kind 不支持 | `Unsupported` | `field`、`path`、`kind` |
+| 启用 service-manager 但缺少 kind 或 service name | `InvalidArgument` | `field`、`path`、`service_manager.kind` 或 `service_manager.service_name` |
 | Capability kind 不支持 | `Unsupported` | `kind` |
 | 跨文件引用不存在 | `NotFound` | 引用方 ID、被引用 ID、文件路径 |
 | 重复 ID | `Conflict` | 重复 ID、首次文件、冲突文件 |
@@ -118,7 +122,7 @@ project root
 | 命令 | 当前结果 |
 | --- | --- |
 | `cargo fmt -p eva-config --check` | 通过 |
-| `cargo test -p eva-config` | 通过，40 个测试 |
+| `cargo test -p eva-config` | 通过，42 个测试 |
 | `cargo check -p eva-config` | 通过 |
 | `cargo check --workspace` | 通过 |
 | `cargo test --workspace` | 通过 |
@@ -127,7 +131,7 @@ project root
 
 | 测试名 | 覆盖内容 |
 | --- | --- |
-| `load_eva_config_accepts_sample_config` | 示例 `config/eva.yaml` 可加载 |
+| `load_eva_config_accepts_sample_config` | 示例 `config/eva.yaml` 可加载，并解析 `service_manager` typed config |
 | `load_eva_config_rejects_missing_required_runtime` | 主配置缺少必填 `runtime` 会失败 |
 | `load_agent_manifest_accepts_sample_agent` | 示例 Agent manifest 可加载 |
 | `load_agent_manifest_rejects_invalid_agent_id` | 非法 Agent ID 会失败 |
@@ -138,6 +142,8 @@ project root
 | `adapter_manifest_parses_hardware_typed_config` | hardware manifest 解析 typed bus/protocol/hotplug/driver config |
 | `hardware_config_reserves_real_driver_kinds` | USB/串口/BLE/socket/vendor SDK driver kind 预留稳定拼写 |
 | `load_project_config_rejects_unknown_hardware_driver_kind` | 项目加载阶段拒绝未知 hardware driver kind |
+| `service_manager_requires_kind_and_name_when_enabled` | 启用 service-manager 时缺少 kind 或 service name 会失败 |
+| `service_manager_rejects_unknown_kind` | 未知 service-manager kind 会失败 |
 | `load_capability_manifest_accepts_sample_capability` | 示例 Capability manifest 可加载 |
 | `load_capability_manifest_rejects_invalid_runtime_capability` | 非法 runtime capability 会失败 |
 | `load_policy_document_accepts_sample_policy` | 示例 policy 文件可加载 |
@@ -165,7 +171,7 @@ project root
 | 文件/模块 | 具体功能 | 当前进度 | 下一步 |
 | --- | --- | --- | --- |
 | `src/lib.rs` | `ProjectConfig` 聚合、加载入口、跨文件校验 | 已完成 | V0.3 输出 CLI 诊断模型。 |
-| `src/eva_yaml.rs` | `config/eva.yaml` 解析和 `ConfigRoots` | 已完成 | 增加 schema validator 细粒度错误。 |
+| `src/eva_yaml.rs` | `config/eva.yaml`、`ConfigRoots` 和 `service_manager` typed config | 已完成 V1.14.5 | 后续随平台 adapter 增加更严格的 service-manager runtime binary 校验。 |
 | `src/manifest/agent.rs` | Agent manifest 解析和基础校验 | 已完成 | 扩展 permission 字段解释。 |
 | `src/manifest/adapter.rs` | Adapter manifest 解析、基础校验、hardware typed config | 已完成 V1.10.1 | 后续随真实 driver lifecycle 增加 OS 权限配置。 |
 | `src/manifest/capability.rs` | Capability manifest 解析和 provider 引用校验 | 已完成 | 接 CapabilityRegistry descriptor。 |
@@ -201,7 +207,7 @@ project root
 
 ### Current Status
 
-The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`. Since V0.3, `eva-cli` exposes this path through `eva config validate`; the V0.5 task diagnostics basic loop reuses the same `ProjectConfig` as its composition input.
+The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`. Since V0.3, `eva-cli` exposes this path through `eva config validate`; the V0.5 task diagnostics basic loop reuses the same `ProjectConfig` as its composition input. V1.14.5 also parses explicit top-level `service_manager` settings into typed config for the service-manager abstraction without claiming platform handoff support.
 
 | Area | Status | Notes |
 | --- | --- | --- |
@@ -213,6 +219,7 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | Capability manifest | Done | Validates `CapabilityId`, kind, runtime capability name, and provider id syntax |
 | Policy documents | Done | Loads extensible policy YAML documents while domain interpretation stays outside `eva-config` |
 | Routes config | Done | Loads topic route tables and validates topic patterns, delivery mode, and target Agent IDs |
+| Service-manager config | Done in V1.14.5 | Parses explicit `service_manager` kind and service name for fake/Windows Service/systemd/launchd configurations |
 | Project aggregation | Done | `load_project_config` collects main config, manifests, policy documents, and routes |
 | Cross-file validation | Done | Checks duplicate IDs, Agent references, Agent scripts, Capability provider Adapters, and Route target Agents |
 | Schema helpers | Done | Exposes standard schema paths and supported enum values, including route delivery |
@@ -238,7 +245,7 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | Command | Result |
 | --- | --- |
 | `cargo fmt -p eva-config --check` | Passed |
-| `cargo test -p eva-config` | Passed, 27 tests |
+| `cargo test -p eva-config` | Passed, 42 tests |
 | `cargo check -p eva-config` | Passed |
 | `cargo check --workspace` | Passed |
 | `cargo test --workspace` | Passed |

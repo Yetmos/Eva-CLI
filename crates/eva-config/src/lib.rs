@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub use eva_yaml::{load_eva_config, RuntimeConfig};
+pub use eva_yaml::{load_eva_config, RuntimeConfig, ServiceManagerConfig, ServiceManagerKind};
 pub use manifest::adapter::{
     AdapterTransport, HardwareAdapterConfig, HardwareBusKind, HardwareClaimMode,
     HardwareDriverConfig, HardwareDriverKind, HardwareHotplugConfig, HardwareIdentityConfig,

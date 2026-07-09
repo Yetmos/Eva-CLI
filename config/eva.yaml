@@ -31,6 +31,11 @@ process:
 service_manager:
   # Enable service-manager behavior. / 启用服务管理行为。
   enabled: true
+  # V1.14.5 uses a fake adapter in local samples; platform adapters require explicit production config.
+  # V1.14.5 本地样例使用 fake adapter；平台 adapter 必须显式生产配置。
+  kind: fake
+  # Logical service name used for service-manager handoff evidence. / 用于 service-manager handoff 证据的逻辑服务名。
+  service_name: eva-dev
   # Do not auto-start on boot in the sample configuration. / 示例配置默认不随系统启动。
   start_on_boot: false
   # Let the service manager restart the supervisor process. / 允许服务管理器重启 supervisor 进程。

@@ -183,6 +183,7 @@ impl ReleaseHardeningService {
         gates.push(signed_backup_archive_gate());
         gates.push(restore_apply_gate());
         gates.push(supervisor_handoff_gate());
+        gates.push(service_manager_abstraction_gate());
         gates.push(daemon_runtime_gate());
         let mcp_compatibility_report = McpCompatibilityMatrix::v1137_fixture().verify()?;
         gates.push(mcp_compatibility_matrix_gate(Some(
@@ -610,6 +611,7 @@ fn release_audit(
         "signed_backup_archive_baseline_ready".to_owned(),
         "restore_apply_gate_baseline_ready".to_owned(),
         "supervisor_handoff_baseline_ready".to_owned(),
+        "service_manager_abstraction_ready".to_owned(),
         "daemon_runtime_readiness_gate_ready".to_owned(),
         "mcp_compatibility_matrix_ready".to_owned(),
         "provider_supervision_readiness_gate_ready".to_owned(),
@@ -1144,6 +1146,27 @@ fn supervisor_handoff_gate() -> ReleaseGate {
     }
 }
 
+fn service_manager_abstraction_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-SERVICE-MANAGER-ABSTRACTION-001".to_owned(),
+        domain: "service_manager_abstraction".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "V1.14.5 OS service-manager adapter trait, typed config, fake handoff, and rollback evidence are implemented".to_owned(),
+        evidence: vec![
+            "crates/eva-lifecycle/src/service_manager.rs ServiceManagerAdapter and FakeServiceManagerAdapter".to_owned(),
+            "crates/eva-config/src/eva_yaml.rs service_manager typed config".to_owned(),
+            "cargo test -p eva-lifecycle service_manager".to_owned(),
+            "cargo test -p eva-config service_manager".to_owned(),
+            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.14.5 Done".to_owned(),
+        ],
+        remediation: vec![
+            "keep fake adapter limited to local tests and explicit fake config".to_owned(),
+            "do not claim Windows Service, systemd, or launchd handoff until V1.14.6 platform adapters pass controlled tests".to_owned(),
+        ],
+    }
+}
+
 fn daemon_runtime_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DAEMON-RUNTIME-001".to_owned(),
@@ -1488,6 +1511,11 @@ mod tests {
             gate.id == "REL-SUPERVISOR-HANDOFF-001" && gate.status == ReleaseGateStatus::Pass
         }));
         assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-SERVICE-MANAGER-ABSTRACTION-001"
+                && gate.status == ReleaseGateStatus::Pass
+                && gate.domain == "service_manager_abstraction"
+        }));
+        assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-DAEMON-RUNTIME-001"
                 && gate.status == ReleaseGateStatus::Pass
                 && gate.domain == "daemon_runtime"
@@ -1546,6 +1574,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "supervisor_handoff_baseline_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "service_manager_abstraction_ready"));
         assert!(report
             .audit
             .iter()
