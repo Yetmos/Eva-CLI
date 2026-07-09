@@ -66,6 +66,7 @@ Run this sequence from the repository root:
 | Inspect durable | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | Reports backend schema, migration status, and pending redrive count. |
 | Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
 | Emit event | `cargo run -- emit /input/user --payload hello --output json` | Publishes a typed Event to the in-memory EventBus boundary. |
+| Agent status | `cargo run -- agent status --agent root-agent --output json` | Reports Agent lifecycle and manifest evidence. |
 | Task status | `cargo run -- task status --output json` | Reads the latest task report. |
 | Release gate | `cargo run -- release check --output json` | Prints V1.11.4 release readiness. |
 
@@ -81,6 +82,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Inspect | `inspect`, `inspect durable` | Show project configuration, runtime summary, or durable backend diagnostics. | No |
 | Runtime | `run --example basic` | Execute the V1.0 in-memory basic loop through the restricted Lua VM boundary. | Writes `.eva/tasks` or durable backend `tasks/` |
 | Emit | `emit <topic>` | Publish a typed Event to in-memory or durable EventBus. | Writes durable backend `events/log/` when `--durable-backend` is set |
+| Agent | `agent status/drain/reload` | Report Agent lifecycle, drain plans, and generation reload evidence. | No daemon mutation; reports `mutation_executed:false` |
 | Task | `task status/logs/cancel` | Read or mark task diagnostics. | Writes task cancel marker |
 | Adapter | `adapter list/probe` | List or probe manifest-derived adapter handles. | No |
 | MCP | `mcp list/probe` | List or probe allowlisted MCP tools. | No |
@@ -117,6 +119,26 @@ cargo run -- emit /input/user --event-id evt-manual-2 --payload-bytes-hex 68656c
 | `--target-agent`, `--target-capability`, `--target-adapter` | Broadcast | Directed delivery target. |
 | `--request-id`, `--generation`, `--correlation-id`, `--causation-id` | unset | Optional metadata carried on the event. |
 | `--durable-backend <path>` | unset | Persist through the durable EventBus log. |
+
+## Agent Lifecycle Evidence
+
+`agent status`, `agent drain`, and `agent reload` expose the current Agent
+manifest/runtime/lifecycle boundaries as operator evidence. They reuse
+`AgentRuntime`, `AgentLifecycle`, `DrainCoordinator`, and `GenerationController`
+to report lifecycle state, drain plans, and generation-swap evidence. They do
+not restart a daemon, mutate scheduler state, or apply a live hot reload.
+
+```powershell
+cargo run -- agent status --agent root-agent --output json
+cargo run -- agent drain --agent root-agent --generation gen-v1115-agent --output json
+cargo run -- agent reload --agent root-agent --from-generation gen-old --to-generation gen-new --from-release 1.11.4-alpha --to-release 1.11.5-alpha --output json
+```
+
+| Command | Key fields | Meaning |
+| --- | --- | --- |
+| `agent status` | `lifecycle`, `queued_events`, `subscriptions` | Manifest-backed Agent snapshot; enabled Agents report a locally-started `running` runtime boundary. |
+| `agent drain` | `drain.accepts_new_work:false`, `drain.status`, `mutation_executed:false` | Drain plan evidence for one Agent generation. |
+| `agent reload` | `active_generation`, `previous_generation`, `drain`, `audit`, `mutation_executed:false` | Generation promotion and old-generation drain evidence without daemon mutation. |
 
 ## Basic Runtime Loop
 

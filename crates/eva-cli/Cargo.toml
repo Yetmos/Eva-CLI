@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 eva-adapter = { path = "../eva-adapter" }
+eva-agent = { path = "../eva-agent" }
 eva-backup = { path = "../eva-backup" }
 eva-config = { path = "../eva-config" }
 eva-core = { path = "../eva-core" }

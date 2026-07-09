@@ -1,6 +1,7 @@
 //! CLI command parsing, output envelopes, and process exit mapping.
 
 mod adapter_cmd;
+mod agent_cmd;
 mod backup_cmd;
 mod config_cmd;
 mod discovery_cmd;
@@ -20,6 +21,7 @@ mod upgrade_cmd;
 mod version_cmd;
 
 use adapter_cmd::AdapterCommand;
+use agent_cmd::AgentCommand;
 use backup_cmd::BackupCommand;
 use discovery_cmd::DiscoveryCommand;
 use emit_cmd::EmitCommand;
@@ -86,6 +88,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "release migration",
     "cli command module split",
     "emit",
+    "agent status/drain/reload",
 ];
 
 /// Process entry point for the root binary shim.
@@ -165,6 +168,7 @@ where
             }
         }
         Command::Emit(command) => emit_cmd::execute_emit(command, stdout, stderr),
+        Command::Agent(command) => agent_cmd::execute_agent(command, stdout, stderr),
         Command::Task(command) => task_cmd::execute_task(command, stdout, stderr),
         Command::Adapter(command) => adapter_cmd::execute_adapter(command, stdout, stderr),
         Command::Mcp(command) => mcp_cmd::execute_mcp(command, stdout, stderr),
@@ -192,6 +196,7 @@ enum Command {
     Inspect(InspectOptions),
     Run(RunOptions),
     Emit(EmitCommand),
+    Agent(AgentCommand),
     Task(TaskCommand),
     Adapter(AdapterCommand),
     Mcp(McpCommand),
@@ -273,6 +278,7 @@ where
         )?)),
         "run" => Ok(Command::Run(parse_run_options(&args[1..])?)),
         "emit" => Ok(Command::Emit(emit_cmd::parse_emit_command(&args[1..])?)),
+        "agent" => Ok(Command::Agent(agent_cmd::parse_agent_command(&args[1..])?)),
         "task" => Ok(Command::Task(task_cmd::parse_task_command(&args[1..])?)),
         "adapter" => Ok(Command::Adapter(adapter_cmd::parse_adapter_command(
             &args[1..],
@@ -1010,6 +1016,9 @@ fn help_text() -> &'static str {
         "  eva inspect durable --durable-backend <path> [--redrive-ready-at-ms <ms>] [--output text|json]\n",
         "  eva run --example basic [--project <path>] [--task-id <id>] [--durable-backend <path>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n",
         "  eva emit <topic> [--event-id <id>] [--payload <text>|--payload-empty|--payload-bytes-hex <hex>] [--target-agent <id>|--target-capability <name>|--target-adapter <id>] [--request-id <id>] [--generation <id>] [--correlation-id <event_id>] [--causation-id <event_id>] [--durable-backend <path>] [--output text|json]\n",
+        "  eva agent status [--agent <id>] [--project <path>] [--output text|json]\n",
+        "  eva agent drain --agent <id> [--generation <id>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
+        "  eva agent reload --agent <id> [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva task status [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
         "  eva task logs [--project <path>] [--task <id>] [--durable-backend <path>] [--output text|json]\n",
         "  eva task cancel [--project <path>] [--task <id>] [--durable-backend <path>] [--reason <text>] [--output text|json]\n",
@@ -1043,6 +1052,7 @@ fn help_text() -> &'static str {
         "  inspect          Show project surfaces or durable backend diagnostics without mutating runtime state.\n",
         "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks or a durable backend task store.\n",
         "  emit             Publish a typed Event to the in-memory or durable EventBus boundary.\n",
+        "  agent            Report Agent lifecycle status, drain plans, and reload generation evidence without daemon mutation.\n",
         "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
         "  adapter          List and probe authorized Adapter handles derived from manifests.\n",
         "  mcp              List and probe allowlisted MCP tools without starting external servers.\n",
@@ -1535,6 +1545,112 @@ mod tests {
         assert!(stderr.is_empty());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_status_reports_manifest_and_lifecycle_json() {
+        let root = workspace_root();
+        let (text_exit, text_stdout, text_stderr) = run_cli(&[
+            "agent",
+            "status",
+            "--agent",
+            "root-agent",
+            "--project",
+            root.to_str().unwrap(),
+        ]);
+
+        assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
+        assert!(text_stdout.contains("Agent status"));
+        assert!(text_stdout.contains("root-agent enabled=true lifecycle=running"));
+        assert!(text_stderr.is_empty());
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "agent",
+            "status",
+            "--agent",
+            "root-agent",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"agent.status\""));
+        assert!(stdout.contains("\"status\":\"ready\""));
+        assert!(stdout.contains("\"agent_id\":\"root-agent\""));
+        assert!(stdout.contains("\"enabled\":true"));
+        assert!(stdout.contains("\"lifecycle\":\"running\""));
+        assert!(stdout.contains("\"queued_events\":0"));
+        assert!(stdout.contains("\"subscriptions\":[\"/sys\"]"));
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn agent_drain_outputs_drain_plan_without_runtime_mutation() {
+        let root = workspace_root();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "agent",
+            "drain",
+            "--agent",
+            "root-agent",
+            "--generation",
+            "gen-agent-old",
+            "--inflight",
+            "0",
+            "--timeout-ms",
+            "30000",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"agent.drain\""));
+        assert!(stdout.contains("\"agent_id\":\"root-agent\""));
+        assert!(stdout.contains("\"status\":\"draining\""));
+        assert!(stdout.contains("\"lifecycle\":\"draining\""));
+        assert!(stdout.contains("\"generation_id\":\"gen-agent-old\""));
+        assert!(stdout.contains("\"accepts_new_work\":false"));
+        assert!(stdout.contains("\"status\":\"completed\""));
+        assert!(stdout.contains("\"mutation_executed\":false"));
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn agent_reload_outputs_generation_swap_evidence() {
+        let root = workspace_root();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "agent",
+            "reload",
+            "--agent",
+            "root-agent",
+            "--from-generation",
+            "gen-old",
+            "--to-generation",
+            "gen-new",
+            "--from-release",
+            "1.11.4-alpha",
+            "--to-release",
+            "1.11.5-alpha",
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"agent.reload\""));
+        assert!(stdout.contains("\"agent_id\":\"root-agent\""));
+        assert!(stdout.contains("\"from_generation\":\"gen-old\""));
+        assert!(stdout.contains("\"to_generation\":\"gen-new\""));
+        assert!(stdout.contains("\"active_generation\":\"gen-new\""));
+        assert!(stdout.contains("\"previous_generation\":\"gen-old\""));
+        assert!(stdout.contains("\"previous_generation_state\":\"draining\""));
+        assert!(stdout.contains("generation:gen-old:draining_after_swap_to:gen-new"));
+        assert!(stdout.contains("\"mutation_executed\":false"));
+        assert!(stderr.is_empty());
     }
 
     #[test]

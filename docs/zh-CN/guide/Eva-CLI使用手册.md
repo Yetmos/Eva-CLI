@@ -64,6 +64,7 @@ release: V1.11.4-alpha
 | 查看 durable backend | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | 输出 backend schema、migration status 和 pending redrive count。 |
 | 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |
 | 发布事件 | `cargo run -- emit /input/user --payload hello --output json` | 向 in-memory EventBus 边界发布 typed Event。 |
+| Agent 状态 | `cargo run -- agent status --agent root-agent --output json` | 输出 Agent lifecycle 和 manifest evidence。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
 | 发布门禁 | `cargo run -- release check --output json` | 输出 V1.11.4 release readiness。 |
 
@@ -80,6 +81,7 @@ release: V1.11.4-alpha
 | 查看 | `inspect`、`inspect durable` | 查看项目配置、路由、策略、runtime 摘要或 durable backend 诊断。 | 否 |
 | 运行 | `run --example basic` | 通过受限 Lua VM 边界执行 V1.0 in-memory basic loop。 | 写 `.eva/tasks` 或 durable backend `tasks/` |
 | 事件 | `emit <topic>` | 向 in-memory 或 durable EventBus 发布 typed Event。 | 传入 `--durable-backend` 时写 durable backend `events/log/` |
+| Agent | `agent status/drain/reload` | 输出 Agent lifecycle、drain plan 和 generation reload evidence。 | 不执行 daemon mutation；输出 `mutation_executed:false` |
 | 任务 | `task status/logs/cancel` | 读取或标记 task 诊断。 | 只写 task 取消标记 |
 | Adapter | `adapter list/probe` | 列出或探测 manifest 派生的 Adapter handle。 | 否 |
 | MCP | `mcp list/probe` | 列出或探测 allowlist 中的 MCP tool。 | 否 |
@@ -130,6 +132,22 @@ cargo run -- emit /input/user --event-id evt-manual-2 --payload-bytes-hex 68656c
 | `--target-agent`、`--target-capability`、`--target-adapter` | Broadcast | 定向投递目标。 |
 | `--request-id`、`--generation`、`--correlation-id`、`--causation-id` | 未设置 | 写入事件 metadata 的可选链路字段。 |
 | `--durable-backend <path>` | 未启用 | 通过 durable EventBus log 持久化发布。 |
+
+## Agent lifecycle evidence
+
+`agent status`、`agent drain` 和 `agent reload` 把当前 Agent manifest/runtime/lifecycle 边界暴露为 operator evidence。它们复用 `AgentRuntime`、`AgentLifecycle`、`DrainCoordinator` 和 `GenerationController` 输出 lifecycle 状态、drain 计划和 generation swap evidence；它们不会重启 daemon、不会修改 scheduler 状态，也不会执行真实热更新 apply。
+
+```powershell
+cargo run -- agent status --agent root-agent --output json
+cargo run -- agent drain --agent root-agent --generation gen-v1115-agent --output json
+cargo run -- agent reload --agent root-agent --from-generation gen-old --to-generation gen-new --from-release 1.11.4-alpha --to-release 1.11.5-alpha --output json
+```
+
+| 命令 | 关键字段 | 说明 |
+| --- | --- | --- |
+| `agent status` | `lifecycle`、`queued_events`、`subscriptions` | manifest-backed Agent snapshot；enabled Agent 会输出本地启动后的 `running` runtime 边界。 |
+| `agent drain` | `drain.accepts_new_work:false`、`drain.status`、`mutation_executed:false` | 单 Agent generation 的 drain plan evidence。 |
+| `agent reload` | `active_generation`、`previous_generation`、`drain`、`audit`、`mutation_executed:false` | generation promotion 和旧 generation drain evidence，不执行 daemon mutation。 |
 
 ## 运行 basic 示例
 

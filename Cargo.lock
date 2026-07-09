@@ -164,6 +164,7 @@ name = "eva-cli"
 version = "1.11.4-alpha"
 dependencies = [
  "eva-adapter",
+ "eva-agent",
  "eva-backup",
  "eva-config",
  "eva-core",
