@@ -8,7 +8,7 @@
 | `router.rs` | 已实现 | `CapabilityRouter`，执行 `config.lint` 和 `runtime.echo` builtin，并可为 adapter-backed capability 生成 provider plan 或 authorized provider plan。 |
 | `gate.rs` | 已实现 V1.8.5.2 | `CapabilityPermissionGate`，检查显式 capability/provider 授权、required adapter capability 和 manifest provider allowlist。 |
 | `selection.rs` | 已实现 V1.8.5.1 | `CapabilityProviderSelection`、`CapabilityProviderPlan` 和 provider source，负责 explicit/default/fallback 稳定排序与去重。 |
-| `host_api.rs` | 已实现 | `CapabilityHostApi` trait。 |
+| `host_api.rs` | 已实现 V1.13.3 | `CapabilityHostApi` trait；`eva-adapter` 的外部 provider host 复用 retryable admission gate fallback。 |
 | `generation.rs` | 已实现边界 | `CapabilityGeneration` marker。 |
 | `lib.rs` | 已实现 | re-export capability 公开类型。 |
 

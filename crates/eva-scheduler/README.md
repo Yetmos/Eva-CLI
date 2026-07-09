@@ -17,6 +17,7 @@
 | fanout | `DeliveryMode::Fanout` | 对 route 中所有 Agent 生成投递计划。 |
 | compete | `DeliveryMode::Compete` | V0.4 选取 route 的第一个 Agent，后续再扩展公平竞争。 |
 | mailbox | `AgentMailbox`、`MailboxRegistry` | bounded FIFO；容量满返回 `Unavailable`。 |
+| retry backoff | `RetryBackoffPolicy`、`decide_retry_backoff` | V1.13.3 用于 provider retryable admission failure 的入队判定；non-retryable 或次数耗尽不会入队。 |
 
 ## 模块边界
 
@@ -36,7 +37,7 @@ use eva_scheduler::{DeliveryMode, MailboxRegistry, RoutingRule, SubscriptionTabl
 cargo test -p eva-scheduler
 ```
 
-V0.4 已覆盖：wildcard 匹配、bounded FIFO、fanout route、direct target override、deliver 写入 mailbox。
+V0.4 已覆盖：wildcard 匹配、bounded FIFO、fanout route、direct target override、deliver 写入 mailbox。V1.13.3 增加 retryable backoff admission 判定测试。
 
 ## 后续计划
 

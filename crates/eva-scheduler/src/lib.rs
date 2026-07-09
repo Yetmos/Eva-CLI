@@ -12,6 +12,9 @@ pub use generation::{GenerationRouteCandidate, GenerationRouteGate};
 pub use mailbox::AgentMailbox;
 pub use matcher::matching_rules;
 pub use registry::MailboxRegistry;
-pub use retry::{dispatch_retry_event, RetryDispatchReport};
+pub use retry::{
+    decide_retry_backoff, dispatch_retry_event, RetryBackoffDecision, RetryBackoffPolicy,
+    RetryDispatchReport,
+};
 pub use routing::{DeliveryMode, RoutingRule};
 pub use subscription::{DeliveryPlan, SubscriptionTable};

@@ -196,10 +196,12 @@ impl AdapterRuntime {
         handle: crate::manifest::AdapterHandle,
         invocation: AdapterInvocation,
     ) -> Result<AdapterInvokeReport, EvaError> {
-        let slot = self
-            .supervisor
-            .borrow_mut()
-            .acquire(ProviderExecutionRequest::from_handle(&handle, &invocation))?;
+        let execution_request = ProviderExecutionRequest::from_handle(&handle, &invocation)
+            .with_retry_backoff_ms(
+                self.policy_gate
+                    .adapter_retry_backoff_ms(&invocation.capability),
+            );
+        let slot = self.supervisor.borrow_mut().acquire(execution_request)?;
         let credential_scope =
             ProviderCredentialScope::from_slot(&slot, invocation.capability.clone());
         let policy_decision = self.policy_gate.decide(
@@ -284,7 +286,7 @@ fn append_supervisor_audit(audit: &mut Vec<String>, snapshot: &ProviderProcessSn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::AdapterHandle;
+    use crate::manifest::{AdapterCircuitBreaker, AdapterHandle};
     use crate::registry::AdapterRegistry;
     use crate::supervisor::{
         ProviderCredentialScope, PROVIDER_SESSION_ID_HEADER, PROVIDER_SESSION_TOKEN_ENV,
@@ -475,6 +477,45 @@ mod tests {
     }
 
     #[test]
+    fn runtime_blocks_new_provider_process_while_circuit_is_open() {
+        let mut handle = stdio_handle(true, "definitely-not-started", Vec::new(), Vec::new());
+        handle.circuit_breaker = Some(AdapterCircuitBreaker {
+            failure_threshold: 1,
+            recovery_window_ms: 60_000,
+        });
+        let runtime = runtime_with_handle(handle);
+
+        let first = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-circuit-runtime-a").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap_err();
+        let second = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-circuit-runtime-b").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap_err();
+
+        assert_eq!(first.kind(), ErrorKind::Unavailable);
+        assert_eq!(second.kind(), ErrorKind::Unavailable);
+        assert_eq!(
+            second.provider_code().map(|code| code.as_str()),
+            Some("provider_circuit_open")
+        );
+        let processes = runtime.provider_processes().unwrap();
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].health, "circuit_open");
+    }
+
+    #[test]
     fn runtime_invokes_http_adapter_and_redacts_credential_header() {
         let env_name = "EVA_TEST_HTTP_SECRET_RUNTIME";
         let secret = "http-runtime-secret";
@@ -607,8 +648,11 @@ mod tests {
             method: None,
             credential_env,
             timeout_ms: Some(5_000),
+            max_concurrency: None,
             output_limit_bytes: Some(4096),
             max_prompt_bytes: Some(4096),
+            rate_limit: None,
+            circuit_breaker: None,
             headers: BTreeMap::new(),
             mcp_server_transport: None,
             mcp_command: None,
@@ -650,8 +694,11 @@ mod tests {
             method: Some("POST".to_owned()),
             credential_env,
             timeout_ms: Some(5_000),
+            max_concurrency: None,
             output_limit_bytes: Some(4096),
             max_prompt_bytes: Some(4096),
+            rate_limit: None,
+            circuit_breaker: None,
             headers,
             mcp_server_transport: None,
             mcp_command: None,

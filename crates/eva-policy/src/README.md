@@ -2,7 +2,7 @@
 
 ![Eva module implementation roadmap](../../assets/eva-module-implementation-roadmap.svg)
 
-本目录承载权限集合、沙箱策略、effective policy 计算、V1.9.2 policy domain runtime gate 和 V1.13.2 provider credential session scope decision。`eva-config` 负责加载 YAML，当前目录负责解释已定义的策略领域并返回可审计 decision。
+本目录承载权限集合、沙箱策略、effective policy 计算、V1.9.2 policy domain runtime gate、V1.13.2 provider credential session scope decision 和 V1.13.3 provider admission retry backoff 查询。`eva-config` 负责加载 YAML，当前目录负责解释已定义的策略领域并返回可审计 decision。
 
 ## 功能说明
 
@@ -12,7 +12,7 @@
 | `permissions.rs` | `PermissionSet`、收紧、diff、subset、显式 capability/adapter allow 查询 | 已完成 | V0.2/V0.3/V1.8.5.2 |
 | `sandbox.rs` | `SandboxPolicy`、Lua 默认安全基线、收紧 | 已完成 | V0.2/V0.4 |
 | `effective.rs` | `PolicyLayer`、`EffectivePolicy`、request gate | 已完成 | V0.2/V0.4 |
-| `domains.rs` | typed policy domain parser、`RuntimePolicyGate`、高风险 action / provider credential session allow/deny audit | 已完成 | V1.13.2 |
+| `domains.rs` | typed policy domain parser、`RuntimePolicyGate`、高风险 action / provider credential session allow/deny audit / retry backoff 查询 | 已完成 | V1.13.3 |
 
 ## 开发实施步骤
 
@@ -33,5 +33,5 @@
 | Permissions | 权限集合、扩权检测和显式 allow 查询 | 已完成 | CLI 展示 diff；runtime/capability gate 复用。 |
 | Sandbox | 沙箱限制 | 已完成 | Lua host 接入。 |
 | Effective | 多层合并和 request gate | 已完成 | Runtime/capability gate 接入。 |
-| Domain parser | YAML policy domain 解释 | 已完成 V1.13.2 | 真实 provider/hardware/backup/lifecycle apply 继续复用。 |
-| Runtime gate | 高风险 action 默认拒绝、显式 allow、provider credential session scope 和 audit decision | 已完成 V1.13.2 | 接生产 audit sink 和常驻 runtime。 |
+| Domain parser | YAML policy domain 解释 | 已完成 V1.13.3 | 真实 provider/hardware/backup/lifecycle apply 继续复用。 |
+| Runtime gate | 高风险 action 默认拒绝、显式 allow、provider credential session scope、retry backoff hint 和 audit decision | 已完成 V1.13.3 | 接生产 audit sink 和常驻 runtime。 |

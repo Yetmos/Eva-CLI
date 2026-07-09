@@ -40,6 +40,18 @@ pub struct SkillInputProperty {
     pub enum_values: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdapterRateLimit {
+    pub max_requests: u32,
+    pub window_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdapterCircuitBreaker {
+    pub failure_threshold: u32,
+    pub recovery_window_ms: u64,
+}
+
 /// Authorized runtime handle derived from configuration, not from discovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterHandle {
@@ -56,8 +68,11 @@ pub struct AdapterHandle {
     pub method: Option<String>,
     pub credential_env: Vec<String>,
     pub timeout_ms: Option<u64>,
+    pub max_concurrency: Option<usize>,
     pub output_limit_bytes: Option<usize>,
     pub max_prompt_bytes: Option<usize>,
+    pub rate_limit: Option<AdapterRateLimit>,
+    pub circuit_breaker: Option<AdapterCircuitBreaker>,
     pub headers: BTreeMap<String, String>,
     pub mcp_server_transport: Option<String>,
     pub mcp_command: Option<String>,
@@ -105,10 +120,15 @@ impl AdapterHandle {
             method: manifest.extra_string("method").map(str::to_owned),
             credential_env: manifest.nested_extra_string_list("permissions", "env"),
             timeout_ms: manifest.nested_extra_u64("limits", "timeout_ms"),
+            max_concurrency: nonzero_usize(
+                manifest.nested_extra_usize("limits", "max_concurrency"),
+            ),
             output_limit_bytes: manifest
                 .nested_extra_usize("limits", "output_limit_bytes")
                 .or_else(|| manifest.nested_extra_usize("limits", "max_output_bytes")),
             max_prompt_bytes: manifest.nested_extra_usize("limits", "max_prompt_bytes"),
+            rate_limit: AdapterRateLimit::from_manifest(manifest),
+            circuit_breaker: AdapterCircuitBreaker::from_manifest(manifest),
             headers: {
                 let mut headers = manifest.extra_string_map("headers");
                 headers.extend(manifest.nested_extra_string_map("http", "headers"));
@@ -237,6 +257,51 @@ impl AdapterHandle {
     }
 }
 
+impl AdapterRateLimit {
+    fn from_manifest(manifest: &AdapterManifest) -> Option<Self> {
+        let max_requests = manifest
+            .deep_extra_u64(&["limits", "rate_limit", "max_requests"])
+            .or_else(|| manifest.nested_extra_u64("limits", "rate_limit_max_requests"))?;
+        let max_requests = u32::try_from(max_requests)
+            .ok()
+            .filter(|value| *value > 0)?;
+        let window_ms = manifest
+            .deep_extra_u64(&["limits", "rate_limit", "window_ms"])
+            .or_else(|| manifest.nested_extra_u64("limits", "rate_limit_window_ms"))
+            .unwrap_or(60_000);
+        if window_ms == 0 {
+            return None;
+        }
+        Some(Self {
+            max_requests,
+            window_ms,
+        })
+    }
+}
+
+impl AdapterCircuitBreaker {
+    fn from_manifest(manifest: &AdapterManifest) -> Option<Self> {
+        let failure_threshold = manifest
+            .deep_extra_u64(&["limits", "circuit_breaker", "failure_threshold"])
+            .or_else(|| manifest.nested_extra_u64("limits", "circuit_breaker_failure_threshold"))?;
+        let failure_threshold = u32::try_from(failure_threshold)
+            .ok()
+            .filter(|value| *value > 0)?;
+        let recovery_window_ms = manifest
+            .deep_extra_u64(&["limits", "circuit_breaker", "recovery_window_ms"])
+            .or_else(|| manifest.nested_extra_u64("limits", "circuit_breaker_recovery_ms"))
+            .unwrap_or(60_000);
+        Some(Self {
+            failure_threshold,
+            recovery_window_ms,
+        })
+    }
+}
+
+fn nonzero_usize(value: Option<usize>) -> Option<usize> {
+    value.filter(|value| *value > 0)
+}
+
 impl AdapterCapabilityBinding {
     pub fn from_manifest(provider: AdapterId, manifest: &CapabilityManifest) -> Self {
         Self {
@@ -339,10 +404,26 @@ mod tests {
         assert_eq!(stdio_handle.command.as_deref(), Some("codex"));
         assert!(stdio_handle.args.contains(&"exec".to_owned()));
         assert_eq!(stdio_handle.timeout_ms, Some(300000));
+        assert_eq!(stdio_handle.max_concurrency, Some(1));
         assert_eq!(stdio_handle.max_prompt_bytes, Some(200000));
         assert_eq!(
             http_handle.endpoint.as_deref(),
             Some("https://api.anthropic.com/v1/messages")
+        );
+        assert_eq!(http_handle.max_concurrency, Some(4));
+        assert_eq!(
+            http_handle.rate_limit,
+            Some(AdapterRateLimit {
+                max_requests: 60,
+                window_ms: 60000
+            })
+        );
+        assert_eq!(
+            http_handle.circuit_breaker,
+            Some(AdapterCircuitBreaker {
+                failure_threshold: 3,
+                recovery_window_ms: 30000
+            })
         );
         assert!(http_handle
             .credential_env

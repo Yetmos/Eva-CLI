@@ -12,6 +12,20 @@ pub struct RetryDispatchReport {
     pub deliveries: Vec<DeliveryPlan>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryBackoffPolicy {
+    pub max_attempts: u32,
+    pub backoff_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryBackoffDecision {
+    pub enqueue: bool,
+    pub next_attempt: u32,
+    pub due_after_ms: Option<u64>,
+    pub reason: String,
+}
+
 pub fn dispatch_retry_event(
     table: &SubscriptionTable,
     registry: &mut MailboxRegistry,
@@ -19,6 +33,35 @@ pub fn dispatch_retry_event(
 ) -> Result<RetryDispatchReport, EvaError> {
     let deliveries = table.deliver(registry, event)?;
     Ok(RetryDispatchReport { deliveries })
+}
+
+pub fn decide_retry_backoff(
+    retryable: bool,
+    attempts_made: u32,
+    policy: RetryBackoffPolicy,
+) -> RetryBackoffDecision {
+    if !retryable {
+        return RetryBackoffDecision {
+            enqueue: false,
+            next_attempt: attempts_made,
+            due_after_ms: None,
+            reason: "failure is not retryable".to_owned(),
+        };
+    }
+    if attempts_made >= policy.max_attempts {
+        return RetryBackoffDecision {
+            enqueue: false,
+            next_attempt: attempts_made,
+            due_after_ms: None,
+            reason: "retry attempts exhausted".to_owned(),
+        };
+    }
+    RetryBackoffDecision {
+        enqueue: true,
+        next_attempt: attempts_made.saturating_add(1),
+        due_after_ms: Some(policy.backoff_ms),
+        reason: "retryable failure scheduled with backoff".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -62,5 +105,25 @@ mod tests {
 
         assert_eq!(error.kind(), eva_core::ErrorKind::NotFound);
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn retry_backoff_admits_retryable_failures_until_attempts_exhausted() {
+        let policy = RetryBackoffPolicy {
+            max_attempts: 2,
+            backoff_ms: 1000,
+        };
+
+        let first = decide_retry_backoff(true, 0, policy);
+        let exhausted = decide_retry_backoff(true, 2, policy);
+        let non_retryable = decide_retry_backoff(false, 0, policy);
+
+        assert!(first.enqueue);
+        assert_eq!(first.next_attempt, 1);
+        assert_eq!(first.due_after_ms, Some(1000));
+        assert!(!exhausted.enqueue);
+        assert_eq!(exhausted.reason, "retry attempts exhausted");
+        assert!(!non_retryable.enqueue);
+        assert_eq!(non_retryable.reason, "failure is not retryable");
     }
 }

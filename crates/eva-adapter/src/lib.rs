@@ -12,7 +12,9 @@ pub mod transports;
 pub use capability_host::{
     is_retryable_provider_failure, response_from_report, AdapterBackedCapabilityHost,
 };
-pub use manifest::{AdapterCapabilityBinding, AdapterHandle, AdapterHealth};
+pub use manifest::{
+    AdapterCapabilityBinding, AdapterCircuitBreaker, AdapterHandle, AdapterHealth, AdapterRateLimit,
+};
 pub use registry::AdapterRegistry;
 pub use router::{AdapterRoute, AdapterRouteRequest, AdapterRouter};
 pub use runtime::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};

@@ -361,6 +361,15 @@ impl RuntimePolicyGate {
         &self.domains
     }
 
+    pub fn adapter_retry_backoff_ms(&self, capability: &CapabilityName) -> Option<u64> {
+        self.domains
+            .adapter
+            .retry
+            .capabilities
+            .get(capability)
+            .and_then(|policy| policy.backoff_ms)
+    }
+
     pub fn decide(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         match request.action {
             HighRiskAction::McpToolCall => self.decide_mcp_tool_call(request),
@@ -1154,6 +1163,22 @@ mod tests {
         assert!(decision
             .audit
             .contains(&"policy.action:provider.credential_session".to_owned()));
+    }
+
+    #[test]
+    fn runtime_gate_exposes_adapter_retry_backoff_by_capability() {
+        let domains =
+            PolicyDomainSet::from_project(&load_project_config(workspace_root()).unwrap()).unwrap();
+        let gate = RuntimePolicyGate::new(domains);
+
+        assert_eq!(
+            gate.adapter_retry_backoff_ms(&capability("repo.analyze")),
+            Some(1000)
+        );
+        assert_eq!(
+            gate.adapter_retry_backoff_ms(&capability("chat.reply")),
+            None
+        );
     }
 
     #[test]

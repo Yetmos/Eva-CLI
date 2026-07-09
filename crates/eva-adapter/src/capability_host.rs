@@ -176,7 +176,7 @@ fn report_error(report: AdapterInvokeReport) -> EvaError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::AdapterHandle;
+    use crate::manifest::{AdapterHandle, AdapterRateLimit};
     use crate::registry::AdapterRegistry;
     use eva_capability::{CapabilityDescriptor, CapabilityProviderSelection, CapabilityRegistry};
     use eva_config::AdapterTransport;
@@ -386,6 +386,56 @@ mod tests {
             .any(|(key, value)| key == "provider" && value == "stdio-fail-b"));
     }
 
+    #[test]
+    fn adapter_backed_host_falls_back_after_retryable_rate_limit_gate() {
+        let mut rate_limited = stdio_handle("stdio-rate", Some(test_command()), success_args());
+        rate_limited.rate_limit = Some(AdapterRateLimit {
+            max_requests: 1,
+            window_ms: 60_000,
+        });
+        let host = host_with_provider_selection_and_handles(
+            PermissionSet::deny_all()
+                .allow_capability(capability("repo.summary"))
+                .allow_adapter(adapter("stdio-rate"))
+                .allow_adapter(adapter("builtin-test")),
+            CapabilityProviderSelection::new(
+                None,
+                Some(adapter("stdio-rate")),
+                vec![adapter("builtin-test")],
+                Vec::new(),
+            ),
+            vec![rate_limited, builtin_handle(true)],
+        );
+        let first = InvokeRequest::new(
+            RequestId::parse("req-capability-rate-first").unwrap(),
+            InvokeTarget::Capability(capability("repo.summary")),
+            InvokeInput::text("repo"),
+        );
+        let second = InvokeRequest::new(
+            RequestId::parse("req-capability-rate-second").unwrap(),
+            InvokeTarget::Capability(capability("repo.summary")),
+            InvokeInput::text("repo"),
+        );
+
+        let first_response = host.invoke(first).unwrap();
+        let second_response = host.invoke(second).unwrap();
+
+        assert_eq!(first_response.status(), InvokeStatus::Completed);
+        assert!(first_response
+            .output()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .contains("stdio-ok"));
+        assert_eq!(second_response.status(), InvokeStatus::Completed);
+        assert!(second_response
+            .output()
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .contains("builtin-test"));
+    }
+
     fn host_with_builtin_adapter(enabled: bool) -> AdapterBackedCapabilityHost {
         host_with_permissions_and_handle(
             PermissionSet::deny_all()
@@ -458,8 +508,11 @@ mod tests {
             method: None,
             credential_env: Vec::new(),
             timeout_ms: Some(5_000),
+            max_concurrency: None,
             output_limit_bytes: Some(4096),
             max_prompt_bytes: Some(4096),
+            rate_limit: None,
+            circuit_breaker: None,
             headers: BTreeMap::new(),
             mcp_server_transport: None,
             mcp_command: None,
@@ -514,6 +567,20 @@ mod tests {
     #[cfg(not(windows))]
     fn fail_args() -> Vec<String> {
         vec!["-c".to_owned(), "exit 7".to_owned()]
+    }
+
+    #[cfg(windows)]
+    fn success_args() -> Vec<String> {
+        vec![
+            "-NoProfile".to_owned(),
+            "-Command".to_owned(),
+            "[Console]::Out.Write('stdio-ok')".to_owned(),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn success_args() -> Vec<String> {
+        vec!["-c".to_owned(), "printf stdio-ok".to_owned()]
     }
 
     fn report(status: &str, output: &str) -> AdapterInvokeReport {

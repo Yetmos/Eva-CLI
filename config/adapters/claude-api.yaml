@@ -46,6 +46,12 @@ limits:
   max_concurrency: 4
   # Maximum prompt payload size in bytes. / 最大 prompt 载荷字节数。
   max_prompt_bytes: 100000
+  rate_limit:
+    max_requests: 60
+    window_ms: 60000
+  circuit_breaker:
+    failure_threshold: 3
+    recovery_window_ms: 30000
 
 # Routing preferences when several adapters can serve the same capability. / 多个 Adapter 可处理同一能力时的路由偏好。
 routing:

@@ -4,7 +4,7 @@
 
 ![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
 
-`eva-capability` 负责 capability descriptor、registry、router、provider selection plan、permission gate、generation marker 和给 Lua/Agent 使用的 typed host API。V0.4 已实现内存注册表和两个无外部副作用 builtin：`config.lint`、`runtime.echo`。V1.8.5.1 起，manifest 中的 provider/default/fallback metadata 会保存在 descriptor 中，并可生成稳定 provider plan；V1.8.5.2 起，`CapabilityPermissionGate` 会在真实调用前执行 capability、required adapter capability、provider 和 manifest allowlist 门禁；V1.8.5.4 起，`eva-adapter` 的 adapter-backed host 会按 `EvaError::is_retryable()` 对 provider 失败做 fallback 分类。真实 Hardware generation/supervision 仍由后续节点接入。
+`eva-capability` 负责 capability descriptor、registry、router、provider selection plan、permission gate、generation marker 和给 Lua/Agent 使用的 typed host API。V0.4 已实现内存注册表和两个无外部副作用 builtin：`config.lint`、`runtime.echo`。V1.8.5.1 起，manifest 中的 provider/default/fallback metadata 会保存在 descriptor 中，并可生成稳定 provider plan；V1.8.5.2 起，`CapabilityPermissionGate` 会在真实调用前执行 capability、required adapter capability、provider 和 manifest allowlist 门禁；V1.8.5.4 起，`eva-adapter` 的 adapter-backed host 会按 `EvaError::is_retryable()` 对 provider 失败做 fallback 分类；V1.13.3 起，provider admission gate 的 retryable concurrency/rate/circuit 错误也复用该 fallback 分类。真实 Hardware generation/supervision 仍由后续节点接入。
 
 ## V0.4 当前实现
 
@@ -54,4 +54,5 @@ cargo test -p eva-capability
 | V1.8.5.2 | 已完成 capability/provider permission gate。 |
 | V1.8.5.3 | 接入 AdapterRuntime/MCP provider 并统一 InvokeResponse。 |
 | V1.8.5.4 | 已完成 retryable fallback 分类和 provider report/error 停止规则。 |
+| V1.13.3 | 已验证 retryable provider admission gate 可 fallback，non-retryable 错误仍不 fallback。 |
 | V1.3 | 接入 HardwareAdapter provider。 |
