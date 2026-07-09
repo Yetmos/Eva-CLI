@@ -33,10 +33,12 @@ content authority:
   currently contains the most complete implementation-spec detail.
 - Register content assets that contain readable text in the manifest `assets`
   section, with locale-specific image paths and translation status.
-- Keep published document IDs stable; when moving a document, update
-  `docs/_i18n/manifest.json` and regenerate the website.
-- Keep historical root-level Chinese documents under `docs/zh-CN/legacy/` while
-  the categorized `docs/zh-CN/*/` tree remains the current source.
+- Keep published document IDs stable; when moving or merging a document, update
+  `docs/_i18n/manifest.json`, remove obsolete duplicate paths, and regenerate
+  the website.
+- Do not keep migrated historical copies once their content has been merged into
+  the categorized `docs/{locale}/` tree; update incoming links to the canonical
+  document instead.
 - Do not translate code, commands, JSON keys, Topic names, Lua bindings, file
   paths, or error codes.
 

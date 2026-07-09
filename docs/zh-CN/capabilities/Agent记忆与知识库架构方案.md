@@ -423,7 +423,7 @@ ContextBuilder 输出 `AgentContext`：
       "document_id": "kdoc_001",
       "title": "Rust 与 Lua 事件总线智能体调度架构方案",
       "excerpt": "Scheduler 订阅 EventBus，根据 topic 路由到 Agent 私有队列。",
-      "uri": "docs/zh-CN/legacy/architecture/Rust与Lua事件总线智能体调度架构方案.md"
+      "uri": "docs/zh-CN/architecture/Rust与Lua事件总线智能体调度架构方案.md"
     }
   ]
 }
@@ -541,7 +541,7 @@ Agent 可以提出索引请求，但不能绕过权限读取任意文件：
 ```lua
 ctx.knowledge.propose_source({
   source_type = "file",
-  uri = "docs/zh-CN/legacy/architecture/总体架构方案.md",
+  uri = "docs/zh-CN/architecture/总体架构方案.md",
   reason = "当前任务需要引用总体架构边界"
 })
 ```
