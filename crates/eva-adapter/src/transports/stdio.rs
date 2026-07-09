@@ -5,6 +5,7 @@ pub const RESPONSIBILITY: &str = "stdio command transport with separated command
 
 use crate::manifest::AdapterHandle;
 use crate::runtime::{AdapterInvocation as RuntimeAdapterInvocation, AdapterInvokeReport};
+use crate::supervisor::{redact_provider_session_tokens, validate_credential_scope_for_provider};
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -262,9 +263,20 @@ pub fn invoke(
     validate_input_size(handle, &invocation.input)?;
 
     let trace = invocation.trace_for_adapter(&handle.id);
+    let credential_scope = validate_credential_scope_for_provider(
+        invocation.credential_scope(),
+        &handle.id,
+        &invocation.request_id,
+        &invocation.capability,
+        !handle.credential_env.is_empty(),
+    )?
+    .cloned();
     let request_id = invocation.request_id;
     let capability = invocation.capability;
-    let credential_env = credential_env_values(&handle.credential_env);
+    let mut credential_env = credential_env_values(&handle.credential_env);
+    if let Some(scope) = &credential_scope {
+        scope.apply_env(&mut credential_env.values);
+    }
     let config = StdioRunnerConfig::new(
         [command.to_owned()],
         timeout_ms(handle),
@@ -292,6 +304,9 @@ pub fn invoke(
             .unwrap_or_else(|| "none".to_owned())
     ));
     audit.extend(credential_env.audit);
+    if let Some(scope) = &credential_scope {
+        audit.extend(scope.audit_entries());
+    }
 
     Ok(AdapterInvokeReport {
         request_id,
@@ -460,6 +475,7 @@ fn redact_bytes(bytes: Vec<u8>, sensitive_values: &[String]) -> Vec<u8> {
     for value in sensitive_values {
         text = text.replace(value, "[REDACTED]");
     }
+    text = redact_provider_session_tokens(&text);
     text.into_bytes()
 }
 

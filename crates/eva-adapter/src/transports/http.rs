@@ -5,6 +5,7 @@ pub const RESPONSIBILITY: &str = "HTTP transport with env allowlist-based creden
 
 use crate::manifest::AdapterHandle;
 use crate::runtime::{AdapterInvocation as RuntimeAdapterInvocation, AdapterInvokeReport};
+use crate::supervisor::{redact_provider_session_tokens, validate_credential_scope_for_provider};
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -269,10 +270,25 @@ pub fn invoke_with_client(
             .with_context("adapter_id", handle.id.as_str())
     })?;
     validate_input_size(handle, &invocation.input)?;
+    let credential_scope = validate_credential_scope_for_provider(
+        invocation.credential_scope(),
+        &handle.id,
+        &invocation.request_id,
+        &invocation.capability,
+        has_scoped_http_credentials(handle),
+    )?
+    .cloned();
     let method = HttpMethod::parse(handle.method.as_deref().unwrap_or("POST"))?;
     let header_plan = http_headers(handle)?;
     let mut sensitive_values = header_plan.sensitive_values.clone();
     sensitive_values.extend(credential_env_values(&handle.credential_env).values);
+    if let Some(scope) = &credential_scope {
+        sensitive_values.extend(scope.redaction_values());
+    }
+    let mut headers = header_plan.headers.clone();
+    if let Some(scope) = &credential_scope {
+        scope.apply_headers(&mut headers);
+    }
     let config = HttpRunnerConfig::new(
         [url_origin(endpoint)?],
         [method],
@@ -283,7 +299,7 @@ pub fn invoke_with_client(
         &config,
         client,
         HttpInvocation::new(method, endpoint)
-            .with_headers(header_plan.headers)
+            .with_headers(headers)
             .with_body(invocation.input.as_bytes().to_vec()),
     )?;
 
@@ -300,6 +316,9 @@ pub fn invoke_with_client(
     audit.extend(run.audit);
     audit.extend(header_plan.audit);
     audit.extend(credential_env_audit(&handle.credential_env));
+    if let Some(scope) = &credential_scope {
+        audit.extend(scope.audit_entries());
+    }
     let body = redact_text(&String::from_utf8_lossy(&run.body), &sensitive_values);
 
     Ok(AdapterInvokeReport {
@@ -319,6 +338,14 @@ pub fn invoke_with_client(
         audit,
         trace,
     })
+}
+
+fn has_scoped_http_credentials(handle: &AdapterHandle) -> bool {
+    !handle.credential_env.is_empty()
+        || handle
+            .headers
+            .values()
+            .any(|value| value.strip_prefix("env:").is_some())
 }
 
 fn validate_invocation(
@@ -575,7 +602,7 @@ fn redact_text(value: &str, sensitive_values: &[String]) -> String {
             redacted = redacted.replace(sensitive, "[REDACTED]");
         }
     }
-    redacted
+    redact_provider_session_tokens(&redacted)
 }
 
 fn escape_json(value: &str) -> String {

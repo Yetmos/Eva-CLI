@@ -5,9 +5,14 @@ use crate::runtime::AdapterInvocation;
 use eva_config::AdapterTransport;
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
 use eva_storage::{InMemoryProviderProcessTable, ProviderProcessSnapshot, ProviderProcessTable};
+use std::collections::BTreeMap;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "provider execution slots and process table mutation";
+pub const PROVIDER_SESSION_ID_ENV: &str = "EVA_PROVIDER_SESSION_ID";
+pub const PROVIDER_SESSION_TOKEN_ENV: &str = "EVA_PROVIDER_SESSION_TOKEN";
+pub const PROVIDER_SESSION_ID_HEADER: &str = "X-Eva-Provider-Session";
+pub const PROVIDER_SESSION_TOKEN_HEADER: &str = "X-Eva-Provider-Session-Token";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderExecutionRequest {
@@ -26,6 +31,15 @@ pub struct ProviderExecutionSlot {
     pub provider_process_id: String,
     pub request_id: RequestId,
     pub adapter_id: AdapterId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderCredentialScope {
+    pub session_id: String,
+    pub adapter_id: AdapterId,
+    pub request_id: RequestId,
+    pub capability: CapabilityName,
+    pub token_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +80,96 @@ impl ProviderExecutionRequest {
     }
 }
 
+impl ProviderCredentialScope {
+    pub fn new_for_session(
+        session_id: impl Into<String>,
+        adapter_id: AdapterId,
+        request_id: RequestId,
+        capability: CapabilityName,
+    ) -> Self {
+        let session_id = session_id.into();
+        let token_digest =
+            credential_token_digest(&session_id, &adapter_id, &request_id, &capability);
+        Self {
+            session_id,
+            adapter_id,
+            request_id,
+            capability,
+            token_digest,
+        }
+    }
+
+    pub fn from_slot(slot: &ProviderExecutionSlot, capability: CapabilityName) -> Self {
+        Self::new_for_session(
+            slot.session_id.clone(),
+            slot.adapter_id.clone(),
+            slot.request_id.clone(),
+            capability,
+        )
+    }
+
+    pub fn ensure_matches(
+        &self,
+        adapter_id: &AdapterId,
+        request_id: &RequestId,
+        capability: &CapabilityName,
+    ) -> Result<(), EvaError> {
+        if &self.adapter_id != adapter_id {
+            return Err(EvaError::permission_denied(
+                "provider credential session cannot be reused across providers",
+            )
+            .with_context("session_id", &self.session_id)
+            .with_context("session_provider", self.adapter_id.as_str())
+            .with_context("requested_provider", adapter_id.as_str()));
+        }
+        if &self.request_id != request_id || &self.capability != capability {
+            return Err(EvaError::permission_denied(
+                "provider credential session cannot be reused across requests",
+            )
+            .with_context("session_id", &self.session_id)
+            .with_context("session_request", self.request_id.as_str())
+            .with_context("requested_request", request_id.as_str()));
+        }
+        Ok(())
+    }
+
+    pub fn audit_entries(&self) -> Vec<String> {
+        vec![
+            "credential.scope:provider_session".to_owned(),
+            format!("credential.session:{}", self.session_id),
+            format!("credential.session_digest:{}", self.token_digest),
+            "credential.session_token:redacted".to_owned(),
+        ]
+    }
+
+    pub(crate) fn apply_env(&self, env: &mut BTreeMap<String, String>) {
+        env.insert(PROVIDER_SESSION_ID_ENV.to_owned(), self.session_id.clone());
+        env.insert(PROVIDER_SESSION_TOKEN_ENV.to_owned(), self.session_token());
+    }
+
+    pub(crate) fn apply_headers(&self, headers: &mut BTreeMap<String, String>) {
+        headers.insert(
+            PROVIDER_SESSION_ID_HEADER.to_owned(),
+            self.session_id.clone(),
+        );
+        headers.insert(
+            PROVIDER_SESSION_TOKEN_HEADER.to_owned(),
+            self.session_token(),
+        );
+    }
+
+    pub(crate) fn redaction_values(&self) -> Vec<String> {
+        vec![self.session_token()]
+    }
+
+    fn session_token(&self) -> String {
+        format!(
+            "eva-provider-session:{}:{}",
+            self.session_id, self.token_digest
+        )
+    }
+}
+
 impl ProviderExecutionOutcome {
     pub fn completed(status: &str) -> Self {
         Self {
@@ -88,6 +192,46 @@ impl ProviderExecutionOutcome {
             last_error: Some(format!("{}: {}", error.kind().as_str(), error.message())),
         }
     }
+}
+
+pub(crate) fn validate_credential_scope_for_provider<'a>(
+    scope: Option<&'a ProviderCredentialScope>,
+    adapter_id: &AdapterId,
+    request_id: &RequestId,
+    capability: &CapabilityName,
+    required: bool,
+) -> Result<Option<&'a ProviderCredentialScope>, EvaError> {
+    match scope {
+        Some(scope) => {
+            scope.ensure_matches(adapter_id, request_id, capability)?;
+            Ok(Some(scope))
+        }
+        None if required => Err(EvaError::permission_denied(
+            "provider credential session scope is required",
+        )
+        .with_context("adapter_id", adapter_id.as_str())
+        .with_context("request_id", request_id.as_str())),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn redact_provider_session_tokens(value: &str) -> String {
+    let mut redacted = value.to_owned();
+    while let Some(start) = redacted.find("eva-provider-session:") {
+        let end = redacted[start..]
+            .char_indices()
+            .find_map(|(offset, ch)| {
+                if offset > 0 && (ch.is_whitespace() || matches!(ch, '"' | '\'' | '\\' | '<' | '>'))
+                {
+                    Some(start + offset)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(redacted.len());
+        redacted.replace_range(start..end, "[REDACTED]");
+    }
+    redacted
 }
 
 impl Default for InMemoryProviderSupervisor {
@@ -234,6 +378,21 @@ fn manifest_digest(handle: &AdapterHandle) -> String {
     format!("fnv64:{:016x}", fnv1a64(material.as_bytes()))
 }
 
+fn credential_token_digest(
+    session_id: &str,
+    adapter_id: &AdapterId,
+    request_id: &RequestId,
+    capability: &CapabilityName,
+) -> String {
+    let material = format!(
+        "{session_id}|{}|{}|{}",
+        adapter_id.as_str(),
+        request_id.as_str(),
+        capability.as_str()
+    );
+    format!("fnv64:{:016x}", fnv1a64(material.as_bytes()))
+}
+
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in bytes {
@@ -346,5 +505,66 @@ mod tests {
         );
 
         assert_eq!(request.start_command, "skill-fallback --fallback");
+    }
+
+    #[test]
+    fn credential_scope_rejects_cross_provider_reuse() {
+        let scope = ProviderCredentialScope::new_for_session(
+            "session-stdio-req",
+            AdapterId::parse("stdio-test").unwrap(),
+            RequestId::parse("req-supervisor-credentials").unwrap(),
+            CapabilityName::parse("repo.analyze").unwrap(),
+        );
+
+        let error = scope
+            .ensure_matches(
+                &AdapterId::parse("other-provider").unwrap(),
+                &RequestId::parse("req-supervisor-credentials").unwrap(),
+                &CapabilityName::parse("repo.analyze").unwrap(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert!(!scope
+            .audit_entries()
+            .iter()
+            .any(|entry| entry.contains("eva-provider-session:")));
+    }
+
+    #[test]
+    fn credential_scope_injects_token_without_exposing_it_in_audit() {
+        let scope = ProviderCredentialScope::new_for_session(
+            "session-stdio-req",
+            AdapterId::parse("stdio-test").unwrap(),
+            RequestId::parse("req-supervisor-credentials").unwrap(),
+            CapabilityName::parse("repo.analyze").unwrap(),
+        );
+        let mut env = BTreeMap::new();
+        let mut headers = BTreeMap::new();
+
+        scope.apply_env(&mut env);
+        scope.apply_headers(&mut headers);
+
+        assert_eq!(
+            env.get(PROVIDER_SESSION_ID_ENV).map(String::as_str),
+            Some("session-stdio-req")
+        );
+        assert!(env
+            .get(PROVIDER_SESSION_TOKEN_ENV)
+            .unwrap()
+            .starts_with("eva-provider-session:"));
+        assert!(headers.contains_key(PROVIDER_SESSION_TOKEN_HEADER));
+        assert!(scope
+            .audit_entries()
+            .contains(&"credential.session_token:redacted".to_owned()));
+    }
+
+    #[test]
+    fn provider_session_token_redaction_catches_prefixed_values() {
+        let redacted = redact_provider_session_tokens(
+            "before eva-provider-session:session-1:fnv64:abc123 after",
+        );
+
+        assert_eq!(redacted, "before [REDACTED] after");
     }
 }

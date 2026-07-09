@@ -1,6 +1,6 @@
 # eva-policy / 权限策略
 
-更新时间：2026-07-08
+更新时间：2026-07-09
 
 ![Eva module implementation roadmap](../assets/eva-module-implementation-roadmap.svg)
 
@@ -24,7 +24,7 @@ V0.2 已落地最小权限契约：
 | `EffectivePolicy` | 已完成 | 从一个或多个 `PolicyLayer` 计算最终权限和沙箱策略 |
 | request 校验 | 已完成 | `ensure_request_allowed` 会拒绝试图扩大 effective policy 的请求 |
 | YAML policy 解析 | 已完成 V1.9.2 | `PolicyDomainSet` 解释 `adapter_policy`、`hardware_policy`、`mcp_server`、`runtime_policy` 和 `lua_sandbox`，并生成 `PolicyLayer` |
-| 运行时高风险门禁 | 已完成 V1.9.2 | `RuntimePolicyGate` 对 MCP tool/topic、Skill、Hardware、Restore/Upgrade/Release/Supervisor 等动作输出 allow/deny decision 和 audit |
+| 运行时高风险门禁 | 已完成 V1.13.2 | `RuntimePolicyGate` 对 MCP tool/topic、Skill、Hardware、Restore/Upgrade/Release/Supervisor 和 provider credential session scope 等动作输出 allow/deny decision 和 audit |
 
 ### 公开 API
 
@@ -44,7 +44,7 @@ V0.2 已落地最小权限契约：
 | `EffectivePolicy::ensure_request_allowed` | `&PermissionSet` | `Result<(), EvaError>` | 拒绝扩权 request |
 | `PolicyDomainSet::from_documents` | `&[PolicyDocument]` | `Result<PolicyDomainSet, EvaError>` | 将配置加载出的 policy YAML 转成 typed domain 和 policy layers |
 | `PolicyDomainSet::effective_policy` | 无 | `Result<EffectivePolicy, EvaError>` | 合并 policy domain 生成的 layers |
-| `RuntimePolicyGate::decide` | `RuntimePolicyRequest` | `PolicyDecision` | 对高风险动作执行默认拒绝和显式 allow 判定 |
+| `RuntimePolicyGate::decide` | `RuntimePolicyRequest` | `PolicyDecision` | 对高风险动作和 provider credential session scope 执行 allow/deny 判定 |
 
 ### 权限收紧规则
 
@@ -93,7 +93,7 @@ V0.2 已落地最小权限契约：
 
 | 命令 | 当前结果 |
 | --- | --- |
-| `cargo test -p eva-policy` | 通过，18 个测试 |
+| `cargo test -p eva-policy` | 通过，20 个测试 |
 | `cargo test --workspace` | 通过 |
 
 关键测试覆盖：
@@ -112,6 +112,8 @@ V0.2 已落地最小权限契约：
 | `parses_sample_policy_domains` | 示例 policy YAML 可解析为 typed domain |
 | `runtime_gate_requires_explicit_high_risk_allow` | restore/upgrade 等高风险动作默认拒绝 |
 | `runtime_policy_can_explicitly_allow_high_risk_action` | 显式 allow path 生成允许 decision |
+| `runtime_gate_allows_provider_credential_session_for_matching_provider` | 同 provider credential session scope 允许并输出 audit |
+| `runtime_gate_denies_provider_credential_session_cross_provider` | 跨 provider credential session scope 被拒绝 |
 
 ### 详细开发实施步骤
 
@@ -133,7 +135,7 @@ V0.2 已落地最小权限契约：
 | `src/permissions.rs` | `PermissionSet`、收紧、diff、subset | 已完成 | V0.3 增加 CLI 友好的 diff 展示。 |
 | `src/sandbox.rs` | `SandboxPolicy`、Lua 默认沙箱、收紧 | 已完成 | V0.4 接 `eva-lua-host` 限制映射。 |
 | `src/effective.rs` | `PolicyLayer`、`EffectivePolicy`、request 校验 | 已完成 | V0.4 接 runtime/capability gate。 |
-| `src/domains.rs` | YAML policy domain parser、`RuntimePolicyGate`、高风险 action decision | 已完成 V1.9.2 | 后续接生产 runtime/supervisor/hardware apply。 |
+| `src/domains.rs` | YAML policy domain parser、`RuntimePolicyGate`、高风险 action decision | 已完成 V1.13.2 | 已接 provider credential session scope；后续接生产 runtime/supervisor/hardware apply。 |
 | `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和后续阶段。 |
 | policy domain parser | YAML domain 到策略层 | 已完成 V1.9.2 | 扩展真实 provider/hardware/backup/lifecycle 细粒度策略。 |
 
@@ -144,6 +146,7 @@ V0.2 已落地最小权限契约：
 | V0.3 | CLI 将使用 `ensure_request_allowed` 转换成人类/JSON 诊断和 exit code |
 | V0.4 | Runtime/Tool Layer 在 capability 调用前应用 effective policy |
 | V1.9.2 | Adapter/MCP/Hardware/Runtime/Lua policy domain 解释并输出 runtime gate audit |
+| V1.13.2 | Provider credential session scope 复用 `RuntimePolicyGate` 输出 allow/deny audit |
 | V1.10+ | Hardware、restore、upgrade 等真实 apply 路径复用 runtime gate 并写入生产 audit sink |
 
 ## English

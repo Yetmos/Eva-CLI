@@ -17,8 +17,9 @@ pub use registry::AdapterRegistry;
 pub use router::{AdapterRoute, AdapterRouteRequest, AdapterRouter};
 pub use runtime::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};
 pub use supervisor::{
-    InMemoryProviderSupervisor, ProviderExecutionOutcome, ProviderExecutionRequest,
-    ProviderExecutionSlot, ProviderSupervisor,
+    InMemoryProviderSupervisor, ProviderCredentialScope, ProviderExecutionOutcome,
+    ProviderExecutionRequest, ProviderExecutionSlot, ProviderSupervisor, PROVIDER_SESSION_ID_ENV,
+    PROVIDER_SESSION_ID_HEADER, PROVIDER_SESSION_TOKEN_ENV, PROVIDER_SESSION_TOKEN_HEADER,
 };
 pub use transports::http::{
     HttpClient, HttpClientResponse, HttpInvocation, HttpMethod, HttpRunReport, HttpRunner,

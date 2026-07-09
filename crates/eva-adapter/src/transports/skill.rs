@@ -2,6 +2,7 @@
 
 use crate::manifest::{AdapterHandle, SkillInputSchema};
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
+use crate::supervisor::{redact_provider_session_tokens, validate_credential_scope_for_provider};
 use eva_core::{AdapterId, EvaError, RequestId};
 use eva_storage::{ArtifactRecord, FileSystemArtifactStore};
 use std::collections::{BTreeMap, BTreeSet};
@@ -198,6 +199,14 @@ pub fn invoke(
     }
     validate_input_size(handle, &invocation.input)?;
     validate_skill_input(handle, &invocation.input)?;
+    let credential_scope = validate_credential_scope_for_provider(
+        invocation.credential_scope(),
+        &handle.id,
+        &invocation.request_id,
+        &invocation.capability,
+        !handle.credential_env.is_empty(),
+    )?
+    .cloned();
 
     let trace = invocation.trace_for_adapter(&handle.id);
     let request_id = invocation.request_id;
@@ -215,7 +224,10 @@ pub fn invoke(
     } else {
         handle.args.clone()
     };
-    let credential_env = credential_env_values(&handle.credential_env);
+    let mut credential_env = credential_env_values(&handle.credential_env);
+    if let Some(scope) = &credential_scope {
+        scope.apply_env(&mut credential_env.values);
+    }
     let artifact_root = artifact_root(handle);
     let work_root = artifact_root
         .join("work")
@@ -246,6 +258,9 @@ pub fn invoke(
     let mut audit = vec![format!("adapter.invoked:{}", handle.id.as_str())];
     audit.extend(run.audit.clone());
     audit.extend(credential_env.audit);
+    if let Some(scope) = &credential_scope {
+        audit.extend(scope.audit_entries());
+    }
     audit.push(format!("skill.status:{}", run.status.as_str()));
     audit.push(format!(
         "skill.artifacts:{}",
@@ -1089,6 +1104,7 @@ fn redact_bytes(bytes: Vec<u8>, sensitive_values: &[String]) -> Vec<u8> {
     for value in sensitive_values {
         text = text.replace(value, "[REDACTED]");
     }
+    text = redact_provider_session_tokens(&text);
     text.into_bytes()
 }
 
@@ -1174,6 +1190,7 @@ fn json_string(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::manifest::{SkillInputProperty, SkillInputSchema};
+    use crate::supervisor::{ProviderCredentialScope, PROVIDER_SESSION_TOKEN_ENV};
     use eva_config::AdapterTransport;
     use eva_core::{CapabilityName, ErrorKind};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1234,20 +1251,27 @@ mod tests {
             root.path.clone(),
         )
         .with_credential_env(env_name);
+        let request_id = RequestId::parse("req-skill-process").unwrap();
+        let capability = CapabilityName::parse("workflow.code_review").unwrap();
+        let scope = ProviderCredentialScope::new_for_session(
+            "session-skill-process",
+            handle.id.clone(),
+            request_id.clone(),
+            capability.clone(),
+        );
 
         let report = invoke(
             &handle,
-            AdapterInvocation::new(
-                RequestId::parse("req-skill-process").unwrap(),
-                CapabilityName::parse("workflow.code_review").unwrap(),
-            )
-            .with_input("{\"scope\":\"current_diff\",\"severity\":\"major\"}"),
+            AdapterInvocation::new(request_id, capability)
+                .with_credential_scope(scope)
+                .with_input("{\"scope\":\"current_diff\",\"severity\":\"major\"}"),
         )
         .unwrap();
         env::remove_var(env_name);
 
         assert_eq!(report.status, "completed");
         assert!(!report.output.contains(secret));
+        assert!(!report.output.contains("eva-provider-session:"));
         assert!(report.output.contains("[REDACTED]"));
         assert!(report
             .output
@@ -1255,6 +1279,9 @@ mod tests {
         assert!(report
             .audit
             .contains(&format!("credential_env:{env_name}:redacted")));
+        assert!(report
+            .audit
+            .contains(&"credential.session_token:redacted".to_owned()));
     }
 
     #[test]
@@ -1458,7 +1485,7 @@ mod tests {
             "-NoProfile".to_owned(),
             "-Command".to_owned(),
             format!(
-                "$dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'result.txt') -Value 'artifact-ok'; [Console]::Out.Write('{secret}'); [Console]::Error.Write('stderr-ok')"
+                "$dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'result.txt') -Value 'artifact-ok'; [Console]::Out.Write('{secret}'); [Console]::Out.Write($env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Error.Write('stderr-ok'); [Console]::Error.Write($env:{PROVIDER_SESSION_TOKEN_ENV})"
             ),
         ]
     }
@@ -1468,7 +1495,7 @@ mod tests {
         vec![
             "-c".to_owned(),
             format!(
-                "mkdir -p \"$EVA_SKILL_ARTIFACT_DIR\"; printf artifact-ok > \"$EVA_SKILL_ARTIFACT_DIR/result.txt\"; printf '{secret}'; printf stderr-ok >&2"
+                "mkdir -p \"$EVA_SKILL_ARTIFACT_DIR\"; printf artifact-ok > \"$EVA_SKILL_ARTIFACT_DIR/result.txt\"; printf '{secret}'; printf \"${PROVIDER_SESSION_TOKEN_ENV}\"; printf stderr-ok >&2; printf \"${PROVIDER_SESSION_TOKEN_ENV}\" >&2"
             ),
         ]
     }

@@ -92,6 +92,7 @@ pub struct RuntimePolicyDomain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HighRiskAction {
     AdapterInvoke,
+    ProviderCredentialSession,
     McpToolCall,
     McpTopicEmit,
     SkillRun,
@@ -240,6 +241,7 @@ impl HighRiskAction {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AdapterInvoke => "adapter.invoke",
+            Self::ProviderCredentialSession => "provider.credential_session",
             Self::McpToolCall => "mcp.tool.call",
             Self::McpTopicEmit => "mcp.topic.emit",
             Self::SkillRun => "skill.run",
@@ -256,6 +258,7 @@ impl HighRiskAction {
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "adapter.invoke" => Ok(Self::AdapterInvoke),
+            "provider.credential_session" => Ok(Self::ProviderCredentialSession),
             "mcp.tool.call" => Ok(Self::McpToolCall),
             "mcp.topic.emit" => Ok(Self::McpTopicEmit),
             "skill.run" => Ok(Self::SkillRun),
@@ -365,6 +368,9 @@ impl RuntimePolicyGate {
             HighRiskAction::HardwareBind => self.decide_hardware_bind(request),
             HighRiskAction::HardwareRawIo => self.decide_hardware_raw_io(request),
             HighRiskAction::AdapterInvoke => self.decide_adapter_invoke(request),
+            HighRiskAction::ProviderCredentialSession => {
+                self.decide_provider_credential_session(request)
+            }
             HighRiskAction::SkillRun => self.decide_skill_run(request),
             HighRiskAction::BackupCreate
             | HighRiskAction::RestoreApply
@@ -392,6 +398,29 @@ impl RuntimePolicyGate {
             }
         }
         allowed(action, "adapter request is within policy domain")
+    }
+
+    fn decide_provider_credential_session(&self, request: RuntimePolicyRequest) -> PolicyDecision {
+        let action = request.action;
+        let Some(adapter) = &request.adapter else {
+            return denied(action, "provider credential session requires adapter scope");
+        };
+        let Some(provider) = &request.provider else {
+            return denied(
+                action,
+                "provider credential session requires provider scope",
+            );
+        };
+        if adapter != provider {
+            return denied(
+                action,
+                "provider credential session cannot be reused across providers",
+            );
+        }
+        allowed(
+            action,
+            "provider credential session is scoped to requested provider",
+        )
     }
 
     fn decide_skill_run(&self, request: RuntimePolicyRequest) -> PolicyDecision {
@@ -1108,6 +1137,38 @@ mod tests {
 
         assert!(decision.allowed, "{decision:?}");
         assert!(decision.audit.contains(&"policy.decision:allow".to_owned()));
+    }
+
+    #[test]
+    fn runtime_gate_allows_provider_credential_session_for_matching_provider() {
+        let gate = RuntimePolicyGate::new(PolicyDomainSet::default());
+
+        let decision = gate.decide(
+            RuntimePolicyRequest::new(HighRiskAction::ProviderCredentialSession)
+                .with_adapter(adapter("stdio-test"))
+                .with_provider(adapter("stdio-test"))
+                .with_capability(capability("repo.analyze")),
+        );
+
+        assert!(decision.allowed, "{decision:?}");
+        assert!(decision
+            .audit
+            .contains(&"policy.action:provider.credential_session".to_owned()));
+    }
+
+    #[test]
+    fn runtime_gate_denies_provider_credential_session_cross_provider() {
+        let gate = RuntimePolicyGate::new(PolicyDomainSet::default());
+
+        let decision = gate.decide(
+            RuntimePolicyRequest::new(HighRiskAction::ProviderCredentialSession)
+                .with_adapter(adapter("stdio-test"))
+                .with_provider(adapter("other-provider"))
+                .with_capability(capability("repo.analyze")),
+        );
+
+        assert!(!decision.allowed);
+        assert!(decision.reason.contains("across providers"));
     }
 
     #[test]

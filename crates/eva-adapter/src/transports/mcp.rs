@@ -2,6 +2,7 @@
 
 use crate::manifest::AdapterHandle;
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
+use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::EvaError;
 use eva_mcp::{McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig};
 
@@ -18,6 +19,14 @@ pub fn invoke(
             .with_context("capability", invocation.capability.as_str())
     })?;
     validate_input_size(handle, &invocation.input)?;
+    let credential_scope = validate_credential_scope_for_provider(
+        invocation.credential_scope(),
+        &handle.id,
+        &invocation.request_id,
+        &invocation.capability,
+        false,
+    )?
+    .cloned();
     let session_config = handle.mcp_session_config()?;
     let request_id = invocation.request_id.clone();
     let capability = invocation.capability.clone();
@@ -47,6 +56,9 @@ pub fn invoke(
         ),
         format!("mcp.command:{}", session_config.process.command),
     ];
+    if let Some(scope) = &credential_scope {
+        audit.extend(scope.audit_entries());
+    }
     audit.extend(call.audit);
     Ok(AdapterInvokeReport {
         request_id,

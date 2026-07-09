@@ -19,6 +19,7 @@ pub enum AuditAction {
     LuaHostAudit,
     CapabilityInvoked,
     AdapterInvoked,
+    ProviderCredentialSession,
     SkillRunStarted,
     SkillRunCompleted,
     SkillRunFailed,
@@ -78,6 +79,7 @@ impl AuditAction {
             Self::LuaHostAudit => "lua.host.audit",
             Self::CapabilityInvoked => "capability.invoked",
             Self::AdapterInvoked => "adapter.invoked",
+            Self::ProviderCredentialSession => "provider.credential_session",
             Self::SkillRunStarted => "skill.run.started",
             Self::SkillRunCompleted => "skill.run.completed",
             Self::SkillRunFailed => "skill.run.failed",
@@ -145,6 +147,10 @@ mod tests {
         assert_eq!(AuditAction::RuntimeRecovered.as_str(), "runtime.recovered");
         assert_eq!(AuditAction::LuaHostLog.as_str(), "lua.host.log");
         assert_eq!(AuditAction::LuaHostAudit.as_str(), "lua.host.audit");
+        assert_eq!(
+            AuditAction::ProviderCredentialSession.as_str(),
+            "provider.credential_session"
+        );
         assert_eq!(AuditAction::SkillRunStarted.as_str(), "skill.run.started");
         assert_eq!(
             AuditAction::SkillRunCompleted.as_str(),
