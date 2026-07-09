@@ -11,7 +11,7 @@ use eva_config::{AdapterTransport, ProjectConfig};
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
 use eva_observability::{SpanId, TraceFields};
 use eva_policy::{HighRiskAction, PolicyDomainSet, RuntimePolicyGate, RuntimePolicyRequest};
-use eva_storage::ProviderProcessSnapshot;
+use eva_storage::{FileSystemProviderProcessTable, ProviderProcessSnapshot};
 use std::cell::RefCell;
 
 /// Architectural responsibility for this module.
@@ -110,11 +110,23 @@ impl AdapterRuntime {
         registry: AdapterRegistry,
         policy_gate: RuntimePolicyGate,
     ) -> Self {
+        Self::from_registry_with_policy_and_supervisor(
+            registry,
+            policy_gate,
+            InMemoryProviderSupervisor::new(),
+        )
+    }
+
+    fn from_registry_with_policy_and_supervisor(
+        registry: AdapterRegistry,
+        policy_gate: RuntimePolicyGate,
+        supervisor: InMemoryProviderSupervisor,
+    ) -> Self {
         let router = AdapterRouter::new(registry.clone());
         Self {
             registry,
             router,
-            supervisor: RefCell::new(InMemoryProviderSupervisor::new()),
+            supervisor: RefCell::new(supervisor),
             policy_gate,
         }
     }
@@ -123,6 +135,30 @@ impl AdapterRuntime {
         let registry = AdapterRegistry::from_project(project)?;
         let policy_gate = RuntimePolicyGate::from_project(project)?;
         Ok(Self::from_registry_with_policy(registry, policy_gate))
+    }
+
+    pub fn from_project_with_provider_process_table(
+        project: &ProjectConfig,
+        process_table: FileSystemProviderProcessTable,
+    ) -> Result<Self, EvaError> {
+        let registry = AdapterRegistry::from_project(project)?;
+        let policy_gate = RuntimePolicyGate::from_project(project)?;
+        Ok(Self::from_registry_with_policy_and_supervisor(
+            registry,
+            policy_gate,
+            InMemoryProviderSupervisor::with_process_table(process_table),
+        ))
+    }
+
+    pub fn from_registry_with_provider_process_table(
+        registry: AdapterRegistry,
+        process_table: FileSystemProviderProcessTable,
+    ) -> Self {
+        Self::from_registry_with_policy_and_supervisor(
+            registry,
+            RuntimePolicyGate::new(PolicyDomainSet::default()),
+            InMemoryProviderSupervisor::with_process_table(process_table),
+        )
     }
 
     pub fn registry(&self) -> &AdapterRegistry {
@@ -295,6 +331,10 @@ mod tests {
     use eva_config::load_project_config;
     use eva_config::AdapterTransport;
     use eva_core::ErrorKind;
+    use eva_storage::{
+        DurableBackendOptions, FileSystemDurableBackend, FileSystemProviderProcessTable,
+        ProviderProcessTable,
+    };
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -477,6 +517,46 @@ mod tests {
     }
 
     #[test]
+    fn runtime_can_mirror_provider_processes_to_durable_table() {
+        let root = temp_root("durable-provider-table");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(&root)).unwrap();
+        let process_table = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let runtime = AdapterRuntime::from_registry_with_provider_process_table(
+            registry_with_handle(stdio_handle(
+                true,
+                "definitely-not-started",
+                Vec::new(),
+                Vec::new(),
+            )),
+            process_table,
+        );
+
+        let error = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-durable-provider-table").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Unavailable);
+        let reader = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let processes = reader.list().unwrap();
+        assert_eq!(processes.len(), 1);
+        assert_eq!(
+            processes[0].session_id,
+            "session-stdio-test-req-durable-provider-table"
+        );
+        assert!(!processes[0].active);
+        assert_eq!(processes[0].health, "failed");
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn runtime_blocks_new_provider_process_while_circuit_is_open() {
         let mut handle = stdio_handle(true, "definitely-not-started", Vec::new(), Vec::new());
         handle.circuit_breaker = Some(AdapterCircuitBreaker {
@@ -594,9 +674,13 @@ mod tests {
     }
 
     fn runtime_with_handle(handle: AdapterHandle) -> AdapterRuntime {
+        AdapterRuntime::from_registry(registry_with_handle(handle))
+    }
+
+    fn registry_with_handle(handle: AdapterHandle) -> AdapterRegistry {
         let mut registry = AdapterRegistry::new();
         registry.register(handle).unwrap();
-        AdapterRuntime::from_registry(registry)
+        registry
     }
 
     fn http_header_end(bytes: &[u8]) -> Option<usize> {
@@ -626,6 +710,19 @@ mod tests {
                 None
             }
         })
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "eva-adapter-runtime-{name}-{}-{now}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
     }
 
     fn stdio_handle(

@@ -4,7 +4,10 @@ use crate::manifest::{AdapterCircuitBreaker, AdapterHandle, AdapterRateLimit};
 use crate::runtime::AdapterInvocation;
 use eva_config::AdapterTransport;
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
-use eva_storage::{InMemoryProviderProcessTable, ProviderProcessSnapshot, ProviderProcessTable};
+use eva_storage::{
+    FileSystemProviderProcessTable, InMemoryProviderProcessTable, ProviderProcessSnapshot,
+    ProviderProcessTable,
+};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -70,6 +73,7 @@ pub trait ProviderSupervisor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InMemoryProviderSupervisor {
     table: InMemoryProviderProcessTable,
+    durable_table: Option<FileSystemProviderProcessTable>,
     rate_windows: BTreeMap<AdapterId, ProviderRateWindow>,
     circuit_states: BTreeMap<AdapterId, ProviderCircuitState>,
 }
@@ -275,6 +279,16 @@ impl InMemoryProviderSupervisor {
     pub fn new() -> Self {
         Self {
             table: InMemoryProviderProcessTable::new(),
+            durable_table: None,
+            rate_windows: BTreeMap::new(),
+            circuit_states: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_process_table(durable_table: FileSystemProviderProcessTable) -> Self {
+        Self {
+            table: InMemoryProviderProcessTable::new(),
+            durable_table: Some(durable_table),
             rate_windows: BTreeMap::new(),
             circuit_states: BTreeMap::new(),
         }
@@ -312,7 +326,8 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
             request.restart_policy,
         );
         snapshot.audit.extend(limit_audit);
-        self.table.upsert(snapshot)?;
+        snapshot.retry_backoff_ms = request.retry_backoff_ms;
+        self.upsert_process(snapshot)?;
         Ok(ProviderExecutionSlot {
             session_id,
             provider_process_id,
@@ -330,7 +345,7 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         let mut snapshot = self.table.read(&slot.session_id)?;
         snapshot.release(outcome.health, outcome.last_error)?;
         self.record_circuit_outcome(slot, &mut snapshot);
-        self.table.upsert(snapshot.clone())?;
+        self.upsert_process(snapshot.clone())?;
         Ok(snapshot)
     }
 
@@ -340,6 +355,14 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
 }
 
 impl InMemoryProviderSupervisor {
+    fn upsert_process(&mut self, snapshot: ProviderProcessSnapshot) -> Result<(), EvaError> {
+        self.table.upsert(snapshot.clone())?;
+        if let Some(table) = &mut self.durable_table {
+            table.upsert(snapshot)?;
+        }
+        Ok(())
+    }
+
     fn admit_concurrency(&self, request: &ProviderExecutionRequest) -> Result<(), EvaError> {
         let Some(max_concurrency) = request.max_concurrency else {
             return Ok(());

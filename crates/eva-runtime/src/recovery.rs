@@ -3,9 +3,10 @@
 use eva_core::{EvaError, EventId};
 use eva_eventbus::DurableEventBus;
 use eva_observability::{AuditAction, AuditEvent, AuditOutcome, AuditSink, TraceFields};
+use eva_scheduler::{decide_retry_backoff, RetryBackoffPolicy};
 use eva_storage::{
-    EventLogStatus, FileSystemTaskStateStore, TaskStateReplaySnapshot, TaskStateSnapshot,
-    TaskStateStore,
+    EventLogStatus, FileSystemTaskStateStore, ProviderProcessSnapshot, ProviderProcessTable,
+    TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
 };
 
 /// Architectural responsibility for this module.
@@ -27,6 +28,11 @@ pub struct RuntimeRecoveryReport {
     pub recovered_snapshots: Vec<TaskStateSnapshot>,
     pub redriven_events: Vec<RecoveredEvent>,
     pub skipped_redrive_events: Vec<SkippedRedriveEvent>,
+    pub scanned_provider_processes: usize,
+    pub recovered_provider_processes: Vec<RecoveredProviderProcess>,
+    pub unchanged_provider_processes: Vec<String>,
+    pub provider_backoff_tasks: Vec<ProviderBackoffTask>,
+    pub skipped_provider_tasks: Vec<SkippedProviderTask>,
     pub audit: Vec<String>,
 }
 
@@ -51,6 +57,35 @@ pub struct RecoveredEvent {
 pub struct SkippedRedriveEvent {
     pub task_id: String,
     pub event_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredProviderProcess {
+    pub session_id: String,
+    pub provider_process_id: String,
+    pub request_id: String,
+    pub adapter_id: String,
+    pub previous_health: String,
+    pub health: String,
+    pub task_id: String,
+    pub task_status: Option<String>,
+    pub retry_scheduled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderBackoffTask {
+    pub task_id: String,
+    pub session_id: String,
+    pub next_attempt: u32,
+    pub due_after_ms: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedProviderTask {
+    pub task_id: String,
+    pub session_id: String,
     pub reason: String,
 }
 
@@ -95,6 +130,11 @@ impl RuntimeRecoveryCoordinator {
             recovered_snapshots,
             redriven_events: Vec::new(),
             skipped_redrive_events: Vec::new(),
+            scanned_provider_processes: 0,
+            recovered_provider_processes: Vec::new(),
+            unchanged_provider_processes: Vec::new(),
+            provider_backoff_tasks: Vec::new(),
+            skipped_provider_tasks: Vec::new(),
             audit,
         }
     }
@@ -104,6 +144,17 @@ impl RuntimeRecoveryCoordinator {
         store: &mut FileSystemTaskStateStore,
     ) -> Result<RuntimeRecoveryReport, EvaError> {
         let mut report = self.recover_snapshots(store.list_snapshots()?);
+        persist_recovered_snapshots(store, &mut report)?;
+        Ok(report)
+    }
+
+    pub fn recover_task_store_with_provider_processes(
+        &self,
+        store: &mut FileSystemTaskStateStore,
+        process_table: &mut impl ProviderProcessTable,
+    ) -> Result<RuntimeRecoveryReport, EvaError> {
+        let mut report = self.recover_snapshots(store.list_snapshots()?);
+        recover_provider_processes(&mut report, process_table)?;
         persist_recovered_snapshots(store, &mut report)?;
         Ok(report)
     }
@@ -334,6 +385,170 @@ fn recovery_audit_event(trace: TraceFields, report: &RuntimeRecoveryReport) -> A
             "skipped_redrive_events",
             report.skipped_redrive_events.len().to_string(),
         )
+        .with_field(
+            "scanned_provider_processes",
+            report.scanned_provider_processes.to_string(),
+        )
+        .with_field(
+            "recovered_provider_processes",
+            report.recovered_provider_processes.len().to_string(),
+        )
+}
+
+fn recover_provider_processes(
+    report: &mut RuntimeRecoveryReport,
+    process_table: &mut impl ProviderProcessTable,
+) -> Result<(), EvaError> {
+    let processes = process_table.list()?;
+    report.scanned_provider_processes = processes.len();
+
+    for mut process in processes {
+        if !process.active {
+            report.unchanged_provider_processes.push(process.session_id);
+            continue;
+        }
+
+        let previous_health = process.health.clone();
+        let task_id = process.request_id.as_str().to_owned();
+        let task_status = recover_provider_task(report, &process);
+        let retry_scheduled = task_status
+            .as_ref()
+            .map(|status| status == "recovering")
+            .unwrap_or(false)
+            && report
+                .provider_backoff_tasks
+                .iter()
+                .any(|entry| entry.session_id == process.session_id);
+        process
+            .mark_interrupted_after_restart("daemon restart interrupted active provider session");
+        process_table.upsert(process.clone())?;
+
+        report
+            .recovered_provider_processes
+            .push(RecoveredProviderProcess {
+                session_id: process.session_id,
+                provider_process_id: process.provider_process_id,
+                request_id: process.request_id.as_str().to_owned(),
+                adapter_id: process.adapter_id.as_str().to_owned(),
+                previous_health,
+                health: process.health,
+                task_id,
+                task_status,
+                retry_scheduled,
+            });
+    }
+
+    report.audit.push(format!(
+        "runtime.recovery:provider_scanned:{}",
+        report.scanned_provider_processes
+    ));
+    report.audit.push(format!(
+        "runtime.recovery:provider_recovered:{}",
+        report.recovered_provider_processes.len()
+    ));
+    report.audit.push(format!(
+        "runtime.recovery:provider_unchanged:{}",
+        report.unchanged_provider_processes.len()
+    ));
+    report.audit.push(format!(
+        "runtime.recovery:provider_backoff:{}",
+        report.provider_backoff_tasks.len()
+    ));
+    report.audit.push(format!(
+        "runtime.recovery:provider_task_skipped:{}",
+        report.skipped_provider_tasks.len()
+    ));
+    Ok(())
+}
+
+fn recover_provider_task(
+    report: &mut RuntimeRecoveryReport,
+    process: &ProviderProcessSnapshot,
+) -> Option<String> {
+    let task_id = process.request_id.as_str();
+    let Some(snapshot) = report
+        .recovered_snapshots
+        .iter_mut()
+        .find(|snapshot| snapshot.task_id == task_id)
+    else {
+        let reason = if report.unchanged_tasks.iter().any(|task| task == task_id) {
+            "task_already_terminal"
+        } else {
+            "task_snapshot_missing"
+        };
+        report.skipped_provider_tasks.push(SkippedProviderTask {
+            task_id: task_id.to_owned(),
+            session_id: process.session_id.clone(),
+            reason: reason.to_owned(),
+        });
+        return None;
+    };
+
+    let backoff = provider_backoff_decision(process, snapshot);
+    if let Some(backoff) = backoff {
+        snapshot.status = "recovering".to_owned();
+        snapshot.interrupted_reason =
+            Some("provider restart recovery scheduled scheduler backoff".to_owned());
+        snapshot.push_log(
+            "warning",
+            format!(
+                "provider recovery scheduled scheduler backoff for session {} after {}ms",
+                process.session_id, backoff.due_after_ms
+            ),
+        );
+        report.provider_backoff_tasks.push(backoff);
+    } else {
+        if snapshot.status != "recovering" {
+            snapshot.status = "interrupted".to_owned();
+            snapshot.interrupted_reason =
+                Some("provider session interrupted by daemon restart".to_owned());
+            snapshot.error_kind = Some("interrupted".to_owned());
+            snapshot.error_message =
+                Some("provider session interrupted by daemon restart".to_owned());
+        }
+        snapshot.push_log(
+            "warning",
+            format!(
+                "provider recovery linked interrupted session {}",
+                process.session_id
+            ),
+        );
+    }
+    Some(snapshot.status.clone())
+}
+
+fn provider_backoff_decision(
+    process: &ProviderProcessSnapshot,
+    snapshot: &TaskStateSnapshot,
+) -> Option<ProviderBackoffTask> {
+    if !provider_restart_policy_allows_backoff(&process.restart_policy) {
+        return None;
+    }
+    let retry_backoff_ms = process.retry_backoff_ms?;
+    let max_attempts = snapshot.retry_max_attempts.try_into().unwrap_or(u32::MAX);
+    let attempts = snapshot.attempts.try_into().unwrap_or(u32::MAX);
+    let decision = decide_retry_backoff(
+        true,
+        attempts,
+        RetryBackoffPolicy {
+            max_attempts,
+            backoff_ms: retry_backoff_ms,
+        },
+    );
+    if !decision.enqueue {
+        return None;
+    }
+    Some(ProviderBackoffTask {
+        task_id: snapshot.task_id.clone(),
+        session_id: process.session_id.clone(),
+        next_attempt: decision.next_attempt,
+        due_after_ms: decision.due_after_ms.unwrap_or(retry_backoff_ms),
+        reason: decision.reason,
+    })
+}
+
+fn provider_restart_policy_allows_backoff(policy: &str) -> bool {
+    matches!(policy, "scheduler_backoff" | "retry_backoff" | "retryable")
 }
 
 #[cfg(test)]
@@ -344,7 +559,8 @@ mod tests {
     use eva_observability::{SpanId, TraceFields};
     use eva_storage::{
         DurableBackendOptions, FileSystemAuditSink, FileSystemDurableBackend,
-        TaskStateDeadLetterSnapshot, TaskStateLogSnapshot,
+        FileSystemProviderProcessTable, ProviderProcessTable, TaskStateDeadLetterSnapshot,
+        TaskStateLogSnapshot,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -743,6 +959,103 @@ mod tests {
         assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
     }
 
+    #[test]
+    fn recovery_interrupts_active_provider_process_and_preserves_task() {
+        let root = test_root("provider-interrupted");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let mut task = snapshot("req-provider-recovery-interrupted", "running");
+        task.retry_max_attempts = 3;
+        store.write(&task).unwrap();
+        processes
+            .upsert(provider_process(
+                "session-provider-recovery-interrupted",
+                "req-provider-recovery-interrupted",
+                "none",
+                None,
+            ))
+            .unwrap();
+
+        let report = RuntimeRecoveryCoordinator
+            .recover_task_store_with_provider_processes(&mut store, &mut processes)
+            .unwrap();
+        let recovered_task = store
+            .read(Some("req-provider-recovery-interrupted"))
+            .unwrap();
+        let recovered_process = processes
+            .read("session-provider-recovery-interrupted")
+            .unwrap();
+
+        assert_eq!(report.scanned_provider_processes, 1);
+        assert_eq!(report.recovered_provider_processes.len(), 1);
+        assert_eq!(
+            report.recovered_provider_processes[0]
+                .task_status
+                .as_deref(),
+            Some("interrupted")
+        );
+        assert!(report.provider_backoff_tasks.is_empty());
+        assert_eq!(recovered_task.status, "interrupted");
+        assert_eq!(
+            recovered_task.interrupted_reason.as_deref(),
+            Some("provider session interrupted by daemon restart")
+        );
+        assert!(!recovered_process.active);
+        assert_eq!(recovered_process.health, "interrupted");
+        assert!(recovered_process
+            .audit
+            .iter()
+            .any(|entry| entry == "provider.recovery:restart_scan"));
+    }
+
+    #[test]
+    fn recovery_schedules_provider_backoff_only_when_restart_policy_allows_it() {
+        let root = test_root("provider-backoff");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let mut task = snapshot("req-provider-recovery-backoff", "running");
+        task.attempts = 1;
+        task.retry_max_attempts = 3;
+        store.write(&task).unwrap();
+        processes
+            .upsert(provider_process(
+                "session-provider-recovery-backoff",
+                "req-provider-recovery-backoff",
+                "scheduler_backoff",
+                Some(2500),
+            ))
+            .unwrap();
+
+        let report = RuntimeRecoveryCoordinator
+            .recover_task_store_with_provider_processes(&mut store, &mut processes)
+            .unwrap();
+        let recovered_task = store.read(Some("req-provider-recovery-backoff")).unwrap();
+
+        assert_eq!(report.provider_backoff_tasks.len(), 1);
+        assert_eq!(
+            report.provider_backoff_tasks[0].task_id,
+            "req-provider-recovery-backoff"
+        );
+        assert_eq!(report.provider_backoff_tasks[0].next_attempt, 2);
+        assert_eq!(report.provider_backoff_tasks[0].due_after_ms, 2500);
+        assert_eq!(
+            report.recovered_provider_processes[0]
+                .task_status
+                .as_deref(),
+            Some("recovering")
+        );
+        assert!(report.recovered_provider_processes[0].retry_scheduled);
+        assert_eq!(recovered_task.status, "recovering");
+        assert_eq!(
+            recovered_task.interrupted_reason.as_deref(),
+            Some("provider restart recovery scheduled scheduler backoff")
+        );
+    }
+
     fn snapshot(task_id: &str, status: &str) -> TaskStateSnapshot {
         TaskStateSnapshot {
             task_id: task_id.to_owned(),
@@ -784,6 +1097,27 @@ mod tests {
             Topic::parse("/input/user").unwrap(),
             EventPayload::text("hello"),
         )
+    }
+
+    fn provider_process(
+        session_id: &str,
+        request_id: &str,
+        restart_policy: &str,
+        retry_backoff_ms: Option<u64>,
+    ) -> ProviderProcessSnapshot {
+        let mut snapshot = ProviderProcessSnapshot::running(
+            session_id,
+            format!("proc-{session_id}"),
+            eva_core::RequestId::parse(request_id).unwrap(),
+            eva_core::AdapterId::parse("stdio-test").unwrap(),
+            eva_core::CapabilityName::parse("repo.analyze").unwrap(),
+            "stdio",
+            "fnv64:0123456789abcdef",
+            "stdio-runner --once",
+            restart_policy,
+        );
+        snapshot.retry_backoff_ms = retry_backoff_ms;
+        snapshot
     }
 
     struct TestRoot {

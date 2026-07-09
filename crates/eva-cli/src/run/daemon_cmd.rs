@@ -357,6 +357,18 @@ fn write_daemon_start<W: Write>(
                 .map_err(write_error_kind)?;
             writeln!(
                 writer,
+                "recovery_scanned_tasks: {}",
+                report.recovery.scanned_tasks
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "recovery_scanned_provider_processes: {}",
+                report.recovery.scanned_provider_processes
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
                 "observability_backend: {}",
                 report.observability.backend_root
             )
@@ -408,7 +420,7 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
         .map(shutdown_json)
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"status\":{},\"mode\":{},\"pid\":{},\"generation_id\":{},\"project_root\":{},\"foreground\":{},\"dev_mode\":{},\"provider_processes_started\":{},\"paths\":{},\"durable_backend\":{},\"policy\":{},\"observability\":{},\"shutdown\":{},\"audit\":{}}}",
+        "{{\"status\":{},\"mode\":{},\"pid\":{},\"generation_id\":{},\"project_root\":{},\"foreground\":{},\"dev_mode\":{},\"provider_processes_started\":{},\"paths\":{},\"durable_backend\":{},\"recovery\":{},\"policy\":{},\"observability\":{},\"shutdown\":{},\"audit\":{}}}",
         json_string(&report.status),
         json_string(&report.mode),
         report.pid,
@@ -419,10 +431,118 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
         report.provider_processes_started,
         daemon_paths_json(&report.paths),
         durable_backend_json(&report.durable_backend),
+        recovery_json(&report.recovery),
         daemon_policy_json(&report.policy),
         observability_json(&report.observability),
         shutdown,
         json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn recovery_json(report: &eva_runtime::RuntimeRecoveryReport) -> String {
+    format!(
+        "{{\"scanned_tasks\":{},\"recovered_tasks\":{},\"unchanged_tasks\":{},\"redriven_events\":{},\"skipped_redrive_events\":{},\"scanned_provider_processes\":{},\"recovered_provider_processes\":{},\"unchanged_provider_processes\":{},\"provider_backoff_tasks\":{},\"skipped_provider_tasks\":{},\"audit\":{}}}",
+        report.scanned_tasks,
+        json_array(report.recovered_tasks.iter().map(recovered_task_json)),
+        json_array(report.unchanged_tasks.iter().map(|entry| json_string(entry))),
+        json_array(report.redriven_events.iter().map(recovered_event_json)),
+        json_array(
+            report
+                .skipped_redrive_events
+                .iter()
+                .map(skipped_redrive_event_json)
+        ),
+        report.scanned_provider_processes,
+        json_array(
+            report
+                .recovered_provider_processes
+                .iter()
+                .map(recovered_provider_process_json)
+        ),
+        json_array(
+            report
+                .unchanged_provider_processes
+                .iter()
+                .map(|entry| json_string(entry))
+        ),
+        json_array(
+            report
+                .provider_backoff_tasks
+                .iter()
+                .map(provider_backoff_task_json)
+        ),
+        json_array(
+            report
+                .skipped_provider_tasks
+                .iter()
+                .map(skipped_provider_task_json)
+        ),
+        json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn recovered_task_json(task: &eva_runtime::RecoveredTask) -> String {
+    format!(
+        "{{\"task_id\":{},\"previous_status\":{},\"status\":{},\"redrive_candidate\":{}}}",
+        json_string(&task.task_id),
+        json_string(&task.previous_status),
+        json_string(&task.status),
+        task.redrive_candidate
+    )
+}
+
+fn recovered_event_json(event: &eva_runtime::RecoveredEvent) -> String {
+    format!(
+        "{{\"task_id\":{},\"event_id\":{},\"replay_event_id\":{},\"sequence\":{},\"topic\":{}}}",
+        json_string(&event.task_id),
+        json_string(&event.event_id),
+        json_string(&event.replay_event_id),
+        event.sequence,
+        json_string(&event.topic)
+    )
+}
+
+fn skipped_redrive_event_json(event: &eva_runtime::SkippedRedriveEvent) -> String {
+    format!(
+        "{{\"task_id\":{},\"event_id\":{},\"reason\":{}}}",
+        json_string(&event.task_id),
+        json_string(&event.event_id),
+        json_string(&event.reason)
+    )
+}
+
+fn recovered_provider_process_json(process: &eva_runtime::RecoveredProviderProcess) -> String {
+    format!(
+        "{{\"session_id\":{},\"provider_process_id\":{},\"request_id\":{},\"adapter_id\":{},\"previous_health\":{},\"health\":{},\"task_id\":{},\"task_status\":{},\"retry_scheduled\":{}}}",
+        json_string(&process.session_id),
+        json_string(&process.provider_process_id),
+        json_string(&process.request_id),
+        json_string(&process.adapter_id),
+        json_string(&process.previous_health),
+        json_string(&process.health),
+        json_string(&process.task_id),
+        option_json(process.task_status.as_deref()),
+        process.retry_scheduled
+    )
+}
+
+fn provider_backoff_task_json(task: &eva_runtime::ProviderBackoffTask) -> String {
+    format!(
+        "{{\"task_id\":{},\"session_id\":{},\"next_attempt\":{},\"due_after_ms\":{},\"reason\":{}}}",
+        json_string(&task.task_id),
+        json_string(&task.session_id),
+        task.next_attempt,
+        task.due_after_ms,
+        json_string(&task.reason)
+    )
+}
+
+fn skipped_provider_task_json(task: &eva_runtime::SkippedProviderTask) -> String {
+    format!(
+        "{{\"task_id\":{},\"session_id\":{},\"reason\":{}}}",
+        json_string(&task.task_id),
+        json_string(&task.session_id),
+        json_string(&task.reason)
     )
 }
 

@@ -1,6 +1,6 @@
 # eva-cli/src
 
-更新时间：2026-07-08
+更新时间：2026-07-09
 
 本目录承载 CLI 命令解析、执行分发、文本/JSON 输出、exit code 映射和本地/持久诊断文件读写。V1.11.4 开始把稳定命令组从 `run.rs` 拆到子模块：`version`、`doctor`、`config validate`、`inspect`、`task`、`adapter`、`mcp`、`skill`、`discovery`、`memory`、`observability`、`hardware`、`backup`、`snapshot`、`restore`、`upgrade` 和 `release` 已迁移到 `run/` 子模块，并继续复用 `run.rs` 的 JSON envelope、trace 字段和 exit code helper。
 
@@ -29,6 +29,7 @@
 | `run/release_cmd.rs` | V1.11.4 已实现 | `release check/security/perf/migration` 的 parser、artifact/distribution/security scan/benchmark evidence reader、文本/JSON writer 和 release report formatter；保持 V1.11.1-V1.11.3 release evidence gate 的公开 JSON shape 与 exit code 不变。 |
 | `run/emit_cmd.rs` | V1.11.5.1 已实现 | `emit` parser、typed `eva-core::Event` 构造、in-memory/durable EventBus publish、text/JSON receipt formatter；支持 payload、target、request/generation 和 trace metadata。 |
 | `run/agent_cmd.rs` | V1.12.5 已更新 | `agent status/drain/reload` parser、AgentRuntime/AgentLifecycle/DrainCoordinator/GenerationController evidence 构造、text/JSON formatter；`drain/reload` 连接 running daemon 时通过 mailbox 写入 daemon mutation state，无 daemon 时保持 `mutation_executed:false` evidence。 |
+| `run/daemon_cmd.rs` | V1.13.5 已更新 | `daemon start/status/stop/shutdown/submit/cancel/drain/reload` parser、foreground daemon smoke/control mailbox writer；`start` JSON 新增 task/provider process recovery report。 |
 | `run/capability_cmd.rs` | V1.11.5.3 已实现 | `capability list/probe/call` parser、CapabilityRegistry/provider selection/permission gate/runtime policy/adapter-backed host evidence 构造、text/JSON formatter；`call` 默认 dry-run，确认后受控 invoke。 |
 | `doctor.rs` | 已更新 | workspace/config/schema/runtime builder/Lua host 诊断。 |
 | `inspect.rs` | V0.3 已实现 | 从 `ProjectConfig` 和 `RuntimeSummary` 构造综合 inspect report。 |

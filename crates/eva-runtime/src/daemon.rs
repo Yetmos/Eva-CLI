@@ -1,8 +1,8 @@
 //! Local daemon process-boundary and control-plane contracts for V1.12.
 
 use crate::{
-    run_scheduler_retry_tick, RuntimeBuilder, SchedulerRetryTickOptions, SchedulerRetryTickReport,
-    ShutdownReport,
+    run_scheduler_retry_tick, RuntimeBuilder, RuntimeRecoveryCoordinator, RuntimeRecoveryReport,
+    SchedulerRetryTickOptions, SchedulerRetryTickReport, ShutdownReport,
 };
 use eva_config::ProjectConfig;
 use eva_core::{AgentId, EvaError, GenerationId, RequestId};
@@ -19,7 +19,7 @@ use eva_policy::PolicyDomainSet;
 use eva_scheduler::GenerationRouteGate;
 use eva_storage::{
     DurableBackend, DurableBackendOptions, DurableBackendReport, FileSystemDurableBackend,
-    FileSystemTaskStateStore, TaskStateSnapshot, TaskStateStore,
+    FileSystemProviderProcessTable, FileSystemTaskStateStore, TaskStateSnapshot, TaskStateStore,
 };
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -99,6 +99,7 @@ pub struct DaemonStartReport {
     pub provider_processes_started: bool,
     pub paths: DaemonPathReport,
     pub durable_backend: DurableBackendReport,
+    pub recovery: RuntimeRecoveryReport,
     pub policy: DaemonPolicyReport,
     pub observability: ObservabilitySmokeReport,
     pub shutdown: Option<ShutdownReport>,
@@ -1020,6 +1021,11 @@ pub fn start_daemon(
         &options.durable_backend,
     ))?;
     let durable_report = durable_backend.verify()?;
+    let mut task_store = FileSystemTaskStateStore::from_durable_layout(durable_backend.layout());
+    let mut provider_process_table =
+        FileSystemProviderProcessTable::from_durable_layout(durable_backend.layout());
+    let recovery = RuntimeRecoveryCoordinator
+        .recover_task_store_with_provider_processes(&mut task_store, &mut provider_process_table)?;
     drop(durable_backend);
     let policy = verify_policy(project)?;
     let observability = verify_observability(&options, trace)?;
@@ -1069,6 +1075,7 @@ pub fn start_daemon(
         provider_processes_started: false,
         paths: DaemonPathReport::from_options(&options),
         durable_backend: durable_report,
+        recovery,
         policy,
         observability,
         shutdown,
@@ -1080,6 +1087,7 @@ pub fn start_daemon(
             "daemon:v1.12.1:provider_processes_not_started".to_owned(),
             "daemon:v1.12.2:control_mailbox_ready".to_owned(),
             "daemon:v1.12.4:scheduler_retry_tick_ready".to_owned(),
+            "daemon:v1.13.5:provider_recovery_scanned".to_owned(),
         ],
     })
 }
@@ -1959,6 +1967,9 @@ mod tests {
     use eva_config::load_project_config;
     use eva_core::{Event, EventId, EventPayload, Topic};
     use eva_eventbus::EventBus;
+    use eva_storage::{
+        FileSystemProviderProcessTable, ProviderProcessSnapshot, ProviderProcessTable,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace_root() -> PathBuf {
@@ -2028,6 +2039,20 @@ mod tests {
         )
     }
 
+    fn daemon_provider_process(session_id: &str, request_id: &str) -> ProviderProcessSnapshot {
+        ProviderProcessSnapshot::running(
+            session_id,
+            format!("proc-{session_id}"),
+            RequestId::parse(request_id).unwrap(),
+            eva_core::AdapterId::parse("stdio-test").unwrap(),
+            eva_core::CapabilityName::parse("repo.analyze").unwrap(),
+            "stdio",
+            "fnv64:0123456789abcdef",
+            "stdio-runner --once",
+            "none",
+        )
+    }
+
     #[test]
     fn daemon_start_smoke_verifies_boundaries_and_stops() {
         let project = load_project_config(workspace_root()).unwrap();
@@ -2042,6 +2067,57 @@ mod tests {
         assert!(state_file(&options).is_file());
         assert!(!lock_file(&options).exists());
         assert!(!pid_file(&options).exists());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_start_recovers_interrupted_provider_process_state() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("provider-recovery");
+        let options = daemon_options(&root, true);
+        {
+            let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+                &options.durable_backend,
+            ))
+            .unwrap();
+            let mut task_store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut process_table =
+                FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+            let mut task = TaskStateSnapshot::queued("req-daemon-provider-recovery").unwrap();
+            task.mark_running(100, None, "cancel-token-provider-recovery");
+            task_store.write(&task).unwrap();
+            process_table
+                .upsert(daemon_provider_process(
+                    "session-daemon-provider-recovery",
+                    "req-daemon-provider-recovery",
+                ))
+                .unwrap();
+        }
+
+        let report = start_daemon(&project, options.clone(), &TraceFields::default()).unwrap();
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let task_store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let process_table = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let task = task_store
+            .read(Some("req-daemon-provider-recovery"))
+            .unwrap();
+        let process = process_table
+            .read("session-daemon-provider-recovery")
+            .unwrap();
+
+        assert_eq!(report.recovery.scanned_provider_processes, 1);
+        assert_eq!(report.recovery.recovered_provider_processes.len(), 1);
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "daemon:v1.13.5:provider_recovery_scanned"));
+        assert_eq!(task.status, "interrupted");
+        assert!(!process.active);
+        assert_eq!(process.health, "interrupted");
 
         fs::remove_dir_all(root).ok();
     }

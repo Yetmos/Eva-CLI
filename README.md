@@ -377,8 +377,9 @@ native archive metadata, and install-smoke/package dry-run evidence; old tags
 are not republished retroactively. The main remaining work is now narrower and more
 implementation-focused:
 
-- Real provider execution for stdio/http/MCP processes, including authentication,
-  session isolation, timeout handling, and rate limits.
+- Production provider supervision beyond the current controlled stdio/http/MCP/Skill
+  runners, including OS process management, MCP HTTP/auth/full streaming lifecycle,
+  and OS credential vault integration.
 - Durable Scheduler, runtime audit wiring, memory, and backup
   stores beyond the current durable EventBus/task snapshot/audit sink baseline
   and local diagnostic surfaces.

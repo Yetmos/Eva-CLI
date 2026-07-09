@@ -17,6 +17,7 @@
 | V1.12.1 | daemon process boundary | `start_daemon` / `daemon_status` / `stop_daemon` 固定本机 daemon pid/lock/state、foreground/dev smoke、durable backend、policy、observability 和 shutdown contract；不启动 provider 进程。 |
 | V1.12.2 | daemon control mailbox | `send_daemon_control_request` 和 foreground control loop 定义受控 filesystem mailbox 协议，支持 status、shutdown、submit task、cancel task、drain 和 reload plan；request/response 均带 trace id，不暴露远程网络监听。 |
 | V1.12.3 | durable task lifecycle | daemon submit/cancel 使用 `TaskStateSnapshot` lifecycle API：submit 写 `queued`，cancel 将非终态任务推进到 `cancelling` 并追加日志；recovery 会把 `queued`/`running`/`cancelling` 恢复为 `interrupted` 或 `recovering`。 |
+| V1.13.5 | provider execution recovery | daemon start 扫描 durable provider process table 和 task store；残留 active provider session 标记为 `interrupted`，关联 task 保留为 interrupted/recovering，只有显式 retryable restart policy 才生成 scheduler backoff 证据。 |
 
 ## V1.0 Basic 闭环
 
@@ -48,7 +49,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 | `BasicRunOptions` | 配置 event id、request/task id、topic、payload、timeout、cancel、retry、dead-letter replay。 |
 | `BasicRunReport` | CLI `run` 的完整机器可读报告。 |
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
-| `RuntimeRecoveryCoordinator` | V1.6.4 recovery coordinator；读取 task snapshots，持久化 interrupted/recovering 状态，可通过 durable EventBus 执行受控 redrive checkpoint，并可记录 `runtime.recovered` audit。 |
+| `RuntimeRecoveryCoordinator` | V1.6.4/V1.13.5 recovery coordinator；读取 task snapshots 和 provider process snapshots，持久化 interrupted/recovering 状态，可通过 durable EventBus 执行受控 redrive checkpoint，并可记录 `runtime.recovered` audit。 |
 | `DaemonStartOptions` | V1.12.1 daemon foreground/dev smoke 的 durable backend、state、lock、pid 和 observability 路径配置。 |
 | `DaemonControlRequest` | V1.12.2 本机 control mailbox 请求；封装 request id、trace id、operation、task/plan/generation 参数。 |
 
@@ -56,12 +57,13 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 
 `eva-runtime::daemon` 提供本机 daemon 进程边界 smoke，而不是生产后台守护进程：
 
-- `start_daemon` 先获取 `daemon.lock`，再验证 durable backend、policy domain 和 file JSONL observability backend。
+- `start_daemon` 先获取 `daemon.lock`，再验证 durable backend、扫描 durable task/provider process recovery state、policy domain 和 file JSONL observability backend。
 - 成功后写入 `daemon.state` 和 `daemon.pid`，foreground smoke 会立即调用 `Runtime::shutdown()` 并移除 lock/pid。
 - 显式传入 `shutdown_after_smoke=false` 时进入前台 control loop，通过 `state/control/requests` 和 `state/control/responses` 处理本机 filesystem mailbox 请求。
 - control operation 覆盖 status、shutdown、submit task、cancel task、drain 和 reload plan；status/shutdown 作用于前台 daemon，submit/cancel 写 durable task lifecycle store，drain/reload 会写入 `agent-control.state`，记录 drain gate、reload generation route 和旧 generation draining 状态。
 - `send_daemon_control_request` 在没有 running state、lock 和 pid 时返回稳定 `Unavailable`，避免把 stopped smoke state 误读成 live daemon。
 - JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
+- JSON/report 中新增 `recovery` 对象，包含 scanned/recovered task、provider process、backoff 和 skipped evidence。
 - 已有 lock 会返回 conflict；坏 durable backend 会在写 daemon state 前失败。
 
 ## V1.6.4 Recovery Checkpoint
@@ -88,10 +90,21 @@ task-only 入口只负责确定性状态修复：
 restart redrive 和 corrupt task store，`release check` 暴露
 `REL-DURABLE-RECOVERY-001`。
 
+## V1.13.5 Provider Execution Recovery
+
+`RuntimeRecoveryCoordinator::recover_task_store_with_provider_processes()` 同时读取
+`FileSystemTaskStateStore` 和 `ProviderProcessTable`。恢复语义保持保守：
+
+- active provider session 会被标记为 inactive + `health=interrupted`，并追加 recovery audit；
+- 关联 non-terminal task 会保留 durable task snapshot，不会丢失 task id、日志或原始状态证据；
+- 默认不会重放 provider 调用，避免重复外部副作用；
+- 只有 provider snapshot 的 `restart_policy` 明确为 `scheduler_backoff` / `retry_backoff` / `retryable` 且 retry 预算未耗尽时，task 才会进入 `recovering` 并在 report 中写入 `provider_backoff_tasks`；
+- daemon start 会把该 report 暴露到 `DaemonStartReport.recovery` 和 CLI JSON `recovery` 字段。
+
 ## 当前非目标
 
-- V1.12.5 只提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick 和 agent drain/reload mutation state；不提供生产后台 service manager、远程网络监听、provider supervision 或完整生产 scheduler apply。
-- recovery checkpoint 只恢复 task/event/audit evidence，不恢复 provider/runtime 执行态；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
+- V1.12/V1.13.5 只提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload mutation state 和 provider execution-state recovery；不提供生产后台 service manager、远程网络监听、OS provider process supervisor 或完整生产 scheduler apply。
+- recovery checkpoint 已恢复 task/event/audit evidence 和 durable provider process snapshots，但不会重启或杀死真实 OS provider 进程；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
 - 不引入真实 Lua VM；`LuaGeneration` 是 generation marker，不是 VM swap 实现。
 - Adapter/MCP/Discovery/Memory/Hardware/Backup/Lifecycle 仍属于后续版本。
 
@@ -105,4 +118,4 @@ cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```
 
-已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit 和 corrupt-store smoke。
+已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit、corrupt-store smoke、V1.13.5 provider interrupted/backoff recovery 和 daemon start provider recovery smoke。

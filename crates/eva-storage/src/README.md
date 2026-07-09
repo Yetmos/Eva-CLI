@@ -2,7 +2,7 @@
 
 更新时间：2026-07-09
 
-本目录承载存储 trait、in-memory 实现、V1.6 durable filesystem backend 和 V1.13.1 provider process table baseline。
+本目录承载存储 trait、in-memory 实现、V1.6 durable filesystem backend 和 V1.13.5 provider process recovery table baseline。
 
 | 文件 | 状态 | 说明 |
 | --- | --- | --- |
@@ -11,11 +11,11 @@
 | `state_store.rs` | 已实现 | `StateStore`、`StateRecord`、`StateVersion`、`InMemoryStateStore`。支持 get、put、CAS。 |
 | `task_state.rs` | V1.6.4 in progress | `TaskStateStore`、`TaskStateSnapshot`、`FileSystemTaskStateStore`。默认保存 `.eva/tasks` task snapshot，也可通过 `DurableBackendLayout` 使用 durable backend 的 `tasks/` 目录，支持跨进程读取 latest、指定 task 或 snapshot 列表。 |
 | `artifact_store.rs` | V1.13.4 已更新 | `ArtifactStore`、`ArtifactRecord`、`InMemoryArtifactStore`、`FileSystemArtifactStore`。保存 bytes 并生成 SHA-256 digest；filesystem backend 写入 v2 metadata，记录 size、content type、retention policy 和 retain-until timestamp，并在读取时校验 key、size、digest；`eva-adapter::stream` 复用该受控 sink 写入 redacted provider stream artifact。 |
-| `provider_process.rs` | V1.13.1 已实现 | `ProviderProcessSnapshot`、`ProviderProcessTable`、`InMemoryProviderProcessTable`。记录 provider session/process id、manifest digest、start command、health、last error、restart policy 和 acquire/release audit。 |
+| `provider_process.rs` | V1.13.5 已更新 | `ProviderProcessSnapshot`、`ProviderProcessTable`、`InMemoryProviderProcessTable`、`FileSystemProviderProcessTable`。记录 provider session/process id、manifest digest、start command、health、last error、restart policy、retry backoff hint 和 acquire/release/recovery audit；filesystem backend 写入 durable `state/provider-processes/`。 |
 | `sqlite.rs` | 边界保留 | 未来 SQLite/local durable backend。V0.4 不引入 SQLite 依赖。 |
 | `lib.rs` | 已实现 | re-export 公开类型，供 eventbus/runtime/adapter 直接使用。 |
 
-验证：`cargo test -p eva-storage`；V1.13.1 重点覆盖 `cargo test -p eva-storage provider_process -- --nocapture`。
+验证：`cargo test -p eva-storage`；V1.13.5 重点覆盖 `cargo test -p eva-storage provider_process -- --nocapture`。
 
 ## V1.6.1 Durable Backend Baseline
 
@@ -53,11 +53,13 @@ retain-until timestamp; legacy metadata without a version field is still read
 with default content type and retention policy, while corrupt metadata returns a
 stable conflict error.
 
-## V1.13.1 Provider Process Table
+## V1.13.1 / V1.13.5 Provider Process Table
 
 `provider_process.rs` defines the storage-side contract for supervised provider
 execution state. `ProviderProcessSnapshot::running()` creates active session
 evidence and `release()` marks completed or failed sessions inactive while
-preserving last error and audit history. The first implementation is
-`InMemoryProviderProcessTable`; durable crash recovery is intentionally left to
-later V1.13 work.
+preserving last error and audit history. `InMemoryProviderProcessTable` remains
+the process-local supervisor table. V1.13.5 adds
+`FileSystemProviderProcessTable`, which stores snapshots under durable backend
+`state/provider-processes/` and lets daemon recovery mark stale active provider
+sessions as `interrupted` without replaying side effects.

@@ -22,8 +22,9 @@ pub use diagnostics::{
     inspect_durable_backend, DurableDiagnosticsOptions, DurableDiagnosticsReport,
 };
 pub use recovery::{
-    RecoveredEvent, RecoveredTask, RuntimeRecoveryCoordinator, RuntimeRecoveryOptions,
-    RuntimeRecoveryReport, SkippedRedriveEvent,
+    ProviderBackoffTask, RecoveredEvent, RecoveredProviderProcess, RecoveredTask,
+    RuntimeRecoveryCoordinator, RuntimeRecoveryOptions, RuntimeRecoveryReport, SkippedProviderTask,
+    SkippedRedriveEvent,
 };
 pub use runtime::{Runtime, RuntimeStatus, RuntimeSummary};
 pub use scheduler_retry::{

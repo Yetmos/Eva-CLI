@@ -167,6 +167,7 @@ cargo run -- daemon shutdown --state-dir .eva/daemon-state --lock-dir .eva/daemo
 | --- | --- |
 | `provider_processes_started:false` | 该命令只验证 daemon 边界，不进入 provider supervision。 |
 | `durable_backend` | 启动前验证的 durable backend layout 和 schema。 |
+| `recovery` | 启动时扫描 task/provider process snapshot 的恢复报告；残留 active provider session 会被标记为 interrupted，但不会自动重放不可重复副作用。 |
 | `policy` | 已加载的 policy source 和 effective policy layer evidence。 |
 | `observability` | file JSONL audit/metric/span smoke evidence。 |
 | `shutdown` | foreground smoke 结束时的 `Runtime::shutdown()` 报告。 |

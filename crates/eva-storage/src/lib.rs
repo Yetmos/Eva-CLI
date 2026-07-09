@@ -22,7 +22,8 @@ pub use event_log::{
     EventLog, EventLogRecord, EventLogStatus, FileSystemEventLog, InMemoryEventLog,
 };
 pub use provider_process::{
-    InMemoryProviderProcessTable, ProviderProcessSnapshot, ProviderProcessTable,
+    FileSystemProviderProcessTable, InMemoryProviderProcessTable, ProviderProcessSnapshot,
+    ProviderProcessTable,
 };
 pub use state_store::{InMemoryStateStore, StateRecord, StateStore, StateVersion};
 pub use task_state::{
