@@ -6,14 +6,14 @@
 
 本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
 V1.11.5-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
-EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、Agent lifecycle evidence 和 capability provider routing 命令已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
+EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、daemon process boundary smoke、Agent lifecycle evidence 和 capability provider routing 命令已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
 
 ## 当前定位
 
 | 项目 | 当前状态 |
 | --- | --- |
 | 发布形态 | 源码发布；从 Git 仓库和 Rust 工具链运行。 |
-| 运行时 | `run --example basic` 通过受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环。 |
+| 运行时 | `run --example basic` 通过受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环；`daemon start/status/stop` 提供 V1.12.1 本机 pid/lock/state 和 shutdown 边界 smoke。 |
 | 外部能力 | Adapter、MCP、Skill、Discovery 当前提供受控诊断面，不启动真实 provider。 |
 | 风险动作 | 硬件绑定、恢复、升级和生命周期切换保持 plan-first，不执行 destructive apply。 |
 | 发布检查 | V1.11.5-alpha 提供 `release check/security/perf/migration` 可执行门禁，包含 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
@@ -64,6 +64,7 @@ release: V1.11.5-alpha
 | 查看 durable backend | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | 输出 backend schema、migration status 和 pending redrive count。 |
 | 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |
 | 发布事件 | `cargo run -- emit /input/user --payload hello --output json` | 向 in-memory EventBus 边界发布 typed Event。 |
+| Daemon smoke | `cargo run -- daemon start --foreground --dev --output json` | 验证 pid/lock/state、durable backend、policy、observability 和 shutdown contract，不启动 provider。 |
 | Agent 状态 | `cargo run -- agent status --agent root-agent --output json` | 输出 Agent lifecycle 和 manifest evidence。 |
 | Capability probe | `cargo run -- capability probe repo.analyze --output json` | 输出 provider plan 和 permission gate evidence。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
@@ -82,6 +83,7 @@ release: V1.11.5-alpha
 | 查看 | `inspect`、`inspect durable` | 查看项目配置、路由、策略、runtime 摘要或 durable backend 诊断。 | 否 |
 | 运行 | `run --example basic` | 通过受限 Lua VM 边界执行 V1.0 in-memory basic loop。 | 写 `.eva/tasks` 或 durable backend `tasks/` |
 | 事件 | `emit <topic>` | 向 in-memory 或 durable EventBus 发布 typed Event。 | 传入 `--durable-backend` 时写 durable backend `events/log/` |
+| Daemon | `daemon start/status/stop` | 验证本机 daemon pid/lock/state、durable backend、policy、observability 和 shutdown contract。 | 写入指定 daemon state/observability 目录；foreground smoke 会移除 lock/pid |
 | Agent | `agent status/drain/reload` | 输出 Agent lifecycle、drain plan 和 generation reload evidence。 | 不执行 daemon mutation；输出 `mutation_executed:false` |
 | Capability | `capability list/probe/call` | 输出 provider routing，并执行 dry-run 或确认后的受控 invoke。 | `call` 默认 dry-run；确认执行仍输出 `mutation_executed:false` |
 | 任务 | `task status/logs/cancel` | 读取或标记 task 诊断。 | 只写 task 取消标记 |
@@ -134,6 +136,24 @@ cargo run -- emit /input/user --event-id evt-manual-2 --payload-bytes-hex 68656c
 | `--target-agent`、`--target-capability`、`--target-adapter` | Broadcast | 定向投递目标。 |
 | `--request-id`、`--generation`、`--correlation-id`、`--causation-id` | 未设置 | 写入事件 metadata 的可选链路字段。 |
 | `--durable-backend <path>` | 未启用 | 通过 durable EventBus log 持久化发布。 |
+
+## Daemon process boundary
+
+`daemon start/status/stop` 是 V1.12.1 的本机进程边界 smoke。它固定 pid、lock、state、durable backend、policy、observability 和 shutdown contract，但不启动生产后台守护进程，不启动 provider，也不执行 scheduler apply。
+
+```powershell
+cargo run -- daemon start --foreground --dev --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
+cargo run -- daemon status --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
+cargo run -- daemon stop --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `provider_processes_started:false` | 该命令只验证 daemon 边界，不进入 provider supervision。 |
+| `durable_backend` | 启动前验证的 durable backend layout 和 schema。 |
+| `policy` | 已加载的 policy source 和 effective policy layer evidence。 |
+| `observability` | file JSONL audit/metric/span smoke evidence。 |
+| `shutdown` | foreground smoke 结束时的 `Runtime::shutdown()` 报告。 |
 
 ## Agent lifecycle evidence
 
@@ -356,7 +376,7 @@ cargo run -- release migration --output json
 - destructive restore；
 - 真实 Supervisor 进程切换；
 - 完整 durable task 查询/恢复索引、runtime audit wiring/export、runtime crash recovery、durable memory 和 backup database；
-- 超出当前 shadow load、route gate、drain evidence 和 rollback audit 边界的常驻 daemon 热更新编排。
+- 超出当前 daemon process boundary smoke、shadow load、route gate、drain evidence 和 rollback audit 边界的控制 API/IPC、长任务调度、scheduler apply 与常驻 daemon 热更新编排。
 
 这些能力需要后续版本在显式 apply gate、持久化存储、签名 artifact 和更强发布证据
 之后逐步接入。

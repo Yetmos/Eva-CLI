@@ -1,6 +1,6 @@
 # eva-runtime / 运行时组合根
 
-更新时间：2026-07-03
+更新时间：2026-07-09
 
 `eva-runtime` 是 Eva-CLI 的 composition root。下层 crate 不反向依赖 runtime；跨模块服务装配、运行闭环、V0.5 任务诊断和 V1.0 core 发布标识都由本 crate 统一组合。
 
@@ -14,6 +14,7 @@
 | V0.5 | task diagnostics loop | `RuntimeBuilder::in_memory_v05()` 增加 task status/logs/cancel、timeout、retry、dead-letter replay 和 Lua generation marker。 |
 | V1.0 | core release loop | `RuntimeBuilder::in_memory_v10()` 复用 V0.5 diagnostics，并将 runtime mode/generation 固定为 `in_memory_v1.0` / `basic-v1.0`。 |
 | V1.6.4 | recovery checkpoint | `RuntimeRecoveryCoordinator` 扫描 durable task snapshots，把重启后残留的 `queued`/`running` task 标记为 `interrupted` 或 `recovering`；带 eventbus 的 checkpoint 可 redrive 未 ack 且已到期的 durable dead-letter，并把 recovery evidence 写入 durable audit。 |
+| V1.12.1 | daemon process boundary | `start_daemon` / `daemon_status` / `stop_daemon` 固定本机 daemon pid/lock/state、foreground/dev smoke、durable backend、policy、observability 和 shutdown contract；不启动 provider 进程。 |
 
 ## V1.0 Basic 闭环
 
@@ -33,7 +34,7 @@
 ## 公开入口
 
 ```rust
-use eva_runtime::{BasicRunOptions, RuntimeBuilder, TaskReport};
+use eva_runtime::{BasicRunOptions, DaemonStartOptions, RuntimeBuilder, TaskReport};
 ```
 
 关键类型：
@@ -46,6 +47,16 @@ use eva_runtime::{BasicRunOptions, RuntimeBuilder, TaskReport};
 | `BasicRunReport` | CLI `run` 的完整机器可读报告。 |
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
 | `RuntimeRecoveryCoordinator` | V1.6.4 recovery coordinator；读取 task snapshots，持久化 interrupted/recovering 状态，可通过 durable EventBus 执行受控 redrive checkpoint，并可记录 `runtime.recovered` audit。 |
+| `DaemonStartOptions` | V1.12.1 daemon foreground/dev smoke 的 durable backend、state、lock、pid 和 observability 路径配置。 |
+
+## V1.12.1 Daemon Process Boundary
+
+`eva-runtime::daemon` 提供本机 daemon 进程边界 smoke，而不是生产后台守护进程：
+
+- `start_daemon` 先获取 `daemon.lock`，再验证 durable backend、policy domain 和 file JSONL observability backend。
+- 成功后写入 `daemon.state` 和 `daemon.pid`，foreground smoke 会立即调用 `Runtime::shutdown()` 并移除 lock/pid。
+- JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
+- 已有 lock 会返回 conflict；坏 durable backend 会在写 daemon state 前失败。
 
 ## V1.6.4 Recovery Checkpoint
 
@@ -71,10 +82,10 @@ task-only 入口只负责确定性状态修复：
 restart redrive 和 corrupt task store，`release check` 暴露
 `REL-DURABLE-RECOVERY-001`。
 
-## V1.0 非目标
+## 当前非目标
 
-- 不启动后台 daemon，不承诺长生命周期任务调度。
-- 不提供 durable crash recovery；CLI 只把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
+- V1.12.1 只提供 daemon 进程边界 smoke，不提供本机控制 API/IPC、后台常驻循环或长生命周期任务调度。
+- recovery checkpoint 只恢复 task/event/audit evidence，不恢复 provider/runtime 执行态；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
 - 不引入真实 Lua VM；`LuaGeneration` 是 generation marker，不是 VM swap 实现。
 - Adapter/MCP/Discovery/Memory/Hardware/Backup/Lifecycle 仍属于后续版本。
 

@@ -5,6 +5,7 @@ mod agent_cmd;
 mod backup_cmd;
 mod capability_cmd;
 mod config_cmd;
+mod daemon_cmd;
 mod discovery_cmd;
 mod doctor_cmd;
 mod emit_cmd;
@@ -25,6 +26,7 @@ use adapter_cmd::AdapterCommand;
 use agent_cmd::AgentCommand;
 use backup_cmd::BackupCommand;
 use capability_cmd::CapabilityCommand;
+use daemon_cmd::DaemonCommand;
 use discovery_cmd::DiscoveryCommand;
 use emit_cmd::EmitCommand;
 use eva_config::load_project_config;
@@ -63,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -90,6 +92,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "release migration",
     "cli command module split",
     "emit",
+    "daemon start/status/stop",
     "agent status/drain/reload",
     "capability list/probe/call",
 ];
@@ -171,6 +174,7 @@ where
             }
         }
         Command::Emit(command) => emit_cmd::execute_emit(command, stdout, stderr),
+        Command::Daemon(command) => daemon_cmd::execute_daemon(command, stdout, stderr),
         Command::Agent(command) => agent_cmd::execute_agent(command, stdout, stderr),
         Command::Capability(command) => capability_cmd::execute_capability(command, stdout, stderr),
         Command::Task(command) => task_cmd::execute_task(command, stdout, stderr),
@@ -200,6 +204,7 @@ enum Command {
     Inspect(InspectOptions),
     Run(RunOptions),
     Emit(EmitCommand),
+    Daemon(DaemonCommand),
     Agent(AgentCommand),
     Capability(CapabilityCommand),
     Task(TaskCommand),
@@ -283,6 +288,9 @@ where
         )?)),
         "run" => Ok(Command::Run(parse_run_options(&args[1..])?)),
         "emit" => Ok(Command::Emit(emit_cmd::parse_emit_command(&args[1..])?)),
+        "daemon" => Ok(Command::Daemon(daemon_cmd::parse_daemon_command(
+            &args[1..],
+        )?)),
         "agent" => Ok(Command::Agent(agent_cmd::parse_agent_command(&args[1..])?)),
         "capability" => Ok(Command::Capability(
             capability_cmd::parse_capability_command(&args[1..])?,
@@ -1024,6 +1032,9 @@ fn help_text() -> &'static str {
         "  eva inspect durable --durable-backend <path> [--redrive-ready-at-ms <ms>] [--output text|json]\n",
         "  eva run --example basic [--project <path>] [--task-id <id>] [--durable-backend <path>] [--output text|json] [--timeout-ms <ms>] [--retry-attempts <n>] [--cancel] [--replay-dead-letters]\n",
         "  eva emit <topic> [--event-id <id>] [--payload <text>|--payload-empty|--payload-bytes-hex <hex>] [--target-agent <id>|--target-capability <name>|--target-adapter <id>] [--request-id <id>] [--generation <id>] [--correlation-id <event_id>] [--causation-id <event_id>] [--durable-backend <path>] [--output text|json]\n",
+        "  eva daemon start [--foreground] [--dev] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--observability-backend <path>] [--project <path>] [--output text|json]\n",
+        "  eva daemon status [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--project <path>] [--output text|json]\n",
+        "  eva daemon stop [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--project <path>] [--output text|json]\n",
         "  eva agent status [--agent <id>] [--project <path>] [--output text|json]\n",
         "  eva agent drain --agent <id> [--generation <id>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva agent reload --agent <id> [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
@@ -1057,12 +1068,13 @@ fn help_text() -> &'static str {
         "  eva release perf [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
         "  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\n",
         "Commands:\n",
-        "  version          Print the V1.5 release version and supported contracts.\n",
+        "  version          Print the current alpha release version and supported contracts.\n",
         "  doctor           Check workspace, configuration roots, schema files, and runtime boundaries.\n",
         "  config validate  Load eva.yaml plus split manifests and report stable diagnostics.\n",
         "  inspect          Show project surfaces or durable backend diagnostics without mutating runtime state.\n",
         "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks or a durable backend task store.\n",
         "  emit             Publish a typed Event to the in-memory or durable EventBus boundary.\n",
+        "  daemon           Verify V1.12.1 local daemon config, lock, state, pid, durable backend, policy, observability, and shutdown boundaries.\n",
         "  agent            Report Agent lifecycle status, drain plans, and reload generation evidence without daemon mutation.\n",
         "  capability       List, probe, and dry-run or confirmed-call capability provider routes.\n",
         "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
@@ -1555,6 +1567,161 @@ mod tests {
         assert!(event_data.contains("payload_kind=bytes"));
         assert!(event_data.contains("payload_value=68656c6c6f"));
         assert!(stderr.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn daemon_start_foreground_smoke_reports_verified_boundaries() {
+        let project = workspace_root();
+        let root = test_temp_dir("daemon-start");
+        let durable = root.join("durable");
+        let state = root.join("state");
+        let locks = root.join("locks");
+        let pids = root.join("pids");
+        let observability = root.join("observability");
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "daemon",
+            "start",
+            "--foreground",
+            "--dev",
+            "--durable-backend",
+            durable.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--observability-backend",
+            observability.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("\"command\":\"daemon.start\""));
+        assert!(stdout.contains("\"status\":\"stopped\""));
+        assert!(stdout.contains("\"mode\":\"foreground_dev\""));
+        assert!(stdout.contains("\"provider_processes_started\":false"));
+        assert!(stdout.contains("\"durable_backend\":{"));
+        assert!(stdout.contains("\"policy\":{\"status\":\"verified\""));
+        assert!(stdout.contains("\"observability\":{"));
+        assert!(stdout.contains("\"shutdown\":{\"already_shutdown\":false"));
+        assert!(state.join("daemon.state").is_file());
+        assert!(!locks.join("daemon.lock").exists());
+        assert!(!pids.join("daemon.pid").exists());
+        assert!(observability.join("audit.jsonl").is_file());
+        assert!(stderr.is_empty());
+
+        let (status_exit, status_stdout, status_stderr) = run_cli(&[
+            "daemon",
+            "status",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(status_exit, EXIT_OK, "{status_stderr}");
+        assert!(status_stdout.contains("\"command\":\"daemon.status\""));
+        assert!(status_stdout.contains("\"available\":true"));
+        assert!(status_stdout.contains("\"status\":\"stopped\""));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn daemon_start_lock_conflict_does_not_write_state() {
+        let project = workspace_root();
+        let root = test_temp_dir("daemon-lock");
+        let durable = root.join("durable");
+        let state = root.join("state");
+        let locks = root.join("locks");
+        let pids = root.join("pids");
+        let observability = root.join("observability");
+        fs::create_dir_all(&locks).unwrap();
+        fs::write(locks.join("daemon.lock"), "pid=1\n").unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "daemon",
+            "start",
+            "--durable-backend",
+            durable.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--observability-backend",
+            observability.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"command\":\"daemon.start\""));
+        assert!(stderr.contains("\"kind\":\"conflict\""));
+        assert!(stderr.contains("daemon lock already exists"));
+        assert!(!state.join("daemon.state").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn daemon_start_bad_durable_backend_does_not_write_state() {
+        let project = workspace_root();
+        let root = test_temp_dir("daemon-bad-durable");
+        let durable = root.join("durable");
+        let state = root.join("state");
+        let locks = root.join("locks");
+        let pids = root.join("pids");
+        let observability = root.join("observability");
+        fs::create_dir_all(&durable).unwrap();
+        fs::write(
+            durable.join("backend.manifest"),
+            "schema_version=999\nlayout_version=eva.durable.v1\nevent_dir=events\nstate_dir=state\ntask_dir=tasks\naudit_dir=audit\nartifact_dir=artifacts\n",
+        )
+        .unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "daemon",
+            "start",
+            "--durable-backend",
+            durable.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--observability-backend",
+            observability.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"command\":\"daemon.start\""));
+        assert!(stderr.contains("durable backend schema version mismatch"));
+        assert!(!state.join("daemon.state").exists());
+        assert!(!locks.join("daemon.lock").exists());
 
         fs::remove_dir_all(root).unwrap();
     }

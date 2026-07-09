@@ -2,6 +2,7 @@
 
 pub mod basic;
 pub mod builder;
+pub mod daemon;
 pub mod diagnostics;
 pub mod recovery;
 pub mod runtime;
@@ -11,6 +12,10 @@ pub mod task;
 
 pub use basic::{BasicRunOptions, BasicRunReport};
 pub use builder::{RuntimeBuilder, RuntimeMode, RuntimeOptions};
+pub use daemon::{
+    daemon_status, start_daemon, stop_daemon, DaemonPathReport, DaemonPolicyReport,
+    DaemonStartOptions, DaemonStartReport, DaemonStateRecord, DaemonStatusReport, DaemonStopReport,
+};
 pub use diagnostics::{
     inspect_durable_backend, DurableDiagnosticsOptions, DurableDiagnosticsReport,
 };
