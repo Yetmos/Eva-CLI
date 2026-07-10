@@ -14,7 +14,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 
 | Area | Public Type | Behavior |
 | --- | --- | --- |
-| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, service-manager abstraction, daemon runtime, MCP compatibility, provider supervision, and hardware safety readiness. |
+| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, service-manager abstraction, daemon runtime, MCP compatibility, provider supervision, hardware safety, and public JSON contract readiness. |
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
 | Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, V1.15.1 hardware OS permission diagnostics/raw-handle boundaries, and lifecycle apply risk. |
@@ -31,6 +31,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | MCP compatibility readiness | `ReleaseGate` | Records V1.13.7 stdio/HTTP transport, tool schema, stream lifecycle, dangling-session, and explicit server-surface fixture evidence as `REL-MCP-COMPAT-001`. |
 | Provider supervision readiness | `ReleaseGate` | Records V1.13.8 supervisor slot, process table, credential scope, admission, stream artifact, recovery, and MCP compatibility gate evidence as `REL-PROVIDER-SUPERVISION-001`. |
 | Hardware safety readiness | `ReleaseGate` | Records V1.15.5 simulator parity, permission denial, lease cleanup, and daemon hotplug smoke evidence as `REL-HARDWARE-SAFETY-001`, accepting simulator-only alpha evidence without claiming real device I/O. |
+| Public JSON contract readiness | `ReleaseGate` | Records V1.17.4 golden subset fixtures and `scripts/validate-cli-json-contracts.ps1` as `REL-JSON-CONTRACT-001`, allowing additive fields while blocking removed or renamed public JSON fields. |
 
 ## CLI Surface
 
@@ -79,6 +80,7 @@ runtime-unavailable exit code `4`.
 - expose external scanner and measured benchmark evidence as opt-in readiness gates;
 - expose the repo-local MCP compatibility matrix as a required readiness gate;
 - expose the current provider supervision baseline as a required readiness gate;
+- expose public CLI JSON contract fixtures as a required readiness gate;
 - preserve known future risks as warnings instead of silently enabling apply paths.
 
 `eva-release` does not:
@@ -99,6 +101,7 @@ runtime-unavailable exit code `4`.
 ```powershell
 cargo test -p eva-release
 cargo test -p eva-cli
+./scripts/validate-cli-json-contracts.ps1
 cargo run -- release check --output json
 cargo run -- release check --artifact-evidence release-evidence/release-artifact.evidence --output json
 cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --output json
@@ -145,6 +148,9 @@ V1.15.5 adds required hardware safety gate `REL-HARDWARE-SAFETY-001` for
 simulator parity, OS permission denial, lease cleanup, and daemon hotplug smoke
 evidence; alpha accepts simulator-only evidence, while production releases must
 attach real or virtual hardware fixture evidence before claiming real device I/O.
+V1.17.4 adds required public JSON contract gate `REL-JSON-CONTRACT-001` for
+golden subset fixtures and `scripts/validate-cli-json-contracts.ps1`; additive
+fields are allowed, but removed or renamed public fields block validation.
 V1.14.5 adds required service-manager abstraction gate
 `REL-SERVICE-MANAGER-ABSTRACTION-001` for the adapter trait, fake handoff and
 rollback evidence, explicit config parsing, and docs/progress tracking; it does

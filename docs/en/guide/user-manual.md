@@ -26,7 +26,7 @@ diagnostic or plan-first.
 | Runtime | `run --example basic` executes the V1.0 in-memory basic runtime loop through the restricted Lua VM, host binding, resource-limit, and hot-reload lifecycle boundary. |
 | External capabilities | Adapter, MCP, Skill, and Discovery commands expose controlled diagnostics, not real provider execution. |
 | Risky actions | Hardware binding, restore, upgrade, and lifecycle switching stay plan-first. |
-| Release checks | V1.12.6 adds daemon runtime readiness to `release check`; `release check/security/perf/migration` still cover Lua VM, release evidence, CLI split readiness, and runtime command completion evidence. |
+| Release checks | V1.17.4 adds public JSON contract diff readiness to `release check`; `release check/security/perf/migration` still cover Lua VM, daemon runtime readiness, release evidence, CLI split readiness, and runtime command completion evidence. |
 
 ![Eva-CLI source workflow](../../assets/eva-cli-user-manual-flow.svg)
 
@@ -72,7 +72,7 @@ Run this sequence from the repository root:
 | Agent status | `cargo run -- agent status --agent root-agent --output json` | Reports Agent lifecycle and manifest evidence. |
 | Capability probe | `cargo run -- capability probe repo.analyze --output json` | Reports provider plan and permission gate evidence. |
 | Task status | `cargo run -- task status --output json` | Reads the latest task report. |
-| Release gate | `cargo run -- release check --output json` | Prints release readiness including `REL-DAEMON-RUNTIME-001`. |
+| Release gate | `cargo run -- release check --output json` | Prints release readiness including `REL-DAEMON-RUNTIME-001` and `REL-JSON-CONTRACT-001`. |
 
 `--version` / `version --output json` includes `mcp_http_auth_v1.13.6`,
 `mcp_compat_matrix_v1.13.7`, and `provider_supervision_release_gate_v1.13.8`
@@ -89,7 +89,10 @@ while preserving the same public text/JSON contract. V1.17.2 adds
 between invocation execution and destructive mutation execution. V1.17.3 adds
 `operator_apply_text_v1.17.3`, which means restore, upgrade, and hardware
 high-risk text output includes operator summaries with plan, target, final
-state, rollback path, and risk evidence.
+state, rollback path, and risk evidence. V1.17.4 adds
+`json_contract_diff_suite_v1.17.4`, `contracts/cli-json/*.json` fixtures, and
+`scripts/validate-cli-json-contracts.ps1` to block removed or renamed public
+JSON fields while allowing additive fields.
 
 Use text output for human inspection and `--output json` for scripts or CI.
 
@@ -117,7 +120,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Snapshot | `snapshot create` | Create a release snapshot linked to a backup manifest. | No |
 | Restore | `restore plan` | Produce a restore plan with `apply_allowed:false`. | No |
 | Upgrade | `upgrade check` | Check generation, migration, drain, and rollback readiness. | No |
-| Release | `release check/security/perf/migration` | Run release readiness, security, performance, and migration gates; `release check` includes daemon runtime readiness. | No |
+| Release | `release check/security/perf/migration` | Run release readiness, security, performance, and migration gates; `release check` includes daemon runtime and public JSON contract readiness. | No |
 
 ## Emit Typed Events
 
@@ -251,6 +254,7 @@ servers, provider CLIs, or workflow runners.
 
 ```powershell
 cargo run -- release check --output json
+./scripts/validate-cli-json-contracts.ps1
 cargo run -- release security --output json
 cargo run -- release perf --output json
 cargo run -- release migration --output json
@@ -258,7 +262,7 @@ cargo run -- release migration --output json
 
 | Command | Focus |
 | --- | --- |
-| `release check` | Cross-platform, stability, docs, security, performance, migration, and compatibility gates. |
+| `release check` | Cross-platform, stability, docs, security, performance, migration, compatibility, daemon runtime, hardware safety, and JSON contract gates. |
 | `release security` | Policy, Lua sandbox, secret redaction, MCP allowlist, hardware, and lifecycle risks. |
 | `release perf` | EventBus, Scheduler, Adapter, memory, backup, and release-check budgets. |
 | `release migration` | V1.5.1 to V1.11.5-alpha migration steps and compatibility policy. |
@@ -303,8 +307,9 @@ real observability database sink, production retention scheduling, durable
 memory/backup databases, or daemon-driven hot-reload orchestration beyond the
   current JSONL audit wiring, tracing bridge, explicit OTel SDK exporter smoke,
   V1.16.4 JSONL/durable-audit retention policy, V1.17.1 run command module
-  split boundary, V1.17.2 operator execution-field boundary, and V1.17.3
-  text-only operator apply summary boundary.
+  split boundary, V1.17.2 operator execution-field boundary, V1.17.3
+  text-only operator apply summary boundary, and V1.17.4 JSON contract diff
+  boundary.
 
 ## Recommended Verification
 

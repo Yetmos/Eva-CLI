@@ -1,0 +1,50 @@
+{
+  "id": "release-check",
+  "description": "Release check JSON exposes the public JSON contract diff gate.",
+  "command": ["release", "check", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "release.check",
+    "exit_code": 0,
+    "data": {
+      "version": "1.11.5-alpha",
+      "status": "ready",
+      "target": "all",
+      "blocking_gates": 0,
+      "warning_gates": 1,
+      "gates": [
+        {
+          "id": "REL-DOCS-001",
+          "domain": "docs",
+          "status": "pass",
+          "required": true
+        },
+        {
+          "id": "REL-JSON-CONTRACT-001",
+          "domain": "cli_json_contract",
+          "status": "pass",
+          "required": true,
+          "evidence": [
+            "scripts/validate-cli-json-contracts.ps1",
+            "contracts/cli-json/version.json",
+            "contracts/cli-json/release-check.json"
+          ]
+        },
+        {
+          "id": "REL-HARDWARE-SAFETY-001",
+          "domain": "hardware_safety",
+          "status": "pass",
+          "required": true
+        }
+      ],
+      "audit": [
+        "public_json_contract_diff_ready",
+        "hardware_safety_release_gate_ready"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.release.check"
+    }
+  }
+}

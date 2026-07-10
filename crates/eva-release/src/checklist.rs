@@ -191,6 +191,7 @@ impl ReleaseHardeningService {
         )));
         gates.push(provider_supervision_gate());
         gates.push(hardware_safety_release_gate());
+        gates.push(public_json_contract_gate());
         let artifact_report = artifact_evidence
             .map(|evidence| evidence.verify(&ReleaseArtifactSigningKey::local_development()));
         if let Some(report) = artifact_report.as_ref() {
@@ -622,6 +623,7 @@ fn release_audit(
         "mcp_compatibility_matrix_ready".to_owned(),
         "provider_supervision_readiness_gate_ready".to_owned(),
         "hardware_safety_release_gate_ready".to_owned(),
+        "public_json_contract_diff_ready".to_owned(),
     ];
     if let Some(report) = artifact_report {
         if report.status == "verified" {
@@ -1300,12 +1302,39 @@ fn hardware_safety_release_gate() -> ReleaseGate {
     }
 }
 
+fn public_json_contract_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-JSON-CONTRACT-001".to_owned(),
+        domain: "cli_json_contract".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "Public CLI JSON envelope and command data contracts are protected by additive-compatible golden subset diffs".to_owned(),
+        evidence: vec![
+            "scripts/validate-cli-json-contracts.ps1".to_owned(),
+            "contracts/cli-json/version.json".to_owned(),
+            "contracts/cli-json/run-basic.json".to_owned(),
+            "contracts/cli-json/capability-list.json".to_owned(),
+            "contracts/cli-json/hardware-bind.json".to_owned(),
+            "contracts/cli-json/restore-plan.json".to_owned(),
+            "contracts/cli-json/upgrade-check.json".to_owned(),
+            "contracts/cli-json/release-check.json".to_owned(),
+            "contract.diff:golden_subset_allows_additive_fields".to_owned(),
+            "contract.diff:missing_or_renamed_fields_block".to_owned(),
+        ],
+        remediation: vec![
+            "run ./scripts/validate-cli-json-contracts.ps1 before release".to_owned(),
+            "treat removed or renamed JSON fields as breaking unless a new compatibility window is documented".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
         "cargo clippy --workspace --all-targets -- -D warnings".to_owned(),
         "cargo test --workspace".to_owned(),
         "cargo test -p eva-lua-host".to_owned(),
+        "./scripts/validate-cli-json-contracts.ps1".to_owned(),
         "cargo run -- --version".to_owned(),
         "cargo run -- inspect durable --durable-backend .eva/ci-durable --output json".to_owned(),
         "cargo run -- release check --output json".to_owned(),
@@ -1589,6 +1618,19 @@ mod tests {
                     .iter()
                     .any(|item| item == "real_hardware_fixture:not_required_for_alpha")
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-JSON-CONTRACT-001"
+                && gate.status == ReleaseGateStatus::Pass
+                && gate.domain == "cli_json_contract"
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "scripts/validate-cli-json-contracts.ps1")
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "contracts/cli-json/release-check.json")
+        }));
         assert!(report
             .audit
             .iter()
@@ -1641,6 +1683,10 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "hardware_safety_release_gate_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "public_json_contract_diff_ready"));
     }
 
     #[test]
@@ -1697,6 +1743,36 @@ mod tests {
         assert!(gate.remediation.iter().any(|item| {
             item.contains("real or virtual hardware fixture evidence")
                 && item.contains("claiming real USB")
+        }));
+    }
+
+    #[test]
+    fn public_json_contract_gate_records_additive_diff_suite() {
+        let gate = public_json_contract_gate();
+
+        assert_eq!(gate.id, "REL-JSON-CONTRACT-001");
+        assert_eq!(gate.status, ReleaseGateStatus::Pass);
+        assert!(gate.required);
+        assert_eq!(gate.domain, "cli_json_contract");
+        assert!(gate
+            .evidence
+            .contains(&"scripts/validate-cli-json-contracts.ps1".to_owned()));
+        assert!(gate
+            .evidence
+            .contains(&"contracts/cli-json/version.json".to_owned()));
+        assert!(gate
+            .evidence
+            .contains(&"contracts/cli-json/release-check.json".to_owned()));
+        assert!(gate
+            .evidence
+            .iter()
+            .any(|item| { item == "contract.diff:golden_subset_allows_additive_fields" }));
+        assert!(gate
+            .evidence
+            .iter()
+            .any(|item| { item == "contract.diff:missing_or_renamed_fields_block" }));
+        assert!(gate.remediation.iter().any(|item| {
+            item.contains("removed or renamed JSON fields") && item.contains("breaking")
         }));
     }
 

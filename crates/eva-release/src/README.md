@@ -18,7 +18,7 @@ run in local development and CI.
 | `distribution.rs` | Defines V1.11.2 distribution evidence, Windows/Linux/macOS install smoke verification, package-manager dry-run verification, and key/value manifest parsing. |
 | `scanner.rs` | Defines V1.11.3 external security scanner evidence, finding severity normalization, high/critical blocking verification, and key/value manifest parsing. |
 | `benchmark.rs` | Defines V1.11.3 production benchmark evidence, measured budget verification, and conversion into the stable `PerformanceBaselineReport` shape. |
-| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, V1.10.4 restore apply gate, V1.14.2 staged file mutation, V1.14.3 rollback apply, V1.14.4 operator confirmation, V1.10.5 supervisor handoff readiness, V1.14.5 service-manager abstraction readiness, V1.11 release evidence gates, V1.12.6 daemon runtime readiness, V1.13.7 MCP compatibility readiness, V1.13.8 provider supervision readiness, and V1.15.5 hardware safety readiness. |
+| `checklist.rs` | Defines `ReleaseHardeningService`, readiness reports, release gates, platform readiness, and stability scenarios, including durable recovery/diagnostics, Lua runtime, V1.10.3 signed backup archive, V1.10.4 restore apply gate, V1.14.2 staged file mutation, V1.14.3 rollback apply, V1.14.4 operator confirmation, V1.10.5 supervisor handoff readiness, V1.14.5 service-manager abstraction readiness, V1.11 release evidence gates, V1.12.6 daemon runtime readiness, V1.13.7 MCP compatibility readiness, V1.13.8 provider supervision readiness, V1.15.5 hardware safety readiness, and V1.17.4 public JSON contract readiness. |
 | `security.rs` | Defines security severity and findings for policy, sandbox, secret, MCP, hardware, and lifecycle boundaries. |
 | `performance.rs` | Defines source-release performance budgets and the baseline report. |
 | `migration.rs` | Defines migration steps and the V1.5 compatibility policy. |
@@ -86,6 +86,9 @@ of CLI formatting so future release tooling can reuse the same data contracts.
   lease cleanup, and daemon hotplug smoke evidence as the alpha release contract.
   Production releases still need real or virtual hardware fixture evidence
   before claiming USB, serial, BLE, socket, or vendor SDK I/O.
+- The public JSON contract release gate records golden subset fixtures and the
+  validation script. It allows additive fields, but removed or renamed public
+  JSON fields block readiness unless a compatibility window is documented.
 - The release artifact evidence gate is opt-in until CI generates the key/value
   evidence manifest. When supplied, unsigned artifacts, signature mismatch, or
   provenance/source commit mismatch block readiness.

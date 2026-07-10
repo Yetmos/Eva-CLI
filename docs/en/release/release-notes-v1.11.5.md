@@ -55,8 +55,12 @@ hardware operator outputs while preserving existing compatibility fields;
 `capability call` continues to show `invocation_executed` separately from
 `mutation_executed:false`. V1.17.3 adds the `operator_apply_text_v1.17.3`
 runtime marker and text-only operator summaries for restore, upgrade, and
-hardware high-risk paths. Production release upload remains future work because
-it still needs signing/attestation and package repository credentials.
+hardware high-risk paths. V1.17.4 adds the
+`json_contract_diff_suite_v1.17.4` runtime marker, golden subset JSON fixtures,
+`scripts/validate-cli-json-contracts.ps1`, and the required
+`REL-JSON-CONTRACT-001` readiness gate. Production release upload remains
+future work because it still needs signing/attestation and package repository
+credentials.
 
 ## Verification
 
@@ -72,6 +76,7 @@ it still needs signing/attestation and package repository credentials.
 - `cargo test -p eva-cli upgrade_apply`
 - `cargo test -p eva-cli hardware_commands_report_candidates_and_bind_plan`
 - `cargo test -p eva-release`
+- `scripts/validate-cli-json-contracts.ps1`
 - `scripts/validate-i18n.ps1`
 - `scripts/validate-version-management.ps1 -Tag v1.11.5-alpha`
 - `cargo run -- --version`

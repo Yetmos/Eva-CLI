@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4 + service_manager_abstraction_v1.14.5 + hardware_os_permission_provider_v1.15.1 + hardware_hotplug_subscriber_v1.15.4 + hardware_safety_release_gate_v1.15.5 + memory_knowledge_maintenance_v1.15.6 + knowledge_retrieval_provider_v1.15.7 + memory_redaction_audit_v1.15.8 + runtime_audit_sink_wiring_v1.16.1 + tracing_subscriber_bridge_v1.16.2 + opentelemetry_sdk_exporter_v1.16.3 + observability_retention_policy_v1.16.4 + run_command_module_split_v1.17.1 + operator_execution_fields_v1.17.2 + operator_apply_text_v1.17.3";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4 + service_manager_abstraction_v1.14.5 + hardware_os_permission_provider_v1.15.1 + hardware_hotplug_subscriber_v1.15.4 + hardware_safety_release_gate_v1.15.5 + memory_knowledge_maintenance_v1.15.6 + knowledge_retrieval_provider_v1.15.7 + memory_redaction_audit_v1.15.8 + runtime_audit_sink_wiring_v1.16.1 + tracing_subscriber_bridge_v1.16.2 + opentelemetry_sdk_exporter_v1.16.3 + observability_retention_policy_v1.16.4 + run_command_module_split_v1.17.1 + operator_execution_fields_v1.17.2 + operator_apply_text_v1.17.3 + json_contract_diff_suite_v1.17.4";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -91,6 +91,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "release security",
     "release perf",
     "release migration",
+    "public JSON contract diff",
     "cli command module split",
     "emit",
     "daemon start/status/stop/shutdown/submit/cancel/drain/reload",
@@ -2206,7 +2207,9 @@ mod tests {
         assert!(json_stdout.contains("run_command_module_split_v1.17.1"));
         assert!(json_stdout.contains("operator_execution_fields_v1.17.2"));
         assert!(json_stdout.contains("operator_apply_text_v1.17.3"));
+        assert!(json_stdout.contains("json_contract_diff_suite_v1.17.4"));
         assert!(json_stdout.contains("cli command module split"));
+        assert!(json_stdout.contains("public JSON contract diff"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));
         assert!(json_stdout.contains("capability list/probe/call"));
@@ -2264,6 +2267,11 @@ mod tests {
         assert!(stdout.contains("hardware.safety.release_mode:alpha_simulator_only"));
         assert!(stdout.contains("real_hardware_fixture:not_required_for_alpha"));
         assert!(stdout.contains("hardware_safety_release_gate_ready"));
+        assert!(stdout.contains("\"id\":\"REL-JSON-CONTRACT-001\""));
+        assert!(stdout.contains("\"domain\":\"cli_json_contract\""));
+        assert!(stdout.contains("scripts/validate-cli-json-contracts.ps1"));
+        assert!(stdout.contains("contracts/cli-json/version.json"));
+        assert!(stdout.contains("public_json_contract_diff_ready"));
     }
 
     #[test]

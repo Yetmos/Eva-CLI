@@ -1,0 +1,43 @@
+{
+  "id": "capability-list",
+  "description": "Capability list JSON keeps manifest identity, kind, provider, and enablement fields.",
+  "command": ["capability", "list", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "capability.list",
+    "exit_code": 0,
+    "data": {
+      "capabilities": [
+        {
+          "manifest_id": "config-lint-skill",
+          "name": "Configuration Lint Skill",
+          "version": "1.0.0",
+          "capability": "config.lint",
+          "kind": "lua_capability",
+          "enabled": true,
+          "provider": "lua_capability"
+        },
+        {
+          "manifest_id": "project-summary-mcp",
+          "capability": "mcp.tool.call",
+          "kind": "mcp_tool",
+          "enabled": true,
+          "provider": "github-mcp",
+          "required_adapter_capabilities": ["mcp.tool.call"]
+        },
+        {
+          "manifest_id": "repo-summary",
+          "capability": "repo.analyze",
+          "kind": "adapter_capability",
+          "enabled": true,
+          "provider": "codex-cli",
+          "required_adapter_capabilities": ["repo.analyze"]
+        }
+      ]
+    },
+    "trace": {
+      "span_id": "cli.capability.list"
+    }
+  }
+}

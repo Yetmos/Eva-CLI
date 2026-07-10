@@ -1,0 +1,44 @@
+{
+  "id": "upgrade-check",
+  "description": "Upgrade check JSON remains diagnostic and records rollback planning without mutation.",
+  "command": ["upgrade", "check", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "upgrade.check",
+    "exit_code": 0,
+    "data": {
+      "status": "ready",
+      "mutation_executed": false,
+      "supervisor": {
+        "active_generation": "gen-v13",
+        "candidate_generation": "gen-v14",
+        "healthy": true
+      },
+      "drain": {
+        "generation_id": "gen-v13",
+        "inflight_tasks": 0,
+        "timeout_ms": 30000,
+        "accepts_new_work": false,
+        "status": "completed"
+      },
+      "rollback": {
+        "from_generation": "gen-v14",
+        "to_generation": "gen-v13",
+        "snapshot_id": null,
+        "status": "planned"
+      },
+      "migration": {
+        "package_id": "migration-v14",
+        "status": "ready"
+      },
+      "risks": [
+        "upgrade check is diagnostic; no runtime process is started by CLI",
+        "rollback remains planned until lifecycle apply is explicitly authorized"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.upgrade.check"
+    }
+  }
+}

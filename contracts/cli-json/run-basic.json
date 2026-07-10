@@ -1,0 +1,75 @@
+{
+  "id": "run-basic",
+  "description": "Basic runtime JSON output keeps task, delivery, Lua, and audit shape stable.",
+  "command": ["run", "--example", "basic", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "run",
+    "exit_code": 0,
+    "data": {
+      "runtime_mode": "in_memory_v1.0",
+      "generation_id": "basic-v1.0",
+      "task": {
+        "task_id": "req-basic-1",
+        "status": "completed",
+        "attempts": 1,
+        "retry_policy": {
+          "max_attempts": 1
+        },
+        "cancellation": {
+          "requested": false,
+          "accepted": false,
+          "reason": null
+        },
+        "error": null
+      },
+      "event_id": "evt-basic-1",
+      "topic": "/input/user",
+      "receipt": {
+        "event_id": "evt-basic-1",
+        "sequence": 1,
+        "topic": "/input/user",
+        "target": "Broadcast"
+      },
+      "deliveries": [
+        {
+          "agent_id": "root-agent",
+          "delivery": "fanout"
+        }
+      ],
+      "agent_runs": [
+        {
+          "agent_id": "root-agent",
+          "event_id": "evt-basic-1",
+          "status": "handled",
+          "attempts": 1,
+          "handler_status": "accepted",
+          "error": null
+        }
+      ],
+      "lua_results": [
+        {
+          "agent_id": "root-agent",
+          "status": "accepted",
+          "topic": "/input/user",
+          "capability": null,
+          "capability_input": "basic example"
+        }
+      ],
+      "lua_generation": {
+        "generation_id": "basic-v1.0",
+        "script_count": 1
+      },
+      "capability_response": null,
+      "audit": [
+        "event.accepted:evt-basic-1",
+        "event.delivered:1",
+        "lua.host.audit:root-agent requested config.lint"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.run"
+    }
+  }
+}

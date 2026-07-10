@@ -1,0 +1,52 @@
+{
+  "id": "hardware-bind",
+  "description": "Hardware bind JSON stays plan-first and never exposes raw I/O handles.",
+  "command": ["hardware", "bind", "--adapter", "scale-main", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "hardware.bind",
+    "exit_code": 0,
+    "data": {
+      "adapter_id": "scale-main",
+      "request_id": "req-hardware-1",
+      "status": "blocked",
+      "apply": false,
+      "mutation_executed": false,
+      "device": {
+        "device_id": "scale-main:main-scale",
+        "adapter_id": "scale-main",
+        "logical_name": "main-scale",
+        "device_class": "scale",
+        "bus": "usb",
+        "trust": "rejected",
+        "health": "disconnected",
+        "handle_granted": false,
+        "rejected_reason": "hardware adapter manifest is disabled"
+      },
+      "permission": {
+        "device_id": "scale-main:main-scale",
+        "bus": "usb",
+        "permission": "usb-device-access",
+        "granted": false,
+        "raw_device_path_exposed": false
+      },
+      "steps": [
+        "discover hardware manifest candidate",
+        "evaluate OS permission provider before driver start",
+        "release logical lease and emit audit"
+      ],
+      "risks": [
+        "hardware binding is plan-first; no raw I/O is opened by CLI",
+        "hardware adapter manifest is disabled"
+      ],
+      "audit": [
+        "policy.action:hardware.bind",
+        "policy.decision:allow"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.hardware.bind"
+    }
+  }
+}

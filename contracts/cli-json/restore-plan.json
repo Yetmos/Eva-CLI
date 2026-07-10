@@ -1,0 +1,57 @@
+{
+  "id": "restore-plan",
+  "description": "Restore plan JSON keeps backup evidence and non-mutating plan fields stable.",
+  "command": ["restore", "plan", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "restore.plan",
+    "exit_code": 0,
+    "data": {
+      "snapshot": {
+        "snapshot_id": "snapshot-v14",
+        "role": "pre_release",
+        "release_ref": "1.4.0",
+        "request_id": "req-restore-1",
+        "runtime_generation": "gen-v14",
+        "backup_artifact_id": "backup-for-snapshot-v14",
+        "health_status": "healthy"
+      },
+      "backup": {
+        "artifact_id": "backup-for-snapshot-v14",
+        "request_id": "req-restore-1",
+        "runtime_generation": "gen-v14",
+        "project_id": "eva-cli",
+        "verified": true,
+        "artifact_store": {
+          "kind": "in_memory",
+          "path": null
+        },
+        "archive": {
+          "format": "eva.backup.archive.v1",
+          "artifact_key": "backup/backup-for-snapshot-v14",
+          "encrypted": false
+        },
+        "risks": [
+          "restore remains plan-first; no destructive mutation is performed"
+        ]
+      },
+      "plan": {
+        "snapshot_id": "snapshot-v14",
+        "status": "planned",
+        "apply_allowed": false,
+        "mutation_executed": false,
+        "steps": [
+          "verify snapshot manifest and backup digest",
+          "stage restore from backup artifact"
+        ],
+        "audit": [
+          "restore:planned"
+        ]
+      }
+    },
+    "trace": {
+      "span_id": "cli.restore.plan"
+    }
+  }
+}

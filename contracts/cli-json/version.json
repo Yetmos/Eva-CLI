@@ -1,0 +1,29 @@
+{
+  "id": "version",
+  "description": "Public version JSON envelope and runtime marker contract.",
+  "command": ["version", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "version",
+    "exit_code": 0,
+    "data": {
+      "version": "1.11.5-alpha",
+      "release": "V1.11.5-alpha",
+      "status": "alpha",
+      "runtime_mode": {
+        "__contains": "json_contract_diff_suite_v1.17.4"
+      },
+      "contracts": [
+        "run --example basic",
+        "restore apply",
+        "upgrade apply",
+        "release check",
+        "public JSON contract diff"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.version"
+    }
+  }
+}
