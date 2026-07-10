@@ -1,6 +1,7 @@
 use super::{
     json_array, json_string, option_json, parse_common_options, required_option, success_envelope,
-    trace_for, write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_OK,
+    trace_for, write_command_error, write_error_kind, write_risk_lines_text, CommonOptions,
+    OutputFormat, EXIT_OK,
 };
 use eva_config::{load_project_config, ProjectConfig};
 use eva_core::{AdapterId, EvaError, RequestId};
@@ -403,7 +404,8 @@ fn write_hardware_bind<W: Write>(
             }
             writeln!(writer, "apply: {}", plan.apply).map_err(write_error_kind)?;
             writeln!(writer, "mutation_executed: {}", plan.mutation_executed)
-                .map_err(write_error_kind)
+                .map_err(write_error_kind)?;
+            write_hardware_operator_summary_text(writer, plan)
         }
         OutputFormat::Json => writeln!(
             writer,
@@ -417,6 +419,32 @@ fn write_hardware_bind<W: Write>(
         )
         .map_err(write_error_kind),
     }
+}
+
+fn write_hardware_operator_summary_text<W: Write>(
+    writer: &mut W,
+    plan: &HardwareBindPlan,
+) -> Result<(), EvaError> {
+    writeln!(writer, "operator_summary: hardware.bind").map_err(write_error_kind)?;
+    writeln!(writer, "plan_id: {}", plan.request_id).map_err(write_error_kind)?;
+    writeln!(writer, "confirm_token: not_required_plan_only").map_err(write_error_kind)?;
+    writeln!(writer, "target: {}", hardware_bind_target(plan)).map_err(write_error_kind)?;
+    writeln!(writer, "final_state: {}", plan.status).map_err(write_error_kind)?;
+    writeln!(writer, "rollback_path: none; no raw I/O handle granted").map_err(write_error_kind)?;
+    write_risk_lines_text(writer, &plan.risks)
+}
+
+fn hardware_bind_target(plan: &HardwareBindPlan) -> String {
+    plan.device
+        .as_ref()
+        .map(|device| {
+            format!(
+                "{} ({})",
+                device.identity.logical_name,
+                device.identity.id.as_str()
+            )
+        })
+        .unwrap_or_else(|| plan.adapter_id.as_str().to_owned())
 }
 
 fn hardware_candidates_json(candidates: &[DeviceCandidate]) -> String {

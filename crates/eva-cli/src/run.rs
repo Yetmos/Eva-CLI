@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4 + service_manager_abstraction_v1.14.5 + hardware_os_permission_provider_v1.15.1 + hardware_hotplug_subscriber_v1.15.4 + hardware_safety_release_gate_v1.15.5 + memory_knowledge_maintenance_v1.15.6 + knowledge_retrieval_provider_v1.15.7 + memory_redaction_audit_v1.15.8 + runtime_audit_sink_wiring_v1.16.1 + tracing_subscriber_bridge_v1.16.2 + opentelemetry_sdk_exporter_v1.16.3 + observability_retention_policy_v1.16.4 + run_command_module_split_v1.17.1 + operator_execution_fields_v1.17.2";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4 + service_manager_abstraction_v1.14.5 + hardware_os_permission_provider_v1.15.1 + hardware_hotplug_subscriber_v1.15.4 + hardware_safety_release_gate_v1.15.5 + memory_knowledge_maintenance_v1.15.6 + knowledge_retrieval_provider_v1.15.7 + memory_redaction_audit_v1.15.8 + runtime_audit_sink_wiring_v1.16.1 + tracing_subscriber_bridge_v1.16.2 + opentelemetry_sdk_exporter_v1.16.3 + observability_retention_policy_v1.16.4 + run_command_module_split_v1.17.1 + operator_execution_fields_v1.17.2 + operator_apply_text_v1.17.3";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -655,6 +655,14 @@ fn suggestion_for_error(error: &EvaError) -> String {
 
 fn write_error_kind(error: io::Error) -> EvaError {
     EvaError::internal("failed to write CLI output").with_context("io_error", error.to_string())
+}
+
+fn write_risk_lines_text<W: Write>(writer: &mut W, risks: &[String]) -> Result<(), EvaError> {
+    writeln!(writer, "risk_count: {}", risks.len()).map_err(write_error_kind)?;
+    for (index, risk) in risks.iter().enumerate() {
+        writeln!(writer, "risk[{index}]: {risk}").map_err(write_error_kind)?;
+    }
+    Ok(())
 }
 
 fn help_text() -> &'static str {
@@ -2197,6 +2205,7 @@ mod tests {
         assert!(json_stdout.contains("observability_retention_policy_v1.16.4"));
         assert!(json_stdout.contains("run_command_module_split_v1.17.1"));
         assert!(json_stdout.contains("operator_execution_fields_v1.17.2"));
+        assert!(json_stdout.contains("operator_apply_text_v1.17.3"));
         assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));
@@ -2956,6 +2965,24 @@ mod tests {
         assert!(bind_stdout.contains("\"mutation_executed\":false"));
         assert!(bind_stdout.contains("\"raw_device_path_exposed\":false"));
         assert!(bind_stdout.contains("raw I/O"));
+
+        let (bind_text_exit, bind_text_stdout, bind_text_stderr) = run_cli(&[
+            "hardware",
+            "bind",
+            "--adapter",
+            "scale-main",
+            "--project",
+            root,
+            "--output",
+            "text",
+        ]);
+        assert_eq!(bind_text_exit, EXIT_OK, "{bind_text_stderr}");
+        assert!(bind_text_stdout.contains("operator_summary: hardware.bind"));
+        assert!(bind_text_stdout.contains("plan_id: req-hardware-1"));
+        assert!(bind_text_stdout.contains("confirm_token: not_required_plan_only"));
+        assert!(bind_text_stdout.contains("final_state: blocked"));
+        assert!(bind_text_stdout.contains("rollback_path: none; no raw I/O handle granted"));
+        assert!(bind_text_stdout.contains("risk_count:"));
     }
 
     #[test]
@@ -3526,7 +3553,35 @@ mod tests {
         assert!(stdout.contains("\"lock_id\":\"upgrade-apply-plan-upgrade\""));
         assert!(lock_root.join("plan-upgrade.lock").exists());
 
+        let text_lock_root = test_temp_dir("upgrade-apply-lock-text");
+        let (text_exit, text_stdout, text_stderr) = run_cli(&[
+            "upgrade",
+            "apply",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--confirm",
+            "plan-upgrade",
+            "--lock-store",
+            text_lock_root.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "text",
+        ]);
+
+        assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
+        assert!(text_stdout.contains("operator_summary: upgrade.apply"));
+        assert!(text_stdout.contains("plan_id: plan-upgrade"));
+        assert!(text_stdout.contains("confirm_token: plan-upgrade"));
+        assert!(text_stdout.contains("target: gen-v14 -> gen-v15"));
+        assert!(text_stdout.contains("final_state: locked"));
+        assert!(
+            text_stdout.contains("rollback_path: none; no supervisor handoff mutation executed")
+        );
+        assert!(text_stdout.contains("risk_count:"));
+
         fs::remove_dir_all(lock_root).unwrap();
+        fs::remove_dir_all(text_lock_root).unwrap();
     }
 
     #[test]
@@ -4003,6 +4058,13 @@ mod tests {
         assert!(text_stdout.contains("mutation_executed: false"));
         assert!(text_stdout.contains("rollback_required: false"));
         assert!(text_stdout.contains("rollback_executed: false"));
+        assert!(text_stdout.contains("final_state: dry_run_validated"));
+        assert!(text_stdout.contains("rollback_path: pre_restore_backup=backup/pre-apply-staged"));
+        assert!(text_stdout.contains("rollback_manifest_entries=3"));
+        assert!(text_stdout.contains("risk_count: 2"));
+        assert!(
+            text_stdout.contains("risk[0]: 3 affected paths require review before confirmation")
+        );
         assert!(text_stdout.contains("irreversible_warning:"));
         assert!(text_stdout.contains("next_action:"));
         assert_eq!(

@@ -53,7 +53,10 @@ JSON contract. V1.17.2 adds the `operator_execution_fields_v1.17.2` runtime
 marker and exposes top-level `mutation_executed` on restore, upgrade, and
 hardware operator outputs while preserving existing compatibility fields;
 `capability call` continues to show `invocation_executed` separately from
-`mutation_executed:false`.
+`mutation_executed:false`. V1.17.3 adds the `operator_apply_text_v1.17.3`
+runtime marker and text-only operator summaries for restore, upgrade, and
+hardware high-risk paths. Production release upload remains future work because
+it still needs signing/attestation and package repository credentials.
 
 ## Verification
 
@@ -67,6 +70,7 @@ hardware operator outputs while preserving existing compatibility fields;
 - `cargo test -p eva-cli task_`
 - `cargo test -p eva-cli restore_apply`
 - `cargo test -p eva-cli upgrade_apply`
+- `cargo test -p eva-cli hardware_commands_report_candidates_and_bind_plan`
 - `cargo test -p eva-release`
 - `scripts/validate-i18n.ps1`
 - `scripts/validate-version-management.ps1 -Tag v1.11.5-alpha`

@@ -86,7 +86,10 @@ sink is enabled. V1.17.1 adds `run_command_module_split_v1.17.1`, which means
 `run --example basic` parser/runtime glue/output code lives in `run/run_cmd.rs`
 while preserving the same public text/JSON contract. V1.17.2 adds
 `operator_execution_fields_v1.17.2`, which fixes the operator-facing distinction
-between invocation execution and destructive mutation execution.
+between invocation execution and destructive mutation execution. V1.17.3 adds
+`operator_apply_text_v1.17.3`, which means restore, upgrade, and hardware
+high-risk text output includes operator summaries with plan, target, final
+state, rollback path, and risk evidence.
 
 Use text output for human inspection and `--output json` for scripts or CI.
 
@@ -238,7 +241,7 @@ servers, provider CLIs, or workflow runners.
 | --- | --- | --- |
 | Hardware candidates | `cargo run -- hardware list --output json` | Reads manifests; does not open devices. |
 | Hardware probe | `cargo run -- hardware probe --adapter scale-main --output json` | Reports health, trust, and handle status. |
-| Hardware bind plan | `cargo run -- hardware bind --adapter scale-main --output json` | Produces plan steps, risks, and `mutation_executed:false`; no raw I/O handle. |
+| Hardware bind plan | `cargo run -- hardware bind --adapter scale-main --output json` | Produces plan steps, risks, `mutation_executed:false`, and text operator summary; no raw I/O handle. |
 | Backup artifact | `cargo run -- backup create --output json` | Uses an in-memory artifact store. |
 | Release snapshot | `cargo run -- snapshot create --output json` | Links to a verified backup manifest. |
 | Restore plan | `cargo run -- restore plan --output json` | Returns `apply_allowed:false` and `mutation_executed:false`. |
@@ -300,7 +303,8 @@ real observability database sink, production retention scheduling, durable
 memory/backup databases, or daemon-driven hot-reload orchestration beyond the
   current JSONL audit wiring, tracing bridge, explicit OTel SDK exporter smoke,
   V1.16.4 JSONL/durable-audit retention policy, V1.17.1 run command module
-  split boundary, and V1.17.2 operator execution-field boundary.
+  split boundary, V1.17.2 operator execution-field boundary, and V1.17.3
+  text-only operator apply summary boundary.
 
 ## Recommended Verification
 

@@ -2,8 +2,8 @@ use super::{
     artifact_store_ref, artifact_store_ref_json, backup_cmd, json_array, json_string,
     lock_store_ref, lock_store_ref_json, parse_common_options, required_option, rollback_plan_json,
     snapshot_cmd, success_envelope, trace_for, write_artifact_store_ref, write_command_error,
-    write_error_kind, write_lock_store_ref, ArtifactStoreRef, CommonOptions, LockStoreRef,
-    OutputFormat, EXIT_OK, EXIT_RUNTIME_UNAVAILABLE,
+    write_error_kind, write_lock_store_ref, write_risk_lines_text, ArtifactStoreRef, CommonOptions,
+    LockStoreRef, OutputFormat, EXIT_OK, EXIT_RUNTIME_UNAVAILABLE,
 };
 use backup_cmd::BackupCreateResult;
 use eva_backup::{
@@ -1044,6 +1044,15 @@ fn write_restore_apply_dry_run<W: Write>(
                 result.report.pre_restore_backup_artifact_key
             )
             .map_err(write_error_kind)?;
+            writeln!(writer, "final_state: {}", result.report.status).map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "rollback_path: {}",
+                restore_apply_dry_run_rollback_path(&result.report)
+            )
+            .map_err(write_error_kind)?;
+            let risks = restore_apply_dry_run_risks(&result.report);
+            write_risk_lines_text(writer, &risks)?;
             write_restore_operator_confirmation_text(
                 writer,
                 &restore_apply_dry_run_operator_confirmation(result),
@@ -1118,6 +1127,15 @@ fn write_restore_apply<W: Write>(
             if let Some(rollback) = &result.rollback_plan {
                 writeln!(writer, "rollback: {}", rollback.status).map_err(write_error_kind)?;
             }
+            writeln!(writer, "final_state: {}", restore_apply_final_state(result))
+                .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "rollback_path: {}",
+                restore_apply_rollback_path(result)
+            )
+            .map_err(write_error_kind)?;
+            write_risk_lines_text(writer, &result.report.risks)?;
             write_restore_operator_confirmation_text(
                 writer,
                 &restore_apply_operator_confirmation(result),
@@ -1175,6 +1193,12 @@ fn write_restore_rollback<W: Write>(
                 result.rollback.rollback_log_path
             )
             .map_err(write_error_kind)?;
+            writeln!(writer, "final_state: {}", result.rollback.status)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "rollback_path: {}", restore_rollback_path(result))
+                .map_err(write_error_kind)?;
+            let risks = restore_rollback_risks(result);
+            write_risk_lines_text(writer, &risks)?;
             writeln!(writer, "lock: {}", result.lock.lock_id).map_err(write_error_kind)?;
             write_restore_operator_confirmation_text(
                 writer,
@@ -1195,6 +1219,66 @@ fn write_restore_rollback<W: Write>(
         )
         .map_err(write_error_kind),
     }
+}
+
+fn restore_apply_dry_run_rollback_path(report: &RestoreApplyDryRunReport) -> String {
+    format!(
+        "pre_restore_backup={};rollback_manifest_entries={}",
+        report.pre_restore_backup_artifact_key,
+        report.mutation_plan.rollback_manifest.len()
+    )
+}
+
+fn restore_apply_dry_run_risks(report: &RestoreApplyDryRunReport) -> Vec<String> {
+    if report.mutation_plan.mutation_planned {
+        vec![
+            format!(
+                "{} affected paths require review before confirmation",
+                report.mutation_plan.affected_paths.len()
+            ),
+            "destructive restore can overwrite or delete files".to_owned(),
+        ]
+    } else {
+        vec!["no staged mutation steps were declared; apply remains gated".to_owned()]
+    }
+}
+
+fn restore_apply_final_state(result: &RestoreApplyResult) -> &str {
+    result
+        .mutation_apply
+        .as_ref()
+        .map(|apply| apply.status.as_str())
+        .unwrap_or(result.report.status.as_str())
+}
+
+fn restore_apply_rollback_path(result: &RestoreApplyResult) -> String {
+    if let Some(rollback) = &result.rollback_plan {
+        return format!(
+            "rollback_plan:{}:{}->{}",
+            rollback.status,
+            rollback.from_generation.as_str(),
+            rollback.to_generation.as_str()
+        );
+    }
+    if let Some(mutation_apply) = &result.mutation_apply {
+        return format!("transaction_log={}", mutation_apply.transaction_log_path);
+    }
+    "none; no mutation executed".to_owned()
+}
+
+fn restore_rollback_path(result: &RestoreRollbackResult) -> String {
+    format!(
+        "transaction_log={};rollback_log={}",
+        result.rollback.transaction_log_path, result.rollback.rollback_log_path
+    )
+}
+
+fn restore_rollback_risks(result: &RestoreRollbackResult) -> Vec<String> {
+    let mut risks = vec!["rollback rewrites target files from pre-restore archive".to_owned()];
+    if !result.rollback.rollback_executed {
+        risks.push("manual recovery may be required before retrying".to_owned());
+    }
+    risks
 }
 
 fn restore_plan_json(result: &RestorePlanResult) -> String {

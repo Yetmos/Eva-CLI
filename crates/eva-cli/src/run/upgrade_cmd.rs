@@ -1,8 +1,8 @@
 use super::{
     json_array, json_string, lock_store_ref, lock_store_ref_json, option_json,
     parse_common_options, required_option, rollback_plan_json, success_envelope, trace_for,
-    write_command_error, write_error_kind, write_lock_store_ref, CommonOptions, LockStoreRef,
-    OutputFormat, EXIT_OK,
+    write_command_error, write_error_kind, write_lock_store_ref, write_risk_lines_text,
+    CommonOptions, LockStoreRef, OutputFormat, EXIT_OK,
 };
 use eva_backup::{MigrationPackageManifest, MigrationPackageService, MigrationPreflight};
 use eva_config::load_project_config;
@@ -620,6 +620,7 @@ fn write_upgrade_apply<W: Write>(
                 upgrade_apply_mutation_executed(result)
             )
             .map_err(write_error_kind)?;
+            write_upgrade_apply_operator_summary_text(writer, result)?;
             if let Some(handoff) = &result.handoff {
                 writeln!(writer, "active_generation: {}", handoff.active_generation)
                     .map_err(write_error_kind)?;
@@ -643,6 +644,70 @@ fn write_upgrade_apply<W: Write>(
         )
         .map_err(write_error_kind),
     }
+}
+
+fn write_upgrade_apply_operator_summary_text<W: Write>(
+    writer: &mut W,
+    result: &UpgradeApplyResult,
+) -> Result<(), EvaError> {
+    writeln!(writer, "operator_summary: upgrade.apply").map_err(write_error_kind)?;
+    writeln!(writer, "plan_id: {}", result.report.plan_id).map_err(write_error_kind)?;
+    writeln!(writer, "confirm_token: {}", result.report.plan_id).map_err(write_error_kind)?;
+    writeln!(writer, "target: {}", upgrade_apply_target(result)).map_err(write_error_kind)?;
+    writeln!(writer, "final_state: {}", upgrade_apply_final_state(result))
+        .map_err(write_error_kind)?;
+    writeln!(
+        writer,
+        "rollback_path: {}",
+        upgrade_apply_rollback_path(result)
+    )
+    .map_err(write_error_kind)?;
+    let risks = upgrade_apply_risks(result);
+    write_risk_lines_text(writer, &risks)
+}
+
+fn upgrade_apply_target(result: &UpgradeApplyResult) -> String {
+    format!(
+        "{} -> {}",
+        result.report.lock.from_generation.as_str(),
+        result.report.lock.to_generation.as_str()
+    )
+}
+
+fn upgrade_apply_final_state(result: &UpgradeApplyResult) -> &str {
+    result
+        .handoff
+        .as_ref()
+        .map(|handoff| handoff.status.as_str())
+        .unwrap_or(result.report.status.as_str())
+}
+
+fn upgrade_apply_rollback_path(result: &UpgradeApplyResult) -> String {
+    if let Some(handoff) = &result.handoff {
+        if let Some(rollback) = &handoff.rollback_plan {
+            return format!(
+                "rollback_plan:{}:{}->{}",
+                rollback.status,
+                rollback.from_generation.as_str(),
+                rollback.to_generation.as_str()
+            );
+        }
+        if let Some(pointer) = &handoff.release_pointer {
+            return format!(
+                "previous_generation:{};release_pointer:{}",
+                pointer.previous_generation, pointer.pointer_path
+            );
+        }
+    }
+    "none; no supervisor handoff mutation executed".to_owned()
+}
+
+fn upgrade_apply_risks(result: &UpgradeApplyResult) -> Vec<String> {
+    let mut risks = result.report.risks.clone();
+    if let Some(handoff) = &result.handoff {
+        risks.extend(handoff.risks.clone());
+    }
+    risks
 }
 
 fn upgrade_apply_json(result: &UpgradeApplyResult) -> String {
