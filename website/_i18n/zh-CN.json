@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | 多 Agent 运行时",
-    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.11.5-alpha CLI runtime，并已完成 V1.17.5 文档与 i18n 同步闭环；它通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、durable evidence、observability policy、operator safety fields、public JSON contract validation 和 runtime command completion 组织运行时能力。"
+    "description": "Eva-CLI 是面向受控多 Agent 工作流的开源 V1.11.5-alpha CLI runtime，并已完成 V1.17.6 V1.x closure release gate；它通过 Rust 运行时边界、Lua 能力层、Topic EventBus、记忆知识上下文、Adapter、硬件计划、发布门禁、durable evidence、observability policy、operator safety fields、public JSON contract validation、closure report 和 runtime command completion 组织运行时能力。"
   },
   "brand": {
     "tagline": "多 Agent 运行时"
@@ -38,7 +38,7 @@
         "description": "通过权限边界接入 CLI、MCP、HTTP、Skill 与硬件。"
       }
     ],
-    "runtimePanelNote": "V1.17.5 仍保持 V1.11.5-alpha runtime 版本，同时把更宽的 V1.x 证据线同步到文档：daemon control、provider supervision gate、restore mutation/rollback evidence、service-manager abstraction、hardware safety、memory 与 observability policy、operator execution fields、高风险 text summary 和 public JSON contract validation。",
+    "runtimePanelNote": "V1.17.6 仍保持 V1.11.5-alpha runtime 版本，同时把 V1.x closure release gate 覆盖到更宽的证据线：daemon control、provider supervision gate、restore mutation/rollback evidence、service-manager abstraction、hardware safety、memory 与 observability policy、operator execution fields、高风险 text summary、public JSON contract validation 和 external blocker 记录。",
     "actionsLabel": "项目入口",
     "primaryAction": "阅读文档",
     "secondaryAction": "总体架构",
@@ -47,14 +47,14 @@
     "progressTitle": "从架构骨架走向发布证据、操作者安全和契约校验",
     "progressCurrentLabel": "当前开发阶段",
     "progressCurrentKicker": "当前阶段",
-    "progressCurrentTitle": "V1.17.5 文档、i18n 和发布说明已同步",
-    "progressCurrentBody": "仓库仍保持 V1.11.5-alpha 源码版本，同时已将 V1.12 到 V1.17 的 runtime 证据线同步到文档：daemon control/recovery、provider supervision gate、restore mutation 和 rollback evidence、service-manager abstraction、hardware safety gate、memory retrieval/redaction、observability retention policy、run command split、operator execution fields、高风险 text summary 和 public JSON contract diff validation。",
+    "progressCurrentTitle": "V1.17.6 V1.x closure release gate 已落地",
+    "progressCurrentBody": "仓库仍保持 V1.11.5-alpha 源码版本，同时已将 V1.12 到 V1.17 的 runtime 证据线同步并纳入 closure gate：daemon control/recovery、provider supervision gate、restore mutation 和 rollback evidence、service-manager abstraction、hardware safety gate、memory retrieval/redaction、observability retention policy、run command split、operator execution fields、高风险 text summary、public JSON contract diff validation 和 V1.x closure report。",
     "progressTimelineLabel": "发布进度阶段",
     "progressRoadmapLabel": "查看路线图",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
-      "完成文档与契约校验同步后，继续补最终 V1.x closure gate。",
-      "生产 signing、attestation、OS package 发布和 release upload 在凭据与仓库权限具备前继续保持阻塞。",
+      "生产 signing、attestation、OS package 发布和 release upload 在凭据与仓库权限具备后继续解除。",
+      "平台 service-manager 测试环境、真实硬件 fixture 和生产 database sink evidence 具备前继续保持 external blocker 记录。",
       "restore、upgrade、hardware 和 lifecycle 等高风险路径继续保留显式 evidence、confirmation gate 和稳定 JSON contract。"
     ],
     "featuredBlogEyebrow": "推荐阅读",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "当前",
-        "label": "V1.17.5 文档与契约闭环",
-        "description": "V1.12 daemon、V1.13 provider、V1.14 restore/service-manager、V1.15 hardware/memory、V1.16 observability 和 V1.17 CLI/operator contract evidence 已同步到网站、文档、发布说明和 i18n manifest。"
+        "label": "V1.17.6 V1.x closure release gate",
+        "description": "V1.12 daemon、V1.13 provider、V1.14 restore/service-manager、V1.15 hardware/memory、V1.16 observability 和 V1.17 CLI/operator contract evidence 已由 closure gate 汇总，并同步到网站、文档、发布说明和 i18n manifest。"
       },
       {
         "status": "later",
@@ -167,7 +167,7 @@
       {
         "id": "release-notes-v1.11.5",
         "title": "V1.11.5 Alpha 发布说明与 V1.17 同步",
-        "description": "发布说明现在同时汇总 V1.12-V1.17 daemon、provider、restore、hardware、memory、observability、operator UX 和 public JSON contract evidence。"
+        "description": "发布说明现在同时汇总 V1.12-V1.17 daemon、provider、restore、hardware、memory、observability、operator UX、public JSON contract 和 V1.x closure evidence。"
       },
       {
         "id": "release-notes-v1.11.4",
@@ -385,7 +385,7 @@
       {
         "id": "release-notes-v1.11.5",
         "title": "V1.11.5 Alpha 发布说明与 V1.17 同步",
-        "description": "V1.11.5 alpha 发布说明，以及 V1.12-V1.17 daemon control、provider supervision、restore/hardware/operator safety、observability policy 和 JSON contract validation 的同步证据线。"
+        "description": "V1.11.5 alpha 发布说明，以及 V1.12-V1.17 daemon control、provider supervision、restore/hardware/operator safety、observability policy、JSON contract validation 和 closure report 的同步证据线。"
       },
       {
         "id": "release-notes-v1.11.4",

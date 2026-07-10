@@ -71,6 +71,18 @@ pub struct StabilityScenario {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V1xClosureReport {
+    pub status: String,
+    pub summary: String,
+    pub required_gate_ids: Vec<String>,
+    pub passed_required_gate_ids: Vec<String>,
+    pub missing_required_gate_ids: Vec<String>,
+    pub blocking_required_gate_ids: Vec<String>,
+    pub optional_production_gate_ids: Vec<String>,
+    pub blocked_external_items: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseReadinessReport {
     pub version: String,
     pub status: String,
@@ -78,6 +90,7 @@ pub struct ReleaseReadinessReport {
     pub platforms: Vec<PlatformReadiness>,
     pub stability: Vec<StabilityScenario>,
     pub gates: Vec<ReleaseGate>,
+    pub closure: V1xClosureReport,
     pub audit: Vec<String>,
 }
 
@@ -191,6 +204,7 @@ impl ReleaseHardeningService {
         )));
         gates.push(provider_supervision_gate());
         gates.push(hardware_safety_release_gate());
+        gates.push(observability_policy_gate());
         gates.push(public_json_contract_gate());
         let artifact_report = artifact_evidence
             .map(|evidence| evidence.verify(&ReleaseArtifactSigningKey::local_development()));
@@ -209,6 +223,8 @@ impl ReleaseHardeningService {
         if let Some(report) = benchmark_report.as_ref() {
             gates.push(release_benchmark_gate(report));
         }
+        let closure = v1x_closure_report(&gates);
+        gates.push(v1x_closure_gate(&closure));
 
         let status = if gates
             .iter()
@@ -227,6 +243,7 @@ impl ReleaseHardeningService {
             platforms,
             stability,
             gates,
+            closure,
             audit: release_audit(
                 artifact_report.as_ref(),
                 distribution_report.as_ref(),
@@ -623,7 +640,9 @@ fn release_audit(
         "mcp_compatibility_matrix_ready".to_owned(),
         "provider_supervision_readiness_gate_ready".to_owned(),
         "hardware_safety_release_gate_ready".to_owned(),
+        "observability_policy_release_gate_ready".to_owned(),
         "public_json_contract_diff_ready".to_owned(),
+        "v1x_closure_report_ready".to_owned(),
     ];
     if let Some(report) = artifact_report {
         if report.status == "verified" {
@@ -1328,6 +1347,145 @@ fn public_json_contract_gate() -> ReleaseGate {
     }
 }
 
+fn observability_policy_gate() -> ReleaseGate {
+    ReleaseGate {
+        id: "REL-OBSERVABILITY-POLICY-001".to_owned(),
+        domain: "observability_policy".to_owned(),
+        status: ReleaseGateStatus::Pass,
+        required: true,
+        summary: "Runtime observability audit wiring, tracing bridge, OTLP exporter smoke, and retention policy are recorded for V1.x closure".to_owned(),
+        evidence: vec![
+            "runtime_audit_sink_wiring_v1.16.1".to_owned(),
+            "tracing_subscriber_bridge_v1.16.2".to_owned(),
+            "opentelemetry_sdk_exporter_v1.16.3".to_owned(),
+            "observability_retention_policy_v1.16.4".to_owned(),
+            "BestEffortObservabilityPipeline covers daemon/provider/task/restore paths".to_owned(),
+            "FileObservabilitySink retention/rotation/corrupt-record policy is tested".to_owned(),
+            "database_sink:policy_kind_only_not_claimed_as_real_backend".to_owned(),
+        ],
+        remediation: vec![
+            "do not claim production telemetry until a real database sink and retention scheduler are implemented".to_owned(),
+            "keep tracing, OTLP exporter smoke, and JSONL retention tests in the V1.x release evidence".to_owned(),
+        ],
+    }
+}
+
+fn v1x_closure_required_gate_ids() -> Vec<&'static str> {
+    vec![
+        "REL-DAEMON-RUNTIME-001",
+        "REL-MCP-COMPAT-001",
+        "REL-PROVIDER-SUPERVISION-001",
+        "REL-RESTORE-APPLY-GATE-001",
+        "REL-SERVICE-MANAGER-ABSTRACTION-001",
+        "REL-HARDWARE-SAFETY-001",
+        "REL-OBSERVABILITY-POLICY-001",
+        "REL-JSON-CONTRACT-001",
+    ]
+}
+
+fn v1x_closure_report(gates: &[ReleaseGate]) -> V1xClosureReport {
+    let required_gate_ids: Vec<String> = v1x_closure_required_gate_ids()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let mut passed_required_gate_ids = Vec::new();
+    let mut missing_required_gate_ids = Vec::new();
+    let mut blocking_required_gate_ids = Vec::new();
+
+    for gate_id in &required_gate_ids {
+        match gates.iter().find(|gate| gate.id == *gate_id) {
+            Some(gate) if gate.status == ReleaseGateStatus::Pass => {
+                passed_required_gate_ids.push(gate_id.clone());
+            }
+            Some(gate) if gate.status.is_blocking() => {
+                blocking_required_gate_ids.push(gate_id.clone());
+            }
+            Some(_) => blocking_required_gate_ids.push(gate_id.clone()),
+            None => missing_required_gate_ids.push(gate_id.clone()),
+        }
+    }
+
+    let status = if missing_required_gate_ids.is_empty() && blocking_required_gate_ids.is_empty() {
+        "ready_with_external_blockers"
+    } else {
+        "blocked"
+    }
+    .to_owned();
+
+    V1xClosureReport {
+        status,
+        summary: "V1.x alpha closure covers daemon, MCP, provider supervision, restore, service-manager abstraction, hardware safety, observability policy, and public JSON contract gates while recording production-only blockers separately".to_owned(),
+        required_gate_ids,
+        passed_required_gate_ids,
+        missing_required_gate_ids,
+        blocking_required_gate_ids,
+        optional_production_gate_ids: vec![
+            "REL-ARTIFACT-PROVENANCE-001".to_owned(),
+            "REL-DISTRIBUTION-001".to_owned(),
+            "REL-SECURITY-SCAN-001".to_owned(),
+            "REL-BENCHMARK-001".to_owned(),
+        ],
+        blocked_external_items: vec![
+            "production_signing_attestation_credentials".to_owned(),
+            "homebrew_winget_apt_repository_credentials".to_owned(),
+            "platform_service_manager_test_environment".to_owned(),
+            "real_or_virtual_hardware_fixture".to_owned(),
+            "production_database_sink_and_retention_scheduler".to_owned(),
+        ],
+    }
+}
+
+fn v1x_closure_gate(closure: &V1xClosureReport) -> ReleaseGate {
+    let mut evidence = vec![
+        format!("closure.status:{}", closure.status),
+        format!(
+            "closure.required_gate_count:{}",
+            closure.required_gate_ids.len()
+        ),
+        format!(
+            "closure.passed_required_gate_count:{}",
+            closure.passed_required_gate_ids.len()
+        ),
+        format!(
+            "closure.missing_required_gate_count:{}",
+            closure.missing_required_gate_ids.len()
+        ),
+        format!(
+            "closure.blocking_required_gate_count:{}",
+            closure.blocking_required_gate_ids.len()
+        ),
+    ];
+    evidence.extend(
+        closure
+            .required_gate_ids
+            .iter()
+            .map(|gate_id| format!("closure.required_gate:{gate_id}")),
+    );
+    evidence.extend(
+        closure
+            .blocked_external_items
+            .iter()
+            .map(|item| format!("closure.external_blocker:{item}")),
+    );
+
+    ReleaseGate {
+        id: "REL-V1X-CLOSURE-001".to_owned(),
+        domain: "v1x_closure".to_owned(),
+        status: if closure.status == "blocked" {
+            ReleaseGateStatus::Blocked
+        } else {
+            ReleaseGateStatus::Pass
+        },
+        required: true,
+        summary: "V1.x closure report aggregates completed readiness gates and records external production blockers without claiming them complete".to_owned(),
+        evidence,
+        remediation: vec![
+            "resolve missing or blocking required gates before claiming V1.x closure".to_owned(),
+            "keep production-only blockers listed until credentials, platform service tests, hardware fixtures, and database sink exist".to_owned(),
+        ],
+    }
+}
+
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -1631,6 +1789,38 @@ mod tests {
                     .iter()
                     .any(|item| item == "contracts/cli-json/release-check.json")
         }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-OBSERVABILITY-POLICY-001"
+                && gate.status == ReleaseGateStatus::Pass
+                && gate.domain == "observability_policy"
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "observability_retention_policy_v1.16.4")
+        }));
+        assert!(report.gates.iter().any(|gate| {
+            gate.id == "REL-V1X-CLOSURE-001"
+                && gate.status == ReleaseGateStatus::Pass
+                && gate.domain == "v1x_closure"
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "closure.required_gate:REL-JSON-CONTRACT-001")
+                && gate.evidence.iter().any(|item| {
+                    item == "closure.external_blocker:production_signing_attestation_credentials"
+                })
+        }));
+        assert_eq!(report.closure.status, "ready_with_external_blockers");
+        assert!(report.closure.missing_required_gate_ids.is_empty());
+        assert!(report.closure.blocking_required_gate_ids.is_empty());
+        assert!(report
+            .closure
+            .required_gate_ids
+            .contains(&"REL-OBSERVABILITY-POLICY-001".to_owned()));
+        assert!(report
+            .closure
+            .blocked_external_items
+            .contains(&"production_signing_attestation_credentials".to_owned()));
         assert!(report
             .audit
             .iter()
@@ -1687,6 +1877,14 @@ mod tests {
             .audit
             .iter()
             .any(|item| item == "public_json_contract_diff_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "observability_policy_release_gate_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|item| item == "v1x_closure_report_ready"));
     }
 
     #[test]
@@ -1774,6 +1972,70 @@ mod tests {
         assert!(gate.remediation.iter().any(|item| {
             item.contains("removed or renamed JSON fields") && item.contains("breaking")
         }));
+    }
+
+    #[test]
+    fn observability_policy_gate_records_v1164_boundary() {
+        let gate = observability_policy_gate();
+
+        assert_eq!(gate.id, "REL-OBSERVABILITY-POLICY-001");
+        assert_eq!(gate.status, ReleaseGateStatus::Pass);
+        assert!(gate.required);
+        assert_eq!(gate.domain, "observability_policy");
+        assert!(gate
+            .evidence
+            .contains(&"runtime_audit_sink_wiring_v1.16.1".to_owned()));
+        assert!(gate
+            .evidence
+            .contains(&"tracing_subscriber_bridge_v1.16.2".to_owned()));
+        assert!(gate
+            .evidence
+            .contains(&"opentelemetry_sdk_exporter_v1.16.3".to_owned()));
+        assert!(gate
+            .evidence
+            .contains(&"observability_retention_policy_v1.16.4".to_owned()));
+        assert!(gate
+            .evidence
+            .contains(&"database_sink:policy_kind_only_not_claimed_as_real_backend".to_owned()));
+    }
+
+    #[test]
+    fn v1x_closure_gate_records_external_blockers_without_blocking_alpha() {
+        let mcp_report = McpCompatibilityMatrix::v1137_fixture().verify().unwrap();
+        let gates = vec![
+            daemon_runtime_gate(),
+            mcp_compatibility_matrix_gate(Some(&mcp_report)),
+            provider_supervision_gate(),
+            restore_apply_gate(),
+            service_manager_abstraction_gate(),
+            hardware_safety_release_gate(),
+            observability_policy_gate(),
+            public_json_contract_gate(),
+        ];
+        let closure = v1x_closure_report(&gates);
+        let gate = v1x_closure_gate(&closure);
+
+        assert_eq!(closure.status, "ready_with_external_blockers");
+        assert!(closure.missing_required_gate_ids.is_empty());
+        assert!(closure.blocking_required_gate_ids.is_empty());
+        assert!(closure
+            .optional_production_gate_ids
+            .contains(&"REL-DISTRIBUTION-001".to_owned()));
+        assert!(closure
+            .blocked_external_items
+            .contains(&"production_signing_attestation_credentials".to_owned()));
+        assert_eq!(gate.id, "REL-V1X-CLOSURE-001");
+        assert_eq!(gate.status, ReleaseGateStatus::Pass);
+        assert!(gate.required);
+        assert!(gate
+            .evidence
+            .contains(&"closure.status:ready_with_external_blockers".to_owned()));
+        assert!(gate
+            .evidence
+            .contains(&"closure.required_gate:REL-OBSERVABILITY-POLICY-001".to_owned()));
+        assert!(gate.evidence.contains(
+            &"closure.external_blocker:production_signing_attestation_credentials".to_owned()
+        ));
     }
 
     #[test]

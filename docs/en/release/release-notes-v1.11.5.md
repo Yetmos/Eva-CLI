@@ -63,7 +63,15 @@ future work because it still needs signing/attestation and package repository
 credentials. V1.17.5 adds no runtime marker; it synchronizes the root README,
 documentation entry pages, user manuals, release notes, website i18n cards,
 generated localized site HTML, and `docs/_i18n/manifest.json` so the public docs
-describe the V1.12-V1.17 evidence line consistently.
+describe the V1.12-V1.17 evidence line consistently. V1.17.6 adds the
+`v1x_closure_gate_v1.17.6` runtime marker, required
+`REL-OBSERVABILITY-POLICY-001` and `REL-V1X-CLOSURE-001` gates, and additive
+`release check` `closure` JSON. The closure report requires daemon, MCP,
+provider, restore, service-manager abstraction, hardware safety, observability
+policy, and public JSON contract gates to pass, while explicitly recording
+production signing credentials, package repository credentials, platform
+service-manager test environments, real hardware fixtures, and production
+database sink/retention scheduling as external blockers.
 
 ## Verification
 

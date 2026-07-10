@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Eva-CLI | Multi-Agent Runtime",
-    "description": "Eva-CLI is an open-source V1.11.5-alpha CLI runtime with V1.17.5 documentation and i18n synchronization for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, durable evidence, observability policy, operator safety fields, public JSON contract validation, and runtime command completion."
+    "description": "Eva-CLI is an open-source V1.11.5-alpha CLI runtime with V1.17.6 V1.x closure release gate evidence for controlled multi-Agent workflows, combining Rust runtime boundaries, Lua capability layers, Topic EventBus routing, memory and knowledge context, adapters, hardware plans, release gates, durable evidence, observability policy, operator safety fields, public JSON contract validation, closure reporting, and runtime command completion."
   },
   "brand": {
     "tagline": "Multi-Agent Runtime"
@@ -38,23 +38,23 @@
         "description": "Routes CLI, MCP, HTTP, skills, and hardware through permissions."
       }
     ],
-    "runtimePanelNote": "V1.17.5 keeps the V1.11.5-alpha runtime version and synchronizes the wider V1.x evidence line: daemon control, provider supervision gates, restore mutation/rollback evidence, service-manager abstraction, hardware safety, memory and observability policy, operator execution fields, high-risk text summaries, and public JSON contract validation.",
+    "runtimePanelNote": "V1.17.6 keeps the V1.11.5-alpha runtime version and adds the V1.x closure release gate over the wider evidence line: daemon control, provider supervision gates, restore mutation/rollback evidence, service-manager abstraction, hardware safety, memory and observability policy, operator execution fields, high-risk text summaries, public JSON contract validation, and external blocker reporting.",
     "actionsLabel": "Project entrances",
     "primaryAction": "Read the docs",
     "secondaryAction": "Architecture overview",
     "progressAction": "Development progress",
     "progressEyebrow": "Development progress",
-    "progressTitle": "From architecture scaffold to release evidence, operator safety, and contract validation",
+    "progressTitle": "From architecture scaffold to release evidence, operator safety, and closure gates",
     "progressCurrentLabel": "Current development stage",
     "progressCurrentKicker": "Current stage",
-    "progressCurrentTitle": "V1.17.5 docs, i18n, and release notes are synchronized",
-    "progressCurrentBody": "The repository keeps the V1.11.5-alpha source version while documenting the completed V1.12 to V1.17 runtime evidence line: daemon control and recovery, provider supervision gates, restore mutation and rollback evidence, service-manager abstraction, hardware safety gates, memory retrieval and redaction, observability retention policy, run command split, operator execution fields, high-risk text summaries, and public JSON contract diff validation.",
+    "progressCurrentTitle": "V1.17.6 V1.x closure release gate is in place",
+    "progressCurrentBody": "The repository keeps the V1.11.5-alpha source version while documenting and gating the completed V1.12 to V1.17 runtime evidence line: daemon control and recovery, provider supervision gates, restore mutation and rollback evidence, service-manager abstraction, hardware safety gates, memory retrieval and redaction, observability retention policy, run command split, operator execution fields, high-risk text summaries, public JSON contract diff validation, and the V1.x closure report.",
     "progressTimelineLabel": "Release progress stages",
     "progressRoadmapLabel": "Open roadmap",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
-      "Add the final V1.x closure gate after the synchronized docs and contract checks are in place.",
-      "Keep production signing, attestation, OS package publication, and release upload work blocked until credentials and repository permissions exist.",
+      "Resolve production signing, attestation, OS package publication, and release upload blockers when credentials and repository permissions exist.",
+      "Attach platform service-manager test environments, real hardware fixtures, and production database sink evidence before claiming production readiness.",
       "Keep high-risk restore, upgrade, hardware, and lifecycle paths behind explicit evidence, confirmation gates, and stable JSON contracts."
     ],
     "featuredBlogEyebrow": "Recommended reading",
@@ -83,8 +83,8 @@
       {
         "status": "current",
         "badge": "Now",
-        "label": "V1.17.5 documentation and contract closure",
-        "description": "The V1.12 daemon, V1.13 provider, V1.14 restore/service-manager, V1.15 hardware and memory, V1.16 observability, and V1.17 CLI/operator contract evidence lines are documented and synchronized across website, docs, release notes, and i18n manifest."
+        "label": "V1.17.6 V1.x closure release gate",
+        "description": "The V1.12 daemon, V1.13 provider, V1.14 restore/service-manager, V1.15 hardware and memory, V1.16 observability, and V1.17 CLI/operator contract evidence lines are summarized by the closure gate and synchronized across website, docs, release notes, and i18n manifest."
       },
       {
         "status": "later",
@@ -167,7 +167,7 @@
       {
         "id": "release-notes-v1.11.5",
         "title": "V1.11.5 Alpha Release Notes and V1.17 Sync",
-        "description": "The alpha prerelease notes now also summarize V1.12-V1.17 daemon, provider, restore, hardware, memory, observability, operator UX, and public JSON contract evidence."
+        "description": "The alpha prerelease notes now also summarize V1.12-V1.17 daemon, provider, restore, hardware, memory, observability, operator UX, public JSON contract, and V1.x closure evidence."
       },
       {
         "id": "release-notes-v1.11.4",
@@ -385,7 +385,7 @@
       {
         "id": "release-notes-v1.11.5",
         "title": "V1.11.5 Alpha Release Notes and V1.17 Sync",
-        "description": "The alpha release notes plus the synchronized V1.12-V1.17 evidence line for daemon control, provider supervision, restore/hardware/operator safety, observability policy, and JSON contract validation."
+        "description": "The alpha release notes plus the synchronized V1.12-V1.17 evidence line for daemon control, provider supervision, restore/hardware/operator safety, observability policy, JSON contract validation, and closure reporting."
       },
       {
         "id": "release-notes-v1.11.4",

@@ -4,7 +4,7 @@
 > Published default: docs/en/README.md
 > Current detail authority: [简体中文](../zh-CN/中文文档入口.md)
 
-Eva-CLI has reached the V1.17.5 documentation/i18n synchronization checkpoint
+Eva-CLI has reached the V1.17.6 V1.x closure release gate checkpoint
 on the V1.11.5-alpha source line. The repository now contains a compileable
 Rust workspace, executable CLI surfaces, configuration validation, an in-memory
 basic runtime loop, local task diagnostics, controlled Adapter/MCP/Skill/
@@ -14,12 +14,13 @@ provider supervision readiness, restore mutation and rollback evidence,
 service-manager abstraction, hardware safety gates, memory retrieval and
 redaction evidence, observability retention/rotation policy, operator
 execution-state fields, high-risk operator text summaries, public JSON contract
-diff validation, and synchronized README, user manual, release notes, website
-cards, generated site HTML, and i18n manifest metadata.
+diff validation, synchronized README, user manual, release notes, website
+cards, generated site HTML, i18n manifest metadata, and additive `release check`
+`closure` reporting with production-only external blockers.
 
 Current managed project version: `V1.11.5-alpha` (`Cargo.toml` version
-`1.11.5-alpha`, prerelease Git tag form `v1.11.5-alpha`). V1.17.5 is a
-documentation/i18n synchronization checkpoint, not a new release tag. See
+`1.11.5-alpha`, prerelease Git tag form `v1.11.5-alpha`). V1.17.6 is a
+V1.x closure release gate checkpoint, not a new release tag. See
 [Eva-CLI Version Management Plan](release/version-management-plan.md).
 
 Important source rule: English documents currently provide the default public

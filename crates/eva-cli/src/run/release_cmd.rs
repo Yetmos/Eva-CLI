@@ -384,7 +384,16 @@ fn write_release_check<W: Write>(
             writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
             writeln!(writer, "blocking_gates: {}", report.blocking_count())
                 .map_err(write_error_kind)?;
-            writeln!(writer, "warning_gates: {}", report.warning_count()).map_err(write_error_kind)
+            writeln!(writer, "warning_gates: {}", report.warning_count())
+                .map_err(write_error_kind)?;
+            writeln!(writer, "closure_status: {}", report.closure.status)
+                .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "closure_external_blockers: {}",
+                report.closure.blocked_external_items.len()
+            )
+            .map_err(write_error_kind)
         }
         OutputFormat::Json => writeln!(
             writer,
@@ -484,7 +493,7 @@ fn write_release_migration<W: Write>(
 
 fn release_check_json(report: &ReleaseReadinessReport) -> String {
     format!(
-        "{{\"version\":{},\"status\":{},\"target\":{},\"blocking_gates\":{},\"warning_gates\":{},\"platforms\":{},\"stability\":{},\"gates\":{},\"audit\":{}}}",
+        "{{\"version\":{},\"status\":{},\"target\":{},\"blocking_gates\":{},\"warning_gates\":{},\"platforms\":{},\"stability\":{},\"gates\":{},\"closure\":{},\"audit\":{}}}",
         json_string(&report.version),
         json_string(&report.status),
         json_string(&report.target),
@@ -493,7 +502,48 @@ fn release_check_json(report: &ReleaseReadinessReport) -> String {
         json_array(report.platforms.iter().map(platform_readiness_json)),
         json_array(report.stability.iter().map(stability_scenario_json)),
         json_array(report.gates.iter().map(release_gate_json)),
+        v1x_closure_json(report),
         json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+fn v1x_closure_json(report: &ReleaseReadinessReport) -> String {
+    let closure = &report.closure;
+    format!(
+        "{{\"status\":{},\"summary\":{},\"required_gate_ids\":{},\"passed_required_gate_ids\":{},\"missing_required_gate_ids\":{},\"blocking_required_gate_ids\":{},\"optional_production_gate_ids\":{},\"blocked_external_items\":{}}}",
+        json_string(&closure.status),
+        json_string(&closure.summary),
+        json_array(closure.required_gate_ids.iter().map(|item| json_string(item))),
+        json_array(
+            closure
+                .passed_required_gate_ids
+                .iter()
+                .map(|item| json_string(item))
+        ),
+        json_array(
+            closure
+                .missing_required_gate_ids
+                .iter()
+                .map(|item| json_string(item))
+        ),
+        json_array(
+            closure
+                .blocking_required_gate_ids
+                .iter()
+                .map(|item| json_string(item))
+        ),
+        json_array(
+            closure
+                .optional_production_gate_ids
+                .iter()
+                .map(|item| json_string(item))
+        ),
+        json_array(
+            closure
+                .blocked_external_items
+                .iter()
+                .map(|item| json_string(item))
+        )
     )
 }
 

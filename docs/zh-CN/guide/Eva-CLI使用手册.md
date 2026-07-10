@@ -2,15 +2,16 @@
 
 更新时间：2026-07-10
 
-适用版本：Eva-CLI `1.11.5-alpha`，并已同步 V1.17.5 文档/i18n 状态
+适用版本：Eva-CLI `1.11.5-alpha`，并已同步 V1.17.6 V1.x closure release gate 状态
 
 本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
 V1.11.5-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
 EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、daemon process boundary smoke、daemon control mailbox、durable task lifecycle、scheduler retry dispatch、daemon-backed Agent drain/reload mutation、daemon runtime release gate、Agent lifecycle evidence 和 capability provider routing 命令已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
 V1.16.4 已补 JSONL/durable-audit retention/rotation/corrupt-record policy；
-V1.17.1-V1.17.4 已补 `run --example basic` 拆分、operator execution-state
-字段、高风险 text summary 和 public JSON contract diff suite；V1.17.5 则把这些
-runtime 边界同步到使用手册、发布说明、官网卡片、生成站点 HTML 和 i18n manifest。
+V1.17.1-V1.17.6 已补 `run --example basic` 拆分、operator execution-state
+字段、高风险 text summary、public JSON contract diff suite、文档/i18n 同步闭环和
+V1.x closure release gate/report；生产签名、包仓库、平台 service-manager、硬件 fixture
+和生产 database sink 仍作为 external blockers 记录。
 
 ## 当前定位
 
@@ -20,7 +21,7 @@ runtime 边界同步到使用手册、发布说明、官网卡片、生成站点
 | 运行时 | `run --example basic` 通过受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环；`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 提供 V1.12 本机 pid/lock/state、shutdown 边界 smoke、filesystem mailbox 控制面和 due dead-letter scheduler retry tick。 |
 | 外部能力 | Adapter、MCP、Skill、Discovery 当前提供受控诊断面，不启动真实 provider。 |
 | 风险动作 | 硬件绑定、恢复、升级和生命周期切换保持 plan-first，不执行 destructive apply。 |
-| 发布检查 | V1.12.6 已把 daemon runtime readiness 纳入 `release check`；V1.17.4 已加入 public JSON contract diff readiness；V1.17.5 同步相关文档/i18n/release notes。`release check/security/perf/migration` 仍覆盖 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
+| 发布检查 | V1.12.6 已把 daemon runtime readiness 纳入 `release check`；V1.17.4 已加入 public JSON contract diff readiness；V1.17.6 新增 `REL-OBSERVABILITY-POLICY-001`、`REL-V1X-CLOSURE-001` 和 additive `closure` JSON。`release check/security/perf/migration` 仍覆盖 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
 
 ![Eva-CLI 源码使用闭环](../../assets/eva-cli-user-manual-flow.zh-CN.svg)
 
@@ -74,16 +75,17 @@ release: V1.11.5-alpha
 | Agent 状态 | `cargo run -- agent status --agent root-agent --output json` | 输出 Agent lifecycle 和 manifest evidence。 |
 | Capability probe | `cargo run -- capability probe repo.analyze --output json` | 输出 provider plan 和 permission gate evidence。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
-| 发布门禁 | `cargo run -- release check --output json` | 输出 release readiness，包含 `REL-DAEMON-RUNTIME-001` 和 `REL-JSON-CONTRACT-001`。 |
+| 发布门禁 | `cargo run -- release check --output json` | 输出 release readiness，包含 `REL-DAEMON-RUNTIME-001`、`REL-OBSERVABILITY-POLICY-001`、`REL-JSON-CONTRACT-001`、`REL-V1X-CLOSURE-001` 和 `closure`。 |
 
 `--version` / `version --output json` 还会报告
 `mcp_http_auth_v1.13.6`、`mcp_compat_matrix_v1.13.7`、
 `provider_supervision_release_gate_v1.13.8`、
 `observability_retention_policy_v1.16.4`、`run_command_module_split_v1.17.1`、
-`operator_execution_fields_v1.17.2`、`operator_apply_text_v1.17.3` 和
-`json_contract_diff_suite_v1.17.4`。这些 marker 表示对应诊断、操作者安全和
-公开 JSON contract 验证边界可用；V1.17.5 不新增 runtime marker，而是同步
-README、手册、发布说明、官网卡片、生成 HTML 和 i18n manifest。
+`operator_execution_fields_v1.17.2`、`operator_apply_text_v1.17.3`、
+`json_contract_diff_suite_v1.17.4` 和 `v1x_closure_gate_v1.17.6`。这些
+marker 表示对应诊断、操作者安全、公开 JSON contract 验证和 V1.x closure
+release gate 边界可用；生产 external blockers 会留在 `release check` 的
+`closure.blocked_external_items` 中。
 
 文本输出适合人工查看，JSON 输出适合 CI 或脚本处理。需要稳定字段时加
 `--output json`。
@@ -112,7 +114,7 @@ README、手册、发布说明、官网卡片、生成 HTML 和 i18n manifest。
 | Snapshot | `snapshot create` | 创建绑定 backup manifest 的 release snapshot。 | 否 |
 | Restore | `restore plan` | 生成恢复计划，保持 `apply_allowed:false`。 | 否 |
 | Upgrade | `upgrade check` | 检查 generation、migration、drain 和 rollback readiness。 | 否 |
-| Release | `release check/security/perf/migration` | 执行发布准备、安全、性能和迁移门禁，`release check` 包含 daemon runtime readiness 和 public JSON contract readiness。 | 否 |
+| Release | `release check/security/perf/migration` | 执行发布准备、安全、性能和迁移门禁，`release check` 包含 daemon runtime、observability policy、public JSON contract 和 V1.x closure readiness。 | 否 |
 
 ## 基本用法
 
@@ -334,7 +336,7 @@ cargo run -- release migration --output json
 
 | 命令 | 输出重点 |
 | --- | --- |
-| `release check` | 跨平台、稳定性、文档、安全、性能、迁移和兼容门禁汇总。 |
+| `release check` | 跨平台、稳定性、文档、安全、性能、迁移、兼容、daemon runtime、observability policy、public JSON contract 和 V1.x closure 门禁汇总。 |
 | `release security` | policy、Lua sandbox、secret redaction、MCP allowlist、hardware 和 lifecycle 风险。 |
 | `release perf` | EventBus、Scheduler、Adapter、memory、backup 和 release check 预算。 |
 | `release migration` | V1.5.1 到 V1.11.5-alpha 的迁移步骤和兼容性策略。 |
@@ -402,7 +404,7 @@ cargo run -- release migration --output json
 | task 状态为空 | `cargo run -- run --example basic --output json` | 先运行 basic 示例生成 `.eva/tasks`。 |
 | MCP tool 被 blocked | `cargo run -- mcp probe --adapter github-mcp --tool <name> --output json` | 检查 tool 是否在 allowlist 中。 |
 | 硬件绑定 blocked | `cargo run -- hardware probe --adapter scale-main --output json` | 检查 hardware manifest 是否 enabled、trust 是否 accepted。 |
-| 发布检查 blocked | `cargo run -- release check --output json` | 根据 gate group 继续运行 security、perf 或 migration 子命令。 |
+| 发布检查 blocked | `cargo run -- release check --output json` | 根据 gate group 继续运行 security、perf 或 migration 子命令；生产凭据/fixture 类事项查看 `closure.blocked_external_items`。 |
 
 ## 当前非目标
 

@@ -14,7 +14,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 
 | Area | Public Type | Behavior |
 | --- | --- | --- |
-| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, service-manager abstraction, daemon runtime, MCP compatibility, provider supervision, hardware safety, and public JSON contract readiness. |
+| Release checklist | `ReleaseHardeningService`, `ReleaseReadinessReport`, `ReleaseGate` | Aggregates cross-platform, stability, docs, security, performance, migration, durable runtime, Lua runtime, signed backup archive, restore apply/rollback/operator confirmation, supervisor handoff, service-manager abstraction, daemon runtime, MCP compatibility, provider supervision, hardware safety, observability policy, public JSON contract readiness, and the V1.x closure report. |
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
 | Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, V1.15.1 hardware OS permission diagnostics/raw-handle boundaries, and lifecycle apply risk. |
@@ -31,7 +31,9 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | MCP compatibility readiness | `ReleaseGate` | Records V1.13.7 stdio/HTTP transport, tool schema, stream lifecycle, dangling-session, and explicit server-surface fixture evidence as `REL-MCP-COMPAT-001`. |
 | Provider supervision readiness | `ReleaseGate` | Records V1.13.8 supervisor slot, process table, credential scope, admission, stream artifact, recovery, and MCP compatibility gate evidence as `REL-PROVIDER-SUPERVISION-001`. |
 | Hardware safety readiness | `ReleaseGate` | Records V1.15.5 simulator parity, permission denial, lease cleanup, and daemon hotplug smoke evidence as `REL-HARDWARE-SAFETY-001`, accepting simulator-only alpha evidence without claiming real device I/O. |
+| Observability policy readiness | `ReleaseGate` | Records V1.16.1-V1.16.4 runtime audit wiring, tracing bridge, SDK exporter smoke, and retention/rotation/corrupt-record policy as `REL-OBSERVABILITY-POLICY-001`, without claiming a real database sink. |
 | Public JSON contract readiness | `ReleaseGate` | Records V1.17.4 golden subset fixtures and `scripts/validate-cli-json-contracts.ps1` as `REL-JSON-CONTRACT-001`, allowing additive fields while blocking removed or renamed public JSON fields. |
+| V1.x closure readiness | `V1xClosureReport`, `ReleaseGate` | Records V1.17.6 `REL-V1X-CLOSURE-001`, required gate coverage, additive `closure` JSON, and external blockers for production signing, package repositories, platform service-manager tests, real hardware fixtures, and production database sink work. |
 
 ## CLI Surface
 
@@ -60,7 +62,10 @@ All commands use the standard CLI JSON envelope:
 `release check` returns exit code `0` when no required gate is blocked. A
 blocked required gate maps to configuration exit code `2`; blocked security
 findings map to policy exit code `3`; over-budget performance gates map to
-runtime-unavailable exit code `4`.
+runtime-unavailable exit code `4`. V1.17.6 also returns additive
+`data.closure`; its `ready_with_external_blockers` status records production
+blockers without changing the alpha readiness exit behavior when all required
+local gates pass.
 
 ## Boundary Rules
 
@@ -76,11 +81,13 @@ runtime-unavailable exit code `4`.
 - expose V1.15.1 hardware OS permission diagnostics through `SEC-HW-001` security evidence;
 - expose V1.15.4 daemon hotplug subscriber and watcher crash lease-release evidence through `SEC-HW-001` security evidence;
 - expose V1.15.5 hardware safety evidence through the required `REL-HARDWARE-SAFETY-001` readiness gate;
+- expose V1.16 observability policy evidence through the required `REL-OBSERVABILITY-POLICY-001` readiness gate;
 - expose signed artifact, distribution install smoke, and package-manager dry-run evidence as opt-in readiness gates;
 - expose external scanner and measured benchmark evidence as opt-in readiness gates;
 - expose the repo-local MCP compatibility matrix as a required readiness gate;
 - expose the current provider supervision baseline as a required readiness gate;
 - expose public CLI JSON contract fixtures as a required readiness gate;
+- expose a V1.x closure report that summarizes required local gates and records production-only external blockers;
 - preserve known future risks as warnings instead of silently enabling apply paths.
 
 `eva-release` does not:
@@ -151,6 +158,13 @@ attach real or virtual hardware fixture evidence before claiming real device I/O
 V1.17.4 adds required public JSON contract gate `REL-JSON-CONTRACT-001` for
 golden subset fixtures and `scripts/validate-cli-json-contracts.ps1`; additive
 fields are allowed, but removed or renamed public fields block validation.
+V1.17.6 adds required observability policy gate
+`REL-OBSERVABILITY-POLICY-001` and closure gate `REL-V1X-CLOSURE-001`; the
+additive `closure` report requires daemon, MCP, provider, restore,
+service-manager abstraction, hardware safety, observability policy, and JSON
+contract gates to pass, while listing production signing, repository
+publication, platform service-manager tests, real hardware fixtures, and
+production database sink as external blockers.
 V1.14.5 adds required service-manager abstraction gate
 `REL-SERVICE-MANAGER-ABSTRACTION-001` for the adapter trait, fake handoff and
 rollback evidence, explicit config parsing, and docs/progress tracking; it does

@@ -1,6 +1,6 @@
 {
   "id": "release-check",
-  "description": "Release check JSON exposes the public JSON contract diff gate.",
+  "description": "Release check JSON exposes public JSON contract and V1.x closure gates.",
   "command": ["release", "check", "--output", "json"],
   "process_exit_code": 0,
   "expected": {
@@ -32,15 +32,61 @@
           ]
         },
         {
+          "id": "REL-OBSERVABILITY-POLICY-001",
+          "domain": "observability_policy",
+          "status": "pass",
+          "required": true,
+          "evidence": [
+            "runtime_audit_sink_wiring_v1.16.1",
+            "observability_retention_policy_v1.16.4",
+            "database_sink:policy_kind_only_not_claimed_as_real_backend"
+          ]
+        },
+        {
+          "id": "REL-V1X-CLOSURE-001",
+          "domain": "v1x_closure",
+          "status": "pass",
+          "required": true,
+          "evidence": [
+            "closure.status:ready_with_external_blockers",
+            "closure.required_gate:REL-JSON-CONTRACT-001",
+            "closure.external_blocker:production_signing_attestation_credentials"
+          ]
+        },
+        {
           "id": "REL-HARDWARE-SAFETY-001",
           "domain": "hardware_safety",
           "status": "pass",
           "required": true
         }
       ],
+      "closure": {
+        "status": "ready_with_external_blockers",
+        "required_gate_ids": [
+          "REL-DAEMON-RUNTIME-001",
+          "REL-MCP-COMPAT-001",
+          "REL-PROVIDER-SUPERVISION-001",
+          "REL-RESTORE-APPLY-GATE-001",
+          "REL-SERVICE-MANAGER-ABSTRACTION-001",
+          "REL-HARDWARE-SAFETY-001",
+          "REL-OBSERVABILITY-POLICY-001",
+          "REL-JSON-CONTRACT-001"
+        ],
+        "missing_required_gate_ids": [],
+        "blocking_required_gate_ids": [],
+        "blocked_external_items": [
+          "production_signing_attestation_credentials",
+          "homebrew_winget_apt_repository_credentials",
+          "platform_service_manager_test_environment",
+          "real_or_virtual_hardware_fixture",
+          "production_database_sink_and_retention_scheduler"
+        ]
+      },
       "audit": [
         "public_json_contract_diff_ready",
-        "hardware_safety_release_gate_ready"
+        "hardware_safety_release_gate_ready",
+        "observability_policy_release_gate_ready",
+        "v1x_closure_report_ready"
       ]
     },
     "trace": {
