@@ -52,7 +52,7 @@ knowledge.
 - Grant Adapter, MCP, hardware, or filesystem authority.
 - Own production retrieval provider fleets or long-lived retrieval scheduling.
 - Allow Lua or Agents to request another Agent's private memory.
-- Provide policy-driven redaction configuration, memory read/write/search/context audit wiring, or a long-lived background maintenance scheduler yet.
+- Provide a long-lived background maintenance or production retrieval scheduler yet.
 
 ## Verification
 
@@ -65,14 +65,15 @@ cargo run -- memory context --agent root-agent --query memory --durable-backend 
 The CLI smoke proves the public envelope includes `memory`, `global_memory`,
 `knowledge`, `lua_context`, and `audit`. Durable smoke additionally proves
 `state/memory` and `state/knowledge` round trips, expiration filtering,
-compression metadata, redaction, durable index locks, TTL GC checkpointing, and
-knowledge rebuild checkpointing. Provider retrieval tests additionally prove
+compression metadata, policy-driven redaction, durable index locks, TTL GC
+checkpointing, knowledge rebuild checkpointing, and memory read/search/context
+JSONL audit/metrics evidence. Provider retrieval tests additionally prove
 policy denial, timeout/failure, schema rejection, redaction, and source audit do
 not pollute the knowledge index.
 
 ## Next Scope
 
-Next production work is configurable redaction policy, memory-specific
-read/write/search/context audit wiring, and a long-lived maintenance scheduler.
-Those features must preserve the invariant that private memory is scoped
-by `agent_id` and request context is assembled through `ContextBuilder`.
+Next production work is a long-lived maintenance scheduler and production
+retrieval scheduling. Those features must preserve the invariant that private
+memory is scoped by `agent_id` and request context is assembled through
+`ContextBuilder`.

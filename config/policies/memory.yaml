@@ -1,0 +1,16 @@
+# Memory and knowledge context policy.
+# This domain is parsed by eva-policy and consumed by eva-memory.
+memory_policy:
+  redaction:
+    enabled: true
+    audit_redactions: true
+    replacement: "[REDACTED]"
+    sensitive_key_fragments:
+      - password
+      - secret
+      - token
+      - api_key
+      - apikey
+      - authorization
+    sensitive_token_prefixes:
+      - sk-

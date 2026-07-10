@@ -99,7 +99,7 @@ supervisor 已启用。
 | MCP | `mcp list/probe` | 列出或探测 allowlist 中的 MCP tool。 | 否 |
 | Skill | `skill list/run` | 运行受控 workflow skill runner，写入 artifact evidence。 | 仅 manifest allowlist runner |
 | Discovery | `discovery scan` | 扫描可信配置源并输出候选能力。 | 否 |
-| Memory | `memory context` | 构造 request-scoped memory/knowledge context。 | 否 |
+| Memory | `memory context` | 构造 request-scoped memory/knowledge context，并写 memory audit/metrics JSONL evidence。 | 否 |
 | Hardware | `hardware list/probe/bind` | 发现硬件 manifest 并生成绑定计划。 | 否 |
 | Backup | `backup create` | 在 in-memory artifact store 中创建并校验备份 artifact。 | 否 |
 | Snapshot | `snapshot create` | 创建绑定 backup manifest 的 release snapshot。 | 否 |
@@ -276,7 +276,8 @@ provider。
 ## 记忆和知识上下文
 
 `memory context` 用于验证 V1.2 `eva-memory`、`ContextBuilder` 和 Lua context
-快照边界：
+快照边界。V1.15.8 起，该命令还会按 `memory_policy.redaction` 脱敏，并把
+memory read/search/context audit 与 metrics 写入 `.eva/data/observability`：
 
 ```powershell
 cargo run -- memory context --agent root-agent --query context --private-limit 1 --output json
@@ -406,7 +407,7 @@ cargo run -- release migration --output json
 - 生产 service-manager/daemon handoff；
 - 真实 Supervisor 进程切换；
 - 完整 durable task 查询/恢复索引、tracing/OTel exporter、retention/rotation、runtime crash recovery、durable memory 和 backup database；
-- 超出当前 daemon foreground/control mailbox、durable task lifecycle、scheduler retry dispatch、agent drain/reload mutation state、V1.16.1 JSONL audit wiring、shadow load、route gate、drain evidence 和 rollback audit 边界的真实长任务执行器、OS provider supervision 与生产热更新编排。
+- 超出当前 daemon foreground/control mailbox、durable task lifecycle、scheduler retry dispatch、agent drain/reload mutation state、V1.15.8 memory JSONL audit wiring、V1.16.1 runtime JSONL audit wiring、shadow load、route gate、drain evidence 和 rollback audit 边界的真实长任务执行器、OS provider supervision、生产 memory retrieval 调度与生产热更新编排。
 
 这些能力需要后续版本在显式 apply gate、持久化存储、签名 artifact 和更强发布证据
 之后逐步接入。

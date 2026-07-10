@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct PolicyDomainSet {
     pub source_count: usize,
     pub adapter: AdapterPolicyDomain,
+    pub memory: MemoryPolicyDomain,
     pub hardware: HardwarePolicyDomain,
     pub mcp_server: McpServerPolicyDomain,
     pub runtime: RuntimePolicyDomain,
@@ -86,6 +87,20 @@ pub struct McpToolPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RuntimePolicyDomain {
     pub allow_high_risk_actions: BTreeSet<HighRiskAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MemoryPolicyDomain {
+    pub redaction: RedactionPolicyDomain,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedactionPolicyDomain {
+    pub enabled: bool,
+    pub audit_redactions: bool,
+    pub replacement: String,
+    pub sensitive_key_fragments: BTreeSet<String>,
+    pub sensitive_token_prefixes: BTreeSet<String>,
 }
 
 /// Stable high-risk runtime actions understood by the policy gate.
@@ -167,6 +182,28 @@ impl Default for HardwareHotplugPolicy {
     }
 }
 
+impl Default for RedactionPolicyDomain {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            audit_redactions: true,
+            replacement: "[REDACTED]".to_owned(),
+            sensitive_key_fragments: [
+                "password",
+                "secret",
+                "token",
+                "api_key",
+                "apikey",
+                "authorization",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            sensitive_token_prefixes: ["sk-"].into_iter().map(str::to_owned).collect(),
+        }
+    }
+}
+
 impl PolicyDomainSet {
     pub fn from_project(project: &ProjectConfig) -> Result<Self, EvaError> {
         Self::from_documents(&project.policies)
@@ -189,6 +226,9 @@ impl PolicyDomainSet {
                             domains.adapter.defaults.clone(),
                             SandboxPolicy::default(),
                         ));
+                    }
+                    "memory_policy" => {
+                        domains.memory = parse_memory_policy(value)?;
                     }
                     "hardware_policy" => {
                         domains.hardware = parse_hardware_policy(value)?;
@@ -690,6 +730,55 @@ fn parse_retry_policy(value: &Value) -> Result<RetryPolicyDomain, EvaError> {
     Ok(retry)
 }
 
+fn parse_memory_policy(value: &Value) -> Result<MemoryPolicyDomain, EvaError> {
+    let mapping = expect_mapping(value, "memory_policy")?;
+    let mut policy = MemoryPolicyDomain::default();
+    if let Some(redaction) = get(mapping, "redaction") {
+        policy.redaction = parse_redaction_policy(redaction)?;
+    }
+    Ok(policy)
+}
+
+fn parse_redaction_policy(value: &Value) -> Result<RedactionPolicyDomain, EvaError> {
+    let mapping = expect_mapping(value, "memory_policy.redaction")?;
+    let mut policy = RedactionPolicyDomain::default();
+    policy.enabled = bool_field(
+        mapping,
+        "enabled",
+        policy.enabled,
+        "memory_policy.redaction",
+    )?;
+    policy.audit_redactions = bool_field(
+        mapping,
+        "audit_redactions",
+        policy.audit_redactions,
+        "memory_policy.redaction",
+    )?;
+    policy.replacement = string_field(
+        mapping,
+        "replacement",
+        &policy.replacement,
+        "memory_policy.redaction",
+    )?;
+    if policy.replacement.trim().is_empty() {
+        return Err(
+            EvaError::invalid_argument("redaction replacement cannot be empty")
+                .with_context("field", "memory_policy.redaction.replacement"),
+        );
+    }
+    if let Some(keys) = get(mapping, "sensitive_key_fragments") {
+        policy.sensitive_key_fragments =
+            parse_lowercase_string_set(keys, "memory_policy.redaction.sensitive_key_fragments")?;
+    }
+    if let Some(prefixes) = get(mapping, "sensitive_token_prefixes") {
+        policy.sensitive_token_prefixes = parse_lowercase_string_set(
+            prefixes,
+            "memory_policy.redaction.sensitive_token_prefixes",
+        )?;
+    }
+    Ok(policy)
+}
+
 fn parse_hardware_policy(value: &Value) -> Result<HardwarePolicyDomain, EvaError> {
     let mapping = expect_mapping(value, "hardware_policy")?;
     let defaults = get(mapping, "defaults")
@@ -978,6 +1067,25 @@ fn parse_string_set(
         .collect()
 }
 
+fn parse_lowercase_string_set(
+    value: &Value,
+    path: &'static str,
+) -> Result<BTreeSet<String>, EvaError> {
+    sequence(value, path)?
+        .iter()
+        .map(|value| {
+            let value = required_str(value, path)?;
+            if value.trim().is_empty() || value.trim() != value {
+                return Err(EvaError::invalid_argument(
+                    "policy list values must be non-empty strings",
+                )
+                .with_context("field", path));
+            }
+            Ok(value.to_ascii_lowercase())
+        })
+        .collect()
+}
+
 fn parse_agent_set(
     value: Option<&Value>,
     path: &'static str,
@@ -1100,7 +1208,7 @@ mod tests {
         let project = load_project_config(workspace_root()).unwrap();
         let domains = PolicyDomainSet::from_project(&project).unwrap();
 
-        assert_eq!(domains.source_count, 4);
+        assert_eq!(domains.source_count, 5);
         assert_eq!(domains.adapter.defaults.max_timeout_ms, Some(120_000));
         assert!(domains
             .adapter
@@ -1115,8 +1223,60 @@ mod tests {
         assert!(domains.hardware.allowed_buses.contains("usb"));
         assert!(domains.mcp_server.enabled);
         assert!(domains.mcp_server.tools.contains_key("adapter.invoke"));
+        assert!(domains.memory.redaction.enabled);
+        assert!(domains
+            .memory
+            .redaction
+            .sensitive_key_fragments
+            .contains("token"));
+        assert!(domains
+            .memory
+            .redaction
+            .sensitive_token_prefixes
+            .contains("sk-"));
         assert!(!domains.lua_sandbox.filesystem_enabled);
         assert!(domains.layers().len() >= 3);
+    }
+
+    #[test]
+    fn parses_memory_redaction_policy_domain() {
+        let value = serde_yaml::from_str::<Value>(
+            r#"
+memory_policy:
+  redaction:
+    enabled: true
+    audit_redactions: false
+    replacement: "[MASKED]"
+    sensitive_key_fragments:
+      - Credential
+      - Session_Token
+    sensitive_token_prefixes:
+      - pk-
+"#,
+        )
+        .unwrap();
+        let document = PolicyDocument::try_from(value).unwrap();
+
+        let domains = PolicyDomainSet::from_documents(&[document]).unwrap();
+
+        assert!(domains.memory.redaction.enabled);
+        assert!(!domains.memory.redaction.audit_redactions);
+        assert_eq!(domains.memory.redaction.replacement, "[MASKED]");
+        assert!(domains
+            .memory
+            .redaction
+            .sensitive_key_fragments
+            .contains("credential"));
+        assert!(domains
+            .memory
+            .redaction
+            .sensitive_key_fragments
+            .contains("session_token"));
+        assert!(domains
+            .memory
+            .redaction
+            .sensitive_token_prefixes
+            .contains("pk-"));
     }
 
     #[test]

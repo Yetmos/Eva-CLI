@@ -33,6 +33,10 @@ pub enum AuditAction {
     McpSessionStopped,
     McpStreamAborted,
     McpProxyDenied,
+    MemoryWrite,
+    MemoryRead,
+    MemorySearch,
+    MemoryContext,
     MemoryMaintenance,
     HardwareDriverStarted,
     HardwareDriverStopped,
@@ -100,6 +104,10 @@ impl AuditAction {
             Self::McpSessionStopped => "mcp.session.stopped",
             Self::McpStreamAborted => "mcp.stream.aborted",
             Self::McpProxyDenied => "mcp.proxy.denied",
+            Self::MemoryWrite => "memory.write",
+            Self::MemoryRead => "memory.read",
+            Self::MemorySearch => "memory.search",
+            Self::MemoryContext => "memory.context",
             Self::MemoryMaintenance => "memory.maintenance",
             Self::HardwareDriverStarted => "hardware.driver.started",
             Self::HardwareDriverStopped => "hardware.driver.stopped",
@@ -190,6 +198,10 @@ mod tests {
         );
         assert_eq!(AuditAction::McpStreamAborted.as_str(), "mcp.stream.aborted");
         assert_eq!(AuditAction::McpProxyDenied.as_str(), "mcp.proxy.denied");
+        assert_eq!(AuditAction::MemoryWrite.as_str(), "memory.write");
+        assert_eq!(AuditAction::MemoryRead.as_str(), "memory.read");
+        assert_eq!(AuditAction::MemorySearch.as_str(), "memory.search");
+        assert_eq!(AuditAction::MemoryContext.as_str(), "memory.context");
         assert_eq!(
             AuditAction::MemoryMaintenance.as_str(),
             "memory.maintenance"

@@ -101,7 +101,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | MCP | `mcp list/probe` | List or probe allowlisted MCP tools. | No |
 | Skill | `skill list/run` | Run controlled workflow skill runners and write artifact evidence. | Manifest allowlisted runner only |
 | Discovery | `discovery scan` | Scan trusted config sources for candidates. | No |
-| Memory | `memory context` | Build request-scoped memory and knowledge context. | No |
+| Memory | `memory context` | Build request-scoped memory and knowledge context and write memory audit/metrics JSONL evidence. | No |
 | Hardware | `hardware list/probe/bind` | Discover hardware manifests and produce binding plans. | No |
 | Backup | `backup create` | Create and verify an in-memory backup artifact. | No |
 | Snapshot | `snapshot create` | Create a release snapshot linked to a backup manifest. | No |

@@ -23,7 +23,7 @@ V0.2 已落地最小权限契约：
 | `PolicyLayer` | 已完成 | 表示 system、manifest、session、request 等任意策略层 |
 | `EffectivePolicy` | 已完成 | 从一个或多个 `PolicyLayer` 计算最终权限和沙箱策略 |
 | request 校验 | 已完成 | `ensure_request_allowed` 会拒绝试图扩大 effective policy 的请求 |
-| YAML policy 解析 | 已完成 V1.9.2 | `PolicyDomainSet` 解释 `adapter_policy`、`hardware_policy`、`mcp_server`、`runtime_policy` 和 `lua_sandbox`，并生成 `PolicyLayer` |
+| YAML policy 解析 | 已完成 V1.15.8 | `PolicyDomainSet` 解释 `adapter_policy`、`hardware_policy`、`mcp_server`、`runtime_policy`、`lua_sandbox` 和 `memory_policy.redaction`，并生成 `PolicyLayer` |
 | 运行时高风险门禁 | 已完成 V1.13.3 | `RuntimePolicyGate` 对 MCP tool/topic、Skill、Hardware、Restore/Upgrade/Release/Supervisor 和 provider credential session scope 等动作输出 allow/deny decision 和 audit，并为 provider admission 暴露 capability retry backoff |
 
 ### 公开 API
@@ -44,6 +44,7 @@ V0.2 已落地最小权限契约：
 | `EffectivePolicy::ensure_request_allowed` | `&PermissionSet` | `Result<(), EvaError>` | 拒绝扩权 request |
 | `PolicyDomainSet::from_documents` | `&[PolicyDocument]` | `Result<PolicyDomainSet, EvaError>` | 将配置加载出的 policy YAML 转成 typed domain 和 policy layers |
 | `PolicyDomainSet::effective_policy` | 无 | `Result<EffectivePolicy, EvaError>` | 合并 policy domain 生成的 layers |
+| `PolicyDomainSet::memory.redaction` | 无 | `RedactionPolicyDomain` | 为 memory/context/provider retrieval 提供策略化脱敏规则 |
 | `RuntimePolicyGate::decide` | `RuntimePolicyRequest` | `PolicyDecision` | 对高风险动作和 provider credential session scope 执行 allow/deny 判定 |
 
 ### 权限收紧规则
@@ -136,7 +137,7 @@ V0.2 已落地最小权限契约：
 | `src/permissions.rs` | `PermissionSet`、收紧、diff、subset | 已完成 | V0.3 增加 CLI 友好的 diff 展示。 |
 | `src/sandbox.rs` | `SandboxPolicy`、Lua 默认沙箱、收紧 | 已完成 | V0.4 接 `eva-lua-host` 限制映射。 |
 | `src/effective.rs` | `PolicyLayer`、`EffectivePolicy`、request 校验 | 已完成 | V0.4 接 runtime/capability gate。 |
-| `src/domains.rs` | YAML policy domain parser、`RuntimePolicyGate`、高风险 action decision | 已完成 V1.13.3 | 已接 provider credential session scope 和 retry backoff 查询；后续接生产 runtime/supervisor/hardware apply。 |
+| `src/domains.rs` | YAML policy domain parser、`RuntimePolicyGate`、高风险 action decision、memory redaction policy | 已完成 V1.15.8 | 已接 provider credential session scope、retry backoff 查询和 `memory_policy.redaction`；后续接生产 runtime/supervisor/hardware apply。 |
 | `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和后续阶段。 |
 | policy domain parser | YAML domain 到策略层 | 已完成 V1.9.2 | 扩展真实 provider/hardware/backup/lifecycle 细粒度策略。 |
 
@@ -149,6 +150,7 @@ V0.2 已落地最小权限契约：
 | V1.9.2 | Adapter/MCP/Hardware/Runtime/Lua policy domain 解释并输出 runtime gate audit |
 | V1.13.2 | Provider credential session scope 复用 `RuntimePolicyGate` 输出 allow/deny audit |
 | V1.13.3 | Provider admission gate 可通过 `RuntimePolicyGate::adapter_retry_backoff_ms` 获取 capability backoff hint |
+| V1.15.8 | `memory_policy.redaction` 为 memory/context/provider retrieval 提供 key fragment、token prefix、replacement 和 audit 开关 |
 | V1.10+ | Hardware、restore、upgrade 等真实 apply 路径复用 runtime gate 并写入生产 audit sink |
 
 ## English

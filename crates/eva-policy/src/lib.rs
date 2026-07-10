@@ -7,8 +7,9 @@ pub mod sandbox;
 
 pub use domains::{
     AdapterPolicyDomain, CapabilityRetryPolicy, HardwareHotplugPolicy, HardwarePolicyDomain,
-    HighRiskAction, McpServerPolicyDomain, McpToolPolicy, PolicyDecision, PolicyDomainSet,
-    RetryPolicyDomain, RuntimePolicyDomain, RuntimePolicyGate, RuntimePolicyRequest, SkillPolicy,
+    HighRiskAction, McpServerPolicyDomain, McpToolPolicy, MemoryPolicyDomain, PolicyDecision,
+    PolicyDomainSet, RedactionPolicyDomain, RetryPolicyDomain, RuntimePolicyDomain,
+    RuntimePolicyGate, RuntimePolicyRequest, SkillPolicy,
 };
 pub use effective::{EffectivePolicy, PolicyLayer};
 pub use permissions::{PermissionSet, PermissionSetDiff};

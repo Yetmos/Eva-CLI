@@ -11,7 +11,8 @@ use eva_memory::{
     KnowledgeItem, KnowledgeSearchResult, KnowledgeSource, MemoryCompression, MemoryRecord,
     MemoryRetention, MemoryWrite,
 };
-use eva_observability::TraceFields;
+use eva_observability::{BestEffortObservabilityPipeline, TraceFields};
+use eva_policy::PolicyDomainSet;
 use eva_storage::{DurableBackendOptions, FileSystemDurableBackend};
 use std::io::Write;
 use std::path::PathBuf;
@@ -164,6 +165,10 @@ fn build_memory_context(
     }
     let request_id = RequestId::parse(&options.request_id)?;
     let now_ms = current_time_ms();
+    let redaction_policy = PolicyDomainSet::from_project(project)?
+        .memory
+        .redaction
+        .clone();
     let memory_writes = seeded_memory_writes(project, &agent_id, &request_id, now_ms);
     let knowledge_items = seeded_knowledge_items(request_id.clone())?;
     let (memory, knowledge) = if let Some(root) = &options.durable_backend {
@@ -188,15 +193,22 @@ fn build_memory_context(
         }
         (memory, knowledge)
     };
-    ContextBuilder::new(&memory, &knowledge).build(
-        ContextRequest::new(request_id, agent_id, options.query.clone())
-            .with_budget(ContextBudget {
-                private_memory: options.private_limit,
-                global_memory: options.global_limit,
-                knowledge: options.knowledge_limit,
-            })
-            .with_now_ms(now_ms),
-    )
+    let mut observability =
+        BestEffortObservabilityPipeline::open(memory_observability_backend(project));
+    let trace = TraceFields::default().with_request_id(request_id.clone());
+    ContextBuilder::new(&memory, &knowledge)
+        .with_redaction_policy(redaction_policy)
+        .build_observed(
+            ContextRequest::new(request_id, agent_id, options.query.clone())
+                .with_budget(ContextBudget {
+                    private_memory: options.private_limit,
+                    global_memory: options.global_limit,
+                    knowledge: options.knowledge_limit,
+                })
+                .with_now_ms(now_ms),
+            &mut observability,
+            &trace,
+        )
 }
 
 fn seeded_memory_writes(
@@ -285,6 +297,20 @@ fn current_time_ms() -> u128 {
         .unwrap_or_default()
 }
 
+fn memory_observability_backend(project: &ProjectConfig) -> PathBuf {
+    let data_dir = project
+        .eva
+        .runtime
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(".eva/data"));
+    if data_dir.is_absolute() {
+        data_dir.join("observability")
+    } else {
+        project.project_root.join(data_dir).join("observability")
+    }
+}
+
 fn write_memory_context<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -319,7 +345,7 @@ fn write_memory_context<W: Write>(
 
 fn memory_context_json(context: &BuiltContext) -> String {
     format!(
-        "{{\"request_id\":{},\"agent_id\":{},\"query\":{},\"totals\":{{\"items\":{},\"private_memory\":{},\"global_memory\":{},\"knowledge\":{}}},\"memory\":{},\"global_memory\":{},\"knowledge\":{},\"lua_context\":{},\"audit\":{}}}",
+        "{{\"request_id\":{},\"agent_id\":{},\"query\":{},\"totals\":{{\"items\":{},\"private_memory\":{},\"global_memory\":{},\"knowledge\":{},\"redactions\":{}}},\"memory\":{},\"global_memory\":{},\"knowledge\":{},\"lua_context\":{},\"audit\":{}}}",
         json_string(context.request_id.as_str()),
         json_string(context.agent_id.as_str()),
         json_string(&context.query),
@@ -327,6 +353,7 @@ fn memory_context_json(context: &BuiltContext) -> String {
         context.memory.len(),
         context.global_memory.len(),
         context.knowledge.len(),
+        context.redaction_count,
         json_array(context.memory.iter().map(memory_record_json)),
         json_array(context.global_memory.iter().map(memory_record_json)),
         json_array(context.knowledge.iter().map(knowledge_result_json)),

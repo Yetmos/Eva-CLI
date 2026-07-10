@@ -1,6 +1,8 @@
 //! Agent-private and global memory service contracts.
 
+use crate::observability::{record_memory_observation, MemoryObservation, MemoryOperation};
 use eva_core::{AgentId, EvaError, RequestId};
+use eva_observability::{AuditSink, MetricSink, TraceFields};
 use eva_storage::StateVersion;
 use std::collections::BTreeMap;
 
@@ -58,6 +60,7 @@ pub struct MemoryWrite {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryReadRequest {
     pub requester: AgentId,
+    pub request_id: Option<RequestId>,
     pub owner_agent: Option<AgentId>,
     pub visibility: MemoryVisibility,
     pub key: String,
@@ -202,6 +205,7 @@ impl MemoryReadRequest {
     pub fn private(requester: AgentId, key: impl Into<String>) -> Self {
         Self {
             owner_agent: Some(requester.clone()),
+            request_id: None,
             requester,
             visibility: MemoryVisibility::Private,
             key: key.into(),
@@ -211,6 +215,7 @@ impl MemoryReadRequest {
     pub fn global(requester: AgentId, key: impl Into<String>) -> Self {
         Self {
             requester,
+            request_id: None,
             owner_agent: None,
             visibility: MemoryVisibility::Global,
             key: key.into(),
@@ -219,6 +224,11 @@ impl MemoryReadRequest {
 
     pub fn with_owner_agent(mut self, owner_agent: AgentId) -> Self {
         self.owner_agent = Some(owner_agent);
+        self
+    }
+
+    pub fn with_request_id(mut self, request_id: RequestId) -> Self {
+        self.request_id = Some(request_id);
         self
     }
 }
@@ -268,6 +278,34 @@ impl InMemoryMemoryService {
         Ok(record)
     }
 
+    pub fn write_observed<S>(
+        &mut self,
+        write: MemoryWrite,
+        sink: &mut S,
+        trace: &TraceFields,
+    ) -> Result<MemoryRecord, EvaError>
+    where
+        S: AuditSink + MetricSink,
+    {
+        let request_id = write.request_id.clone();
+        let agent_id = write.owner_agent.clone();
+        let visibility = write.visibility;
+        let key = write.key.clone();
+        let record = self.write(write)?;
+        let mut observation = MemoryObservation::new(MemoryOperation::Write, trace.clone())
+            .with_visibility(visibility)
+            .with_key(key)
+            .with_item_count(1);
+        if let Some(request_id) = request_id {
+            observation = observation.with_request_id(request_id);
+        }
+        if let Some(agent_id) = agent_id {
+            observation = observation.with_agent_id(agent_id);
+        }
+        record_memory_observation(sink, observation)?;
+        Ok(record)
+    }
+
     pub fn read(&self, request: &MemoryReadRequest) -> Result<Option<MemoryRecord>, EvaError> {
         self.read_at(request, 0)
     }
@@ -289,6 +327,29 @@ impl InMemoryMemoryService {
             .get(&index)
             .filter(|record| !record.is_expired_at(now_ms))
             .cloned())
+    }
+
+    pub fn read_observed<S>(
+        &self,
+        request: &MemoryReadRequest,
+        now_ms: u128,
+        sink: &mut S,
+        trace: &TraceFields,
+    ) -> Result<Option<MemoryRecord>, EvaError>
+    where
+        S: AuditSink + MetricSink,
+    {
+        let record = self.read_at(request, now_ms)?;
+        let mut observation = MemoryObservation::new(MemoryOperation::Read, trace.clone())
+            .with_agent_id(request.requester.clone())
+            .with_visibility(request.visibility)
+            .with_key(request.key.clone())
+            .with_item_count(usize::from(record.is_some()));
+        if let Some(request_id) = &request.request_id {
+            observation = observation.with_request_id(request_id.clone());
+        }
+        record_memory_observation(sink, observation)?;
+        Ok(record)
     }
 
     pub fn list_private(&self, requester: &AgentId) -> Vec<MemoryRecord> {
@@ -429,6 +490,27 @@ fn take_records(records: Vec<MemoryRecord>, limit: usize) -> Vec<MemoryRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eva_observability::{
+        AuditEvent, AuditSink, InMemoryAuditSink, InMemoryMetricSink, MetricPoint, MetricSink,
+    };
+
+    #[derive(Debug, Default)]
+    struct TestSink {
+        audit: InMemoryAuditSink,
+        metrics: InMemoryMetricSink,
+    }
+
+    impl AuditSink for TestSink {
+        fn record(&mut self, event: AuditEvent) -> Result<(), EvaError> {
+            self.audit.record(event)
+        }
+    }
+
+    impl MetricSink for TestSink {
+        fn record(&mut self, point: MetricPoint) -> Result<(), EvaError> {
+            self.metrics.record(point)
+        }
+    }
 
     fn agent(value: &str) -> AgentId {
         AgentId::parse(value).unwrap()
@@ -500,5 +582,43 @@ mod tests {
 
         assert_eq!(snapshot.private.len(), 1);
         assert_eq!(snapshot.private[0].key, "fresh");
+    }
+
+    #[test]
+    fn memory_write_and_read_observed_record_request_agent_audit_and_metrics() {
+        let mut service = InMemoryMemoryService::new();
+        let mut sink = TestSink::default();
+        let owner = agent("root-agent");
+        let request_id = RequestId::parse("req-memory-observed").unwrap();
+
+        service
+            .write_observed(
+                MemoryWrite::private(owner.clone(), "goal", "ship")
+                    .with_request_id(request_id.clone()),
+                &mut sink,
+                &TraceFields::default(),
+            )
+            .unwrap();
+        let record = service
+            .read_observed(
+                &MemoryReadRequest::private(owner.clone(), "goal")
+                    .with_request_id(request_id.clone()),
+                0,
+                &mut sink,
+                &TraceFields::default(),
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(record.value, "ship");
+        assert_eq!(sink.audit.events.len(), 2);
+        assert_eq!(sink.audit.events[0].action.as_str(), "memory.write");
+        assert_eq!(sink.audit.events[1].action.as_str(), "memory.read");
+        assert_eq!(
+            sink.audit.events[0].trace.request_id.as_ref(),
+            Some(&request_id)
+        );
+        assert_eq!(sink.audit.events[0].trace.agent_id.as_ref(), Some(&owner));
+        assert_eq!(sink.metrics.points.len(), 4);
     }
 }

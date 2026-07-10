@@ -6,4 +6,4 @@
 
 ## English
 
-Policy files define global floors for sandboxing, Adapters, the MCP server, hardware access, and retry behavior. Permission merging can only narrow permissions; Agents, Adapters, and request-level config cannot expand them.
+Policy files define global floors for sandboxing, Adapters, the MCP server, hardware access, retry behavior, and memory redaction. Permission merging can only narrow permissions; Agents, Adapters, and request-level config cannot expand them.

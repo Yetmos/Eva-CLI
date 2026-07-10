@@ -4,6 +4,7 @@ pub mod context_builder;
 pub mod durable;
 pub mod knowledge_service;
 pub mod memory_service;
+pub mod observability;
 pub mod redaction;
 
 pub use context_builder::{
@@ -21,5 +22,9 @@ pub use knowledge_service::{
 pub use memory_service::{
     InMemoryMemoryService, MemoryCompression, MemoryReadRequest, MemoryRecord, MemoryRetention,
     MemorySnapshot, MemoryVisibility, MemoryWrite,
+};
+pub use observability::{
+    record_memory_observation, MemoryObservation, MemoryOperation,
+    RESPONSIBILITY as OBSERVABILITY_RESPONSIBILITY,
 };
 pub use redaction::{redact_sensitive_text, RedactedText};

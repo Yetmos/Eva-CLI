@@ -38,9 +38,10 @@ capability calls remain controlled CLI invokes and still report
 This is still an alpha checkpoint. Tracing/OTel export, retention/rotation, OS
 provider supervision, real hardware access, production daemon-driven hot-reload
 orchestration, signed installers, OS package repositories, and production
-signing or attestation credentials remain future release scope. V1.16.1 only
-adds JSONL best-effort runtime audit wiring; it is not a production telemetry
-backend.
+signing or attestation credentials remain future release scope. V1.15.8 adds
+policy-driven memory redaction/audit JSONL evidence; V1.16.1 only adds JSONL
+best-effort runtime audit wiring. These are not a production telemetry backend
+or production retrieval scheduler.
 
 ## Verification
 

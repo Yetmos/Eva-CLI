@@ -1,12 +1,16 @@
 //! Knowledge item indexing and retrieval contracts.
 
-use crate::redaction::redact_knowledge_item;
+use crate::observability::{record_memory_observation, MemoryObservation, MemoryOperation};
+use crate::redaction::{redact_knowledge_item, redact_knowledge_item_with_policy};
 use eva_capability::CapabilityHostApi;
 use eva_core::{
     AdapterId, AgentId, CapabilityName, EvaError, InvokeInput, InvokeMetadata, InvokeRequest,
     InvokeStatus, InvokeTarget, RequestId,
 };
-use eva_policy::{HighRiskAction, PolicyDecision, RuntimePolicyGate, RuntimePolicyRequest};
+use eva_observability::{AuditSink, MetricSink, TraceFields};
+use eva_policy::{
+    HighRiskAction, PolicyDecision, RedactionPolicyDomain, RuntimePolicyGate, RuntimePolicyRequest,
+};
 use std::collections::BTreeMap;
 
 /// Architectural responsibility for this module.
@@ -37,6 +41,8 @@ pub struct KnowledgeSearch {
     pub query: String,
     pub limit: usize,
     pub required_tags: Vec<String>,
+    pub request_id: Option<RequestId>,
+    pub agent_id: Option<AgentId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +159,8 @@ impl KnowledgeSearch {
             query: query.into(),
             limit: 8,
             required_tags: Vec::new(),
+            request_id: None,
+            agent_id: None,
         }
     }
 
@@ -163,6 +171,16 @@ impl KnowledgeSearch {
 
     pub fn with_required_tag(mut self, tag: impl Into<String>) -> Self {
         self.required_tags.push(tag.into());
+        self
+    }
+
+    pub fn with_request_id(mut self, request_id: RequestId) -> Self {
+        self.request_id = Some(request_id);
+        self
+    }
+
+    pub fn with_agent_id(mut self, agent_id: AgentId) -> Self {
+        self.agent_id = Some(agent_id);
         self
     }
 }
@@ -205,6 +223,29 @@ impl InMemoryKnowledgeService {
                 .then(left.item.id.cmp(&right.item.id))
         });
         results.truncate(search.limit);
+        Ok(results)
+    }
+
+    pub fn search_observed<S>(
+        &self,
+        search: &KnowledgeSearch,
+        sink: &mut S,
+        trace: &TraceFields,
+    ) -> Result<Vec<KnowledgeSearchResult>, EvaError>
+    where
+        S: AuditSink + MetricSink,
+    {
+        let results = self.search(search)?;
+        let mut observation = MemoryObservation::new(MemoryOperation::Search, trace.clone())
+            .with_query_len(search.query.len())
+            .with_item_count(results.len());
+        if let Some(agent_id) = &search.agent_id {
+            observation = observation.with_agent_id(agent_id.clone());
+        }
+        if let Some(request_id) = &search.request_id {
+            observation = observation.with_request_id(request_id.clone());
+        }
+        record_memory_observation(sink, observation)?;
         Ok(results)
     }
 
@@ -261,6 +302,16 @@ impl ExternalKnowledgeRetrievalRequest {
         gate: &RuntimePolicyGate,
         host: &impl CapabilityHostApi,
         knowledge: &mut InMemoryKnowledgeService,
+    ) -> Result<ExternalKnowledgeRetrievalReport, EvaError> {
+        self.execute_with_redaction_policy(gate, host, knowledge, &RedactionPolicyDomain::default())
+    }
+
+    pub fn execute_with_redaction_policy(
+        &self,
+        gate: &RuntimePolicyGate,
+        host: &impl CapabilityHostApi,
+        knowledge: &mut InMemoryKnowledgeService,
+        redaction_policy: &RedactionPolicyDomain,
     ) -> Result<ExternalKnowledgeRetrievalReport, EvaError> {
         if self.query.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -345,7 +396,11 @@ impl ExternalKnowledgeRetrievalRequest {
                 ))
             }
         };
-        let (item, redaction_count) = redact_knowledge_item(&item);
+        let (item, redaction_count) = if *redaction_policy == RedactionPolicyDomain::default() {
+            redact_knowledge_item(&item)
+        } else {
+            redact_knowledge_item_with_policy(&item, redaction_policy)
+        };
         let indexed_id = item.id.as_str().to_owned();
         let source_audit = vec![
             format!("source.provider:{}", self.provider.as_str()),
@@ -750,6 +805,50 @@ mod tests {
         assert_eq!(
             indexed.source.digest,
             KnowledgeSource::new("", "", indexed.content.as_bytes()).digest
+        );
+    }
+
+    #[test]
+    fn external_retrieval_uses_policy_driven_redaction_before_indexing() {
+        let mut knowledge = InMemoryKnowledgeService::new();
+        let request = retrieval_request();
+        let item = item(
+            "retrieved-policy-memory",
+            "runtime credential=secret summary",
+            "runtime memory pk-provider body token=legacy",
+        )
+        .with_tag("retrieval");
+        let host = retrieval_host(InvokeResponse::completed(
+            request.request_id.clone(),
+            InvokeOutput::text(render_retrieval_item(&item)),
+        ));
+        let mut policy = RedactionPolicyDomain {
+            replacement: "[MASKED]".to_owned(),
+            ..RedactionPolicyDomain::default()
+        };
+        policy
+            .sensitive_key_fragments
+            .insert("credential".to_owned());
+        policy.sensitive_token_prefixes.insert("pk-".to_owned());
+
+        let report = request
+            .execute_with_redaction_policy(
+                &RuntimePolicyGate::new(PolicyDomainSet::default()),
+                &host,
+                &mut knowledge,
+                &policy,
+            )
+            .unwrap();
+        let indexed = knowledge
+            .get(&KnowledgeId::parse("retrieved-policy-memory").unwrap())
+            .unwrap();
+
+        assert_eq!(report.status, "indexed");
+        assert_eq!(report.redaction_count, 3);
+        assert_eq!(indexed.summary, "runtime credential=[MASKED] summary");
+        assert_eq!(
+            indexed.content,
+            "runtime memory [MASKED] body token=[MASKED]"
         );
     }
 
