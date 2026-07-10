@@ -4,6 +4,7 @@ pub mod audit;
 pub mod backend;
 pub mod metrics;
 pub mod opentelemetry_exporter;
+pub mod retention;
 pub mod trace;
 pub mod tracing_bridge;
 
@@ -17,6 +18,10 @@ pub use metrics::{
 pub use opentelemetry_exporter::{
     run_opentelemetry_exporter_smoke, OpenTelemetryDropPolicy, OpenTelemetryExporterConfig,
     OpenTelemetryExporterReport,
+};
+pub use retention::{
+    ObservabilityCorruptRecordPolicy, ObservabilityRetentionPolicy, ObservabilityRetentionReport,
+    ObservabilitySinkPolicyKind,
 };
 pub use trace::{SpanId, TraceFields};
 pub use tracing_bridge::{

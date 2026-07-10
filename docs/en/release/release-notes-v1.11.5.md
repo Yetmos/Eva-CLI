@@ -35,16 +35,18 @@ restart a daemon, mutate a live scheduler, or apply a real hot reload. Confirmed
 capability calls remain controlled CLI invokes and still report
 `mutation_executed:false`.
 
-This is still an alpha checkpoint. Retention/rotation, db sink policy, OS
-provider supervision, real hardware access, production daemon-driven hot-reload
+This is still an alpha checkpoint. Real database sink support, OS provider
+supervision, real hardware access, production daemon-driven hot-reload
 orchestration, signed installers, OS package repositories, and production
 signing or attestation credentials remain future release scope. V1.15.8 adds
 policy-driven memory redaction/audit JSONL evidence; V1.16.1 adds JSONL
 best-effort runtime audit wiring; V1.16.2 adds a tracing subscriber bridge into
 the existing JSONL/dev-console sinks; V1.16.3 adds explicit OpenTelemetry SDK
-OTLP trace/metrics exporter smoke and collector-degraded reporting. These are
-not a complete production telemetry backend with retention/db sink policy or a
-production retrieval scheduler.
+OTLP trace/metrics exporter smoke and collector-degraded reporting; V1.16.4
+adds JSONL/durable-audit retention, rotation, max-size, and corrupt-record
+policy plus a database policy kind boundary. These are not a complete
+production telemetry backend with a real database sink or a production
+retrieval scheduler.
 
 ## Verification
 

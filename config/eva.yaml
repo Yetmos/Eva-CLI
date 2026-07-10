@@ -170,6 +170,18 @@ observability:
     drop_policy: drop-new
     # Maximum labels exported per metric point. / 每个 metric point 的最大导出标签数。
     max_metric_labels: 8
+  # Retention and rotation policy for observability sinks. / 观测 sink 的保留和轮转策略。
+  retention:
+    # Supported policy kinds: jsonl-file, durable-audit, database. / 支持的策略类型。
+    sink: jsonl-file
+    # Rotate active JSONL files after this size. / 活跃 JSONL 文件超过该大小后轮转。
+    max_file_bytes: 8388608
+    # Report when rotated file count exceeds this value. / 轮转文件数量超过该值时报告。
+    max_rotated_files: 16
+    # Delete only expired observability records/files. / 只删除已过期观测记录或文件。
+    retain_for_ms: 604800000
+    # Corrupt records are skipped and reported by default. / 默认跳过并报告损坏记录。
+    corrupt_record_policy: skip-and-report
 
 # Pointers to split configuration roots.
 # 拆分配置根目录的位置。

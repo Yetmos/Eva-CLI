@@ -58,6 +58,17 @@
             "max_metric_labels": { "type": "integer" }
           },
           "additionalProperties": false
+        },
+        "retention": {
+          "type": "object",
+          "properties": {
+            "sink": { "type": "string", "enum": ["jsonl", "jsonl-file", "jsonl_file", "durable-audit", "durable_audit", "database", "db"] },
+            "max_file_bytes": { "type": "integer" },
+            "max_rotated_files": { "type": "integer" },
+            "retain_for_ms": { "type": "integer" },
+            "corrupt_record_policy": { "type": "string", "enum": ["skip-and-report", "skip_and_report", "fail-fast", "fail_fast"] }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": true

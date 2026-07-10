@@ -61,6 +61,7 @@ pub struct ObservabilityConfig {
     pub audit: bool,
     pub otel_endpoint_env: Option<String>,
     pub otel_exporter: Option<OpenTelemetryExporterConfig>,
+    pub retention: Option<ObservabilityRetentionConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +78,28 @@ pub struct OpenTelemetryExporterConfig {
 pub enum OpenTelemetryDropPolicy {
     DropNew,
     DropOldest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservabilityRetentionConfig {
+    pub sink: ObservabilityRetentionSink,
+    pub max_file_bytes: u64,
+    pub max_rotated_files: usize,
+    pub retain_for_ms: u64,
+    pub corrupt_record_policy: ObservabilityCorruptRecordPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservabilityRetentionSink {
+    JsonlFile,
+    DurableAudit,
+    Database,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservabilityCorruptRecordPolicy {
+    SkipAndReport,
+    FailFast,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +186,10 @@ impl ObservabilityConfig {
             .otel_exporter
             .map(|config| OpenTelemetryExporterConfig::try_from_raw(path, config))
             .transpose()?;
+        let retention = raw
+            .retention
+            .map(|config| ObservabilityRetentionConfig::try_from_raw(path, config))
+            .transpose()?;
 
         Ok(Self {
             log_level,
@@ -171,6 +198,7 @@ impl ObservabilityConfig {
             audit: raw.audit.unwrap_or(true),
             otel_endpoint_env,
             otel_exporter,
+            retention,
         })
     }
 }
@@ -269,6 +297,113 @@ impl OpenTelemetryDropPolicy {
         match self {
             Self::DropNew => "drop-new",
             Self::DropOldest => "drop-oldest",
+        }
+    }
+}
+
+impl ObservabilityRetentionConfig {
+    fn try_from_raw(path: &Path, raw: RawObservabilityRetentionConfig) -> Result<Self, EvaError> {
+        let sink = raw
+            .sink
+            .as_deref()
+            .map(ObservabilityRetentionSink::parse)
+            .transpose()
+            .map_err(|error| {
+                with_field_context(error, CONFIG_TYPE, path, "observability.retention.sink")
+            })?
+            .unwrap_or(ObservabilityRetentionSink::JsonlFile);
+        let max_file_bytes = raw.max_file_bytes.unwrap_or(8 * 1024 * 1024);
+        if max_file_bytes == 0 {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "observability.retention.max_file_bytes",
+                "observability retention max_file_bytes must be greater than zero",
+            ));
+        }
+        let max_rotated_files = raw.max_rotated_files.unwrap_or(16);
+        if max_rotated_files == 0 {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "observability.retention.max_rotated_files",
+                "observability retention max_rotated_files must be greater than zero",
+            ));
+        }
+        let retain_for_ms = raw.retain_for_ms.unwrap_or(7 * 24 * 60 * 60 * 1000);
+        if retain_for_ms == 0 {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "observability.retention.retain_for_ms",
+                "observability retention retain_for_ms must be greater than zero",
+            ));
+        }
+        let corrupt_record_policy = raw
+            .corrupt_record_policy
+            .as_deref()
+            .map(ObservabilityCorruptRecordPolicy::parse)
+            .transpose()
+            .map_err(|error| {
+                with_field_context(
+                    error,
+                    CONFIG_TYPE,
+                    path,
+                    "observability.retention.corrupt_record_policy",
+                )
+            })?
+            .unwrap_or(ObservabilityCorruptRecordPolicy::SkipAndReport);
+
+        Ok(Self {
+            sink,
+            max_file_bytes,
+            max_rotated_files,
+            retain_for_ms,
+            corrupt_record_policy,
+        })
+    }
+}
+
+impl ObservabilityRetentionSink {
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "jsonl" | "jsonl-file" | "jsonl_file" => Ok(Self::JsonlFile),
+            "durable-audit" | "durable_audit" => Ok(Self::DurableAudit),
+            "database" | "db" => Ok(Self::Database),
+            _ => Err(
+                EvaError::invalid_argument("unsupported observability retention sink")
+                    .with_context("sink", value)
+                    .with_context("expected", "jsonl-file|durable-audit|database"),
+            ),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::JsonlFile => "jsonl-file",
+            Self::DurableAudit => "durable-audit",
+            Self::Database => "database",
+        }
+    }
+}
+
+impl ObservabilityCorruptRecordPolicy {
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "skip-and-report" | "skip_and_report" => Ok(Self::SkipAndReport),
+            "fail-fast" | "fail_fast" => Ok(Self::FailFast),
+            _ => Err(
+                EvaError::invalid_argument("unsupported observability corrupt record policy")
+                    .with_context("corrupt_record_policy", value)
+                    .with_context("expected", "skip-and-report|fail-fast"),
+            ),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SkipAndReport => "skip-and-report",
+            Self::FailFast => "fail-fast",
         }
     }
 }
@@ -460,6 +595,7 @@ struct RawObservabilityConfig {
     audit: Option<bool>,
     otel_endpoint_env: Option<String>,
     otel_exporter: Option<RawOpenTelemetryExporterConfig>,
+    retention: Option<RawObservabilityRetentionConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -470,6 +606,15 @@ struct RawOpenTelemetryExporterConfig {
     timeout_ms: Option<u64>,
     drop_policy: Option<String>,
     max_metric_labels: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawObservabilityRetentionConfig {
+    sink: Option<String>,
+    max_file_bytes: Option<u64>,
+    max_rotated_files: Option<usize>,
+    retain_for_ms: Option<u64>,
+    corrupt_record_policy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -519,6 +664,16 @@ mod tests {
                 .drop_policy
                 .as_str(),
             "drop-new"
+        );
+        assert_eq!(
+            config
+                .observability
+                .retention
+                .as_ref()
+                .unwrap()
+                .corrupt_record_policy
+                .as_str(),
+            "skip-and-report"
         );
         let service_manager = config
             .service_manager
@@ -671,6 +826,36 @@ config:
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
         assert!(error.context().entries().iter().any(|(key, value)| {
             key == "field" && value == "observability.otel_exporter.drop_policy"
+        }));
+    }
+
+    #[test]
+    fn observability_retention_rejects_invalid_limits() {
+        let value = serde_yaml::from_str::<Value>(
+            r#"
+runtime:
+  env: dev
+  workspace: .
+  hot_reload: true
+observability:
+  retention:
+    sink: jsonl-file
+    retain_for_ms: 0
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas
+"#,
+        )
+        .unwrap();
+
+        let error = EvaConfig::try_from(value).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+        assert!(error.context().entries().iter().any(|(key, value)| {
+            key == "field" && value == "observability.retention.retain_for_ms"
         }));
     }
 

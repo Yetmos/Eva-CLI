@@ -207,7 +207,7 @@ project root
 
 ### Current Status
 
-The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`. Since V0.3, `eva-cli` exposes this path through `eva config validate`; the V0.5 task diagnostics basic loop reuses the same `ProjectConfig` as its composition input. V1.14.5 also parses explicit top-level `service_manager` settings into typed config for the service-manager abstraction without claiming platform handoff support.
+The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`. Since V0.3, `eva-cli` exposes this path through `eva config validate`; the V0.5 task diagnostics basic loop reuses the same `ProjectConfig` as its composition input. V1.14.5 also parses explicit top-level `service_manager` settings into typed config for the service-manager abstraction without claiming platform handoff support. V1.16.4 parses `observability.retention` into typed JSONL/durable-audit/database policy config for observability sink retention and rotation.
 
 | Area | Status | Notes |
 | --- | --- | --- |
@@ -220,6 +220,7 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | Policy documents | Done | Loads extensible policy YAML documents while domain interpretation stays outside `eva-config` |
 | Routes config | Done | Loads topic route tables and validates topic patterns, delivery mode, and target Agent IDs |
 | Service-manager config | Done in V1.14.5 | Parses explicit `service_manager` kind and service name for fake/Windows Service/systemd/launchd configurations |
+| Observability retention config | Done in V1.16.4 | Parses `observability.retention` sink, max file size, rotated file limit, retention window, and corrupt-record policy |
 | Project aggregation | Done | `load_project_config` collects main config, manifests, policy documents, and routes |
 | Cross-file validation | Done | Checks duplicate IDs, Agent references, Agent scripts, Capability provider Adapters, and Route target Agents |
 | Schema helpers | Done | Exposes standard schema paths and supported enum values, including route delivery |
@@ -231,6 +232,7 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | API | Input | Output | Purpose |
 | --- | --- | --- | --- |
 | `load_eva_config` | `impl AsRef<Path>` | `Result<EvaConfig, EvaError>` | Load and validate `eva.yaml` |
+| `ObservabilityRetentionConfig` | `observability.retention` YAML | typed struct | Configure JSONL/durable-audit/database retention policy boundaries |
 | `load_agent_manifest` | `impl AsRef<Path>` | `Result<AgentManifest, EvaError>` | Load one Agent manifest |
 | `load_adapter_manifest` | `impl AsRef<Path>` | `Result<AdapterManifest, EvaError>` | Load one Adapter manifest |
 | `load_capability_manifest` | `impl AsRef<Path>` | `Result<CapabilityManifest, EvaError>` | Load one Capability manifest |

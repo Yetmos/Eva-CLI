@@ -26,7 +26,7 @@ Directory ownership:
 
 | Path | Purpose |
 | --- | --- |
-| `eva.yaml` | Global runtime, EventBus, Scheduler, state, memory, knowledge, and observability settings. |
+| `eva.yaml` | Global runtime, EventBus, Scheduler, state, memory, knowledge, and observability settings, including exporter and retention policy knobs. |
 | `agents/` | Lua Agent manifests, constraints, and entry scripts. |
 | `adapters/` | Adapter manifests for Codex CLI, Claude API, MCP, workflow skills, and hardware. |
 | `capabilities/` | Capability definitions for Skills, MCP, and Tools. |

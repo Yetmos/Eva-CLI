@@ -2,7 +2,8 @@
 
 use crate::{
     AuditAction, AuditEvent, AuditOutcome, AuditSink, InMemoryAuditSink, InMemoryMetricSink,
-    MetricPoint, MetricSink, TraceFields,
+    MetricPoint, MetricSink, ObservabilityCorruptRecordPolicy, ObservabilityRetentionPolicy,
+    ObservabilityRetentionReport, ObservabilitySinkPolicyKind, TraceFields,
 };
 use eva_core::EvaError;
 use std::fs::{self, OpenOptions};
@@ -16,6 +17,7 @@ pub const RESPONSIBILITY: &str = "best-effort production observability backend a
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileObservabilitySink {
     root: PathBuf,
+    retention_policy: Option<ObservabilityRetentionPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +27,8 @@ pub struct BestEffortObservabilityPipeline {
     fallback_metrics: InMemoryMetricSink,
     degraded_reasons: Vec<String>,
 }
+
+const JSONL_FILES: [&str; 3] = ["audit.jsonl", "metrics.jsonl", "otel-spans.jsonl"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservabilitySmokeReport {
@@ -45,7 +49,26 @@ impl FileObservabilitySink {
                 .with_context("path", root.display().to_string())
                 .with_context("io_error", error.to_string())
         })?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            retention_policy: None,
+        })
+    }
+
+    pub fn open_with_policy(
+        root: impl AsRef<Path>,
+        policy: ObservabilityRetentionPolicy,
+    ) -> Result<Self, EvaError> {
+        policy.validate()?;
+        if policy.sink_kind != ObservabilitySinkPolicyKind::JsonlFile {
+            return Err(EvaError::invalid_argument(
+                "file observability sink requires jsonl-file retention policy",
+            )
+            .with_context("sink_kind", policy.sink_kind.as_str()));
+        }
+        let mut sink = Self::open(root)?;
+        sink.retention_policy = Some(policy);
+        Ok(sink)
     }
 
     pub fn root(&self) -> &Path {
@@ -58,10 +81,7 @@ impl FileObservabilitySink {
         trace: &TraceFields,
         attributes: &[(&str, &str)],
     ) -> Result<(), EvaError> {
-        append_line(
-            &self.root.join("otel-spans.jsonl"),
-            &otel_span_json(name, trace, attributes),
-        )
+        self.append_jsonl("otel-spans.jsonl", &otel_span_json(name, trace, attributes))
     }
 
     pub fn audit_path(&self) -> PathBuf {
@@ -71,17 +91,37 @@ impl FileObservabilitySink {
     pub fn metrics_path(&self) -> PathBuf {
         self.root.join("metrics.jsonl")
     }
+
+    pub fn apply_retention_policy(&self) -> Result<ObservabilityRetentionReport, EvaError> {
+        self.apply_retention_policy_at(system_time_millis(SystemTime::now()) as u64)
+    }
+
+    pub fn apply_retention_policy_at(
+        &self,
+        now_ms: u64,
+    ) -> Result<ObservabilityRetentionReport, EvaError> {
+        let policy = self.retention_policy.clone().unwrap_or_default();
+        apply_jsonl_retention_policy_at(&self.root, &policy, now_ms)
+    }
+
+    fn append_jsonl(&mut self, file_name: &str, line: &str) -> Result<(), EvaError> {
+        let path = self.root.join(file_name);
+        if let Some(policy) = &self.retention_policy {
+            rotate_if_needed(&path, policy, line.len().saturating_add(1) as u64)?;
+        }
+        append_line(&path, line)
+    }
 }
 
 impl AuditSink for FileObservabilitySink {
     fn record(&mut self, event: AuditEvent) -> Result<(), EvaError> {
-        append_line(&self.audit_path(), &audit_event_json(&event))
+        self.append_jsonl("audit.jsonl", &audit_event_json(&event))
     }
 }
 
 impl MetricSink for FileObservabilitySink {
     fn record(&mut self, point: MetricPoint) -> Result<(), EvaError> {
-        append_line(&self.metrics_path(), &metric_point_json(&point))
+        self.append_jsonl("metrics.jsonl", &metric_point_json(&point))
     }
 }
 
@@ -89,6 +129,27 @@ impl BestEffortObservabilityPipeline {
     pub fn open(root: impl AsRef<Path>) -> Self {
         let backend_root = root.as_ref().display().to_string();
         match FileObservabilitySink::open(root) {
+            Ok(primary) => Self {
+                primary: Some(primary),
+                fallback_audit: InMemoryAuditSink::default(),
+                fallback_metrics: InMemoryMetricSink::default(),
+                degraded_reasons: Vec::new(),
+            },
+            Err(error) => Self {
+                primary: None,
+                fallback_audit: degraded_sink_event(format!(
+                    "observability backend unavailable at {backend_root}: {}",
+                    error.message()
+                )),
+                fallback_metrics: InMemoryMetricSink::default(),
+                degraded_reasons: vec![error.message().to_owned()],
+            },
+        }
+    }
+
+    pub fn open_with_policy(root: impl AsRef<Path>, policy: ObservabilityRetentionPolicy) -> Self {
+        let backend_root = root.as_ref().display().to_string();
+        match FileObservabilitySink::open_with_policy(root, policy) {
             Ok(primary) => Self {
                 primary: Some(primary),
                 fallback_audit: InMemoryAuditSink::default(),
@@ -185,6 +246,78 @@ impl BestEffortObservabilityPipeline {
     }
 }
 
+fn apply_jsonl_retention_policy_at(
+    root: &Path,
+    policy: &ObservabilityRetentionPolicy,
+    now_ms: u64,
+) -> Result<ObservabilityRetentionReport, EvaError> {
+    policy.validate()?;
+    if policy.sink_kind != ObservabilitySinkPolicyKind::JsonlFile {
+        return Err(EvaError::invalid_argument(
+            "JSONL retention policy requires jsonl-file sink kind",
+        )
+        .with_context("sink_kind", policy.sink_kind.as_str()));
+    }
+    let mut report = ObservabilityRetentionReport::new(policy.sink_kind);
+    if !root.exists() {
+        return Ok(report);
+    }
+
+    let mut rotated_by_signal: Vec<(String, u64, PathBuf)> = Vec::new();
+    for entry in fs::read_dir(root).map_err(|error| {
+        EvaError::internal("failed to read observability backend directory")
+            .with_context("path", root.display().to_string())
+            .with_context("io_error", error.to_string())
+    })? {
+        let entry = entry.map_err(|error| {
+            EvaError::internal("failed to read observability backend entry")
+                .with_context("path", root.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+
+        if JSONL_FILES.contains(&file_name) {
+            inspect_jsonl_file(&path, policy, &mut report)?;
+            report.retained_files += 1;
+            continue;
+        }
+
+        if let Some((signal, rotated_at_ms)) = parse_rotated_jsonl_name(file_name) {
+            report.rotated_files += 1;
+            inspect_jsonl_file(&path, policy, &mut report)?;
+            if rotated_at_ms.saturating_add(policy.retain_for_ms) < now_ms {
+                fs::remove_file(&path).map_err(|error| {
+                    EvaError::internal("failed to delete expired observability file")
+                        .with_context("path", path.display().to_string())
+                        .with_context("io_error", error.to_string())
+                })?;
+                report.deleted_files += 1;
+            } else {
+                report.retained_files += 1;
+                rotated_by_signal.push((signal, rotated_at_ms, path));
+            }
+        }
+    }
+
+    for signal in ["audit", "metrics", "otel-spans"] {
+        let count = rotated_by_signal
+            .iter()
+            .filter(|(candidate, _, _)| candidate == signal)
+            .count();
+        if count > policy.max_rotated_files {
+            report.warn(format!(
+                "{signal} rotated file count {count} exceeds max_rotated_files {}",
+                policy.max_rotated_files
+            ));
+        }
+    }
+
+    Ok(report)
+}
+
 impl AuditSink for BestEffortObservabilityPipeline {
     fn record(&mut self, event: AuditEvent) -> Result<(), EvaError> {
         if let Some(primary) = &mut self.primary {
@@ -249,6 +382,106 @@ fn append_line(path: &Path, line: &str) -> Result<(), EvaError> {
             .with_context("path", path.display().to_string())
             .with_context("io_error", error.to_string())
     })
+}
+
+fn rotate_if_needed(
+    path: &Path,
+    policy: &ObservabilityRetentionPolicy,
+    incoming_bytes: u64,
+) -> Result<(), EvaError> {
+    policy.validate()?;
+    let Ok(metadata) = fs::metadata(path) else {
+        return Ok(());
+    };
+    if metadata.len() == 0 || metadata.len().saturating_add(incoming_bytes) <= policy.max_file_bytes
+    {
+        return Ok(());
+    }
+
+    let rotated = next_rotated_path(path, system_time_millis(SystemTime::now()) as u64)?;
+    fs::rename(path, &rotated).map_err(|error| {
+        EvaError::internal("failed to rotate observability output")
+            .with_context("from", path.display().to_string())
+            .with_context("to", rotated.display().to_string())
+            .with_context("io_error", error.to_string())
+    })
+}
+
+fn next_rotated_path(path: &Path, rotated_at_ms: u64) -> Result<PathBuf, EvaError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| EvaError::invalid_argument("observability output path has no file name"))?;
+    let signal = file_name
+        .strip_suffix(".jsonl")
+        .ok_or_else(|| EvaError::invalid_argument("observability output path is not JSONL"))?;
+
+    for suffix in 0..1000 {
+        let candidate = if suffix == 0 {
+            parent.join(format!("{signal}.{rotated_at_ms}.jsonl"))
+        } else {
+            parent.join(format!("{signal}.{rotated_at_ms}.{suffix}.jsonl"))
+        };
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(EvaError::conflict(
+        "failed to allocate unique observability rotation path",
+    ))
+}
+
+fn parse_rotated_jsonl_name(file_name: &str) -> Option<(String, u64)> {
+    let base = file_name.strip_suffix(".jsonl")?;
+    let parts = base.split('.').collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+    let signal = parts[0].to_owned();
+    if !matches!(signal.as_str(), "audit" | "metrics" | "otel-spans") {
+        return None;
+    }
+    let rotated_at_ms = parts.get(1)?.parse::<u64>().ok()?;
+    Some((signal, rotated_at_ms))
+}
+
+fn inspect_jsonl_file(
+    path: &Path,
+    policy: &ObservabilityRetentionPolicy,
+    report: &mut ObservabilityRetentionReport,
+) -> Result<(), EvaError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        EvaError::internal("failed to read observability JSONL file")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    let corrupt = data
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| !looks_like_json_object(line))
+        .count();
+    if corrupt == 0 {
+        return Ok(());
+    }
+
+    match policy.corrupt_record_policy {
+        ObservabilityCorruptRecordPolicy::SkipAndReport => {
+            report.record_corrupt_file(path.display().to_string(), corrupt);
+            Ok(())
+        }
+        ObservabilityCorruptRecordPolicy::FailFast => Err(EvaError::conflict(
+            "observability JSONL file contains corrupt records",
+        )
+        .with_context("path", path.display().to_string())
+        .with_context("corrupt_records", corrupt.to_string())),
+    }
+}
+
+fn looks_like_json_object(line: &str) -> bool {
+    let value = line.trim();
+    value.starts_with('{') && value.ends_with('}')
 }
 
 fn audit_event_json(event: &AuditEvent) -> String {
@@ -400,5 +633,67 @@ mod tests {
         assert!(pipeline.degraded());
         assert!(!pipeline.fallback_audit().events.is_empty());
         fs::remove_file(root).ok();
+    }
+
+    #[test]
+    fn file_observability_policy_rotates_and_continues_writing() {
+        let root = temp_root("rotation");
+        let policy = ObservabilityRetentionPolicy::jsonl_file()
+            .with_max_file_bytes(160)
+            .with_max_rotated_files(4);
+        let mut sink = FileObservabilitySink::open_with_policy(&root, policy).unwrap();
+        let trace = TraceFields::default().with_span_id(SpanId::parse("span-rotate").unwrap());
+
+        for index in 0..4 {
+            AuditSink::record(
+                &mut sink,
+                AuditEvent::new(AuditAction::RuntimeStarted, AuditOutcome::Ok, trace.clone())
+                    .with_message(format!("runtime observed {index}")),
+            )
+            .unwrap();
+        }
+
+        assert!(root.join("audit.jsonl").is_file());
+        let rotated = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("audit."))
+            .count();
+        assert!(rotated > 0, "expected rotated audit JSONL file");
+        let report = sink.apply_retention_policy().unwrap();
+        assert_eq!(report.deleted_files, 0);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn jsonl_retention_deletes_only_expired_observability_files_and_reports_corrupt_records() {
+        let root = temp_root("retention");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("audit.jsonl"), "{\"active\":true}\n").unwrap();
+        fs::write(root.join("audit.1.jsonl"), "{\"expired\":true}\n").unwrap();
+        fs::write(root.join("metrics.9000.jsonl"), "not-json\n{\"ok\":true}\n").unwrap();
+        fs::write(root.join("unrelated.1.jsonl"), "{\"keep\":true}\n").unwrap();
+        let sink = FileObservabilitySink::open_with_policy(
+            &root,
+            ObservabilityRetentionPolicy::jsonl_file()
+                .with_retain_for_ms(5_000)
+                .with_corrupt_record_policy(ObservabilityCorruptRecordPolicy::SkipAndReport),
+        )
+        .unwrap();
+
+        let report = sink.apply_retention_policy_at(10_000).unwrap();
+
+        assert_eq!(report.deleted_files, 1);
+        assert_eq!(report.rotated_files, 2);
+        assert_eq!(report.skipped_corrupt_records, 1);
+        assert!(report
+            .corrupt_files
+            .iter()
+            .any(|path| path.ends_with("metrics.9000.jsonl")));
+        assert!(!root.join("audit.1.jsonl").exists());
+        assert!(root.join("audit.jsonl").exists());
+        assert!(root.join("metrics.9000.jsonl").exists());
+        assert!(root.join("unrelated.1.jsonl").exists());
+        fs::remove_dir_all(root).ok();
     }
 }

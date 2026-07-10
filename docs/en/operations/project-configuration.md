@@ -24,7 +24,8 @@ Eva-CLI configuration should cover:
 - MCP policy.
 - Hardware policy.
 - Sandbox policy.
-- Runtime and observability settings.
+- Runtime and observability settings, including explicit OpenTelemetry exporter
+  and observability retention/rotation policy fields.
 
 ## Validation Rules
 

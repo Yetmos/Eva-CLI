@@ -70,7 +70,10 @@ Run this sequence from the repository root:
 when the runtime supports bounded MCP JSON-RPC over `http://` endpoints with
 auth/session headers and has the repo-local MCP compatibility matrix plus
 provider supervision release gates. It still does not mean OS provider process
-supervision is enabled.
+supervision is enabled. V1.16.4 also adds
+`observability_retention_policy_v1.16.4`, which means JSONL/durable-audit
+retention and rotation policy is available; it does not mean a real database
+sink is enabled.
 | Inspect runtime | `cargo run -- inspect runtime --output json` | Prints agents, adapters, capabilities, routes, policy, and runtime summary. |
 | Inspect durable | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | Reports backend schema, migration status, and pending redrive count. |
 | Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
@@ -289,9 +292,10 @@ Error JSON output uses `ok`, `command`, `exit_code`, `error`, and `trace`.
 V1.11.5-alpha does not provide packaged installers, production signing
 credentials, full provider supervision, raw hardware I/O,
 production service-manager/daemon handoff, full durable task query/recovery indexes,
-observability retention/rotation, db sink policy, durable memory/backup databases,
-or daemon-driven hot-reload orchestration beyond the current JSONL audit wiring,
-tracing bridge, and explicit OTel SDK exporter smoke.
+real observability database sink, production retention scheduling, durable
+memory/backup databases, or daemon-driven hot-reload orchestration beyond the
+current JSONL audit wiring, tracing bridge, explicit OTel SDK exporter smoke,
+and V1.16.4 JSONL/durable-audit retention policy.
 
 ## Recommended Verification
 

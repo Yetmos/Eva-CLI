@@ -80,6 +80,16 @@ and `task status/logs/cancel`.
 `audit/` directory. `query_by_trace_id` can retrieve records by span, request,
 event, correlation, or causation id.
 
+## V1.16.4 Audit Retention Policy
+
+`FileSystemAuditSink::open_with_policy(layout, policy, now_ms)` opens the same
+durable backend `audit/` directory with an explicit
+`ObservabilityRetentionPolicy::durable_audit()` policy. The loader can skip and
+report corrupt `.audit` records, or fail fast, and deletes only records whose
+recorded timestamp is outside the retention window. The next write sequence
+still scans every `.audit` file name, including skipped corrupt records, so a
+new audit event cannot overwrite evidence left behind for investigation.
+
 `FileSystemArtifactStore` writes versioned metadata next to artifact bytes. V2
 metadata includes the key, digest, size, content type, retention policy, and
 optional retain-until timestamp. Reads continue to accept legacy metadata

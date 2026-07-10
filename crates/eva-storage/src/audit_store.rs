@@ -2,7 +2,10 @@
 
 use crate::DurableBackendLayout;
 use eva_core::EvaError;
-use eva_observability::{AuditEvent, AuditSink};
+use eva_observability::{
+    AuditEvent, AuditSink, ObservabilityCorruptRecordPolicy, ObservabilityRetentionPolicy,
+    ObservabilityRetentionReport, ObservabilitySinkPolicyKind,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,6 +36,14 @@ impl FileSystemAuditSink {
         Self::from_audit_dir(&layout.audit_dir)
     }
 
+    pub fn open_with_policy(
+        layout: &DurableBackendLayout,
+        policy: &ObservabilityRetentionPolicy,
+        now_ms: u128,
+    ) -> Result<(Self, ObservabilityRetentionReport), EvaError> {
+        Self::from_audit_dir_with_policy(&layout.audit_dir, policy, now_ms)
+    }
+
     pub fn from_audit_dir(audit_dir: impl AsRef<Path>) -> Result<Self, EvaError> {
         let audit_dir = audit_dir.as_ref().to_path_buf();
         fs::create_dir_all(&audit_dir).map_err(|error| {
@@ -41,17 +52,42 @@ impl FileSystemAuditSink {
                 .with_context("io_error", error.to_string())
         })?;
         let records = load_records(&audit_dir)?;
-        let next_sequence = records
-            .iter()
-            .map(|record| record.sequence)
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let next_sequence = next_sequence_after(&audit_dir, &records)?;
         Ok(Self {
             audit_dir,
             records,
             next_sequence,
         })
+    }
+
+    pub fn from_audit_dir_with_policy(
+        audit_dir: impl AsRef<Path>,
+        policy: &ObservabilityRetentionPolicy,
+        now_ms: u128,
+    ) -> Result<(Self, ObservabilityRetentionReport), EvaError> {
+        policy.validate()?;
+        if policy.sink_kind != ObservabilitySinkPolicyKind::DurableAudit {
+            return Err(EvaError::invalid_argument(
+                "filesystem audit sink requires durable-audit retention policy",
+            )
+            .with_context("sink_kind", policy.sink_kind.as_str()));
+        }
+        let audit_dir = audit_dir.as_ref().to_path_buf();
+        fs::create_dir_all(&audit_dir).map_err(|error| {
+            EvaError::internal("failed to create audit directory")
+                .with_context("path", audit_dir.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        let (records, report) = load_records_with_policy(&audit_dir, policy, now_ms)?;
+        let next_sequence = next_sequence_after(&audit_dir, &records)?;
+        Ok((
+            Self {
+                audit_dir,
+                records,
+                next_sequence,
+            },
+            report,
+        ))
     }
 
     pub fn audit_dir(&self) -> &Path {
@@ -225,8 +261,97 @@ fn load_records(audit_dir: &Path) -> Result<Vec<AuditRecord>, EvaError> {
     Ok(records)
 }
 
+fn load_records_with_policy(
+    audit_dir: &Path,
+    policy: &ObservabilityRetentionPolicy,
+    now_ms: u128,
+) -> Result<(Vec<AuditRecord>, ObservabilityRetentionReport), EvaError> {
+    let mut records = Vec::new();
+    let mut report = ObservabilityRetentionReport::new(policy.sink_kind);
+    for entry in fs::read_dir(audit_dir).map_err(|error| {
+        EvaError::internal("failed to read audit directory")
+            .with_context("path", audit_dir.display().to_string())
+            .with_context("io_error", error.to_string())
+    })? {
+        let entry = entry.map_err(|error| {
+            EvaError::internal("failed to read audit directory entry")
+                .with_context("path", audit_dir.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("audit") {
+            continue;
+        }
+        let data = fs::read_to_string(&path).map_err(|error| {
+            EvaError::internal("failed to read audit record")
+                .with_context("path", path.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        let record = match AuditRecord::from_storage(&data) {
+            Ok(record) => record,
+            Err(error) => match policy.corrupt_record_policy {
+                ObservabilityCorruptRecordPolicy::SkipAndReport => {
+                    report.record_corrupt_file(path.display().to_string(), 1);
+                    continue;
+                }
+                ObservabilityCorruptRecordPolicy::FailFast => {
+                    return Err(error.with_context("path", path.display().to_string()));
+                }
+            },
+        };
+        if record
+            .recorded_at_ms
+            .saturating_add(policy.retain_for_ms as u128)
+            < now_ms
+        {
+            fs::remove_file(&path).map_err(|error| {
+                EvaError::internal("failed to delete expired audit record")
+                    .with_context("path", path.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+            report.deleted_files += 1;
+            continue;
+        }
+        report.retained_files += 1;
+        records.push(record);
+    }
+    records.sort_by_key(|record| record.sequence);
+    Ok((records, report))
+}
+
 fn record_path(audit_dir: &Path, sequence: u64) -> PathBuf {
     audit_dir.join(format!("{sequence:020}.audit"))
+}
+
+fn next_sequence_after(audit_dir: &Path, records: &[AuditRecord]) -> Result<u64, EvaError> {
+    let mut max_sequence = records
+        .iter()
+        .map(|record| record.sequence)
+        .max()
+        .unwrap_or(0);
+    for entry in fs::read_dir(audit_dir).map_err(|error| {
+        EvaError::internal("failed to read audit directory")
+            .with_context("path", audit_dir.display().to_string())
+            .with_context("io_error", error.to_string())
+    })? {
+        let entry = entry.map_err(|error| {
+            EvaError::internal("failed to read audit directory entry")
+                .with_context("path", audit_dir.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("audit") {
+            continue;
+        }
+        if let Some(sequence) = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            max_sequence = max_sequence.max(sequence);
+        }
+    }
+    Ok(max_sequence + 1)
 }
 
 fn system_time_millis(value: SystemTime) -> u128 {
@@ -350,6 +475,76 @@ mod tests {
         let error = FileSystemAuditSink::open(backend.layout()).unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn filesystem_audit_policy_skips_corrupt_and_deletes_only_expired_records() {
+        let root = test_root("policy");
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let audit_dir = &backend.layout().audit_dir;
+        let old = AuditRecord {
+            sequence: 1,
+            recorded_at_ms: 1,
+            action: "runtime.started".to_owned(),
+            outcome: "ok".to_owned(),
+            message: None,
+            trace: Vec::new(),
+            fields: Vec::new(),
+        };
+        let fresh = AuditRecord {
+            sequence: 2,
+            recorded_at_ms: 9_000,
+            action: "runtime.started".to_owned(),
+            outcome: "ok".to_owned(),
+            message: None,
+            trace: Vec::new(),
+            fields: Vec::new(),
+        };
+        fs::write(
+            audit_dir.join("00000000000000000001.audit"),
+            old.to_storage(),
+        )
+        .unwrap();
+        fs::write(
+            audit_dir.join("00000000000000000002.audit"),
+            fresh.to_storage(),
+        )
+        .unwrap();
+        fs::write(
+            audit_dir.join("00000000000000000003.audit"),
+            "version=1\nsequence=3\n",
+        )
+        .unwrap();
+        fs::write(audit_dir.join("notes.txt"), "not audit").unwrap();
+
+        let policy = ObservabilityRetentionPolicy::durable_audit()
+            .with_retain_for_ms(5_000)
+            .with_corrupt_record_policy(ObservabilityCorruptRecordPolicy::SkipAndReport);
+        let (mut sink, report) =
+            FileSystemAuditSink::open_with_policy(backend.layout(), &policy, 10_000).unwrap();
+
+        assert_eq!(report.deleted_files, 1);
+        assert_eq!(report.skipped_corrupt_records, 1);
+        assert_eq!(sink.records().len(), 1);
+        assert_eq!(sink.records()[0].sequence, 2);
+        assert!(!audit_dir.join("00000000000000000001.audit").exists());
+        assert!(audit_dir.join("00000000000000000002.audit").exists());
+        assert!(audit_dir.join("00000000000000000003.audit").exists());
+        assert!(audit_dir.join("notes.txt").exists());
+
+        sink.record(AuditEvent::new(
+            AuditAction::RuntimeStarted,
+            AuditOutcome::Ok,
+            TraceFields::default(),
+        ))
+        .unwrap();
+        assert!(
+            audit_dir.join("00000000000000000004.audit").exists(),
+            "next sequence must not overwrite skipped corrupt record"
+        );
     }
 
     struct TestRoot {

@@ -6,4 +6,4 @@
 
 ## English
 
-This directory contains JSON Schemas for configuration files. Schemas validate the parsed YAML structures before startup and work alongside strongly typed Rust config deserialization.
+This directory contains JSON Schemas for configuration files. Schemas validate the parsed YAML structures before startup and work alongside strongly typed Rust config deserialization. V1.16.4 includes `observability.retention` schema fields for sink kind, max file size, rotated file count, retention window, and corrupt-record policy.
