@@ -20,6 +20,8 @@ pub struct EvaConfig {
     pub path: PathBuf,
     /// Runtime path and hot-reload settings.
     pub runtime: RuntimeConfig,
+    /// Logging, tracing, metrics, audit, and exporter settings.
+    pub observability: ObservabilityConfig,
     /// Optional service-manager integration settings.
     pub service_manager: Option<ServiceManagerConfig>,
     /// Split configuration roots.
@@ -51,6 +53,32 @@ pub struct ServiceManagerConfig {
     pub restart_supervisor: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservabilityConfig {
+    pub log_level: String,
+    pub tracing: bool,
+    pub metrics: bool,
+    pub audit: bool,
+    pub otel_endpoint_env: Option<String>,
+    pub otel_exporter: Option<OpenTelemetryExporterConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenTelemetryExporterConfig {
+    pub endpoint: Option<String>,
+    pub auth_header_env: Option<String>,
+    pub batch_size: usize,
+    pub timeout_ms: u64,
+    pub drop_policy: OpenTelemetryDropPolicy,
+    pub max_metric_labels: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenTelemetryDropPolicy {
+    DropNew,
+    DropOldest,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceManagerKind {
     Fake,
@@ -80,6 +108,7 @@ pub fn load_eva_config(path: impl AsRef<Path>) -> Result<EvaConfig, EvaError> {
 impl EvaConfig {
     fn try_from_raw(path: PathBuf, raw: RawEvaConfig) -> Result<Self, EvaError> {
         let runtime = RuntimeConfig::try_from_raw(&path, raw.runtime)?;
+        let observability = ObservabilityConfig::try_from_raw(&path, raw.observability)?;
         let service_manager = raw
             .service_manager
             .map(|config| ServiceManagerConfig::try_from_raw(&path, config))
@@ -88,6 +117,7 @@ impl EvaConfig {
         Ok(Self {
             path,
             runtime,
+            observability,
             service_manager,
             config,
             extra: raw.extra,
@@ -109,6 +139,137 @@ impl RuntimeConfig {
             adapter_dir: raw.adapter_dir,
             hot_reload: raw.hot_reload,
         })
+    }
+}
+
+impl ObservabilityConfig {
+    fn try_from_raw(path: &Path, raw: RawObservabilityConfig) -> Result<Self, EvaError> {
+        let log_level = raw.log_level.unwrap_or_else(|| "info".to_owned());
+        if log_level.trim().is_empty() || log_level.trim() != log_level {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "observability.log_level",
+                "log level cannot be empty or contain leading/trailing whitespace",
+            ));
+        }
+        let otel_endpoint_env = raw
+            .otel_endpoint_env
+            .map(|value| {
+                require_non_empty(value, CONFIG_TYPE, path, "observability.otel_endpoint_env")
+            })
+            .transpose()?;
+        let otel_exporter = raw
+            .otel_exporter
+            .map(|config| OpenTelemetryExporterConfig::try_from_raw(path, config))
+            .transpose()?;
+
+        Ok(Self {
+            log_level,
+            tracing: raw.tracing.unwrap_or(true),
+            metrics: raw.metrics.unwrap_or(true),
+            audit: raw.audit.unwrap_or(true),
+            otel_endpoint_env,
+            otel_exporter,
+        })
+    }
+}
+
+impl OpenTelemetryExporterConfig {
+    fn try_from_raw(path: &Path, raw: RawOpenTelemetryExporterConfig) -> Result<Self, EvaError> {
+        let endpoint = raw
+            .endpoint
+            .map(|value| {
+                require_non_empty(
+                    value,
+                    CONFIG_TYPE,
+                    path,
+                    "observability.otel_exporter.endpoint",
+                )
+            })
+            .transpose()?;
+        let auth_header_env = raw
+            .auth_header_env
+            .map(|value| {
+                require_non_empty(
+                    value,
+                    CONFIG_TYPE,
+                    path,
+                    "observability.otel_exporter.auth_header_env",
+                )
+            })
+            .transpose()?;
+        let batch_size = raw.batch_size.unwrap_or(32);
+        if batch_size == 0 {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "observability.otel_exporter.batch_size",
+                "OpenTelemetry exporter batch size must be greater than zero",
+            ));
+        }
+        let timeout_ms = raw.timeout_ms.unwrap_or(5_000);
+        if timeout_ms == 0 {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "observability.otel_exporter.timeout_ms",
+                "OpenTelemetry exporter timeout must be greater than zero",
+            ));
+        }
+        let max_metric_labels = raw.max_metric_labels.unwrap_or(8);
+        if max_metric_labels == 0 {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "observability.otel_exporter.max_metric_labels",
+                "OpenTelemetry exporter metric label limit must be greater than zero",
+            ));
+        }
+        let drop_policy = raw
+            .drop_policy
+            .as_deref()
+            .map(OpenTelemetryDropPolicy::parse)
+            .transpose()
+            .map_err(|error| {
+                with_field_context(
+                    error,
+                    CONFIG_TYPE,
+                    path,
+                    "observability.otel_exporter.drop_policy",
+                )
+            })?
+            .unwrap_or(OpenTelemetryDropPolicy::DropNew);
+
+        Ok(Self {
+            endpoint,
+            auth_header_env,
+            batch_size,
+            timeout_ms,
+            drop_policy,
+            max_metric_labels,
+        })
+    }
+}
+
+impl OpenTelemetryDropPolicy {
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "drop-new" | "drop_new" => Ok(Self::DropNew),
+            "drop-oldest" | "drop_oldest" => Ok(Self::DropOldest),
+            _ => Err(
+                EvaError::invalid_argument("unsupported OpenTelemetry exporter drop policy")
+                    .with_context("drop_policy", value)
+                    .with_context("expected", "drop-new|drop-oldest"),
+            ),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DropNew => "drop-new",
+            Self::DropOldest => "drop-oldest",
+        }
     }
 }
 
@@ -261,6 +422,8 @@ fn resolve_path(root: &Path, path: &Path) -> PathBuf {
 struct RawEvaConfig {
     runtime: RawRuntimeConfig,
     #[serde(default)]
+    observability: RawObservabilityConfig,
+    #[serde(default)]
     service_manager: Option<RawServiceManagerConfig>,
     config: RawConfigRoots,
     #[serde(flatten)]
@@ -287,6 +450,26 @@ struct RawServiceManagerConfig {
     candidate_runtime_binary: Option<PathBuf>,
     start_on_boot: Option<bool>,
     restart_supervisor: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawObservabilityConfig {
+    log_level: Option<String>,
+    tracing: Option<bool>,
+    metrics: Option<bool>,
+    audit: Option<bool>,
+    otel_endpoint_env: Option<String>,
+    otel_exporter: Option<RawOpenTelemetryExporterConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawOpenTelemetryExporterConfig {
+    endpoint: Option<String>,
+    auth_header_env: Option<String>,
+    batch_size: Option<usize>,
+    timeout_ms: Option<u64>,
+    drop_policy: Option<String>,
+    max_metric_labels: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -326,6 +509,17 @@ mod tests {
         let config = load_eva_config(workspace_root().join("config").join("eva.yaml")).unwrap();
 
         assert_eq!(config.runtime.env, "dev");
+        assert_eq!(config.observability.log_level, "info");
+        assert_eq!(
+            config
+                .observability
+                .otel_exporter
+                .as_ref()
+                .unwrap()
+                .drop_policy
+                .as_str(),
+            "drop-new"
+        );
         let service_manager = config
             .service_manager
             .as_ref()
@@ -418,6 +612,66 @@ config:
             .entries()
             .iter()
             .any(|(key, value)| key == "kind" && value == "smf"));
+    }
+
+    #[test]
+    fn observability_exporter_rejects_invalid_limits() {
+        let value = serde_yaml::from_str::<Value>(
+            r#"
+runtime:
+  env: dev
+  workspace: .
+  hot_reload: true
+observability:
+  otel_exporter:
+    endpoint: http://localhost:4318
+    batch_size: 0
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas
+"#,
+        )
+        .unwrap();
+
+        let error = EvaConfig::try_from(value).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+        assert!(error.context().entries().iter().any(|(key, value)| {
+            key == "field" && value == "observability.otel_exporter.batch_size"
+        }));
+    }
+
+    #[test]
+    fn observability_exporter_rejects_unknown_drop_policy() {
+        let value = serde_yaml::from_str::<Value>(
+            r#"
+runtime:
+  env: dev
+  workspace: .
+  hot_reload: true
+observability:
+  otel_exporter:
+    endpoint: http://localhost:4318
+    drop_policy: random
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas
+"#,
+        )
+        .unwrap();
+
+        let error = EvaConfig::try_from(value).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+        assert!(error.context().entries().iter().any(|(key, value)| {
+            key == "field" && value == "observability.otel_exporter.drop_policy"
+        }));
     }
 
     #[test]

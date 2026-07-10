@@ -3,6 +3,7 @@
 pub mod audit;
 pub mod backend;
 pub mod metrics;
+pub mod opentelemetry_exporter;
 pub mod trace;
 pub mod tracing_bridge;
 
@@ -12,6 +13,10 @@ pub use backend::{
 };
 pub use metrics::{
     InMemoryMetricSink, MetricKind, MetricLabels, MetricName, MetricPoint, MetricSink,
+};
+pub use opentelemetry_exporter::{
+    run_opentelemetry_exporter_smoke, OpenTelemetryDropPolicy, OpenTelemetryExporterConfig,
+    OpenTelemetryExporterReport,
 };
 pub use trace::{SpanId, TraceFields};
 pub use tracing_bridge::{

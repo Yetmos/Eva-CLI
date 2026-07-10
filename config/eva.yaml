@@ -157,6 +157,19 @@ observability:
   audit: true
   # Optional OpenTelemetry endpoint is read from this env var. / 可选 OpenTelemetry endpoint 从该环境变量读取。
   otel_endpoint_env: OTEL_EXPORTER_OTLP_ENDPOINT
+  # Optional OTLP HTTP exporter config. / 可选 OTLP HTTP exporter 配置。
+  otel_exporter:
+    # Base collector endpoint; Eva appends signal paths. / Collector base endpoint；Eva 会追加 signal path。
+    endpoint: http://localhost:4318
+    # Authorization header source for production deployments. / 生产部署的 Authorization header 来源。
+    auth_header_env: OTEL_EXPORTER_OTLP_AUTH_HEADER
+    # Batch and timeout settings used by smoke/runtime exporter setup. / smoke/runtime exporter 的 batch 和 timeout 设置。
+    batch_size: 32
+    timeout_ms: 5000
+    # Drop newest metric points after the batch is full. / batch 满后丢弃新的 metric point。
+    drop_policy: drop-new
+    # Maximum labels exported per metric point. / 每个 metric point 的最大导出标签数。
+    max_metric_labels: 8
 
 # Pointers to split configuration roots.
 # 拆分配置根目录的位置。

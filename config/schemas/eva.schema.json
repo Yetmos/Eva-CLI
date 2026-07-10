@@ -38,7 +38,30 @@
     },
     "eventbus": { "$comment": "EventBus publication, recovery, and dead-letter settings. / EventBus 发布、恢复和死信设置。", "type": "object" },
     "scheduler": { "$comment": "Default topic scheduling and delivery behavior. / Topic 调度与投递默认行为。", "type": "object" },
-    "observability": { "$comment": "Logging, tracing, metrics, and audit settings. / 日志、追踪、指标和审计设置。", "type": "object" },
+    "observability": {
+      "$comment": "Logging, tracing, metrics, audit, and OpenTelemetry exporter settings. / 日志、追踪、指标、审计和 OpenTelemetry exporter 设置。",
+      "type": "object",
+      "properties": {
+        "log_level": { "type": "string" },
+        "tracing": { "type": "boolean" },
+        "metrics": { "type": "boolean" },
+        "audit": { "type": "boolean" },
+        "otel_endpoint_env": { "type": "string" },
+        "otel_exporter": {
+          "type": "object",
+          "properties": {
+            "endpoint": { "type": "string" },
+            "auth_header_env": { "type": "string" },
+            "batch_size": { "type": "integer" },
+            "timeout_ms": { "type": "integer" },
+            "drop_policy": { "type": "string", "enum": ["drop-new", "drop_new", "drop-oldest", "drop_oldest"] },
+            "max_metric_labels": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    },
     "config": { "$comment": "Pointers to split configuration roots. / 拆分配置根目录的位置。", "type": "object" }
   },
   "additionalProperties": true

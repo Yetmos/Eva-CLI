@@ -90,6 +90,21 @@ impl MetricLabels {
             .map(|(key, value)| (key.as_str(), value.as_str()))
     }
 
+    pub fn limited(&self, max_labels: usize) -> (Self, usize) {
+        let mut labels = BTreeMap::new();
+        let mut dropped = 0;
+
+        for (index, (key, value)) in self.labels.iter().enumerate() {
+            if index < max_labels {
+                labels.insert(key.clone(), value.clone());
+            } else {
+                dropped += 1;
+            }
+        }
+
+        (Self { labels }, dropped)
+    }
+
     pub fn runtime(runtime_mode: impl Into<String>, generation: impl Into<String>) -> Self {
         Self::new()
             .with("surface", "runtime")
@@ -197,6 +212,22 @@ mod tests {
         assert_eq!(provider.get("surface"), Some("provider"));
         assert_eq!(provider.get("capability"), Some("code.review"));
         assert_eq!(task.get("surface"), Some("task"));
+    }
+
+    #[test]
+    fn metric_labels_apply_deterministic_cardinality_limit() {
+        let labels = MetricLabels::new()
+            .with("zeta", "last")
+            .with("alpha", "first")
+            .with("surface", "runtime");
+
+        let (limited, dropped) = labels.limited(2);
+
+        assert_eq!(dropped, 1);
+        assert_eq!(
+            limited.entries().collect::<Vec<_>>(),
+            vec![("alpha", "first"), ("surface", "runtime")]
+        );
     }
 
     #[test]
