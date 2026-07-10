@@ -49,7 +49,11 @@ production telemetry backend with a real database sink or a production
 retrieval scheduler. V1.17.1 adds the `run_command_module_split_v1.17.1`
 runtime marker by moving `run --example basic` parser/runtime glue/task snapshot
 writing/output code into `run/run_cmd.rs` without changing the public text or
-JSON contract.
+JSON contract. V1.17.2 adds the `operator_execution_fields_v1.17.2` runtime
+marker and exposes top-level `mutation_executed` on restore, upgrade, and
+hardware operator outputs while preserving existing compatibility fields;
+`capability call` continues to show `invocation_executed` separately from
+`mutation_executed:false`.
 
 ## Verification
 
@@ -61,6 +65,8 @@ JSON contract.
 - `cargo test -p eva-cli capability`
 - `cargo test -p eva-cli run_basic_example_json_succeeds`
 - `cargo test -p eva-cli task_`
+- `cargo test -p eva-cli restore_apply`
+- `cargo test -p eva-cli upgrade_apply`
 - `cargo test -p eva-release`
 - `scripts/validate-i18n.ps1`
 - `scripts/validate-version-management.ps1 -Tag v1.11.5-alpha`

@@ -589,6 +589,7 @@ fn write_upgrade_check<W: Write>(
             writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
             writeln!(writer, "active: {}", report.supervisor.active_generation)
                 .map_err(write_error_kind)?;
+            writeln!(writer, "mutation_executed: false").map_err(write_error_kind)?;
             writeln!(writer, "migration: {}", report.migration.status).map_err(write_error_kind)
         }
         OutputFormat::Json => writeln!(
@@ -613,9 +614,13 @@ fn write_upgrade_apply<W: Write>(
             writeln!(writer, "status: {}", result.report.status).map_err(write_error_kind)?;
             writeln!(writer, "apply_allowed: {}", result.report.apply_allowed)
                 .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "mutation_executed: {}",
+                upgrade_apply_mutation_executed(result)
+            )
+            .map_err(write_error_kind)?;
             if let Some(handoff) = &result.handoff {
-                writeln!(writer, "mutation_executed: {}", handoff.mutation_executed)
-                    .map_err(write_error_kind)?;
                 writeln!(writer, "active_generation: {}", handoff.active_generation)
                     .map_err(write_error_kind)?;
                 if let Some(rollback) = &handoff.rollback_plan {
@@ -642,10 +647,11 @@ fn write_upgrade_apply<W: Write>(
 
 fn upgrade_apply_json(result: &UpgradeApplyResult) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"lock_store\":{},\"state_store\":{},\"lock\":{},\"handoff\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"lock_store\":{},\"state_store\":{},\"lock\":{},\"handoff\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
         json_string(&result.report.plan_id),
         json_string(&result.report.status),
         result.report.apply_allowed,
+        upgrade_apply_mutation_executed(result),
         lock_store_ref_json(&result.lock_store),
         result
             .state_store
@@ -662,6 +668,14 @@ fn upgrade_apply_json(result: &UpgradeApplyResult) -> String {
         json_array(result.report.risks.iter().map(|risk| json_string(risk))),
         json_array(result.report.audit.iter().map(|entry| json_string(entry)))
     )
+}
+
+fn upgrade_apply_mutation_executed(result: &UpgradeApplyResult) -> bool {
+    result
+        .handoff
+        .as_ref()
+        .map(|handoff| handoff.mutation_executed)
+        .unwrap_or(false)
 }
 
 fn supervisor_handoff_json(report: &SupervisorHandoffReport) -> String {
@@ -727,7 +741,7 @@ fn upgrade_apply_lock_json(lock: &UpgradeApplyLock) -> String {
 
 fn upgrade_check_json(report: &UpgradeCheckReport) -> String {
     format!(
-        "{{\"status\":{},\"supervisor\":{},\"drain\":{},\"rollback\":{},\"migration\":{},\"steps\":{},\"risks\":{}}}",
+        "{{\"status\":{},\"mutation_executed\":false,\"supervisor\":{},\"drain\":{},\"rollback\":{},\"migration\":{},\"steps\":{},\"risks\":{}}}",
         json_string(&report.status),
         supervisor_report_json(&report.supervisor),
         drain_plan_json(&report.drain),

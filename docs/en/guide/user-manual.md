@@ -1,6 +1,6 @@
 # Eva-CLI User Manual
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 Applies to: Eva-CLI `1.11.5-alpha`
 
@@ -64,6 +64,15 @@ Run this sequence from the repository root:
 | Version | `cargo run -- --version` | Prints version, release label, and supported contracts. |
 | Doctor | `cargo run -- doctor --output json` | Checks workspace roots, schema files, Lua host boundary, and runtime builder. |
 | Config validation | `cargo run -- config validate --output json` | Loads `config/eva.yaml` and split manifests. |
+| Inspect runtime | `cargo run -- inspect runtime --output json` | Prints agents, adapters, capabilities, routes, policy, and runtime summary. |
+| Inspect durable | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | Reports backend schema, migration status, and pending redrive count. |
+| Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
+| Emit event | `cargo run -- emit /input/user --payload hello --output json` | Publishes a typed Event to the in-memory EventBus boundary. |
+| Daemon smoke | `cargo run -- daemon start --foreground --dev --output json` | Verifies local pid/lock/state, durable backend, provider/task recovery state, policy, observability, and shutdown contract without starting providers. |
+| Agent status | `cargo run -- agent status --agent root-agent --output json` | Reports Agent lifecycle and manifest evidence. |
+| Capability probe | `cargo run -- capability probe repo.analyze --output json` | Reports provider plan and permission gate evidence. |
+| Task status | `cargo run -- task status --output json` | Reads the latest task report. |
+| Release gate | `cargo run -- release check --output json` | Prints release readiness including `REL-DAEMON-RUNTIME-001`. |
 
 `--version` / `version --output json` includes `mcp_http_auth_v1.13.6`,
 `mcp_compat_matrix_v1.13.7`, and `provider_supervision_release_gate_v1.13.8`
@@ -75,16 +84,9 @@ supervision is enabled. V1.16.4 also adds
 retention and rotation policy is available; it does not mean a real database
 sink is enabled. V1.17.1 adds `run_command_module_split_v1.17.1`, which means
 `run --example basic` parser/runtime glue/output code lives in `run/run_cmd.rs`
-while preserving the same public text/JSON contract.
-| Inspect runtime | `cargo run -- inspect runtime --output json` | Prints agents, adapters, capabilities, routes, policy, and runtime summary. |
-| Inspect durable | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | Reports backend schema, migration status, and pending redrive count. |
-| Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
-| Emit event | `cargo run -- emit /input/user --payload hello --output json` | Publishes a typed Event to the in-memory EventBus boundary. |
-| Daemon smoke | `cargo run -- daemon start --foreground --dev --output json` | Verifies local pid/lock/state, durable backend, provider/task recovery state, policy, observability, and shutdown contract without starting providers. |
-| Agent status | `cargo run -- agent status --agent root-agent --output json` | Reports Agent lifecycle and manifest evidence. |
-| Capability probe | `cargo run -- capability probe repo.analyze --output json` | Reports provider plan and permission gate evidence. |
-| Task status | `cargo run -- task status --output json` | Reads the latest task report. |
-| Release gate | `cargo run -- release check --output json` | Prints release readiness including `REL-DAEMON-RUNTIME-001`. |
+while preserving the same public text/JSON contract. V1.17.2 adds
+`operator_execution_fields_v1.17.2`, which fixes the operator-facing distinction
+between invocation execution and destructive mutation execution.
 
 Use text output for human inspection and `--output json` for scripts or CI.
 
@@ -100,7 +102,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Emit | `emit <topic>` | Publish a typed Event to in-memory or durable EventBus. | Writes durable backend `events/log/` when `--durable-backend` is set |
 | Daemon | `daemon start/status/stop/shutdown/submit/cancel/drain/reload` | Verify the V1.12/V1.13.5 local daemon pid/lock/state, durable backend, provider/task recovery, policy, observability, shutdown contract, and filesystem mailbox control plane. | Writes daemon state/observability/control directories; the default smoke removes lock/pid |
 | Agent | `agent status/drain/reload` | Report Agent lifecycle, drain plans, and generation reload evidence. | With a running daemon, `drain/reload` write daemon mutation state; without one they report `mutation_executed:false` |
-| Capability | `capability list/probe/call` | Report provider routing and run dry-run or confirmed controlled invokes. | `call` defaults to dry-run; confirmed invokes still report `mutation_executed:false` |
+| Capability | `capability list/probe/call` | Report provider routing and run dry-run or confirmed controlled invokes. | `call` defaults to dry-run; confirmed invokes report `invocation_executed` and keep `mutation_executed:false` |
 | Task | `task status/logs/cancel` | Read or mark task diagnostics. | Writes task cancel marker |
 | Adapter | `adapter list/probe` | List or probe manifest-derived adapter handles. | No |
 | MCP | `mcp list/probe` | List or probe allowlisted MCP tools. | No |
@@ -183,7 +185,7 @@ cargo run -- capability call config.lint --input config --request-id req-manual-
 | --- | --- | --- |
 | `capability list` | `capabilities[].providers`, `required_adapter_capabilities` | Manifest-derived capability registry and provider selection metadata. |
 | `capability probe` | `provider_plan`, `providers`, `permission_gate` | Read-only provider route and adapter health evidence. |
-| `capability call` | `status`, `confirmed`, `invocation_executed`, `response` | Dry-run by default; confirmed calls execute through the builtin router or adapter-backed host. |
+| `capability call` | `status`, `confirmed`, `invocation_executed`, `mutation_executed`, `response` | Dry-run by default; confirmed calls execute through the builtin router or adapter-backed host without implying destructive mutation. |
 
 ## Basic Runtime Loop
 
@@ -236,11 +238,11 @@ servers, provider CLIs, or workflow runners.
 | --- | --- | --- |
 | Hardware candidates | `cargo run -- hardware list --output json` | Reads manifests; does not open devices. |
 | Hardware probe | `cargo run -- hardware probe --adapter scale-main --output json` | Reports health, trust, and handle status. |
-| Hardware bind plan | `cargo run -- hardware bind --adapter scale-main --output json` | Produces plan steps and risks; no raw I/O handle. |
+| Hardware bind plan | `cargo run -- hardware bind --adapter scale-main --output json` | Produces plan steps, risks, and `mutation_executed:false`; no raw I/O handle. |
 | Backup artifact | `cargo run -- backup create --output json` | Uses an in-memory artifact store. |
 | Release snapshot | `cargo run -- snapshot create --output json` | Links to a verified backup manifest. |
-| Restore plan | `cargo run -- restore plan --output json` | Returns `apply_allowed:false`. |
-| Upgrade readiness | `cargo run -- upgrade check --output json` | Reports migration, drain, and rollback readiness. |
+| Restore plan | `cargo run -- restore plan --output json` | Returns `apply_allowed:false` and `mutation_executed:false`. |
+| Upgrade readiness | `cargo run -- upgrade check --output json` | Reports migration, drain, rollback readiness, and `mutation_executed:false`. |
 
 ## Release Gates
 
@@ -297,8 +299,8 @@ production service-manager/daemon handoff, full durable task query/recovery inde
 real observability database sink, production retention scheduling, durable
 memory/backup databases, or daemon-driven hot-reload orchestration beyond the
   current JSONL audit wiring, tracing bridge, explicit OTel SDK exporter smoke,
-  V1.16.4 JSONL/durable-audit retention policy, and V1.17.1 run command module
-  split boundary.
+  V1.16.4 JSONL/durable-audit retention policy, V1.17.1 run command module
+  split boundary, and V1.17.2 operator execution-field boundary.
 
 ## Recommended Verification
 

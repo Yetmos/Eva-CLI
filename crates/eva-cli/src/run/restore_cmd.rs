@@ -994,6 +994,7 @@ fn write_restore_plan<W: Write>(
             writeln!(writer, "status: {}", result.plan.status).map_err(write_error_kind)?;
             writeln!(writer, "apply_allowed: {}", result.plan.apply_allowed)
                 .map_err(write_error_kind)?;
+            writeln!(writer, "mutation_executed: false").map_err(write_error_kind)?;
             write_artifact_store_ref(writer, &result.backup.artifact_store)
         }
         OutputFormat::Json => writeln!(
@@ -1018,6 +1019,7 @@ fn write_restore_apply_dry_run<W: Write>(
             writeln!(writer, "status: {}", result.report.status).map_err(write_error_kind)?;
             writeln!(writer, "apply_allowed: {}", result.report.apply_allowed)
                 .map_err(write_error_kind)?;
+            writeln!(writer, "mutation_executed: false").map_err(write_error_kind)?;
             writeln!(
                 writer,
                 "mutation_planned: {}",
@@ -1151,6 +1153,12 @@ fn write_restore_rollback<W: Write>(
             writeln!(writer, "status: {}", result.rollback.status).map_err(write_error_kind)?;
             writeln!(
                 writer,
+                "mutation_executed: {}",
+                result.rollback.rollback_executed
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
                 "rollback_executed: {}",
                 result.rollback.rollback_executed
             )
@@ -1191,7 +1199,7 @@ fn write_restore_rollback<W: Write>(
 
 fn restore_plan_json(result: &RestorePlanResult) -> String {
     format!(
-        "{{\"snapshot\":{},\"backup\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
+        "{{\"snapshot\":{},\"backup\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":false,\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
         snapshot_cmd::snapshot_json(&result.snapshot),
         backup_cmd::backup_result_json(&result.backup),
         json_string(&result.plan.snapshot_id),
@@ -1212,7 +1220,7 @@ fn restore_apply_dry_run_report_json(
     artifact_store: &ArtifactStoreRef,
 ) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"pre_restore_backup_artifact_key\":{},\"pre_restore_expected_digest\":{},\"pre_restore_actual_digest\":{},\"mutation_plan\":{},\"operator_confirmation\":{},\"artifact_store\":{},\"audit\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":false,\"backup_artifact_key\":{},\"expected_digest\":{},\"actual_digest\":{},\"pre_restore_backup_artifact_key\":{},\"pre_restore_expected_digest\":{},\"pre_restore_actual_digest\":{},\"mutation_plan\":{},\"operator_confirmation\":{},\"artifact_store\":{},\"audit\":{}}}",
         json_string(&report.plan_id),
         json_string(&report.status),
         report.apply_allowed,
@@ -1266,9 +1274,10 @@ fn restore_apply_json(result: &RestoreApplyResult) -> String {
 
 fn restore_rollback_json(result: &RestoreRollbackResult) -> String {
     format!(
-        "{{\"plan_id\":{},\"status\":{},\"rollback_executed\":{},\"rollback\":{},\"mutation_plan\":{},\"operator_confirmation\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"audit\":{}}}",
+        "{{\"plan_id\":{},\"status\":{},\"mutation_executed\":{},\"rollback_executed\":{},\"rollback\":{},\"mutation_plan\":{},\"operator_confirmation\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"audit\":{}}}",
         json_string(&result.plan.plan_id),
         json_string(&result.rollback.status),
+        result.rollback.rollback_executed,
         result.rollback.rollback_executed,
         restore_rollback_apply_json(&result.rollback),
         restore_mutation_plan_json(&result.dry_run.mutation_plan),

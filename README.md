@@ -30,7 +30,8 @@ has also added daemon control/recovery, provider supervision gates, destructive
 restore mutation/rollback, service-manager abstraction, hardware permission and
   hotplug safety gates, durable memory/knowledge maintenance, provider retrieval
   execution evidence, V1.16.4 observability retention/rotation policy evidence,
-  and V1.17.1 `run --example basic` command module split evidence.
+  V1.17.1 `run --example basic` command module split evidence, and V1.17.2
+  operator execution-state fields for invocation vs mutation output.
 
 Current managed project version: `V1.11.5-alpha` (`Cargo.toml` version
 `1.11.5-alpha`, prerelease Git tag form `v1.11.5-alpha`). Version policy is defined in
@@ -84,7 +85,7 @@ release gates.
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 20 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V1.17.1 controlled runtime surface | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `emit`, `daemon start/status/stop/shutdown/submit/cancel/drain/reload`, `agent status/drain/reload`, `capability list/probe/call`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `observability smoke`, `hardware list/probe/bind`, `backup create`, `snapshot create/promote`, `restore plan/apply/rollback`, `upgrade check/apply`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task/event store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, daemon/provider/hardware/memory maintenance, retrieval, redaction/audit markers evidence, V1.16.1 runtime audit sink marker, V1.16.2 tracing subscriber bridge marker, V1.16.3 OpenTelemetry SDK exporter marker, V1.16.4 observability retention policy marker, V1.17.1 run command module split marker, command module split coverage, and exit-code mapping | Keep command contracts stable as future apply paths are added |
+| `eva-cli` | V1.17.2 controlled runtime surface | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `emit`, `daemon start/status/stop/shutdown/submit/cancel/drain/reload`, `agent status/drain/reload`, `capability list/probe/call`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `observability smoke`, `hardware list/probe/bind`, `backup create`, `snapshot create/promote`, `restore plan/apply/rollback`, `upgrade check/apply`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task/event store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, daemon/provider/hardware/memory maintenance, retrieval, redaction/audit markers evidence, V1.16.1 runtime audit sink marker, V1.16.2 tracing subscriber bridge marker, V1.16.3 OpenTelemetry SDK exporter marker, V1.16.4 observability retention policy marker, V1.17.1 run command module split marker, V1.17.2 operator execution fields marker, command module split coverage, and exit-code mapping | Keep command contracts stable as future apply paths are added |
 | Runtime composition | V1.16.1 daemon smoke baseline | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, idempotent shutdown, foreground daemon control mailbox, task/provider recovery, scheduler retry tick, hotplug subscriber smoke, memory/knowledge maintenance smoke, and best-effort JSONL observability for daemon control/task lifecycle/scheduler retry | Production background service manager and long-running execution remain later scope |
 | EventBus and Scheduler | V1.6.4 durable recovery baseline implemented | EventBus publish/ack/fail/dead-letter/replay diagnostics; durable EventLog records; queryable dead-letter store; redrive replay attempts; ack-safe recovery redrive checkpoint; Scheduler topic routing and mailbox delivery | Scheduler-driven delayed backoff and broader crash recovery remain later scope |
 | Agent and Lua host | V1.11.4 hot-reload lifecycle implemented | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, restricted `mlua` VM adapter, real `on_event` execution, read-only request/trace/memory tables, `ctx.host.log/audit`, `ctx.tools.call`, Lua wall-clock timeout, instruction budget, cancellation token, memory budget, static parser fallback, generation marker, shadow-load health checks, generation route gating, drain evidence, and rollback audit evidence | Daemon-driven hot-reload orchestration and real provider paths remain later scope |
@@ -378,8 +379,8 @@ Core boundaries:
 ## Remaining V1.x Gaps
 
 V1.11.5-alpha is a source alpha and CLI runtime command completion checkpoint
-with V1.11.4/V1.17.1 module split evidence and V1.11.5 `emit`, `agent`, and
-`capability` command evidence. Later release tags that
+with V1.11.4/V1.17.1 module split evidence, V1.17.2 operator execution-field
+evidence, and V1.11.5 `emit`, `agent`, and `capability` command evidence. Later release tags that
 contain package support publish the GHCR container image `ghcr.io/yetmos/eva-cli`,
 native archive metadata, and install-smoke/package dry-run evidence; old tags
 are not republished retroactively. The main remaining work is now narrower and more

@@ -39,6 +39,7 @@ struct HardwareBindPlan {
     request_id: RequestId,
     status: String,
     apply: bool,
+    mutation_executed: bool,
     device: Option<DeviceCandidate>,
     permission: Option<OsPermissionCheck>,
     steps: Vec<String>,
@@ -280,6 +281,7 @@ fn hardware_bind_plan(
         request_id,
         status,
         apply: options.apply,
+        mutation_executed: false,
         device,
         permission,
         steps: vec![
@@ -399,7 +401,9 @@ fn write_hardware_bind<W: Write>(
                 )
                 .map_err(write_error_kind)?;
             }
-            writeln!(writer, "apply: {}", plan.apply).map_err(write_error_kind)
+            writeln!(writer, "apply: {}", plan.apply).map_err(write_error_kind)?;
+            writeln!(writer, "mutation_executed: {}", plan.mutation_executed)
+                .map_err(write_error_kind)
         }
         OutputFormat::Json => writeln!(
             writer,
@@ -446,11 +450,12 @@ fn hardware_candidate_json(candidate: &DeviceCandidate) -> String {
 
 fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
     format!(
-        "{{\"adapter_id\":{},\"request_id\":{},\"status\":{},\"apply\":{},\"device\":{},\"permission\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
+        "{{\"adapter_id\":{},\"request_id\":{},\"status\":{},\"apply\":{},\"mutation_executed\":{},\"device\":{},\"permission\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
         json_string(plan.adapter_id.as_str()),
         json_string(plan.request_id.as_str()),
         json_string(&plan.status),
         plan.apply,
+        plan.mutation_executed,
         plan.device
             .as_ref()
             .map(hardware_candidate_json)
