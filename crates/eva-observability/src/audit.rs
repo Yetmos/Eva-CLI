@@ -115,6 +115,47 @@ impl AuditAction {
             Self::SecurityDenied => "security.denied",
         }
     }
+
+    pub fn from_stable_name(value: &str) -> Option<Self> {
+        match value {
+            "config.loaded" => Some(Self::ConfigLoaded),
+            "config.validated" => Some(Self::ConfigValidated),
+            "policy.evaluated" => Some(Self::PolicyEvaluated),
+            "runtime.started" => Some(Self::RuntimeStarted),
+            "runtime.recovered" => Some(Self::RuntimeRecovered),
+            "runtime.control" => Some(Self::RuntimeControl),
+            "runtime.stopped" => Some(Self::RuntimeStopped),
+            "restore.apply" => Some(Self::RestoreApply),
+            "restore.rollback" => Some(Self::RestoreRollback),
+            "scheduler.retry" => Some(Self::SchedulerRetry),
+            "event.accepted" => Some(Self::EventAccepted),
+            "event.delivered" => Some(Self::EventDelivered),
+            "task.lifecycle" => Some(Self::TaskLifecycle),
+            "lua.host.log" => Some(Self::LuaHostLog),
+            "lua.host.audit" => Some(Self::LuaHostAudit),
+            "capability.invoked" => Some(Self::CapabilityInvoked),
+            "adapter.invoked" => Some(Self::AdapterInvoked),
+            "provider.supervised" => Some(Self::ProviderSupervised),
+            "provider.credential_session" => Some(Self::ProviderCredentialSession),
+            "skill.run.started" => Some(Self::SkillRunStarted),
+            "skill.run.completed" => Some(Self::SkillRunCompleted),
+            "skill.run.failed" => Some(Self::SkillRunFailed),
+            "mcp.session.started" => Some(Self::McpSessionStarted),
+            "mcp.session.stopped" => Some(Self::McpSessionStopped),
+            "mcp.stream.aborted" => Some(Self::McpStreamAborted),
+            "mcp.proxy.denied" => Some(Self::McpProxyDenied),
+            "memory.write" => Some(Self::MemoryWrite),
+            "memory.read" => Some(Self::MemoryRead),
+            "memory.search" => Some(Self::MemorySearch),
+            "memory.context" => Some(Self::MemoryContext),
+            "memory.maintenance" => Some(Self::MemoryMaintenance),
+            "hardware.driver.started" => Some(Self::HardwareDriverStarted),
+            "hardware.driver.stopped" => Some(Self::HardwareDriverStopped),
+            "hardware.hotplug.published" => Some(Self::HardwareHotplugPublished),
+            "security.denied" => Some(Self::SecurityDenied),
+            _ => None,
+        }
+    }
 }
 
 impl AuditOutcome {
@@ -219,6 +260,10 @@ mod tests {
             "hardware.hotplug.published"
         );
         assert_eq!(AuditOutcome::Blocked.as_str(), "blocked");
+        assert_eq!(
+            AuditAction::from_stable_name("provider.supervised"),
+            Some(AuditAction::ProviderSupervised)
+        );
     }
 
     #[test]

@@ -6,3 +6,5 @@ publish.workspace = true
 
 [dependencies]
 eva-core = { path = "../eva-core" }
+tracing = "0.1"
+tracing-subscriber = "0.3"

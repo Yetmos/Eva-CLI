@@ -289,7 +289,7 @@ Error JSON output uses `ok`, `command`, `exit_code`, `error`, and `trace`.
 V1.11.5-alpha does not provide packaged installers, production signing
 credentials, full provider supervision, raw hardware I/O,
 production service-manager/daemon handoff, full durable task query/recovery indexes,
-tracing/OTel export and retention, durable memory/backup databases, or
+OTel export and retention, durable memory/backup databases, or
 daemon-driven hot-reload orchestration beyond the current JSONL audit wiring.
 
 ## Recommended Verification

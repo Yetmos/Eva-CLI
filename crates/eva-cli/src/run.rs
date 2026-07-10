@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4 + service_manager_abstraction_v1.14.5 + hardware_os_permission_provider_v1.15.1 + hardware_hotplug_subscriber_v1.15.4 + hardware_safety_release_gate_v1.15.5 + memory_knowledge_maintenance_v1.15.6 + knowledge_retrieval_provider_v1.15.7 + memory_redaction_audit_v1.15.8 + runtime_audit_sink_wiring_v1.16.1";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4 + service_manager_abstraction_v1.14.5 + hardware_os_permission_provider_v1.15.1 + hardware_hotplug_subscriber_v1.15.4 + hardware_safety_release_gate_v1.15.5 + memory_knowledge_maintenance_v1.15.6 + knowledge_retrieval_provider_v1.15.7 + memory_redaction_audit_v1.15.8 + runtime_audit_sink_wiring_v1.16.1 + tracing_subscriber_bridge_v1.16.2";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -1056,7 +1056,7 @@ fn help_text() -> &'static str {
         "  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n",
         "  eva discovery scan [--project <path>] [--output text|json]\n",
         "  eva memory context [--agent <id>] [--query <text>] [--private-limit <n>] [--global-limit <n>] [--knowledge-limit <n>] [--durable-backend <path>] [--project <path>] [--output text|json]\n",
-        "  eva observability smoke [--backend <path>] [--project <path>] [--output text|json]\n",
+        "  eva observability smoke [--backend <path>] [--tracing-sink jsonl|dev-console] [--project <path>] [--output text|json]\n",
         "  eva hardware list [--project <path>] [--output text|json]\n",
         "  eva hardware probe [--adapter <id>] [--project <path>] [--output text|json]\n",
         "  eva hardware bind [--adapter <id>] [--request-id <id>] [--apply] [--project <path>] [--output text|json]\n",
@@ -2555,6 +2555,7 @@ mod tests {
         assert!(json_stdout.contains("knowledge_retrieval_provider_v1.15.7"));
         assert!(json_stdout.contains("memory_redaction_audit_v1.15.8"));
         assert!(json_stdout.contains("runtime_audit_sink_wiring_v1.16.1"));
+        assert!(json_stdout.contains("tracing_subscriber_bridge_v1.16.2"));
         assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));
@@ -3185,9 +3186,13 @@ mod tests {
         assert_eq!(exit_code, EXIT_OK, "{stderr}");
         assert!(stdout.contains("\"command\":\"observability.smoke\""));
         assert!(stdout.contains("\"degraded\":false"), "{stdout}");
-        assert!(stdout.contains("\"audit_events\":1"), "{stdout}");
+        assert!(stdout.contains("\"audit_events\":2"), "{stdout}");
         assert!(stdout.contains("\"metric_points\":3"), "{stdout}");
-        assert!(stdout.contains("\"otel_spans\":2"), "{stdout}");
+        assert!(stdout.contains("\"otel_spans\":3"), "{stdout}");
+        assert!(stdout.contains("\"tracing_bridge\":{"), "{stdout}");
+        assert!(stdout.contains("\"spans\":1"), "{stdout}");
+        assert!(stdout.contains("\"events\":1"), "{stdout}");
+        assert!(stdout.contains("\"duplicate_span_ids\":0"), "{stdout}");
         assert!(backend.join("audit.jsonl").is_file());
         assert!(backend.join("metrics.jsonl").is_file());
         assert!(backend.join("otel-spans.jsonl").is_file());
@@ -3210,6 +3215,30 @@ mod tests {
             "{degraded_stdout}"
         );
         fs::remove_file(degraded_path).ok();
+
+        let dev_console_backend = test_temp_dir("observability-dev-console");
+        let (dev_exit, dev_stdout, dev_stderr) = run_cli(&[
+            "observability",
+            "smoke",
+            "--backend",
+            dev_console_backend.to_str().unwrap(),
+            "--tracing-sink",
+            "dev-console",
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(dev_exit, EXIT_OK, "{dev_stderr}");
+        assert!(
+            dev_stdout.contains("\"sink\":\"dev-console\""),
+            "{dev_stdout}"
+        );
+        assert!(
+            dev_stdout.contains("\"dev_console_lines\":2"),
+            "{dev_stdout}"
+        );
+        assert!(!dev_stdout.contains("sk-"), "{dev_stdout}");
+        fs::remove_dir_all(dev_console_backend).ok();
     }
 
     #[test]
