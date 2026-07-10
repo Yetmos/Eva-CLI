@@ -73,7 +73,9 @@ provider supervision release gates. It still does not mean OS provider process
 supervision is enabled. V1.16.4 also adds
 `observability_retention_policy_v1.16.4`, which means JSONL/durable-audit
 retention and rotation policy is available; it does not mean a real database
-sink is enabled.
+sink is enabled. V1.17.1 adds `run_command_module_split_v1.17.1`, which means
+`run --example basic` parser/runtime glue/output code lives in `run/run_cmd.rs`
+while preserving the same public text/JSON contract.
 | Inspect runtime | `cargo run -- inspect runtime --output json` | Prints agents, adapters, capabilities, routes, policy, and runtime summary. |
 | Inspect durable | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | Reports backend schema, migration status, and pending redrive count. |
 | Run basic loop | `cargo run -- run --example basic --output json` | Executes the in-memory basic loop and writes `.eva/tasks` by default. |
@@ -294,8 +296,9 @@ credentials, full provider supervision, raw hardware I/O,
 production service-manager/daemon handoff, full durable task query/recovery indexes,
 real observability database sink, production retention scheduling, durable
 memory/backup databases, or daemon-driven hot-reload orchestration beyond the
-current JSONL audit wiring, tracing bridge, explicit OTel SDK exporter smoke,
-and V1.16.4 JSONL/durable-audit retention policy.
+  current JSONL audit wiring, tracing bridge, explicit OTel SDK exporter smoke,
+  V1.16.4 JSONL/durable-audit retention policy, and V1.17.1 run command module
+  split boundary.
 
 ## Recommended Verification
 

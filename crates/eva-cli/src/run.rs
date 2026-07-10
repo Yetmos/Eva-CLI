@@ -16,6 +16,7 @@ mod memory_cmd;
 mod observability_cmd;
 mod release_cmd;
 mod restore_cmd;
+mod run_cmd;
 mod skill_cmd;
 mod snapshot_cmd;
 mod task_cmd;
@@ -29,11 +30,9 @@ use capability_cmd::CapabilityCommand;
 use daemon_cmd::DaemonCommand;
 use discovery_cmd::DiscoveryCommand;
 use emit_cmd::EmitCommand;
-use eva_config::load_project_config;
-use eva_core::{CapabilityName, ErrorKind, EvaError, InvokeStatus};
+use eva_core::{CapabilityName, ErrorKind, EvaError};
 use eva_lifecycle::RollbackPlan;
 use eva_observability::{SpanId, TraceFields};
-use eva_runtime::{BasicRunOptions, BasicRunReport, RuntimeBuilder};
 use hardware_cmd::HardwareCommand;
 use inspect_cmd::InspectOptions;
 use mcp_cmd::McpCommand;
@@ -41,6 +40,7 @@ use memory_cmd::MemoryCommand;
 use observability_cmd::ObservabilityCommand;
 use release_cmd::ReleaseCommand;
 use restore_cmd::RestoreCommand;
+use run_cmd::RunOptions;
 use skill_cmd::SkillCommand;
 use snapshot_cmd::SnapshotCommand;
 use std::env;
@@ -65,7 +65,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_STATUS: &str = "alpha";
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
 const RELEASE_RUNTIME_MODE: &str =
-    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4 + service_manager_abstraction_v1.14.5 + hardware_os_permission_provider_v1.15.1 + hardware_hotplug_subscriber_v1.15.4 + hardware_safety_release_gate_v1.15.5 + memory_knowledge_maintenance_v1.15.6 + knowledge_retrieval_provider_v1.15.7 + memory_redaction_audit_v1.15.8 + runtime_audit_sink_wiring_v1.16.1 + tracing_subscriber_bridge_v1.16.2 + opentelemetry_sdk_exporter_v1.16.3 + observability_retention_policy_v1.16.4";
+    "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4 + service_manager_abstraction_v1.14.5 + hardware_os_permission_provider_v1.15.1 + hardware_hotplug_subscriber_v1.15.4 + hardware_safety_release_gate_v1.15.5 + memory_knowledge_maintenance_v1.15.6 + knowledge_retrieval_provider_v1.15.7 + memory_redaction_audit_v1.15.8 + runtime_audit_sink_wiring_v1.16.1 + tracing_subscriber_bridge_v1.16.2 + opentelemetry_sdk_exporter_v1.16.3 + observability_retention_policy_v1.16.4 + run_command_module_split_v1.17.1";
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -163,17 +163,7 @@ where
             config_cmd::execute_config_validate(options, stdout, stderr)
         }
         Command::Inspect(options) => inspect_cmd::execute_inspect(options, stdout, stderr),
-        Command::Run(options) => {
-            let trace = trace_for("cli.run");
-            match execute_run(options, stdout, stderr, &trace) {
-                Ok(exit_code) => Ok(exit_code),
-                Err(error) => {
-                    let exit_code = exit_code_for_error(&error);
-                    write_error(stderr, OutputFormat::Text, "run", exit_code, &error, &trace)?;
-                    Ok(exit_code)
-                }
-            }
-        }
+        Command::Run(options) => run_cmd::execute_run(options, stdout, stderr),
         Command::Emit(command) => emit_cmd::execute_emit(command, stdout, stderr),
         Command::Daemon(command) => daemon_cmd::execute_daemon(command, stdout, stderr),
         Command::Agent(command) => agent_cmd::execute_agent(command, stdout, stderr),
@@ -229,18 +219,6 @@ struct CommonOptions {
     output: OutputFormat,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RunOptions {
-    common: CommonOptions,
-    example: Option<String>,
-    task_id: Option<String>,
-    durable_backend: Option<PathBuf>,
-    timeout_ms: Option<u64>,
-    cancel_requested: bool,
-    retry_attempts: usize,
-    replay_dead_letters: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {
     Text,
@@ -287,7 +265,7 @@ where
         "inspect" => Ok(Command::Inspect(inspect_cmd::parse_inspect_options(
             &args[1..],
         )?)),
-        "run" => Ok(Command::Run(parse_run_options(&args[1..])?)),
+        "run" => Ok(Command::Run(run_cmd::parse_run_options(&args[1..])?)),
         "emit" => Ok(Command::Emit(emit_cmd::parse_emit_command(&args[1..])?)),
         "daemon" => Ok(Command::Daemon(daemon_cmd::parse_daemon_command(
             &args[1..],
@@ -333,76 +311,6 @@ where
     }
 }
 
-fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
-    let mut passthrough = Vec::new();
-    let mut example = None;
-    let mut task_id = None;
-    let mut durable_backend = None;
-    let mut timeout_ms = Some(30_000);
-    let mut cancel_requested = false;
-    let mut retry_attempts = 1;
-    let mut replay_dead_letters = false;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--example" => {
-                index += 1;
-                let value = args.get(index).ok_or_else(|| {
-                    EvaError::invalid_argument("missing value for example option")
-                })?;
-                example = Some(value.clone());
-            }
-            "--task-id" | "--task" => {
-                index += 1;
-                let value = args.get(index).ok_or_else(|| {
-                    EvaError::invalid_argument("missing value for task id option")
-                })?;
-                eva_core::RequestId::parse(value)?;
-                task_id = Some(value.clone());
-            }
-            "--durable-backend" | "--durable-backend-root" => {
-                index += 1;
-                durable_backend = Some(PathBuf::from(required_option(
-                    args,
-                    index,
-                    "durable backend option",
-                )?));
-            }
-            "--timeout-ms" => {
-                index += 1;
-                let value = args.get(index).ok_or_else(|| {
-                    EvaError::invalid_argument("missing value for timeout option")
-                })?;
-                timeout_ms = Some(parse_u64_option("timeout_ms", value)?);
-            }
-            "--no-timeout" => timeout_ms = None,
-            "--cancel" => cancel_requested = true,
-            "--retry-attempts" => {
-                index += 1;
-                let value = args
-                    .get(index)
-                    .ok_or_else(|| EvaError::invalid_argument("missing value for retry option"))?;
-                retry_attempts = parse_usize_option("retry_attempts", value)?.max(1);
-            }
-            "--replay-dead-letters" => replay_dead_letters = true,
-            _ => passthrough.push(args[index].clone()),
-        }
-        index += 1;
-    }
-
-    Ok(RunOptions {
-        common: parse_common_options(&passthrough)?,
-        example,
-        task_id,
-        durable_backend,
-        timeout_ms,
-        cancel_requested,
-        retry_attempts,
-        replay_dead_letters,
-    })
-}
-
 fn required_option<'a>(
     args: &'a [String],
     index: usize,
@@ -426,90 +334,6 @@ fn parse_usize_option(name: &'static str, value: &str) -> Result<usize, EvaError
             .with_context("option", name)
             .with_context("value", value)
     })
-}
-
-fn execute_run<W, E>(
-    options: RunOptions,
-    stdout: &mut W,
-    stderr: &mut E,
-    trace: &TraceFields,
-) -> Result<i32, EvaError>
-where
-    W: Write,
-    E: Write,
-{
-    match options.example.as_deref() {
-        Some("basic") => {
-            let project_root = options.common.project_root.join("examples").join("basic");
-            let mut run_options = BasicRunOptions {
-                timeout_ms: options.timeout_ms,
-                cancel_requested: options.cancel_requested,
-                retry_attempts: options.retry_attempts,
-                replay_dead_letters: options.replay_dead_letters,
-                ..BasicRunOptions::default()
-            };
-            if let Some(task_id) = &options.task_id {
-                run_options.request_id = eva_core::RequestId::parse(task_id)?;
-            }
-            match load_project_config(&project_root).and_then(|project| {
-                let runtime = RuntimeBuilder::in_memory_v10().build(&project)?;
-                runtime
-                    .run_basic(&project, run_options)
-                    .map(|report| (project, runtime, report))
-            }) {
-                Ok((_project, _runtime, report)) => {
-                    task_cmd::write_task_snapshot(
-                        &options.common.project_root,
-                        options.durable_backend.as_deref(),
-                        &report,
-                    )?;
-                    write_run(stdout, options.common.output, &report, trace)?;
-                    Ok(EXIT_OK)
-                }
-                Err(error) => {
-                    let exit_code = exit_code_for_error(&error);
-                    write_error(
-                        stderr,
-                        options.common.output,
-                        "run",
-                        exit_code,
-                        &error,
-                        trace,
-                    )?;
-                    Ok(exit_code)
-                }
-            }
-        }
-        Some(example) => {
-            let error = EvaError::unsupported("unknown run example")
-                .with_context("example", example)
-                .with_context("supported", "basic");
-            let exit_code = EXIT_USAGE;
-            write_error(
-                stderr,
-                options.common.output,
-                "run",
-                exit_code,
-                &error,
-                trace,
-            )?;
-            Ok(exit_code)
-        }
-        None => {
-            let error = EvaError::unsupported("eva run requires an example in V1.0 core")
-                .with_context("suggestion", "use `eva run --example basic`");
-            let exit_code = EXIT_RUNTIME_UNAVAILABLE;
-            write_error(
-                stderr,
-                options.common.output,
-                "run",
-                exit_code,
-                &error,
-                trace,
-            )?;
-            Ok(exit_code)
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -669,196 +493,8 @@ fn join_capabilities(capabilities: &[CapabilityName]) -> String {
         .join(",")
 }
 
-fn write_run<W: Write>(
-    writer: &mut W,
-    output: OutputFormat,
-    report: &BasicRunReport,
-    trace: &TraceFields,
-) -> Result<(), EvaError> {
-    match output {
-        OutputFormat::Text => {
-            writeln!(writer, "OK run example=basic").map_err(write_error_kind)?;
-            writeln!(writer, "project_root: {}", report.project_root).map_err(write_error_kind)?;
-            writeln!(
-                writer,
-                "runtime: mode={} generation={}",
-                report.runtime_mode, report.generation_id
-            )
-            .map_err(write_error_kind)?;
-            writeln!(
-                writer,
-                "task: id={} status={} attempts={}/{}",
-                report.task.task_id,
-                report.task.status.as_str(),
-                report.task.attempts,
-                report.task.retry_policy.max_attempts
-            )
-            .map_err(write_error_kind)?;
-            writeln!(
-                writer,
-                "event: {} topic={} sequence={}",
-                report.event_id, report.topic, report.receipt.sequence
-            )
-            .map_err(write_error_kind)?;
-            writeln!(writer, "deliveries:").map_err(write_error_kind)?;
-            for delivery in &report.deliveries {
-                writeln!(
-                    writer,
-                    "  - agent={} delivery={}",
-                    delivery.agent_id,
-                    delivery.delivery.as_str()
-                )
-                .map_err(write_error_kind)?;
-            }
-            writeln!(writer, "agent_runs:").map_err(write_error_kind)?;
-            for run in &report.agent_runs {
-                writeln!(
-                    writer,
-                    "  - agent={} status={} handler_status={}",
-                    run.agent_id,
-                    run.status.as_str(),
-                    run.handler_status.as_deref().unwrap_or("")
-                )
-                .map_err(write_error_kind)?;
-            }
-            if let Some(response) = &report.capability_response {
-                writeln!(
-                    writer,
-                    "capability: status={} output={}",
-                    invoke_status(response.status()),
-                    response
-                        .output()
-                        .and_then(|output| output.as_text())
-                        .unwrap_or("")
-                )
-                .map_err(write_error_kind)?;
-            }
-            Ok(())
-        }
-        OutputFormat::Json => writeln!(
-            writer,
-            "{}",
-            success_envelope("run", EXIT_OK, &run_report_json(report), trace)
-        )
-        .map_err(write_error_kind),
-    }
-}
-
-fn run_report_json(report: &BasicRunReport) -> String {
-    let deliveries = report.deliveries.iter().map(|delivery| {
-        format!(
-            "{{\"agent_id\":{},\"delivery\":{}}}",
-            json_string(delivery.agent_id.as_str()),
-            json_string(delivery.delivery.as_str())
-        )
-    });
-    let agent_runs = report.agent_runs.iter().map(|run| {
-        let error = run
-            .error
-            .as_ref()
-            .map(|error| json_string(error.message()))
-            .unwrap_or_else(|| "null".to_owned());
-        format!(
-            "{{\"agent_id\":{},\"event_id\":{},\"topic\":{},\"status\":{},\"attempts\":{},\"handler_status\":{},\"output\":{},\"error\":{}}}",
-            json_string(run.agent_id.as_str()),
-            json_string(run.event_id.as_str()),
-            json_string(run.topic.as_str()),
-            json_string(run.status.as_str()),
-            run.attempts,
-            option_json(run.handler_status.as_deref()),
-            option_json(run.output.as_deref()),
-            error
-        )
-    });
-    let lua_results = report.lua_results.iter().map(|result| {
-        format!(
-            "{{\"agent_id\":{},\"status\":{},\"topic\":{},\"note\":{},\"capability\":{},\"capability_input\":{}}}",
-            json_string(result.agent_id.as_str()),
-            json_string(&result.status),
-            json_string(result.topic.as_str()),
-            option_json(result.note.as_deref()),
-            result
-                .capability
-                .as_ref()
-                .map(|capability| json_string(capability.as_str()))
-                .unwrap_or_else(|| "null".to_owned()),
-            option_json(result.capability_input.as_deref())
-        )
-    });
-    let lua_observability = report.lua_observability.iter().map(|observation| {
-        let fields = observation.fields.iter().map(|(key, value)| {
-            format!(
-                "{{\"key\":{},\"value\":{}}}",
-                json_string(key),
-                json_string(value)
-            )
-        });
-        format!(
-            "{{\"action\":{},\"outcome\":{},\"message\":{},\"fields\":{},\"trace\":{}}}",
-            json_string(observation.action.as_str()),
-            json_string(observation.outcome.as_str()),
-            option_json(observation.message.as_deref()),
-            json_array(fields),
-            trace_json(&observation.trace)
-        )
-    });
-    let capability_response = report
-        .capability_response
-        .as_ref()
-        .map(capability_response_json)
-        .unwrap_or_else(|| "null".to_owned());
-    format!(
-        "{{\"runtime_mode\":{},\"generation_id\":{},\"project_root\":{},\"task\":{},\"event_id\":{},\"topic\":{},\"receipt\":{{\"event_id\":{},\"sequence\":{},\"topic\":{},\"target\":{}}},\"deliveries\":{},\"agent_runs\":{},\"lua_results\":{},\"lua_observability\":{},\"lua_generation\":{{\"generation_id\":{},\"script_count\":{}}},\"capability_response\":{},\"audit\":{}}}",
-        json_string(&report.runtime_mode),
-        json_string(&report.generation_id),
-        json_string(&report.project_root),
-        task_cmd::task_snapshot_json_from_report(report),
-        json_string(&report.event_id),
-        json_string(&report.topic),
-        json_string(report.receipt.event_id.as_str()),
-        report.receipt.sequence,
-        json_string(report.receipt.topic.as_str()),
-        json_string(&format!("{:?}", report.receipt.target)),
-        json_array(deliveries),
-        json_array(agent_runs),
-        json_array(lua_results),
-        json_array(lua_observability),
-        json_string(report.lua_generation.generation_id.as_str()),
-        report.lua_generation.script_count,
-        capability_response,
-        json_array(report.audit.iter().map(|entry| json_string(entry)))
-    )
-}
-
-fn capability_response_json(response: &eva_core::InvokeResponse) -> String {
-    format!(
-        "{{\"request_id\":{},\"status\":{},\"output\":{},\"error\":{}}}",
-        json_string(response.request_id().as_str()),
-        json_string(invoke_status(response.status())),
-        response
-            .output()
-            .and_then(|output| output.as_text())
-            .map(json_string)
-            .unwrap_or_else(|| "null".to_owned()),
-        response
-            .error()
-            .map(|error| json_string(error.message()))
-            .unwrap_or_else(|| "null".to_owned())
-    )
-}
-
 fn option_json(value: Option<&str>) -> String {
     value.map(json_string).unwrap_or_else(|| "null".to_owned())
-}
-
-fn invoke_status(status: InvokeStatus) -> &'static str {
-    match status {
-        InvokeStatus::Accepted => "accepted",
-        InvokeStatus::Completed => "completed",
-        InvokeStatus::Failed => "failed",
-        InvokeStatus::Cancelled => "cancelled",
-        InvokeStatus::Timeout => "timeout",
-    }
 }
 
 fn write_error<W: Write>(
@@ -2559,6 +2195,7 @@ mod tests {
         assert!(json_stdout.contains("tracing_subscriber_bridge_v1.16.2"));
         assert!(json_stdout.contains("opentelemetry_sdk_exporter_v1.16.3"));
         assert!(json_stdout.contains("observability_retention_policy_v1.16.4"));
+        assert!(json_stdout.contains("run_command_module_split_v1.17.1"));
         assert!(json_stdout.contains("cli command module split"));
         assert!(json_stdout.contains("emit"));
         assert!(json_stdout.contains("agent status/drain/reload"));

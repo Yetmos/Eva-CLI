@@ -46,7 +46,10 @@ OTLP trace/metrics exporter smoke and collector-degraded reporting; V1.16.4
 adds JSONL/durable-audit retention, rotation, max-size, and corrupt-record
 policy plus a database policy kind boundary. These are not a complete
 production telemetry backend with a real database sink or a production
-retrieval scheduler.
+retrieval scheduler. V1.17.1 adds the `run_command_module_split_v1.17.1`
+runtime marker by moving `run --example basic` parser/runtime glue/task snapshot
+writing/output code into `run/run_cmd.rs` without changing the public text or
+JSON contract.
 
 ## Verification
 
@@ -56,6 +59,8 @@ retrieval scheduler.
 - `cargo test -p eva-cli emit`
 - `cargo test -p eva-cli agent`
 - `cargo test -p eva-cli capability`
+- `cargo test -p eva-cli run_basic_example_json_succeeds`
+- `cargo test -p eva-cli task_`
 - `cargo test -p eva-release`
 - `scripts/validate-i18n.ps1`
 - `scripts/validate-version-management.ps1 -Tag v1.11.5-alpha`
