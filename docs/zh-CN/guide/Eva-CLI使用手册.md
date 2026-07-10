@@ -1,12 +1,16 @@
 # Eva-CLI 使用手册
 
-更新时间：2026-07-09
+更新时间：2026-07-10
 
-适用版本：Eva-CLI `1.11.5-alpha`
+适用版本：Eva-CLI `1.11.5-alpha`，并已同步 V1.17.5 文档/i18n 状态
 
 本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
 V1.11.5-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
 EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、daemon process boundary smoke、daemon control mailbox、durable task lifecycle、scheduler retry dispatch、daemon-backed Agent drain/reload mutation、daemon runtime release gate、Agent lifecycle evidence 和 capability provider routing 命令已经落地，但高风险路径仍以受控诊断、in-memory 示例闭环、plan-first 和发布门禁为主。
+V1.16.4 已补 JSONL/durable-audit retention/rotation/corrupt-record policy；
+V1.17.1-V1.17.4 已补 `run --example basic` 拆分、operator execution-state
+字段、高风险 text summary 和 public JSON contract diff suite；V1.17.5 则把这些
+runtime 边界同步到使用手册、发布说明、官网卡片、生成站点 HTML 和 i18n manifest。
 
 ## 当前定位
 
@@ -16,7 +20,7 @@ EventBus redrive、可重启读取的 task snapshot、durable audit record、art
 | 运行时 | `run --example basic` 通过受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环；`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 提供 V1.12 本机 pid/lock/state、shutdown 边界 smoke、filesystem mailbox 控制面和 due dead-letter scheduler retry tick。 |
 | 外部能力 | Adapter、MCP、Skill、Discovery 当前提供受控诊断面，不启动真实 provider。 |
 | 风险动作 | 硬件绑定、恢复、升级和生命周期切换保持 plan-first，不执行 destructive apply。 |
-| 发布检查 | V1.12.6 已把 daemon runtime readiness 纳入 `release check`；`release check/security/perf/migration` 仍覆盖 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
+| 发布检查 | V1.12.6 已把 daemon runtime readiness 纳入 `release check`；V1.17.4 已加入 public JSON contract diff readiness；V1.17.5 同步相关文档/i18n/release notes。`release check/security/perf/migration` 仍覆盖 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
 
 ![Eva-CLI 源码使用闭环](../../assets/eva-cli-user-manual-flow.zh-CN.svg)
 
@@ -61,12 +65,6 @@ release: V1.11.5-alpha
 | 工作区诊断 | `cargo run -- doctor --output json` | 检查仓库根、配置根、schema、Lua host 和 runtime builder。 |
 | 配置校验 | `cargo run -- config validate --output json` | 加载 `config/eva.yaml` 和拆分 manifest，返回配置摘要。 |
 
-`--version` / `version --output json` 包含 `mcp_http_auth_v1.13.6`、
-`mcp_compat_matrix_v1.13.7` 和 `provider_supervision_release_gate_v1.13.8`
-时，表示 runtime 已支持带 auth/session header 的受限 MCP `http://`
-JSON-RPC transport 边界，并已具备 repo-local MCP compatibility matrix release
-gate 与 provider supervision release gate。它仍不表示 OS provider process
-supervisor 已启用。
 | 查看运行时 | `cargo run -- inspect runtime --output json` | 输出 agents、adapters、capabilities、routes、policy 和 runtime 摘要。 |
 | 查看 durable backend | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | 输出 backend schema、migration status 和 pending redrive count。 |
 | 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |
@@ -76,7 +74,16 @@ supervisor 已启用。
 | Agent 状态 | `cargo run -- agent status --agent root-agent --output json` | 输出 Agent lifecycle 和 manifest evidence。 |
 | Capability probe | `cargo run -- capability probe repo.analyze --output json` | 输出 provider plan 和 permission gate evidence。 |
 | 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
-| 发布门禁 | `cargo run -- release check --output json` | 输出 release readiness，包含 `REL-DAEMON-RUNTIME-001`。 |
+| 发布门禁 | `cargo run -- release check --output json` | 输出 release readiness，包含 `REL-DAEMON-RUNTIME-001` 和 `REL-JSON-CONTRACT-001`。 |
+
+`--version` / `version --output json` 还会报告
+`mcp_http_auth_v1.13.6`、`mcp_compat_matrix_v1.13.7`、
+`provider_supervision_release_gate_v1.13.8`、
+`observability_retention_policy_v1.16.4`、`run_command_module_split_v1.17.1`、
+`operator_execution_fields_v1.17.2`、`operator_apply_text_v1.17.3` 和
+`json_contract_diff_suite_v1.17.4`。这些 marker 表示对应诊断、操作者安全和
+公开 JSON contract 验证边界可用；V1.17.5 不新增 runtime marker，而是同步
+README、手册、发布说明、官网卡片、生成 HTML 和 i18n manifest。
 
 文本输出适合人工查看，JSON 输出适合 CI 或脚本处理。需要稳定字段时加
 `--output json`。
@@ -105,7 +112,7 @@ supervisor 已启用。
 | Snapshot | `snapshot create` | 创建绑定 backup manifest 的 release snapshot。 | 否 |
 | Restore | `restore plan` | 生成恢复计划，保持 `apply_allowed:false`。 | 否 |
 | Upgrade | `upgrade check` | 检查 generation、migration、drain 和 rollback readiness。 | 否 |
-| Release | `release check/security/perf/migration` | 执行发布准备、安全、性能和迁移门禁，`release check` 包含 daemon runtime readiness。 | 否 |
+| Release | `release check/security/perf/migration` | 执行发布准备、安全、性能和迁移门禁，`release check` 包含 daemon runtime readiness 和 public JSON contract readiness。 | 否 |
 
 ## 基本用法
 
@@ -216,7 +223,7 @@ cargo run -- capability call config.lint --input config --request-id req-manual-
 | --- | --- | --- |
 | `capability list` | `capabilities[].providers`、`required_adapter_capabilities` | manifest-derived capability registry 和 provider selection metadata。 |
 | `capability probe` | `provider_plan`、`providers`、`permission_gate` | 只读 provider route 和 adapter health evidence。 |
-| `capability call` | `status`、`confirmed`、`invocation_executed`、`response` | 默认 dry-run；确认后通过 builtin router 或 adapter-backed host 执行。 |
+| `capability call` | `status`、`confirmed`、`invocation_executed`、`mutation_executed`、`response` | 默认 dry-run；确认后通过 builtin router 或 adapter-backed host 执行，但仍不代表 destructive mutation。 |
 
 ## 运行 basic 示例
 

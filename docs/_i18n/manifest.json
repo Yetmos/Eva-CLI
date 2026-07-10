@@ -836,7 +836,7 @@
     },
     {
       "id": "release-notes-v1.11.5",
-      "title": "Eva-CLI V1.11.5 Alpha Release Notes",
+      "title": "Eva-CLI V1.11.5 Alpha Release Notes and V1.17 Sync",
       "source": "docs/en/release/release-notes-v1.11.5.md",
       "translations": {
         "zh-CN": "docs/zh-CN/release/V1.11.5-alpha发布说明.md"

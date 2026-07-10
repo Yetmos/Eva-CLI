@@ -4,26 +4,22 @@
 > Published default: docs/en/README.md
 > Current detail authority: [简体中文](../zh-CN/中文文档入口.md)
 
-Eva-CLI has reached the V1.11.5-alpha CLI runtime command completion checkpoint. The repository now
-contains a compileable Rust workspace, executable CLI surfaces, configuration
-validation, an in-memory basic runtime loop, local task diagnostics, controlled
-Adapter/MCP/Skill/Discovery surfaces, request-scoped memory and knowledge
-context assembly, hardware binding plans, backup/lifecycle diagnostics, and
-release readiness, security, performance, migration, compatibility checks,
-durable EventBus redrive, durable task snapshots, durable audit records, and
-artifact metadata hardening, plus a runtime recovery scanner, event redrive
-checkpoint, durable recovery audit smoke, `inspect durable` backend
-diagnostics, restricted Lua VM `on_event` execution, read-only Lua context
-tables, Lua host observability, controlled `ctx.tools.call` capability
-binding, Lua timeout/instruction/cancellation/memory execution limits, and Lua
-shadow-load health checks, scheduler generation route gating, drain evidence,
-rollback audit evidence, signed artifact/provenance release evidence,
-distribution install-smoke/package dry-run release evidence, external scanner
-release evidence, measured benchmark release evidence, and command module split
-coverage for the public CLI surface.
+Eva-CLI has reached the V1.17.5 documentation/i18n synchronization checkpoint
+on the V1.11.5-alpha source line. The repository now contains a compileable
+Rust workspace, executable CLI surfaces, configuration validation, an in-memory
+basic runtime loop, local task diagnostics, controlled Adapter/MCP/Skill/
+Discovery surfaces, durable EventBus/task/audit/artifact evidence, Lua
+execution and hot-reload lifecycle boundaries, daemon control and recovery,
+provider supervision readiness, restore mutation and rollback evidence,
+service-manager abstraction, hardware safety gates, memory retrieval and
+redaction evidence, observability retention/rotation policy, operator
+execution-state fields, high-risk operator text summaries, public JSON contract
+diff validation, and synchronized README, user manual, release notes, website
+cards, generated site HTML, and i18n manifest metadata.
 
 Current managed project version: `V1.11.5-alpha` (`Cargo.toml` version
-`1.11.5-alpha`, prerelease Git tag form `v1.11.5-alpha`). See
+`1.11.5-alpha`, prerelease Git tag form `v1.11.5-alpha`). V1.17.5 is a
+documentation/i18n synchronization checkpoint, not a new release tag. See
 [Eva-CLI Version Management Plan](release/version-management-plan.md).
 
 Important source rule: English documents currently provide the default public
@@ -87,7 +83,7 @@ migration policy.
 - [Eva-CLI V1.5 Release Hardening](release/v1.5-release-hardening.md)
 - [Eva-CLI V1.5 Migration Guide](release/v1.5-migration-guide.md)
 - [Eva-CLI V1.5 Compatibility Policy](release/v1.5-compatibility-policy.md)
-- [Eva-CLI V1.11.5 Alpha Release Notes](release/release-notes-v1.11.5.md)
+- [Eva-CLI V1.11.5 Alpha Release Notes and V1.17 Sync](release/release-notes-v1.11.5.md)
 - [Eva-CLI V1.11.4 Alpha Release Notes](release/release-notes-v1.11.4.md)
 - [Eva-CLI V1.7.3 Alpha Release Notes](release/release-notes-v1.7.3.md)
 - [Eva-CLI V1.7.2 Alpha Release Notes](release/release-notes-v1.7.2.md)

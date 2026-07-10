@@ -1,4 +1,4 @@
-# Eva-CLI V1.11.5 Alpha Release Notes
+# Eva-CLI V1.11.5 Alpha Release Notes and V1.17 Sync
 
 Status: alpha prerelease
 Tag: `v1.11.5-alpha`
@@ -60,7 +60,10 @@ hardware high-risk paths. V1.17.4 adds the
 `scripts/validate-cli-json-contracts.ps1`, and the required
 `REL-JSON-CONTRACT-001` readiness gate. Production release upload remains
 future work because it still needs signing/attestation and package repository
-credentials.
+credentials. V1.17.5 adds no runtime marker; it synchronizes the root README,
+documentation entry pages, user manuals, release notes, website i18n cards,
+generated localized site HTML, and `docs/_i18n/manifest.json` so the public docs
+describe the V1.12-V1.17 evidence line consistently.
 
 ## Verification
 
@@ -77,6 +80,7 @@ credentials.
 - `cargo test -p eva-cli hardware_commands_report_candidates_and_bind_plan`
 - `cargo test -p eva-release`
 - `scripts/validate-cli-json-contracts.ps1`
+- `scripts/build-site-i18n.ps1`
 - `scripts/validate-i18n.ps1`
 - `scripts/validate-version-management.ps1 -Tag v1.11.5-alpha`
 - `cargo run -- --version`

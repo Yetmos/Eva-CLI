@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-10
 
-Applies to: Eva-CLI `1.11.5-alpha`
+Applies to: Eva-CLI `1.11.5-alpha` with V1.17.5 documentation/i18n sync
 
 This manual is for developers, testers, and documentation maintainers using
 Eva-CLI from source. V1.11.5-alpha is a source alpha checkpoint: the repository
@@ -15,8 +15,10 @@ execution limits, shadow-load health checks, generation route gating, drain
 evidence, rollback audit evidence, release evidence gates, and CLI command
 module split coverage, typed event emission, daemon control, daemon-backed Agent
 drain/reload mutation, daemon runtime release gate, Agent lifecycle evidence,
-and capability provider routing commands are in place, while risky paths remain
-diagnostic or plan-first.
+and capability provider routing commands are in place. V1.17.5 synchronizes
+the manuals, release notes, website cards, generated localized HTML, and i18n
+manifest with those runtime boundaries, while risky paths remain diagnostic or
+plan-first.
 
 ## Current Position
 
@@ -26,7 +28,7 @@ diagnostic or plan-first.
 | Runtime | `run --example basic` executes the V1.0 in-memory basic runtime loop through the restricted Lua VM, host binding, resource-limit, and hot-reload lifecycle boundary. |
 | External capabilities | Adapter, MCP, Skill, and Discovery commands expose controlled diagnostics, not real provider execution. |
 | Risky actions | Hardware binding, restore, upgrade, and lifecycle switching stay plan-first. |
-| Release checks | V1.17.4 adds public JSON contract diff readiness to `release check`; `release check/security/perf/migration` still cover Lua VM, daemon runtime readiness, release evidence, CLI split readiness, and runtime command completion evidence. |
+| Release checks | V1.17.4 adds public JSON contract diff readiness to `release check`; V1.17.5 syncs docs/i18n/release notes around that gate. `release check/security/perf/migration` still cover Lua VM, daemon runtime readiness, release evidence, CLI split readiness, and runtime command completion evidence. |
 
 ![Eva-CLI source workflow](../../assets/eva-cli-user-manual-flow.svg)
 
@@ -92,7 +94,9 @@ high-risk text output includes operator summaries with plan, target, final
 state, rollback path, and risk evidence. V1.17.4 adds
 `json_contract_diff_suite_v1.17.4`, `contracts/cli-json/*.json` fixtures, and
 `scripts/validate-cli-json-contracts.ps1` to block removed or renamed public
-JSON fields while allowing additive fields.
+JSON fields while allowing additive fields. V1.17.5 adds no runtime marker; it
+keeps the manual, release notes, website cards, and i18n manifest synchronized
+with the V1.12-V1.17 evidence line.
 
 Use text output for human inspection and `--output json` for scripts or CI.
 
