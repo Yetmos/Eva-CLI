@@ -3,10 +3,8 @@
 Date: 2026-07-06
 Scope: project release process, CI/DI gates, GitHub Packages, and Windows/macOS/Linux support
 
-This document defines the project-level release plan for Eva-CLI. It sits above
-version-specific notes such as the V1.5 GitHub Release Plan and describes the
-repeatable process for preparing, validating, publishing, and repairing a
-release.
+This document is the canonical project-level process for preparing, validating,
+publishing, and repairing an Eva-CLI release.
 
 In this document, CI/DI means:
 
@@ -27,19 +25,18 @@ The release process must provide:
   contain package support;
 - a repair path that avoids rewriting public history after a release is visible.
 
-The existing `v1.5.0` release remains a source release because the public tag
-predates the GHCR package channel and must not be moved. For later release tags
-that contain the release workflow and Dockerfile support, Eva-CLI publishes a
-GHCR container image through GitHub Packages. Packaged installers, signed binary
-artifacts, provenance bundles, and package-manager publishing remain future
-release scope.
+The existing `v1.5.0` release remains source-only because its public tag predates
+the current workflow and must not be moved. Supported later tags can publish a
+GHCR image, unsigned Windows/Linux/macOS CLI archives, install-smoke evidence,
+`SHA256SUMS`, and a provenance bundle. Signed installers, platform notarization,
+and Homebrew/Winget/Apt publication remain external release blockers.
 
 ## Release Channels
 
 | Channel | Owner | Trigger | Output |
 | --- | --- | --- | --- |
 | CI | `.github/workflows/ci.yml` | Pull request, push to `main`/`master`, manual dispatch | Rust, CLI smoke, website, and i18n validation logs |
-| GitHub Release DI | `.github/workflows/release.yml` | Push a tag that follows the version management plan, or manually dispatch against an existing tag | GitHub Release, source archives, `release-evidence-*` artifact |
+| GitHub Release DI | `.github/workflows/release.yml` | Push a tag that follows the version management plan, or manually dispatch against an existing tag | GitHub Release, source archives, unsigned native CLI archives, checksums, provenance bundle, `release-evidence-*` artifact |
 | GitHub Packages DI | `.github/workflows/release.yml` | After release tag verification, or manual dispatch against an existing tag that contains package support | `ghcr.io/yetmos/eva-cli`, package digest, package metadata, package evidence |
 | Website DI | `.github/workflows/pages.yml` | Push changes under website, docs, assets, scripts, or the pages workflow | GitHub Pages deployment |
 
@@ -129,7 +126,7 @@ signed or uploaded:
 
 ```json
 {
-  "status": "planned|published|skipped",
+  "status": "published",
   "version": "1.5.1",
   "source_tag": "v1.5.1",
   "source_sha": "<commit-sha>",
@@ -139,17 +136,20 @@ signed or uploaded:
       "archive": "eva-cli-1.5.1-x86_64-pc-windows-msvc.zip",
       "format": "zip",
       "binary": "eva.exe",
-      "checksum": null,
-      "signed": false
+      "checksum": "sha256:<digest>",
+      "signed": false,
+      "smoke_test": "passed"
     }
   ]
 }
 ```
 
-Until native archive jobs are implemented, the release workflow writes this
-schema with `status: "planned"` to `release-evidence/native-artifacts.json`.
-That keeps release evidence forward-compatible without claiming that signed or
-native artifacts are already published.
+The Windows, Linux, and macOS archive jobs build and smoke-test each binary,
+publish per-target evidence, and merge it into
+`release-evidence/native-artifacts.json`. The publish job verifies downloaded
+archive digests, generates `SHA256SUMS`, and writes
+`release-evidence/provenance-bundle.json`. Archives remain explicitly unsigned
+until production signing/notarization credentials and handling are configured.
 
 ## Documentation And Website Gate
 
@@ -177,19 +177,18 @@ source releases with documented command contracts. Before release publication:
 7. Verify that the GitHub Release body, source archives, package links, and
    documentation links match the release tag.
 
-## Binary Artifact Roadmap
+## Artifact Matrix
 
-Signed binary packaging is not part of the current V1.5 source release. GHCR
-container publication is the implemented GitHub Packages channel for release
-tags that contain package support, and future release automation should use
-this target map:
+Current automation publishes unsigned native CLI archives and GHCR packages for
+supported tags. The remaining platform work is signing, notarization, installers,
+and OS package repositories:
 
-| Platform | Initial target | Future output |
+| Platform | Target | Current and future output |
 | --- | --- | --- |
-| Windows | `x86_64-pc-windows-msvc` | GitHub Release `.zip`; installer after signing is available |
-| macOS Intel | `x86_64-apple-darwin` | GitHub Release `.tar.gz`; bundle after signing/notarization is available |
-| macOS Apple Silicon | `aarch64-apple-darwin` | GitHub Release `.tar.gz`; bundle after signing/notarization is available |
-| Linux | `x86_64-unknown-linux-gnu` | GitHub Release `.tar.gz`; Linux package-manager integration later |
+| Windows | `x86_64-pc-windows-msvc` | Unsigned GitHub Release `.zip` now; signed installer after credentials are available |
+| macOS Intel | `x86_64-apple-darwin` | Unsigned GitHub Release `.tar.gz` now; signed/notarized bundle later |
+| macOS Apple Silicon | `aarch64-apple-darwin` | Unsigned GitHub Release `.tar.gz` now; signed/notarized bundle later |
+| Linux | `x86_64-unknown-linux-gnu` | Unsigned GitHub Release `.tar.gz` and checksum evidence now; package-manager integration later |
 | Container | `linux/amd64`, `linux/arm64` | GitHub Packages Container Registry: `ghcr.io/yetmos/eva-cli:<version>` |
 | Ecosystem packages | npm, NuGet, Maven/Gradle, RubyGems, and other GitHub Packages supported registries | Enable only after package metadata, install validation, and compatibility policy are ready |
 
@@ -264,6 +263,8 @@ A release is complete only when all of the following evidence exists:
 - The release workflow is green for Windows, macOS, and Linux on the release tag.
 - The GitHub Release exists for the tag.
 - GitHub source archives are available.
+- Windows, Linux, and macOS native archives passed install smoke and are attached.
+- `SHA256SUMS`, `native-artifacts.json`, and `provenance-bundle.json` match the tag.
 - `release-evidence-${RELEASE_TAG}` is uploaded.
 - For tags with package support: the package registry page is reachable, the
   digest matches release evidence, and pull smoke tests pass.

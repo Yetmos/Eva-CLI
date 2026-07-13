@@ -2,32 +2,16 @@
 
 ## 中文
 
-每个 Agent 使用独立目录维护，至少包含 `agent.yaml` 和 `main.lua`。固定职责、禁止行为和输出约束写入同目录的 `constraints.md`，并由 `agent.yaml` 显式引用。
+每个 Agent 使用独立目录，目录名应与 Agent ID 一致，并至少包含 `agent.yaml` 和 `main.lua`。
 
-推荐目录名与 Agent ID 一致：
+`constraints.md` 是可选的稳定行为约束文档。需要使用时，必须通过 `agent.yaml` 中的 `constraints.file` 显式引用；未引用的同名文件不会自动生效。
 
-```text
-config/agents/
-  root-agent/
-  agent-a/
-  agent-a11/
-  agent-a12/
-```
-
-运行时父子关系、订阅关系、Topic 路由和权限关系以 `agent.yaml` 中的 `id`、`parent`、`children`、`subscriptions` 和 `permissions.emit` 为准，不依赖目录嵌套自动推断。`/sys/route-a/route-aa` 这类 Topic 只应出现在 Agent 配置或 `config/routes/topics.yaml` 中，不应作为 Agent 存放目录。
+父子关系、订阅、局部路由意图和发布权限以 manifest 中的 `id`、`parent`、`children`、`subscriptions`、`routes` 和 `permissions.emit` 为准，不根据目录嵌套推断。生产 Topic 投递以 `config/routes/topics.yaml` 为事实源。
 
 ## English
 
-Each Agent is maintained in its own directory with at least `agent.yaml` and `main.lua`. Stable responsibilities, forbidden behavior, and output constraints live in `constraints.md` and are referenced explicitly by `agent.yaml`.
+Each Agent has its own directory. The directory name should match the Agent ID and contain at least `agent.yaml` and `main.lua`.
 
-Prefer directory names that match Agent IDs:
+A `constraints.md` file is optional. When used, it must be referenced explicitly through `constraints.file` in `agent.yaml`; an unreferenced file is not loaded implicitly.
 
-```text
-config/agents/
-  root-agent/
-  agent-a/
-  agent-a11/
-  agent-a12/
-```
-
-Runtime parent-child relationships, subscriptions, Topic routes, and permissions are defined by `id`, `parent`, `children`, `subscriptions`, and `permissions.emit` in `agent.yaml`; they are not inferred from directory nesting alone. Topics such as `/sys/route-a/route-aa` should appear only in Agent config or `config/routes/topics.yaml`, not as Agent storage directories.
+Parent-child relationships, subscriptions, local routing intent, and emit permissions come from `id`, `parent`, `children`, `subscriptions`, `routes`, and `permissions.emit` in the manifest, not directory nesting. `config/routes/topics.yaml` remains the source of truth for production Topic delivery.

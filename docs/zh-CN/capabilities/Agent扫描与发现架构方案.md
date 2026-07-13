@@ -1,5 +1,5 @@
 > Language: 简体中文
-> English default entry: ../en/agent-discovery.md
+> English default entry: [English](../../en/capabilities/agent-discovery.md)
 > Translation status: current
 
 # Agent 扫描与发现架构方案

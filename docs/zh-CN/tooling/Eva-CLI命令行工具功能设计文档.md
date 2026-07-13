@@ -1,5 +1,5 @@
 > Language: 简体中文
-> English default entry: ../en/command-line-tool-feature-design.md
+> English default entry: [English](../../en/tooling/command-line-tool-feature-design.md)
 > Translation status: current
 
 # Eva-CLI 命令行工具功能设计文档

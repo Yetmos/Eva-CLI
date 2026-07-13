@@ -17,17 +17,18 @@ module split coverage, typed event emission, daemon control, daemon-backed Agent
 drain/reload mutation, daemon runtime release gate, Agent lifecycle evidence,
 and capability provider routing commands are in place. V1.17.6 adds the V1.x
 closure release gate/report on top of the synchronized manuals, release notes,
-website cards, generated localized HTML, and i18n manifest, while risky paths
-remain diagnostic or plan-first.
+website cards, generated localized HTML, and i18n manifest. High-risk mutation
+paths remain plan-first and require explicit confirmation, policy, evidence,
+lock, and health gates.
 
 ## Current Position
 
 | Area | Current status |
 | --- | --- |
-| Release shape | Source release from the Git repository and Rust toolchain. |
+| Release shape | Source-oriented alpha with Git tags/Releases, unsigned native CLI archives, GHCR packages for supported tags, checksums, and release evidence. Signed installers and OS package repositories are not available. |
 | Runtime | `run --example basic` executes the V1.0 in-memory basic runtime loop through the restricted Lua VM, host binding, resource-limit, and hot-reload lifecycle boundary. |
-| External capabilities | Adapter, MCP, Skill, and Discovery commands expose controlled diagnostics, not real provider execution. |
-| Risky actions | Hardware binding, restore, upgrade, and lifecycle switching stay plan-first. |
+| External capabilities | Declared stdio/http providers, MCP JSON-RPC tools, and Skill workflows can execute through controlled runners; Discovery remains candidate-only. Production OS process supervision is not available. |
+| Risky actions | Hardware raw I/O remains blocked. Snapshot promotion, staged restore apply/rollback, and local release-pointer upgrade apply are implemented behind plan, confirmation, policy, evidence, lock, and health gates. |
 | Release checks | V1.17.6 adds `REL-OBSERVABILITY-POLICY-001`, `REL-V1X-CLOSURE-001`, and additive `closure` JSON to `release check`. `release check/security/perf/migration` still cover Lua VM, daemon runtime readiness, release evidence, CLI split readiness, public JSON contract readiness, and runtime command completion evidence. |
 
 ![Eva-CLI source workflow](../../assets/eva-cli-user-manual-flow.svg)
@@ -123,10 +124,10 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Discovery | `discovery scan` | Scan trusted config sources for candidates. | No |
 | Memory | `memory context` | Build request-scoped memory and knowledge context and write memory audit/metrics JSONL evidence. | No |
 | Hardware | `hardware list/probe/bind` | Discover hardware manifests and produce binding plans. | No |
-| Backup | `backup create` | Create and verify an in-memory backup artifact. | No |
-| Snapshot | `snapshot create` | Create a release snapshot linked to a backup manifest. | No |
-| Restore | `restore plan` | Produce a restore plan with `apply_allowed:false`. | No |
-| Upgrade | `upgrade check` | Check generation, migration, drain, and rollback readiness. | No |
+| Backup | `backup create` | Create and verify a backup artifact in memory or a filesystem artifact store. | Writes the selected artifact store when `--artifact-store` is set |
+| Snapshot | `snapshot create/promote` | Create a release snapshot or confirm its release-pointer promotion plan. | Promotion is gated by the snapshot id and artifact evidence |
+| Restore | `restore plan/apply/rollback` | Plan restore, apply staged file mutations, or reverse a rollback-required transaction. | Apply/rollback can mutate the target filesystem after all gates pass |
+| Upgrade | `upgrade check/apply` | Check readiness or commit a local state-store handoff and release-pointer mutation. | `apply --state-store` writes local supervisor state after policy and health gates |
 | Release | `release check/security/perf/migration` | Run release readiness, security, performance, and migration gates; `release check` includes daemon runtime, observability policy, public JSON contract, and V1.x closure readiness. | No |
 
 ## Emit Typed Events
@@ -225,7 +226,7 @@ cargo run -- task status --task req-durable-1 --durable-backend .eva/durable --o
 | `--cancel` | Off | Simulates cancellation before handler execution. |
 | `--replay-dead-letters` | Off | Produces replay receipts for dead-letter events. |
 
-## External Capability Diagnostics
+## Controlled External Capability Execution
 
 V1.8 and later commands expose adapter, MCP, skill, and discovery diagnostics
 and allow manifest-gated stdio/http, MCP JSON-RPC, and Skill workflow runners
@@ -256,6 +257,15 @@ servers, provider CLIs, or workflow runners.
 | Release snapshot | `cargo run -- snapshot create --output json` | Links to a verified backup manifest. |
 | Restore plan | `cargo run -- restore plan --output json` | Returns `apply_allowed:false` and `mutation_executed:false`. |
 | Upgrade readiness | `cargo run -- upgrade check --output json` | Reports migration, drain, rollback readiness, and `mutation_executed:false`. |
+
+Confirmed mutation commands are available for prepared plans:
+
+| Scenario | Command shape | Current boundary |
+| --- | --- | --- |
+| Snapshot promotion | `snapshot promote --snapshot-id <id> --confirm <id> --artifact-store <path>` | Confirms the snapshot promotion plan; does not perform production service-manager handoff. |
+| Restore apply | `restore apply --plan <path> --confirm <plan-id> --artifact-store <path> --lock-store <path>` | Executes staged copy/delete/replace steps only after artifact, policy, lock, health, and confirmation gates; writes a transaction log and can report `rollback_required`. |
+| Restore rollback | `restore rollback --plan <path> --confirm <plan-id> --artifact-store <path> --lock-store <path>` | Reverses committed staged steps from signed pre-restore evidence after drift and transaction-log checks. |
+| Upgrade apply | `upgrade apply --plan <path> --confirm <plan-id> --lock-store <path> --state-store <path>` | Can commit local handoff state and release-pointer mutation; platform service-manager activation remains external work. |
 
 ## Release Gates
 
@@ -302,21 +312,17 @@ Error JSON output uses `ok`, `command`, `exit_code`, `error`, and `trace`.
 | `2` | Configuration, path, manifest, route, schema, or task state issue. |
 | `3` | Policy denied. |
 | `4` | Runtime unavailable or capability not implemented in this release. |
-| `5` | Reserved for external capability unavailable. |
+| `5` | External capability unavailable. |
 | `64` | Command usage error. |
 
 ## Non-Goals in V1.11.5 Alpha
 
-V1.11.5-alpha does not provide packaged installers, production signing
-credentials, full provider supervision, raw hardware I/O,
-production service-manager/daemon handoff, full durable task query/recovery indexes,
-real observability database sink, production retention scheduling, durable
-memory/backup databases, or daemon-driven hot-reload orchestration beyond the
-  current JSONL audit wiring, tracing bridge, explicit OTel SDK exporter smoke,
-  V1.16.4 JSONL/durable-audit retention policy, V1.17.1 run command module
-  split boundary, V1.17.2 operator execution-field boundary, V1.17.3
-  text-only operator apply summary boundary, V1.17.4 JSON contract diff
-  boundary, and V1.17.6 V1.x closure gate/report boundary.
+V1.11.5-alpha does not provide signed installers, production signing or
+attestation credentials, Homebrew/Winget/Apt publication, production background
+daemon/service-manager handoff, OS provider process supervision or credential
+vault isolation, production MCP streaming/TLS certification, raw hardware I/O,
+real hardware fixtures, a production observability database sink/retention
+scheduler, or long-lived production memory/retrieval scheduling.
 
 ## Recommended Verification
 

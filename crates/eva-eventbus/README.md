@@ -22,12 +22,12 @@
 
 - replay 不覆盖原始 event id；会生成 `原始ID:replay-N` 子事件，避免 EventLog 冲突。
 - replay 会增加 `DeadLetterRecord.replay_count`，供 runtime task report 输出。
-- `DeadLetterRecord.redrive` 包含 `retry_delay_ms` 与 `next_attempt_after_ms`，当前默认策略仍是立即 redrive，字段已进入 durable 序列化以便后续接入 backoff policy。
+- `DeadLetterRecord.redrive` 包含 `retry_delay_ms` 与 `next_attempt_after_ms`。EventBus 保存这些调度证据；V1.12.4 runtime scheduler retry tick 只在记录到期后执行 redrive。
 - durable redrive 只负责保存和重新发布事件，不决定 scheduler 路由、consumer 选择或任务恢复状态；V1.6.4 runtime recovery 使用单事件 redrive 入口按 task/event 证据筛选候选。
 
 ## 模块边界
 
-`eva-eventbus` 不做 Topic 匹配，不维护 Agent 订阅表，不执行 Lua，不调用 capability。Topic 到 Agent 的投递由 `eva-scheduler` 完成。V1.6.2 的 durable redrive 只提供事件生命周期证据和持久化死信队列；crash recovery coordinator、任务状态恢复和 backoff 调度属于后续 runtime 切片。
+`eva-eventbus` 不做 Topic 匹配，不维护 Agent 订阅表，不执行 Lua，不调用 capability。Topic 到 Agent 的投递由 `eva-scheduler` 完成。Durable redrive 只提供事件生命周期证据和持久化死信队列；crash recovery、任务状态恢复和到期 retry dispatch 已在 `eva-runtime` / `eva-scheduler` 中组合，不属于 EventBus 的职责。
 
 ## 公开入口
 
@@ -49,4 +49,5 @@ cargo test -p eva-eventbus
 | --- | --- |
 | V1.0 | 已将 dead-letter replay 报告纳入 quickstart 故障诊断和 release notes。 |
 | V1.6.2 | 已接入 durable EventBus、可查询 dead-letter store 和默认 redrive 字段。 |
-| V1.x | 接入 observability metrics、真实 backoff 调度和 runtime crash recovery。 |
+| V1.12.4 | 已由 runtime scheduler retry tick 消费到期 backoff 记录，并更新 durable ack/fail evidence。 |
+| 后续 | 增加 EventBus 自身的细粒度 observability metrics；恢复与调度继续由 runtime/scheduler 拥有。 |

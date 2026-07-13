@@ -901,7 +901,7 @@ foreach ($locale in $locales) {
 
   $readmePath = Get-DocumentPath -Manifest $manifest -DocumentId "readme" -LocaleCode $localeCode
   $architecturePath = Get-DocumentPath -Manifest $manifest -DocumentId "architecture-overview" -LocaleCode $localeCode
-  $progressRoadmapPath = Get-DocumentPath -Manifest $manifest -DocumentId "zero-to-one-roadmap" -LocaleCode $localeCode
+  $progressRoadmapPath = Get-DocumentPath -Manifest $manifest -DocumentId "v1.x-incomplete-feature-inventory" -LocaleCode $localeCode
   $architectureImagePath = Get-AssetPath -Manifest $manifest -AssetId "architecture-diagram" -LocaleCode $localeCode
   $architectureImageHref = Convert-SitePathToRelativeHref -Path $architectureImagePath -Context $context
   $docsHref = if ($localeCode -eq $manifest.defaultLocale) {

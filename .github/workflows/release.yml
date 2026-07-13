@@ -371,7 +371,7 @@ jobs:
           - eva.exe --version
 
           Signing:
-          - This archive is not signed yet. Signed installers are tracked by the signed-provenance-apply roadmap.
+          - This archive is not signed yet. Production signing remains an external blocker reported by eva release check.
           "@
           $readme | Set-Content -LiteralPath dist\windows\README.txt -Encoding utf8
           Compress-Archive -LiteralPath dist\windows\eva.exe, dist\windows\README.txt -DestinationPath "dist\${{ steps.native_vars.outputs.archive }}" -Force
@@ -474,7 +474,7 @@ jobs:
           - ./eva --version
 
           Signing:
-          - This archive is not signed yet. Signed installers are tracked by the signed-provenance-apply roadmap.
+          - This archive is not signed yet. Production signing remains an external blocker reported by eva release check.
           EOF
           tar -C dist/linux -czf "dist/${{ steps.native_vars.outputs.archive }}" eva README.txt
 
@@ -590,7 +590,7 @@ jobs:
           - ./eva --version
 
           Signing:
-          - This archive is not signed or notarized yet. Signed installers are tracked by the signed-provenance-apply roadmap.
+          - This archive is not signed or notarized yet. Production signing and notarization remain external blockers reported by eva release check.
           EOF
           tar -C "dist/${{ matrix.target }}" -czf "dist/${{ steps.native_vars.outputs.archive }}" eva README.txt
 

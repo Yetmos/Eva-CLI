@@ -1,7 +1,7 @@
 # Topic 路由混合同步方案
 
 > Language: 简体中文
-> English default entry: [../en/topic-routing-hybrid-sync.md](../../en/architecture/topic-routing-hybrid-sync.md)
+> English default entry: [English](../../en/architecture/topic-routing-hybrid-sync.md)
 > Translation status: current
 
 更新日期：2026-07-01

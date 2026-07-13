@@ -178,7 +178,6 @@ project root
 | `src/policy.rs` | policy YAML document 加载 | 已完成 | 与 `eva-policy` 协作解释 policy domain。 |
 | `src/routes.rs` | routes YAML 加载和 delivery 校验 | 已完成 | 接 `eva-scheduler` route registry。 |
 | `src/schema.rs` | schema 路径、枚举辅助和 JSON Schema 子集校验 | 已完成 V1.9.1 | 后续按新 schema 关键字扩展 validator。 |
-| `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和后续阶段。 |
 
 ### 下一步开发计划
 

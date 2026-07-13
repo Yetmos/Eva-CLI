@@ -1,5 +1,5 @@
 > Language: 简体中文
-> English default entry: ../en/eva-core-module.md
+> English default entry: [English](../../en/architecture/eva-core-module.md)
 > Translation status: current
 
 # eva-core 模块设计
@@ -104,4 +104,3 @@ eva-core
 ## 8. 总结
 
 `eva-core` 应该优先实现 Topic、ID、Event、Invoke 和 Error 五类基础契约。它越稳定，后续 `eva-config`、`eva-eventbus`、`eva-scheduler`、`eva-agent` 和 `eva-adapter` 的实现越少返工。
-

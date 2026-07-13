@@ -24,7 +24,7 @@ Eva-CLI 已经完成 V0.1 到 V1.17.6 可执行/可验证能力与 release closu
 3. `eva-runtime` 已实现 V1.0 `in_memory_v1.0` basic runtime 和本地 task 诊断；
 4. `eva-cli` 已实现 `version`、`doctor`、`config validate`、`inspect`、`inspect durable`、`run --example basic`、`emit`、`daemon start/status/stop/shutdown/submit/cancel/drain/reload`、`agent status/drain/reload`、`capability list/probe/call`、`task status/logs/cancel`、`adapter`、`mcp`、`skill`、`discovery`、`memory context`、`hardware list/probe/bind`、`backup/snapshot/restore/upgrade` 和 `release check/security/perf/migration`；
 5. `eva-hardware` 已实现 V1.3 discovery candidate、DeviceRegistry lease、simulated driver binding 和 hotplug state machine；
-6. `eva-backup` 和 `eva-lifecycle` 已实现 V1.4 backup artifact verification、migration preflight、release snapshot、restore plan、generation handoff、drain 和 rollback plan；
+6. `eva-backup` 和 `eva-lifecycle` 已实现 filesystem artifact store、release snapshot create/promote、restore plan/apply/rollback、local release pointer upgrade apply、generation handoff、drain 和 rollback evidence；
 7. `eva-release` 已实现 V1.17.6 release readiness、security review、performance baseline、migration guide、compatibility policy、durable recovery smoke gate、durable diagnostics smoke gate、Lua VM execution gate、Lua host bindings gate、Lua resource limits gate、Lua hot reload lifecycle gate、artifact/distribution/scanner/benchmark evidence gate、daemon/provider/hardware/observability readiness gate、public JSON contract diff gate 和 V1.x closure report；
 8. `eva-storage`、`eva-eventbus` 与 `eva-runtime` 已实现 V1.6 durable backend manifest、migration lock、filesystem EventLog、DurableEventBus、queryable dead-letter store、redrive 基线、durable task snapshot adapter、durable audit sink、runtime recovery scanner、runtime recovered audit evidence、durable backend diagnostics report 和 artifact metadata hardening；
 9. `eva-lua-host` 已实现 V1.7.1 `mlua` VM adapter、受限标准库、真实 `on_event` 执行、稳定错误映射、旧静态 parser compatibility fallback、V1.7.2 只读 request/trace/memory、host observability 和 `ctx.tools.call` capability binding、V1.7.3 wall-clock timeout、instruction budget、cancellation token 和 memory budget，以及 V1.7.4 shadow load health gate；
@@ -32,15 +32,13 @@ Eva-CLI 已经完成 V0.1 到 V1.17.6 可执行/可验证能力与 release closu
 11. `eva-observability` 已实现 V1.16.1 runtime/provider/task/restore JSONL best-effort audit sink wiring、V1.16.2 tracing subscriber bridge、V1.16.3 OpenTelemetry SDK exporter smoke 和 V1.16.4 retention/rotation/corrupt-record policy。
 12. V1.17 已完成 `run --example basic` 拆分、operator execution-state 字段、高风险 text summary、public JSON contract diff suite、V1.17.5 文档/i18n/release notes/网站同步闭环，以及 V1.17.6 V1.x closure release gate/report。
 
-完整阶段划分见 [从零到 1.0 版本路线图](docs/zh-CN/planning/从零到1.0版本路线图.md)。
-V1.5.0 的 GitHub 托管发版流程见 [V1.5 GitHub 发版计划](docs/zh-CN/release/V1.5-GitHub发版计划.md)。
-版本命名、递增、tag、GitHub Release 和 package 规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。V1.11.5-alpha 及 V1.12-V1.17 同步后的发版内容见 [V1.11.5 Alpha 发布说明](docs/zh-CN/release/V1.11.5-alpha发布说明.md)，历史 V1.11.4-alpha 内容见 [V1.11.4 Alpha 发布说明](docs/zh-CN/release/V1.11.4-alpha发布说明.md)。
+当前使用方式见 [Eva-CLI 使用手册](docs/zh-CN/guide/Eva-CLI使用手册.md)，未完整实现边界见 [V1.x 未完整实现功能清单](docs/zh-CN/planning/V1.x未完整实现功能清单.md)。项目级发布流程见 [项目发布方案](docs/zh-CN/release/项目发布方案.md)，版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)，当前发版内容见 [V1.11.5 Alpha 发布说明](docs/zh-CN/release/V1.11.5-alpha发布说明.md)。
 
-## eva-core 模块要实现的功能
+## eva-core 模块边界
 
-`eva-core` 是 Eva-CLI Rust workspace 的基础契约层。它不负责启动 runtime、执行 Lua、访问网络或落盘数据，而是先把下游 crate 会共同依赖的稳定数据模型定义清楚。当前源码已经有 `event`、`topic`、`ids`、`capability`、`invoke` 和 `error` 模块占位，第一阶段要把这些占位落成可测试、可序列化、无副作用的契约类型。
+`eva-core` 是 Eva-CLI Rust workspace 的基础契约层。它不负责启动 runtime、执行 Lua、访问网络或落盘数据，而是提供下游 crate 共同依赖、可测试且无副作用的稳定数据模型。
 
-`eva-core` 的具体实现范围：
+`eva-core` 已实现的范围：
 
 - Topic 契约：实现 `Topic` 和 `TopicPattern` 的解析、格式校验和通配匹配，支持 exact、`*`、`**`，并拒绝空段、非法前缀以及位置不合法的 `**`。
 - ID 契约：实现 `AgentId`、`AdapterId`、`CapabilityName`、`RequestId`、`EventId` 等 newtype，提供解析、显示和序列化能力，避免把不同 ID 当普通字符串混用。
@@ -95,9 +93,7 @@ Eva-CLI/
 9. [Project Configuration](docs/en/operations/project-configuration.md)：理解 YAML 配置、schema、policy、manifest 和热加载边界。
 10. [Process-Level Upgrade](docs/en/operations/process-level-upgrade.md)：理解 Supervisor、Runtime generation、blue-green、draining、恢复和回滚。
 11. [Backup, Migration Package, and Release Snapshot](docs/en/operations/backup-migration-release-snapshot.md)：理解为什么备份、迁移包、release snapshot、restore 和 rollback 的可信执行应归 Runtime，Agent 只负责请求与解释。
-12. [Design Risk Review](docs/en/planning/design-risk-review.md)：集中查看当前方案的纯设计风险、语义缺口和需要补强的设计面。
-13. [Zero to 1.0 Roadmap](docs/en/planning/zero-to-one-roadmap.md)：了解从架构文档到模块划分、契约定义、最小运行闭环和 1.0 发布准备的阶段路径。
-14. [Command-Line Tool Feature Design](docs/en/tooling/command-line-tool-feature-design.md)：把 Runtime 架构收束为 `eva` 命令表面，包括命令组、输出契约、安全闸口和发布优先级。
+12. [Command-Line Tool Feature Design](docs/en/tooling/command-line-tool-feature-design.md)：把 Runtime 架构收束为 `eva` 命令表面，包括命令组、输出契约、安全闸口和发布优先级。
 
 ## 文档职责
 
@@ -114,8 +110,6 @@ Eva-CLI/
 | [Project Configuration](docs/en/operations/project-configuration.md) | 定义 `config/` 目录、`eva.yaml`、Agent/Adapter/Capability manifest、policy、schema 和热加载策略。 |
 | [Process-Level Upgrade](docs/en/operations/process-level-upgrade.md) | 定义 OS service manager、Supervisor、Runtime、Ingress Gate、Durable Event Log、State Store 和双活切流。 |
 | [Backup, Migration Package, and Release Snapshot](docs/en/operations/backup-migration-release-snapshot.md) | 定义备份、迁移包、release snapshot、restore、rollback、manifest 校验和 artifact audit 为什么应由 Runtime service 承担。 |
-| [Design Risk Review](docs/en/planning/design-risk-review.md) | 评审当前方案在 Bot 行为、事件一致性、状态归属、权限闭包、capability 语义和错误恢复上的设计风险。 |
-| [Zero to 1.0 Roadmap](docs/en/planning/zero-to-one-roadmap.md) | 定义从架构文档到模块划分、契约定义、最小可运行骨架、最小 Runtime 闭环、模块实现和 1.0 发布准备的阶段路径。 |
 | [Command-Line Tool Feature Design](docs/en/tooling/command-line-tool-feature-design.md) | 定义目标 `eva` 命令组、全局参数、安全闸口、输出契约、exit code 和阶段化 CLI 实现优先级。 |
 
 ## 当前方案定位
@@ -134,13 +128,12 @@ Eva-CLI/
 
 ## V1.x 剩余缺口
 
-V1.11.5-alpha 是源码 alpha 与 CLI runtime 命令补齐检查点，已在 V1.11.4 模块拆分基础上补入 `emit`、`agent` 和 `capability` 命令 evidence。后续包含 package 支持的 release tag 会发布 GHCR 容器镜像 `ghcr.io/yetmos/eva-cli`、native archive metadata，以及 install-smoke/package dry-run evidence；旧 tag 不追溯重新发布。后续工作已经从“是否能落地”收窄为更具体的执行边界：
+受控 provider runner、capability invoke、staged restore apply/rollback、snapshot promote、本地 release pointer upgrade apply、native release archive、checksum 和 provenance bundle 已经实现。当前剩余生产边界为：
 
-- stdio/http/MCP 等真实 provider 进程执行，包括认证、会话隔离、超时和限流。
-- Durable Scheduler、runtime audit wiring、artifact metadata、memory 和 backup store，衔接当前 durable EventBus/task snapshot/audit sink 基线与本地诊断表面。
-- 超出当前 shadow load、route gate、drain evidence 和 rollback audit 边界的常驻 daemon 热更新编排。
-- `restore apply`、release pointer mutation、Supervisor 激活、blue-green Runtime 进程切换等破坏性 apply 路径。
-- 生产签名凭据、Homebrew/Winget/Apt 仓库发布、外部 scanner 接入和更强 artifact provenance。
-- 当高风险 apply 路径从 plan-only 诊断进入真实执行时，需要更深的机器可校验 schema 与 policy 检查。
+- 生产后台 daemon 与 OS 进程监督，包括平台 service-manager handoff 和 blue-green rollback；
+- OS credential vault/用户隔离，以及 MCP 生产 streaming、TLS 和真实外部 server 兼容认证；
+- 真实硬件 driver、OS hotplug watcher 和真实/虚拟 release fixture；
+- 生产 database observability sink、retention scheduler 和长驻 memory/retrieval 调度；
+- 生产 signing/attestation credential，以及 Homebrew/Winget/Apt 仓库凭据和发布。
 
-当前文档已经区分“已实现诊断面”和“目标 apply 路径”。原始架构风险清单见 [方案设计风险评审](docs/zh-CN/planning/方案设计风险评审.md)，V1.5 源码发布保持稳定的契约见 [V1.5 兼容性策略](docs/zh-CN/release/V1.5兼容性策略.md)。
+维护中的缺口清单见 [V1.x 未完整实现功能清单](docs/zh-CN/planning/V1.x未完整实现功能清单.md)，发布制品与 external blockers 见 [项目发布方案](docs/zh-CN/release/项目发布方案.md)。

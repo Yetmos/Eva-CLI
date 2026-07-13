@@ -64,8 +64,6 @@
 | `src/sources/omx.rs` | OMX workflow 来源 | 已实现 | 后续接更细 workflow trust metadata。 |
 | `src/sources/codex.rs` | Codex 能力来源 | 已实现 | 后续接 Codex source auth 和版本 metadata。 |
 | `src/sources/registry.rs` | 外部 registry 来源 | 已实现边界 | 后续接真实 registry 协议、认证和缓存。 |
-| `src/README.md` | 源码目录说明 | 已更新 | 随 V1.9.x 继续维护。 |
-| `src/sources/README.md` | source 目录说明 | 简略 | 补充各来源信任边界。 |
 
 ## 验证计划
 

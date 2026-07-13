@@ -8,7 +8,7 @@ memory/knowledge context assembly, hardware binding plans, backup/lifecycle
 checks, and source-release operations.
 
 The repository is on the V1.11.5-alpha development line with a V1.17.6
-V1.x closure release gate checkpoint. It now has a compileable Rust
+V1.x closure release gate checkpoint. It now has a compilable Rust
 workspace, executable CLI surfaces, the V1.0 in-memory runtime loop, durable
 EventBus/task/audit/artifact evidence, Lua execution and hot-reload lifecycle
 boundaries, controlled Adapter/MCP/Skill execution, policy/discovery/memory/
@@ -45,13 +45,13 @@ maintained in [docs/](docs/), and Rust source code lives in [src/](src/) and
 
 ## Current Project Progress
 
-Updated: 2026-07-10
+Updated: 2026-07-13
 
 Eva-CLI has moved past a design-only repository and now has a V1.11.5-alpha
 CLI runtime command surface with V1.17.6 V1.x closure release gate status. It
-includes a compileable Rust workspace, configuration examples and
+includes a compilable Rust workspace, configuration examples and
 schemas, implemented foundation contracts, project configuration loading, a
-V1.0 CLI quickstart, the `in_memory_v1.0` basic runtime composition root, local
+source quick start, the `in_memory_v1.0` basic runtime composition root, local
 `.eva/tasks` diagnostics, Adapter/MCP/Skill/Discovery diagnostics,
 MemoryService/KnowledgeService/ContextBuilder, controlled hardware discovery
 and binding plans, backup artifact verification, release snapshot restore
@@ -75,49 +75,23 @@ release gates.
 
 | Area | Status | Evidence | Remaining Work |
 | --- | --- | --- | --- |
-| Architecture and docs | V1.17.6 synchronized | English and Simplified Chinese docs, diagrams, website pages, roadmap, risk review, user manual, release notes, V1.x progress tables, and V1.x closure report status | Keep docs synchronized with implementation; turn remaining design assumptions into executable contracts |
+| Architecture and docs | V1.17.6 synchronized | English and Simplified Chinese docs, diagrams, website pages, user manual, release notes, V1.x gap inventory, and V1.x closure report status | Keep docs synchronized with implementation |
 | Website and docs publishing | V1.17.6 synchronized | Static website source, localized content, generated HTML, i18n manifest, validation/build scripts | Continue content maintenance and CI verification as product behavior changes |
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 20 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V1.17.6 controlled runtime closure surface | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `emit`, `daemon start/status/stop/shutdown/submit/cancel/drain/reload`, `agent status/drain/reload`, `capability list/probe/call`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `observability smoke`, `hardware list/probe/bind`, `backup create`, `snapshot create/promote`, `restore plan/apply/rollback`, `upgrade check/apply`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task/event store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, daemon/provider/hardware/memory maintenance, retrieval, redaction/audit markers evidence, V1.16.1 runtime audit sink marker, V1.16.2 tracing subscriber bridge marker, V1.16.3 OpenTelemetry SDK exporter marker, V1.16.4 observability retention policy marker, V1.17.1 run command module split marker, V1.17.2 operator execution fields marker, V1.17.3 operator apply text marker, V1.17.4 JSON contract diff marker and `REL-JSON-CONTRACT-001`, synchronized V1.17.5 docs/i18n/release notes, V1.17.6 `v1x_closure_gate_v1.17.6` marker, `REL-OBSERVABILITY-POLICY-001`, `REL-V1X-CLOSURE-001`, additive `release check` `closure` JSON, command module split coverage, and exit-code mapping | Keep command contracts stable as future apply paths are added |
+| `eva-cli` | V1.17.6 controlled runtime closure surface | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `emit`, `daemon start/status/stop/shutdown/submit/cancel/drain/reload`, `agent status/drain/reload`, `capability list/probe/call`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `observability smoke`, `hardware list/probe/bind`, `backup create`, `snapshot create/promote`, `restore plan/apply/rollback`, `upgrade check/apply`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task/event store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, daemon/provider/hardware/memory maintenance, retrieval, redaction/audit markers evidence, V1.16.1 runtime audit sink marker, V1.16.2 tracing subscriber bridge marker, V1.16.3 OpenTelemetry SDK exporter marker, V1.16.4 observability retention policy marker, V1.17.1 run command module split marker, V1.17.2 operator execution fields marker, V1.17.3 operator apply text marker, V1.17.4 JSON contract diff marker and `REL-JSON-CONTRACT-001`, synchronized V1.17.5 docs/i18n/release notes, V1.17.6 `v1x_closure_gate_v1.17.6` marker, `REL-OBSERVABILITY-POLICY-001`, `REL-V1X-CLOSURE-001`, additive `release check` `closure` JSON, command module split coverage, and exit-code mapping | Keep public command contracts stable while adding production integrations |
 | Runtime composition | V1.16.1 daemon smoke baseline | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, idempotent shutdown, foreground daemon control mailbox, task/provider recovery, scheduler retry tick, hotplug subscriber smoke, memory/knowledge maintenance smoke, and best-effort JSONL observability for daemon control/task lifecycle/scheduler retry | Production background service manager and long-running execution remain later scope |
-| EventBus and Scheduler | V1.6.4 durable recovery baseline implemented | EventBus publish/ack/fail/dead-letter/replay diagnostics; durable EventLog records; queryable dead-letter store; redrive replay attempts; ack-safe recovery redrive checkpoint; Scheduler topic routing and mailbox delivery | Scheduler-driven delayed backoff and broader crash recovery remain later scope |
-| Agent and Lua host | V1.11.4 hot-reload lifecycle implemented | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, restricted `mlua` VM adapter, real `on_event` execution, read-only request/trace/memory tables, `ctx.host.log/audit`, `ctx.tools.call`, Lua wall-clock timeout, instruction budget, cancellation token, memory budget, static parser fallback, generation marker, shadow-load health checks, generation route gating, drain evidence, and rollback audit evidence | Daemon-driven hot-reload orchestration and real provider paths remain later scope |
-| Capability and Adapter layers | V1.1 controlled envelopes implemented | `eva-capability` has V0.4 builtins; `eva-adapter` now builds authorized handles, routes capabilities to providers, probes adapters, and invokes MCP/Skill controlled envelopes | Real stdio/http process execution and richer policy evaluation remain later scope |
+| EventBus and Scheduler | V1.6.4 durable recovery baseline implemented | EventBus publish/ack/fail/dead-letter/replay diagnostics; durable EventLog records; queryable dead-letter store; redrive replay attempts; ack-safe recovery redrive checkpoint; Scheduler topic routing, mailbox delivery, and daemon retry tick | Broader crash recovery and production long-running scheduling remain later scope |
+| Agent and Lua host | V1.11.4 hot-reload lifecycle implemented | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, restricted `mlua` VM adapter, real `on_event` execution, read-only request/trace/memory tables, `ctx.host.log/audit`, `ctx.tools.call`, Lua wall-clock timeout, instruction budget, cancellation token, memory budget, static parser fallback, generation marker, shadow-load health checks, generation route gating, drain evidence, and rollback audit evidence | Daemon-driven hot-reload orchestration and OS-supervised provider restart remain later scope |
+| Capability and Adapter layers | Controlled execution implemented | `eva-capability` provides the registry/router; `eva-adapter` executes manifest-gated stdio/http providers, MCP JSON-RPC, and Skill workflows with allowlists, policy, timeout, output limits, credential scoping, and audit evidence | OS process supervision, OS credential vault/user isolation, and production MCP streaming/TLS/external-server certification remain later scope |
 | Policy, observability, storage | Mixed with V1.16.4 retention baseline | `eva-policy` and `eva-observability` have V0.2 contracts plus V1.15.8 `memory_policy.redaction` and memory write/read/search/context actions; `eva-storage` has in-memory stores/logs plus schema-versioned durable backend layout, migration lock, filesystem EventLog, durable task snapshot adapter, durable audit sink, runtime recovered audit records, artifact metadata hardening, read-only verification, diagnostics-friendly read-only event/dead-letter access, V1.16.1 best-effort daemon/provider/task/restore JSONL audit/metric/span wiring, V1.16.2 tracing subscriber span/event bridge with JSONL/dev-console redaction, V1.16.3 SDK-based OTLP HTTP/protobuf trace/metrics exporter smoke, and V1.16.4 JSONL/durable-audit retention, rotation, max-size, and corrupt-record policy | Task query indexes, richer audit sinks, real database sink, and production retention scheduling remain later scope |
 | Discovery, MCP, memory, hardware, backup, lifecycle, release | Mixed | Discovery and MCP have controlled candidates/probes plus MCP compatibility gates; memory has private/global records, knowledge search, ContextBuilder, Lua context snapshots, durable files, index locks, TTL GC, rebuild checkpoints, supervised provider retrieval with schema/redaction/source audit, and policy-driven memory redaction/audit metrics; hardware has discovery candidates, registry leases, simulated driver binding, OS permission evidence, hotplug subscriber smoke, and safety gates; backup/lifecycle have signed archives, staged restore mutation/rollback, generation handoff, and service-manager abstraction; release has readiness/security/performance/migration gates plus durable, Lua, provider, hardware, artifact/distribution/scanner/benchmark evidence | Real hardware drivers, production service-manager handoff, production signing credentials, and OS package repository publication remain later scope |
-| Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, V1.0 quickstart smoke commands, V1.1 external capability smoke commands, V1.2 memory context smoke, V1.3 hardware smoke, V1.4 backup/lifecycle smoke, V1.5 release hardening smoke, V1.6 durable backend/EventBus smoke, public JSON contract validation, website generation, and i18n validation | Add gates as future runtime behavior expands |
+| Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, CLI/runtime/provider/memory/hardware/backup/lifecycle/release smoke, public JSON contract validation, website generation, and i18n validation | Add gates as behavior expands |
 
-## Implementation Plan
+## Quick Start
 
-The implementation should continue in small, testable stages. Each stage should
-leave behind compileable artifacts, focused tests, and updated documentation.
-
-| Phase | Goal | Main Deliverables | Exit Criteria |
-| --- | --- | --- | --- |
-| 0. Documentation and architecture baseline | Keep the design intent clear before adding behavior | Architecture docs, roadmap, module partitioning, risk review, website/docs structure | Docs explain ownership, non-goals, and release path |
-| 1. Workspace and module scaffolding | Make crate boundaries and dependency direction concrete | Root binary shim, workspace crates, module files, README files | `cargo check --workspace` passes with all crates present |
-| 2. Foundation contracts | Stabilize shared types before runtime behavior | `eva-core` Topic, IDs, Capability, Event, Invoke, Error contracts | `cargo test -p eva-core` covers parsing, validation, matching, construction, and status semantics |
-| 3. Config and policy contracts | Turn manifests and policies into machine-verifiable inputs | `eva-config` schema loading/validation, manifest normalization, `eva-policy` effective permissions | `eva validate` can reject invalid sample config and unsafe policy expansions |
-| 4. CLI skeleton | Establish user-facing development loop | Real `eva doctor`, `eva validate`, `eva run`, `eva emit`, `eva inspect` command surfaces | CLI builds from clean checkout and returns structured output and exit codes |
-| 5. Event and scheduling kernel | Route one typed event without Lua or external providers | EventBus publish/recover path, scheduler subscriptions, agent mailbox contracts | One in-process event can be routed deterministically under tests |
-| 6. Agent and Lua execution boundary | Run one controlled Lua Agent safely | Agent lifecycle, queue, Lua loader, sandbox, host bindings, timeout boundary | One Lua Agent can process one event in an isolated state generation |
-| 7. Capability and adapter execution | Allow controlled tool/provider calls | Capability registry/router, AdapterRegistry, built-in/stdio/MCP/skill/hardware transport boundaries | One authorized capability call completes with trace, audit, and structured error handling |
-| 8. Minimum end-to-end runtime loop | Prove the full architecture with one narrow path | Ingress -> EventBus -> Scheduler -> Agent -> Lua -> Tool -> response, plus example project | `examples/basic/` runs and integration tests cover success and failure |
-| 9. Hot reload, recovery, and lifecycle | Make runtime changes and failures controlled | Generation swaps, drain, rollback, durable event log, backup/release snapshot integration | Runtime can reject unsafe changes, drain old generations, and recover from known failures |
-| 10. Hardening and 1.0 readiness | Turn working internals into a release-quality CLI | CI, cross-platform checks, security review, quickstart, install docs, release notes, migration guidance | New users can install, run quickstart, diagnose failures, and rely on stable documented contracts |
-
-See [Zero to 1.0 Roadmap](docs/en/planning/zero-to-one-roadmap.md) for the staged
-release path from design documents to a 1.0 release, and see
-[eva-core Module Design](docs/en/architecture/eva-core-module.md) plus
-[crates/eva-core/README.md](crates/eva-core/README.md) for the implemented
-foundation contract layer.
-
-## V1.0 Quickstart
-
-The supported V1.0 source-install path is documented in
-[Eva-CLI V1.0 Quickstart](docs/en/guide/v1.0-quickstart.md). The short path is:
+Build and exercise the current source release from the repository root:
 
 ```powershell
 git clone https://github.com/Yetmos/Eva-CLI.git
@@ -127,24 +101,24 @@ cargo run -- --version
 cargo run -- doctor --output json
 cargo run -- config validate --output json
 cargo run -- inspect runtime --output json
-cargo run -- run --example basic --task-id req-readme-v10 --output json
+cargo run -- run --example basic --task-id req-readme-basic --output json
 cargo run -- emit /input/user --event-id evt-readme-v1115 --payload hello --output json
 cargo run -- agent status --agent root-agent --output json
 cargo run -- capability probe repo.analyze --output json
 cargo run -- capability call config.lint --input config --request-id req-readme-cap --confirm req-readme-cap --output json
-cargo run -- task status --task req-readme-v10 --output json
-cargo run -- task logs --task req-readme-v10 --output json
+cargo run -- task status --task req-readme-basic --output json
+cargo run -- task logs --task req-readme-basic --output json
 ```
 
-V1.0 scope and non-goals are explicit in
-[Known Limitations](docs/en/release/v1.0-known-limitations.md), and the release summary
-is in [V1.0.0 Release Notes](docs/en/release/release-notes-v1.0.0.md).
+See the [User Manual](docs/en/guide/user-manual.md) for command details and the
+[V1.x Incomplete Feature Inventory](docs/en/planning/v1.x-incomplete-feature-inventory.md)
+for production boundaries.
 
-## V1.1 External Capability Smoke
+## Controlled External Capability Execution
 
-V1.1 adds a controlled external capability ecosystem without starting real
-stdio/http/MCP server processes. These commands prove that external capability
-surfaces are visible, probeable, and callable through a safe envelope:
+Adapter probes remain side-effect-free, while declared stdio/http providers,
+MCP JSON-RPC tools, and Skill workflows can execute through manifest allowlists,
+policy gates, timeouts, output limits, credential scoping, and audit evidence:
 
 ```powershell
 cargo run -- adapter list --output json
@@ -155,12 +129,14 @@ cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
 cargo run -- skill list --output json
 cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
 cargo run -- discovery scan --output json
+cargo run -- capability call config.lint --input config --request-id req-readme-cap --confirm req-readme-cap --output json
 ```
 
-The key V1.1 boundary is that discovery returns candidates only. Runtime
-authority still comes from validated manifests and `eva-adapter` handles.
+Discovery still returns candidates only. Execution authority comes from
+validated manifests, allowlists, policy, and `eva-adapter` handles; production
+OS process supervision and credential vault integration are not implemented.
 
-## V1.2 Memory And Knowledge Context Smoke
+## Memory And Knowledge Context
 
 V1.2 adds a request-scoped context layer. `eva-memory` owns private Agent
 memory, global memory, knowledge indexing, and budgeted context assembly, while
@@ -175,7 +151,7 @@ The output includes `memory`, `global_memory`, `knowledge`, `lua_context`, and
 global memory and knowledge remain explicit context inputs rather than EventBus
 state.
 
-## V1.3 Hardware Access Smoke
+## Hardware Access
 
 V1.3 adds controlled hardware discovery and plan-first binding diagnostics.
 `eva-hardware` owns discovery candidates, stable device identities,
@@ -193,12 +169,12 @@ The sample `scale-main` adapter is intentionally disabled until real device
 identifiers are configured. Hardware binding therefore returns a blocked plan
 instead of opening USB, serial, BLE, network, or vendor SDK raw I/O.
 
-## V1.4 Backup And Lifecycle Smoke
+## Backup And Lifecycle
 
-V1.4 adds plan-first backup, snapshot, restore, and upgrade lifecycle commands.
-`eva-backup` verifies in-memory artifacts and produces release restore plans,
-while `eva-lifecycle` models generation handoff, drain, rollback, and supervisor
-readiness without starting real processes.
+Backup and lifecycle commands preserve plan-first safety while supporting real,
+gated mutation paths. Filesystem artifact stores, snapshot promotion, staged
+restore apply/rollback, and local release-pointer upgrade apply are implemented;
+production service-manager handoff is not.
 
 ```powershell
 cargo run -- backup create --output json
@@ -207,11 +183,13 @@ cargo run -- restore plan --output json
 cargo run -- upgrade check --output json
 ```
 
-Restore and upgrade commands remain diagnostic in V1.4: they do not execute
-destructive restore, move release pointers, or start Supervisor/Runtime
-processes.
+`restore apply` and `restore rollback` require matching plan confirmation,
+artifact evidence, policy approval, locks, health checks, and staged mutation
+evidence. `upgrade apply --state-store` can mutate the local release pointer
+after policy and health gates, but does not perform production Windows Service,
+systemd, or launchd handoff.
 
-## V1.5 Release Hardening Smoke
+## Release Checks
 
 V1.5 adds executable release-hardening checks through `eva-release` and the
 `release` CLI command group. These commands aggregate cross-platform readiness,
@@ -225,25 +203,13 @@ cargo run -- release perf --output json
 cargo run -- release migration --output json
 ```
 
-The release-hardening docs are:
+Canonical release references:
 
-- [V1.5 Release Hardening](docs/en/release/v1.5-release-hardening.md)
-- [V1.5 Migration Guide](docs/en/release/v1.5-migration-guide.md)
-- [V1.5 Compatibility Policy](docs/en/release/v1.5-compatibility-policy.md)
-- [V1.11.5 Alpha Release Notes](docs/en/release/release-notes-v1.11.5.md)
-- [V1.11.4 Alpha Release Notes](docs/en/release/release-notes-v1.11.4.md)
-- [V1.7.3 Alpha Release Notes](docs/en/release/release-notes-v1.7.3.md)
-- [V1.7.2 Alpha Release Notes](docs/en/release/release-notes-v1.7.2.md)
-- [V1.7.1 Alpha Release Notes](docs/en/release/release-notes-v1.7.1.md)
-- [V1.6.5 Alpha Release Notes](docs/en/release/release-notes-v1.6.5.md)
-- [V1.6.4 Alpha Release Notes](docs/en/release/release-notes-v1.6.4.md)
-- [V1.6.3 Alpha Release Notes](docs/en/release/release-notes-v1.6.3.md)
-- [V1.6.2 Alpha Release Notes](docs/en/release/release-notes-v1.6.2.md)
-- [V1.6.1 Alpha Release Notes](docs/en/release/release-notes-v1.6.1.md)
-- [V1.5.1 Release Notes](docs/en/release/release-notes-v1.5.1.md)
-- [V1.5.0 Release Notes](docs/en/release/release-notes-v1.5.0.md)
-- [V1.5 GitHub Release Plan](docs/en/release/v1.5-github-release-plan.md)
+- [Project Release Plan](docs/en/release/project-release-plan.md)
 - [Version Management Plan](docs/en/release/version-management-plan.md)
+- [Install, Upgrade, and Uninstall](docs/en/release/install-upgrade-uninstall.md)
+- [Current Alpha Release Notes](docs/en/release/release-notes-v1.11.5.md)
+- [Release documentation directory](docs/en/release/)
 
 ## Repository Layout
 
@@ -314,13 +280,7 @@ Recommended reading order for the English default documentation:
     understand why trusted backup, migration, release snapshot, restore, and
     rollback execution belongs to the Runtime while Agents only request and
     explain operations.
-12. [Design Risk Review](docs/en/planning/design-risk-review.md): review historical
-    design risks, semantic gaps, and areas that still need stronger executable
-    contracts.
-13. [Zero to 1.0 Roadmap](docs/en/planning/zero-to-one-roadmap.md): follow the staged
-    implementation path from architecture documents to module layout,
-    contracts, a minimum runtime loop, and release readiness.
-14. [Command-Line Tool Feature Design](docs/en/tooling/command-line-tool-feature-design.md):
+12. [Command-Line Tool Feature Design](docs/en/tooling/command-line-tool-feature-design.md):
     turn the runtime architecture into the target `eva` command surface,
     including command groups, output contracts, safety gates, and release
     priorities.
@@ -340,8 +300,6 @@ Recommended reading order for the English default documentation:
 | [Project Configuration](docs/en/operations/project-configuration.md) | Defines the `config/` directory, `eva.yaml`, Agent/Adapter/Capability manifests, policies, schemas, and hot-reload strategy. |
 | [Process-Level Upgrade](docs/en/operations/process-level-upgrade.md) | Defines the OS service manager, Supervisor, Runtime, Ingress Gate, Durable Event Log, State Store, and blue-green traffic switching. |
 | [Backup, Migration Package, and Release Snapshot](docs/en/operations/backup-migration-release-snapshot.md) | Defines why backup, migration package, release snapshot, restore, rollback, manifest verification, and artifact audit belong to Runtime services. |
-| [Design Risk Review](docs/en/planning/design-risk-review.md) | Reviews design risks around Bot behavior, event consistency, state ownership, permission closure, capability semantics, and error recovery. |
-| [Zero to 1.0 Roadmap](docs/en/planning/zero-to-one-roadmap.md) | Defines the staged path from architecture documents to module layout, contracts, a minimum runnable skeleton, a minimum Runtime loop, module implementation, and 1.0 release readiness. |
 | [Command-Line Tool Feature Design](docs/en/tooling/command-line-tool-feature-design.md) | Defines the target `eva` command groups, global flags, safety gates, output contract, exit codes, and staged CLI implementation priorities. |
 
 ## Current Design Position
@@ -373,43 +331,21 @@ Core boundaries:
 
 ## Remaining V1.x Gaps
 
-V1.11.5-alpha is a source alpha and CLI runtime command completion checkpoint
-  with V1.11.4/V1.17.1 module split evidence, V1.17.2 operator execution-field
-  evidence, V1.17.3 high-risk apply text evidence, V1.17.4 public JSON contract
-  diff evidence, V1.17.5 docs/i18n synchronization, V1.17.6 V1.x closure
-  release report evidence, and V1.11.5 `emit`,
-`agent`, and `capability` command evidence.
-Later release tags that
-contain package support publish the GHCR container image `ghcr.io/yetmos/eva-cli`,
-native archive metadata, and install-smoke/package dry-run evidence; old tags
-are not republished retroactively. The main remaining work is now narrower and more
-implementation-focused:
+The controlled provider runners, capability invocation, staged restore
+apply/rollback, snapshot promotion, local release-pointer upgrade apply, native
+release archives, checksums, and provenance bundle are implemented. Remaining
+production work is limited to these boundaries:
 
-- Production provider supervision beyond the current controlled stdio/http/MCP/Skill
-  runners, including OS process management, MCP production streaming/TLS HTTP
-  client coverage, external-server compatibility certification, and OS credential
-  vault integration. The repo-local MCP compatibility matrix and
-  `REL-MCP-COMPAT-001` release gate are present as V1.13.7 evidence, and
-  `REL-PROVIDER-SUPERVISION-001` records the current controlled provider
-  supervision baseline as V1.13.8 evidence.
-- Durable Scheduler, production memory retrieval scheduling, real database sink
-  policy, and backup stores beyond the current durable
-  EventBus/task snapshot/audit sink baseline, V1.15.7 provider retrieval
-  executor, V1.15.8 policy-driven memory redaction/audit, V1.16.1 JSONL
-  runtime audit wiring, V1.16.2 tracing subscriber bridge, V1.16.3 SDK-based
-  OTLP trace/metrics exporter smoke, V1.16.4 JSONL/durable-audit retention
-  policy, and local diagnostic surfaces.
-- Daemon-driven Lua hot-reload orchestration beyond the current shadow-load,
-  route-gate, drain-evidence, and rollback-audit boundaries.
-- Destructive apply paths such as `restore apply`, release pointer mutation,
-  supervisor activation, and blue-green runtime process handoff.
-- Production signing credentials, Homebrew/Winget/Apt repository publication,
-  external scanner integration, and stronger artifact provenance.
-- Deeper machine-verifiable schemas and policy checks as high-risk apply paths
-  move from plan-only diagnostics to execution.
+- background daemon and OS process supervision, including production
+  service-manager handoff and blue-green runtime rollback;
+- OS credential vault/user isolation and MCP production streaming, TLS, and
+  external-server compatibility certification;
+- real hardware drivers, OS hotplug watchers, and real or virtual release fixtures;
+- production database observability sink, retention scheduler, and long-lived
+  memory/retrieval scheduling;
+- production signing/attestation credentials and Homebrew/Winget/Apt repository
+  credentials and publication.
 
-The current documentation now distinguishes implemented diagnostics from target
-apply paths. See [Design Risk Review](docs/en/planning/design-risk-review.md) for the
-original architectural risk inventory, and
-[V1.5 Compatibility Policy](docs/en/release/v1.5-compatibility-policy.md) for the
-contracts held stable by this source release.
+See the [V1.x Incomplete Feature Inventory](docs/en/planning/v1.x-incomplete-feature-inventory.md)
+for the maintained gap list and the [Project Release Plan](docs/en/release/project-release-plan.md)
+for release artifacts and external blockers.

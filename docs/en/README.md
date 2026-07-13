@@ -5,7 +5,7 @@
 > Current detail authority: [简体中文](../zh-CN/中文文档入口.md)
 
 Eva-CLI has reached the V1.17.6 V1.x closure release gate checkpoint
-on the V1.11.5-alpha source line. The repository now contains a compileable
+on the V1.11.5-alpha source line. The repository now contains a compilable
 Rust workspace, executable CLI surfaces, configuration validation, an in-memory
 basic runtime loop, local task diagnostics, controlled Adapter/MCP/Skill/
 Discovery surfaces, durable EventBus/task/audit/artifact evidence, Lua
@@ -35,7 +35,6 @@ implementation-spec content until the English full-detail migration catches up.
 Start here when you want to run the project.
 
 - [Eva-CLI User Manual](guide/user-manual.md)
-- [Eva-CLI V1.0 Quickstart](guide/v1.0-quickstart.md)
 
 ### Architecture
 
@@ -77,8 +76,7 @@ migration policy.
 - [Eva-CLI Project Release Plan](release/project-release-plan.md)
 - [Eva-CLI Version Management Plan](release/version-management-plan.md)
 - [Eva-CLI GitHub Packages Publishing](release/github-packages-publishing.md)
-- [Eva-CLI Install, Upgrade, And Uninstall](release/install-upgrade-uninstall.md)
-- [Signed Installers, Provenance, and Real Apply Paths Roadmap](release/signed-provenance-apply-roadmap.md)
+- [Eva-CLI Install, Upgrade, and Uninstall](release/install-upgrade-uninstall.md)
 - [Eva-CLI V1.0 Known Limitations](release/v1.0-known-limitations.md)
 - [Eva-CLI V1.0.0 Release Notes](release/release-notes-v1.0.0.md)
 - [Eva-CLI V1.5 Release Hardening](release/v1.5-release-hardening.md)
@@ -86,6 +84,7 @@ migration policy.
 - [Eva-CLI V1.5 Compatibility Policy](release/v1.5-compatibility-policy.md)
 - [Eva-CLI V1.11.5 Alpha Release Notes and V1.17 Sync](release/release-notes-v1.11.5.md)
 - [Eva-CLI V1.11.4 Alpha Release Notes](release/release-notes-v1.11.4.md)
+- [Eva-CLI V1.7.4 Alpha Release Notes](release/release-notes-v1.7.4.md)
 - [Eva-CLI V1.7.3 Alpha Release Notes](release/release-notes-v1.7.3.md)
 - [Eva-CLI V1.7.2 Alpha Release Notes](release/release-notes-v1.7.2.md)
 - [Eva-CLI V1.7.1 Alpha Release Notes](release/release-notes-v1.7.1.md)
@@ -96,21 +95,16 @@ migration policy.
 - [Eva-CLI V1.6.1 Alpha Release Notes](release/release-notes-v1.6.1.md)
 - [Eva-CLI V1.5.1 Release Notes](release/release-notes-v1.5.1.md)
 - [Eva-CLI V1.5.0 Release Notes](release/release-notes-v1.5.0.md)
-- [Eva-CLI V1.5 GitHub Release Plan](release/v1.5-github-release-plan.md)
 - [Eva-CLI V1.5 Release Acceptance](release/v1.5-release-acceptance.md)
 
 ### Planning
 
-Planning and acceptance documents preserve roadmap decisions and milestone
-evidence.
+Planning stays focused on the current V1.x inventory and implementation work.
+Superseded roadmap and milestone history remains available through Git history,
+immutable release tags, and release notes.
 
-- [Design Risk Review](planning/design-risk-review.md)
-- [Zero to 1.0 Roadmap](planning/zero-to-one-roadmap.md)
-- [Full Implementation Plan](planning/full-implementation-plan.md)
 - [V1.x Incomplete Feature Inventory](planning/v1.x-incomplete-feature-inventory.md)
 - [V1.x Real Runtime Implementation Plan](planning/v1.x-real-runtime-implementation-plan.md)
-- [V0.1 Baseline Acceptance](planning/v0.1-baseline-acceptance.md)
-- [V0.2 Contract and Configuration Acceptance](planning/v0.2-contract-config-acceptance.md)
 
 ### Tooling
 

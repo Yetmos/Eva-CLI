@@ -48,7 +48,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 | 类型 | 用途 |
 | --- | --- |
 | `RuntimeBuilder::in_memory_v05()` | 构造 V0.5 summary，标记 task registry、dead-letter replay、hot-reload generation ready。 |
-| `RuntimeBuilder::in_memory_v10()` | 构造 V1.0 core summary，增加 release core 和 advanced capability planned 标记。 |
+| `RuntimeBuilder::in_memory_v10()` | 构造兼容 V1.0 basic loop 的 legacy summary；其中 advanced capability 标记描述该运行模式，不代表整个 workspace 的当前能力状态。 |
 | `BasicRunOptions` | 配置 event id、request/task id、topic、payload、timeout、cancel、retry、dead-letter replay。 |
 | `BasicRunReport` | CLI `run` 的完整机器可读报告。 |
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
@@ -110,10 +110,10 @@ restart redrive 和 corrupt task store，`release check` 暴露
 
 ## 当前非目标
 
-- V1.12/V1.13.5/V1.15.4/V1.15.6/V1.16.1 只提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload mutation state、provider execution-state recovery、manifest snapshot hotplug subscriber、一次性 memory/knowledge maintenance smoke 和 JSONL best-effort runtime audit wiring；不提供生产后台 service manager、远程网络监听、OS provider process supervisor、真实 OS hotplug watcher、长驻 memory scheduler、真实 OTel exporter 或完整生产 scheduler apply。
+- 当前 daemon 路径提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload state、provider execution-state recovery、manifest snapshot hotplug subscriber、一次性 memory/knowledge maintenance 和 best-effort observability wiring；不提供生产后台 service-manager 集成、远程网络监听、OS provider process supervisor、真实 OS hotplug watcher、长驻 memory scheduler、生产级 OTel/数据库 sink 或完整 scheduler apply。
 - recovery checkpoint 已恢复 task/event/audit evidence 和 durable provider process snapshots，但不会重启或杀死真实 OS provider 进程；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
-- 不引入真实 Lua VM；`LuaGeneration` 是 generation marker，不是 VM swap 实现。
-- Adapter/MCP/Discovery/Memory/Hardware/Backup/Lifecycle 仍属于后续版本。
+- Lua 执行已使用受限真实 VM，并具备 host binding、资源限制和 generation lifecycle；当前 daemon reload 记录 generation route/drain 状态，但不等同于生产级进程内 VM 热替换。
+- Adapter、MCP、Discovery、Memory、Hardware、Backup 和 Lifecycle 已有受控 1.x 实现并由 CLI/runtime 按场景组合；真实 OS provider supervision、raw hardware I/O 和生产 service-manager handoff 仍在边界之外。
 
 ## 验证
 

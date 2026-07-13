@@ -3,9 +3,9 @@
 The documentation currently separates the published default language from the
 content authority:
 
-- The current documentation set tracks the V1.5 source-release checkpoint:
-  executable CLI diagnostics, release-hardening gates, compatibility policy,
-  migration notes, and the remaining target apply paths.
+- The current documentation set tracks the V1.11.5-alpha source line and the
+  V1.17.6 V1.x closure release gate, including current runtime status,
+  remaining production blockers, compatibility policy, and release evidence.
 - `docs/en/` is the default public documentation entry. Documents are grouped
   into topic directories such as `guide/`, `architecture/`, `capabilities/`,
   `operations/`, `release/`, `planning/`, and `tooling/`.
@@ -39,6 +39,11 @@ content authority:
 - Do not keep migrated historical copies once their content has been merged into
   the categorized `docs/{locale}/` tree; update incoming links to the canonical
   document instead.
+- Preserve superseded roadmap and milestone history through Git history,
+  immutable release tags, and release notes instead of keeping stale planning
+  or acceptance documents in the live documentation tree.
+- Keep `planning/` focused on the current V1.x incomplete-feature inventory and
+  real-runtime implementation plan.
 - Do not translate code, commands, JSON keys, Topic names, Lua bindings, file
   paths, or error codes.
 

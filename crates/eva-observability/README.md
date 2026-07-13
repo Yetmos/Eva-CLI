@@ -158,7 +158,6 @@ data payload as the top-level CLI envelope uses for command-level trace.
 | `src/backend.rs` | file JSONL backend、OTel-style span export、best-effort degradation、smoke report、JSONL rotation/retention/corrupt report | 已完成 V1.16.4 | 已由 runtime/provider/task/restore 路径使用；后续接真实 db sink 和常驻调度。 |
 | `src/retention.rs` | retention/rotation/corrupt-record policy 和 report 类型 | 已完成 V1.16.4 | 后续真实 database sink 复用同一 policy kind。 |
 | `src/opentelemetry_exporter.rs` | OpenTelemetry SDK OTLP HTTP/protobuf trace/metrics exporter smoke、collector degraded report、label limit | 已完成 V1.16.3 | 后续与 retention/db policy 组合成生产后端策略。 |
-| `src/README.md` | 源码目录说明 | 已更新 V1.9.5 | 随后端与 runtime wiring 继续同步。 |
 | concrete backend | tracing/OpenTelemetry SDK/db/rotation | 部分实现 V1.16.4 | JSONL runtime wiring、OTel exporter smoke 和 JSONL/durable-audit retention policy 已完成；真实 database sink 后续独立选型。 |
 
 ## English

@@ -1,7 +1,7 @@
 # 备份、迁移包与 Release Snapshot 架构方案
 
 > Language: 简体中文
-> English default entry: ../en/backup-migration-release-snapshot.md
+> English default entry: [English](../../en/operations/backup-migration-release-snapshot.md)
 > Translation status: current
 
 更新日期：2026-06-17

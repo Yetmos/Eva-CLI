@@ -1,5 +1,5 @@
 > Language: 简体中文
-> English default entry: ../en/rust-lua-eventbus-scheduler.md
+> English default entry: [English](../../en/architecture/rust-lua-eventbus-scheduler.md)
 > Translation status: current
 
 # Rust + Lua + EventBus Topic Agent 调度架构方案

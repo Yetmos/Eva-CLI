@@ -50,7 +50,7 @@
     "progressCurrentTitle": "V1.17.6 V1.x closure release gate is in place",
     "progressCurrentBody": "The repository keeps the V1.11.5-alpha source version while documenting and gating the completed V1.12 to V1.17 runtime evidence line: daemon control and recovery, provider supervision gates, restore mutation and rollback evidence, service-manager abstraction, hardware safety gates, memory retrieval and redaction, observability retention policy, run command split, operator execution fields, high-risk text summaries, public JSON contract diff validation, and the V1.x closure report.",
     "progressTimelineLabel": "Release progress stages",
-    "progressRoadmapLabel": "Open roadmap",
+    "progressRoadmapLabel": "Remaining work",
     "progressNextTitle": "Next implementation work",
     "progressNextItems": [
       "Resolve production signing, attestation, OS package publication, and release upload blockers when credentials and repository permissions exist.",
@@ -318,24 +318,19 @@
         "description": "Runtime-owned safety capabilities for backups, migration packages, release snapshots, restores, rollback, and artifact audit."
       },
       {
-        "id": "design-risk-review",
-        "title": "Design Risk Review",
-        "description": "Known architecture risks and required follow-up contracts."
-      },
-      {
-        "id": "zero-to-one-roadmap",
-        "title": "Zero to 1.0 Roadmap",
-        "description": "The staged implementation path from architecture documents to module layout, contracts, a minimum runtime loop, and 1.0 release readiness."
-      },
-      {
-        "id": "v1.0-quickstart",
-        "title": "V1.0 Quickstart",
-        "description": "Install from source, verify the release surface, run the basic loop, and inspect task diagnostics."
-      },
-      {
         "id": "user-manual",
         "title": "Eva-CLI User Manual",
         "description": "An SVG-illustrated source user manual covering installation, command surface, JSON output, exit codes, troubleshooting, and current non-goals."
+      },
+      {
+        "id": "v1.x-incomplete-feature-inventory",
+        "title": "V1.x Incomplete Feature Inventory",
+        "description": "Tracks partially implemented V1.x capabilities and the remaining production gaps."
+      },
+      {
+        "id": "v1.x-real-runtime-implementation-plan",
+        "title": "V1.x Real Runtime Implementation Plan",
+        "description": "Sequences the remaining work needed to replace diagnostic envelopes with real runtime paths."
       },
       {
         "id": "project-release-plan",
@@ -351,11 +346,6 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages Publishing",
         "description": "The GHCR package channel, tag rules, release evidence, Buildx provenance/SBOM attestations, permissions, and pull verification contract."
-      },
-      {
-        "id": "signed-provenance-apply-roadmap",
-        "title": "Signed Provenance and Apply Roadmap",
-        "description": "The implementation ledger for signed installers, provenance, native release artifacts, durable stores, provider execution, and real apply gates."
       },
       {
         "id": "v1.0-known-limitations",
@@ -448,11 +438,6 @@
         "description": "The release-hardening checkpoint, new release commands, stabilized contracts, and explicit non-goals."
       },
       {
-        "id": "v1.5-github-release-plan",
-        "title": "V1.5 GitHub Release Plan",
-        "description": "The tag-driven GitHub Release workflow, release evidence, verification steps, and rollback policy for V1.5.0."
-      },
-      {
         "id": "v1.5-release-acceptance",
         "title": "V1.5 Release Acceptance",
         "description": "The V1.5.0 tag, GitHub Release, local gate results, Pages status, and immutable-tag decision record."
@@ -460,7 +445,7 @@
       {
         "id": "website-docs-i18n",
         "title": "Website and Documentation i18n",
-        "description": "The multilingual website and documentation migration plan."
+        "description": "Current locale ownership, manifest, document lifecycle, localized assets, build, validation, and publishing rules."
       }
     ]
   },

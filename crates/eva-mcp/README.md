@@ -10,13 +10,13 @@
 
 | 功能域 | 当前状态 | 目标行为 |
 | --- | --- | --- |
-| Client | 已完成 V1.8.2 | 通过受控 JSON-RPC stdio transport 连接已配置 MCP server，执行受 allowlist、timeout 和 output limit 限制的 tool 调用。 |
-| Server | 骨架 | 对外暴露 Eva 的受控工具，例如 agent invoke、adapter list。 |
-| Tool mapping | 骨架 | 将 MCP tool/resource/prompt 转成 Eva capability 或 adapter invocation。 |
-| Policy helper | 骨架 | 根据 client/server、tool name、schema、scope 生成 policy 检查输入。 |
-| Schema | 骨架 | 定义 MCP 输入输出 schema、错误 envelope 和版本兼容边界。 |
+| Client | 已完成 V1.13.6 | 通过受控 JSON-RPC stdio 或 HTTP transport 连接已配置 MCP server，执行受 allowlist、timeout、output limit 和显式 auth header 限制的 tool 调用。 |
+| Server | 已完成受控 surface | `EvaMcpServerSurface` 只暴露显式工具并拒绝无限 Topic、event 和 state 代理；生产 server 数据面仍不在本 crate 中启动。 |
+| Tool mapping | 已完成 V1.1 | `McpToolMapping` 和 `McpToolRegistry` 提供确定性 tool-to-capability 映射与重复检测。 |
+| Policy helper | 已完成 V1.1 | `McpAllowlist` 校验 tool/resource/prompt allowlist，并在 RPC 前拒绝未授权 tool。 |
+| Schema | 已完成基础边界 | `McpSchemaFamily` 固定 tool/resource/prompt/error envelope family，compatibility matrix 负责回归验证。 |
 | Compatibility matrix | 已完成 V1.13.7 | 提供 repo-local transport/schema/stream/server-surface fixture，供 release gate 验证。 |
-| Discovery 接入 | 未实现 | V1.1 由 `eva-discovery` 扫描候选，授权仍在 Adapter/MCP policy gate。 |
+| Discovery 接入 | 已完成候选发现 | `eva-discovery` 从项目 manifest 发现 MCP 候选；发现结果不授予 handle，授权仍由 Adapter/MCP policy gate 决定。 |
 
 ## 模块边界
 
@@ -57,10 +57,9 @@
 | `src/lifecycle.rs` | MCP session registry 和 streaming 边界 | 已完成 V1.8.3 | 保留 stream abort/orphan cleanup 边界；后续接真实 OS process supervisor。 |
 | `src/compatibility.rs` | MCP compatibility matrix | 已完成 V1.13.7 | 维护 stdio/HTTP transport、tool schema、stream lifecycle 和 explicit-tool server gate fixture/report。 |
 | `src/server.rs` | 受控 MCP server | 已完成 V1.8.3 | 最小 server surface 和 explicit-tool gate 已覆盖；后续接真实 server 数据面。 |
-| `src/tool_mapping.rs` | tool/resource/prompt 映射 | `RESPONSIBILITY` 占位 | 定义 mapping table 和冲突处理。 |
-| `src/policy.rs` | MCP policy helper | `RESPONSIBILITY` 占位 | 定义 allowlist、scope、request gate 输入。 |
-| `src/schema.rs` | MCP schema 边界 | `RESPONSIBILITY` 占位 | 定义输入输出 schema 和错误 envelope。 |
-| `src/README.md` | 源码目录说明 | 简略 | 补充文件职责和进度。 |
+| `src/tool_mapping.rs` | tool-to-capability mapping registry | 已完成 V1.1 | 保持确定性查找和重复 mapping 拒绝。 |
+| `src/policy.rs` | MCP allowlist policy helper | 已完成 V1.1 | 在 transport 写入前校验 tool/resource/prompt allowlist。 |
+| `src/schema.rs` | MCP schema family 边界 | 已完成基础枚举 | 与 compatibility matrix 一起维护稳定 envelope family。 |
 | 单元测试 | mapping/policy/schema/JSON-RPC/lifecycle/compatibility | 已完成 V1.13.7 | 后续增加真实 OS supervisor、HTTPS/TLS 和外部 MCP server compatibility suite。 |
 
 ## 验证计划
@@ -87,7 +86,7 @@ V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on
 - `EvaMcpServerSurface::v11_minimal()` documents the first server-facing tool surface (`adapter.list`, `adapter.probe`) without opening a socket or stdio server.
 - `McpSchemaFamily` names the stable schema envelope families used by future compatibility tests.
 
-V1.8.2 adds a controlled JSON-RPC stdio client transport. It sends `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` requests with generated request ids, blocks non-allowlisted tools before writing RPC, and maps timeout, protocol, JSON-RPC error object, and oversized-response failures into stable `EvaError`s. Streaming responses, authentication, compatibility matrices, and long-lived session supervision remain later work.
+V1.8.2 adds a controlled JSON-RPC stdio client transport. It sends `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` requests with generated request ids, blocks non-allowlisted tools before writing RPC, and maps timeout, protocol, JSON-RPC error object, and oversized-response failures into stable `EvaError`s. V1.8.3 and V1.13.6 subsequently added session lifecycle, stream-abort boundaries, HTTP transport, and configured authentication headers.
 V1.8.3 adds a session lifecycle registry around the existing supervisor contract. It records started sessions, reports health, removes sessions on shutdown, aborts controlled streams, cleans up missing-process orphans, and rejects non-explicit server tools such as unlimited Topic/event/state proxies with stable audit entries.
 V1.13.6 adds an MCP JSON-RPC HTTP client boundary for manifest-selected `http://` MCP endpoints. The client posts `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` over bounded HTTP requests, preserves timeout/output-limit/error-object mapping, sends configured auth headers, and still rejects non-allowlisted tools before any RPC is sent.
 V1.13.7 adds `McpCompatibilityMatrix`, a repo-local fixture/report for stdio/HTTP transport, tool schema, stream lifecycle start/abort/cleanup, dangling sessions, and explicit-tool server-surface evidence. It feeds `REL-MCP-COMPAT-001` in `eva-release`. HTTPS/TLS client support, a production streaming data plane, and real external MCP server compatibility certification remain follow-up work.
@@ -107,27 +106,6 @@ runtime process execution:
   manifests, and V1.8.2 uses it to launch stdio JSON-RPC tool calls.
 - `McpSessionRegistry` owns started sessions for V1.8.3 health,
   shutdown, stream-abort, and orphan-cleanup tests.
-
-## V1.1 Verification
-
-```powershell
-cargo test -p eva-mcp
-cargo run -- mcp list --output json
-cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
-cargo run -- mcp probe --adapter github-mcp --tool delete_repo --output json
-```
-
-## V1.1 Status
-
-V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on a real MCP SDK or a running external server:
-
-- `McpAllowlist` validates and stores tool/resource/prompt allowlists, and returns `permission_denied` for unlisted tools.
-- `InMemoryMcpClient` supports side-effect-free `probe_tool` and controlled `call_tool` envelopes. It preserves adapter id, request id, tool name, and input text for diagnostics.
-- `McpToolMapping` and `McpToolRegistry` provide deterministic tool-to-capability mapping and duplicate mapping detection.
-- `EvaMcpServerSurface::v11_minimal()` documents the first server-facing tool surface (`adapter.list`, `adapter.probe`) without opening a socket or stdio server.
-- `McpSchemaFamily` names the stable schema envelope families used by future compatibility tests.
-
-V1.8.3 adds a session lifecycle registry and explicit-tool server gate. V1.13.6 adds the bounded HTTP JSON-RPC client/auth boundary for `http://` MCP endpoints. V1.13.7 adds the MCP compatibility matrix fixture and release gate evidence. Real OS process supervision, HTTPS/TLS client coverage, external-server compatibility certification, and the full production streaming data plane remain later work.
 
 ## V1.1 Verification
 

@@ -50,7 +50,7 @@
     "progressCurrentTitle": "V1.17.6 V1.x closure release gate 已落地",
     "progressCurrentBody": "仓库仍保持 V1.11.5-alpha 源码版本，同时已将 V1.12 到 V1.17 的 runtime 证据线同步并纳入 closure gate：daemon control/recovery、provider supervision gate、restore mutation 和 rollback evidence、service-manager abstraction、hardware safety gate、memory retrieval/redaction、observability retention policy、run command split、operator execution fields、高风险 text summary、public JSON contract diff validation 和 V1.x closure report。",
     "progressTimelineLabel": "发布进度阶段",
-    "progressRoadmapLabel": "查看路线图",
+    "progressRoadmapLabel": "剩余工作",
     "progressNextTitle": "下一步实现工作",
     "progressNextItems": [
       "生产 signing、attestation、OS package 发布和 release upload 在凭据与仓库权限具备后继续解除。",
@@ -318,24 +318,19 @@
         "description": "由 Runtime 托管备份、迁移包、release snapshot、restore、rollback 和 artifact audit 的安全能力边界。"
       },
       {
-        "id": "design-risk-review",
-        "title": "方案设计风险评审",
-        "description": "已知架构风险与需要补齐的后续契约。"
-      },
-      {
-        "id": "zero-to-one-roadmap",
-        "title": "从零到 1.0 版本路线图",
-        "description": "从架构文档到模块划分、契约定义、最小运行闭环和 1.0 发布准备的阶段路径。"
-      },
-      {
-        "id": "v1.0-quickstart",
-        "title": "V1.0 快速开始",
-        "description": "从源码安装、验证发布面、运行 basic 闭环，并查看 task 诊断。"
-      },
-      {
         "id": "user-manual",
         "title": "Eva-CLI 使用手册",
         "description": "带 SVG 插图和表格的源码使用手册，覆盖安装、命令面、JSON 输出、退出码、排障和当前非目标。"
+      },
+      {
+        "id": "v1.x-incomplete-feature-inventory",
+        "title": "V1.x 未完整实现功能清单",
+        "description": "跟踪 V1.x 已部分实现能力及仍需补齐的生产缺口。"
+      },
+      {
+        "id": "v1.x-real-runtime-implementation-plan",
+        "title": "V1.x 真实运行时能力补齐实施计划",
+        "description": "安排把诊断 envelope 替换为真实 runtime 路径的剩余实施工作。"
       },
       {
         "id": "project-release-plan",
@@ -351,11 +346,6 @@
         "id": "github-packages-publishing",
         "title": "GitHub Packages 发布方案",
         "description": "GHCR package 通道、tag 规则、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证契约。"
-      },
-      {
-        "id": "signed-provenance-apply-roadmap",
-        "title": "签名、Provenance 与 Apply 路线图",
-        "description": "签名安装器、provenance、原生 release artifacts、durable stores、provider 执行和真实 apply gate 的实施台账。"
       },
       {
         "id": "v1.0-known-limitations",
@@ -448,19 +438,14 @@
         "description": "发布加固 checkpoint、新 release 命令、稳定契约和明确非目标。"
       },
       {
-        "id": "v1.5-github-release-plan",
-        "title": "V1.5 GitHub 发版计划",
-        "description": "V1.5.0 的 tag 驱动 GitHub Release workflow、发布证据、验证步骤和回滚策略。"
-      },
-      {
         "id": "v1.5-release-acceptance",
         "title": "V1.5 发布验收记录",
         "description": "V1.5.0 tag、GitHub Release、本地门禁结果、Pages 状态和不可变 tag 决策记录。"
       },
       {
         "id": "website-docs-i18n",
-        "title": "网站与文档多语言适配",
-        "description": "多语言官网与文档迁移方案。"
+        "title": "网站与文档多语言维护",
+        "description": "现行语言职责、manifest、文档生命周期、本地化图片、构建、校验与发布规则。"
       }
     ]
   },

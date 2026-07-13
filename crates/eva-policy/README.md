@@ -138,7 +138,6 @@ V0.2 已落地最小权限契约：
 | `src/sandbox.rs` | `SandboxPolicy`、Lua 默认沙箱、收紧 | 已完成 | V0.4 接 `eva-lua-host` 限制映射。 |
 | `src/effective.rs` | `PolicyLayer`、`EffectivePolicy`、request 校验 | 已完成 | V0.4 接 runtime/capability gate。 |
 | `src/domains.rs` | YAML policy domain parser、`RuntimePolicyGate`、高风险 action decision、memory redaction policy | 已完成 V1.15.8 | 已接 provider credential session scope、retry backoff 查询和 `memory_policy.redaction`；后续接生产 runtime/supervisor/hardware apply。 |
-| `src/README.md` | 源码目录说明 | 简略 | 同步文件职责和后续阶段。 |
 | policy domain parser | YAML domain 到策略层 | 已完成 V1.9.2 | 扩展真实 provider/hardware/backup/lifecycle 细粒度策略。 |
 
 ### 后续版本移交
