@@ -233,11 +233,12 @@ combined `website/`, `docs/`, and `assets/` content.
 
 ![Eva-CLI architecture overview](assets/eva-cli-architecture.svg)
 
-The diagram summarizes the current design path: ingress and configuration hot
-reload enter the Rust-managed Runtime, flow through a Recoverable EventBus and
-Scheduler, and are dispatched to Lua Agents. Lua only handles business logic
-inside the sandbox and accesses controlled capabilities through the Rust Tool
-Layer, AdapterRegistry, MemoryService, KnowledgeService, and HardwareAdapter.
+The diagram summarizes the implemented boundaries. The basic path composes a
+local EventBus, Scheduler mailboxes, AgentRuntime, and a restricted Lua 5.4
+host. External capability calls use separate policy, Adapter, provider, and
+transport gates. Foreground daemon, recovery, backup, restore, upgrade, and
+release commands compose their own filesystem-backed services and evidence;
+`RuntimeBuilder` is not a container that owns every concrete service.
 
 ## Documentation Entrances
 
@@ -251,8 +252,8 @@ Recommended reading order for the English default documentation:
 
 1. [Architecture Overview](docs/en/architecture/architecture-overview.md): start with system
    boundaries, core modules, and the overall conclusion.
-2. [Rust, Lua, and EventBus Scheduler](docs/en/architecture/rust-lua-eventbus-scheduler.md):
-   understand the Runtime, EventBus, Scheduler, Lua Agents, and Topic routing.
+2. [Single-Process Rust, Lua, and EventBus Runtime](docs/en/architecture/rust-lua-eventbus-scheduler.md):
+   understand the synchronous EventBus, Scheduler, Agent, Lua, and daemon boundaries.
 3. [Lua External Agent Adapter](docs/en/capabilities/lua-external-agent-adapter.md):
    understand how external Agents, CLI tools, HTTP APIs, MCP servers, and
    Skills are connected through adapters.
@@ -289,8 +290,8 @@ Recommended reading order for the English default documentation:
 
 | Document | Responsibility |
 | --- | --- |
-| [Architecture Overview](docs/en/architecture/architecture-overview.md) | Main entry point for system goals, non-goals, module boundaries, runtime flow, security principles, and pending design work. |
-| [Rust, Lua, and EventBus Scheduler](docs/en/architecture/rust-lua-eventbus-scheduler.md) | Defines the Rust Runtime, Lua Agents, EventBus, Topics, Scheduler, state, consistency, and hot reload. |
+| [Architecture Overview](docs/en/architecture/architecture-overview.md) | Current code map for module boundaries, command-specific runtime flows, safety invariants, state ownership, and production blockers. |
+| [Single-Process Rust, Lua, and EventBus Runtime](docs/en/architecture/rust-lua-eventbus-scheduler.md) | Defines the current synchronous EventBus, Topic routing, bounded mailboxes, AgentRuntime, Lua 5.4 host, and foreground daemon boundary. |
 | [Lua External Agent Adapter](docs/en/capabilities/lua-external-agent-adapter.md) | Defines AdapterRegistry, AdapterRouter, McpAdapter, SkillAdapter, HardwareAdapter, and external capability transports such as stdio, HTTP, EventBus, and hardware. |
 | [Lua Skill, MCP, and Tool Hot Reload](docs/en/capabilities/lua-skill-mcp-tool-hot-reload.md) | Defines `lua_tool`, `lua_skill`, `lua_mcp_handler`, the Lua Capability Runtime, host APIs, security sandboxing, and generation swaps. |
 | [Skill Implementation Plan](docs/en/capabilities/skill-implementation.md) | Defines Skill classification, manifests, runtime gates, invocation routing, security boundaries, hot reload, and verification rules. |
@@ -304,30 +305,32 @@ Recommended reading order for the English default documentation:
 
 ## Current Design Position
 
-The current design target is a multi-Agent scheduling system that combines a
-Rust-managed runtime, hot-reloadable Lua Agents, Topic EventBus, dynamic
-adapters, bidirectional MCP integration, HardwareAdapter, and process-level
-recovery.
+The current implementation is a local, Rust-controlled multi-Agent runtime
+with typed Topic events, bounded synchronous scheduling, restricted Lua Agent
+handlers, controlled provider transports, filesystem durability, and guarded
+operator workflows.
 
 Core boundaries:
 
 - Rust owns system boundaries, permissions, schemas, sandboxing, secrets,
   process lifecycle, audit, timeout handling, and recovery.
-- Lua owns hot-reloadable business logic, Agent-local state, tool orchestration,
-  and result mapping.
+- Lua owns handler logic and result mapping inside a restricted per-invocation
+  VM. Shadow-load and generation primitives exist, but automatic file watching
+  and live process-wide VM replacement do not.
 - Topic EventBus coordinates Agent collaboration; it must not become an
   implicit global business state store.
 - Adapters connect external capabilities, including CLI tools, HTTP APIs, MCP,
   Skills, local models, internal Agents, and hardware.
 - Discovery only performs discovery and normalization. It is not authorization;
   execution must still pass through manifests, schemas, and policies.
-- External hardware is connected through the `hardware` transport and
-  HardwareAdapter. Lua must not directly access device handles, system device
-  paths, or raw IO.
-- Hot reload covers scripts, hot-reloadable manifest fields, routes, and
-  registry generations by default. Permission expansion, transports, MCP
-  commands, state backends, and similar boundary changes require runtime rebuild
-  or blue-green switching.
+- External hardware uses manifest-derived candidates, permission gates, leases,
+  and simulator-oriented drivers. Lua never receives raw device handles or
+  system device paths; production hardware drivers remain outside the alpha
+  boundary.
+- Topic routes come only from the configured route file. Editing routes or
+  manifests requires validation and an explicit runtime rebuild/restart;
+  current reload evidence does not provide automatic route synchronization or
+  atomic live RouteTable replacement.
 
 ## Remaining V1.x Gaps
 

@@ -212,15 +212,15 @@
           </a>
           <a class="doc-link" href="docs/en/architecture/architecture-overview.md">
             <span>Architecture Overview</span>
-            <small>System goals, module boundaries, runtime chain, safety principles, and open design contracts.</small>
+            <small>Current module boundaries, command-specific runtime flows, safety invariants, state ownership, and production blockers.</small>
           </a>
           <a class="doc-link" href="docs/en/architecture/module-partitioning.md">
             <span>Module Partitioning</span>
             <small>The landed Rust workspace shape, crate boundaries, dependency direction, runtime handoffs, and ownership rules.</small>
           </a>
           <a class="doc-link" href="docs/en/architecture/rust-lua-eventbus-scheduler.md">
-            <span>Runtime and EventBus</span>
-            <small>Rust core, Lua Agents, Topic routing, Scheduler behavior, and recoverable event delivery.</small>
+            <span>Single-Process Runtime and EventBus</span>
+            <small>Synchronous EventBus delivery, bounded Scheduler mailboxes, Lua 5.4 execution, and foreground daemon boundaries.</small>
           </a>
           <a class="doc-link" href="docs/en/capabilities/lua-external-agent-adapter.md">
             <span>Dynamic Adapter Layer</span>

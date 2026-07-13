@@ -1,146 +1,190 @@
-# Topic 路由混合同步方案
+# Topic 路由事实源与校验边界
 
 > Language: 简体中文
 > English default entry: [English](../../en/architecture/topic-routing-hybrid-sync.md)
 > Translation status: current
 
-更新日期：2026-07-01
+更新日期：2026-07-13
 
-## 1. 方案定位
+## 文档定位
 
-本文定义 `config/routes/topics.yaml` 与 `config/agents/**/agent.yaml` 之间的混合维护方案。结论是：**生产运行时以 `config/routes/topics.yaml` 作为 Topic 路由事实源，不由运行时根据 `agent.yaml` 隐式改写；同时允许工具从 `agent.yaml` 生成建议路由、执行一致性校验，并在显式命令下写回路由表。**
+本文记录当前 runtime Topic route table 与 Agent manifest 之间已经实现的关系。
 
-这个方案解决两个目标之间的冲突：
+**从 `config/eva.yaml` 解析出的 route 文件（通常为
+`config/routes/topics.yaml`）是 Scheduler Topic 投递的唯一运行时事实源。**
+Agent `subscriptions` 是会被解析和展示的声明，但不会生成、合并或替换 route
+table。
 
-- 路由必须显式、可审计、可回滚，不能因为某个 Agent manifest 写错而自动扩大事件投递面。
-- Agent 创建、重命名、订阅变更时不应完全依赖人工同步，否则容易漏改 `topics.yaml`。
+Eva-CLI 只读取这份配置。启动、校验、Agent reload 和 daemon control 都不会
+写入 route。
 
-## 2. 文件职责
+## 配置归属
 
-| 文件 | 职责 | 是否为生产事实源 | 是否允许工具生成 |
-| --- | --- | --- | --- |
-| `config/agents/**/agent.yaml` | 声明 Agent 身份、父子关系、订阅、可发 Topic、局部路由意图和权限边界 | 对 Agent 自身配置是事实源 | 可由 Agent 创建工具生成初稿 |
-| `config/routes/topics.yaml` | 声明 Scheduler 的全局 Topic 投递规则、目标 Agent、delivery 模式和匹配顺序 | 对生产 Topic 路由是事实源 | 只允许显式 CLI/IDE 操作写回 |
-| `.eva/generated/routes/topics.generated.yaml` | 从 Agent manifest 推导出的建议路由或测试路由 | 否 | 是 |
-| `.eva/reports/config/routes-diff.json` | 校验差异、冲突和建议修复 | 否 | 是 |
-
-`agent.yaml` 可以包含 `subscriptions`、`children` 和 `routes` 提示，但这些字段不等价于最终投递规则。最终投递仍由 Scheduler 读取 `config/routes/topics.yaml` 后决定。
-
-## 3. 架构图
-
-![Topic 路由混合同步方案](../../assets/topic-routing-hybrid-sync.zh-CN.svg)
-
-## 4. 推荐数据流
-
-```text
-config/agents/**/agent.yaml
-  -> AgentManifestScanner
-  -> RouteProposalBuilder
-  -> ConsistencyValidator
-  -> routes-diff.json
-  -> eva config routes sync --write
-  -> config/routes/topics.yaml
-  -> Scheduler RouteTable
-```
-
-运行时启动路径保持简单：
-
-```text
-config/routes/topics.yaml
-  -> schema validate
-  -> policy validate
-  -> Scheduler RouteTable
-```
-
-启动时可以读取 Agent manifests 做交叉校验，但不应在启动过程中修改 `config/routes/topics.yaml`。
-
-## 5. CLI 行为
-
-| 命令 | 行为 | 是否写文件 | 适用场景 |
-| --- | --- | --- | --- |
-| `eva config validate` | 校验所有配置、Agent 引用、Topic pattern、权限和路由一致性 | 否 | 本地开发、CI、启动前检查 |
-| `eva config routes sync --check` | 从 `agent.yaml` 生成建议路由，并与 `topics.yaml` 比较 | 否 | PR 检查、IDE 诊断 |
-| `eva config routes sync --write` | 将可安全合并的建议写回 `config/routes/topics.yaml` | 是 | 新增 Agent 后显式同步 |
-| `eva config routes preview` | 输出合并后的路由表和冲突说明 | 否 | 人工 review 前预览 |
-| `eva config routes dump-effective` | 输出 Scheduler 实际使用的 RouteTable | 否 | 运行时诊断 |
-
-`--write` 必须是显式命令，不应由运行时热加载、启动流程或 Agent 自身触发。
-
-## 6. 一致性校验规则
-
-| 校验项 | 规则 | 失败等级 |
+| 输入 | 已实现职责 | 是否拥有路由决定权 |
 | --- | --- | --- |
-| 目标 Agent 存在性 | `topics.yaml` 中每个 `agents[]` 必须引用存在且 `enabled: true` 的 Agent | error |
-| 订阅覆盖 | 路由 pattern 应被目标 Agent 的 `subscriptions` 覆盖，或存在显式豁免 | warning/error |
-| 权限边界 | Agent 只能 emit `permissions.emit` 允许的 Topic pattern | error |
-| 路由提示一致性 | `agent.yaml.routes.*.topic/targets` 应与全局路由兼容 | warning |
-| delivery 冲突 | 同一 pattern 不应同时出现不兼容的 `fanout`、`compete` 或优先级声明 | error |
-| 顺序敏感规则 | 通配符路由不能无意覆盖更具体路由；具体路由应优先 | warning/error |
-| 未投递订阅 | Agent 声明了 subscription，但全局路由没有任何匹配投递 | warning |
-| 孤儿路由 | 全局路由投递给未订阅该 Topic 的 Agent | warning/error |
+| `config/eva.yaml` | 选择配置根，包括 `config.route_file` | 指向 route 事实源 |
+| `config/routes/topics.yaml` | 定义有序的 `pattern`、`delivery` 和 `agents` 规则 | 是 |
+| `config/agents/**/agent.yaml` 的 `subscriptions` | 声明与 Agent 关联的 Topic pattern，并暴露给 inspect/status | 否 |
+| `config/agents/**/agent.yaml` 的 `permissions.emit` | 声明 Agent 允许 emit 的 Topic pattern | 否 |
+| Agent `parent` 与 `children` | 声明管理关系 | 否 |
 
-订阅覆盖默认建议为 warning，因为某些管理型 Agent 可以 intentionally 处理更宽或更窄的 Topic 范围。生产环境可通过 policy 将其提升为 error。
+当前契约没有生成 route 文件或 route diff 产物，Agent manifest 也没有强类型
+`routes` 字段。
 
-## 7. 路由生成规则
+## 架构图
 
-RouteProposalBuilder 只能生成“建议”，不能直接绕过 review。建议规则：
+![Topic 路由事实源与校验边界](../../assets/topic-routing-hybrid-sync.zh-CN.svg)
 
-1. 对每个 enabled Agent 读取 `subscriptions`。
-2. 如果某个 subscription 没有出现在 `topics.yaml`，生成候选规则：
+## 加载与校验链路
+
+```text
+config/eva.yaml
+  -> 解析 ConfigRoots.route_file
+  -> 使用 config/schemas/routes.schema.json 校验 route YAML
+  -> eva-config::load_routes -> RouteConfig
+  -> 加载 Agent manifest
+  -> validate_project_config -> validate_route_agents
+  -> RuntimeBuilder / basic::subscription_table
+  -> eva-scheduler::SubscriptionTable
+```
+
+`load_project_config` 先执行 schema 校验，再进行强类型加载；随后把 route table
+和 Agent manifest 放入同一个 `ProjectConfig`，并校验跨文件 target 引用。basic
+runtime 把每个 `RouteRule` 转换为 Scheduler 对应的 `RoutingRule`。
+
+所有阶段都不会把 YAML 写回磁盘。
+
+## Route Schema
+
+已实现的 route 形态如下：
 
 ```yaml
-- pattern: /sys/route-a
-  delivery: fanout
-  agents:
-    - agent-a
+routes:
+  - pattern: /sys/route-a
+    delivery: fanout
+    agents:
+      - agent-a
 ```
 
-3. 如果多个 Agent 订阅同一 Topic，默认建议 `delivery: fanout`，并标记需要人工确认。
-4. 如果 `agent.yaml.routes` 声明了 `targets`，生成候选子路由，但必须校验目标 Agent 存在、enabled 且订阅覆盖。
-5. 不自动推导 `compete`、优先级、负载均衡或 fallback；这些必须由 `topics.yaml` 手写。
-6. 不从目录嵌套推导 Topic 或父子关系。
-
-## 8. 热加载边界
-
-| 变更 | 可热加载 | 需要重建/重启 | 说明 |
-| --- | --- | --- | --- |
-| 修改 `topics.yaml` 中已有 pattern 的目标 Agent | 是 | 否 | 通过新 RouteTable generation 原子替换 |
-| 新增简单 fanout 路由 | 是 | 否 | 必须先通过 schema 和 policy 校验 |
-| 修改 Agent `subscriptions` | 是 | 否 | 只影响一致性校验和 mailbox 注册 |
-| 扩大 `permissions.emit` | 否 | 是 | 属于权限扩张 |
-| 修改 delivery 为 `compete` 或优先级策略 | 视实现而定 | 可能需要 | 如果影响队列语义，应切 generation |
-| 运行时自动写回 `topics.yaml` | 否 | 不允许 | 避免隐式配置漂移 |
-
-## 9. 方案优缺点
-
-| 方案 | 优点 | 缺点 |
-| --- | --- | --- |
-| 完全手写 `topics.yaml` | 路由显式、review 友好、安全边界清晰、复杂规则可表达 | 新增 Agent 时容易漏同步，重复信息较多 |
-| 完全由 `agent.yaml` 动态生成 | Agent 创建体验好，简单订阅不易漏配，适合测试环境 | 事实源不清晰，安全审计变难，复杂 delivery/优先级难以可靠推导 |
-| 混合方案 | 保留生产显式路由，同时用工具减少漏改；适合 CI、IDE 和脚手架 | 需要实现校验、diff 和同步命令；规则设计必须避免误写 |
-
-## 10. 推荐落地步骤
-
-1. 保持 `config/routes/topics.yaml` 为生产路由事实源。
-2. 在 `eva config validate` 中加入 Agent 与 Topic 路由交叉校验。
-3. 新增 `eva config routes sync --check`，只生成 diff，不写文件。
-4. 新增 `eva config routes sync --write`，只写入无冲突、可解释的建议变更。
-5. 将 `.eva/generated/routes/topics.generated.yaml` 和 `.eva/reports/config/routes-diff.json` 作为诊断产物，不作为生产配置提交。
-6. 在 CI 中执行 `eva config validate` 和 `eva config routes sync --check`。
-7. IDE 插件只展示建议和 quick-fix，不能在后台静默改写生产路由表。
-
-## 11. 决策记录
-
-| 决策 | 结论 |
+| 字段 | 已实现规则 |
 | --- | --- |
-| 生产路由事实源 | `config/routes/topics.yaml` |
-| Agent manifest 的作用 | Agent 自身声明和路由建议输入 |
-| 自动更新策略 | 运行时不自动写回；只允许显式 CLI/IDE 操作 |
-| 生成产物位置 | `.eva/generated/` 和 `.eva/reports/` |
-| CI 默认要求 | 校验失败阻塞；建议 diff 可配置为 warning 或 error |
+| `routes` | 必填，并且强类型加载后必须至少包含一条 route |
+| `pattern` | 必填，并解析为 `TopicPattern` |
+| `delivery` | 必填，只接受 `fanout` 和 `compete` |
+| `agents` | 必填，并且必须至少包含一个合法 `AgentId` |
+| 额外 route 字段 | 由 JSON Schema 拒绝 |
 
-## 12. 总结
+`TopicPattern` 支持精确 segment、匹配一个 segment 的 `*`，以及匹配零个或
+多个尾部 segment 的最终 `**`。Pattern 必须以 `/` 开头，不能包含空 segment，
+也不能以 `/` 结尾。
 
-混合方案的核心边界是：**让机器帮助发现不一致，但让人或显式命令决定生产路由表。**
+## 已存在的校验
 
-这样可以保留 `topics.yaml` 的审计性、可读性和安全边界，同时避免 Agent 变更后人工同步遗漏。对于 Eva-CLI 当前的架构阶段，这比“运行时动态改写配置”更稳定，也比“完全手写无校验”更容易长期维护。
+`eva config validate` 运行与 runtime 命令相同的项目 loader。对 route 已实现的
+校验包括：
+
+- route 和 Agent 文件符合各自 JSON Schema；
+- route table 非空；
+- 每个 pattern 都能成功解析；
+- delivery 为 `fanout` 或 `compete`；
+- 每条 route 至少包含一个语法合法的 Agent ID；
+- 每个目标 Agent ID 都存在于已加载的 Agent manifest 中。
+
+Agent manifest 还会分别校验 ID 唯一、parent/child 引用合法、Lua 脚本存在、
+subscription 与 emit pattern 合法，以及 provider/capability 引用合法。
+
+当前 target 存在性校验包含 disabled Agent manifest，不要求目标
+`enabled: true`。
+
+## 尚不存在的校验
+
+当前校验不会：
+
+- 要求 route pattern 被目标 Agent 的 subscription 覆盖；
+- 拒绝没有对应全局 route 的 subscription；
+- 比较 route delivery 与 Agent permission；
+- 从 `parent`、`children`、目录嵌套或 subscription 推导 route；
+- 把重复或重叠 route pattern 判定为冲突；
+- 让精确 pattern 优先于通配 pattern；
+- 校验 priority、fallback、consumer group 或负载均衡 policy；
+- 生成 warning、proposal、generated route 或 route diff。
+
+因此配置 review 时要明确：`config validate` 成功只证明当前实现的 schema、
+强类型和引用校验通过，并不证明 subscription 语义覆盖完整。
+
+## 运行时路由语义
+
+Scheduler 保持 route 文件顺序，并展开所有命中规则。
+
+1. 显式 `EventTarget::Agent` 绕过 Topic route 展开。
+2. 否则按源文件顺序处理所有匹配该 Topic 的 route pattern。
+3. `fanout` 投递给每条命中规则列出的全部 Agent。
+4. `compete` 当前只投递给每条命中规则列出的第一个 Agent。
+5. 没有规则命中时返回结构化 not-found 错误。
+
+系统不存在隐式的“最具体规则胜出”。精确 route 和通配 route 可以同时为同一
+事件产生投递。
+
+## Agent Subscriptions
+
+`subscriptions` 仍是有用的 Agent metadata：
+
+- `eva-config` 把每个值解析为 `TopicPattern`；
+- project inspect 和 `eva agent status` 可以展示这些声明。
+
+Scheduler 不会从这些声明构建 `SubscriptionTable`。因此 Agent 可以声明一个
+subscription 却收不到事件，route 也可以指向声明未覆盖该 pattern 的 Agent。
+最终 runtime 投递结果仍只来自 route 文件。
+
+## CLI 边界
+
+已经实现的配置命令是：
+
+```text
+eva config validate [--project <path>] [--output text|json]
+```
+
+`eva inspect config` 可以显示已加载项目的配置摘要，但不是 Scheduler effective
+route dump。
+
+以下命令不存在：
+
+```text
+eva config routes sync --check
+eva config routes sync --write
+eva config routes preview
+eva config routes dump-effective
+```
+
+当前也没有 `RouteProposalBuilder`、`.eva/generated/routes/` 或
+`.eva/reports/config/routes-diff.json` 实现。
+
+## 变更与 Reload 边界
+
+Route 变更是人工配置编辑：
+
+1. 编辑 `config/routes/topics.yaml`，或 `config.route_file` 选中的文件。
+2. 运行 `eva config validate`。
+3. 重建或重启消费该配置的 runtime/command，使其加载新的 `ProjectConfig` 并
+   构建新的 `SubscriptionTable`。
+
+修改 YAML 不会改变已经构建的 table。Agent reload 和 daemon reload-plan
+generation evidence 都不会重新读取、替换或写入 route 文件。当前没有与该配置
+接线的 file watcher、自动同步或原子 live RouteTable replacement。
+
+## 决策记录
+
+| 决策 | 当前结论 |
+| --- | --- |
+| Runtime route 事实源 | `config.route_file` 选中的文件，通常为 `config/routes/topics.yaml` |
+| Agent subscription 作用 | 已校验的声明，以及 inspect/status metadata |
+| Route mutation | 只允许人工编辑 |
+| CLI 支持 | 只读 `config validate`；没有 sync、preview、write 或 effective dump 命令 |
+| Runtime 更新 | 显式重建/重启；没有自动热替换 |
+| Compete 选择 | 命中规则中列出的第一个 Agent |
+
+## 总结
+
+Eva-CLI 保持 Topic 投递显式：route 文件决定谁接收事件，Agent subscription
+只描述 Agent，不改变这项决定。校验保护语法、强类型值和 target 引用，但不会
+合成 route，也不会证明 subscription coverage。

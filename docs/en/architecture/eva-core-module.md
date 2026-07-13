@@ -1,107 +1,211 @@
 > Language: English
-> Translation: [简体中文](../../zh-CN/architecture/eva-core模块设计.md)
+> Translation: [Simplified Chinese](../../zh-CN/architecture/eva-core模块设计.md)
 > Translation status: current
 
-# eva-core Module Design
+# eva-core Contract Module
 
-Updated: 2026-06-30
+Updated: 2026-07-13
 
-`eva-core` is the foundational contract module in the Eva-CLI Rust workspace. It defines stable shared data structures so EventBus, Scheduler, AgentRuntime, Adapter, Capability, Runtime, and CLI crates use the same event, Topic, ID, invocation, and error model.
+`eva-core` is the dependency-free contract foundation of the Eva-CLI Rust
+workspace. It defines the values exchanged across configuration, EventBus,
+Scheduler, Agent, Lua, capability, Adapter, storage, runtime, release, and CLI
+boundaries. It performs no external I/O or runtime composition.
 
 ![eva-core contract boundary](../../assets/eva-core-contract-boundary.svg)
 
-## 1. Purpose
+## 1. Implemented Boundary
 
-`eva-core` defines the system's shared language. It should not execute side effects. Keep it free of I/O, runtime task wiring, provider-private protocols, and implicit global state.
-
-| Design Goal | Description |
+| `eva-core` owns | `eva-core` does not own |
 | --- | --- |
-| Stable contracts | Pin down data types that travel across crate APIs. |
-| Low coupling | Downstream modules depend on `eva-core`; `eva-core` does not depend on runtime modules. |
-| No side effects | Do not access files, network, databases, shell, Lua, MCP, or hardware directly. |
-| Strong boundaries | Use newtypes to separate Agent IDs, Adapter IDs, Capability names, Topics, and Request IDs. |
-| Testable | Validation, parsing, and matching logic can be covered by pure unit tests. |
+| Strongly typed Eva identifiers | ID allocation, registry lifecycle, persistence |
+| Concrete Topic and TopicPattern parsing/matching | Subscription tables, load balancing, delivery |
+| Event, target, payload and trace-link contracts | Event publication, replay, dead letters, handlers |
+| Capability names/references and provider hints | Provider selection, authorization or invocation |
+| Invoke request/response lifecycle values | Timeout enforcement, cancellation or transport execution |
+| Structured cross-crate error values | Retry scheduling, logging, audit persistence or exit codes |
 
-## 2. Responsibility Boundary
+The crate has no dependencies in `Cargo.toml`; all current implementation uses
+the Rust standard library and other `eva-core` modules.
 
-| Area | `eva-core` Owns | Does Not Own |
-| --- | --- | --- |
-| Event | Event body, Topic, target, payload, timestamps, trace linkage fields | Broadcast, persistence, replay, dead-letter storage |
-| Topic | Topic names, Topic patterns, wildcard rules, validation errors | Subscription registry, delivery policy, Agent mailboxes |
-| ID | Stable ID newtypes such as `AgentId`, `AdapterId`, `CapabilityName`, `RequestId`, `EventId` | ID allocation strategy or registry lifecycle |
-| Invoke | Agent, Capability, and Adapter request/response contracts | Executing Lua, HTTP, stdio, MCP, or hardware |
-| Error | Structured cross-crate errors and error categories | Log persistence, audit output, retry scheduling |
+## 2. Public Module Surface
 
-## 3. Submodule Plan
+| Module | Public contracts |
+| --- | --- |
+| `ids` | `AgentId`, `AdapterId`, `CapabilityId`, `RequestId`, `EventId`, `GenerationId` |
+| `topic` | `Topic`, `TopicPattern`, `TopicPatternSegment` |
+| `event` | `Event`, `EventMetadata`, `EventPayload`, `EventTarget`, `TraceContext` |
+| `capability` | `CapabilityName`, `CapabilityRef`, `ProviderHint` |
+| `invoke` | `InvokeInput`, `InvokeOutput`, `InvokeMetadata`, `InvokeRequest`, `InvokeResponse`, `InvokeStatus`, `InvokeTarget` |
+| `error` | `ErrorKind`, `ProviderCode`, `ErrorContext`, `EvaError` |
 
-| Submodule | Planned Content | Main Downstream Users |
-| --- | --- | --- |
-| `ids` | Stable ID newtypes, parsing, display, serialization | All runtime crates |
-| `topic` | `Topic`, `TopicPattern`, wildcard matching, format validation | `eva-scheduler`, `eva-policy`, `eva-config` |
-| `event` | `Event`, `EventTarget`, payload, correlation/causation fields | `eva-eventbus`, `eva-scheduler`, `eva-agent` |
-| `capability` | `CapabilityName` and provider-selection primitives | `eva-capability`, `eva-adapter` |
-| `invoke` | Agent/Capability request, response, status enums | `eva-agent`, `eva-runtime`, `eva-cli` |
-| `error` | `EvaError`, `ErrorKind`, retryable, provider code | All cross-module boundaries |
+These high-use types are re-exported from `eva_core` and form the stable import
+surface for downstream crates.
 
-## 4. Recommended Minimum Delivery
+## 3. Identifier Contracts
 
-The first implementation pass should avoid implementing every business object. Lock down the smallest contracts that downstream modules need.
+Each identifier is a distinct Rust newtype, so an `AgentId` cannot be passed as
+an `AdapterId` accidentally. All six ID types share these validation rules:
 
-| Priority | Contract | Acceptance Standard |
-| --- | --- | --- |
-| 1 | Topic | Parses `/input/user` and `/sys/route-a`; rejects empty segments and invalid prefixes. |
-| 2 | TopicPattern | Supports exact, `*`, and `**`; guarantees `**` only appears as the last segment. |
-| 3 | ID newtypes | `AgentId`, `AdapterId`, `RequestId`, and related types cannot be mixed accidentally. |
-| 4 | Event | Events carry `event_id`, `topic`, payload, and optional trace linkage fields. |
-| 5 | Error | Errors include kind, message, retryable, and optional provider code. |
+- non-empty, with no leading or trailing whitespace;
+- at most 128 bytes;
+- no `/` or `\` path separator;
+- ASCII letters, digits, `.`, `_`, `-`, and `:` only.
 
-## 5. Dependency Rules
+IDs implement ordering, hashing, display, `FromStr`, and `TryFrom<&str>`. They
+do not allocate themselves and do not imply that a referenced object exists.
+
+## 4. Topic Contracts
+
+### 4.1 Concrete Topic
+
+A `Topic` is an absolute slash-separated path such as `/input/user`. Parsing
+rejects relative paths, empty segments, trailing slashes, whitespace, and any
+wildcard character.
+
+### 4.2 Topic Pattern
+
+A `TopicPattern` uses the same path form and supports:
+
+| Segment | Meaning |
+| --- | --- |
+| literal | exact segment match |
+| `*` | exactly one segment |
+| trailing `**` | zero or more remaining segments |
+
+Wildcards must occupy a complete segment, and `**` is valid only as the final
+segment. Matching is a pure linear contract operation. Route order, fanout,
+compete selection, and mailbox delivery belong to `eva-scheduler`.
+
+## 5. Event Contracts
+
+An `Event` contains:
 
 ```text
-eva-core
-  <- eva-config
-  <- eva-policy
-  <- eva-eventbus
-  <- eva-scheduler
-  <- eva-agent
-  <- eva-capability
-  <- eva-adapter
-  <- eva-runtime
-  <- eva-cli
+Event
+  event_id: EventId
+  topic: Topic
+  target: Broadcast | Agent | Capability | Adapter
+  payload: Empty | Text | Bytes
+  metadata:
+    created_at: SystemTime
+    request_id?: RequestId
+    trace: correlation_id? + causation_id?
+    generation_id?: GenerationId
 ```
 
-Constraints:
+The default target is `Broadcast`. `EventTarget` expresses intent only; it does
+not route or execute the event. In the current Scheduler, only a direct Agent
+target has special routing behavior.
 
-- `eva-core` must not depend on other Eva runtime crates.
-- `eva-core` may depend on small stable general-purpose libraries, but each dependency must serve contract expression, such as serialization, time, or error derivation.
-- Do not implement providers, transports, registries, runtime builders, or CLI commands in `eva-core`.
-- Do not read `config/` from `eva-core`; only define foundational types that parsed configuration may reference.
+`TraceContext::child_of` preserves an existing correlation root, or uses the
+parent event as the new root, and records the parent as causation.
+`Event::child_event` applies that linkage to a new event. The payload remains
+opaque: schema interpretation belongs to configuration, Adapter, or caller
+boundaries.
 
-## 6. Runtime Relationship
+## 6. Capability Contracts
 
-| Runtime Node | How It Uses `eva-core` |
-| --- | --- |
-| Ingress | Builds valid `Event` values or invoke requests. |
-| EventBus | Publishes, records, and recovers `Event` values. |
-| Scheduler | Uses `Topic` / `TopicPattern` to select target Agents. |
-| AgentRuntime | Hands events to Lua and receives structured responses or errors. |
-| CapabilityRouter | Uses `CapabilityName` and invoke requests to select providers. |
-| AdapterRuntime | Returns unified responses or `EvaError`. |
-| CLI | Emits stable inspect, emit, and validate output. |
+`CapabilityName` is a validated dotted name such as `repo.analyze` and exposes
+its namespace and segments. `CapabilityRef` pairs a name with an optional
+`ProviderHint`.
 
-## 7. Content That Should Stay Out
+A provider hint is advisory contract data. `eva-core` does not resolve it,
+check a manifest allowlist, grant permission, or invoke the named provider.
+Those responsibilities belong to `eva-capability`, `eva-policy`, and
+`eva-adapter`.
 
-| Should Not Go Here | Owning Module |
-| --- | --- |
-| YAML/JSON Schema loading | `eva-config` |
-| Permission merge and effective policy | `eva-policy` |
-| Event log and dead-letter queue | `eva-eventbus` / `eva-storage` |
-| Lua State, sandbox, and bindings | `eva-lua-host` |
-| Adapter manifest and transport runtime | `eva-adapter` |
-| MCP server/client protocol details | `eva-mcp` |
-| Runtime generation, drain, rollback | `eva-lifecycle` / `eva-runtime` |
+## 7. Invoke Contracts
 
-## 8. Summary
+`InvokeTarget` identifies an Agent, Capability, or Adapter. `InvokeInput` and
+`InvokeOutput` reuse the opaque `EventPayload` representation.
 
-`eva-core` should first implement five foundational contracts: Topic, ID, Event, Invoke, and Error. The more stable this crate is, the less rework later modules such as `eva-config`, `eva-eventbus`, `eva-scheduler`, `eva-agent`, and `eva-adapter` will need.
+```text
+InvokeRequest
+  request_id
+  target
+  input
+  metadata: timeout? + trace + generation_id? + caller?
 
+InvokeResponse
+  request_id
+  status: Accepted | Completed | Failed | Cancelled | Timeout
+  output?
+  error?
+  metadata
+```
+
+`Completed`, `Failed`, `Cancelled`, and `Timeout` are terminal statuses;
+`Accepted` is not. Constructors preserve a structured error for failure,
+cancellation, and timeout paths.
+
+The timeout field is a budget declaration. `eva-core` does not run a clock or
+cancel work. Likewise, `caller` is correlation data, not an authenticated
+principal. Runtime and provider boundaries must enforce both semantics.
+
+## 8. Error Contract
+
+`EvaError` carries:
+
+```text
+kind
+message
+retryable
+provider_code?
+context: ordered key/value entries
+```
+
+`ErrorKind` currently covers invalid argument, not found, conflict, permission
+denied, timeout, unavailable, internal, and unsupported conditions. The
+optional provider code preserves a provider-specific machine label without
+making its protocol part of the shared enum.
+
+`retryable` is classification data, not a command to retry. Scheduler, Agent,
+Adapter, and CLI layers decide whether and how to retry. Trace persistence,
+audit output, redaction, and process exit mapping also stay outside this crate.
+
+## 9. Cross-Crate Invariants
+
+- Downstream crates reuse these contracts instead of defining look-alike ID,
+  Topic, Event, Invoke, or Error shapes.
+- Constructors validate at the boundary; fields remain private where mutation
+  could violate a contract.
+- Core values contain no registry handles, file paths to execute, sockets,
+  process objects, Lua values, MCP messages, or storage clients.
+- Event and Invoke payloads remain opaque; `eva-core` never interprets business
+  JSON or provider protocol schemas.
+- Correlation, generation, target, provider hint, timeout, caller, and
+  retryability metadata never grant permission or prove execution.
+- Adding provider-specific state to a shared enum is avoided unless it becomes
+  a stable cross-crate concept.
+
+## 10. Runtime Handoff
+
+| Consumer | Use of `eva-core` | Execution owned elsewhere |
+| --- | --- | --- |
+| `eva-config` | Parses IDs, Topics, patterns, capabilities | File/schema and cross-reference validation |
+| `eva-eventbus` | Stores and returns Event contracts | Publish, ack, fail, replay |
+| `eva-scheduler` | Matches TopicPattern and creates Agent deliveries | Mailboxes and route selection |
+| `eva-agent` / `eva-lua-host` | Passes Event and structured results/errors | Queue, handler, sandbox and limits |
+| `eva-capability` / `eva-adapter` | Builds Invoke values and provider references | Gates, routing, supervision and transports |
+| `eva-storage` | Persists serialized representations of contracts | Layout, checksums, files and migration lock |
+| `eva-runtime` / `eva-cli` | Correlates requests, reports and exit behavior | Composition, execution and presentation |
+
+## 11. Content That Must Stay Out
+
+- YAML and schema loaders;
+- policy merging or permission grants;
+- EventBus logs, dead-letter queues and Scheduler registries;
+- Agent queues, Lua VM state or hot reload;
+- Adapter manifests, provider selection, credentials or transport protocols;
+- MCP JSON-RPC messages and sessions;
+- memory, hardware, backup, lifecycle or release services;
+- filesystem/network/database/process access;
+- CLI JSON envelopes and exit-code policy.
+
+## 12. Summary
+
+`eva-core` is an implemented, side-effect-free vocabulary: six ID newtypes,
+Topic matching, Event and trace linkage, capability references, Invoke
+lifecycle values, and structured errors. Its most important invariant is that
+metadata describes intent and correlation while execution authority remains in
+the owning runtime crate.

@@ -238,7 +238,18 @@
       "title": "eva-core Contract Boundary Diagram",
       "source": "docs/assets/eva-core-contract-boundary.svg",
       "translations": {
-        "zh-CN": "docs/assets/eva-core-contract-boundary.svg"
+        "zh-CN": "docs/assets/eva-core-contract-boundary.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "rust-lua-eventbus-runtime-diagram",
+      "title": "Rust, Lua, and EventBus Runtime Diagram",
+      "source": "docs/assets/rust-lua-eventbus-runtime.svg",
+      "translations": {
+        "zh-CN": "docs/assets/rust-lua-eventbus-runtime.zh-CN.svg"
       },
       "status": {
         "zh-CN": "current"
@@ -246,7 +257,7 @@
     },
     {
       "id": "topic-routing-hybrid-sync-diagram",
-      "title": "Topic Routing Hybrid Sync Diagram",
+      "title": "Topic Route Source of Truth and Validation Diagram",
       "source": "docs/assets/topic-routing-hybrid-sync.svg",
       "translations": {
         "zh-CN": "docs/assets/topic-routing-hybrid-sync.zh-CN.svg"
@@ -289,11 +300,11 @@
         "path": "docs/zh-CN/architecture/总体架构方案.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "summary-or-entry"
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "module-partitioning",
-      "title": "Module Partitioning Plan",
+      "title": "Module Partitioning",
       "source": "docs/en/architecture/module-partitioning.md",
       "translations": {
         "zh-CN": "docs/zh-CN/architecture/模块划分方案.md"
@@ -306,11 +317,11 @@
         "path": "docs/zh-CN/architecture/模块划分方案.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "summary-or-entry"
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "eva-core-module",
-      "title": "eva-core Module Design",
+      "title": "eva-core Contract Module",
       "source": "docs/en/architecture/eva-core-module.md",
       "translations": {
         "zh-CN": "docs/zh-CN/architecture/eva-core模块设计.md"
@@ -327,7 +338,7 @@
     },
     {
       "id": "rust-lua-eventbus-scheduler",
-      "title": "Rust, Lua, and EventBus Scheduler",
+      "title": "Single-Process Rust, Lua, and EventBus Runtime",
       "source": "docs/en/architecture/rust-lua-eventbus-scheduler.md",
       "translations": {
         "zh-CN": "docs/zh-CN/architecture/Rust与Lua事件总线智能体调度架构方案.md"
@@ -340,7 +351,7 @@
         "path": "docs/zh-CN/architecture/Rust与Lua事件总线智能体调度架构方案.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "summary-or-entry"
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "lua-external-agent-adapter",
@@ -463,7 +474,7 @@
     },
     {
       "id": "topic-routing-hybrid-sync",
-      "title": "Topic Routing Hybrid Sync",
+      "title": "Topic Route Source of Truth and Validation",
       "source": "docs/en/architecture/topic-routing-hybrid-sync.md",
       "translations": {
         "zh-CN": "docs/zh-CN/architecture/Topic路由混合同步方案.md"

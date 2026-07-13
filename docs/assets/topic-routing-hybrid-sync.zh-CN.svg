@@ -1,82 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="640" viewBox="0 0 1120 640" role="img" aria-labelledby="title desc">
-  <title id="title">Topic 路由混合同步方案</title>
-  <desc id="desc">Agent manifest、建议路由、显式同步命令与 Scheduler 路由表之间的混合同步流程。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">当前 Topic 路由配置流</title>
+  <desc id="desc">当前只读 Topic 路由流程，从 routes 配置经过 schema 加载和目标校验进入 ProjectConfig、Scheduler SubscriptionTable 与 Agent mailbox。</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
-    </marker>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#2563eb"/></marker>
     <style>
-      .bg { fill: #f8fafc; }
-      .title { font: 700 26px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
-      .subtitle { font: 15px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
-      .label { font: 700 15px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
-      .text { font: 13px Arial, "Microsoft YaHei", sans-serif; fill: #334155; }
-      .small { font: 12px Arial, "Microsoft YaHei", sans-serif; fill: #475569; }
-      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
-      .source { fill: #ecfeff; stroke: #0891b2; }
-      .generated { fill: #f0fdf4; stroke: #16a34a; }
-      .gate { fill: #fff7ed; stroke: #ea580c; }
-      .runtime { fill: #eef2ff; stroke: #4f46e5; }
-      .warn { fill: #fef2f2; stroke: #dc2626; }
-      .line { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
-      .dash { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:29px;font-weight:700}.subtitle{font-size:14px;fill:#526174}
+      .label{font-size:13px;font-weight:700}.small{font-size:11px;fill:#526174}.section{font-size:15px;font-weight:700}
+      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}
+      .green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}.orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}
+      .purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}.line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}
+      .read{fill:none;stroke:#2563eb;stroke-width:2;stroke-dasharray:7 6;marker-end:url(#arrow-blue)}
     </style>
   </defs>
+  <rect width="1200" height="680" fill="#ffffff"/>
+  <text class="title" x="38" y="46">Topic 路由：当前只读流程</text>
+  <text class="subtitle" x="38" y="72">配置的 route_file 是运行时事实源；启动与诊断只校验和读取，不会自动改写。</text>
 
-  <rect class="bg" width="1120" height="640"/>
-  <text class="title" x="48" y="54">Topic 路由混合同步方案</text>
-  <text class="subtitle" x="48" y="82">生产路由保持显式；工具从 Agent manifest 生成建议和校验结果。</text>
+  <g>
+    <rect class="blue" x="20" y="126" width="130" height="100" rx="7"/><text class="label" x="85" y="156" text-anchor="middle">config.route_file</text><text class="small" x="85" y="180" text-anchor="middle">通常为 config/routes/</text><text class="small" x="85" y="198" text-anchor="middle">topics.yaml</text>
+    <rect class="green" x="170" y="126" width="130" height="100" rx="7"/><text class="label" x="235" y="156" text-anchor="middle">Schema 门禁</text><text class="small" x="235" y="180" text-anchor="middle">routes.schema.json</text><text class="small" x="235" y="198" text-anchor="middle">严格字段</text>
+    <rect class="green" x="320" y="126" width="130" height="100" rx="7"/><text class="label" x="385" y="156" text-anchor="middle">强类型加载</text><text class="small" x="385" y="180" text-anchor="middle">RouteConfig</text><text class="small" x="385" y="198" text-anchor="middle">RouteRule</text>
+    <rect class="orange" x="470" y="126" width="130" height="100" rx="7"/><text class="label" x="535" y="156" text-anchor="middle">目标校验</text><text class="small" x="535" y="180" text-anchor="middle">Agent ID 存在</text><text class="small" x="535" y="198" text-anchor="middle">不检查 enabled</text>
+    <rect class="blue" x="620" y="126" width="130" height="100" rx="7"/><text class="label" x="685" y="156" text-anchor="middle">ProjectConfig</text><text class="small" x="685" y="180" text-anchor="middle">routes</text><text class="small" x="685" y="198" text-anchor="middle">已校验模型</text>
+    <rect class="purple" x="770" y="126" width="130" height="100" rx="7"/><text class="label" x="835" y="156" text-anchor="middle">运行时映射</text><text class="small" x="835" y="180" text-anchor="middle">RoutingRule</text><text class="small" x="835" y="198" text-anchor="middle">DeliveryMode</text>
+    <rect class="purple" x="920" y="126" width="130" height="100" rx="7"/><text class="label" x="985" y="156" text-anchor="middle">SubscriptionTable</text><text class="small" x="985" y="180" text-anchor="middle">TopicPattern</text><text class="small" x="985" y="198" text-anchor="middle">fanout / compete</text>
+    <rect class="orange" x="1070" y="126" width="110" height="100" rx="7"/><text class="label" x="1125" y="156" text-anchor="middle">Mailbox</text><text class="small" x="1125" y="180" text-anchor="middle">DeliveryPlan</text><text class="small" x="1125" y="198" text-anchor="middle">Agent 队列</text>
+    <path class="line" d="M150 176H170"/><path class="line" d="M300 176H320"/><path class="line" d="M450 176H470"/><path class="line" d="M600 176H620"/><path class="line" d="M750 176H770"/><path class="line" d="M900 176H920"/><path class="line" d="M1050 176H1070"/>
+  </g>
 
-  <rect class="box source" x="48" y="125" width="240" height="116"/>
-  <text class="label" x="68" y="157">Agent manifest</text>
-  <text class="text" x="68" y="184">config/agents/**/agent.yaml</text>
-  <text class="small" x="68" y="209">subscriptions、children、routes</text>
+  <rect class="panel" x="20" y="276" width="1160" height="164" rx="8"/>
+  <text class="section" x="42" y="308">已实现的只读诊断</text>
+  <rect class="green" x="52" y="334" width="300" height="76" rx="7"/><text class="label" x="202" y="364" text-anchor="middle">eva config validate</text><text class="small" x="202" y="388" text-anchor="middle">加载 schema、manifest、policy 与 routes</text>
+  <rect class="blue" x="450" y="334" width="300" height="76" rx="7"/><text class="label" x="600" y="364" text-anchor="middle">eva inspect routes</text><text class="small" x="600" y="388" text-anchor="middle">输出已校验的 ProjectConfig 路由视图</text>
+  <rect class="purple" x="848" y="334" width="300" height="76" rx="7"/><text class="label" x="998" y="364" text-anchor="middle">Scheduler 路由</text><text class="small" x="998" y="388" text-anchor="middle">直接 Agent target 优先于 Topic 匹配</text>
+  <path class="read" d="M202 334V252H385V226"/><path class="read" d="M600 334V252H685V226"/><path class="read" d="M998 334V252H985V226"/>
 
-  <rect class="box generated" x="338" y="125" width="230" height="116"/>
-  <text class="label" x="358" y="157">建议路由</text>
-  <text class="text" x="358" y="184">RouteProposalBuilder</text>
-  <text class="small" x="358" y="209">建议 pattern 和目标 Agent</text>
+  <rect class="blue" x="20" y="480" width="560" height="132" rx="8"/>
+  <text class="section" x="42" y="514">配置路由所有权</text>
+  <text class="small" x="42" y="543">只有显式编辑 route_file 才会改变 runtime 使用的配置路由源。</text>
+  <text class="small" x="42" y="568">Runtime 启动、热加载、校验与 inspect 操作都保持只读。</text>
+  <text class="small" x="42" y="593">当前仓库没有 route proposal、sync、preview 或 write 命令。</text>
 
-  <rect class="box gate" x="618" y="125" width="220" height="116"/>
-  <text class="label" x="638" y="157">校验门禁</text>
-  <text class="text" x="638" y="184">schema + policy + diff</text>
-  <text class="small" x="638" y="209">routes-diff.json</text>
-
-  <rect class="box warn" x="888" y="125" width="184" height="116"/>
-  <text class="label" x="908" y="157">显式写回</text>
-  <text class="text" x="908" y="184">sync --write</text>
-  <text class="small" x="908" y="209">人工或 CI 确认</text>
-
-  <rect class="box source" x="340" y="334" width="250" height="124"/>
-  <text class="label" x="360" y="366">生产路由文件</text>
-  <text class="text" x="360" y="393">config/routes/topics.yaml</text>
-  <text class="small" x="360" y="418">Scheduler 的路由事实源</text>
-
-  <rect class="box runtime" x="682" y="334" width="245" height="124"/>
-  <text class="label" x="702" y="366">Scheduler RouteTable</text>
-  <text class="text" x="702" y="393">已校验的运行时 generation</text>
-  <text class="small" x="702" y="418">匹配顺序、delivery、目标 Agent</text>
-
-  <rect class="box generated" x="60" y="356" width="218" height="84"/>
-  <text class="label" x="80" y="388">生成诊断产物</text>
-  <text class="small" x="80" y="414">.eva/generated/ 和 .eva/reports/</text>
-
-  <path class="line" d="M 288 183 L 338 183"/>
-  <path class="line" d="M 568 183 L 618 183"/>
-  <path class="line" d="M 838 183 L 888 183"/>
-  <path class="line" d="M 980 241 C 980 295 650 284 555 334"/>
-  <path class="line" d="M 590 396 L 682 396"/>
-  <path class="dash" d="M 453 241 C 410 290 290 314 230 356"/>
-  <path class="dash" d="M 728 241 C 705 284 620 300 536 334"/>
-
-  <text class="small" x="315" y="170">扫描</text>
-  <text class="small" x="586" y="170">校验</text>
-  <text class="small" x="852" y="170">确认</text>
-  <text class="small" x="908" y="286">只有显式命令可以写回</text>
-  <text class="small" x="604" y="384">运行时只读取</text>
-
-  <rect class="box" x="48" y="520" width="1024" height="72"/>
-  <text class="label" x="68" y="550">规则</text>
-  <text class="text" x="118" y="550">运行时可以用 Agent manifest 校验路由，但启动或热加载时不得改写 config/routes/topics.yaml。</text>
-  <text class="small" x="118" y="574">机器负责发现不一致；生产路由变更由显式 CLI 或 IDE 操作决定。</text>
+  <rect class="orange" x="620" y="480" width="560" height="132" rx="8"/>
+  <text class="section" x="642" y="514">投递语义</text>
+  <text class="small" x="642" y="543">TopicPattern 选择匹配规则；显式 EventTarget::Agent 绕过 Topic 规则。</text>
+  <text class="small" x="642" y="568">fanout 展开到全部配置 Agent；compete 选择第一个配置目标。</text>
+  <text class="small" x="642" y="593">没有匹配路由或已注册 Agent 时，mailbox 投递返回结构化错误。</text>
+  <text class="small" x="38" y="650">事实源：当前 eva-config、eva-runtime、eva-scheduler 与 eva-cli 实现。</text>
 </svg>

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">eva-core 基础契约边界</title>
+  <desc id="desc">无副作用的 eva-core crate 向 Eva-CLI workspace 提供 Topic、标识符、事件、Invoke 契约和结构化错误。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
+    <style>
+      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:30px;font-weight:700}.subtitle{font-size:14px;fill:#526174}
+      .label{font-size:15px;font-weight:700}.small{font-size:12px;fill:#526174}.core-title{font-size:25px;font-weight:700;fill:#ffffff}.core-text{font-size:13px;fill:#eaf2ff}
+      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}
+      .green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}.orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}
+      .purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}.line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1200" height="680" fill="#ffffff"/>
+  <text class="title" x="42" y="48">eva-core 基础契约边界</text>
+  <text class="subtitle" x="42" y="74">只定义系统共享数据语言：不承载文件、网络、shell、数据库、Lua、MCP、硬件、provider 或运行时编排。</text>
+
+  <rect class="blue" x="70" y="126" width="250" height="92" rx="7"/><text class="label" x="195" y="158" text-anchor="middle">配置与 Policy</text><text class="small" x="195" y="182" text-anchor="middle">强类型引用与错误</text><text class="small" x="195" y="202" text-anchor="middle">eva-config · eva-policy</text>
+  <rect class="blue" x="70" y="270" width="250" height="92" rx="7"/><text class="label" x="195" y="302" text-anchor="middle">事件路由</text><text class="small" x="195" y="326" text-anchor="middle">发布、匹配、重试元数据</text><text class="small" x="195" y="346" text-anchor="middle">eva-eventbus · eva-scheduler</text>
+  <rect class="orange" x="70" y="414" width="250" height="92" rx="7"/><text class="label" x="195" y="446" text-anchor="middle">Agent 执行</text><text class="small" x="195" y="470" text-anchor="middle">handler 与 Lua 边界</text><text class="small" x="195" y="490" text-anchor="middle">eva-agent · eva-lua-host</text>
+
+  <rect x="390" y="126" width="420" height="380" rx="8" fill="#1f6fba"/>
+  <text class="core-title" x="600" y="166" text-anchor="middle">eva-core</text>
+  <line x1="420" y1="188" x2="780" y2="188" stroke="#91c8f6"/>
+  <text class="core-text" x="430" y="222">Topic</text><text class="core-text" x="560" y="222">Topic · TopicPattern · segments</text>
+  <text class="core-text" x="430" y="266">标识符</text><text class="core-text" x="560" y="266">AgentId · AdapterId · CapabilityId</text><text class="core-text" x="560" y="286">EventId · RequestId · GenerationId</text>
+  <text class="core-text" x="430" y="330">事件</text><text class="core-text" x="560" y="330">Event · EventMetadata · EventTarget</text><text class="core-text" x="560" y="350">EventPayload · TraceContext</text>
+  <text class="core-text" x="430" y="394">调用</text><text class="core-text" x="560" y="394">InvokeRequest · InvokeResponse</text><text class="core-text" x="560" y="414">InvokeTarget · InvokeStatus</text>
+  <text class="core-text" x="430" y="458">错误</text><text class="core-text" x="560" y="458">EvaError · ErrorKind · ErrorContext</text><text class="core-text" x="560" y="478">ProviderCode</text>
+
+  <rect class="green" x="880" y="126" width="250" height="92" rx="7"/><text class="label" x="1005" y="158" text-anchor="middle">Capability 与 Adapter</text><text class="small" x="1005" y="182" text-anchor="middle">与 provider 无关的 invoke 契约</text><text class="small" x="1005" y="202" text-anchor="middle">eva-capability · eva-adapter</text>
+  <rect class="green" x="880" y="270" width="250" height="92" rx="7"/><text class="label" x="1005" y="302" text-anchor="middle">存储与遥测</text><text class="small" x="1005" y="326" text-anchor="middle">稳定记录标识符</text><text class="small" x="1005" y="346" text-anchor="middle">eva-storage · eva-observability</text>
+  <rect class="purple" x="880" y="414" width="250" height="92" rx="7"/><text class="label" x="1005" y="446" text-anchor="middle">Runtime 与 CLI</text><text class="small" x="1005" y="470" text-anchor="middle">组合稳定公开契约</text><text class="small" x="1005" y="490" text-anchor="middle">eva-runtime · eva-cli</text>
+
+  <path class="line" d="M320 172H390"/><path class="line" d="M320 316H390"/><path class="line" d="M320 460H390"/>
+  <path class="line" d="M880 172H810"/><path class="line" d="M880 316H810"/><path class="line" d="M880 460H810"/>
+
+  <rect class="panel" x="70" y="552" width="1060" height="82" rx="8"/>
+  <text class="label" x="94" y="584">边界保证</text>
+  <text class="small" x="94" y="608">eva-core 定义值与校验规则；分配策略、持久化、路由、执行、重试、I/O 和 mutation 仍由下游 crate 负责。</text>
+  <text class="small" x="94" y="626">其他 workspace crate 也通过相同稳定的 crate 根导出使用这些契约。</text>
+</svg>

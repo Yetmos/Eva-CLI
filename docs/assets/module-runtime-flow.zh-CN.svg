@@ -1,84 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="620" viewBox="0 0 1180 620" role="img" aria-labelledby="title desc">
-  <title id="title">Eva-CLI 运行时调用链</title>
-  <desc id="desc">从入口到 EventBus、Scheduler、Lua Agent、Tool Layer、AdapterRouter 和外部能力的主运行链路。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="900" viewBox="0 0 1320 900" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 当前运行路径</title>
+  <desc id="desc">三条相互独立的已实现路径：basic 内存 Agent 事件路径、外部 provider 执行路径、持久化 daemon 与运维路径；它们不是一条共享的 EventBus 流水线。</desc>
   <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
     <style>
-      .bg { fill: #f8fafc; }
-      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 8; }
-      .hot { fill: #fef3c7; stroke: #d97706; }
-      .rust { fill: #e0f2fe; stroke: #0284c7; }
-      .adapter { fill: #fce7f3; stroke: #db2777; }
-      .store { fill: #dcfce7; stroke: #16a34a; }
-      .title { font: 700 22px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
-      .label { font: 700 14px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
-      .small { font: 400 12px Arial, "Microsoft YaHei", sans-serif; fill: #334155; }
-      .arrow { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
-      .audit { stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 6 5; fill: none; marker-end: url(#arrow); }
+      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:29px;font-weight:700}.subtitle{font-size:14px;fill:#526174}
+      .section{font-size:16px;font-weight:700}.label{font-size:13px;font-weight:700}.small{font-size:11px;fill:#526174}.tiny{font-size:11px;fill:#64748b}
+      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}
+      .green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}.orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}
+      .purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}.rose{fill:#fff1f2;stroke:#e25572;stroke-width:1.5}
+      .line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}
     </style>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
-    </marker>
   </defs>
-  <rect class="bg" width="1180" height="620"/>
-  <text class="title" x="50" y="48">运行时调用链与模块交接</text>
-  <text class="small" x="50" y="72">关键路径把副作用限制在 Rust 托管的 Tool 与 Adapter 之后。</text>
+  <rect width="1320" height="900" fill="#ffffff"/>
+  <text class="title" x="38" y="46">当前运行路径与模块交接</text>
+  <text class="subtitle" x="38" y="72">basic Agent 执行、外部 provider 与持久化运维使用不同入口和状态，是三条独立代码路径。</text>
 
-  <rect class="box rust" x="60" y="125" width="130" height="70"/>
-  <text class="label" x="96" y="156">入口</text>
-  <text class="small" x="78" y="176">CLI / API / UI</text>
+  <rect class="panel" x="28" y="100" width="1264" height="238" rx="8"/>
+  <text class="section" x="50" y="130">1. Basic 内存 Agent 事件路径</text>
+  <text class="tiny" x="1268" y="130" text-anchor="end">eva-runtime 中的 run_basic</text>
+  <rect class="purple" x="52" y="156" width="170" height="82" rx="7"/><text class="label" x="137" y="187" text-anchor="middle">eva run basic</text><text class="small" x="137" y="210" text-anchor="middle">BasicRunOptions</text>
+  <rect class="purple" x="250" y="156" width="170" height="82" rx="7"/><text class="label" x="335" y="187" text-anchor="middle">TaskReport</text><text class="small" x="335" y="210" text-anchor="middle">running + 任务日志</text>
+  <rect class="blue" x="448" y="156" width="170" height="82" rx="7"/><text class="label" x="533" y="187" text-anchor="middle">InMemoryEventBus</text><text class="small" x="533" y="210" text-anchor="middle">publish receipt / 死信</text>
+  <rect class="blue" x="646" y="156" width="190" height="82" rx="7"/><text class="label" x="741" y="187" text-anchor="middle">Scheduler 表</text><text class="small" x="741" y="210" text-anchor="middle">SubscriptionTable + mailbox</text>
+  <rect class="orange" x="864" y="156" width="190" height="82" rx="7"/><text class="label" x="959" y="187" text-anchor="middle">AgentRuntime + LuaHost</text><text class="small" x="959" y="210" text-anchor="middle">运行 handler 并收集结果</text>
+  <rect class="orange" x="1082" y="156" width="184" height="82" rx="7"/><text class="label" x="1174" y="187" text-anchor="middle">LuaEventResult</text><text class="small" x="1174" y="210" text-anchor="middle">status · note · context</text>
+  <path class="line" d="M222 197H250"/><path class="line" d="M420 197H448"/><path class="line" d="M618 197H646"/><path class="line" d="M836 197H864"/><path class="line" d="M1054 197H1082"/>
+  <rect class="green" x="742" y="262" width="250" height="54" rx="7"/><text class="label" x="867" y="284" text-anchor="middle">可选内置 CapabilityRouter</text><text class="small" x="867" y="303" text-anchor="middle">仅 config.lint response</text>
+  <rect class="blue" x="1040" y="262" width="226" height="54" rx="7"/><text class="label" x="1153" y="284" text-anchor="middle">BasicRunReport</text><text class="small" x="1153" y="303" text-anchor="middle">结果 + response + 审计</text>
+  <path class="line" d="M1174 238V262"/><path class="line" d="M1174 238V250H867V262"/><path class="line" d="M992 289H1040"/>
+  <text class="tiny" x="52" y="314">当前行为：LuaEventResult.topic 只进入报告，不会重新 publish；可选 capability response 返回报告，不进入 Scheduler。</text>
 
-  <rect class="box rust" x="240" y="125" width="130" height="70"/>
-  <text class="label" x="276" y="156">EventBus</text>
-  <text class="small" x="262" y="176">typed Topic</text>
+  <rect class="panel" x="28" y="362" width="1264" height="202" rx="8"/>
+  <text class="section" x="50" y="392">2. 外部 Provider 执行路径</text>
+  <text class="tiny" x="1268" y="392" text-anchor="end">不要求经过 EventBus、Scheduler、AgentRuntime 或 LuaHost</text>
+  <rect class="purple" x="52" y="422" width="180" height="88" rx="7"/><text class="label" x="142" y="453" text-anchor="middle">Provider 入口</text><text class="small" x="142" y="476" text-anchor="middle">capability · adapter · MCP CLI</text><text class="small" x="142" y="496" text-anchor="middle">或受门禁 MCP surface</text>
+  <rect class="green" x="258" y="422" width="190" height="88" rx="7"/><text class="label" x="353" y="453" text-anchor="middle">Capability 门禁</text><text class="small" x="353" y="476" text-anchor="middle">policy + schema + provider plan</text>
+  <rect class="rose" x="474" y="422" width="190" height="88" rx="7"/><text class="label" x="569" y="453" text-anchor="middle">Adapter registry</text><text class="small" x="569" y="476" text-anchor="middle">manifest + route + credentials</text>
+  <rect class="rose" x="690" y="422" width="190" height="88" rx="7"/><text class="label" x="785" y="453" text-anchor="middle">Provider 执行</text><text class="small" x="785" y="476" text-anchor="middle">AdapterRuntime + Supervisor</text>
+  <rect class="orange" x="906" y="422" width="190" height="88" rx="7"/><text class="label" x="1001" y="453" text-anchor="middle">Transport</text><text class="small" x="1001" y="476" text-anchor="middle">builtin · stdio · HTTP · MCP</text><text class="small" x="1001" y="496" text-anchor="middle">EventBus · Skill · Lua · 硬件</text>
+  <rect class="blue" x="1122" y="422" width="144" height="88" rx="7"/><text class="label" x="1194" y="453" text-anchor="middle">结果</text><text class="small" x="1194" y="476" text-anchor="middle">结构化 response</text><text class="small" x="1194" y="496" text-anchor="middle">stream + 审计</text>
+  <path class="line" d="M232 466H258"/><path class="line" d="M448 466H474"/><path class="line" d="M664 466H690"/><path class="line" d="M880 466H906"/><path class="line" d="M1096 466H1122"/>
+  <text class="tiny" x="52" y="542">Provider 状态可以使用 ProviderProcessTable 与审计存储，但 provider 调用不经过 basic Agent 事件闭环。</text>
 
-  <rect class="box rust" x="420" y="125" width="130" height="70"/>
-  <text class="label" x="452" y="156">Scheduler</text>
-  <text class="small" x="444" y="176">投递到 inbox</text>
-
-  <rect class="box hot" x="600" y="125" width="145" height="70"/>
-  <text class="label" x="631" y="156">AgentRuntime</text>
-  <text class="small" x="628" y="176">Lua State 队列</text>
-
-  <rect class="box hot" x="795" y="125" width="145" height="70"/>
-  <text class="label" x="832" y="156">Lua 逻辑</text>
-  <text class="small" x="817" y="176">on_event + 状态</text>
-
-  <rect class="box rust" x="795" y="285" width="145" height="70"/>
-  <text class="label" x="824" y="316">Tool Layer</text>
-  <text class="small" x="816" y="336">schema + policy</text>
-
-  <rect class="box adapter" x="600" y="285" width="145" height="70"/>
-  <text class="label" x="628" y="316">AdapterRouter</text>
-  <text class="small" x="622" y="336">provider 选择</text>
-
-  <rect class="box adapter" x="410" y="285" width="150" height="70"/>
-  <text class="label" x="430" y="316">AdapterRuntime</text>
-  <text class="small" x="432" y="336">stdio/http/mcp/skill</text>
-
-  <rect class="box adapter" x="210" y="285" width="150" height="70"/>
-  <text class="label" x="249" y="316">外部能力</text>
-  <text class="small" x="233" y="336">Agent / MCP / 硬件</text>
-
-  <rect class="box store" x="420" y="455" width="150" height="70"/>
-  <text class="label" x="452" y="486">StateStore</text>
-  <text class="small" x="435" y="506">记忆 + durable log</text>
-
-  <rect class="box store" x="640" y="455" width="150" height="70"/>
-  <text class="label" x="676" y="486">审计观测</text>
-  <text class="small" x="662" y="506">trace + metrics</text>
-
-  <path class="arrow" d="M190 160 L236 160"/>
-  <path class="arrow" d="M370 160 L416 160"/>
-  <path class="arrow" d="M550 160 L596 160"/>
-  <path class="arrow" d="M745 160 L791 160"/>
-  <path class="arrow" d="M867 195 L867 281"/>
-  <path class="arrow" d="M795 320 L749 320"/>
-  <path class="arrow" d="M600 320 L564 320"/>
-  <path class="arrow" d="M410 320 L364 320"/>
-  <path class="arrow" d="M285 285 C285 235 660 235 842 279"/>
-  <path class="arrow" d="M285 355 C285 405 667 406 672 199"/>
-  <path class="audit" d="M485 195 L485 451"/>
-  <path class="audit" d="M672 355 L715 451"/>
-  <path class="audit" d="M867 355 C840 430 786 459 790 489"/>
-  <text class="small" x="74" y="565">关键边界：Lua 可以表达意图和转换结果，但不能直接打开文件、shell、网络、MCP session 或设备句柄。</text>
+  <rect class="panel" x="28" y="588" width="1264" height="244" rx="8"/>
+  <text class="section" x="50" y="618">3. 持久化 Daemon 与运维路径</text>
+  <text class="tiny" x="1268" y="618" text-anchor="end">持久化并恢复操作状态；retry tick 不运行 Agent 或 Lua handler</text>
+  <rect class="purple" x="52" y="650" width="190" height="94" rx="7"/><text class="label" x="147" y="681" text-anchor="middle">运维入口</text><text class="small" x="147" y="704" text-anchor="middle">daemon control · task</text><text class="small" x="147" y="724" text-anchor="middle">restore · upgrade · snapshot</text>
+  <rect class="blue" x="270" y="650" width="190" height="94" rx="7"/><text class="label" x="365" y="681" text-anchor="middle">DurableBackend</text><text class="small" x="365" y="704" text-anchor="middle">文件系统 layout</text><text class="small" x="365" y="724" text-anchor="middle">或内存实现</text>
+  <rect class="blue" x="488" y="650" width="250" height="94" rx="7"/><text class="label" x="613" y="681" text-anchor="middle">持久化 Store</text><text class="small" x="613" y="704" text-anchor="middle">TaskStateStore · EventLog</text><text class="small" x="613" y="724" text-anchor="middle">ProviderProcessTable · AuditSink</text>
+  <rect class="orange" x="766" y="650" width="190" height="94" rx="7"/><text class="label" x="861" y="681" text-anchor="middle">恢复协调</text><text class="small" x="861" y="704" text-anchor="middle">task/provider recovery</text><text class="small" x="861" y="724" text-anchor="middle">scheduler retry tick</text>
+  <rect class="green" x="984" y="650" width="282" height="94" rx="7"/><text class="label" x="1125" y="681" text-anchor="middle">操作证据</text><text class="small" x="1125" y="704" text-anchor="middle">状态 · mutation 报告 · 回滚证明</text><text class="small" x="1125" y="724" text-anchor="middle">备份 · lifecycle · release 检查</text>
+  <path class="line" d="M242 697H270"/><path class="line" d="M460 697H488"/><path class="line" d="M738 697H766"/><path class="line" d="M956 697H984"/>
+  <text class="tiny" x="52" y="788">Durable EventLog 与 retry 服务可为重试记账重新发布恢复事件，但 daemon 路径不会执行 Agent mailbox 或 Lua 脚本。</text>
+  <text class="tiny" x="38" y="872">边界总结：三条路径共享 eva-core 契约、config、policy、storage 与 observability，但不共享一条强制运行流水线。</text>
 </svg>

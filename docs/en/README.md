@@ -41,10 +41,10 @@ Start here when you want to run the project.
 Read these pages to understand the runtime model and module boundaries.
 
 - [Architecture Overview](architecture/architecture-overview.md)
-- [Module Partitioning Plan](architecture/module-partitioning.md)
-- [eva-core Module Design](architecture/eva-core-module.md)
-- [Rust, Lua, and EventBus Scheduler](architecture/rust-lua-eventbus-scheduler.md)
-- [Topic Routing Hybrid Sync](architecture/topic-routing-hybrid-sync.md)
+- [Module Partitioning](architecture/module-partitioning.md)
+- [eva-core Contract Module](architecture/eva-core-module.md)
+- [Single-Process Rust, Lua, and EventBus Runtime](architecture/rust-lua-eventbus-scheduler.md): current synchronous delivery, Lua 5.4, basic-loop, and daemon boundaries.
+- [Topic Route Source of Truth and Validation](architecture/topic-routing-hybrid-sync.md): manual route ownership, implemented checks, and Scheduler semantics.
 
 ### Capabilities
 
@@ -117,15 +117,16 @@ Tooling documents describe CLI and IDE surfaces.
 
 - Rust owns runtime boundaries, permissions, schemas, sandboxing, secrets,
   process lifecycle, audit, timeout handling, and recovery.
-- Lua owns hot-reloadable business logic, local Agent state transitions, tool
-  orchestration, and result mapping.
+- Lua owns restricted handler logic, data transformation, controlled tool
+  requests, and result mapping. Rust owns Agent state and lifecycle; current
+  reload support is limited to shadow-load and generation-control primitives.
 - Topic EventBus coordinates Agents, but does not store hidden global business
   state.
 - AdapterRegistry exposes external capabilities through controlled manifests,
   schemas, policies, transports, and audit hooks.
 - Discovery normalizes possible capabilities, but does not authorize execution.
-- Memory and knowledge are managed by Runtime services; Lua only uses controlled
-  APIs such as `ctx.memory`, `ctx.global_memory`, and `ctx.knowledge`.
+- Memory and knowledge are managed by Rust services; Lua receives only the
+  configured read-only `ctx.memory` and context snapshots for the current call.
 
 ## Source and Translation Policy
 

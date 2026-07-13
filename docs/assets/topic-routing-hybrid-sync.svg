@@ -1,82 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="640" viewBox="0 0 1120 640" role="img" aria-labelledby="title desc">
-  <title id="title">Topic Routing Hybrid Sync</title>
-  <desc id="desc">Hybrid synchronization flow between Agent manifests, generated route proposals, explicit route synchronization, and the Scheduler route table.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">Current Topic routing configuration flow</title>
+  <desc id="desc">The implemented read-only Topic routing flow from config routes through schema loading and target validation into ProjectConfig, Scheduler SubscriptionTable, and Agent mailboxes.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
-    </marker>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#2563eb"/></marker>
     <style>
-      .bg { fill: #f8fafc; }
-      .title { font: 700 26px Arial, sans-serif; fill: #0f172a; }
-      .subtitle { font: 15px Arial, sans-serif; fill: #475569; }
-      .label { font: 700 15px Arial, sans-serif; fill: #0f172a; }
-      .text { font: 13px Arial, sans-serif; fill: #334155; }
-      .small { font: 12px Arial, sans-serif; fill: #475569; }
-      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
-      .source { fill: #ecfeff; stroke: #0891b2; }
-      .generated { fill: #f0fdf4; stroke: #16a34a; }
-      .gate { fill: #fff7ed; stroke: #ea580c; }
-      .runtime { fill: #eef2ff; stroke: #4f46e5; }
-      .warn { fill: #fef2f2; stroke: #dc2626; }
-      .line { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
-      .dash { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:29px;font-weight:700}.subtitle{font-size:14px;fill:#526174}
+      .label{font-size:13px;font-weight:700}.small{font-size:11px;fill:#526174}.section{font-size:15px;font-weight:700}
+      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}
+      .green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}.orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}
+      .purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}.line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}
+      .read{fill:none;stroke:#2563eb;stroke-width:2;stroke-dasharray:7 6;marker-end:url(#arrow-blue)}
     </style>
   </defs>
+  <rect width="1200" height="680" fill="#ffffff"/>
+  <text class="title" x="38" y="46">Topic Routing: Current Read-Only Flow</text>
+  <text class="subtitle" x="38" y="72">The configured route_file is the runtime source of truth. Startup and diagnostics validate and read it; they do not rewrite it.</text>
 
-  <rect class="bg" width="1120" height="640"/>
-  <text class="title" x="48" y="54">Topic Routing Hybrid Sync</text>
-  <text class="subtitle" x="48" y="82">Production routing stays explicit; tools generate proposals and checks from Agent manifests.</text>
+  <g>
+    <rect class="blue" x="20" y="126" width="130" height="100" rx="7"/><text class="label" x="85" y="156" text-anchor="middle">config.route_file</text><text class="small" x="85" y="180" text-anchor="middle">usually config/routes/</text><text class="small" x="85" y="198" text-anchor="middle">topics.yaml</text>
+    <rect class="green" x="170" y="126" width="130" height="100" rx="7"/><text class="label" x="235" y="156" text-anchor="middle">Schema gate</text><text class="small" x="235" y="180" text-anchor="middle">routes.schema.json</text><text class="small" x="235" y="198" text-anchor="middle">strict fields</text>
+    <rect class="green" x="320" y="126" width="130" height="100" rx="7"/><text class="label" x="385" y="156" text-anchor="middle">Typed loader</text><text class="small" x="385" y="180" text-anchor="middle">RouteConfig</text><text class="small" x="385" y="198" text-anchor="middle">RouteRule</text>
+    <rect class="orange" x="470" y="126" width="130" height="100" rx="7"/><text class="label" x="535" y="156" text-anchor="middle">Target checks</text><text class="small" x="535" y="180" text-anchor="middle">Agent ID exists</text><text class="small" x="535" y="198" text-anchor="middle">enabled is not checked</text>
+    <rect class="blue" x="620" y="126" width="130" height="100" rx="7"/><text class="label" x="685" y="156" text-anchor="middle">ProjectConfig</text><text class="small" x="685" y="180" text-anchor="middle">routes</text><text class="small" x="685" y="198" text-anchor="middle">validated model</text>
+    <rect class="purple" x="770" y="126" width="130" height="100" rx="7"/><text class="label" x="835" y="156" text-anchor="middle">Runtime map</text><text class="small" x="835" y="180" text-anchor="middle">RoutingRule</text><text class="small" x="835" y="198" text-anchor="middle">DeliveryMode</text>
+    <rect class="purple" x="920" y="126" width="130" height="100" rx="7"/><text class="label" x="985" y="156" text-anchor="middle">SubscriptionTable</text><text class="small" x="985" y="180" text-anchor="middle">TopicPattern</text><text class="small" x="985" y="198" text-anchor="middle">fanout / compete</text>
+    <rect class="orange" x="1070" y="126" width="110" height="100" rx="7"/><text class="label" x="1125" y="156" text-anchor="middle">Mailbox</text><text class="small" x="1125" y="180" text-anchor="middle">DeliveryPlan</text><text class="small" x="1125" y="198" text-anchor="middle">Agent queue</text>
+    <path class="line" d="M150 176H170"/><path class="line" d="M300 176H320"/><path class="line" d="M450 176H470"/><path class="line" d="M600 176H620"/><path class="line" d="M750 176H770"/><path class="line" d="M900 176H920"/><path class="line" d="M1050 176H1070"/>
+  </g>
 
-  <rect class="box source" x="48" y="125" width="240" height="116"/>
-  <text class="label" x="68" y="157">Agent manifests</text>
-  <text class="text" x="68" y="184">config/agents/**/agent.yaml</text>
-  <text class="small" x="68" y="209">subscriptions, children, routes</text>
+  <rect class="panel" x="20" y="276" width="1160" height="164" rx="8"/>
+  <text class="section" x="42" y="308">Implemented read-only diagnostics</text>
+  <rect class="green" x="52" y="334" width="300" height="76" rx="7"/><text class="label" x="202" y="364" text-anchor="middle">eva config validate</text><text class="small" x="202" y="388" text-anchor="middle">loads schemas, manifests, policies, and routes</text>
+  <rect class="blue" x="450" y="334" width="300" height="76" rx="7"/><text class="label" x="600" y="364" text-anchor="middle">eva inspect routes</text><text class="small" x="600" y="388" text-anchor="middle">prints the validated ProjectConfig route view</text>
+  <rect class="purple" x="848" y="334" width="300" height="76" rx="7"/><text class="label" x="998" y="364" text-anchor="middle">Scheduler routing</text><text class="small" x="998" y="388" text-anchor="middle">direct Agent target overrides Topic matching</text>
+  <path class="read" d="M202 334V252H385V226"/><path class="read" d="M600 334V252H685V226"/><path class="read" d="M998 334V252H985V226"/>
 
-  <rect class="box generated" x="338" y="125" width="230" height="116"/>
-  <text class="label" x="358" y="157">Route proposals</text>
-  <text class="text" x="358" y="184">RouteProposalBuilder</text>
-  <text class="small" x="358" y="209">suggested patterns and targets</text>
+  <rect class="blue" x="20" y="480" width="560" height="132" rx="8"/>
+  <text class="section" x="42" y="514">Configured route ownership</text>
+  <text class="small" x="42" y="543">Only an explicit route_file edit changes the route source used by runtime.</text>
+  <text class="small" x="42" y="568">Runtime startup, hot reload, validation, and inspect operations remain read-only.</text>
+  <text class="small" x="42" y="593">The repository currently exposes no route proposal, sync, preview, or write command.</text>
 
-  <rect class="box gate" x="618" y="125" width="220" height="116"/>
-  <text class="label" x="638" y="157">Validation gate</text>
-  <text class="text" x="638" y="184">schema + policy + diff</text>
-  <text class="small" x="638" y="209">routes-diff.json</text>
-
-  <rect class="box warn" x="888" y="125" width="184" height="116"/>
-  <text class="label" x="908" y="157">Explicit write</text>
-  <text class="text" x="908" y="184">sync --write</text>
-  <text class="small" x="908" y="209">human/CI approved</text>
-
-  <rect class="box source" x="340" y="334" width="250" height="124"/>
-  <text class="label" x="360" y="366">Production route file</text>
-  <text class="text" x="360" y="393">config/routes/topics.yaml</text>
-  <text class="small" x="360" y="418">source of truth for Scheduler</text>
-
-  <rect class="box runtime" x="682" y="334" width="245" height="124"/>
-  <text class="label" x="702" y="366">Scheduler RouteTable</text>
-  <text class="text" x="702" y="393">validated runtime generation</text>
-  <text class="small" x="702" y="418">match order, delivery, targets</text>
-
-  <rect class="box generated" x="60" y="356" width="218" height="84"/>
-  <text class="label" x="80" y="388">Generated diagnostics</text>
-  <text class="small" x="80" y="414">.eva/generated/ and .eva/reports/</text>
-
-  <path class="line" d="M 288 183 L 338 183"/>
-  <path class="line" d="M 568 183 L 618 183"/>
-  <path class="line" d="M 838 183 L 888 183"/>
-  <path class="line" d="M 980 241 C 980 295 650 284 555 334"/>
-  <path class="line" d="M 590 396 L 682 396"/>
-  <path class="dash" d="M 453 241 C 410 290 290 314 230 356"/>
-  <path class="dash" d="M 728 241 C 705 284 620 300 536 334"/>
-
-  <text class="small" x="315" y="170">scan</text>
-  <text class="small" x="586" y="170">check</text>
-  <text class="small" x="852" y="170">approve</text>
-  <text class="small" x="925" y="286">only explicit commands write</text>
-  <text class="small" x="604" y="384">runtime reads only</text>
-
-  <rect class="box" x="48" y="520" width="1024" height="72"/>
-  <text class="label" x="68" y="550">Rule</text>
-  <text class="text" x="118" y="550">Runtime may validate Agent manifests against routes, but it must not rewrite config/routes/topics.yaml during startup or hot reload.</text>
-  <text class="small" x="118" y="574">Machines find inconsistencies; explicit CLI or IDE actions decide production route changes.</text>
+  <rect class="orange" x="620" y="480" width="560" height="132" rx="8"/>
+  <text class="section" x="642" y="514">Delivery semantics</text>
+  <text class="small" x="642" y="543">TopicPattern chooses matching rules; explicit EventTarget::Agent bypasses Topic rules.</text>
+  <text class="small" x="642" y="568">Fanout expands to every configured Agent; compete selects the first configured target.</text>
+  <text class="small" x="642" y="593">Mailbox delivery returns a structured error when no route or registered Agent is available.</text>
+  <text class="small" x="38" y="650">Source of truth: current eva-config, eva-runtime, eva-scheduler, and eva-cli implementations.</text>
 </svg>

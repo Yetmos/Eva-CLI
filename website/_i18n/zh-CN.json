@@ -107,7 +107,7 @@
       {
         "id": "architecture-overview",
         "title": "总体架构",
-        "description": "系统目标、模块边界、运行链路、安全原则和待补设计契约。"
+        "description": "当前模块边界、按命令组合的运行链路、安全不变量、状态归属和生产阻塞。"
       },
       {
         "id": "module-partitioning",
@@ -116,8 +116,8 @@
       },
       {
         "id": "rust-lua-eventbus-scheduler",
-        "title": "Runtime 与 EventBus",
-        "description": "Rust 核心、Lua Agent、Topic 路由、Scheduler 行为与可恢复事件投递。"
+        "title": "单进程 Runtime 与 EventBus",
+        "description": "同步 EventBus 投递、有界 Scheduler mailbox、Lua 5.4 执行和前台 daemon 边界。"
       },
       {
         "id": "lua-external-agent-adapter",
@@ -255,17 +255,17 @@
       {
         "id": "architecture-overview",
         "title": "总体架构",
-        "description": "系统目标、运行时边界和核心决策的英文默认入口；完整细节以映射的中文页面为准。"
+        "description": "当前系统边界、已实现运行路径、状态归属、安全规则和生产阻塞的代码地图。"
       },
       {
         "id": "module-partitioning",
-        "title": "模块划分方案",
-        "description": "模块架构地图：workspace 形态、crate 职责、依赖规则、运行时交接、状态归属和副作用边界。"
+        "title": "模块划分",
+        "description": "20 crate workspace 地图：直接依赖、运行时交接、状态归属和副作用边界。"
       },
       {
         "id": "rust-lua-eventbus-scheduler",
-        "title": "Rust、Lua 与 EventBus Scheduler",
-        "description": "Topic 驱动的 Agent 调度模型。"
+        "title": "Rust、Lua 与 EventBus 单进程运行时",
+        "description": "当前同步 Topic 投递、Lua 5.4、basic loop 和前台 daemon 边界。"
       },
       {
         "id": "lua-external-agent-adapter",

@@ -70,7 +70,11 @@ Eva-CLI/
 
 ![Eva-CLI 总体架构](assets/eva-cli-architecture.zh-CN.svg)
 
-这张图概括当前方案的主链路：入口与配置热加载进入 Rust 托管 Runtime，经过 Recoverable EventBus 和 Scheduler 投递到 Lua Agent；Lua 只在沙箱内处理业务逻辑，并通过 Rust Tool Layer、AdapterRegistry、MemoryService、KnowledgeService 和 HardwareAdapter 访问受控能力。
+这张图概括当前已实现边界：basic 路径组合本地 EventBus、Scheduler mailbox、
+AgentRuntime 与受限 Lua 5.4 host；外部 capability 调用使用独立的 policy、Adapter、
+provider 与 transport 门禁。前台 daemon、恢复、备份、restore、upgrade 和 release
+命令分别组合文件系统服务与证据，`RuntimeBuilder` 并不是持有全部 concrete service
+的统一容器。
 
 ## 文档入口
 
@@ -83,7 +87,7 @@ Eva-CLI/
 建议先按以下顺序阅读英文默认入口；需要实现级细节时，以对应中文详案为准：
 
 1. [Architecture Overview](docs/en/architecture/architecture-overview.md)：先建立系统边界、核心模块和总体结论。
-2. [Rust, Lua, and EventBus Scheduler](docs/en/architecture/rust-lua-eventbus-scheduler.md)：理解 Runtime、EventBus、Scheduler、Lua Agent 和 Topic 路由。
+2. [Single-Process Rust, Lua, and EventBus Runtime](docs/en/architecture/rust-lua-eventbus-scheduler.md)：理解同步 EventBus、Scheduler、Agent、Lua 与 daemon 边界。
 3. [Lua External Agent Adapter](docs/en/capabilities/lua-external-agent-adapter.md)：理解外部 Agent、CLI、HTTP、MCP、Skill 如何通过 Adapter 接入。
 4. [Lua Skill, MCP, and Tool Hot Reload](docs/en/capabilities/lua-skill-mcp-tool-hot-reload.md)：理解 Tool、Lua Skill 和 MCP tool handler 如何下沉到 Lua 并热更新。
 5. [Skill Implementation Plan](docs/en/capabilities/skill-implementation.md)：理解 workflow Skill、runtime worker 和 Lua Skill 如何进入受控 `workflow.*` capability。
@@ -99,8 +103,8 @@ Eva-CLI/
 
 | 文档 | 职责 |
 | --- | --- |
-| [Architecture Overview](docs/en/architecture/architecture-overview.md) | 总入口，统一系统目标、非目标、模块边界、运行链路、安全原则和待补设计。 |
-| [Rust, Lua, and EventBus Scheduler](docs/en/architecture/rust-lua-eventbus-scheduler.md) | 定义 Rust Runtime、Lua Agent、EventBus、Topic、Scheduler、状态、一致性和热更新。 |
+| [Architecture Overview](docs/en/architecture/architecture-overview.md) | 当前代码地图：模块边界、按命令组合的运行链路、安全不变量、状态归属和生产阻塞。 |
+| [Single-Process Rust, Lua, and EventBus Runtime](docs/en/architecture/rust-lua-eventbus-scheduler.md) | 定义当前同步 EventBus、Topic 路由、有界 mailbox、AgentRuntime、Lua 5.4 host 与前台 daemon 边界。 |
 | [Lua External Agent Adapter](docs/en/capabilities/lua-external-agent-adapter.md) | 定义 AdapterRegistry、AdapterRouter、McpAdapter、SkillAdapter、HardwareAdapter、stdio/http/eventbus/hardware 等外部能力接入。 |
 | [Lua Skill, MCP, and Tool Hot Reload](docs/en/capabilities/lua-skill-mcp-tool-hot-reload.md) | 定义 `lua_tool`、`lua_skill`、`lua_mcp_handler`、Lua Capability Runtime、host API、安全沙箱和 generation swap。 |
 | [Skill Implementation Plan](docs/en/capabilities/skill-implementation.md) | 定义 Skill 分类、manifest、runtime gate、调用路由、安全边界、热更新和验证规则。 |
@@ -114,17 +118,24 @@ Eva-CLI/
 
 ## 当前方案定位
 
-当前方案目标是设计一套 Rust 托管运行时、Lua 热更新 Agent、Topic EventBus、动态 Adapter、MCP 双向集成、HardwareAdapter 和进程级恢复机制组合的多 Agent 调度系统。
+当前实现是一套本地、由 Rust 托管的多 Agent runtime，使用强类型 Topic event、
+有界同步调度、受限 Lua Agent handler、受控 provider transport、文件系统持久化和
+带门禁的 operator workflow。
 
 核心边界：
 
 - Rust 管系统边界、权限、schema、沙箱、密钥、进程生命周期、审计、超时和恢复。
-- Lua 管可热更新业务逻辑、Agent 局部状态、工具调用编排和结果转换。
+- Lua 只负责受限 handler 逻辑、数据转换、受控工具请求和结果映射。Agent 状态与
+  lifecycle 归 Rust；当前 reload 只提供 shadow-load 与 generation-control 原语。
 - Topic EventBus 管 Agent 间协作，不承担隐式全局业务状态。
 - Adapter 管外部能力接入，包括 CLI、HTTP、MCP、Skill、本地模型、内部 Agent 和硬件。
 - Discovery 只做发现与归一化，不代表授权执行；执行前仍必须经过 manifest、schema 和 policy。
-- 外接硬件通过 `hardware` transport 和 HardwareAdapter 接入；Lua 不直接访问设备句柄、系统设备路径或 raw IO。
-- Hot reload 默认只覆盖脚本、manifest 中可热加载字段、路由和注册表 generation；权限扩大、transport、MCP command、状态 backend 等需要重建 runtime 或 blue-green。
+- 外接硬件通过 manifest-derived candidate、权限门禁、lease 和 simulator-oriented
+  driver 接入；Lua 不直接访问设备句柄、系统设备路径或 raw IO，生产硬件 driver
+  仍不在 alpha 边界内。
+- Topic route 只来自配置的 route 文件。修改 route 或 manifest 后必须校验并显式
+  重建/重启 runtime；当前 reload evidence 不提供自动 route 同步或原子 live
+  `RouteTable` 替换。
 
 ## V1.x 剩余缺口
 

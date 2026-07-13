@@ -107,7 +107,7 @@
       {
         "id": "architecture-overview",
         "title": "Architecture Overview",
-        "description": "System goals, module boundaries, runtime chain, safety principles, and open design contracts."
+        "description": "Current module boundaries, command-specific runtime flows, safety invariants, state ownership, and production blockers."
       },
       {
         "id": "module-partitioning",
@@ -116,8 +116,8 @@
       },
       {
         "id": "rust-lua-eventbus-scheduler",
-        "title": "Runtime and EventBus",
-        "description": "Rust core, Lua Agents, Topic routing, Scheduler behavior, and recoverable event delivery."
+        "title": "Single-Process Runtime and EventBus",
+        "description": "Synchronous EventBus delivery, bounded Scheduler mailboxes, Lua 5.4 execution, and foreground daemon boundaries."
       },
       {
         "id": "lua-external-agent-adapter",
@@ -255,17 +255,17 @@
       {
         "id": "architecture-overview",
         "title": "Architecture Overview",
-        "description": "The default English entry for system goals, runtime boundaries, and core decisions; use the mapped Chinese page for full detail."
+        "description": "The current code map for system boundaries, implemented runtime paths, state ownership, safety rules, and production blockers."
       },
       {
         "id": "module-partitioning",
-        "title": "Module Partitioning Plan",
-        "description": "The module architecture map: workspace shape, crate responsibilities, dependency rules, runtime handoffs, state ownership, and side-effect boundaries."
+        "title": "Module Partitioning",
+        "description": "The 20-crate workspace map: direct dependencies, runtime handoffs, state ownership, and side-effect boundaries."
       },
       {
         "id": "rust-lua-eventbus-scheduler",
-        "title": "Rust, Lua, and EventBus Scheduler",
-        "description": "The Topic-driven Agent scheduling model."
+        "title": "Single-Process Rust, Lua, and EventBus Runtime",
+        "description": "The implemented synchronous Topic delivery, Lua 5.4, basic-loop, and foreground daemon boundaries."
       },
       {
         "id": "lua-external-agent-adapter",

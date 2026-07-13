@@ -212,15 +212,15 @@
           </a>
           <a class="doc-link" href="../docs/zh-CN/architecture/总体架构方案.md">
             <span>总体架构</span>
-            <small>系统目标、模块边界、运行链路、安全原则和待补设计契约。</small>
+            <small>当前模块边界、按命令组合的运行链路、安全不变量、状态归属和生产阻塞。</small>
           </a>
           <a class="doc-link" href="../docs/zh-CN/architecture/模块划分方案.md">
             <span>模块划分</span>
             <small>已落地的 Rust workspace 形态、crate 边界、依赖方向、运行时交接链路和职责归属。</small>
           </a>
           <a class="doc-link" href="../docs/zh-CN/architecture/Rust与Lua事件总线智能体调度架构方案.md">
-            <span>Runtime 与 EventBus</span>
-            <small>Rust 核心、Lua Agent、Topic 路由、Scheduler 行为与可恢复事件投递。</small>
+            <span>单进程 Runtime 与 EventBus</span>
+            <small>同步 EventBus 投递、有界 Scheduler mailbox、Lua 5.4 执行和前台 daemon 边界。</small>
           </a>
           <a class="doc-link" href="../docs/zh-CN/capabilities/Lua调用外部Agent动态Adapter架构方案.md">
             <span>动态 Adapter 层</span>

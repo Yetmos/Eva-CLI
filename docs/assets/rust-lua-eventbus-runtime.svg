@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">Rust, Lua, and EventBus runtime</title>
+  <desc id="desc">Current Eva-CLI basic Agent runtime showing Rust-owned EventBus routing, per-Agent mailboxes, Lua execution results, optional built-in capability invocation, recoverable event services, generation reload, and observability.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#2563eb"/></marker>
+    <style>
+      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:29px;font-weight:700}.subtitle{font-size:14px;fill:#526174}
+      .section{font-size:15px;font-weight:700}.label{font-size:14px;font-weight:700}.small{font-size:12px;fill:#526174}.tiny{font-size:11px;fill:#64748b}
+      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}
+      .green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}.orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}
+      .purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}.rose{fill:#fff1f2;stroke:#e25572;stroke-width:1.5}
+      .line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}.feedback{fill:none;stroke:#2563eb;stroke-width:2;stroke-dasharray:7 6;marker-end:url(#arrow-blue)}
+    </style>
+  </defs>
+  <rect width="1280" height="760" fill="#ffffff"/>
+  <text class="title" x="40" y="46">Rust, Lua, and EventBus Runtime</text>
+  <text class="subtitle" x="40" y="72">Rust owns delivery and side effects in the basic example; each selected Agent receives an event through a private mailbox and returns a Lua handler result.</text>
+
+  <text class="tiny" x="725" y="108" text-anchor="middle">LuaEventResult returns status, note, context, observations, and an optional capability request; current runtime does not republish its topic.</text>
+  <g>
+    <rect class="purple" x="40" y="140" width="170" height="90" rx="7"/><text class="label" x="125" y="173" text-anchor="middle">Basic run entry</text><text class="small" x="125" y="197" text-anchor="middle">run --example basic</text>
+    <rect class="blue" x="240" y="140" width="170" height="90" rx="7"/><text class="label" x="325" y="173" text-anchor="middle">EventBus</text><text class="small" x="325" y="197" text-anchor="middle">typed Event transport</text>
+    <rect class="blue" x="440" y="140" width="170" height="90" rx="7"/><text class="label" x="525" y="173" text-anchor="middle">Scheduler</text><text class="small" x="525" y="197" text-anchor="middle">target + TopicPattern</text>
+    <rect class="blue" x="640" y="140" width="170" height="90" rx="7"/><text class="label" x="725" y="173" text-anchor="middle">Agent mailbox</text><text class="small" x="725" y="197" text-anchor="middle">bounded private queue</text>
+    <rect class="orange" x="840" y="140" width="170" height="90" rx="7"/><text class="label" x="925" y="173" text-anchor="middle">AgentRuntime</text><text class="small" x="925" y="197" text-anchor="middle">handler + run control</text>
+    <rect class="orange" x="1040" y="140" width="170" height="90" rx="7"/><text class="label" x="1125" y="173" text-anchor="middle">LuaHost</text><text class="small" x="1125" y="197" text-anchor="middle">isolated on_event</text>
+    <path class="line" d="M210 185H240"/><path class="line" d="M410 185H440"/><path class="line" d="M610 185H640"/><path class="line" d="M810 185H840"/><path class="line" d="M1010 185H1040"/>
+  </g>
+
+  <rect class="panel" x="40" y="290" width="1200" height="216" rx="8"/>
+  <text class="section" x="62" y="322">Supporting runtime boundaries</text>
+  <rect class="blue" x="66" y="346" width="260" height="126" rx="7"/><text class="label" x="196" y="378" text-anchor="middle">Event durability</text><text class="small" x="196" y="402" text-anchor="middle">InMemoryEventBus</text><text class="small" x="196" y="423" text-anchor="middle">DurableEventBus + EventLog</text><text class="small" x="196" y="444" text-anchor="middle">dead letter · retry · replay</text>
+  <rect class="blue" x="356" y="346" width="260" height="126" rx="7"/><text class="label" x="486" y="378" text-anchor="middle">Scheduler controls</text><text class="small" x="486" y="402" text-anchor="middle">SubscriptionTable · MailboxRegistry</text><text class="small" x="486" y="423" text-anchor="middle">fanout / compete · direct target</text><text class="small" x="486" y="444" text-anchor="middle">policy and retry backoff</text>
+  <rect class="green" x="646" y="346" width="260" height="126" rx="7"/><text class="label" x="776" y="378" text-anchor="middle">Capability boundary</text><text class="small" x="776" y="402" text-anchor="middle">CapabilityHostApi · gate · router</text><text class="small" x="776" y="423" text-anchor="middle">schema · policy · timeout</text><text class="small" x="776" y="444" text-anchor="middle">Adapter runtime and transports</text>
+  <rect class="orange" x="936" y="346" width="278" height="126" rx="7"/><text class="label" x="1075" y="378" text-anchor="middle">Lua shadow load</text><text class="small" x="1075" y="402" text-anchor="middle">LuaShadowLoader health run</text><text class="small" x="1075" y="423" text-anchor="middle">healthy / rejected report only</text><text class="small" x="1075" y="444" text-anchor="middle">caller still owns active generation</text>
+  <path class="line" d="M325 230V346"/><path class="line" d="M525 230V308H486V346"/><path class="line" d="M1125 230V308H776V346"/>
+
+  <rect class="blue" x="40" y="542" width="370" height="140" rx="8"/>
+  <text class="section" x="62" y="576">Rust owns</text>
+  <text class="small" x="62" y="603">Event delivery, Topic matching, mailbox capacity, lifecycle,</text>
+  <text class="small" x="62" y="625">timeouts, cancellation, retry, recovery, capability execution,</text>
+  <text class="small" x="62" y="647">storage, provider processes, policy, audit, and telemetry.</text>
+
+  <rect class="orange" x="455" y="542" width="370" height="140" rx="8"/>
+  <text class="section" x="477" y="576">Lua owns</text>
+  <text class="small" x="477" y="603">Handler-local decisions, data transformation, result mapping,</text>
+  <text class="small" x="477" y="625">host observations, and an optional capability request returned</text>
+  <text class="small" x="477" y="647">to Rust. Lua does not open side-effecting handles directly.</text>
+
+  <rect class="green" x="870" y="542" width="370" height="140" rx="8"/>
+  <text class="section" x="892" y="576">Current implementation truth</text>
+  <text class="small" x="892" y="603">The basic runtime uses an in-memory loop. DurableEventBus,</text>
+  <text class="small" x="892" y="625">event log, task state, retry, and daemon recovery services exist</text>
+  <text class="small" x="892" y="647">as Rust modules; no external durable queue is claimed here.</text>
+  <text class="tiny" x="776" y="494" text-anchor="middle">Capability response is collected in BasicRunReport.</text>
+  <text class="tiny" x="40" y="724">Where wired, runtime paths emit structured audit events, trace fields, metrics, and durable operation evidence.</text>
+</svg>

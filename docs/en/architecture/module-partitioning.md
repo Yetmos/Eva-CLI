@@ -1,404 +1,232 @@
-# Module Partitioning Plan
+# Module Partitioning
 
 > Language: English
-> Published default: docs/en/architecture/module-partitioning.md
-> Translation: [简体中文](../../zh-CN/architecture/模块划分方案.md)
+> Published default: `docs/en/architecture/module-partitioning.md`
+> Translation: [Simplified Chinese](../../zh-CN/architecture/模块划分方案.md)
+> Translation status: current
 
-Updated: 2026-06-24
+Updated: 2026-07-13
 
-## Purpose
+## 1. Scope
 
-This document turns the existing Eva-CLI architecture into a module
-architecture plan. The repository is still mostly documentation, so the goal is
-not to describe current Rust code. The goal is to define the target workspace
-shape, crate boundaries, dependency direction, runtime handoffs, and ownership
-rules.
+This document records the module boundaries and direct internal dependencies of
+the current Eva-CLI Rust workspace. It describes the implementation at Cargo
+version `1.11.5-alpha`, including the `V1.17.6` alpha closure gate. It is not a
+future workspace proposal.
 
-The plan follows the established architecture rule: Rust owns runtime authority,
-permissions, schemas, sandboxing, external I/O, recovery, audit, and long-term
-state; Lua owns hot-reloadable Agent and capability business logic.
+The `crates/` directory contains exactly 20 workspace crates. Cargo also
+includes the root `eva` package, a thin binary package that depends on
+`eva-cli`; it is not an additional architecture domain.
 
-## Partitioning Principles
+## 2. Partitioning Rules
 
-- Keep stable contracts in small foundation crates before adding runtime logic.
-- Put concrete side effects behind ports and registries, not behind direct
-  calls from Lua, Scheduler, or domain types.
-- Make `eva-runtime` the only composition root that wires concrete
-  implementations together.
-- Let `Discovery` discover and normalize capabilities; let `Policy` decide
-  whether execution is allowed.
-- Keep EventBus, Scheduler, AgentRuntime, Lua host, AdapterRegistry, and MCP
-  server separable by ownership and dependency direction.
-- Keep module names aligned with stable architecture concepts, not temporary
-  implementation phases.
+- Put shared value contracts in `eva-core`; keep it dependency-free.
+- Load and normalize configuration in `eva-config`; evaluate execution policy
+  in `eva-policy`.
+- Keep publication, routing, Agent queues, and Lua execution as separate
+  boundaries.
+- Route external side effects through capability and Adapter gates.
+- Let each durable state family have an explicit owner; do not use EventBus as
+  a general state store.
+- Keep operational mutation in backup/lifecycle services and expose it through
+  guarded CLI paths.
+- Treat `eva-runtime` and `eva-cli` as composition surfaces, not foundation
+  libraries.
+- Read the Cargo graph as a DAG with cross-links, not as a strict stack.
 
-## Module Overview
+## 3. Workspace Overview
 
 ![Module partition overview](../../assets/module-partition-overview.svg)
 
-The target workspace should use crates for stable bounded contexts and modules
-inside each crate for implementation detail. This structure is an architecture
-boundary map, not a delivery sequence.
-
-## Recommended Workspace Layout
-
 ```text
-Eva-CLI/
-  Cargo.toml
-  src/
-    main.rs                 # thin binary shim, delegates to eva-cli
+eva -> eva-cli
 
-  crates/
-    eva-core/
-      src/
-        event.rs
-        topic.rs
-        ids.rs
-        capability.rs
-        invoke.rs
-        error.rs
-        lib.rs
-
-    eva-config/
-      src/
-        eva_yaml.rs
-        manifest/
-        schema.rs
-        lib.rs
-
-    eva-policy/
-      src/
-        effective.rs
-        permissions.rs
-        sandbox.rs
-        lib.rs
-
-    eva-observability/
-      src/
-        trace.rs
-        metrics.rs
-        audit.rs
-        lib.rs
-
-    eva-storage/
-      src/
-        state_store.rs
-        event_log.rs
-        artifact_store.rs
-        sqlite.rs
-        lib.rs
-
-    eva-eventbus/
-      src/
-        bus.rs
-        in_memory.rs
-        recoverable.rs
-        dead_letter.rs
-        lib.rs
-
-    eva-scheduler/
-      src/
-        registry.rs
-        routing.rs
-        subscription.rs
-        matcher.rs
-        mailbox.rs
-        lib.rs
-
-    eva-agent/
-      src/
-        runtime.rs
-        lifecycle.rs
-        state.rs
-        queue.rs
-        lib.rs
-
-    eva-lua-host/
-      src/
-        loader.rs
-        sandbox.rs
-        bindings.rs
-        hot_reload.rs
-        lib.rs
-
-    eva-capability/
-      src/
-        registry.rs
-        router.rs
-        generation.rs
-        host_api.rs
-        lib.rs
-
-    eva-adapter/
-      src/
-        manifest.rs
-        registry.rs
-        router.rs
-        runtime.rs
-        error.rs
-        transports/
-          builtin.rs
-          stdio.rs
-          http.rs
-          eventbus.rs
-          mcp.rs
-          skill.rs
-          hardware.rs
-          lua_capability.rs
-        lib.rs
-
-    eva-mcp/
-      src/
-        client.rs
-        server.rs
-        tool_mapping.rs
-        policy.rs
-        schema.rs
-        lib.rs
-
-    eva-discovery/
-      src/
-        service.rs
-        scanner.rs
-        normalizer.rs
-        health.rs
-        cache.rs
-        sources/
-          project_agents.rs
-          project_adapters.rs
-          codex.rs
-          omx.rs
-          path_commands.rs
-          mcp.rs
-        lib.rs
-
-    eva-memory/
-      src/
-        memory_service.rs
-        knowledge_service.rs
-        context_builder.rs
-        lib.rs
-
-    eva-hardware/
-      src/
-        discovery.rs
-        registry.rs
-        driver.rs
-        hotplug.rs
-        state.rs
-        lib.rs
-
-    eva-backup/
-      src/
-        backup_service.rs
-        migration_package.rs
-        release_snapshot.rs
-        manifest_verifier.rs
-        lib.rs
-
-    eva-lifecycle/
-      src/
-        supervisor.rs
-        generation.rs
-        drain.rs
-        rollback.rs
-        lib.rs
-
-    eva-runtime/
-      src/
-        builder.rs
-        runtime.rs
-        services.rs
-        shutdown.rs
-        lib.rs
-
-    eva-cli/
-      src/
-        run.rs
-        emit.rs
-        inspect.rs
-        agent.rs
-        adapter.rs
-        capability.rs
-        lib.rs
+contracts:       eva-core
+control:         eva-config, eva-policy
+cross-cutting:   eva-observability, eva-storage
+execution:       eva-eventbus, eva-scheduler, eva-agent, eva-lua-host
+integration:     eva-capability, eva-adapter, eva-mcp, eva-discovery,
+                 eva-memory, eva-hardware
+operations:      eva-backup, eva-lifecycle, eva-release
+composition:     eva-runtime, eva-cli
 ```
 
-## Crate Responsibilities
+These labels aid reading only. Direct Cargo dependencies in the next section
+are authoritative.
 
-| Crate | Owns | Must Not Own |
-| --- | --- | --- |
-| `eva-core` | Pure types: `Event`, `Topic`, IDs, capability names, invoke request/response, structured errors | Tokio task wiring, file system access, provider-specific code |
-| `eva-config` | `eva.yaml`, manifests, schema loading, config normalization | Permission decisions, runtime mutation |
-| `eva-policy` | Effective permissions, sandbox rules, request-level narrowing | Discovery scanning, concrete I/O |
-| `eva-observability` | Trace fields, metrics labels, audit sink traits | Business routing or policy decisions |
-| `eva-storage` | State store, durable event log, artifact store interfaces and local implementations | Agent business logic |
-| `eva-eventbus` | Event publication, recoverable log integration, dead-letter path | Topic subscription matching for Agent routing |
-| `eva-scheduler` | Topic matcher, subscription table, Agent mailbox delivery | Lua execution, adapter invocation |
-| `eva-agent` | Agent lifecycle, private queue, event handling boundary | Lua sandbox internals, external provider transport |
-| `eva-lua-host` | Lua state loading, sandbox, host bindings, hot reload | Policy expansion, direct shell/network/file access |
-| `eva-capability` | Capability registry, generation swap, host API traits | Concrete provider or hardware driver implementation |
-| `eva-adapter` | Adapter manifest, registry, router, transport runtimes | Discovery scanning, global business state |
-| `eva-mcp` | MCP client/server protocol, tool mapping, MCP policy helpers | Unrestricted proxying into internal Topics |
-| `eva-discovery` | Trusted source scanning, normalization, health probing, cache | Final execution authorization |
-| `eva-memory` | Agent memory, global memory, knowledge, context assembly | EventBus storage semantics |
-| `eva-hardware` | Device discovery, driver binding, hotplug state, hardware adapter | Lua raw I/O access |
-| `eva-backup` | Backup, migration package, release snapshot, artifact verification | Agent-owned restore or rollback mutation |
-| `eva-lifecycle` | Supervisor, runtime generation, drain, rollback | Lua business decisions |
-| `eva-runtime` | Composition root, service wiring, startup/shutdown | Domain contracts that lower crates need |
-| `eva-cli` | CLI command parsing and user-facing commands | Core runtime ownership |
+## 4. Crate Inventory And Direct Dependencies
 
-## Dependency Direction
+| Crate | Owns | Direct Eva dependencies | Does not own / current boundary |
+| --- | --- | --- | --- |
+| `eva-core` | ID newtypes, Topic and TopicPattern, Event, capability reference, Invoke contracts, structured errors | none | I/O, configuration loading, routing, persistence, execution |
+| `eva-config` | `eva.yaml`, configured roots, Agent/Adapter/Capability manifests, policy documents, routes, schema and cross-file validation | `eva-core` | runtime authorization or side effects |
+| `eva-policy` | permission sets, effective-policy intersection, sandbox policy, typed high-risk runtime decisions | `eva-config`, `eva-core` | provider execution, storage, discovery scanning |
+| `eva-observability` | trace fields, audit and metric contracts, in-memory/JSONL sinks, tracing bridge, OTLP smoke exporter, retention policy | `eva-core` | business routing, task execution, production database sink |
+| `eva-storage` | in-memory/filesystem state, event log, task snapshots, provider process table, audit and artifact stores, durable layout | `eva-core`, `eva-observability` | SQLite/database implementation; `sqlite.rs` is a placeholder |
+| `eva-eventbus` | synchronous publish/ack/fail contract, in-memory and filesystem durable buses, dead letters and redrive | `eva-core`, `eva-observability`, `eva-storage` | Topic subscription selection or Agent execution |
+| `eva-scheduler` | Topic matching, fanout/compete planning, bounded mailbox registry, generation route gate, retry dispatch helpers | `eva-core`, `eva-observability`, `eva-policy` | Lua execution, provider invocation, durable event ownership |
+| `eva-agent` | Agent lifecycle, bounded FIFO queue, controlled handler retries/timeouts/cancellation, read-only Agent state snapshots | `eva-config`, `eva-core`, `eva-observability`, `eva-policy`, `eva-scheduler`, `eva-storage` | durable task persistence, Lua VM internals or external transports |
+| `eva-lua-host` | Lua script loading, restricted VM, host bindings, execution limits, shadow-load reports | `eva-capability`, `eva-config`, `eva-core`, `eva-memory`, `eva-observability`, `eva-policy` | arbitrary shell/filesystem/network access; live process-wide VM swap |
+| `eva-capability` | capability registry, deterministic provider plan, permission gate, host API, builtin capability router, generation marker | `eva-config`, `eva-core`, `eva-observability`, `eva-policy` | concrete external transports and provider supervision |
+| `eva-adapter` | Adapter handles/registry/router, provider supervisor, credential scope, stream capture, builtin/stdio/HTTP/MCP/Skill/hardware transports | `eva-capability`, `eva-config`, `eva-core`, `eva-hardware`, `eva-mcp`, `eva-observability`, `eva-policy`, `eva-storage` | discovery scanning, global scheduling, OS process management |
+| `eva-mcp` | allowlists, tool mapping, JSON-RPC client, stdio/HTTP calls, session and stream lifecycle records, compatibility matrix, minimal server tool gate | `eva-core`, `eva-observability`, `eva-policy` | unrestricted proxy or production resident MCP server |
+| `eva-discovery` | normalized candidates, trust/health reports, project/PATH/MCP/OMX/Codex/registry-config sources, in-memory incremental cache | `eva-config`, `eva-core`, `eva-observability`, `eva-policy` | authorization, network registry crawling, automatic installation |
+| `eva-memory` | private/global memory, knowledge records, context building, filesystem durability, TTL GC, rebuild checkpoint, retrieval and redaction evidence | `eva-capability`, `eva-core`, `eva-observability`, `eva-policy`, `eva-storage` | vector database or resident production retrieval scheduler |
+| `eva-hardware` | manifest-derived discovery, device/lease registry, simulator drivers, OS permission gate, lifecycle and hotplug EventBus publication | `eva-config`, `eva-core`, `eva-eventbus`, `eva-observability`, `eva-policy` | certified real hardware drivers or fixtures |
+| `eva-backup` | backup scope/manifest, artifact archives, migration package, release snapshots, restore planning, staged file mutation and rollback | `eva-core`, `eva-observability`, `eva-policy`, `eva-storage` | remote backup upload or production key management |
+| `eva-lifecycle` | generation/drain state, upgrade apply locks, supervisor handoff, release-pointer state, rollback, service-manager abstraction | `eva-backup`, `eva-core`, `eva-observability`, `eva-policy` | real systemd/SCM/launchd integration; current service-manager implementation is fake/test-oriented |
+| `eva-release` | release readiness gates, artifact/distribution/scanner/benchmark verification, security/performance/migration reports, V1.x closure report | `eva-core`, `eva-mcp`, `eva-storage` | signing credentials, repository publishing or release upload |
+| `eva-runtime` | service summaries, basic run composition, foreground daemon/control mailbox, durable recovery/diagnostics, scheduler retry tick, runtime task reports | `eva-adapter`, `eva-agent`, `eva-backup`, `eva-capability`, `eva-config`, `eva-core`, `eva-discovery`, `eva-eventbus`, `eva-hardware`, `eva-lifecycle`, `eva-lua-host`, `eva-mcp`, `eva-memory`, `eva-observability`, `eva-policy`, `eva-scheduler`, `eva-storage` | release-gate aggregation; a persistent container holding every service |
+| `eva-cli` | public command parser/dispatch, text and JSON writers, trace/exit-code mapping, command-specific composition and operator gates | `eva-adapter`, `eva-agent`, `eva-backup`, `eva-capability`, `eva-config`, `eva-core`, `eva-discovery`, `eva-eventbus`, `eva-hardware`, `eva-lifecycle`, `eva-mcp`, `eva-memory`, `eva-observability`, `eva-policy`, `eva-release`, `eva-runtime`, `eva-storage` | shared domain contracts or a generic long-lived task executor |
+
+## 5. Dependency Graph
 
 ![Dependency direction rules](../../assets/module-dependency-rules.svg)
 
-Allowed dependency direction:
+The direct dependency graph is acyclic, but deliberately not purely layered:
 
 ```text
-eva-cli / eva-supervisor / test harness
-  -> eva-runtime
-  -> eva-discovery / eva-adapter / eva-mcp / eva-memory / eva-hardware / eva-backup / eva-lifecycle
-  -> eva-agent / eva-lua-host / eva-capability
-  -> eva-eventbus / eva-scheduler
-  -> eva-core / eva-config / eva-policy / eva-storage / eva-observability
+eva-core
+  <- eva-config
+  <- eva-observability
+
+eva-config + eva-core
+  <- eva-policy
+
+eva-core + eva-observability
+  <- eva-storage
+
+eva-eventbus  -> eva-core + eva-observability + eva-storage
+eva-scheduler -> eva-core + eva-observability + eva-policy
+eva-capability -> eva-config + eva-core + eva-observability + eva-policy
+eva-mcp       -> eva-core + eva-observability + eva-policy
+eva-discovery -> eva-config + eva-core + eva-observability + eva-policy
+eva-backup    -> eva-core + eva-observability + eva-policy + eva-storage
+
+eva-agent     -> eva-config + eva-core + eva-observability + eva-policy
+                 + eva-scheduler + eva-storage
+eva-memory    -> eva-capability + eva-core + eva-observability
+                 + eva-policy + eva-storage
+eva-hardware  -> eva-config + eva-core + eva-eventbus
+                 + eva-observability + eva-policy
+eva-lifecycle -> eva-backup + eva-core + eva-observability + eva-policy
+eva-release   -> eva-core + eva-mcp + eva-storage
+
+eva-lua-host  -> eva-capability + eva-config + eva-core + eva-memory
+                 + eva-observability + eva-policy
+eva-adapter   -> eva-capability + eva-config + eva-core + eva-hardware
+                 + eva-mcp + eva-observability + eva-policy + eva-storage
+
+eva-runtime   -> runtime domains, excluding eva-release
+eva-cli       -> operator-facing domains + eva-runtime + eva-release
 ```
 
-Important restrictions:
+Important consequences:
 
-- `eva-core` must not depend on any runtime, adapter, Lua, MCP, or CLI crate.
-- `eva-scheduler` must not import `eva-lua-host` or `eva-adapter`; it only
-  delivers events to registered mailboxes.
-- `eva-lua-host` must call host API traits, not concrete file, network, shell,
-  MCP, or hardware implementations.
-- `eva-adapter` must not change permissions. It receives effective policy and
-  enforces it.
-- `eva-discovery` must not grant authority. It returns discovered candidates
-  and rejected reasons.
-- `eva-runtime` may depend on almost every crate because it wires them together.
-  No lower crate should depend on `eva-runtime`.
+- `eva-hardware -> eva-eventbus` exists because hotplug publication is part of
+  the hardware boundary.
+- `eva-memory -> eva-capability` exists because supervised retrieval uses the
+  capability host contract.
+- `eva-adapter -> eva-hardware + eva-mcp` exists because those are concrete
+  Adapter transports.
+- `eva-release` is consumed directly by `eva-cli`, not by `eva-runtime`.
+- `eva-cli` does not directly depend on `eva-scheduler` or `eva-lua-host`; those
+  enter its basic/daemon flows through `eva-runtime`.
+- No lower-level crate depends on `eva-runtime` or `eva-cli`.
 
-## Runtime Handoff
+## 6. Runtime Handoffs
 
 ![Runtime module flow](../../assets/module-runtime-flow.svg)
 
-The main call chain should remain:
+There is no single universal call chain. Three handoff paths are implemented.
+
+### 6.1 Basic Event Path
 
 ```text
-Ingress
-  -> EventBus
-  -> Scheduler
-  -> AgentRuntime
-  -> Lua on_event
-  -> Rust Tool Layer / Capability Host API
-  -> AdapterRouter or Runtime Service
-  -> AdapterRuntime / MemoryService / HardwareService / MCP Server
-  -> structured response or emitted Topic
+eva-cli
+  -> eva-config
+  -> eva-runtime basic composition
+  -> eva-eventbus
+  -> eva-scheduler mailbox
+  -> eva-agent
+  -> eva-lua-host
+  -> eva-capability builtin host
+  -> ack/fail + task/audit report
 ```
 
-The handoff rules are:
-
-- Ingress only constructs validated events or command requests.
-- EventBus publishes events and recovery metadata, but it does not decide which
-  Agent should execute business logic.
-- Scheduler routes by `target`, exact Topic, wildcard Topic, and explicit
-  routing rules.
-- AgentRuntime owns one Agent queue, one Lua state generation, and one timeout
-  boundary.
-- Lua can transform data, keep local Agent state, emit Topics, and request
-  controlled tools.
-- Tool Layer validates schema, policy, timeout, audit fields, and cancellation.
-- AdapterRouter chooses a provider by explicit provider or capability index.
-- Concrete transports own provider protocol details only after authorization.
-
-## Cross-Cutting Architecture Rules
-
-### Error Model
-
-Cross-module errors must be structured rather than plain strings:
+### 6.2 External Provider Path
 
 ```text
-kind
-message
-retryable
-provider_code?
-correlation_id?
-causation_id?
+eva-cli or CapabilityHostApi caller
+  -> eva-capability provider plan and permission gate
+  -> eva-policy runtime gate
+  -> eva-adapter router and supervisor
+  -> stdio | HTTP | MCP | Skill | hardware transport
+  -> eva-storage artifact/provider evidence
+  -> eva-observability
 ```
 
-Individual crates may use richer internal error types, but public cross-crate
-APIs should preserve stable error kinds and JSON-compatible shapes.
-
-### Permission Model
-
-Permissions only narrow as requests move through the system:
+### 6.3 Durable Operations Path
 
 ```text
-system policy
-  -> manifest permissions
-  -> user/session policy
-  -> request constraints
-  -> effective permissions
+eva-cli
+  -> eva-runtime daemon/recovery, or eva-backup/eva-lifecycle operation
+  -> eva-storage filesystem backend
+  -> policy + confirmation + lock + health gate
+  -> mutation/recovery/rollback evidence
+  -> eva-release readiness aggregation when requested
 ```
 
-No crate may expand effective permissions. A module that detects a required
-permission expansion must return a structured rejection.
+`RuntimeBuilder` participates in inspection and basic/daemon summaries, but
+concrete stores, buses, supervisors, and operation coordinators are opened by
+the command path that uses them.
 
-### State Ownership
+## 7. Cross-Crate Invariants
 
-- Agent local state belongs to `eva-agent` and Lua generations.
-- Durable business state belongs to `eva-storage` and `eva-memory`.
-- Event recovery state belongs to `eva-eventbus`.
-- Adapter runtime state belongs to `eva-adapter`.
-- Runtime generation state belongs to `eva-lifecycle`.
+### 7.1 Contract Invariant
 
-Modules must not share hidden mutable global state across these boundaries.
+Cross-crate Event, Topic, ID, Invoke, and Error shapes are owned by `eva-core`.
+Provider-private protocol values must be translated at Adapter/MCP boundaries.
 
-### Observability Fields
+### 7.2 Policy Invariant
 
-Critical handoffs must preserve these fields where applicable:
+Discovery and manifest loading never grant execution by themselves. Effective
+permissions only narrow. High-risk actions require runtime policy, and
+operator-facing apply paths retain dry-run/confirmation and execution-state
+fields.
 
-```text
-event_id
-request_id
-topic
-agent_id
-adapter_id
-capability
-provider
-correlation_id
-causation_id
-subscription_pattern
-generation
-script_version
-latency_ms
-error_kind
-```
+### 7.3 State Invariant
 
-## Architecture Risks
+Mailbox state belongs to Scheduler/Agent, event recovery to EventBus, durable
+records to Storage, provider state to Adapter, memory data to Memory, hardware
+leases to Hardware, and generation/handoff state to Lifecycle. State must not
+move into hidden globals or Event payloads for convenience.
 
-| Risk | Control |
-| --- | --- |
-| Scheduler grows business logic | Keep routing rule data-only and move business decisions to Agents |
-| Lua host becomes a hidden system API | Expose only typed host APIs with manifest + policy checks |
-| Adapter registry becomes a plugin free-for-all | Require manifest, schema, policy, health, audit, and explicit trust source |
-| MCP becomes an unrestricted proxy | Maintain tool/resource/prompt allowlists and per-client policy |
-| Discovery accidentally authorizes execution | Keep discovered candidates separate from registered runtime handles |
-| State ownership becomes ambiguous | Keep Agent, durable business, event recovery, Adapter, and lifecycle state in separate modules |
-| Concrete transports leak inward | Restrict provider, MCP, shell, HTTP, skill, and hardware details to adapter/service crates |
+### 7.4 Failure And Observability Invariant
 
-## Summary
+Cross-crate failures use `EvaError` with stable kind, retryability, optional
+provider code, and context. Bounded-resource failure, degraded observability,
+redaction, mutation execution, and rollback requirements remain explicit in
+reports.
 
-The clean module cut is:
+## 8. Implemented Boundary Versus Production Blockers
 
-```text
-foundation contracts
-  -> event and routing kernel
-  -> isolated Agent and Lua execution boundary
-  -> controlled capability and adapter boundary
-  -> discovery and runtime services
-  -> application, supervisor, and operational surfaces
-```
+Implemented code includes filesystem durability, foreground daemon control,
+controlled external provider execution, MCP compatibility fixtures, simulator
+hardware safety, destructive restore/rollback, JSONL observability, and local
+release evidence gates.
 
-This partition keeps Eva-CLI's architecture explicit: Rust owns trusted
-runtime boundaries, Lua owns replaceable business behavior, EventBus and
-Scheduler own coordination, Adapter and service crates own side effects, and
-`eva-runtime` is the only place where concrete implementations are composed.
+The crate graph does not imply that the following are complete: background or
+OS-managed daemon startup, a live general task executor, balanced scheduling,
+production MCP serving/TLS/vault isolation, real hardware integration,
+SQLite/database storage, production database observability, platform service
+managers, remote backup, production signing, package repositories, or release
+upload. The V1.17.6 closure report records these as external or later production
+boundaries rather than hiding them behind module names.
+
+## 9. Summary
+
+The 20 crates under `crates/` separate contracts, control, execution,
+integration, durability, operations, and operator composition while allowing
+explicit cross-links required by real behavior. Cargo manifests, not a
+simplified layer diagram, are the source of truth for dependency direction.

@@ -1,84 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="620" viewBox="0 0 1180 620" role="img" aria-labelledby="title desc">
-  <title id="title">Eva-CLI runtime call flow</title>
-  <desc id="desc">Main runtime flow from ingress to EventBus, Scheduler, Lua Agent, Tool Layer, AdapterRouter, and external capabilities.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="900" viewBox="0 0 1320 900" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI current runtime paths</title>
+  <desc id="desc">Three independent implemented paths: the basic in-memory Agent event path, the external provider execution path, and the durable daemon and operational path. They do not form one shared EventBus pipeline.</desc>
   <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
     <style>
-      .bg { fill: #f8fafc; }
-      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 8; }
-      .hot { fill: #fef3c7; stroke: #d97706; }
-      .rust { fill: #e0f2fe; stroke: #0284c7; }
-      .adapter { fill: #fce7f3; stroke: #db2777; }
-      .store { fill: #dcfce7; stroke: #16a34a; }
-      .title { font: 700 22px Arial, sans-serif; fill: #0f172a; }
-      .label { font: 700 14px Arial, sans-serif; fill: #0f172a; }
-      .small { font: 400 12px Arial, sans-serif; fill: #334155; }
-      .arrow { stroke: #334155; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
-      .audit { stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 6 5; fill: none; marker-end: url(#arrow); }
+      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:29px;font-weight:700}.subtitle{font-size:14px;fill:#526174}
+      .section{font-size:16px;font-weight:700}.label{font-size:13px;font-weight:700}.small{font-size:11px;fill:#526174}.tiny{font-size:11px;fill:#64748b}
+      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}
+      .green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}.orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}
+      .purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}.rose{fill:#fff1f2;stroke:#e25572;stroke-width:1.5}
+      .line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}
     </style>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
-    </marker>
   </defs>
-  <rect class="bg" width="1180" height="620"/>
-  <text class="title" x="50" y="48">Runtime Flow and Module Handoffs</text>
-  <text class="small" x="50" y="72">The critical path keeps side effects behind Rust-controlled tools and adapters.</text>
+  <rect width="1320" height="900" fill="#ffffff"/>
+  <text class="title" x="38" y="46">Current Runtime Paths and Module Handoffs</text>
+  <text class="subtitle" x="38" y="72">Basic Agent execution, external providers, and durable operations are separate code paths with different entrypoints and state.</text>
 
-  <rect class="box rust" x="60" y="125" width="130" height="70"/>
-  <text class="label" x="90" y="156">Ingress</text>
-  <text class="small" x="78" y="176">CLI / API / UI</text>
+  <rect class="panel" x="28" y="100" width="1264" height="238" rx="8"/>
+  <text class="section" x="50" y="130">1. Basic in-memory Agent event path</text>
+  <text class="tiny" x="1268" y="130" text-anchor="end">run_basic in eva-runtime</text>
+  <rect class="purple" x="52" y="156" width="170" height="82" rx="7"/><text class="label" x="137" y="187" text-anchor="middle">eva run basic</text><text class="small" x="137" y="210" text-anchor="middle">BasicRunOptions</text>
+  <rect class="purple" x="250" y="156" width="170" height="82" rx="7"/><text class="label" x="335" y="187" text-anchor="middle">TaskReport</text><text class="small" x="335" y="210" text-anchor="middle">running + task logs</text>
+  <rect class="blue" x="448" y="156" width="170" height="82" rx="7"/><text class="label" x="533" y="187" text-anchor="middle">InMemoryEventBus</text><text class="small" x="533" y="210" text-anchor="middle">publish receipt / DLQ</text>
+  <rect class="blue" x="646" y="156" width="190" height="82" rx="7"/><text class="label" x="741" y="187" text-anchor="middle">Scheduler tables</text><text class="small" x="741" y="210" text-anchor="middle">SubscriptionTable + mailboxes</text>
+  <rect class="orange" x="864" y="156" width="190" height="82" rx="7"/><text class="label" x="959" y="187" text-anchor="middle">AgentRuntime + LuaHost</text><text class="small" x="959" y="210" text-anchor="middle">run handler and collect result</text>
+  <rect class="orange" x="1082" y="156" width="184" height="82" rx="7"/><text class="label" x="1174" y="187" text-anchor="middle">LuaEventResult</text><text class="small" x="1174" y="210" text-anchor="middle">status · note · context</text>
+  <path class="line" d="M222 197H250"/><path class="line" d="M420 197H448"/><path class="line" d="M618 197H646"/><path class="line" d="M836 197H864"/><path class="line" d="M1054 197H1082"/>
+  <rect class="green" x="742" y="262" width="250" height="54" rx="7"/><text class="label" x="867" y="284" text-anchor="middle">optional built-in CapabilityRouter</text><text class="small" x="867" y="303" text-anchor="middle">config.lint response only</text>
+  <rect class="blue" x="1040" y="262" width="226" height="54" rx="7"/><text class="label" x="1153" y="284" text-anchor="middle">BasicRunReport</text><text class="small" x="1153" y="303" text-anchor="middle">result + response + audit</text>
+  <path class="line" d="M1174 238V262"/><path class="line" d="M1174 238V250H867V262"/><path class="line" d="M992 289H1040"/>
+  <text class="tiny" x="52" y="314">Current behavior: LuaEventResult.topic is reported but not republished; the optional capability response returns to the report, not to Scheduler.</text>
 
-  <rect class="box rust" x="240" y="125" width="130" height="70"/>
-  <text class="label" x="276" y="156">EventBus</text>
-  <text class="small" x="262" y="176">typed Topic</text>
+  <rect class="panel" x="28" y="362" width="1264" height="202" rx="8"/>
+  <text class="section" x="50" y="392">2. External provider execution path</text>
+  <text class="tiny" x="1268" y="392" text-anchor="end">does not require EventBus, Scheduler, AgentRuntime, or LuaHost</text>
+  <rect class="purple" x="52" y="422" width="180" height="88" rx="7"/><text class="label" x="142" y="453" text-anchor="middle">Provider entry</text><text class="small" x="142" y="476" text-anchor="middle">capability · adapter · MCP CLI</text><text class="small" x="142" y="496" text-anchor="middle">or gated MCP surface</text>
+  <rect class="green" x="258" y="422" width="190" height="88" rx="7"/><text class="label" x="353" y="453" text-anchor="middle">Capability gate</text><text class="small" x="353" y="476" text-anchor="middle">policy + schema + provider plan</text>
+  <rect class="rose" x="474" y="422" width="190" height="88" rx="7"/><text class="label" x="569" y="453" text-anchor="middle">Adapter registry</text><text class="small" x="569" y="476" text-anchor="middle">manifest + route + credentials</text>
+  <rect class="rose" x="690" y="422" width="190" height="88" rx="7"/><text class="label" x="785" y="453" text-anchor="middle">Provider execution</text><text class="small" x="785" y="476" text-anchor="middle">AdapterRuntime + Supervisor</text>
+  <rect class="orange" x="906" y="422" width="190" height="88" rx="7"/><text class="label" x="1001" y="453" text-anchor="middle">Transport</text><text class="small" x="1001" y="476" text-anchor="middle">builtin · stdio · HTTP · MCP</text><text class="small" x="1001" y="496" text-anchor="middle">EventBus · Skill · Lua · HW</text>
+  <rect class="blue" x="1122" y="422" width="144" height="88" rx="7"/><text class="label" x="1194" y="453" text-anchor="middle">Outcome</text><text class="small" x="1194" y="476" text-anchor="middle">structured result</text><text class="small" x="1194" y="496" text-anchor="middle">stream + audit</text>
+  <path class="line" d="M232 466H258"/><path class="line" d="M448 466H474"/><path class="line" d="M664 466H690"/><path class="line" d="M880 466H906"/><path class="line" d="M1096 466H1122"/>
+  <text class="tiny" x="52" y="542">Provider state may use ProviderProcessTable and audit storage, but provider calls are not routed through the basic Agent event loop.</text>
 
-  <rect class="box rust" x="420" y="125" width="130" height="70"/>
-  <text class="label" x="452" y="156">Scheduler</text>
-  <text class="small" x="444" y="176">route to inbox</text>
-
-  <rect class="box hot" x="600" y="125" width="145" height="70"/>
-  <text class="label" x="631" y="156">AgentRuntime</text>
-  <text class="small" x="628" y="176">Lua State queue</text>
-
-  <rect class="box hot" x="795" y="125" width="145" height="70"/>
-  <text class="label" x="832" y="156">Lua Logic</text>
-  <text class="small" x="817" y="176">on_event + state</text>
-
-  <rect class="box rust" x="795" y="285" width="145" height="70"/>
-  <text class="label" x="824" y="316">Tool Layer</text>
-  <text class="small" x="816" y="336">schema + policy</text>
-
-  <rect class="box adapter" x="600" y="285" width="145" height="70"/>
-  <text class="label" x="628" y="316">AdapterRouter</text>
-  <text class="small" x="622" y="336">provider selection</text>
-
-  <rect class="box adapter" x="410" y="285" width="150" height="70"/>
-  <text class="label" x="430" y="316">AdapterRuntime</text>
-  <text class="small" x="432" y="336">stdio/http/mcp/skill</text>
-
-  <rect class="box adapter" x="210" y="285" width="150" height="70"/>
-  <text class="label" x="244" y="316">External</text>
-  <text class="small" x="233" y="336">Agent / MCP / HW</text>
-
-  <rect class="box store" x="420" y="455" width="150" height="70"/>
-  <text class="label" x="452" y="486">StateStore</text>
-  <text class="small" x="435" y="506">memory + durable log</text>
-
-  <rect class="box store" x="640" y="455" width="150" height="70"/>
-  <text class="label" x="676" y="486">Audit</text>
-  <text class="small" x="662" y="506">trace + metrics</text>
-
-  <path class="arrow" d="M190 160 L236 160"/>
-  <path class="arrow" d="M370 160 L416 160"/>
-  <path class="arrow" d="M550 160 L596 160"/>
-  <path class="arrow" d="M745 160 L791 160"/>
-  <path class="arrow" d="M867 195 L867 281"/>
-  <path class="arrow" d="M795 320 L749 320"/>
-  <path class="arrow" d="M600 320 L564 320"/>
-  <path class="arrow" d="M410 320 L364 320"/>
-  <path class="arrow" d="M285 285 C285 235 660 235 842 279"/>
-  <path class="arrow" d="M285 355 C285 405 667 406 672 199"/>
-  <path class="audit" d="M485 195 L485 451"/>
-  <path class="audit" d="M672 355 L715 451"/>
-  <path class="audit" d="M867 355 C840 430 786 459 790 489"/>
-  <text class="small" x="74" y="565">Important boundary: Lua can express intent and transform results, but it cannot open files, shell, network, MCP sessions, or device handles directly.</text>
+  <rect class="panel" x="28" y="588" width="1264" height="244" rx="8"/>
+  <text class="section" x="50" y="618">3. Durable daemon and operational path</text>
+  <text class="tiny" x="1268" y="618" text-anchor="end">persists and recovers operation state; retry ticks do not run Agent or Lua handlers</text>
+  <rect class="purple" x="52" y="650" width="190" height="94" rx="7"/><text class="label" x="147" y="681" text-anchor="middle">Operational entry</text><text class="small" x="147" y="704" text-anchor="middle">daemon control · task</text><text class="small" x="147" y="724" text-anchor="middle">restore · upgrade · snapshot</text>
+  <rect class="blue" x="270" y="650" width="190" height="94" rx="7"/><text class="label" x="365" y="681" text-anchor="middle">DurableBackend</text><text class="small" x="365" y="704" text-anchor="middle">filesystem layout</text><text class="small" x="365" y="724" text-anchor="middle">or in-memory implementation</text>
+  <rect class="blue" x="488" y="650" width="250" height="94" rx="7"/><text class="label" x="613" y="681" text-anchor="middle">Durable stores</text><text class="small" x="613" y="704" text-anchor="middle">TaskStateStore · EventLog</text><text class="small" x="613" y="724" text-anchor="middle">ProviderProcessTable · AuditSink</text>
+  <rect class="orange" x="766" y="650" width="190" height="94" rx="7"/><text class="label" x="861" y="681" text-anchor="middle">Recovery coordinators</text><text class="small" x="861" y="704" text-anchor="middle">task/provider recovery</text><text class="small" x="861" y="724" text-anchor="middle">scheduler retry tick</text>
+  <rect class="green" x="984" y="650" width="282" height="94" rx="7"/><text class="label" x="1125" y="681" text-anchor="middle">Operation evidence</text><text class="small" x="1125" y="704" text-anchor="middle">status · mutation report · rollback proof</text><text class="small" x="1125" y="724" text-anchor="middle">backup · lifecycle · release checks</text>
+  <path class="line" d="M242 697H270"/><path class="line" d="M460 697H488"/><path class="line" d="M738 697H766"/><path class="line" d="M956 697H984"/>
+  <text class="tiny" x="52" y="788">Durable EventLog and retry services can republish recovery events for retry accounting, but this daemon path does not execute Agent mailboxes or Lua scripts.</text>
+  <text class="tiny" x="38" y="872">Boundary summary: the three lanes share eva-core contracts, config, policy, storage, and observability; they do not share one mandatory runtime pipeline.</text>
 </svg>

@@ -1,61 +1,81 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="700" viewBox="0 0 1180 700" role="img" aria-labelledby="title desc">
-  <title id="title">Eva-CLI 依赖方向规则</title>
-  <desc id="desc">应用、运行时、集成、内核和基础契约模块之间允许的依赖方向。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="850" viewBox="0 0 1280 850" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 模块依赖方向</title>
+  <desc id="desc">当前 Eva-CLI workspace 的简化依赖方向，区分入口组合、运行时领域、平台服务和 eva-core 基础契约。</desc>
   <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
     <style>
-      .bg { fill: #f8fafc; }
-      .ring0 { fill: #e0f2fe; stroke: #0369a1; stroke-width: 2; }
-      .ring1 { fill: #dcfce7; stroke: #15803d; stroke-width: 2; }
-      .ring2 { fill: #fef3c7; stroke: #b45309; stroke-width: 2; }
-      .ring3 { fill: #fae8ff; stroke: #a21caf; stroke-width: 2; }
-      .ring4 { fill: #ede9fe; stroke: #6d28d9; stroke-width: 2; }
-      .title { font: 700 22px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
-      .label { font: 700 15px Arial, "Microsoft YaHei", sans-serif; fill: #0f172a; }
-      .small { font: 400 12px Arial, "Microsoft YaHei", sans-serif; fill: #334155; }
-      .note { font: 700 13px Arial, "Microsoft YaHei", sans-serif; fill: #991b1b; }
-      .arrow { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
-      .bad { stroke: #dc2626; stroke-width: 2.4; stroke-dasharray: 8 6; fill: none; marker-end: url(#badArrow); }
+      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:29px;font-weight:700}.subtitle{font-size:14px;fill:#526174}
+      .section{font-size:16px;font-weight:700}.label{font-size:14px;font-weight:700}.small{font-size:12px;fill:#526174}.rule{font-size:13px;fill:#334155}
+      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}
+      .blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}.green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}
+      .orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}.rose{fill:#fff1f2;stroke:#e25572;stroke-width:1.5}
+      .line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}.dash{stroke-dasharray:7 6}
     </style>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
-    </marker>
-    <marker id="badArrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#dc2626"/>
-    </marker>
   </defs>
-  <rect class="bg" width="1180" height="700"/>
-  <text class="title" x="50" y="50">依赖方向与边界规则</text>
-  <text class="small" x="50" y="74">具体 transport、Lua handler、硬件 driver 和外部工具留在内核之外，只由组合运行时装配。</text>
+  <rect width="1280" height="850" fill="#ffffff"/>
+  <text class="title" x="44" y="48">依赖方向与组合规则</text>
+  <text class="subtitle" x="44" y="74">箭头从上层所有者指向下层服务。图中只保留关键方向，精确依赖以 Cargo manifest 为准。</text>
 
-  <circle class="ring4" cx="520" cy="360" r="280"/>
-  <circle class="ring3" cx="520" cy="360" r="224"/>
-  <circle class="ring2" cx="520" cy="360" r="168"/>
-  <circle class="ring1" cx="520" cy="360" r="112"/>
-  <circle class="ring0" cx="520" cy="360" r="58"/>
+  <rect class="panel" x="36" y="98" width="820" height="706" rx="8"/>
+  <text class="section" x="56" y="128">Workspace 依赖形态</text>
 
-  <text class="label" x="486" y="355">基础契约</text>
-  <text class="small" x="458" y="376">core, storage, obs</text>
-  <text class="label" x="486" y="275">调度内核</text>
-  <text class="small" x="421" y="296">eventbus, scheduler</text>
-  <text class="label" x="457" y="198">执行宿主</text>
-  <text class="small" x="385" y="219">agent, lua-host, capability</text>
-  <text class="label" x="457" y="122">外部集成</text>
-  <text class="small" x="345" y="143">adapter, mcp, memory, hardware</text>
-  <text class="label" x="472" y="612">应用入口</text>
-  <text class="small" x="384" y="633">cli, supervisor, tests</text>
+  <rect class="purple" x="92" y="154" width="160" height="52" rx="7"/><text class="label" x="172" y="185" text-anchor="middle">eva 薄壳</text>
+  <rect class="purple" x="332" y="154" width="180" height="52" rx="7"/><text class="label" x="422" y="185" text-anchor="middle">eva-cli</text>
+  <rect class="green" x="592" y="154" width="190" height="52" rx="7"/><text class="label" x="687" y="185" text-anchor="middle">eva-runtime</text>
+  <path class="line" d="M252 180H332"/><path class="line" d="M512 180H592"/>
+  <text class="small" x="422" y="224" text-anchor="middle">面向用户的运维组合</text>
+  <text class="small" x="687" y="224" text-anchor="middle">事件执行链组合</text>
 
-  <path class="arrow" d="M815 170 C760 222 704 270 645 315"/>
-  <text class="small" x="833" y="170">允许：外层模块向内依赖</text>
-  <path class="bad" d="M380 355 C258 310 220 230 255 150"/>
-  <text class="note" x="78" y="143">禁止：core/kernel 反向导入 runtime、adapter 或 CLI</text>
+  <rect class="orange" x="72" y="274" width="224" height="132" rx="7"/>
+  <text class="label" x="184" y="304" text-anchor="middle">事件执行</text>
+  <text class="small" x="184" y="331" text-anchor="middle">eva-eventbus · eva-scheduler</text>
+  <text class="small" x="184" y="354" text-anchor="middle">eva-agent · eva-lua-host</text>
+  <text class="small" x="184" y="377" text-anchor="middle">eva-capability</text>
 
-  <rect x="815" y="230" width="295" height="270" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
-  <text class="label" x="838" y="262">实践规则</text>
-  <text class="small" x="838" y="294">1. eva-core 不做 Tokio 运行时装配。</text>
-  <text class="small" x="838" y="320">2. Scheduler 不导入 Lua 或 Adapter。</text>
-  <text class="small" x="838" y="346">3. Lua host 调用端口，不调具体工具。</text>
-  <text class="small" x="838" y="372">4. Adapter transport 不能改写 policy。</text>
-  <text class="small" x="838" y="398">5. Discovery 只发现，Policy 才授权。</text>
-  <text class="small" x="838" y="424">6. Runtime 是唯一组合根。</text>
-  <text class="small" x="838" y="450">7. 测试可跨层使用 fixtures。</text>
+  <rect class="green" x="316" y="274" width="224" height="132" rx="7"/>
+  <text class="label" x="428" y="304" text-anchor="middle">集成服务</text>
+  <text class="small" x="428" y="331" text-anchor="middle">eva-adapter · eva-mcp</text>
+  <text class="small" x="428" y="354" text-anchor="middle">eva-discovery · eva-memory</text>
+  <text class="small" x="428" y="377" text-anchor="middle">eva-hardware</text>
+
+  <rect class="rose" x="560" y="274" width="224" height="132" rx="7"/>
+  <text class="label" x="672" y="304" text-anchor="middle">运维服务</text>
+  <text class="small" x="672" y="331" text-anchor="middle">eva-backup</text>
+  <text class="small" x="672" y="354" text-anchor="middle">eva-lifecycle</text>
+  <text class="small" x="672" y="377" text-anchor="middle">eva-release</text>
+
+  <text class="small" x="428" y="252" text-anchor="middle">入口 crate 从这些领域中选择并组合服务</text>
+
+  <rect class="blue" x="72" y="470" width="712" height="170" rx="7"/>
+  <text class="label" x="92" y="501">平台契约与基础设施</text>
+  <rect fill="#ffffff" stroke="#3b82f6" x="96" y="528" width="132" height="52" rx="6"/><text class="label" x="162" y="559" text-anchor="middle">eva-config</text>
+  <rect fill="#ffffff" stroke="#3b82f6" x="246" y="528" width="132" height="52" rx="6"/><text class="label" x="312" y="559" text-anchor="middle">eva-policy</text>
+  <rect fill="#ffffff" stroke="#3b82f6" x="396" y="528" width="164" height="52" rx="6"/><text class="label" x="478" y="559" text-anchor="middle">eva-observability</text>
+  <rect fill="#ffffff" stroke="#3b82f6" x="578" y="528" width="170" height="52" rx="6"/><text class="label" x="663" y="559" text-anchor="middle">eva-storage</text>
+  <text class="small" x="428" y="614" text-anchor="middle">policy 建立在 config/core 上；storage 建立在 observability/core 上</text>
+  <path class="line" d="M184 406V470"/><path class="line" d="M428 406V470"/><path class="line" d="M672 406V470"/>
+
+  <rect class="blue" x="264" y="692" width="328" height="76" rx="7"/>
+  <text class="label" x="428" y="724" text-anchor="middle">eva-core</text>
+  <text class="small" x="428" y="748" text-anchor="middle">无副作用共享数据契约；不依赖其他 Eva crate</text>
+  <path class="line" d="M428 640V692"/>
+
+  <rect class="panel" x="884" y="98" width="360" height="706" rx="8"/>
+  <text class="section" x="908" y="132">当前依赖图约束</text>
+  <text class="rule" x="908" y="178">1. eva-core 不依赖其他 Eva crate。</text>
+  <text class="rule" x="908" y="218">2. config 与 observability 依赖 core。</text>
+  <text class="rule" x="908" y="258">3. policy 依赖 config 和 core。</text>
+  <text class="rule" x="908" y="298">4. storage 依赖 observability 和 core。</text>
+  <text class="rule" x="908" y="338">5. Scheduler 不依赖 Lua 或 Adapter。</text>
+  <text class="rule" x="908" y="378">6. LuaHost 使用 capability 与服务端口，</text><text class="rule" x="926" y="399">不直接依赖 provider transport。</text>
+  <text class="rule" x="908" y="439">7. Discovery 负责发现，Policy 负责授权。</text>
+  <text class="rule" x="908" y="479">8. Runtime 组合事件执行链。</text>
+  <text class="rule" x="908" y="519">9. CLI 组合显式运维命令。</text>
+  <rect class="rose" x="908" y="566" width="312" height="112" rx="7"/>
+  <text class="label" x="928" y="596">禁止的反向依赖</text>
+  <text class="small" x="928" y="624">core 不得导入 runtime、CLI、provider、</text>
+  <text class="small" x="928" y="646">Lua、存储实现或 transport。</text>
+  <rect class="green" x="908" y="704" width="312" height="66" rx="7"/>
+  <text class="small" x="928" y="731">图与 Cargo 不一致时，</text>
+  <text class="small" x="928" y="752">以 Cargo.toml 为事实源。</text>
 </svg>

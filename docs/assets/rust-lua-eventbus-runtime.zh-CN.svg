@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">Rust、Lua 与 EventBus 运行时</title>
+  <desc id="desc">当前 Eva-CLI basic Agent 运行时，展示 Rust 托管的 EventBus 路由、每 Agent mailbox、Lua 执行结果、可选内置 Capability 调用、可恢复事件服务、generation 热加载与观测。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#2563eb"/></marker>
+    <style>
+      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033}.title{font-size:29px;font-weight:700}.subtitle{font-size:14px;fill:#526174}
+      .section{font-size:15px;font-weight:700}.label{font-size:14px;font-weight:700}.small{font-size:12px;fill:#526174}.tiny{font-size:11px;fill:#64748b}
+      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}
+      .green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}.orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}
+      .purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}.rose{fill:#fff1f2;stroke:#e25572;stroke-width:1.5}
+      .line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}.feedback{fill:none;stroke:#2563eb;stroke-width:2;stroke-dasharray:7 6;marker-end:url(#arrow-blue)}
+    </style>
+  </defs>
+  <rect width="1280" height="760" fill="#ffffff"/>
+  <text class="title" x="40" y="46">Rust、Lua 与 EventBus 运行时</text>
+  <text class="subtitle" x="40" y="72">在 basic 示例中 Rust 托管投递与副作用；选中的 Agent 通过私有 mailbox 接收事件，并返回 Lua handler 结果。</text>
+
+  <text class="tiny" x="725" y="108" text-anchor="middle">LuaEventResult 返回状态、note、context、观测与可选 capability 请求；当前 runtime 不会重新 publish 其中的 topic。</text>
+  <g>
+    <rect class="purple" x="40" y="140" width="170" height="90" rx="7"/><text class="label" x="125" y="173" text-anchor="middle">Basic run 入口</text><text class="small" x="125" y="197" text-anchor="middle">run --example basic</text>
+    <rect class="blue" x="240" y="140" width="170" height="90" rx="7"/><text class="label" x="325" y="173" text-anchor="middle">EventBus</text><text class="small" x="325" y="197" text-anchor="middle">强类型 Event 传输</text>
+    <rect class="blue" x="440" y="140" width="170" height="90" rx="7"/><text class="label" x="525" y="173" text-anchor="middle">Scheduler</text><text class="small" x="525" y="197" text-anchor="middle">target + TopicPattern</text>
+    <rect class="blue" x="640" y="140" width="170" height="90" rx="7"/><text class="label" x="725" y="173" text-anchor="middle">Agent mailbox</text><text class="small" x="725" y="197" text-anchor="middle">有界私有队列</text>
+    <rect class="orange" x="840" y="140" width="170" height="90" rx="7"/><text class="label" x="925" y="173" text-anchor="middle">AgentRuntime</text><text class="small" x="925" y="197" text-anchor="middle">handler + 运行控制</text>
+    <rect class="orange" x="1040" y="140" width="170" height="90" rx="7"/><text class="label" x="1125" y="173" text-anchor="middle">LuaHost</text><text class="small" x="1125" y="197" text-anchor="middle">隔离 on_event</text>
+    <path class="line" d="M210 185H240"/><path class="line" d="M410 185H440"/><path class="line" d="M610 185H640"/><path class="line" d="M810 185H840"/><path class="line" d="M1010 185H1040"/>
+  </g>
+
+  <rect class="panel" x="40" y="290" width="1200" height="216" rx="8"/>
+  <text class="section" x="62" y="322">运行支撑边界</text>
+  <rect class="blue" x="66" y="346" width="260" height="126" rx="7"/><text class="label" x="196" y="378" text-anchor="middle">事件持久化</text><text class="small" x="196" y="402" text-anchor="middle">InMemoryEventBus</text><text class="small" x="196" y="423" text-anchor="middle">DurableEventBus + EventLog</text><text class="small" x="196" y="444" text-anchor="middle">死信 · 重试 · 重放</text>
+  <rect class="blue" x="356" y="346" width="260" height="126" rx="7"/><text class="label" x="486" y="378" text-anchor="middle">Scheduler 控制</text><text class="small" x="486" y="402" text-anchor="middle">SubscriptionTable · MailboxRegistry</text><text class="small" x="486" y="423" text-anchor="middle">fanout / compete · 直接 target</text><text class="small" x="486" y="444" text-anchor="middle">policy 与重试退避</text>
+  <rect class="green" x="646" y="346" width="260" height="126" rx="7"/><text class="label" x="776" y="378" text-anchor="middle">Capability 边界</text><text class="small" x="776" y="402" text-anchor="middle">CapabilityHostApi · gate · router</text><text class="small" x="776" y="423" text-anchor="middle">schema · policy · timeout</text><text class="small" x="776" y="444" text-anchor="middle">Adapter runtime 与 transport</text>
+  <rect class="orange" x="936" y="346" width="278" height="126" rx="7"/><text class="label" x="1075" y="378" text-anchor="middle">Lua shadow load</text><text class="small" x="1075" y="402" text-anchor="middle">LuaShadowLoader 健康运行</text><text class="small" x="1075" y="423" text-anchor="middle">只返回 healthy / rejected 报告</text><text class="small" x="1075" y="444" text-anchor="middle">active generation 仍由 caller 管理</text>
+  <path class="line" d="M325 230V346"/><path class="line" d="M525 230V308H486V346"/><path class="line" d="M1125 230V308H776V346"/>
+
+  <rect class="blue" x="40" y="542" width="370" height="140" rx="8"/>
+  <text class="section" x="62" y="576">Rust 负责</text>
+  <text class="small" x="62" y="603">事件投递、Topic 匹配、mailbox 容量、生命周期、</text>
+  <text class="small" x="62" y="625">超时、取消、重试、恢复、capability 执行、存储、</text>
+  <text class="small" x="62" y="647">provider 进程、policy、审计与遥测。</text>
+
+  <rect class="orange" x="455" y="542" width="370" height="140" rx="8"/>
+  <text class="section" x="477" y="576">Lua 负责</text>
+  <text class="small" x="477" y="603">handler 局部决策、数据转换、结果映射、host 观测，</text>
+  <text class="small" x="477" y="625">以及返回给 Rust 的可选 capability 请求；Lua 不直接</text>
+  <text class="small" x="477" y="647">打开具有副作用的系统句柄。</text>
+
+  <rect class="green" x="870" y="542" width="370" height="140" rx="8"/>
+  <text class="section" x="892" y="576">当前实现事实</text>
+  <text class="small" x="892" y="603">basic runtime 使用内存闭环；DurableEventBus、EventLog、</text>
+  <text class="small" x="892" y="625">任务状态、重试与 daemon 恢复服务已存在于 Rust 模块，</text>
+  <text class="small" x="892" y="647">本图不宣称已接入外部持久化消息队列。</text>
+  <text class="tiny" x="776" y="494" text-anchor="middle">Capability response 汇入 BasicRunReport。</text>
+  <text class="tiny" x="40" y="724">已接线的运行路径通过结构化审计事件、trace 字段、metrics 与持久化操作证据提供观测。</text>
+</svg>
