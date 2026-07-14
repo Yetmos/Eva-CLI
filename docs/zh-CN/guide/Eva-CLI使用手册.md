@@ -1,441 +1,346 @@
 # Eva-CLI 使用手册
 
-更新时间：2026-07-10
+更新时间：2026-07-14
 
-适用版本：Eva-CLI `1.11.5-alpha`，并已同步 V1.17.6 V1.x closure release gate 状态
+适用版本：Eva-CLI `1.11.5-alpha`（源码版本）
 
-本文面向从源码使用 Eva-CLI 的开发者、测试者和文档维护者。当前版本是
-V1.11.5-alpha 源码 alpha 检查点：仓库可以编译，CLI 命令面可以执行，durable
-EventBus redrive、可重启读取的 task snapshot、durable audit record、artifact metadata evidence、runtime recovery scanner、redrive checkpoint、recovery audit smoke、durable diagnostics、受限 Lua VM `on_event` 真实执行边界、Lua host observability、`ctx.tools.call` capability binding、Lua timeout、instruction budget、cancel 和 memory 执行限制、shadow load、generation route gate、drain evidence、rollback audit evidence、release evidence gates、CLI 命令模块拆分、typed event 发布、daemon process boundary smoke、daemon control mailbox、durable task lifecycle、scheduler retry dispatch、daemon-backed Agent drain/reload mutation、daemon runtime release gate、Agent lifecycle evidence 和 capability provider routing 命令已经落地。高风险 mutation 路径保持 plan-first，并要求显式确认、policy、evidence、lock 和 health gate。
-V1.16.4 已补 JSONL/durable-audit retention/rotation/corrupt-record policy；
-V1.17.1-V1.17.6 已补 `run --example basic` 拆分、operator execution-state
-字段、高风险 text summary、public JSON contract diff suite、文档/i18n 同步闭环和
-V1.x closure release gate/report；生产签名、包仓库、平台 service-manager、硬件 fixture
-和生产 database sink 仍作为 external blockers 记录。
+Eva-CLI 是 Eva 本地运行时的命令行入口。当前版本适合从源码进行配置校验、运行 basic 示例、检查任务和运行时边界，以及验证受控的 Adapter、MCP、Skill、备份和发布流程；它还不是可直接部署的生产守护服务。
 
-## 当前定位
+## 使用前须知
 
-| 项目 | 当前状态 |
-| --- | --- |
-| 发布形态 | 源码导向 alpha；支持 Git tag/Release、unsigned native CLI archive、符合条件 tag 的 GHCR package、checksum 和 release evidence；不提供 signed installer 与 OS 包仓库。 |
-| 运行时 | `run --example basic` 通过受限 Lua VM、host binding、resource-limit 与 hot-reload lifecycle 边界执行 V1.0 in-memory basic runtime 闭环；`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 提供 V1.12 本机 pid/lock/state、shutdown 边界 smoke、filesystem mailbox 控制面和 due dead-letter scheduler retry tick。 |
-| 外部能力 | 已声明的 stdio/http provider、MCP JSON-RPC tool 和 Skill workflow 可通过受控 runner 执行；Discovery 仍只返回候选。生产 OS 进程监督尚不可用。 |
-| 风险动作 | 硬件 raw I/O 仍被阻断；snapshot promote、staged restore apply/rollback 和本地 release pointer upgrade apply 已在 plan、确认、policy、evidence、lock 与 health gate 后可执行。 |
-| 发布检查 | V1.12.6 已把 daemon runtime readiness 纳入 `release check`；V1.17.4 已加入 public JSON contract diff readiness；V1.17.6 新增 `REL-OBSERVABILITY-POLICY-001`、`REL-V1X-CLOSURE-001` 和 additive `closure` JSON。`release check/security/perf/migration` 仍覆盖 Lua VM、release evidence、CLI split readiness 和 runtime 命令补齐 evidence。 |
+- 本手册中的命令默认从仓库根目录运行，并统一使用 `cargo run -q -- <eva 参数>`。构建后也可以把这部分替换为 `target/debug/eva`、`target/release/eva` 或 Windows 下对应的 `.exe`。
+- `run --example basic` 使用 `<项目根>/examples/basic` 中的示例配置，但任务快照默认写入 `<项目根>/.eva/tasks`。
+- `daemon` 当前提供本机前台进程、文件锁、PID、状态和控制邮箱边界，不会启动生产 provider 监督进程。
+- `restore apply/rollback` 和带 `--state-store` 的 `upgrade apply` 可以修改本地文件或状态。执行前必须核对 plan、确认令牌、policy、artifact、lock 和 health gate。
+- 外部 Adapter、MCP 或 Skill 是否真的执行，取决于 manifest、allowlist、policy、provider 可用性和命令是否已确认。不要把 `probe` 或 dry-run 的成功当作外部操作已经完成。
 
-![Eva-CLI 源码使用闭环](../../assets/eva-cli-user-manual-flow.zh-CN.svg)
+![Eva-CLI 日常使用路径](../../assets/eva-cli-user-manual-flow.zh-CN.svg)
 
-## 安装准备
+## 安装与构建
 
-| 依赖 | 建议 | 用途 |
-| --- | --- | --- |
-| Git | 可访问 GitHub SSH 或 HTTPS | 克隆仓库、提交和推送。 |
-| Rust toolchain | Stable Rust，包含 `cargo` | 编译 workspace、运行 CLI 和测试。 |
-| PowerShell 或 Bash | 任一常用 shell | 执行示例命令；Windows 下优先使用 PowerShell。 |
-| 网络访问 | 推送时需要 | 将提交推送到 GitHub。 |
-
-从源码获取并构建：
+需要先安装 Git 和 stable Rust toolchain（包含 `cargo`）。
 
 ```powershell
-git clone git@github.com:Yetmos/Eva-CLI.git
+git clone https://github.com/Yetmos/Eva-CLI.git
 cd Eva-CLI
-cargo build
-cargo run -- --version
+cargo build --release --locked --bin eva
+cargo run -q -- --version
 ```
 
-如果已经在仓库根目录，可以直接运行：
-
-```powershell
-cargo run -- --version
-```
-
-预期版本输出包含：
+版本输出的前两行应为：
 
 ```text
 eva 1.11.5-alpha
 release: V1.11.5-alpha
 ```
 
+当前仓库不提供签名安装器或 Homebrew、Winget、Apt 软件源。其他安装、升级和卸载边界见[安装升级卸载说明](../release/安装升级卸载说明.md)。
+
 ## 快速开始
 
-先用这组命令确认本地环境、配置和 runtime 摘要：
+按以下顺序可以完成一次最小可用性检查：
 
-| 步骤 | 命令 | 预期结果 |
-| --- | --- | --- |
-| 查看版本 | `cargo run -- --version` | 输出版本、release label 和 contract 列表。 |
-| 工作区诊断 | `cargo run -- doctor --output json` | 检查仓库根、配置根、schema、Lua host 和 runtime builder。 |
-| 配置校验 | `cargo run -- config validate --output json` | 加载 `config/eva.yaml` 和拆分 manifest，返回配置摘要。 |
+```powershell
+cargo run -q -- doctor
+cargo run -q -- config validate
+cargo run -q -- inspect runtime
+cargo run -q -- run --example basic
+cargo run -q -- task status
+cargo run -q -- task logs
+```
 
-| 查看运行时 | `cargo run -- inspect runtime --output json` | 输出 agents、adapters、capabilities、routes、policy 和 runtime 摘要。 |
-| 查看 durable backend | `cargo run -- inspect durable --durable-backend .eva/durable --output json` | 输出 backend schema、migration status 和 pending redrive count。 |
-| 运行示例 | `cargo run -- run --example basic --output json` | 执行 in-memory basic loop，默认写入 `.eva/tasks` task report。 |
-| 发布事件 | `cargo run -- emit /input/user --payload hello --output json` | 向 in-memory EventBus 边界发布 typed Event。 |
-| Daemon smoke | `cargo run -- daemon start --foreground --dev --output json` | 验证 pid/lock/state、durable backend、policy、observability 和 shutdown contract，不启动 provider。 |
-| Daemon control | `cargo run -- daemon status --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json` | 查询显式前台 daemon；无 running daemon 时返回稳定 `unavailable`。 |
-| Agent 状态 | `cargo run -- agent status --agent root-agent --output json` | 输出 Agent lifecycle 和 manifest evidence。 |
-| Capability probe | `cargo run -- capability probe repo.analyze --output json` | 输出 provider plan 和 permission gate evidence。 |
-| 查看任务 | `cargo run -- task status --output json` | 读取最新 task 状态。 |
-| 发布门禁 | `cargo run -- release check --output json` | 输出 release readiness，包含 `REL-DAEMON-RUNTIME-001`、`REL-OBSERVABILITY-POLICY-001`、`REL-JSON-CONTRACT-001`、`REL-V1X-CLOSURE-001` 和 `closure`。 |
+预期结果：
 
-`--version` / `version --output json` 还会报告
-`mcp_http_auth_v1.13.6`、`mcp_compat_matrix_v1.13.7`、
-`provider_supervision_release_gate_v1.13.8`、
-`observability_retention_policy_v1.16.4`、`run_command_module_split_v1.17.1`、
-`operator_execution_fields_v1.17.2`、`operator_apply_text_v1.17.3`、
-`json_contract_diff_suite_v1.17.4` 和 `v1x_closure_gate_v1.17.6`。这些
-marker 表示对应诊断、操作者安全、公开 JSON contract 验证和 V1.x closure
-release gate 边界可用；生产 external blockers 会留在 `release check` 的
-`closure.blocked_external_items` 中。
+1. `doctor` 找到 workspace、`config/eva.yaml`、拆分配置目录和 schema；warning 不等同于命令失败。
+2. `config validate` 完成跨文件校验，并输出 Agent、Adapter、Capability、Policy 和 Route 数量。
+3. `inspect runtime` 输出当前配置和 no-op runtime 边界摘要，不代表所有标为 `planned` 的服务都已在生产模式运行。
+4. `run --example basic` 执行受限 Lua basic loop，并写入任务快照。
+5. `task status/logs` 读取刚才生成的任务状态和日志。
 
-文本输出适合人工查看，JSON 输出适合 CI 或脚本处理。需要稳定字段时加
-`--output json`。
+脚本或 CI 需要机器可读结果时，在命令末尾加 `--output json`。
 
 ## 命令总览
 
-| 命令组 | 常用命令 | 当前用途 | 是否执行外部副作用 |
-| --- | --- | --- | --- |
-| 版本 | `version`、`--version` | 输出版本、release label 和支持契约。 | 否 |
-| 诊断 | `doctor` | 检查 workspace、配置根、schema 和 runtime 边界。 | 否 |
-| 配置 | `config validate` | 校验 `eva.yaml`、manifest、policy、routes 和 schema。 | 否 |
-| 查看 | `inspect`、`inspect durable` | 查看项目配置、路由、策略、runtime 摘要或 durable backend 诊断。 | 否 |
-| 运行 | `run --example basic` | 通过受限 Lua VM 边界执行 V1.0 in-memory basic loop。 | 写 `.eva/tasks` 或 durable backend `tasks/` |
-| 事件 | `emit <topic>` | 向 in-memory 或 durable EventBus 发布 typed Event。 | 传入 `--durable-backend` 时写 durable backend `events/log/` |
-| Daemon | `daemon start/status/stop/shutdown/submit/cancel/drain/reload` | 验证本机 daemon pid/lock/state、durable backend、policy、observability、shutdown contract 和 filesystem mailbox 控制面。 | 写入指定 daemon state/observability/control 目录；默认 smoke 会移除 lock/pid；显式前台 daemon 响应 control 请求 |
-| Agent | `agent status/drain/reload` | 输出 Agent lifecycle、drain plan 和 generation reload evidence。 | 连接 running daemon 时 `drain/reload` 写入 daemon mutation state；无 daemon 时回退 `mutation_executed:false` evidence |
-| Capability | `capability list/probe/call` | 输出 provider routing，并执行 dry-run 或确认后的受控 invoke。 | `call` 默认 dry-run；确认执行仍输出 `mutation_executed:false` |
-| 任务 | `task status/logs/cancel` | 读取或标记 task 诊断。 | 只写 task 取消标记 |
-| Adapter | `adapter list/probe` | 列出或探测 manifest 派生的 Adapter handle。 | 否 |
-| MCP | `mcp list/probe` | 列出或探测 allowlist 中的 MCP tool。 | 否 |
-| Skill | `skill list/run` | 运行受控 workflow skill runner，写入 artifact evidence。 | 仅 manifest allowlist runner |
-| Discovery | `discovery scan` | 扫描可信配置源并输出候选能力。 | 否 |
-| Memory | `memory context` | 构造 request-scoped memory/knowledge context，并写 memory audit/metrics JSONL evidence。 | 否 |
-| Hardware | `hardware list/probe/bind` | 发现硬件 manifest 并生成绑定计划。 | 否 |
-| Backup | `backup create` | 在内存或 filesystem artifact store 中创建并校验备份 artifact。 | 传入 `--artifact-store` 时写指定目录 |
-| Snapshot | `snapshot create/promote` | 创建 release snapshot，或确认其 release pointer promotion plan。 | promote 由 snapshot id 与 artifact evidence 门禁控制 |
-| Restore | `restore plan/apply/rollback` | 生成计划、执行 staged file mutation，或回滚 `rollback_required` transaction。 | apply/rollback 在全部门禁通过后会修改目标文件系统 |
-| Upgrade | `upgrade check/apply` | 检查准备度，或提交本地 state-store handoff 与 release pointer mutation。 | `apply --state-store` 在 policy/health gate 后写本地 supervisor state |
-| Release | `release check/security/perf/migration` | 执行发布准备、安全、性能和迁移门禁，`release check` 包含 daemon runtime、observability policy、public JSON contract 和 V1.x closure readiness。 | 否 |
+| 命令组 | 主要用途 | 默认副作用 |
+| --- | --- | --- |
+| `version`、`doctor`、`config validate`、`inspect` | 版本、环境、配置和运行时诊断 | 只读 |
+| `run`、`task`、`emit` | 运行 basic 示例、管理任务快照、发布 typed event | `run` 和 `task cancel` 写任务状态；`emit` 仅在指定 durable backend 时持久化 |
+| `daemon`、`agent` | 本机 daemon smoke/control 和 Agent lifecycle | 写本地 daemon 状态；连接运行中的 daemon 时 drain/reload 可写控制状态 |
+| `capability`、`adapter`、`mcp`、`skill`、`discovery` | 能力路由、外部 provider 和发现 | list/scan 主要只读；确认调用或 Skill runner 可能执行外部程序 |
+| `memory`、`observability` | 构造演示上下文，验证 audit/metric/trace sink | 可写 durable memory/knowledge 和 observability 文件 |
+| `hardware`、`backup`、`snapshot`、`restore`、`upgrade` | 硬件计划、备份和生命周期操作 | 从 plan-only 到受门禁保护的本地文件/状态修改 |
+| `release` | 发布准备、安全、性能和迁移检查 | 只读；可读取外部 evidence 文件 |
 
-## 基本用法
-
-所有命令默认使用当前目录作为项目根。需要指定其他仓库路径时使用
-`--project <path>`：
+完整参数以当前代码生成的帮助为准：
 
 ```powershell
-cargo run -- doctor --project C:\path\to\Eva-CLI --output json
+cargo run -q -- --help
 ```
 
-常见全局选项：
+## 通用参数与输出
 
-| 选项 | 作用 |
+多数命令支持以下选项：
+
+| 选项 | 说明 |
 | --- | --- |
-| `--project <path>` | 指定项目根目录。 |
-| `--output text` | 输出适合人读的文本摘要；多数命令默认使用文本。 |
-| `--output json` | 输出稳定 JSON envelope，适合脚本和 CI。 |
-| `--help` 或 `-h` | 显示完整命令帮助。 |
+| `--project <path>`、`-p <path>` | 指定 Eva 项目根目录；默认是当前目录。 |
+| `--output text`、`-o text` | 人工阅读的文本输出，通常为默认值。 |
+| `--output json`、`-o json` | 稳定 JSON envelope，适合脚本和 CI。 |
+| `--help`、`-h` | 显示当前完整帮助。 |
+| `--version`、`-V`（单独使用） | 显示版本、release label、runtime marker 和支持的 command contract。 |
 
-## 发布 typed event
-
-`emit` 会构造 `eva-core::Event` 并通过 runtime 使用的同一套 EventBus contract 发布事件。未传 `--durable-backend` 时，命令发布到 in-memory bus 并返回 receipt；传入 `--durable-backend <path>` 时，会打开 V1.6 durable backend，并把 event record 写入 `events/log/`。
-
-```powershell
-cargo run -- emit /input/user --event-id evt-manual-1 --payload hello --output json
-cargo run -- emit /input/user --event-id evt-manual-2 --payload-bytes-hex 68656c6c6f --target-agent root-agent --durable-backend .eva/durable --output json
-```
-
-| 选项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `<topic>` 或 `--topic <topic>` | 必填 | 具体事件 topic，例如 `/input/user`。 |
-| `--event-id <id>` | 自动生成 | 稳定 event id；自动生成时使用 `evt-cli-emit-*` 前缀。 |
-| `--payload <text>` | Empty | UTF-8 文本 payload；JSON 文本会按 text 透传，不做结构化解析。 |
-| `--payload-empty` | Empty | 显式空 payload。 |
-| `--payload-bytes-hex <hex>` | Empty | 以 hex 编码的二进制 payload。 |
-| `--target-agent`、`--target-capability`、`--target-adapter` | Broadcast | 定向投递目标。 |
-| `--request-id`、`--generation`、`--correlation-id`、`--causation-id` | 未设置 | 写入事件 metadata 的可选链路字段。 |
-| `--durable-backend <path>` | 未启用 | 通过 durable EventBus log 持久化发布。 |
-
-## Daemon process boundary and control mailbox
-
-`daemon start/status/stop/shutdown/submit/cancel/drain/reload` 是 V1.12 的本机进程边界和控制面。它固定 pid、lock、state、durable backend、policy、observability 和 shutdown contract，但不启动生产后台守护进程，也不启动 provider。显式前台 daemon 每轮 control polling 前会执行 V1.12.4 scheduler retry tick：读取 due dead-letter，生成 replay event，投递到 scheduler mailbox，并用 `scheduler-retry` consumer 写入 durable log ack/fail。V1.12.5 后，`agent drain/reload` 连接该 daemon 时会写入 `agent-control.state`，记录 drain `accepts_new_work:false`、reload 后 `selected_generation_for_new_work` 和旧 generation `draining` 状态；这仍不是完整 provider restart 或生产热更新 apply。
+例如，从仓库外诊断项目：
 
 ```powershell
-cargo run -- daemon start --foreground --dev --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
-cargo run -- daemon status --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
-cargo run -- daemon shutdown --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
+cargo run -q -- doctor --project C:\path\to\Eva-CLI --output json
 ```
 
-默认 `daemon start` 是 smoke：验证完成后会 shutdown 并移除 lock/pid，此时 `daemon status` 会返回 `unavailable`，避免把 stopped state 误读成 live daemon。需要测试 control mailbox 时，在一个终端保持前台 daemon：
+## 配置与只读诊断
 
 ```powershell
-cargo run -- daemon start --foreground --dev --no-shutdown-after-smoke --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
+cargo run -q -- doctor --output json
+cargo run -q -- config validate --output json
+cargo run -q -- inspect all --output json
+cargo run -q -- inspect config --output json
+cargo run -q -- inspect runtime --output json
 ```
 
-再从另一个终端发送 control 请求：
+主要配置位置：
 
-```powershell
-cargo run -- daemon status --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
-cargo run -- daemon submit --task req-daemon-task-1 --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
-cargo run -- daemon cancel --task req-daemon-task-1 --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --reason "manual stop" --output json
-cargo run -- daemon shutdown --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
-```
-
-| 字段 | 说明 |
+| 路径 | 用途 |
 | --- | --- |
-| `provider_processes_started:false` | 该命令只验证 daemon 边界，不进入 provider supervision。 |
-| `durable_backend` | 启动前验证的 durable backend layout 和 schema。 |
-| `recovery` | 启动时扫描 task/provider process snapshot 的恢复报告；残留 active provider session 会被标记为 interrupted，但不会自动重放不可重复副作用。 |
-| `policy` | 已加载的 policy source 和 effective policy layer evidence。 |
-| `observability` | file JSONL audit/metric/span smoke evidence。 |
-| `shutdown` | foreground smoke 结束时的 `Runtime::shutdown()` 报告。 |
-| `trace_id` | control mailbox request/response 的链路标识。 |
-| `request_file` / `response_file` | 受控 filesystem mailbox 文件路径。 |
-| daemon `submit` / `cancel` | `submit` 创建 durable `queued` task lifecycle；`cancel` 将非终态 task 置为 `cancelling` 并追加日志，不伪装成已经完成停止。 |
-| scheduler retry tick | 只确认 replay event 已进入 scheduler mailbox；不启动 provider，也不声明真实 agent handler 已执行。 |
+| `config/eva.yaml` | runtime、state、memory、observability 和拆分配置入口 |
+| `config/agents/` | Agent manifest 与 Lua handler |
+| `config/adapters/` | stdio、HTTP、MCP、Skill 和 hardware Adapter manifest |
+| `config/capabilities/` | Capability 声明与 provider 选择 |
+| `config/policies/` | sandbox、MCP、memory、hardware 和 lifecycle policy |
+| `config/routes/topics.yaml` | Topic 路由 |
+| `config/schemas/` | 配置 JSON Schema |
 
-## Agent lifecycle evidence
+修改任一配置后，至少重新运行 `config validate`。`doctor` 的职责更宽，会同时检查目录、schema 和 runtime 边界；`inspect` 用于查看加载后的有效摘要。
 
-`agent status`、`agent drain` 和 `agent reload` 把当前 Agent manifest/runtime/lifecycle 边界暴露为 operator evidence。它们复用 `AgentRuntime`、`AgentLifecycle`、`DrainCoordinator` 和 `GenerationController` 输出 lifecycle 状态、drain 计划和 generation swap evidence；当指定的 daemon state/lock/pid 指向 running daemon 时，`drain/reload` 会通过 filesystem mailbox 写入 daemon-side mutation state。无 daemon 时仍回退为本地 evidence，不重启 daemon，也不执行完整 provider restart 或生产热更新 apply。
+当前 `inspect all/config/runtime/routes/policy/agents/adapters/capabilities` 都返回同一份项目全景报告，并不会按主题过滤；只有 `inspect durable` 进入独立的 durable backend 诊断路径。
 
-```powershell
-cargo run -- agent status --agent root-agent --output json
-cargo run -- agent drain --agent root-agent --generation gen-v1115-agent --output json
-cargo run -- agent reload --agent root-agent --from-generation gen-old --to-generation gen-new --from-release 1.11.4-alpha --to-release 1.11.5-alpha --output json
-cargo run -- agent drain --agent root-agent --generation gen-old --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --durable-backend .eva/daemon-durable --output json
-cargo run -- agent reload --agent root-agent --from-generation gen-old --to-generation gen-new --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --durable-backend .eva/daemon-durable --output json
-```
-
-| 命令 | 关键字段 | 说明 |
-| --- | --- | --- |
-| `agent status` | `lifecycle`、`queued_events`、`subscriptions` | manifest-backed Agent snapshot；enabled Agent 会输出本地启动后的 `running` runtime 边界。 |
-| `agent drain` | `drain.accepts_new_work:false`、`drain.status`、`mutation_executed` | 单 Agent generation 的 drain plan；有 running daemon 时写入 `agent-control.state` 并返回 `true`，无 daemon 时返回 `false`。 |
-| `agent reload` | `active_generation`、`previous_generation`、`drain`、`audit`、`mutation_executed` | generation promotion 和旧 generation drain evidence；有 running daemon 时记录新 work 进入目标 generation，旧 generation draining。 |
-
-## Capability routing
-
-`capability list`、`capability probe` 和 `capability call` 暴露 Lua 与 Agent 工具调用会使用的 provider routing 边界。命令复用 capability manifest、provider selection plan、permission gate、runtime policy decision 和 adapter-backed host。`capability call` 默认 dry-run；只有传入与 request id 匹配的 `--confirm <request-id>` 才执行。provider 超出 capability manifest allowlist 时会在调用前被拒绝。
+已有 durable backend 时，可以单独检查其布局、schema、迁移状态和待 redrive 数量：
 
 ```powershell
-cargo run -- capability list --output json
-cargo run -- capability probe repo.analyze --output json
-cargo run -- capability call config.lint --input config --request-id req-manual-cap --output json
-cargo run -- capability call config.lint --input config --request-id req-manual-cap --confirm req-manual-cap --output json
+cargo run -q -- inspect durable --durable-backend .eva/durable --output json
 ```
 
-| 命令 | 关键字段 | 说明 |
-| --- | --- | --- |
-| `capability list` | `capabilities[].providers`、`required_adapter_capabilities` | manifest-derived capability registry 和 provider selection metadata。 |
-| `capability probe` | `provider_plan`、`providers`、`permission_gate` | 只读 provider route 和 adapter health evidence。 |
-| `capability call` | `status`、`confirmed`、`invocation_executed`、`mutation_executed`、`response` | 默认 dry-run；确认后通过 builtin router 或 adapter-backed host 执行，但仍不代表 destructive mutation。 |
+## 运行示例、任务与事件
 
-## 运行 basic 示例
-
-`run --example basic` 是当前的 basic runtime 示例命令。它会同步运行
-in-memory basic loop，并默认把最新 task report 写到 `<project>/.eva/tasks`。
-传入 `--durable-backend <path>` 时，CLI 会打开 V1.6 durable backend，并改用
-该 backend 的 `tasks/` 目录，JSON envelope 保持不变。
+### 运行 Basic 示例
 
 ```powershell
-cargo run -- run --example basic --output json
-cargo run -- task status --output json
-cargo run -- task logs --output json
-cargo run -- run --example basic --task-id req-durable-1 --durable-backend .eva/durable --output json
-cargo run -- task status --task req-durable-1 --durable-backend .eva/durable --output json
+cargo run -q -- run --example basic --task-id req-demo-1 --output json
+cargo run -q -- task status --task req-demo-1 --output json
+cargo run -q -- task logs --task req-demo-1 --output json
 ```
 
-常用选项：
+常用运行参数：
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--task-id <id>` | `req-basic-1` | 指定 request/task id。 |
-| `--durable-backend <path>` | 未启用 | 使用 durable backend 的 `tasks/` 布局，而不是 `<project>/.eva/tasks`。 |
-| `--timeout-ms <ms>` | `30000` | 设置 handler timeout budget；`0` 可触发 timeout 诊断路径。 |
-| `--no-timeout` | 未启用 | 取消 timeout budget。 |
-| `--retry-attempts <n>` | `1` | 设置 retry 上限。 |
-| `--cancel` | 未启用 | 在 handler 前模拟取消请求，生成 cancelled task。 |
-| `--replay-dead-letters` | 未启用 | 对 dead-letter 事件生成 replay receipt 摘要。 |
+| `--timeout-ms <ms>` | `30000` | Lua handler 超时预算；`--no-timeout` 可关闭预算。 |
+| `--retry-attempts <n>` | `1` | 最少执行 1 次的重试上限。 |
+| `--cancel` | 关闭 | 在 handler 前走取消诊断路径。 |
+| `--replay-dead-letters` | 关闭 | 为 dead-letter 生成 replay receipt 摘要。 |
+| `--durable-backend <path>` | 未设置 | 把任务快照写到 durable backend 的 `tasks/`，而不是 `.eva/tasks`。 |
 
-示例：
+`task cancel` 修改已持久化的 task 状态，不等同于向另一个正在运行的 CLI 进程发送实时中断。运行中 daemon 的任务使用 `daemon cancel`。
 
-```powershell
-cargo run -- run --example basic --task-id req-demo-1 --retry-attempts 2 --output json
-cargo run -- task logs --task req-demo-1 --output json
-cargo run -- task cancel --task req-demo-1 --reason "manual stop" --output json
-```
-
-## 受控外部能力执行
-
-V1.8 以后命令面可以查看 Adapter、MCP、Skill 和 Discovery，并允许 manifest-gated
-stdio/http、MCP JSON-RPC 和 Skill workflow runner 进入受控执行路径；仍不会启动未声明的
-外部 server、CLI provider 或 workflow runner。
-
-| 场景 | 命令 |
-| --- | --- |
-| 查看 Adapter | `cargo run -- adapter list --output json` |
-| 探测指定 Adapter | `cargo run -- adapter probe --adapter github-mcp --output json` |
-| 按 capability 验证路由 | `cargo run -- adapter probe --capability repo.issue.list --output json` |
-| 查看 MCP allowlist | `cargo run -- mcp list --output json` |
-| 探测 MCP tool | `cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json` |
-| 查看 Skill | `cargo run -- skill list --output json` |
-| 运行受控 Skill workflow | `cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json` |
-| 扫描发现候选 | `cargo run -- discovery scan --output json` |
-
-MCP probe 遇到不在 allowlist 中的 tool 时，会返回 blocked 诊断，而不是调用外部
-provider。
-
-## 记忆和知识上下文
-
-`memory context` 用于验证 V1.2 `eva-memory`、`ContextBuilder` 和 Lua context
-快照边界。V1.15.8 起，该命令还会按 `memory_policy.redaction` 脱敏，并把
-memory read/search/context audit 与 metrics 写入 `.eva/data/observability`：
+### 发布类型化事件
 
 ```powershell
-cargo run -- memory context --agent root-agent --query context --private-limit 1 --output json
+cargo run -q -- emit /input/user --event-id evt-manual-1 --payload hello --output json
+cargo run -q -- emit /input/user --payload-bytes-hex 68656c6c6f --target-agent root-agent --durable-backend .eva/durable --output json
 ```
 
-| 选项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `--agent <id>` | `root-agent` | 指定读取私有记忆上下文的 Agent。 |
-| `--query <text>` | `memory` | 知识检索查询。 |
-| `--request-id <id>` | `req-memory-1` | 写入演示上下文记录的 request id。 |
-| `--private-limit <n>` | `3` | 私有记忆最大返回数量。 |
-| `--global-limit <n>` | `3` | 全局记忆最大返回数量。 |
-| `--knowledge-limit <n>` | `3` | 知识检索最大返回数量。 |
+- `--payload` 按 UTF-8 文本透传；即使内容是 JSON，也不会自动解析为结构化对象。
+- `--payload-empty` 与 `--payload-bytes-hex <hex>` 分别表示空 payload 和二进制 payload。
+- `--target-agent`、`--target-capability`、`--target-adapter` 互斥；不指定时为 broadcast。
+- 未指定 `--durable-backend` 时，事件只发布到本次命令的 in-memory EventBus 并返回 receipt；该命令本身不会启动 Agent handler。
 
-输出会包含 `memory`、`global_memory`、`knowledge`、`lua_context` 和 `audit`。
-当前命令使用演示上下文；durable file store、受监督 provider retrieval、TTL GC
-和 rebuild checkpoint 已实现，长驻生产检索调度仍未实现。
+## Daemon 与 Agent 控制
 
-## 硬件、备份、恢复和升级
+不带 `--no-shutdown-after-smoke` 的 `daemon start` 会完成一次启动检查后立即 shutdown，并清理 lock/PID。要验证控制邮箱，需要两个终端。
 
-这些命令保持 plan-first；硬件 raw I/O 不执行，但 restore/upgrade 的受控 apply
-路径已经实现：
-
-![Eva-CLI 当前安全边界](../../assets/eva-cli-user-manual-safety.zh-CN.svg)
-
-| 场景 | 命令 | 当前边界 |
-| --- | --- | --- |
-| 列出硬件候选 | `cargo run -- hardware list --output json` | 读取 hardware adapter manifest，不打开设备。 |
-| 探测硬件候选 | `cargo run -- hardware probe --adapter scale-main --output json` | 返回候选健康、trust 和 handle 状态。 |
-| 生成绑定计划 | `cargo run -- hardware bind --adapter scale-main --output json` | 输出 plan steps 和风险，不授予 raw I/O handle。 |
-| 创建备份 artifact | `cargo run -- backup create --output json` | 使用 in-memory artifact store。 |
-| 创建 release snapshot | `cargo run -- snapshot create --output json` | 绑定到已验证 backup manifest。 |
-| 生成恢复计划 | `cargo run -- restore plan --output json` | 输出 `apply_allowed:false`。 |
-| 检查升级准备度 | `cargo run -- upgrade check --output json` | 输出 migration、drain、rollback 计划。 |
-
-即使使用 `hardware bind --apply`，V1.3/V1.5 命令面也只保留 plan-first 输出，不打开真实设备。
-
-准备好 plan 后可使用以下命令形态：
-
-| 场景 | 命令形态 | 当前边界 |
-| --- | --- | --- |
-| Snapshot promote | `snapshot promote --snapshot-id <id> --confirm <id> --artifact-store <path>` | 确认 snapshot promotion plan；不执行生产 service-manager handoff。 |
-| Restore apply | `restore apply --plan <path> --confirm <plan-id> --artifact-store <path> --lock-store <path>` | 仅在 artifact、policy、lock、health 与 confirmation gate 全部通过后执行 staged copy/delete/replace，写 transaction log，并可能返回 `rollback_required`。 |
-| Restore rollback | `restore rollback --plan <path> --confirm <plan-id> --artifact-store <path> --lock-store <path>` | 校验 drift 与 transaction log 后，根据 signed pre-restore evidence 逆序恢复已提交步骤。 |
-| Upgrade apply | `upgrade apply --plan <path> --confirm <plan-id> --lock-store <path> --state-store <path>` | 可提交本地 handoff state 和 release pointer mutation；平台 service-manager 激活仍是外部工作。 |
-
-## 发布门禁
-
-V1.5 新增 `release` 命令组，用于把发布准备检查变成可执行证据：
+终端 A：
 
 ```powershell
-cargo run -- release check --output json
-cargo run -- release check --target windows --output json
-cargo run -- release security --output json
-cargo run -- release perf --output json
-cargo run -- release migration --output json
+cargo run -q -- daemon start --foreground --dev --no-shutdown-after-smoke --output json
 ```
 
-| 命令 | 输出重点 |
+终端 B：
+
+```powershell
+cargo run -q -- daemon status --output json
+cargo run -q -- daemon submit --task req-daemon-1 --output json
+cargo run -q -- daemon cancel --task req-daemon-1 --reason "manual stop" --output json
+cargo run -q -- daemon shutdown --output json
+```
+
+`status`、`submit`、`cancel`、`drain`、`reload` 和 `shutdown` 通过文件系统 control mailbox 与前台 daemon 通信。即使是一次性 smoke，`daemon start` 也会以读写模式打开 durable backend，并执行 recovery scan、memory maintenance 和 scheduler retry 边界；但 `provider_processes_started` 仍为 `false`。
+
+默认目录由 `runtime.data_dir` 派生；示例配置使用 `.eva/data/durable`、`.eva/data/daemon/state`、`.eva/data/daemon/locks`、`.eva/data/daemon/pids` 和 `.eva/data/observability`。`--background` 虽可被解析，但当前运行时尚未实现后台模式，请保持终端 A 前台运行。
+
+Agent 命令可以单独查看或规划 lifecycle：
+
+```powershell
+cargo run -q -- agent status --agent root-agent --output json
+cargo run -q -- agent drain --agent root-agent --generation gen-current --output json
+cargo run -q -- agent reload --agent root-agent --from-generation gen-old --to-generation gen-new --output json
+```
+
+没有可用 daemon 时，`agent drain/reload` 返回本地计划，`mutation_executed` 为 `false`；连接到相同 state/lock/PID 目录中的运行中 daemon 后，命令才会写 daemon-side Agent 控制状态。这不等同于完整 provider 重启或生产热更新。
+
+## Capability、Adapter、MCP 与 Skill
+
+先 list/probe，再决定是否执行：
+
+```powershell
+cargo run -q -- capability list --output json
+cargo run -q -- capability probe repo.analyze --output json
+cargo run -q -- adapter list --output json
+cargo run -q -- adapter probe --adapter github-mcp --output json
+cargo run -q -- mcp list --output json
+cargo run -q -- mcp probe --adapter github-mcp --tool list_issues --output json
+cargo run -q -- skill list --output json
+cargo run -q -- discovery scan --output json
+```
+
+`discovery scan` 只返回候选，不授予 runtime handle。MCP tool 或 provider 不在 manifest allowlist、policy 不允许、凭据缺失或进程不可用时，probe/call 会返回 blocked 或 unavailable。
+
+`capability call` 默认是 dry-run。只有 `--confirm` 与 `--request-id` 完全一致时才进入执行路径：
+
+```powershell
+cargo run -q -- capability call config.lint --input config --request-id req-cap-1 --output json
+cargo run -q -- capability call config.lint --input config --request-id req-cap-1 --confirm req-cap-1 --output json
+```
+
+确认调用以及 `skill run` 可能启动 manifest 允许的外部 runner。执行前先检查对应 `config/adapters/`、`config/capabilities/` 和 `config/policies/`，不要仅根据命令名称判断副作用。
+
+例如，运行示例配置中 allowlist 允许的 Skill workflow：
+
+```powershell
+cargo run -q -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
+```
+
+## Memory 与 Observability
+
+```powershell
+cargo run -q -- memory context --agent root-agent --query context --private-limit 1 --output json
+cargo run -q -- observability smoke --backend .eva/observability --output json
+```
+
+`memory context` 当前构造的是演示上下文。未指定 durable backend 时，seed memory/knowledge 只存在于进程内，但 audit/metric 会写入 `runtime.data_dir` 下的 `observability/`；指定 `--durable-backend` 后，演示记录也会写入该 durable store。
+
+`observability smoke` 会在 `--backend` 下写 audit、metric 和 tracing JSONL。还可以用 `--tracing-sink dev-console` 检查控制台 bridge，或用 `--otel-endpoint` 验证 OTLP HTTP exporter；外部 collector 不可用时应检查输出中的 degraded 状态。
+
+## 备份、恢复与升级
+
+![Eva-CLI 副作用与安全边界](../../assets/eva-cli-user-manual-safety.zh-CN.svg)
+
+先使用不会修改待恢复或待升级目标的命令检查计划。下面的 backup、snapshot 和 restore plan 仍会在指定的 artifact store 中写入合成制品：
+
+```powershell
+cargo run -q -- hardware list --output json
+cargo run -q -- hardware probe --adapter scale-main --output json
+cargo run -q -- hardware bind --adapter scale-main --output json
+cargo run -q -- backup create --artifact-store .eva/artifacts --output json
+cargo run -q -- snapshot create --snapshot-id snapshot-manual --artifact-store .eva/artifacts --output json
+cargo run -q -- restore plan --snapshot-id snapshot-manual --artifact-store .eva/artifacts --output json
+cargo run -q -- upgrade check --output json
+```
+
+当前边界：
+
+| 命令 | 实际行为 |
 | --- | --- |
-| `release check` | 跨平台、稳定性、文档、安全、性能、迁移、兼容、daemon runtime、observability policy、public JSON contract 和 V1.x closure 门禁汇总。 |
-| `release security` | policy、Lua sandbox、secret redaction、MCP allowlist、hardware 和 lifecycle 风险。 |
-| `release perf` | EventBus、Scheduler、Adapter、memory、backup 和 release check 预算。 |
-| `release migration` | V1.5.1 到 V1.11.5-alpha 的迁移步骤和兼容性策略。 |
+| `hardware bind [--apply]` | 输出 permission、plan 和风险；当前 CLI 不打开 raw I/O handle。 |
+| `backup create` | 创建并校验内置示例内容生成的 contract/smoke artifact，并不备份当前工作区；指定 store 后写盘，`--dry-run` 也可能写 artifact。 |
+| `snapshot create` | 基于合成 backup evidence 创建 snapshot；指定 store 时持久化 artifact，不代表已经捕获真实工作区。 |
+| `snapshot promote` | 每次重新创建合成 backup/snapshot，再校验确认值并生成 pointer plan；即使确认不匹配，也可能已经写入 artifact，但不会移动 release pointer。 |
+| `restore plan` | 基于合成 snapshot/backup 返回恢复计划，可能写 artifact store；`apply_allowed:false`，不修改恢复目标。 |
+| `restore apply --dry-run` | 解析 plan 并输出 mutation preview、影响路径、确认信息和 rollback manifest。 |
+| `restore apply` | 所有 gate 通过后执行 plan 中声明的 staged copy/replace/delete，并写 transaction log；失败时可能要求 rollback。 |
+| `restore rollback` | 只接受可校验的 rollback-required transaction，并按 pre-restore evidence 逆序恢复。 |
+| `upgrade apply` | 不带 `--state-store` 时保持 lock-only；带 store 且 policy 通过后会写 handoff state，全部 gate 通过才写 release pointer；`--runtime-binary` 会实际执行指定二进制的 `--version`。 |
 
-## 项目结构和配置位置
+`restore plan` 和 `upgrade check` 只输出诊断报告，不会生成 apply 所需的严格 `key=value` plan 文件。下面的 plan 必须由受审计的 operator/release 流程按对应 contract 生成；尖括号内容不能直接照抄：
 
-| 路径 | 作用 |
-| --- | --- |
-| `Cargo.toml` | 根 package 和 workspace 成员声明。 |
-| `crates/eva-cli/` | CLI 命令解析、输出 envelope 和 exit code 映射。 |
-| `config/eva.yaml` | 项目根配置、运行时环境和配置目录入口。 |
-| `config/agents/` | Agent manifest 和 Lua 脚本示例。 |
-| `config/adapters/` | Adapter manifest，包括 stdio、MCP、skill 和 hardware 示例。 |
-| `config/capabilities/` | Capability manifest 和 Lua capability 示例。 |
-| `config/policies/` | 沙箱、MCP、硬件和 adapter policy。 |
-| `config/routes/topics.yaml` | Topic route 配置。 |
-| `config/schemas/` | JSON schema 文件。 |
-| `.eva/tasks/` | `run --example basic` 默认写入的本地 task 诊断目录；不提交到 Git。 |
-| durable backend `tasks/` | 传入 `--durable-backend <path>` 后使用的 task snapshot store。 |
+```powershell
+cargo run -q -- restore apply --dry-run --plan <restore-plan> --confirm <plan-id> --artifact-store <artifact-dir> --lock-store <lock-dir> --output json
+cargo run -q -- restore apply --plan <restore-plan> --confirm <plan-id> --artifact-store <artifact-dir> --lock-store <lock-dir> --output json
+cargo run -q -- restore rollback --plan <restore-plan> --confirm <plan-id> --artifact-store <artifact-dir> --lock-store <lock-dir> --transaction-log <transaction-log> --output json
+cargo run -q -- upgrade apply --plan <upgrade-plan> --confirm <plan-id> --lock-store <lock-dir> --state-store <state-dir> --output json
+```
 
-## JSON 输出和退出码
+示例配置默认没有 `runtime_policy.allow_high_risk_actions`，因此 `restore apply`（非 dry-run）、`restore rollback` 和带 state store 的 `upgrade apply` 会被 policy 拒绝。只有经过独立审核的 policy 显式允许 `restore.apply`（restore 与 rollback 共用）、`supervisor.handoff` 和 `release.pointer_mutation` 后，相关 mutation 才可能通过；不要为了让命令返回成功而临时放开这些 action。
 
-成功 JSON 使用统一 envelope：
+即使 binary probe 或 health check 失败，`upgrade apply --state-store` 也可能写入 `handoff.prepared`，但不会提交 release pointer。这些命令只实现本地受控边界，不会完成平台 service-manager 激活。plan 文件和 artifact contract 见[备份、迁移包与 ReleaseSnapshot 架构方案](../operations/备份迁移包与ReleaseSnapshot架构方案.md)。
+
+## 发布检查
+
+```powershell
+cargo run -q -- release check --output json
+cargo run -q -- release check --target windows --output json
+cargo run -q -- release security --output json
+cargo run -q -- release perf --output json
+cargo run -q -- release migration --output json
+```
+
+- `release check` 聚合平台、稳定性、文档、安全、性能、迁移、daemon、observability 和公开 JSON contract gate。
+- 可通过 `--artifact-evidence`、`--distribution-evidence`、`--security-scan-evidence` 和 `--benchmark-evidence` 提供外部证据。
+- `status: ready` 只表示仓库内 required gate 通过。仍需检查 `closure.status` 和 `closure.blocked_external_items`；生产签名、包仓库、平台 service-manager、硬件 fixture 等外部事项可能仍未完成。
+
+## JSON Envelope 与退出码
+
+成功响应的基本结构：
 
 ```json
 {
   "ok": true,
-  "command": "release.check",
+  "command": "config.validate",
   "exit_code": 0,
   "data": {},
   "trace": {}
 }
 ```
 
-错误 JSON 使用：
+参数已成功解析且由子命令处理的执行错误，在 `--output json` 下使用相同 envelope，并增加 `error`。发生在输出格式确定前的解析错误，以及未被子命令捕获的顶层执行错误，会直接写文本到 stderr。
 
-```json
-{
-  "ok": false,
-  "command": "config.validate",
-  "exit_code": 2,
-  "error": {},
-  "trace": {}
-}
-```
-
-退出码：
-
-| Code | 含义 | 常见处理 |
+| 退出码 | 含义 | 建议 |
 | --- | --- | --- |
-| `0` | 成功 | 可以继续下一步。 |
-| `1` | 内部错误 | 保留 stdout/stderr，作为缺陷报告证据。 |
-| `2` | 配置、路径、manifest、route、schema 或 task state 问题 | 运行 `doctor` 和 `config validate --output json`。 |
-| `3` | policy 拒绝 | 查看 policy、manifest 权限声明和请求能力。 |
-| `4` | runtime 不可用或能力未实现 | 确认该命令是否属于当前源码发布范围。 |
-| `5` | 外部 capability 不可用 | 检查 provider 健康、manifest、allowlist、policy 和外部服务。 |
-| `64` | 命令用法错误 | 运行 `cargo run -- --help` 查看参数。 |
+| `0` | 成功 | 继续检查业务字段；成功不一定代表外部 blocker 已消失。 |
+| `1` | 内部错误 | 保留 stdout/stderr 和复现命令。 |
+| `2` | 配置、路径、schema、evidence 或状态无效 | 运行 `doctor` 和 `config validate`，再检查 error context。 |
+| `3` | policy 拒绝 | 核对 manifest 权限、policy 和确认信息。 |
+| `4` | runtime 不可用、gate 未满足或当前版本不支持 | 查看 status、gate、health 和 rollback 字段。 |
+| `5` | 外部 capability/provider 不可用或调用超时 | 检查 executable、网络、凭据、allowlist、timeout 和 provider health。 |
+| `64` | 命令用法错误 | 运行 `cargo run -q -- --help`。 |
 
-## 常见问题处理
+## 常见问题
 
-| 问题 | 诊断命令 | 处理方向 |
-| --- | --- | --- |
-| 找不到配置 | `cargo run -- doctor --output json` | 确认从仓库根目录执行，或传入 `--project <path>`。 |
-| JSON 输出不符合预期 | `cargo run -- <command> --output json` | 检查 `command`、`ok`、`exit_code` 和 `error.kind`。 |
-| task 状态为空 | `cargo run -- run --example basic --output json` | 先运行 basic 示例生成 `.eva/tasks`。 |
-| MCP tool 被 blocked | `cargo run -- mcp probe --adapter github-mcp --tool <name> --output json` | 检查 tool 是否在 allowlist 中。 |
-| 硬件绑定 blocked | `cargo run -- hardware probe --adapter scale-main --output json` | 检查 hardware manifest 是否 enabled、trust 是否 accepted。 |
-| 发布检查 blocked | `cargo run -- release check --output json` | 根据 gate group 继续运行 security、perf 或 migration 子命令；生产凭据/fixture 类事项查看 `closure.blocked_external_items`。 |
+| 现象 | 处理 |
+| --- | --- |
+| 找不到 `config/eva.yaml` | 从仓库根目录执行，或传入 `--project <path>`。 |
+| `doctor` 成功但有 warning | 查看每个 warning 的 suggestion；只要 error count 为 0，命令仍可能返回成功。 |
+| `task status` 找不到任务 | 先运行 `run --example basic`；使用 durable backend 时，查询命令必须传入同一路径。 |
+| `daemon status` 返回 unavailable | 默认 start 是一次性 smoke；使用 `--no-shutdown-after-smoke` 保持终端 A 运行，并确保控制命令使用相同项目和路径。 |
+| Adapter/MCP/Skill 被 blocked | 检查 manifest 是否 enabled、能力/tool 是否在 allowlist、policy 是否允许，以及 provider 是否可用。 |
+| 硬件绑定一直 blocked | 示例 `scale-main` 默认禁用且使用占位 USB ID；当前版本不会授予 raw I/O handle。 |
+| `release check` ready 但仍有 blocker | 查看 `closure.blocked_external_items`，区分仓库内 gate 与生产外部依赖。 |
 
-## 当前非目标
+## 当前限制
 
-当前 V1.11.5-alpha 不提供 signed installer、生产 signing/attestation credential、
-Homebrew/Winget/Apt 仓库发布、生产后台 daemon/service-manager handoff、OS provider
-进程监督或 credential vault 用户隔离、MCP 生产 streaming/TLS 认证、真实硬件 raw I/O
-与 release fixture、生产 observability database sink/retention scheduler，以及长驻生产
-memory/retrieval 调度。
+当前源码版本尚不提供：
 
-## 推荐验证命令
+- 签名安装器、生产 signing/attestation credential 和 Homebrew/Winget/Apt 发布；
+- 生产后台 daemon、平台 service-manager handoff 和完整 provider 进程监督；
+- OS credential vault 隔离、生产 MCP streaming/TLS 认证；
+- 真实硬件 driver/raw I/O 和发布 fixture；
+- 生产 observability database sink/retention scheduler，以及长驻 memory/retrieval 调度。
 
-修改代码或文档后，建议至少运行：
-
-```powershell
-cargo test -p eva-cli
-cargo run -- --version
-cargo run -- doctor --output json
-cargo run -- config validate --output json
-cargo run -- run --example basic --output json
-cargo run -- release check --output json
-.\scripts\build-site-i18n.ps1
-.\scripts\validate-i18n.ps1
-```
+完整状态见[V1.x 未完整实现功能清单](../planning/V1.x未完整实现功能清单.md)。
