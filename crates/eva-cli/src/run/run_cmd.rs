@@ -1,3 +1,5 @@
+//! 基础示例运行子命令：装配内存运行时，并可将任务快照写入持久化后端。
+
 use super::{
     exit_code_for_error, json_array, json_string, option_json, parse_common_options,
     parse_u64_option, parse_usize_option, success_envelope, task_cmd, trace_for, trace_json,
@@ -12,17 +14,27 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// `eva run` 的已解析执行选项。
 pub(super) struct RunOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 要运行的内置示例；当前仅支持 `basic`。
     example: Option<String>,
+    /// 覆盖运行时默认请求/任务 ID 的可选值。
     task_id: Option<String>,
+    /// 可选持久化后端根，用于保存任务快照。
     durable_backend: Option<PathBuf>,
+    /// 单次运行 timeout；None 明确禁用超时。
     timeout_ms: Option<u64>,
+    /// 是否在运行开始时请求取消。
     cancel_requested: bool,
+    /// 最大重试尝试次数，解析时至少归一化为 1。
     retry_attempts: usize,
+    /// 是否重放已就绪 dead-letter。
     replay_dead_letters: bool,
 }
 
+/// 解析运行示例、任务、超时、重试和持久化选项。
 pub(super) fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut example = None;
@@ -95,6 +107,7 @@ pub(super) fn parse_run_options(args: &[String]) -> Result<RunOptions, EvaError>
     })
 }
 
+/// 执行 run 命令并兜底映射意外返回的结构化错误。
 pub(super) fn execute_run<W, E>(
     options: RunOptions,
     stdout: &mut W,
@@ -115,6 +128,10 @@ where
     }
 }
 
+/// 执行已支持示例并保持每种失败路径的输出格式。
+///
+/// `basic` 成功后先持久化任务快照再报告成功，确保用户看到成功时状态可查询；未知示例
+/// 属于 usage 错误，缺少示例则表示当前运行时能力不可用，两者使用不同退出码。
 fn execute_run_inner<W, E>(
     options: RunOptions,
     stdout: &mut W,
@@ -199,6 +216,7 @@ where
     }
 }
 
+/// 输出基础运行报告的任务、事件、投递、Agent 与 capability 结果。
 fn write_run<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -274,6 +292,7 @@ fn write_run<W: Write>(
     }
 }
 
+/// 将完整基础运行报告编码为稳定 JSON，包括 Lua 观察、审计和任务快照。
 fn run_report_json(report: &BasicRunReport) -> String {
     let deliveries = report.deliveries.iter().map(|delivery| {
         format!(
@@ -360,6 +379,7 @@ fn run_report_json(report: &BasicRunReport) -> String {
     )
 }
 
+/// 将可选 capability 调用响应压缩为 CLI JSON 字段。
 fn capability_response_json(response: &eva_core::InvokeResponse) -> String {
     format!(
         "{{\"request_id\":{},\"status\":{},\"output\":{},\"error\":{}}}",
@@ -377,6 +397,7 @@ fn capability_response_json(response: &eva_core::InvokeResponse) -> String {
     )
 }
 
+/// 将 InvokeStatus 映射为稳定小写状态文本。
 fn invoke_status(status: InvokeStatus) -> &'static str {
     match status {
         InvokeStatus::Accepted => "accepted",

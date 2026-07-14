@@ -1,30 +1,45 @@
+//! 本模块提供 `discovery` 相关实现。
 //! Device discovery and trusted identity matching.
 
 use crate::state::{DeviceBus, DeviceHealth, DeviceId, DeviceIdentity, DeviceTrust};
 use eva_config::{AdapterTransport, HardwareBusKind, ProjectConfig};
 use eva_core::{AdapterId, EvaError};
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "device discovery and trusted identity matching";
 
+/// 表示 `DeviceCandidate` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceCandidate {
+    /// 记录 `identity` 字段对应的值。
     pub identity: DeviceIdentity,
+    /// 记录 `vendor_id` 字段对应的值。
     pub vendor_id: Option<String>,
+    /// 记录 `product_id` 字段对应的值。
     pub product_id: Option<String>,
+    /// 记录 `serial` 字段对应的值。
     pub serial: Option<String>,
+    /// 记录 `protocol` 字段对应的值。
     pub protocol: Option<String>,
+    /// 记录 `health` 字段对应的值。
     pub health: DeviceHealth,
+    /// 记录 `source_path` 字段对应的值。
     pub source_path: String,
+    /// 记录 `handle_granted` 字段对应的值。
     pub handle_granted: bool,
+    /// 记录 `rejected_reason` 字段对应的值。
     pub rejected_reason: Option<String>,
 }
 
+/// 表示 `HardwareDiscoveryReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HardwareDiscoveryReport {
+    /// 记录 `candidates` 字段对应的值。
     pub candidates: Vec<DeviceCandidate>,
 }
 
+/// 执行 `discover_project_devices` 对应的处理逻辑。
 pub fn discover_project_devices(
     project: &ProjectConfig,
 ) -> Result<HardwareDiscoveryReport, EvaError> {
@@ -75,6 +90,7 @@ pub fn discover_project_devices(
     Ok(HardwareDiscoveryReport { candidates })
 }
 
+/// 执行 `device_bus_from_config` 对应的处理逻辑。
 fn device_bus_from_config(bus: HardwareBusKind) -> DeviceBus {
     match bus {
         HardwareBusKind::Usb => DeviceBus::Usb,
@@ -86,6 +102,7 @@ fn device_bus_from_config(bus: HardwareBusKind) -> DeviceBus {
 }
 
 impl DeviceCandidate {
+    /// 执行 `for_adapter` 对应的处理逻辑。
     pub fn for_adapter(adapter_id: AdapterId, logical_name: &str) -> Result<Self, EvaError> {
         Ok(Self {
             identity: DeviceIdentity::new(
@@ -108,16 +125,19 @@ impl DeviceCandidate {
     }
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
     use eva_config::load_project_config;
     use std::path::{Path, PathBuf};
 
+    /// 执行 `workspace_root` 对应的处理逻辑。
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
 
+    /// 验证 `project_discovery_returns_non_authorizing_candidates` 场景下的预期行为。
     #[test]
     fn project_discovery_returns_non_authorizing_candidates() {
         let project = load_project_config(workspace_root()).unwrap();

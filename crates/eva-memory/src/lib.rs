@@ -1,3 +1,4 @@
+//! 中文：记忆、知识检索、上下文构建、持久化、脱敏和观测的统一服务边界。
 //! Memory and knowledge service boundary.
 
 pub mod context_builder;

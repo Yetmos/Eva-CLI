@@ -1,3 +1,4 @@
+//! 中文：跨 CLI、运行时、Agent 和 Adapter 传播的追踪字段契约。
 //! Trace fields and propagation contracts.
 
 use eva_core::{
@@ -5,27 +6,44 @@ use eva_core::{
 };
 use std::fmt;
 
+/// 中文：可观察性记录携带的稳定 Span 标识。
 /// Stable span identifier carried by observability records.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SpanId(String);
+pub struct SpanId(
+    /// 中文：经过稳定字符校验的 Span 标识文本。
+    String,
+);
 
+/// 中文：运行时、Adapter 和 CLI 记录可共享的统一追踪字段。
 /// Common trace fields that all runtime, adapter, and CLI records can share.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TraceFields {
+    /// 中文：当前记录关联的事件标识。
     pub event_id: Option<EventId>,
+    /// 中文：跨命令和异步任务保持不变的请求标识。
     pub request_id: Option<RequestId>,
+    /// 中文：当前事件或操作关联的主题。
     pub topic: Option<Topic>,
+    /// 中文：当前处理或目标 Agent。
     pub agent_id: Option<AgentId>,
+    /// 中文：当前调用或目标 Adapter。
     pub adapter_id: Option<AdapterId>,
+    /// 中文：当前调用的 capability。
     pub capability: Option<CapabilityName>,
+    /// 中文：实际执行调用的 Provider 名称。
     pub provider: Option<String>,
+    /// 中文：一条业务链中根事件的关联标识。
     pub correlation_id: Option<EventId>,
+    /// 中文：直接导致当前事件的父事件标识。
     pub causation_id: Option<EventId>,
+    /// 中文：处理当前记录的运行时代际。
     pub generation_id: Option<GenerationId>,
+    /// 中文：当前观测操作的 Span 标识。
     pub span_id: Option<SpanId>,
 }
 
 impl SpanId {
+    /// 中文：校验 Span 标识非空、无边缘空白且只包含跨后端稳定的 ASCII 字符。
     pub fn parse(value: &str) -> Result<Self, eva_core::EvaError> {
         if value.is_empty() || value.trim() != value {
             return Err(eva_core::EvaError::invalid_argument(
@@ -43,18 +61,24 @@ impl SpanId {
         Ok(Self(value.to_owned()))
     }
 
+    /// 中文：返回经过校验的 Span 标识文本。
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 impl fmt::Display for SpanId {
+    /// 中文：把稳定 Span 标识原样写入格式化器。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
 
 impl TraceFields {
+    /// 中文：从核心事件提取标识、主题、目标和元数据，不读取或记录载荷。
+    ///
+    /// 目标类型决定填充 Agent、capability 或 Adapter 字段；广播目标不增加主体字段，
+    /// 从而避免在追踪层猜测实际消费者。
     /// Builds trace fields from a core event without interpreting its payload.
     pub fn from_event(event: &Event) -> Self {
         let mut fields = Self {
@@ -77,42 +101,53 @@ impl TraceFields {
         fields
     }
 
+    /// 中文：附加或覆盖 Agent 标识。
     pub fn with_agent_id(mut self, value: AgentId) -> Self {
         self.agent_id = Some(value);
         self
     }
 
+    /// 中文：附加或覆盖请求标识。
     pub fn with_request_id(mut self, value: RequestId) -> Self {
         self.request_id = Some(value);
         self
     }
 
+    /// 中文：附加或覆盖 Adapter 标识。
     pub fn with_adapter_id(mut self, value: AdapterId) -> Self {
         self.adapter_id = Some(value);
         self
     }
 
+    /// 中文：附加或覆盖 capability 名称。
     pub fn with_capability(mut self, value: CapabilityName) -> Self {
         self.capability = Some(value);
         self
     }
 
+    /// 中文：附加或覆盖 Provider 名称。
     pub fn with_provider(mut self, value: impl Into<String>) -> Self {
         self.provider = Some(value.into());
         self
     }
 
+    /// 中文：附加或覆盖当前 Span 标识。
     pub fn with_span_id(mut self, value: SpanId) -> Self {
         self.span_id = Some(value);
         self
     }
 
+    /// 中文：克隆全部链路上下文，仅替换 Span 标识以表示新的子操作。
     pub fn child_span(&self, span_id: SpanId) -> Self {
         let mut child = self.clone();
         child.span_id = Some(span_id);
         child
     }
 
+    /// 中文：按请求、关联事件、Span 的优先级生成跨记录连续性键。
+    ///
+    /// 优先选择覆盖面最大的请求标识；缺失时退化到关联事件，最后使用局部 Span。
+    /// 所有字段都缺失时返回 `None`，调用方不应制造随机连续性。
     pub fn continuity_key(&self) -> Option<String> {
         self.request_id
             .as_ref()
@@ -129,6 +164,7 @@ impl TraceFields {
             })
     }
 
+    /// 中文：按固定字段顺序返回当前存在的值，供文本和 JSON 适配器稳定输出。
     /// Returns a flat list of present fields for text/JSON output adapters.
     pub fn entries(&self) -> Vec<(&'static str, String)> {
         let mut entries = Vec::new();
@@ -147,6 +183,7 @@ impl TraceFields {
     }
 }
 
+/// 中文：若可选强类型字段存在，则格式化并追加到扁平输出列表。
 fn push_optional<T: fmt::Display>(
     entries: &mut Vec<(&'static str, String)>,
     key: &'static str,
@@ -157,6 +194,7 @@ fn push_optional<T: fmt::Display>(
     }
 }
 
+/// 中文：若可选字符串字段存在，则复制并追加到扁平输出列表。
 fn push_optional_str(
     entries: &mut Vec<(&'static str, String)>,
     key: &'static str,
@@ -173,6 +211,7 @@ mod tests {
     use eva_core::{EventPayload, Topic};
 
     #[test]
+    /// 中文：验证事件元数据和定向 Agent 会映射到统一追踪字段。
     fn trace_fields_extract_core_event_metadata() {
         let event = Event::new(
             EventId::parse("evt-1").unwrap(),
@@ -191,6 +230,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证扁平输出只包含已设置字段且顺序稳定。
     fn entries_include_only_present_values() {
         let fields = TraceFields::default()
             .with_request_id(RequestId::parse("req-1").unwrap())
@@ -208,6 +248,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证子 Span 替换局部标识但保留请求连续性。
     fn child_span_preserves_trace_continuity() {
         let parent = TraceFields::default()
             .with_request_id(RequestId::parse("req-1").unwrap())

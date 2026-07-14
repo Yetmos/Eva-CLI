@@ -1,3 +1,8 @@
+//! 提供 JSONL 文件后端、保留/轮转策略和不会阻断业务流程的尽力可观测性管道。
+//!
+//! 文件 sink 的直接接口保留 I/O 错误；尽力管道则把主后端失败记录为降级并把审计、指标
+//! 转存内存。JSONL 每条记录追加一行，轮转先重命名当前文件再创建新文件；本模块没有跨
+//! sink 或跨进程锁，调用方必须串行化共享路径上的写入与轮转。
 //! Best-effort file and OpenTelemetry-style observability backend adapters.
 
 use crate::{
@@ -11,37 +16,57 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "best-effort production observability backend adapters";
 
+/// 直接向固定 JSONL 文件追加记录，并可在追加前执行大小轮转的文件 sink。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileObservabilitySink {
+    /// 记录 `root` 字段对应的值。
     root: PathBuf,
+    /// 可选策略控制追加时轮转及显式维护时的过期、损坏记录处理。
     retention_policy: Option<ObservabilityRetentionPolicy>,
 }
 
+/// 在主文件后端失败时降级到内存证据、对业务调用始终返回成功的管道。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BestEffortObservabilityPipeline {
+    /// 可用的文件后端；初始化失败时为 `None`，后续不会自动重新打开。
     primary: Option<FileObservabilitySink>,
+    /// 记录 `fallback_audit` 字段对应的值。
     fallback_audit: InMemoryAuditSink,
+    /// 记录 `fallback_metrics` 字段对应的值。
     fallback_metrics: InMemoryMetricSink,
+    /// 去重保存后端失败原因，供健康报告显式暴露数据完整性下降。
     degraded_reasons: Vec<String>,
 }
 
+/// 定义 `JSONL_FILES` 常量。
 const JSONL_FILES: [&str; 3] = ["audit.jsonl", "metrics.jsonl", "otel-spans.jsonl"];
 
+/// 表示 `ObservabilitySmokeReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservabilitySmokeReport {
+    /// 记录 `backend_root` 字段对应的值。
     pub backend_root: String,
+    /// 记录 `degraded` 字段对应的值。
     pub degraded: bool,
+    /// 记录 `degraded_reasons` 字段对应的值。
     pub degraded_reasons: Vec<String>,
+    /// 记录 `audit_events` 字段对应的值。
     pub audit_events: usize,
+    /// 记录 `metric_points` 字段对应的值。
     pub metric_points: usize,
+    /// 记录 `otel_spans` 字段对应的值。
     pub otel_spans: usize,
+    /// 记录 `continuity_key` 字段对应的值。
     pub continuity_key: Option<String>,
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl FileObservabilitySink {
+    /// 打开或读取 `open` 所需的后端数据，失败时保留错误上下文。
     pub fn open(root: impl AsRef<Path>) -> Result<Self, EvaError> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root).map_err(|error| {
@@ -55,6 +80,7 @@ impl FileObservabilitySink {
         })
     }
 
+    /// 打开或读取 `open_with_policy` 所需的后端数据，失败时保留错误上下文。
     pub fn open_with_policy(
         root: impl AsRef<Path>,
         policy: ObservabilityRetentionPolicy,
@@ -71,10 +97,12 @@ impl FileObservabilitySink {
         Ok(sink)
     }
 
+    /// 返回 `root` 对应的数据视图。
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// 写入或导出 `export_span` 对应的可观测性记录。
     pub fn export_span(
         &mut self,
         name: &str,
@@ -84,18 +112,22 @@ impl FileObservabilitySink {
         self.append_jsonl("otel-spans.jsonl", &otel_span_json(name, trace, attributes))
     }
 
+    /// 执行 `audit_path` 对应的处理逻辑。
     pub fn audit_path(&self) -> PathBuf {
         self.root.join("audit.jsonl")
     }
 
+    /// 执行 `metrics_path` 对应的处理逻辑。
     pub fn metrics_path(&self) -> PathBuf {
         self.root.join("metrics.jsonl")
     }
 
+    /// 执行 `apply_retention_policy` 对应的受控流程。
     pub fn apply_retention_policy(&self) -> Result<ObservabilityRetentionReport, EvaError> {
         self.apply_retention_policy_at(system_time_millis(SystemTime::now()) as u64)
     }
 
+    /// 执行 `apply_retention_policy_at` 对应的受控流程。
     pub fn apply_retention_policy_at(
         &self,
         now_ms: u64,
@@ -104,6 +136,10 @@ impl FileObservabilitySink {
         apply_jsonl_retention_policy_at(&self.root, &policy, now_ms)
     }
 
+    /// 在需要时先轮转当前文件，再追加一条带换行的完整 JSONL 记录。
+    ///
+    /// `&mut self` 串行化单个 sink 实例，但克隆实例和其他进程不共享锁；它们不应并发轮转
+    /// 同一路径。轮转成功而追加失败时，旧记录仍保留在轮转文件中，新记录则返回错误。
     fn append_jsonl(&mut self, file_name: &str, line: &str) -> Result<(), EvaError> {
         let path = self.root.join(file_name);
         if let Some(policy) = &self.retention_policy {
@@ -113,19 +149,25 @@ impl FileObservabilitySink {
     }
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl AuditSink for FileObservabilitySink {
+    /// 写入或导出 `record` 对应的可观测性记录。
     fn record(&mut self, event: AuditEvent) -> Result<(), EvaError> {
         self.append_jsonl("audit.jsonl", &audit_event_json(&event))
     }
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl MetricSink for FileObservabilitySink {
+    /// 写入或导出 `record` 对应的可观测性记录。
     fn record(&mut self, point: MetricPoint) -> Result<(), EvaError> {
         self.append_jsonl("metrics.jsonl", &metric_point_json(&point))
     }
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl BestEffortObservabilityPipeline {
+    /// 打开或读取 `open` 所需的后端数据，失败时保留错误上下文。
     pub fn open(root: impl AsRef<Path>) -> Self {
         let backend_root = root.as_ref().display().to_string();
         match FileObservabilitySink::open(root) {
@@ -147,6 +189,7 @@ impl BestEffortObservabilityPipeline {
         }
     }
 
+    /// 打开或读取 `open_with_policy` 所需的后端数据，失败时保留错误上下文。
     pub fn open_with_policy(root: impl AsRef<Path>, policy: ObservabilityRetentionPolicy) -> Self {
         let backend_root = root.as_ref().display().to_string();
         match FileObservabilitySink::open_with_policy(root, policy) {
@@ -168,22 +211,27 @@ impl BestEffortObservabilityPipeline {
         }
     }
 
+    /// 执行 `degraded` 对应的处理逻辑。
     pub fn degraded(&self) -> bool {
         !self.degraded_reasons.is_empty()
     }
 
+    /// 执行 `degraded_reasons` 对应的处理逻辑。
     pub fn degraded_reasons(&self) -> &[String] {
         &self.degraded_reasons
     }
 
+    /// 执行 `fallback_audit` 对应的处理逻辑。
     pub fn fallback_audit(&self) -> &InMemoryAuditSink {
         &self.fallback_audit
     }
 
+    /// 执行 `fallback_metrics` 对应的处理逻辑。
     pub fn fallback_metrics(&self) -> &InMemoryMetricSink {
         &self.fallback_metrics
     }
 
+    /// 执行 `backend_root` 对应的处理逻辑。
     pub fn backend_root(&self) -> String {
         self.primary
             .as_ref()
@@ -191,6 +239,7 @@ impl BestEffortObservabilityPipeline {
             .unwrap_or_else(|| "degraded".to_owned())
     }
 
+    /// 尝试导出 span；失败只登记降级原因并返回 `Ok`，不阻断被观测业务。
     pub fn export_span(
         &mut self,
         name: &str,
@@ -207,6 +256,7 @@ impl BestEffortObservabilityPipeline {
         Ok(())
     }
 
+    /// 执行 `smoke_report` 对应的处理逻辑。
     pub fn smoke_report(
         &self,
         backend_root: impl Into<String>,
@@ -230,6 +280,7 @@ impl BestEffortObservabilityPipeline {
         }
     }
 
+    /// 去重记录降级原因，并尽力在内存审计中留下后端退化事件。
     fn record_degradation(&mut self, reason: String) {
         if !self.degraded_reasons.contains(&reason) {
             self.degraded_reasons.push(reason.clone());
@@ -246,6 +297,10 @@ impl BestEffortObservabilityPipeline {
     }
 }
 
+/// 检查活动与轮转文件、删除已过期轮转文件并报告损坏记录。
+///
+/// `max_rotated_files` 只产生告警，不按数量强制删除；实际删除仅依据 `retain_for_ms`，避免
+/// 为满足数量上限而意外丢弃仍在保留期内的证据。无关文件不会被检查或删除。
 fn apply_jsonl_retention_policy_at(
     root: &Path,
     policy: &ObservabilityRetentionPolicy,
@@ -318,7 +373,9 @@ fn apply_jsonl_retention_policy_at(
     Ok(report)
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl AuditSink for BestEffortObservabilityPipeline {
+    /// 写入或导出 `record` 对应的可观测性记录。
     fn record(&mut self, event: AuditEvent) -> Result<(), EvaError> {
         if let Some(primary) = &mut self.primary {
             if let Err(error) = AuditSink::record(primary, event.clone()) {
@@ -332,7 +389,9 @@ impl AuditSink for BestEffortObservabilityPipeline {
     }
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl MetricSink for BestEffortObservabilityPipeline {
+    /// 写入或导出 `record` 对应的可观测性记录。
     fn record(&mut self, point: MetricPoint) -> Result<(), EvaError> {
         if let Some(primary) = &mut self.primary {
             if let Err(error) = MetricSink::record(primary, point.clone()) {
@@ -346,6 +405,7 @@ impl MetricSink for BestEffortObservabilityPipeline {
     }
 }
 
+/// 执行 `degraded_sink_event` 对应的处理逻辑。
 fn degraded_sink_event(reason: String) -> InMemoryAuditSink {
     let mut sink = InMemoryAuditSink::default();
     let _ = sink.record(
@@ -360,6 +420,9 @@ fn degraded_sink_event(reason: String) -> InMemoryAuditSink {
     sink
 }
 
+/// 以追加模式写入单行并补换行；不执行 fsync，也不提供跨实例锁。
+///
+/// 进程在写入中崩溃可能留下半行，保留策略会按损坏记录策略报告或失败，而不会自动修复。
 fn append_line(path: &Path, line: &str) -> Result<(), EvaError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -384,6 +447,7 @@ fn append_line(path: &Path, line: &str) -> Result<(), EvaError> {
     })
 }
 
+/// 当现有非空文件加上本条记录将超过上限时，先把整个活动文件重命名为唯一轮转名。
 fn rotate_if_needed(
     path: &Path,
     policy: &ObservabilityRetentionPolicy,
@@ -407,6 +471,7 @@ fn rotate_if_needed(
     })
 }
 
+/// 以毫秒时间和最多 999 个碰撞后缀寻找未占用轮转名；耗尽时返回冲突且不改原文件。
 fn next_rotated_path(path: &Path, rotated_at_ms: u64) -> Result<PathBuf, EvaError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
@@ -433,6 +498,7 @@ fn next_rotated_path(path: &Path, rotated_at_ms: u64) -> Result<PathBuf, EvaErro
     ))
 }
 
+/// 解析或检查 `parse_rotated_jsonl_name` 对应的数据，并报告无效格式。
 fn parse_rotated_jsonl_name(file_name: &str) -> Option<(String, u64)> {
     let base = file_name.strip_suffix(".jsonl")?;
     let parts = base.split('.').collect::<Vec<_>>();
@@ -447,6 +513,10 @@ fn parse_rotated_jsonl_name(file_name: &str) -> Option<(String, u64)> {
     Some((signal, rotated_at_ms))
 }
 
+/// 按行检查 JSON 对象外形，并依策略累计报告或在首个文件检查时失败。
+///
+/// 这是用于发现空截断、半写等常见损坏的轻量检查，仅验证首尾花括号，不等价于完整 JSON
+/// 语法校验；`SkipAndReport` 保留原文件，`FailFast` 也不会删除或改写证据。
 fn inspect_jsonl_file(
     path: &Path,
     policy: &ObservabilityRetentionPolicy,
@@ -479,11 +549,13 @@ fn inspect_jsonl_file(
     }
 }
 
+/// 判断 `looks_like_json_object` 对应的条件是否成立。
 fn looks_like_json_object(line: &str) -> bool {
     let value = line.trim();
     value.starts_with('{') && value.ends_with('}')
 }
 
+/// 执行 `audit_event_json` 对应的处理逻辑。
 fn audit_event_json(event: &AuditEvent) -> String {
     format!(
         "{{\"recorded_at_ms\":{},\"action\":{},\"outcome\":{},\"trace\":{},\"message\":{},\"fields\":{}}}",
@@ -496,6 +568,7 @@ fn audit_event_json(event: &AuditEvent) -> String {
     )
 }
 
+/// 执行 `metric_point_json` 对应的处理逻辑。
 fn metric_point_json(point: &MetricPoint) -> String {
     format!(
         "{{\"name\":{},\"kind\":{},\"value\":{},\"labels\":{}}}",
@@ -506,6 +579,7 @@ fn metric_point_json(point: &MetricPoint) -> String {
     )
 }
 
+/// 执行 `otel_span_json` 对应的处理逻辑。
 fn otel_span_json(name: &str, trace: &TraceFields, attributes: &[(&str, &str)]) -> String {
     format!(
         "{{\"exporter\":\"opentelemetry-jsonl\",\"name\":{},\"trace\":{},\"attributes\":{}}}",
@@ -515,6 +589,7 @@ fn otel_span_json(name: &str, trace: &TraceFields, attributes: &[(&str, &str)]) 
     )
 }
 
+/// 执行 `trace_json` 对应的处理逻辑。
 fn trace_json(trace: &TraceFields) -> String {
     pairs_json(
         trace
@@ -524,6 +599,7 @@ fn trace_json(trace: &TraceFields) -> String {
     )
 }
 
+/// 按稳定格式生成 `pairs_json` 对应的输出。
 fn pairs_json<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
     let entries = pairs
         .into_iter()
@@ -532,10 +608,12 @@ fn pairs_json<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> String
     format!("{{{}}}", entries.join(","))
 }
 
+/// 执行 `option_json` 对应的处理逻辑。
 fn option_json(value: Option<&str>) -> String {
     value.map(json_string).unwrap_or_else(|| "null".to_owned())
 }
 
+/// 执行 `json_string` 对应的处理逻辑。
 fn json_string(value: &str) -> String {
     let mut escaped = String::new();
     escaped.push('"');
@@ -554,12 +632,14 @@ fn json_string(value: &str) -> String {
     escaped
 }
 
+/// 执行 `count_lines` 对应的处理逻辑。
 fn count_lines(path: Option<PathBuf>) -> Option<usize> {
     let path = path?;
     let data = fs::read_to_string(path).ok()?;
     Some(data.lines().filter(|line| !line.trim().is_empty()).count())
 }
 
+/// 执行 `system_time_millis` 对应的处理逻辑。
 fn system_time_millis(value: SystemTime) -> u128 {
     value
         .duration_since(UNIX_EPOCH)
@@ -567,11 +647,13 @@ fn system_time_millis(value: SystemTime) -> u128 {
         .unwrap_or_default()
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{MetricKind, MetricLabels, MetricName, SpanId};
 
+    /// 执行 `temp_root` 对应的处理逻辑。
     fn temp_root(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -583,6 +665,7 @@ mod tests {
         ))
     }
 
+    /// 验证 `file_observability_sink_writes_audit_metrics_and_otel_span` 场景下的预期行为。
     #[test]
     fn file_observability_sink_writes_audit_metrics_and_otel_span() {
         let root = temp_root("file");
@@ -614,6 +697,7 @@ mod tests {
         fs::remove_dir_all(root).ok();
     }
 
+    /// 验证 `best_effort_pipeline_degrades_without_failing` 场景下的预期行为。
     #[test]
     fn best_effort_pipeline_degrades_without_failing() {
         let root = temp_root("degraded");
@@ -635,6 +719,7 @@ mod tests {
         fs::remove_file(root).ok();
     }
 
+    /// 验证 `file_observability_policy_rotates_and_continues_writing` 场景下的预期行为。
     #[test]
     fn file_observability_policy_rotates_and_continues_writing() {
         let root = temp_root("rotation");
@@ -665,6 +750,7 @@ mod tests {
         fs::remove_dir_all(root).ok();
     }
 
+    /// 验证 `jsonl_retention_deletes_only_expired_observability_files_and_reports_corrupt_records` 场景下的预期行为。
     #[test]
     fn jsonl_retention_deletes_only_expired_observability_files_and_reports_corrupt_records() {
         let root = temp_root("retention");

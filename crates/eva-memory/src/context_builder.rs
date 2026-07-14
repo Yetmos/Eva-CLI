@@ -1,3 +1,4 @@
+//! 中文：在请求级预算和策略约束下组装记忆与知识上下文。
 //! Request-level context assembly from memory and knowledge services.
 
 use crate::knowledge_service::{InMemoryKnowledgeService, KnowledgeSearch, KnowledgeSearchResult};
@@ -8,45 +9,70 @@ use eva_core::{AgentId, EvaError, RequestId};
 use eva_observability::{AuditSink, MetricSink, TraceFields};
 use eva_policy::RedactionPolicyDomain;
 
+/// 中文：本模块隔离私有/全局记忆、执行过期过滤和脱敏，并构造可审计上下文。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "policy-aware context assembly";
 
+/// 中文：一次上下文构建允许从各来源取回的最大条目数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextBudget {
+    /// 中文：当前 Agent 私有记忆的最大条目数。
     pub private_memory: usize,
+    /// 中文：全局共享记忆的最大条目数。
     pub global_memory: usize,
+    /// 中文：知识检索结果的最大条目数。
     pub knowledge: usize,
 }
 
+/// 中文：构建上下文所需的请求主体、查询、预算和过期时间参考。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextRequest {
+    /// 中文：关联整个上下文调用链的请求标识。
     pub request_id: RequestId,
+    /// 中文：决定私有记忆可见范围的 Agent 标识。
     pub agent_id: AgentId,
+    /// 中文：用于知识检索的非空查询文本。
     pub query: String,
+    /// 中文：三个上下文来源各自的条目上限。
     pub budget: ContextBudget,
+    /// 中文：判断 TTL 是否过期的调用方时间毫秒值。
     pub now_ms: u128,
 }
 
+/// 中文：完成过期过滤、权限隔离和脱敏后的上下文结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltContext {
+    /// 中文：输入请求标识的稳定副本。
     pub request_id: RequestId,
+    /// 中文：上下文所属的 Agent。
     pub agent_id: AgentId,
+    /// 中文：知识检索使用的原查询文本。
     pub query: String,
+    /// 中文：只属于请求 Agent 的私有记忆。
     pub memory: Vec<MemoryRecord>,
+    /// 中文：对全部 Agent 可见的全局记忆。
     pub global_memory: Vec<MemoryRecord>,
+    /// 中文：按相关性返回的知识检索结果。
     pub knowledge: Vec<KnowledgeSearchResult>,
+    /// 中文：三个来源合计执行的敏感值替换次数。
     pub redaction_count: usize,
+    /// 中文：不含原始内容的范围、数量、过期参考和脱敏审计摘要。
     pub audit: Vec<String>,
 }
 
+/// 中文：借用记忆与知识服务、持有脱敏策略的上下文构建器。
 #[derive(Debug, Clone)]
 pub struct ContextBuilder<'a> {
+    /// 中文：提供按 Agent 与 TTL 过滤快照的记忆服务。
     memory: &'a InMemoryMemoryService,
+    /// 中文：提供查询相关性排序的知识服务。
     knowledge: &'a InMemoryKnowledgeService,
+    /// 中文：上下文注入前应用的脱敏策略快照。
     redaction_policy: RedactionPolicyDomain,
 }
 
 impl Default for ContextBudget {
+    /// 中文：默认每个来源最多取八条，限制上下文膨胀。
     fn default() -> Self {
         Self {
             private_memory: 8,
@@ -57,6 +83,7 @@ impl Default for ContextBudget {
 }
 
 impl ContextRequest {
+    /// 中文：使用默认预算和时间零创建上下文请求。
     pub fn new(request_id: RequestId, agent_id: AgentId, query: impl Into<String>) -> Self {
         Self {
             request_id,
@@ -67,11 +94,13 @@ impl ContextRequest {
         }
     }
 
+    /// 中文：覆盖三个来源的条目预算。
     pub fn with_budget(mut self, budget: ContextBudget) -> Self {
         self.budget = budget;
         self
     }
 
+    /// 中文：设置 TTL 过期判断使用的当前时间毫秒值。
     pub fn with_now_ms(mut self, now_ms: u128) -> Self {
         self.now_ms = now_ms;
         self
@@ -79,10 +108,12 @@ impl ContextRequest {
 }
 
 impl BuiltContext {
+    /// 中文：返回私有记忆、全局记忆和知识结果的总条目数。
     pub fn total_items(&self) -> usize {
         self.memory.len() + self.global_memory.len() + self.knowledge.len()
     }
 
+    /// 中文：生成只含计数和审计摘要的 Lua 上下文快照，不暴露原始记忆文本。
     pub fn lua_summary(&self) -> LuaContextSnapshot {
         LuaContextSnapshot {
             private_memory_count: self.memory.len(),
@@ -93,15 +124,21 @@ impl BuiltContext {
     }
 }
 
+/// 中文：提供给 Lua 宿主的最小上下文统计快照。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LuaContextSnapshot {
+    /// 中文：注入的私有记忆条目数。
     pub private_memory_count: usize,
+    /// 中文：注入的全局记忆条目数。
     pub global_memory_count: usize,
+    /// 中文：注入的知识结果数。
     pub knowledge_count: usize,
+    /// 中文：不含原始内容的上下文审计摘要。
     pub audit: Vec<String>,
 }
 
 impl<'a> ContextBuilder<'a> {
+    /// 中文：借用内存服务并使用默认脱敏策略创建构建器。
     pub fn new(memory: &'a InMemoryMemoryService, knowledge: &'a InMemoryKnowledgeService) -> Self {
         Self {
             memory,
@@ -110,11 +147,16 @@ impl<'a> ContextBuilder<'a> {
         }
     }
 
+    /// 中文：覆盖上下文注入前使用的脱敏策略。
     pub fn with_redaction_policy(mut self, policy: RedactionPolicyDomain) -> Self {
         self.redaction_policy = policy;
         self
     }
 
+    /// 中文：构建不写入可观察性后端的策略感知上下文。
+    ///
+    /// 先拒绝空查询，再按 Agent、预算和 `now_ms` 读取快照；知识检索完成后统一克隆并
+    /// 脱敏所有来源。审计只记录数量、范围和时间参考，不包含记忆、查询或秘密原文。
     pub fn build(&self, request: ContextRequest) -> Result<BuiltContext, EvaError> {
         if request.query.trim().is_empty() {
             return Err(EvaError::invalid_argument("context query cannot be empty"));
@@ -160,6 +202,10 @@ impl<'a> ContextBuilder<'a> {
         })
     }
 
+    /// 中文：构建上下文并记录记忆读取、知识检索和最终上下文三阶段观测。
+    ///
+    /// 观测写入是执行契约的一部分：任何审计或指标错误都会使构建失败。读取观测发生在
+    /// 检索前，最终上下文观测发生在脱敏后，因此指标中的条目与替换计数对应实际返回值。
     pub fn build_observed<S>(
         &self,
         request: ContextRequest,
@@ -236,6 +282,7 @@ impl<'a> ContextBuilder<'a> {
     }
 }
 
+/// 中文：按输入顺序脱敏一组记忆记录，并累计全部替换次数。
 fn redact_memory_records(
     records: Vec<MemoryRecord>,
     policy: &RedactionPolicyDomain,
@@ -252,6 +299,7 @@ fn redact_memory_records(
     (records, replacement_count)
 }
 
+/// 中文：按相关性顺序脱敏知识结果，并累计摘要与正文替换次数。
 fn redact_knowledge_results(
     results: Vec<KnowledgeSearchResult>,
     policy: &RedactionPolicyDomain,
@@ -278,32 +326,40 @@ mod tests {
     };
 
     #[derive(Debug, Default)]
+    /// 中文：同时收集上下文构建审计和指标的测试写入端。
     struct TestSink {
+        /// 中文：内存审计收集器。
         audit: InMemoryAuditSink,
+        /// 中文：内存指标收集器。
         metrics: InMemoryMetricSink,
     }
 
     impl AuditSink for TestSink {
+        /// 中文：把审计事件转发到测试收集器。
         fn record(&mut self, event: AuditEvent) -> Result<(), EvaError> {
             self.audit.record(event)
         }
     }
 
     impl MetricSink for TestSink {
+        /// 中文：把指标点转发到测试收集器。
         fn record(&mut self, point: MetricPoint) -> Result<(), EvaError> {
             self.metrics.record(point)
         }
     }
 
+    /// 中文：解析上下文测试使用的 Agent 标识。
     fn agent(value: &str) -> AgentId {
         AgentId::parse(value).unwrap()
     }
 
+    /// 中文：解析上下文测试使用的请求标识。
     fn request(value: &str) -> RequestId {
         RequestId::parse(value).unwrap()
     }
 
     #[test]
+    /// 中文：验证私有记忆只对所属 Agent 可见，同时仍可读取全局记忆和知识。
     fn context_uses_only_requesting_agents_private_memory() {
         let mut memory = InMemoryMemoryService::new();
         let root = agent("root-agent");
@@ -346,6 +402,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证三个来源分别遵守请求预算。
     fn context_respects_item_budgets() {
         let mut memory = InMemoryMemoryService::new();
         let root = agent("root-agent");
@@ -373,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证过期记忆被过滤且有效记忆在注入前完成脱敏。
     fn context_filters_expired_memory_and_redacts_sensitive_values() {
         let mut memory = InMemoryMemoryService::new();
         let root = agent("root-agent");
@@ -397,6 +455,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证自定义敏感键、前缀和替换文本应用到上下文且审计不泄密。
     fn context_uses_policy_driven_redaction_rules() {
         let mut memory = InMemoryMemoryService::new();
         let root = agent("root-agent");
@@ -436,6 +495,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证观测构建按读取、检索、上下文顺序写入审计和对应指标。
     fn observed_context_records_read_search_and_context_events() {
         let mut memory = InMemoryMemoryService::new();
         let root = agent("root-agent");

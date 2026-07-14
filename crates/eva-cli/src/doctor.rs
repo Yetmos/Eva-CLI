@@ -1,3 +1,4 @@
+//! 面向开发闭环的 Doctor 自检；只读取项目状态，不启动真实运行时。
 //! Doctor checks for the V0.3 developer loop.
 
 use crate::run::display_path;
@@ -5,32 +6,46 @@ use eva_config::{load_project_config, schema_paths};
 use eva_runtime::RuntimeBuilder;
 use std::path::Path;
 
+/// `eva doctor` 的汇总结果，保留项目根目录和按执行顺序排列的检查项。
 /// Result of `eva doctor`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorReport {
+    /// 经过跨平台展示规范化的项目根目录。
     pub project_root: String,
+    /// 环境、配置、schema 与运行时边界的逐项结果。
     pub checks: Vec<DoctorCheck>,
 }
 
+/// 单个环境或配置检查；字段同时服务于文本与稳定 JSON 输出。
 /// One environment or configuration check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorCheck {
+    /// 稳定的机器可读检查名称。
     pub name: String,
+    /// 检查严重级别，决定最终命令是否视为失败。
     pub status: CheckStatus,
+    /// 面向操作者的检查结论。
     pub message: String,
+    /// 与问题相关的可选文件系统路径。
     pub path: Option<String>,
+    /// 失败或警告时的可选修复建议。
     pub suggestion: Option<String>,
 }
 
+/// 文本与 JSON 共同使用的稳定 Doctor 状态；新增值会影响外部输出契约。
 /// Stable doctor status used by text and JSON output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckStatus {
+    /// 检查通过，无需操作者介入。
     Ok,
+    /// 存在非阻塞风险，命令仍可成功。
     Warning,
+    /// 存在阻塞问题，报告应被视为失败。
     Error,
 }
 
 impl CheckStatus {
+    /// 返回稳定的小写状态码，避免展示层各自维护映射。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
@@ -41,6 +56,7 @@ impl CheckStatus {
 }
 
 impl DoctorReport {
+    /// 报告中存在阻塞检查时返回 true；警告不会使 Doctor 失败。
     pub fn has_errors(&self) -> bool {
         self.checks
             .iter()
@@ -48,6 +64,10 @@ impl DoctorReport {
     }
 }
 
+/// 执行只读 Doctor 检查而不启动真实运行时。
+///
+/// 配置加载失败后立即返回，因为后续 schema、路径和 runtime builder 检查都依赖已验证配置；
+/// 这种短路可避免在同一根因上产生大量误导性错误。
 /// Runs V0.3 doctor checks without starting a real runtime.
 pub fn doctor_project(project_root: &Path) -> DoctorReport {
     let mut report = DoctorReport {
@@ -199,6 +219,7 @@ pub fn doctor_project(project_root: &Path) -> DoctorReport {
 }
 
 impl DoctorCheck {
+    /// 构造通过检查；通过项不附带修复建议。
     fn ok(name: impl Into<String>, message: impl Into<String>, path: Option<String>) -> Self {
         Self {
             name: name.into(),
@@ -209,6 +230,7 @@ impl DoctorCheck {
         }
     }
 
+    /// 构造非阻塞警告，并允许提供下一步建议。
     fn warning(
         name: impl Into<String>,
         message: impl Into<String>,
@@ -224,6 +246,7 @@ impl DoctorCheck {
         }
     }
 
+    /// 构造阻塞错误，供 `DoctorReport::has_errors` 汇总失败状态。
     fn error(
         name: impl Into<String>,
         message: impl Into<String>,
@@ -240,6 +263,7 @@ impl DoctorCheck {
     }
 }
 
+/// 将路径存在性判断规范化为 Doctor 检查，确保成功和失败都报告相同路径格式。
 fn push_path_check(
     report: &mut DoctorReport,
     name: &str,
@@ -263,15 +287,18 @@ fn push_path_check(
 }
 
 #[cfg(test)]
+/// Doctor 示例项目集成检查的回归测试。
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
+    /// 返回仓库根目录，供集成式 Doctor 测试使用真实示例配置。
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
 
     #[test]
+    /// 验证仓库示例项目没有阻塞错误，同时保留预期的版本阶段警告。
     fn doctor_accepts_sample_project_with_only_v03_warnings() {
         let report = doctor_project(&workspace_root());
 

@@ -1,62 +1,97 @@
+//! 本模块提供 `compatibility` 相关实现。
 //! MCP compatibility matrix and stream lifecycle evidence.
 
 use crate::session::McpServerTransport;
 use eva_core::EvaError;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "MCP transport, schema, and stream lifecycle compatibility matrix";
 
+/// 表示 `McpCompatibilityMatrix` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpCompatibilityMatrix {
+    /// 记录 `protocol_version` 字段对应的值。
     pub protocol_version: String,
+    /// 记录 `transports` 字段对应的值。
     pub transports: Vec<McpTransportCompatibility>,
+    /// 记录 `tool_schemas` 字段对应的值。
     pub tool_schemas: Vec<McpToolSchemaCompatibility>,
+    /// 记录 `stream_lifecycle` 字段对应的值。
     pub stream_lifecycle: McpStreamLifecycleCompatibility,
+    /// 记录 `server_surface` 字段对应的值。
     pub server_surface: McpServerSurfaceCompatibility,
 }
 
+/// 表示 `McpTransportCompatibility` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpTransportCompatibility {
+    /// 记录 `transport` 字段对应的值。
     pub transport: McpServerTransport,
+    /// 记录 `json_rpc` 字段对应的值。
     pub json_rpc: bool,
+    /// 记录 `auth_headers` 字段对应的值。
     pub auth_headers: bool,
+    /// 记录 `timeout_and_output_limits` 字段对应的值。
     pub timeout_and_output_limits: bool,
+    /// 记录 `stream_lifecycle` 字段对应的值。
     pub stream_lifecycle: bool,
 }
 
+/// 表示 `McpToolSchemaCompatibility` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpToolSchemaCompatibility {
+    /// 记录 `tool` 字段对应的值。
     pub tool: String,
+    /// 记录 `input_schema` 字段对应的值。
     pub input_schema: String,
+    /// 记录 `output_content` 字段对应的值。
     pub output_content: String,
+    /// 记录 `schema_checked` 字段对应的值。
     pub schema_checked: bool,
 }
 
+/// 表示 `McpStreamLifecycleCompatibility` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpStreamLifecycleCompatibility {
+    /// 记录 `start` 字段对应的值。
     pub start: bool,
+    /// 记录 `abort` 字段对应的值。
     pub abort: bool,
+    /// 记录 `cleanup` 字段对应的值。
     pub cleanup: bool,
+    /// 记录 `dangling_sessions_after_abort` 字段对应的值。
     pub dangling_sessions_after_abort: u32,
 }
 
+/// 表示 `McpServerSurfaceCompatibility` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpServerSurfaceCompatibility {
+    /// 记录 `explicit_tool_gate` 字段对应的值。
     pub explicit_tool_gate: bool,
+    /// 记录 `unlimited_proxy_exposed` 字段对应的值。
     pub unlimited_proxy_exposed: bool,
 }
 
+/// 表示 `McpCompatibilityReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpCompatibilityReport {
+    /// 记录 `protocol_version` 字段对应的值。
     pub protocol_version: String,
+    /// 记录 `status` 字段对应的值。
     pub status: String,
+    /// 记录 `transport_count` 字段对应的值。
     pub transport_count: usize,
+    /// 记录 `tool_schema_count` 字段对应的值。
     pub tool_schema_count: usize,
+    /// 记录 `failures` 字段对应的值。
     pub failures: Vec<String>,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
 impl McpCompatibilityMatrix {
+    /// 执行 `v1137_fixture` 对应的处理逻辑。
     pub fn v1137_fixture() -> Self {
         Self {
             protocol_version: "2025-11-25".to_owned(),
@@ -95,6 +130,7 @@ impl McpCompatibilityMatrix {
         }
     }
 
+    /// 执行 `verify` 对应的处理逻辑。
     pub fn verify(&self) -> Result<McpCompatibilityReport, EvaError> {
         if self.protocol_version.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -188,6 +224,7 @@ impl McpCompatibilityMatrix {
         })
     }
 
+    /// 执行 `audit_entries` 对应的处理逻辑。
     fn audit_entries(&self) -> Vec<String> {
         let mut audit = vec![
             format!("mcp.protocol_version:{}", self.protocol_version),
@@ -218,10 +255,12 @@ impl McpCompatibilityMatrix {
     }
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证 `v1137_fixture_verifies_mcp_compatibility_matrix` 场景下的预期行为。
     #[test]
     fn v1137_fixture_verifies_mcp_compatibility_matrix() {
         let report = McpCompatibilityMatrix::v1137_fixture().verify().unwrap();
@@ -236,6 +275,7 @@ mod tests {
         ));
     }
 
+    /// 验证 `compatibility_matrix_blocks_missing_stream_cleanup` 场景下的预期行为。
     #[test]
     fn compatibility_matrix_blocks_missing_stream_cleanup() {
         let mut matrix = McpCompatibilityMatrix::v1137_fixture();
@@ -249,6 +289,7 @@ mod tests {
             .contains(&"stream_lifecycle:cleanup_missing".to_owned()));
     }
 
+    /// 验证 `compatibility_matrix_blocks_missing_transport_stream_lifecycle` 场景下的预期行为。
     #[test]
     fn compatibility_matrix_blocks_missing_transport_stream_lifecycle() {
         let mut matrix = McpCompatibilityMatrix::v1137_fixture();
@@ -262,6 +303,7 @@ mod tests {
             .contains(&"transport:http_stream_lifecycle_missing".to_owned()));
     }
 
+    /// 验证 `compatibility_matrix_blocks_unlimited_server_proxy` 场景下的预期行为。
     #[test]
     fn compatibility_matrix_blocks_unlimited_server_proxy() {
         let mut matrix = McpCompatibilityMatrix::v1137_fixture();

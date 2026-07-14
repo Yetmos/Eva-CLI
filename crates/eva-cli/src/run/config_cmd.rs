@@ -1,3 +1,5 @@
+//! 配置校验子命令：加载拆分清单并输出可审计的配置规模摘要。
+
 use super::{
     display_path, json_array, json_string, parse_common_options, success_envelope, trace_for,
     write_error, write_error_kind, CommonOptions, OutputFormat, EXIT_CONFIG, EXIT_OK,
@@ -8,22 +10,37 @@ use eva_observability::TraceFields;
 use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 已验证项目配置的只读摘要；计数区分总数与启用数。
 struct ValidationReport {
+    /// 规范化项目根路径。
     project_root: String,
+    /// 实际加载的主配置路径。
     eva_config_path: String,
+    /// 配置声明的运行环境。
     environment: String,
+    /// 热重载开关。
     hot_reload: bool,
+    /// Agent 清单总数。
     agents_total: usize,
+    /// 已启用 Agent 数量。
     agents_enabled: usize,
+    /// Adapter 清单总数。
     adapters_total: usize,
+    /// 已启用 Adapter 数量。
     adapters_enabled: usize,
+    /// Capability 清单总数。
     capabilities_total: usize,
+    /// 已启用 Capability 数量。
     capabilities_enabled: usize,
+    /// 已加载策略文件数量。
     policies_total: usize,
+    /// 已验证路由规则数量。
     routes_total: usize,
+    /// 校验使用的 schema 文件路径。
     schema_files: Vec<String>,
 }
 
+/// 解析唯一受支持的 `config validate` 子命令。
 pub(super) fn parse_config_command(args: &[String]) -> Result<CommonOptions, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -37,6 +54,7 @@ pub(super) fn parse_config_command(args: &[String]) -> Result<CommonOptions, Eva
     }
 }
 
+/// 加载并交叉校验项目配置；任何加载错误都固定映射为配置类退出码。
 pub(super) fn execute_config_validate<W, E>(
     options: CommonOptions,
     stdout: &mut W,
@@ -69,6 +87,7 @@ where
 }
 
 impl ValidationReport {
+    /// 从已验证配置投影稳定摘要，避免输出层重新解释清单语义。
     fn from_project(project: &ProjectConfig) -> Self {
         let schemas = schema_paths(&project.roots);
         Self {
@@ -104,6 +123,7 @@ impl ValidationReport {
     }
 }
 
+/// 按文本或 JSON 输出配置摘要；成功 JSON 始终使用统一信封。
 fn write_validation<W: Write>(
     writer: &mut W,
     output: OutputFormat,

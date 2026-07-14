@@ -1,3 +1,5 @@
+//! Agent 状态、排空与热重载子命令；守护进程可用时执行真实变更，否则只生成本地计划。
+
 use super::{
     json_array, json_string, option_json, parse_common_options, parse_u64_option,
     parse_usize_option, required_option, success_envelope, trace_for, write_command_error,
@@ -18,107 +20,193 @@ use eva_runtime::{
 use std::io::Write;
 use std::path::PathBuf;
 
+/// 构建只读 AgentRuntime 时使用的默认队列容量。
 const DEFAULT_QUEUE_CAPACITY: usize = 256;
+/// 未指定时用于排空计划的兼容代际 ID。
 const DEFAULT_DRAIN_GENERATION: &str = "gen-v1115-agent";
+/// 热重载计划的默认源代际。
 const DEFAULT_FROM_GENERATION: &str = "gen-current";
+/// 热重载计划的默认目标代际。
 const DEFAULT_TO_GENERATION: &str = "gen-next";
+/// 热重载计划的默认源发布引用。
 const DEFAULT_FROM_RELEASE: &str = "current";
+/// 热重载计划的默认目标发布引用。
 const DEFAULT_TO_RELEASE: &str = "next";
+/// 排空和 daemon control 的默认超时预算。
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Agent 子命令及其已解析选项。
 pub(super) enum AgentCommand {
-    Status(AgentStatusOptions),
-    Drain(AgentDrainOptions),
-    Reload(AgentReloadOptions),
+    /// 查询一个或全部 Agent 的 manifest 与生命周期状态。
+    Status(
+        /// 已解析的可选 Agent 标识与公共选项。
+        AgentStatusOptions,
+    ),
+    /// 排空指定 Agent 的在途任务。
+    Drain(
+        /// 已解析的 Agent 标识、排空时限、操作者与公共选项。
+        AgentDrainOptions,
+    ),
+    /// 将指定 Agent 切换到新运行时代际。
+    Reload(
+        /// 已解析的 Agent 标识、目标代际、操作者与公共选项。
+        AgentReloadOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Agent 状态查询选项。
 pub(super) struct AgentStatusOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 可选 Agent ID；缺省查询全部 Agent。
     agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Agent 排空选项，包括 daemon control 路径和本地计划参数。
 pub(super) struct AgentDrainOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 必须存在于项目清单的 Agent ID。
     agent_id: String,
+    /// 要排空的运行时代际。
     generation: String,
+    /// 规划时视为仍在执行的任务数。
     inflight_tasks: usize,
+    /// 排空等待预算。
     timeout_ms: u64,
+    /// daemon 使用的可选 durable backend。
     durable_backend: Option<PathBuf>,
+    /// daemon 状态目录。
     state_dir: Option<PathBuf>,
+    /// daemon 锁目录。
     lock_dir: Option<PathBuf>,
+    /// daemon pid 目录。
     pid_dir: Option<PathBuf>,
+    /// control mailbox 响应超时。
     control_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Agent 热重载选项，包含代际/发布切换和 daemon control 路径。
 pub(super) struct AgentReloadOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 要重载的 Agent ID。
     agent_id: String,
+    /// 当前运行时代际。
     from_generation: String,
+    /// 目标运行时代际。
     to_generation: String,
+    /// 当前发布引用。
     from_release: String,
+    /// 目标发布引用。
     to_release: String,
+    /// 切换前需要排空的在途任务数。
     inflight_tasks: usize,
+    /// 排空等待预算。
     timeout_ms: u64,
+    /// daemon 使用的可选 durable backend。
     durable_backend: Option<PathBuf>,
+    /// daemon 状态目录。
     state_dir: Option<PathBuf>,
+    /// daemon 锁目录。
     lock_dir: Option<PathBuf>,
+    /// daemon pid 目录。
     pid_dir: Option<PathBuf>,
+    /// control mailbox 响应超时。
     control_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Agent 状态命令的组合报告。
 struct AgentStatusReport {
+    /// 聚合状态文本。
     status: String,
+    /// 选中 Agent 的逐项状态。
     agents: Vec<AgentStatusEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 单个 Agent 的 manifest 与生命周期状态投影。
 struct AgentStatusEntry {
+    /// 稳定 Agent ID。
     agent_id: String,
+    /// 清单启用状态。
     enabled: bool,
+    /// 当前生命周期状态。
     lifecycle: String,
+    /// AgentRuntime 中的排队事件数。
     queued_events: usize,
+    /// 脚本路径。
     script: String,
+    /// 可选脚本版本。
     script_version: Option<String>,
+    /// 可选父 Agent ID。
     parent: Option<String>,
+    /// 子 Agent ID 列表。
     children: Vec<String>,
+    /// 订阅 topic pattern 列表。
     subscriptions: Vec<String>,
+    /// 清单来源路径。
     manifest_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Agent 排空计划或 daemon 变更的结果。
 struct AgentDrainReport {
+    /// 目标 Agent ID。
     agent_id: String,
+    /// 操作结果状态。
     status: String,
+    /// 操作后的生命周期文本。
     lifecycle: String,
+    /// 清单启用状态。
     enabled: bool,
+    /// 详细排空计划。
     drain: DrainPlan,
+    /// 是否由 daemon 执行了真实状态变更。
     mutation_executed: bool,
+    /// daemon 或本地 fallback 的说明。
     detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Agent 热重载的代际切换证据。
 struct AgentReloadReport {
+    /// 目标 Agent ID。
     agent_id: String,
+    /// 操作状态。
     status: String,
+    /// 操作后的生命周期文本。
     lifecycle: String,
+    /// 清单启用状态。
     enabled: bool,
+    /// 源代际 ID。
     from_generation: String,
+    /// 目标代际 ID。
     to_generation: String,
+    /// 源发布引用。
     from_release: String,
+    /// 目标发布引用。
     to_release: String,
+    /// 切换后的活动代际。
     active_generation: String,
+    /// 被替换的前一代际。
     previous_generation: String,
+    /// 前一代际最终状态。
     previous_generation_state: String,
+    /// 是否由 daemon 执行了真实状态变更。
     mutation_executed: bool,
+    /// 切换前排空证据。
     drain: GenerationDrainEvidence,
+    /// 代际控制器与 daemon 的审计记录。
     audit: Vec<String>,
 }
 
+/// 解析 `agent status|drain|reload` 子命令。
 pub(super) fn parse_agent_command(args: &[String]) -> Result<AgentCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -133,6 +221,7 @@ pub(super) fn parse_agent_command(args: &[String]) -> Result<AgentCommand, EvaEr
     }
 }
 
+/// 执行 Agent 查询或生命周期操作，并保持各分支的 trace 和错误输出一致。
 pub(super) fn execute_agent<W, E>(
     command: AgentCommand,
     stdout: &mut W,
@@ -200,6 +289,7 @@ where
     }
 }
 
+/// 解析可选 Agent ID 和公共选项，并在 I/O 前校验 ID。
 fn parse_agent_status_options(args: &[String]) -> Result<AgentStatusOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut agent_id = None;
@@ -225,6 +315,7 @@ fn parse_agent_status_options(args: &[String]) -> Result<AgentStatusOptions, Eva
     })
 }
 
+/// 解析排空参数、daemon 路径和两类超时预算。
 fn parse_agent_drain_options(args: &[String]) -> Result<AgentDrainOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut agent_id = None;
@@ -326,6 +417,7 @@ fn parse_agent_drain_options(args: &[String]) -> Result<AgentDrainOptions, EvaEr
     })
 }
 
+/// 解析热重载的源/目标代际与发布引用，并验证全部强类型 ID。
 fn parse_agent_reload_options(args: &[String]) -> Result<AgentReloadOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut agent_id = None;
@@ -446,6 +538,7 @@ fn parse_agent_reload_options(args: &[String]) -> Result<AgentReloadOptions, Eva
     })
 }
 
+/// 为选中 Agent 构建只读 manifest 与生命周期状态报告。
 fn create_agent_status(
     project: &ProjectConfig,
     agent_id: Option<&str>,
@@ -463,6 +556,8 @@ fn create_agent_status(
     Ok(AgentStatusReport { status, agents })
 }
 
+/// 优先通过运行中的 daemon 执行排空；daemon 不可用时退化为本地无变更计划。
+/// 只有 `Unavailable`/`NotFound` 等可解释的控制边界失败才应形成 fallback，真实协议错误继续返回。
 fn create_agent_drain_with_daemon_fallback(
     project: &ProjectConfig,
     options: &AgentDrainOptions,
@@ -477,6 +572,7 @@ fn create_agent_drain_with_daemon_fallback(
     }
 }
 
+/// 优先通过 daemon 执行热重载，并在控制端不可用时生成本地代际切换证据。
 fn create_agent_reload_with_daemon_fallback(
     project: &ProjectConfig,
     options: &AgentReloadOptions,
@@ -491,6 +587,7 @@ fn create_agent_reload_with_daemon_fallback(
     }
 }
 
+/// 使用生命周期模型生成本地排空计划；该路径明确不修改 daemon 状态。
 fn create_agent_drain(
     project: &ProjectConfig,
     options: &AgentDrainOptions,
@@ -513,6 +610,7 @@ fn create_agent_drain(
     })
 }
 
+/// 将排空请求发送到 daemon control mailbox，并要求响应证明已执行变更。
 fn create_agent_drain_via_daemon(
     project: &ProjectConfig,
     options: &AgentDrainOptions,
@@ -555,6 +653,7 @@ fn create_agent_drain_via_daemon(
     })
 }
 
+/// 使用 GenerationController 本地模拟排空和代际切换，生成可审计但无外部变更的报告。
 fn create_agent_reload(
     project: &ProjectConfig,
     options: &AgentReloadOptions,
@@ -608,6 +707,7 @@ fn create_agent_reload(
     })
 }
 
+/// 通过 daemon control mailbox 执行热重载并解析代际证据。
 fn create_agent_reload_via_daemon(
     project: &ProjectConfig,
     options: &AgentReloadOptions,
@@ -649,6 +749,7 @@ fn create_agent_reload_via_daemon(
     Ok(report)
 }
 
+/// 将 Agent 命令提供的路径合成为 daemon control 连接选项。
 fn daemon_options_from_agent_paths(
     project: &ProjectConfig,
     durable_backend: Option<&PathBuf>,
@@ -672,6 +773,7 @@ fn daemon_options_from_agent_paths(
     options.resolve_against_project(&project.project_root)
 }
 
+/// 验证 daemon 响应确实执行了请求变更；只返回计划不能冒充成功 apply。
 fn daemon_response_require_mutation(
     response: &DaemonControlResponse,
     operation: DaemonControlOperation,
@@ -688,6 +790,7 @@ fn daemon_response_require_mutation(
     Ok(())
 }
 
+/// 为 daemon Agent 操作生成稳定、可校验的控制请求 ID。
 fn agent_control_request_id(operation: &str, agent_id: &str) -> Result<RequestId, EvaError> {
     let mut suffix = String::new();
     for ch in agent_id.chars().take(80) {
@@ -696,6 +799,7 @@ fn agent_control_request_id(operation: &str, agent_id: &str) -> Result<RequestId
     RequestId::parse(&format!("req-agent-{operation}-{suffix}"))
 }
 
+/// 根据可选 ID 选择一个或全部 Agent；显式 ID 不存在时返回 NotFound。
 fn selected_agents<'a>(
     project: &'a ProjectConfig,
     agent_id: Option<&str>,
@@ -706,6 +810,7 @@ fn selected_agents<'a>(
     Ok(project.agents.iter().collect())
 }
 
+/// 在已验证项目清单中精确查找 Agent。
 fn find_agent<'a>(
     project: &'a ProjectConfig,
     agent_id: &str,
@@ -719,6 +824,7 @@ fn find_agent<'a>(
         })
 }
 
+/// 将 Agent manifest 与模拟 lifecycle snapshot 合并为状态输出项。
 fn agent_status_entry(agent: &AgentManifest) -> Result<AgentStatusEntry, EvaError> {
     let snapshot = lifecycle_snapshot_for_status(agent)?;
     Ok(AgentStatusEntry {
@@ -746,6 +852,7 @@ fn agent_status_entry(agent: &AgentManifest) -> Result<AgentStatusEntry, EvaErro
     })
 }
 
+/// 构建状态查询使用的只读 AgentRuntime 快照。
 fn lifecycle_snapshot_for_status(agent: &AgentManifest) -> Result<AgentStateSnapshot, EvaError> {
     if !agent.enabled {
         return Ok(AgentStateSnapshot::new(agent.id.clone(), 0, "disabled"));
@@ -759,6 +866,7 @@ fn lifecycle_snapshot_for_status(agent: &AgentManifest) -> Result<AgentStateSnap
     ))
 }
 
+/// 通过生命周期转换构建排空后的快照，用于本地 plan 报告。
 fn lifecycle_snapshot_for_drain(agent: &AgentManifest) -> Result<AgentStateSnapshot, EvaError> {
     if !agent.enabled {
         return Ok(AgentStateSnapshot::new(agent.id.clone(), 0, "disabled"));
@@ -773,6 +881,7 @@ fn lifecycle_snapshot_for_drain(agent: &AgentManifest) -> Result<AgentStateSnaps
     ))
 }
 
+/// 构建重载完成后的 Agent 生命周期快照。
 fn lifecycle_snapshot_for_reload(agent: &AgentManifest) -> Result<AgentStateSnapshot, EvaError> {
     if !agent.enabled {
         return Ok(AgentStateSnapshot::new(agent.id.clone(), 0, "disabled"));
@@ -780,6 +889,7 @@ fn lifecycle_snapshot_for_reload(agent: &AgentManifest) -> Result<AgentStateSnap
     lifecycle_snapshot_for_status(agent)
 }
 
+/// 输出一个或多个 Agent 的状态、层级、订阅和脚本信息。
 fn write_agent_status<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -813,6 +923,7 @@ fn write_agent_status<W: Write>(
     }
 }
 
+/// 输出排空计划，并明确标识是否发生 daemon 变更。
 fn write_agent_drain<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -851,6 +962,7 @@ fn write_agent_drain<W: Write>(
     }
 }
 
+/// 输出热重载的源/目标代际、排空证据和变更事实。
 fn write_agent_reload<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -887,6 +999,7 @@ fn write_agent_reload<W: Write>(
     }
 }
 
+/// 将 Agent 状态报告编码为 JSON。
 fn agent_status_json(report: &AgentStatusReport) -> String {
     let agents = report.agents.iter().map(agent_status_entry_json);
     format!(
@@ -896,6 +1009,7 @@ fn agent_status_json(report: &AgentStatusReport) -> String {
     )
 }
 
+/// 将单个 Agent 状态项编码为 JSON。
 fn agent_status_entry_json(agent: &AgentStatusEntry) -> String {
     format!(
         "{{\"agent_id\":{},\"enabled\":{},\"lifecycle\":{},\"queued_events\":{},\"script\":{},\"script_version\":{},\"parent\":{},\"children\":{},\"subscriptions\":{},\"manifest_path\":{}}}",
@@ -912,6 +1026,7 @@ fn agent_status_entry_json(agent: &AgentStatusEntry) -> String {
     )
 }
 
+/// 将 Agent 排空结果编码为 JSON。
 fn agent_drain_json(report: &AgentDrainReport) -> String {
     format!(
         "{{\"agent_id\":{},\"status\":{},\"lifecycle\":{},\"enabled\":{},\"drain\":{},\"mutation_executed\":{},\"detail\":{}}}",
@@ -925,6 +1040,7 @@ fn agent_drain_json(report: &AgentDrainReport) -> String {
     )
 }
 
+/// 将 Agent 热重载证据编码为 JSON。
 fn agent_reload_json(report: &AgentReloadReport) -> String {
     format!(
         "{{\"agent_id\":{},\"status\":{},\"lifecycle\":{},\"enabled\":{},\"from_generation\":{},\"to_generation\":{},\"from_release\":{},\"to_release\":{},\"active_generation\":{},\"previous_generation\":{},\"previous_generation_state\":{},\"mutation_executed\":{},\"drain\":{},\"audit\":{}}}",
@@ -945,6 +1061,7 @@ fn agent_reload_json(report: &AgentReloadReport) -> String {
     )
 }
 
+/// 将代际排空证据编码为 JSON。
 fn generation_drain_json(evidence: &GenerationDrainEvidence) -> String {
     format!(
         "{{\"from_generation\":{},\"to_generation\":{},\"plan\":{},\"audit\":{}}}",
@@ -955,6 +1072,7 @@ fn generation_drain_json(evidence: &GenerationDrainEvidence) -> String {
     )
 }
 
+/// 将排空计划的状态、步骤、风险和审计编码为 JSON。
 fn drain_plan_json(plan: &DrainPlan) -> String {
     format!(
         "{{\"generation_id\":{},\"inflight_tasks\":{},\"timeout_ms\":{},\"accepts_new_work\":{},\"status\":{},\"audit\":{}}}",

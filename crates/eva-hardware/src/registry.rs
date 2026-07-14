@@ -1,3 +1,7 @@
+//! 维护逻辑设备登记和请求绑定的独占租约。
+//!
+//! 设备必须先登记才能认领，同一设备在租约释放前不能被其他请求重复占用；释放操作校验
+//! 完整租约身份，避免旧请求误释放后来者持有的设备。
 //! Claimed hardware device registry.
 
 use crate::discovery::DeviceCandidate;
@@ -5,34 +9,48 @@ use crate::state::{DeviceHealth, DeviceId, DeviceIdentity, DeviceTrust};
 use eva_core::{EvaError, RequestId};
 use std::collections::BTreeMap;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "claimed hardware device registry";
 
+/// 表示 `RegisteredDevice` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredDevice {
+    /// 记录 `identity` 字段对应的值。
     pub identity: DeviceIdentity,
+    /// 记录 `health` 字段对应的值。
     pub health: DeviceHealth,
+    /// 记录 `source_path` 字段对应的值。
     pub source_path: String,
+    /// 记录 `claimed_by` 字段对应的值。
     pub claimed_by: Option<RequestId>,
 }
 
+/// 表示 `DeviceLease` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceLease {
+    /// 记录 `device_id` 字段对应的值。
     pub device_id: DeviceId,
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
+    /// 记录 `exclusive` 字段对应的值。
     pub exclusive: bool,
 }
 
+/// 表示 `DeviceRegistry` 数据结构。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DeviceRegistry {
+    /// 记录 `devices` 字段对应的值。
     devices: BTreeMap<DeviceId, RegisteredDevice>,
 }
 
 impl DeviceRegistry {
+    /// 创建并初始化当前类型的实例。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 根据输入构造当前类型，作为 `from_candidates` 的标准入口。
     pub fn from_candidates(candidates: &[DeviceCandidate]) -> Result<Self, EvaError> {
         let mut registry = Self::new();
         for candidate in candidates {
@@ -44,6 +62,7 @@ impl DeviceRegistry {
         Ok(registry)
     }
 
+    /// 登记 `register` 对应的数据或状态。
     pub fn register(&mut self, candidate: &DeviceCandidate) -> Result<(), EvaError> {
         if candidate.identity.trust == DeviceTrust::Rejected {
             return Err(EvaError::permission_denied(
@@ -67,14 +86,17 @@ impl DeviceRegistry {
         Ok(())
     }
 
+    /// 返回 `list` 对应的数据视图。
     pub fn list(&self) -> Vec<&RegisteredDevice> {
         self.devices.values().collect()
     }
 
+    /// 返回 `get` 对应的数据视图。
     pub fn get(&self, device_id: &DeviceId) -> Option<&RegisteredDevice> {
         self.devices.get(device_id)
     }
 
+    /// 执行 `claim` 对应的处理逻辑。
     pub fn claim(
         &mut self,
         device_id: &DeviceId,
@@ -105,6 +127,7 @@ impl DeviceRegistry {
         })
     }
 
+    /// 执行 `release` 对应的处理逻辑。
     pub fn release(&mut self, lease: &DeviceLease) -> Result<(), EvaError> {
         let device = self.devices.get_mut(&lease.device_id).ok_or_else(|| {
             EvaError::not_found("device is not registered")
@@ -122,12 +145,14 @@ impl DeviceRegistry {
     }
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::discovery::DeviceCandidate;
     use eva_core::AdapterId;
 
+    /// 验证 `registry_claims_and_releases_logical_lease` 场景下的预期行为。
     #[test]
     fn registry_claims_and_releases_logical_lease() {
         let candidate =
@@ -150,6 +175,7 @@ mod tests {
         );
     }
 
+    /// 验证 `registry_rejects_duplicate_claims` 场景下的预期行为。
     #[test]
     fn registry_rejects_duplicate_claims() {
         let candidate =

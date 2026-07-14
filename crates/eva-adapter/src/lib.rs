@@ -1,13 +1,23 @@
+//! 本模块提供 `lib` 相关实现。
 //! Adapter registry, routing, and transport runtime boundary.
 
+/// 声明 `capability_host` 子模块。
 pub mod capability_host;
+/// 声明 `error` 子模块。
 pub mod error;
+/// 声明 `manifest` 子模块。
 pub mod manifest;
+/// 声明 `registry` 子模块。
 pub mod registry;
+/// 声明 `router` 子模块。
 pub mod router;
+/// 声明 `runtime` 子模块。
 pub mod runtime;
+/// 声明 `stream` 子模块。
 pub mod stream;
+/// 声明 `supervisor` 子模块。
 pub mod supervisor;
+/// 声明 `transports` 子模块。
 pub mod transports;
 
 pub use capability_host::{

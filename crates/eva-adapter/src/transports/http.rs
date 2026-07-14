@@ -1,5 +1,11 @@
+//! 执行受来源、方法、超时和响应大小约束的 HTTP 提供者调用。
+//!
+//! URL 在连接前解析并按 origin 白名单校验，请求头拒绝换行以阻断头注入。响应头和正文
+//! 分别设置硬上限，正文到达上限后返回带截断标记的受控报告；环境凭据和会话令牌只进入
+//! 实际请求，并作为敏感值参与输出脱敏。
 //! HTTP transport runner contract.
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "HTTP transport with env allowlist-based credentials";
 
@@ -17,48 +23,79 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
+/// 定义 HTTP 调用允许的来源、方法、时间和响应证据边界。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRunnerConfig {
+    /// 保存规范化的 `scheme://authority`，路径差异不会扩大来源权限。
     pub allowed_origins: BTreeSet<String>,
+    /// 记录 `allowed_methods` 字段对应的值。
     pub allowed_methods: BTreeSet<HttpMethod>,
+    /// 记录 `timeout_ms` 字段对应的值。
     pub timeout_ms: u64,
+    /// 记录 `output_limit_bytes` 字段对应的值。
     pub output_limit_bytes: usize,
+    /// 记录 `preview_limit_bytes` 字段对应的值。
     pub preview_limit_bytes: usize,
+    /// 记录 `stream_chunk_size_bytes` 字段对应的值。
     pub stream_chunk_size_bytes: usize,
+    /// 记录 `artifact_root` 字段对应的值。
     pub artifact_root: Option<std::path::PathBuf>,
+    /// 记录 `artifact_key` 字段对应的值。
     pub artifact_key: Option<String>,
+    /// 保存仅供响应脱敏使用的凭据原值，不写入审计报告。
     pub sensitive_values: Vec<String>,
 }
 
+/// 表示 `HttpInvocation` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpInvocation {
+    /// 记录 `method` 字段对应的值。
     pub method: HttpMethod,
+    /// 记录 `url` 字段对应的值。
     pub url: String,
+    /// 记录 `headers` 字段对应的值。
     pub headers: BTreeMap<String, String>,
+    /// 记录 `body` 字段对应的值。
     pub body: Vec<u8>,
 }
 
+/// 表示 `HttpRunReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRunReport {
+    /// 记录 `method` 字段对应的值。
     pub method: HttpMethod,
+    /// 记录 `url` 字段对应的值。
     pub url: String,
+    /// 记录 `status_code` 字段对应的值。
     pub status_code: u16,
+    /// 记录 `body` 字段对应的值。
     pub body: Vec<u8>,
+    /// 记录 `body_stream` 字段对应的值。
     pub body_stream: ProviderStreamCapture,
+    /// 记录 `duration_ms` 字段对应的值。
     pub duration_ms: u128,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 定义 `HttpMethod` 可取的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HttpMethod {
+    /// 表示 `Get` 枚举分支。
     Get,
+    /// 表示 `Post` 枚举分支。
     Post,
+    /// 表示 `Put` 枚举分支。
     Put,
+    /// 表示 `Patch` 枚举分支。
     Patch,
+    /// 表示 `Delete` 枚举分支。
     Delete,
 }
 
+/// 抽象实际网络客户端，使策略校验和报告逻辑可在无网络副作用下测试。
 pub trait HttpClient {
+    /// 执行 `send` 对应的处理逻辑。
     fn send(
         &self,
         invocation: &HttpInvocation,
@@ -67,21 +104,29 @@ pub trait HttpClient {
     ) -> Result<HttpClientResponse, EvaError>;
 }
 
+/// 表示 `HttpClientResponse` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpClientResponse {
+    /// 记录 `status_code` 字段对应的值。
     pub status_code: u16,
+    /// 记录 `body` 字段对应的值。
     pub body: Vec<u8>,
+    /// 记录 `body_truncated` 字段对应的值。
     pub body_truncated: bool,
+    /// 记录 `body_chunk_count` 字段对应的值。
     pub body_chunk_count: usize,
 }
 
+/// 表示 `HttpRunner` 数据结构。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HttpRunner;
 
+/// 表示 `TcpHttpClient` 数据结构。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TcpHttpClient;
 
 impl HttpRunnerConfig {
+    /// 创建并初始化当前类型的实例。
     pub fn new(
         allowed_origins: impl IntoIterator<Item = impl Into<String>>,
         allowed_methods: impl IntoIterator<Item = HttpMethod>,
@@ -104,6 +149,7 @@ impl HttpRunnerConfig {
         }
     }
 
+    /// 设置 `artifact_sink` 并返回更新后的实例。
     pub fn with_artifact_sink(
         mut self,
         artifact_root: impl Into<std::path::PathBuf>,
@@ -114,6 +160,7 @@ impl HttpRunnerConfig {
         self
     }
 
+    /// 设置 `sensitive_values` 并返回更新后的实例。
     pub fn with_sensitive_values(mut self, sensitive_values: Vec<String>) -> Self {
         self.sensitive_values = sensitive_values;
         self
@@ -121,6 +168,7 @@ impl HttpRunnerConfig {
 }
 
 impl HttpInvocation {
+    /// 创建并初始化当前类型的实例。
     pub fn new(method: HttpMethod, url: impl Into<String>) -> Self {
         Self {
             method,
@@ -130,11 +178,13 @@ impl HttpInvocation {
         }
     }
 
+    /// 设置 `header` 并返回更新后的实例。
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(name.into(), value.into());
         self
     }
 
+    /// 设置 `body` 并返回更新后的实例。
     pub fn with_body(mut self, body: impl Into<Vec<u8>>) -> Self {
         self.body = body.into();
         self
@@ -142,6 +192,7 @@ impl HttpInvocation {
 }
 
 impl HttpMethod {
+    /// 读取或解析 `parse` 所需的数据，失败时保留错误语义。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value.to_ascii_uppercase().as_str() {
             "GET" => Ok(Self::Get),
@@ -156,6 +207,7 @@ impl HttpMethod {
         }
     }
 
+    /// 将当前值按 `as_str` 约定的形式转换。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Get => "GET",
@@ -168,6 +220,7 @@ impl HttpMethod {
 }
 
 impl HttpClientResponse {
+    /// 创建并初始化当前类型的实例。
     pub fn new(status_code: u16, body: impl Into<Vec<u8>>) -> Self {
         let body = body.into();
         let body_chunk_count = usize::from(!body.is_empty());
@@ -181,6 +234,7 @@ impl HttpClientResponse {
 }
 
 impl HttpRunner {
+    /// 在调用客户端前完成来源、方法、头部和输出上限校验，再对响应执行统一有界采集。
     pub fn run(
         &self,
         config: &HttpRunnerConfig,
@@ -227,6 +281,7 @@ impl HttpRunner {
 }
 
 impl HttpClient for TcpHttpClient {
+    /// 通过裸 TCP 执行 HTTP/1.1 请求；当前实现明确拒绝未集成 TLS 的 HTTPS。
     fn send(
         &self,
         invocation: &HttpInvocation,
@@ -300,6 +355,7 @@ impl HttpClient for TcpHttpClient {
     }
 }
 
+/// 使用默认 TCP 客户端执行已经过适配器运行时授权的 HTTP 调用。
 pub fn invoke(
     handle: &AdapterHandle,
     invocation: RuntimeAdapterInvocation,
@@ -307,6 +363,7 @@ pub fn invoke(
     invoke_with_client(handle, invocation, &TcpHttpClient)
 }
 
+/// 构造凭据、白名单与证据配置后调用可替换客户端；任何网络 I/O 都发生在校验之后。
 pub fn invoke_with_client(
     handle: &AdapterHandle,
     invocation: RuntimeAdapterInvocation,
@@ -396,6 +453,7 @@ pub fn invoke_with_client(
     })
 }
 
+/// 判断 `has_scoped_http_credentials` 对应的条件是否成立。
 fn has_scoped_http_credentials(handle: &AdapterHandle) -> bool {
     !handle.credential_env.is_empty()
         || handle
@@ -404,6 +462,7 @@ fn has_scoped_http_credentials(handle: &AdapterHandle) -> bool {
             .any(|value| value.strip_prefix("env:").is_some())
 }
 
+/// 校验方法、输出上限、头部语法和精确来源；失败时客户端尚未被调用。
 fn validate_invocation(
     config: &HttpRunnerConfig,
     invocation: &HttpInvocation,
@@ -433,6 +492,7 @@ fn validate_invocation(
     Ok(())
 }
 
+/// 执行 `body_stream_config` 对应的处理逻辑。
 fn body_stream_config(config: &HttpRunnerConfig) -> ProviderStreamConfig {
     let mut stream_config = ProviderStreamConfig::new("body", config.output_limit_bytes)
         .with_preview_limit(config.preview_limit_bytes)
@@ -444,16 +504,19 @@ fn body_stream_config(config: &HttpRunnerConfig) -> ProviderStreamConfig {
 }
 
 impl HttpInvocation {
+    /// 设置 `headers` 并返回更新后的实例。
     pub fn with_headers(mut self, headers: BTreeMap<String, String>) -> Self {
         self.headers.extend(headers);
         self
     }
 }
 
+/// 执行 `url_origin` 对应的处理逻辑。
 fn url_origin(url: &str) -> Result<String, EvaError> {
     Ok(ParsedHttpUrl::parse(url)?.origin)
 }
 
+/// 校验 `validate_header` 对应的约束，不满足时返回明确错误。
 fn validate_header(name: &str, value: &str) -> Result<(), EvaError> {
     if name.trim().is_empty()
         || !name
@@ -474,17 +537,25 @@ fn validate_header(name: &str, value: &str) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 保存连接、Host 头和来源校验共同使用的 URL 解析结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedHttpUrl {
+    /// 记录 `scheme` 字段对应的值。
     scheme: String,
+    /// 记录 `host` 字段对应的值。
     host: String,
+    /// 记录 `port` 字段对应的值。
     port: u16,
+    /// 记录 `path` 字段对应的值。
     path: String,
+    /// 记录 `authority` 字段对应的值。
     authority: String,
+    /// 记录 `origin` 字段对应的值。
     origin: String,
 }
 
 impl ParsedHttpUrl {
+    /// 读取或解析 `parse` 所需的数据，失败时保留错误语义。
     fn parse(url: &str) -> Result<Self, EvaError> {
         let (scheme, rest) = url
             .split_once("://")
@@ -527,6 +598,7 @@ impl ParsedHttpUrl {
     }
 }
 
+/// 读取或解析 `parse_authority` 所需的数据，失败时保留错误语义。
 fn parse_authority(scheme: &str, authority: &str) -> Result<(String, u16), EvaError> {
     let default_port = if scheme == "https" { 443 } else { 80 };
     if let Some((host, port)) = authority.rsplit_once(':') {
@@ -542,8 +614,10 @@ fn parse_authority(scheme: &str, authority: &str) -> Result<(String, u16), EvaEr
     Ok((authority.to_owned(), default_port))
 }
 
+/// 定义 `HTTP_HEADER_LIMIT_BYTES` 常量。
 const HTTP_HEADER_LIMIT_BYTES: usize = 64 * 1024;
 
+/// 增量解析 HTTP 响应头并有界收集正文；头部超限和缺少终止符均视为协议失败。
 fn read_http_response(
     stream: &mut TcpStream,
     origin: &str,
@@ -574,6 +648,7 @@ fn read_http_response(
         if status_code.is_none() {
             header_bytes.extend_from_slice(chunk);
             if header_bytes.len() > HTTP_HEADER_LIMIT_BYTES {
+                // 响应头不计入正文预算，因此单独设置上限，防止服务端用无终止头耗尽内存。
                 return Err(
                     EvaError::conflict("HTTP provider response headers exceeded limit")
                         .with_context("origin", origin)
@@ -620,6 +695,7 @@ fn read_http_response(
     })
 }
 
+/// 追加预算内的正文前缀；首次超限后保持截断状态并忽略后续数据。
 fn append_http_body_chunk(
     chunk: &[u8],
     output_limit_bytes: usize,
@@ -640,10 +716,12 @@ fn append_http_body_chunk(
     body.extend_from_slice(chunk);
 }
 
+/// 执行 `http_header_end` 对应的处理逻辑。
 fn http_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
+/// 读取或解析 `parse_http_status_code` 所需的数据，失败时保留错误语义。
 fn parse_http_status_code(head: &str) -> Result<u16, EvaError> {
     let status_line = head.lines().next().ok_or_else(|| {
         EvaError::unavailable("HTTP provider returned malformed response")
@@ -664,13 +742,18 @@ fn parse_http_status_code(head: &str) -> Result<u16, EvaError> {
     Ok(status_code)
 }
 
+/// 表示 `HeaderPlan` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HeaderPlan {
+    /// 记录 `headers` 字段对应的值。
     headers: BTreeMap<String, String>,
+    /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
+    /// 记录 `sensitive_values` 字段对应的值。
     sensitive_values: Vec<String>,
 }
 
+/// 执行 `http_headers` 对应的处理逻辑。
 fn http_headers(handle: &AdapterHandle) -> Result<HeaderPlan, EvaError> {
     let mut headers = BTreeMap::new();
     let mut audit = Vec::new();
@@ -700,6 +783,7 @@ fn http_headers(handle: &AdapterHandle) -> Result<HeaderPlan, EvaError> {
     })
 }
 
+/// 执行 `credential_env_values` 对应的处理逻辑。
 fn credential_env_values(names: &[String]) -> CredentialValues {
     let mut values = Vec::new();
     for name in names {
@@ -712,6 +796,7 @@ fn credential_env_values(names: &[String]) -> CredentialValues {
     CredentialValues { values }
 }
 
+/// 执行 `credential_env_audit` 对应的处理逻辑。
 fn credential_env_audit(names: &[String]) -> Vec<String> {
     names
         .iter()
@@ -725,11 +810,14 @@ fn credential_env_audit(names: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// 表示 `CredentialValues` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CredentialValues {
+    /// 记录 `values` 字段对应的值。
     values: Vec<String>,
 }
 
+/// 校验 `validate_input_size` 对应的约束，不满足时返回明确错误。
 fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaError> {
     if let Some(limit) = handle.max_prompt_bytes {
         if input.len() > limit {
@@ -744,10 +832,12 @@ fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaErr
     Ok(())
 }
 
+/// 执行 `timeout_ms` 对应的处理逻辑。
 fn timeout_ms(handle: &AdapterHandle) -> u64 {
     handle.timeout_ms.unwrap_or(30_000)
 }
 
+/// 执行 `output_limit_bytes` 对应的处理逻辑。
 fn output_limit_bytes(handle: &AdapterHandle) -> usize {
     handle
         .output_limit_bytes
@@ -755,6 +845,7 @@ fn output_limit_bytes(handle: &AdapterHandle) -> usize {
         .unwrap_or(64 * 1024)
 }
 
+/// 按 `escape_json` 的协议约定生成输出。
 fn escape_json(value: &str) -> String {
     let mut escaped = String::from("\"");
     for character in value.chars() {
@@ -771,17 +862,21 @@ fn escape_json(value: &str) -> String {
     escaped
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
     use eva_core::ErrorKind;
 
+    /// 表示 `FakeHttpClient` 数据结构。
     #[derive(Debug, Clone)]
     struct FakeHttpClient {
+        /// 记录 `response` 字段对应的值。
         response: Result<HttpClientResponse, EvaError>,
     }
 
     impl HttpClient for FakeHttpClient {
+        /// 执行 `send` 对应的处理逻辑。
         fn send(
             &self,
             _invocation: &HttpInvocation,
@@ -792,6 +887,7 @@ mod tests {
         }
     }
 
+    /// 验证 `runner_denies_url_outside_allowlist` 场景下的预期行为。
     #[test]
     fn runner_denies_url_outside_allowlist() {
         let config = config();
@@ -804,6 +900,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     }
 
+    /// 验证 `runner_denies_method_outside_allowlist` 场景下的预期行为。
     #[test]
     fn runner_denies_method_outside_allowlist() {
         let config = config();
@@ -817,6 +914,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     }
 
+    /// 验证 `runner_maps_client_timeout` 场景下的预期行为。
     #[test]
     fn runner_maps_client_timeout() {
         let config = config();
@@ -831,6 +929,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::Timeout);
     }
 
+    /// 验证 `runner_truncates_oversized_output` 场景下的预期行为。
     #[test]
     fn runner_truncates_oversized_output() {
         let config =
@@ -846,6 +945,7 @@ mod tests {
         assert_eq!(report.body, b"to");
     }
 
+    /// 验证 `runner_completes_allowlisted_request` 场景下的预期行为。
     #[test]
     fn runner_completes_allowlisted_request() {
         let config = config();
@@ -864,6 +964,7 @@ mod tests {
         assert!(report.audit.contains(&"url_allowlist:passed".to_owned()));
     }
 
+    /// 执行 `config` 对应的处理逻辑。
     fn config() -> HttpRunnerConfig {
         HttpRunnerConfig::new(
             ["https://api.example.test"],
@@ -873,6 +974,7 @@ mod tests {
         )
     }
 
+    /// 执行 `client_with_body` 对应的处理逻辑。
     fn client_with_body(body: &str) -> FakeHttpClient {
         FakeHttpClient {
             response: Ok(HttpClientResponse::new(200, body.as_bytes())),

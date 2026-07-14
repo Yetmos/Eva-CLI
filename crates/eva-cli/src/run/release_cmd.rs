@@ -1,3 +1,5 @@
+//! 发布就绪、Security、Performance 和 Migration 门禁子命令；可读取外部证据覆盖内置基线。
+
 use super::{
     json_array, json_string, parse_common_options, required_option, success_envelope, trace_for,
     write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_CONFIG, EXIT_OK,
@@ -16,36 +18,68 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Release 子命令及其已解析选项。
 pub(super) enum ReleaseCommand {
-    Check(ReleaseCheckOptions),
-    Security(CommonOptions),
-    Perf(ReleasePerfOptions),
-    Migration(ReleaseMigrationOptions),
+    /// 聚合平台、稳定性、恢复、分发、安全和性能门禁。
+    Check(
+        /// 已解析的发布标识、证据目录与公共选项。
+        ReleaseCheckOptions,
+    ),
+    /// 运行内置安全评审。
+    Security(
+        /// 安全评审命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
+    /// 对性能基线或外部 benchmark 证据执行预算检查。
+    Perf(
+        /// 已解析的可选 benchmark 证据路径与公共选项。
+        ReleasePerfOptions,
+    ),
+    /// 生成版本间迁移指南。
+    Migration(
+        /// 已解析的起始版本、目标版本与公共选项。
+        ReleaseMigrationOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 发布就绪检查选项及可选外部证据文件。
 pub(super) struct ReleaseCheckOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// all、windows、linux 或 macos 等目标平台。
     target: String,
+    /// 可选签名产物证据。
     artifact_evidence: Option<PathBuf>,
+    /// 可选安装/分发烟测证据。
     distribution_evidence: Option<PathBuf>,
+    /// 可选安全扫描器证据。
     security_scan_evidence: Option<PathBuf>,
+    /// 可选真实性能测量证据。
     benchmark_evidence: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 性能门禁选项。
 pub(super) struct ReleasePerfOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 可选 benchmark 证据；缺省使用服务内置基线。
     benchmark_evidence: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 发布迁移指南的源/目标版本。
 pub(super) struct ReleaseMigrationOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 当前版本文本。
     from_version: String,
+    /// 目标版本文本。
     to_version: String,
 }
 
+/// 解析 `release check|security|perf|migration` 子命令。
 pub(super) fn parse_release_command(args: &[String]) -> Result<ReleaseCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -64,6 +98,7 @@ pub(super) fn parse_release_command(args: &[String]) -> Result<ReleaseCommand, E
     }
 }
 
+/// 解析发布目标和四类外部证据路径；空目标在读取证据前即失败。
 fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut target = "all".to_owned();
@@ -127,6 +162,7 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
     })
 }
 
+/// 解析可选 benchmark 证据和公共选项。
 fn parse_release_perf_options(args: &[String]) -> Result<ReleasePerfOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut benchmark_evidence = None;
@@ -151,6 +187,7 @@ fn parse_release_perf_options(args: &[String]) -> Result<ReleasePerfOptions, Eva
     })
 }
 
+/// 解析源/目标版本并拒绝空值。
 fn parse_release_migration_options(args: &[String]) -> Result<ReleaseMigrationOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut from_version = "1.5.1".to_owned();
@@ -182,6 +219,10 @@ fn parse_release_migration_options(args: &[String]) -> Result<ReleaseMigrationOp
     })
 }
 
+/// 执行发布门禁并按失败性质选择退出码。
+///
+/// Readiness blocker 归为配置/证据问题，安全 blocker 归为策略拒绝，性能回归归为运行时
+/// 不可发布；证据文件的 I/O 或解析错误则通过统一错误分类映射。
 pub(super) fn execute_release<W, E>(
     command: ReleaseCommand,
     stdout: &mut W,
@@ -306,6 +347,7 @@ where
     }
 }
 
+/// 读取签名产物证据 manifest，并在 I/O/解析失败上附加文件路径。
 fn read_release_artifact_evidence(path: &Path) -> Result<ReleaseArtifactEvidence, EvaError> {
     let data = fs::read_to_string(path).map_err(|error| {
         let message = if error.kind() == std::io::ErrorKind::NotFound {
@@ -321,6 +363,7 @@ fn read_release_artifact_evidence(path: &Path) -> Result<ReleaseArtifactEvidence
         .map_err(|error| error.with_context("artifact_evidence", path.display().to_string()))
 }
 
+/// 读取分发与安装烟测证据，并保留路径上下文。
 fn read_release_distribution_evidence(
     path: &Path,
 ) -> Result<ReleaseDistributionEvidence, EvaError> {
@@ -338,6 +381,7 @@ fn read_release_distribution_evidence(
         .map_err(|error| error.with_context("distribution_evidence", path.display().to_string()))
 }
 
+/// 读取外部安全扫描证据，并保留路径上下文。
 fn read_release_security_scan_evidence(
     path: &Path,
 ) -> Result<ReleaseSecurityScanEvidence, EvaError> {
@@ -355,6 +399,7 @@ fn read_release_security_scan_evidence(
         .map_err(|error| error.with_context("security_scan_evidence", path.display().to_string()))
 }
 
+/// 读取 benchmark 实测证据，并保留路径上下文。
 fn read_release_benchmark_evidence(path: &Path) -> Result<ReleaseBenchmarkEvidence, EvaError> {
     let data = fs::read_to_string(path).map_err(|error| {
         let message = if error.kind() == std::io::ErrorKind::NotFound {
@@ -370,6 +415,7 @@ fn read_release_benchmark_evidence(path: &Path) -> Result<ReleaseBenchmarkEviden
         .map_err(|error| error.with_context("benchmark_evidence", path.display().to_string()))
 }
 
+/// 输出发布 readiness、closure、平台、场景和 gate 摘要。
 fn write_release_check<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -404,6 +450,7 @@ fn write_release_check<W: Write>(
     }
 }
 
+/// 输出安全评审 finding 与 blocker 数量。
 fn write_release_security<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -433,6 +480,7 @@ fn write_release_security<W: Write>(
     }
 }
 
+/// 输出性能预算、观测值和超预算数量。
 fn write_release_perf<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -462,6 +510,7 @@ fn write_release_perf<W: Write>(
     }
 }
 
+/// 输出版本迁移步骤和兼容策略。
 fn write_release_migration<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -491,6 +540,7 @@ fn write_release_migration<W: Write>(
     }
 }
 
+/// 将完整发布 readiness 报告编码为稳定 JSON。
 fn release_check_json(report: &ReleaseReadinessReport) -> String {
     format!(
         "{{\"version\":{},\"status\":{},\"target\":{},\"blocking_gates\":{},\"warning_gates\":{},\"platforms\":{},\"stability\":{},\"gates\":{},\"closure\":{},\"audit\":{}}}",
@@ -507,6 +557,7 @@ fn release_check_json(report: &ReleaseReadinessReport) -> String {
     )
 }
 
+/// 将 V1.x closure gate 的覆盖、缺口和审计证据编码为 JSON。
 fn v1x_closure_json(report: &ReleaseReadinessReport) -> String {
     let closure = &report.closure;
     format!(
@@ -547,6 +598,7 @@ fn v1x_closure_json(report: &ReleaseReadinessReport) -> String {
     )
 }
 
+/// 将单个平台就绪报告编码为 JSON。
 fn platform_readiness_json(platform: &PlatformReadiness) -> String {
     format!(
         "{{\"os\":{},\"shell\":{},\"path_model\":{},\"status\":{},\"required_commands\":{},\"notes\":{}}}",
@@ -559,6 +611,7 @@ fn platform_readiness_json(platform: &PlatformReadiness) -> String {
     )
 }
 
+/// 将稳定性场景的状态、步骤和证据编码为 JSON。
 fn stability_scenario_json(scenario: &StabilityScenario) -> String {
     format!(
         "{{\"id\":{},\"status\":{},\"scenario\":{},\"evidence\":{},\"recovery_contract\":{}}}",
@@ -570,6 +623,7 @@ fn stability_scenario_json(scenario: &StabilityScenario) -> String {
     )
 }
 
+/// 将单个发布 gate 及 blocker/risk 编码为 JSON。
 fn release_gate_json(gate: &ReleaseGate) -> String {
     format!(
         "{{\"id\":{},\"domain\":{},\"status\":{},\"required\":{},\"summary\":{},\"evidence\":{},\"remediation\":{}}}",
@@ -583,6 +637,7 @@ fn release_gate_json(gate: &ReleaseGate) -> String {
     )
 }
 
+/// 将安全评审汇总和 findings 编码为 JSON。
 fn security_review_json(report: &SecurityReviewReport) -> String {
     format!(
         "{{\"version\":{},\"status\":{},\"blocking_findings\":{},\"findings\":{},\"audit\":{}}}",
@@ -594,6 +649,7 @@ fn security_review_json(report: &SecurityReviewReport) -> String {
     )
 }
 
+/// 将单条安全 finding 的严重度、状态和 remediation 编码为 JSON。
 fn security_finding_json(finding: &SecurityFinding) -> String {
     format!(
         "{{\"id\":{},\"boundary\":{},\"severity\":{},\"status\":{},\"summary\":{},\"evidence\":{},\"remediation\":{}}}",
@@ -607,6 +663,7 @@ fn security_finding_json(finding: &SecurityFinding) -> String {
     )
 }
 
+/// 将性能基线状态与预算项编码为 JSON。
 fn performance_baseline_json(report: &PerformanceBaselineReport) -> String {
     format!(
         "{{\"version\":{},\"status\":{},\"over_budget\":{},\"budgets\":{},\"audit\":{}}}",
@@ -618,6 +675,7 @@ fn performance_baseline_json(report: &PerformanceBaselineReport) -> String {
     )
 }
 
+/// 将单项性能预算的阈值、观测值和状态编码为 JSON。
 fn performance_budget_json(budget: &PerformanceBudget) -> String {
     format!(
         "{{\"component\":{},\"metric\":{},\"budget_ms\":{},\"observed_ms\":{},\"status\":{},\"evidence\":{}}}",
@@ -630,6 +688,7 @@ fn performance_budget_json(budget: &PerformanceBudget) -> String {
     )
 }
 
+/// 将迁移指南、步骤和兼容策略编码为 JSON。
 fn migration_guide_json(guide: &MigrationGuide) -> String {
     format!(
         "{{\"from_version\":{},\"to_version\":{},\"status\":{},\"breaking_changes\":{},\"steps\":{},\"compatibility_policy\":{},\"audit\":{}}}",
@@ -643,6 +702,7 @@ fn migration_guide_json(guide: &MigrationGuide) -> String {
     )
 }
 
+/// 将单个迁移步骤及是否必需编码为 JSON。
 fn migration_step_json(step: &MigrationStep) -> String {
     format!(
         "{{\"id\":{},\"summary\":{},\"command\":{},\"requires_manual_review\":{}}}",
@@ -653,6 +713,7 @@ fn migration_step_json(step: &MigrationStep) -> String {
     )
 }
 
+/// 将兼容窗口、破坏性变更和弃用策略编码为 JSON。
 fn compatibility_policy_json(policy: &CompatibilityPolicy) -> String {
     format!(
         "{{\"cli_json_envelope\":{},\"exit_codes\":{},\"config_schema\":{},\"command_surface\":{},\"deprecation_window\":{},\"public_contracts\":{}}}",

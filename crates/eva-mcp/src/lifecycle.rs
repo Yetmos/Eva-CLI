@@ -1,3 +1,7 @@
+//! 维护 MCP 会话、逻辑流和孤儿记录的内存生命周期。
+//!
+//! 注册表的变更均要求可变独占访问；关闭成功后才移除会话，运行中的逻辑流会随会话关闭
+//! 标记为中止。孤儿清理只删除已停止或外部检查确认进程不存在的登记项，不负责终止进程。
 //! MCP session registry and lifecycle supervisor boundary.
 
 use crate::session::{
@@ -6,85 +10,133 @@ use crate::session::{
 use eva_core::{AdapterId, EvaError};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "MCP session registry, health, stream abort, and orphan cleanup";
 
+/// 定义 `McpSessionLifecycleStatus` 可取的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpSessionLifecycleStatus {
+    /// 表示 `Running` 枚举分支。
     Running,
+    /// 表示 `Stopped` 枚举分支。
     Stopped,
+    /// 表示 `Orphaned` 枚举分支。
     Orphaned,
 }
 
+/// 定义 `McpStreamStatus` 可取的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpStreamStatus {
+    /// 表示 `Running` 枚举分支。
     Running,
+    /// 表示 `Aborted` 枚举分支。
     Aborted,
 }
 
+/// 表示 `McpSessionLifecycleReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpSessionLifecycleReport {
+    /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
+    /// 记录 `session_id` 字段对应的值。
     pub session_id: String,
+    /// 记录 `status` 字段对应的值。
     pub status: McpSessionLifecycleStatus,
+    /// 记录 `process_id` 字段对应的值。
     pub process_id: Option<u32>,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 表示 `McpSessionHealthReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpSessionHealthReport {
+    /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
+    /// 记录 `session_id` 字段对应的值。
     pub session_id: String,
+    /// 记录 `status` 字段对应的值。
     pub status: McpSessionLifecycleStatus,
+    /// 记录 `healthy` 字段对应的值。
     pub healthy: bool,
+    /// 记录 `active_streams` 字段对应的值。
     pub active_streams: Vec<String>,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 表示 `McpRegisteredSession` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpRegisteredSession {
+    /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
+    /// 记录 `session_id` 字段对应的值。
     pub session_id: String,
+    /// 记录 `process_id` 字段对应的值。
     pub process_id: Option<u32>,
+    /// 记录 `server_transport` 字段对应的值。
     pub server_transport: McpServerTransport,
+    /// 记录 `explicit_tools` 字段对应的值。
     pub explicit_tools: Vec<String>,
+    /// 记录 `active_streams` 字段对应的值。
     pub active_streams: Vec<String>,
 }
 
+/// 表示 `McpStreamReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpStreamReport {
+    /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
+    /// 记录 `session_id` 字段对应的值。
     pub session_id: String,
+    /// 记录 `stream_id` 字段对应的值。
     pub stream_id: String,
+    /// 记录 `status` 字段对应的值。
     pub status: McpStreamStatus,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 表示 `McpOrphanCleanupReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpOrphanCleanupReport {
+    /// 记录 `removed_sessions` 字段对应的值。
     pub removed_sessions: Vec<String>,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 约定 `McpProcessInspector` 实现需要满足的接口。
 pub trait McpProcessInspector {
+    /// 执行 `process_is_running` 对应的处理逻辑。
     fn process_is_running(&self, process_id: u32) -> bool;
 }
 
+/// 表示 `McpSessionRegistry` 数据结构。
 #[derive(Debug, Default)]
 pub struct McpSessionRegistry {
+    /// 记录 `sessions` 字段对应的值。
     sessions: BTreeMap<String, RegisteredSession>,
 }
 
+/// 表示 `RegisteredSession` 数据结构。
 #[derive(Debug)]
 struct RegisteredSession {
+    /// 记录 `session` 字段对应的值。
     session: McpSession,
+    /// 记录 `process_id` 字段对应的值。
     process_id: Option<u32>,
+    /// 记录 `server_transport` 字段对应的值。
     server_transport: McpServerTransport,
+    /// 记录 `explicit_tools` 字段对应的值。
     explicit_tools: BTreeSet<String>,
+    /// 记录 `streams` 字段对应的值。
     streams: BTreeMap<String, McpStreamStatus>,
 }
 
 impl McpSessionLifecycleStatus {
+    /// 将当前值按 `as_str` 约定的形式转换。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -95,6 +147,7 @@ impl McpSessionLifecycleStatus {
 }
 
 impl McpStreamStatus {
+    /// 将当前值按 `as_str` 约定的形式转换。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -104,10 +157,12 @@ impl McpStreamStatus {
 }
 
 impl McpSessionRegistry {
+    /// 创建并初始化当前类型的实例。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 执行 `start` 对应的受控流程。
     pub fn start(
         &mut self,
         supervisor: &mut impl McpSessionSupervisor,
@@ -147,6 +202,7 @@ impl McpSessionRegistry {
         })
     }
 
+    /// 返回 `list` 对应的数据视图。
     pub fn list(&self) -> Vec<McpRegisteredSession> {
         self.sessions
             .iter()
@@ -161,6 +217,7 @@ impl McpSessionRegistry {
             .collect()
     }
 
+    /// 执行 `health` 对应的处理逻辑。
     pub fn health(&self, session_id: &str) -> Result<McpSessionHealthReport, EvaError> {
         let entry = self.session(session_id)?;
         let healthy = entry.session.is_running();
@@ -182,6 +239,7 @@ impl McpSessionRegistry {
         })
     }
 
+    /// 停止或释放 `shutdown` 管理的资源。
     pub fn shutdown(
         &mut self,
         supervisor: &mut impl McpSessionSupervisor,
@@ -214,6 +272,7 @@ impl McpSessionRegistry {
         })
     }
 
+    /// 执行 `start_stream` 对应的受控流程。
     pub fn start_stream(
         &mut self,
         session_id: &str,
@@ -245,6 +304,7 @@ impl McpSessionRegistry {
         })
     }
 
+    /// 执行 `abort_stream` 对应的处理逻辑。
     pub fn abort_stream(
         &mut self,
         session_id: &str,
@@ -270,6 +330,7 @@ impl McpSessionRegistry {
         })
     }
 
+    /// 执行 `cleanup_orphans` 对应的处理逻辑。
     pub fn cleanup_orphans(
         &mut self,
         inspector: &impl McpProcessInspector,
@@ -310,6 +371,7 @@ impl McpSessionRegistry {
         }
     }
 
+    /// 执行 `session` 对应的处理逻辑。
     fn session(&self, session_id: &str) -> Result<&RegisteredSession, EvaError> {
         self.sessions.get(session_id).ok_or_else(|| {
             EvaError::not_found("MCP session is not registered")
@@ -317,6 +379,7 @@ impl McpSessionRegistry {
         })
     }
 
+    /// 执行 `session_mut` 对应的处理逻辑。
     fn session_mut(&mut self, session_id: &str) -> Result<&mut RegisteredSession, EvaError> {
         self.sessions.get_mut(session_id).ok_or_else(|| {
             EvaError::not_found("MCP session is not registered")
@@ -325,6 +388,7 @@ impl McpSessionRegistry {
     }
 }
 
+/// 执行 `active_streams` 对应的处理逻辑。
 fn active_streams(entry: &RegisteredSession) -> Vec<String> {
     entry
         .streams
@@ -339,6 +403,7 @@ fn active_streams(entry: &RegisteredSession) -> Vec<String> {
         .collect()
 }
 
+/// 校验 `validate_explicit_tools` 对应的约束，不满足时返回明确错误。
 fn validate_explicit_tools(
     tools: impl IntoIterator<Item = impl Into<String>>,
 ) -> Result<BTreeSet<String>, EvaError> {
@@ -356,6 +421,7 @@ fn validate_explicit_tools(
     Ok(explicit)
 }
 
+/// 校验 `validate_stream_id` 对应的约束，不满足时返回明确错误。
 fn validate_stream_id(stream_id: String) -> Result<String, EvaError> {
     if stream_id.is_empty()
         || stream_id.trim() != stream_id
@@ -367,6 +433,7 @@ fn validate_stream_id(stream_id: String) -> Result<String, EvaError> {
     Ok(stream_id)
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,14 +442,19 @@ mod tests {
     };
     use eva_core::ErrorKind;
 
+    /// 表示 `FakeSupervisor` 数据结构。
     #[derive(Debug, Clone)]
     struct FakeSupervisor {
+        /// 记录 `next_session_id` 字段对应的值。
         next_session_id: String,
+        /// 记录 `process_id` 字段对应的值。
         process_id: Option<u32>,
+        /// 记录 `shutdown_calls` 字段对应的值。
         shutdown_calls: Vec<String>,
     }
 
     impl FakeSupervisor {
+        /// 创建并初始化当前类型的实例。
         fn new(session_id: &str, process_id: Option<u32>) -> Self {
             Self {
                 next_session_id: session_id.to_owned(),
@@ -393,6 +465,7 @@ mod tests {
     }
 
     impl McpSessionSupervisor for FakeSupervisor {
+        /// 执行 `start_process` 对应的受控流程。
         fn start_process(
             &mut self,
             request: &McpProcessStartRequest,
@@ -404,6 +477,7 @@ mod tests {
             ))
         }
 
+        /// 停止或释放 `shutdown_process` 管理的资源。
         fn shutdown_process(
             &mut self,
             request: &McpProcessShutdownRequest,
@@ -413,17 +487,21 @@ mod tests {
         }
     }
 
+    /// 表示 `StaticInspector` 数据结构。
     #[derive(Debug, Clone, Copy)]
     struct StaticInspector {
+        /// 记录 `running` 字段对应的值。
         running: bool,
     }
 
     impl McpProcessInspector for StaticInspector {
+        /// 执行 `process_is_running` 对应的处理逻辑。
         fn process_is_running(&self, _process_id: u32) -> bool {
             self.running
         }
     }
 
+    /// 验证 `registry_start_health_shutdown_removes_session` 场景下的预期行为。
     #[test]
     fn registry_start_health_shutdown_removes_session() {
         let mut registry = McpSessionRegistry::new();
@@ -447,6 +525,7 @@ mod tests {
         assert!(registry.list().is_empty());
     }
 
+    /// 验证 `stream_can_be_aborted_and_removed_from_health` 场景下的预期行为。
     #[test]
     fn stream_can_be_aborted_and_removed_from_health() {
         let mut registry = McpSessionRegistry::new();
@@ -476,6 +555,7 @@ mod tests {
             .is_empty());
     }
 
+    /// 验证 `orphan_cleanup_removes_missing_process_session` 场景下的预期行为。
     #[test]
     fn orphan_cleanup_removes_missing_process_session() {
         let mut registry = McpSessionRegistry::new();
@@ -493,6 +573,7 @@ mod tests {
             .contains(&"mcp.session:orphan_cleanup_checked".to_owned()));
     }
 
+    /// 验证 `invalid_stream_id_is_rejected` 场景下的预期行为。
     #[test]
     fn invalid_stream_id_is_rejected() {
         let mut registry = McpSessionRegistry::new();
@@ -508,6 +589,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     }
 
+    /// 执行 `config` 对应的处理逻辑。
     fn config() -> McpSessionConfig {
         let process = McpProcessSpec::new("github-mcp-server");
         McpSessionConfig::new(

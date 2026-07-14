@@ -1,24 +1,32 @@
 #!/usr/bin/env pwsh
+# 根据 i18n manifest、语言数据、博客元数据和 HTML 模板生成本地化静态站点。
+# 脚本会写入 website 下的生成页面；任一输入缺失、模板 token 未解析或内容契约无效时立即抛错，
+# 从而避免发布半生成站点。所有输出统一为无 BOM UTF-8，保证跨平台部署结果稳定。
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# 所有输入和输出都锚定仓库根，禁止依赖调用者当前工作目录。
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ManifestPath = Join-Path $Root "docs/_i18n/manifest.json"
 $TemplateRoot = Join-Path $Root "website/_templates"
 $LocaleRoot = Join-Path $Root "website/_i18n"
 $WebsiteRoot = Join-Path $Root "website"
 $BlogDataPath = Join-Path $Root "website/_blog/posts.json"
+# Giscus 参数是所有语言页面共享的固定讨论线程身份；不能随 locale 改变，否则评论会分裂。
 $GiscusRepo = "Yetmos/Eva-CLI"
 $GiscusRepoId = "R_kgDOS4ZJEA"
 $GiscusCategory = "General"
 $GiscusCategoryId = "DIC_kwDOS4ZJEM4C_Tf8"
 $GiscusTerm = "Eva-CLI site discussion"
 
+# 以 UTF-8 一次性读取并解析 JSON；解析失败直接终止生成，调用方不会收到部分对象。
 function Read-JsonFile {
   param([Parameter(Mandatory = $true)][string]$Path)
   return Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json
 }
 
+# 将完整页面原子式写入指定路径使用的基础出口，并按需创建父目录。
+# Content 必须已完成模板替换；无 BOM 编码避免静态托管和前端工具链出现首字符差异。
 function Write-Utf8NoBom {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -34,6 +42,7 @@ function Write-Utf8NoBom {
   [System.IO.File]::WriteAllText($Path, $Content, $encoding)
 }
 
+# 对进入 HTML 文本或属性的动态值做实体编码；null 规范为空串，便于可选 token 安全渲染。
 function Html {
   param([AllowNull()][string]$Value)
   if ($null -eq $Value) {
@@ -43,6 +52,9 @@ function Html {
   return [System.Net.WebUtility]::HtmlEncode($Value)
 }
 
+# 使用显式 token 映射渲染模板。
+# 输入 Tokens 的值必须已按使用场景完成 HTML 编码；替换后若仍有 {{...}}，立即失败，
+# 防止遗漏字段以占位符形式发布到生产站点。
 function Apply-Template {
   param(
     [Parameter(Mandatory = $true)][string]$Template,
@@ -61,6 +73,8 @@ function Apply-Template {
   return $output
 }
 
+# 按名称读取 PSCustomObject 的动态属性；属性不存在返回 null，而不是触发 StrictMode 异常。
+# 该语义用于 locale/translation 可选键的显式回退判断。
 function Get-PropertyValue {
   param(
     [Parameter(Mandatory = $true)]$Object,
@@ -75,6 +89,7 @@ function Get-PropertyValue {
   return $property.Value
 }
 
+# 按稳定 ID 从 manifest 查找文档；未注册属于生成配置错误，不能静默拼接路径。
 function Get-Document {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -89,6 +104,7 @@ function Get-Document {
   return $document
 }
 
+# 按稳定 ID 从 manifest 查找本地化资产；缺失映射时立即终止生成。
 function Get-Asset {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -103,6 +119,8 @@ function Get-Asset {
   return $asset
 }
 
+# 解析某语言的文档仓库相对路径。
+# 默认语言始终使用 source；非默认语言仅在 translation 非空时使用译文，否则回退 source。
 function Get-DocumentPath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -123,6 +141,7 @@ function Get-DocumentPath {
   return $translation
 }
 
+# 解析某语言的资产仓库相对路径，回退规则与文档一致，保证缺译资产仍可访问。
 function Get-AssetPath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -143,6 +162,8 @@ function Get-AssetPath {
   return $translation
 }
 
+# 按页面所在深度把仓库文档路径转换为相对 href。
+# Context 被限制为三种已知目录布局，避免任意深度计算导致链接越级或发布后失效。
 function Convert-DocPathToRelativeHref {
   param(
     [Parameter(Mandatory = $true)][string]$DocPath,
@@ -156,6 +177,7 @@ function Convert-DocPathToRelativeHref {
   }
 }
 
+# 按根首页、语言首页或 docs 索引上下文转换站内资源路径；Path 不应是外部 URL。
 function Convert-SitePathToRelativeHref {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -169,6 +191,8 @@ function Convert-SitePathToRelativeHref {
   }
 }
 
+# 规范化站点基址与路径之间的单个斜线，生成 canonical/hreflang 使用的绝对 URL。
+# BaseUrl 的尾斜线和 Path 的首斜线都可有可无，但不会修改 Path 内部结构。
 function Join-SiteUrl {
   param(
     [Parameter(Mandatory = $true)][string]$BaseUrl,
@@ -183,6 +207,7 @@ function Join-SiteUrl {
   return "$base/$Path"
 }
 
+# 返回某语言首页的站点绝对路径；默认语言占据根路径，其他语言使用 /<locale>/。
 function Get-LocaleHomePath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -196,6 +221,8 @@ function Get-LocaleHomePath {
   return "/$LocaleCode/"
 }
 
+# 为首页或 docs 索引生成所有启用语言的 hreflang，并追加固定 x-default。
+# docs 非默认语言链接依据 manifest 文档映射；缺译时沿用 Get-DocumentPath 的 source 回退。
 function New-AlternateLinks {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -228,6 +255,7 @@ function New-AlternateLinks {
   return ($links -join "`n")
 }
 
+# 返回 locale 感知的博客索引站点路径，保持默认语言不带 locale 前缀。
 function Get-BlogIndexSitePath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -241,6 +269,7 @@ function Get-BlogIndexSitePath {
   return "/$LocaleCode/blog/"
 }
 
+# 在对应语言博客根下构造分类站点路径；CategoryId 必须已由博客数据校验通过。
 function Get-BlogCategorySitePath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -251,6 +280,7 @@ function Get-BlogCategorySitePath {
   return "$(Get-BlogIndexSitePath -Manifest $Manifest -LocaleCode $LocaleCode)category/$CategoryId/"
 }
 
+# 在对应语言博客根下构造文章站点路径；Slug 的唯一性由 Assert-BlogData 保证。
 function Get-BlogPostSitePath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -261,6 +291,7 @@ function Get-BlogPostSitePath {
   return "$(Get-BlogIndexSitePath -Manifest $Manifest -LocaleCode $LocaleCode)$Slug/"
 }
 
+# 将语言博客索引映射到实际 index.html 输出位置。
 function Get-BlogIndexOutputPath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -274,6 +305,7 @@ function Get-BlogIndexOutputPath {
   return Join-Path $WebsiteRoot "$LocaleCode/blog/index.html"
 }
 
+# 将语言/分类组合映射到静态分类页输出位置。
 function Get-BlogCategoryOutputPath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -288,6 +320,7 @@ function Get-BlogCategoryOutputPath {
   return Join-Path $WebsiteRoot "$LocaleCode/blog/category/$CategoryId/index.html"
 }
 
+# 将语言/slug 组合映射到静态文章页输出位置。
 function Get-BlogPostOutputPath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -302,6 +335,8 @@ function Get-BlogPostOutputPath {
   return Join-Path $WebsiteRoot "$LocaleCode/blog/$Slug/index.html"
 }
 
+# 从博客索引、分类或文章页计算到任意站内绝对路径的相对 href。
+# FromKind 与默认/非默认 locale 共同决定目录深度；根路径单独处理以保留正确尾斜线。
 function Get-BlogRelativeHref {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -355,6 +390,7 @@ function Get-BlogRelativeHref {
   }
 }
 
+# 复用博客相对链接计算得到回到站点根的资源前缀，供 CSS/JS/图片 token 使用。
 function Get-BlogAssetPrefix {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -366,6 +402,7 @@ function Get-BlogAssetPrefix {
   return $rootPath
 }
 
+# 读取分类的 locale 标签；缺少译名时回退稳定 category ID，而不生成空导航文本。
 function Get-CategoryLabel {
   param(
     [Parameter(Mandatory = $true)]$Category,
@@ -380,6 +417,8 @@ function Get-CategoryLabel {
   return [string]$label
 }
 
+# 为博客索引、分类或文章生成 canonical sibling hreflang 集合。
+# 文章只为真实存在的同 ID 译文输出链接；x-default 优先指向默认语言，否则回退当前文章。
 function New-BlogAlternateLinks {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -426,6 +465,8 @@ function New-BlogAlternateLinks {
   return ($links -join "`n")
 }
 
+# 构造博客语言切换映射；目标文章缺少译文时回退该语言博客索引，避免死链。
+# FromKind 描述当前页面深度，TargetKind 描述切换后的页面语义，两者不能混用。
 function New-BlogLanguageSwitch {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -438,6 +479,7 @@ function New-BlogLanguageSwitch {
     [Parameter(Mandatory = $true)]$Posts
   )
 
+  # 先建立完整 locale -> 相对 href 映射，再交给通用语言切换器统一渲染 aria/hreflang。
   $hrefByLocale = @{}
   foreach ($locale in $Locales) {
     $code = [string]$locale.code
@@ -460,6 +502,7 @@ function New-BlogLanguageSwitch {
   return New-LanguageSwitch -Locales $Locales -HrefByLocale $hrefByLocale -CurrentLocale $CurrentLocale
 }
 
+# 生成博客分类导航，并按当前语言统计文章数；链接相对深度由 FromKind 统一计算。
 function New-BlogCategoryLinks {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -482,6 +525,8 @@ function New-BlogCategoryLinks {
   return ($items -join "`n")
 }
 
+# 按日期降序、标题升序生成文章卡片，保证同日期内容构建结果确定。
+# 空集合输出本地化 empty state，而不是返回空容器。
 function New-BlogPostCards {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -521,6 +566,8 @@ function New-BlogPostCards {
   return ($items -join "`n")
 }
 
+# 生成首页有限数量的最新文章卡片。
+# Context 只允许根首页或语言首页，因为两者的 locale 前缀剥离和资源相对深度不同。
 function New-FeaturedBlogCards {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -570,6 +617,9 @@ function New-FeaturedBlogCards {
   return ($items -join "`n")
 }
 
+# 在任何页面写入前验证博客元数据的全局一致性。
+# 要求至少一个分类、分类 ID 全局唯一、slug 在各 locale 内唯一、文章语言已启用、分类存在、
+# 内容文件可读且日期可解析；失败通过 throw 终止整个生成，避免产生部分博客树。
 function Assert-BlogData {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -633,6 +683,8 @@ function Assert-BlogData {
   }
 }
 
+# 从完整 locale -> href 映射渲染语言切换器，并为当前语言添加 aria-current。
+# HrefByLocale 必须覆盖 Locales 中每个 code，调用方负责先处理缺译回退。
 function New-LanguageSwitch {
   param(
     [Parameter(Mandatory = $true)]$Locales,
@@ -658,6 +710,7 @@ $($items -join "`n")
 "@
 }
 
+# 使用本地化标签和调用方已归一化的 href 生成全站主导航。
 function New-NavLinks {
   param(
     [Parameter(Mandatory = $true)]$LocaleData,
@@ -680,6 +733,7 @@ function New-NavLinks {
 "@
 }
 
+# 生成共享 Giscus 讨论线程嵌入代码；仅 UI 语言随 locale 变化，repo/category/term 固定。
 function New-DiscussionEmbed {
   param(
     [Parameter(Mandatory = $true)][string]$LocaleCode
@@ -707,6 +761,8 @@ function New-DiscussionEmbed {
 "@
 }
 
+# 将 locale 数据中的文档卡片 ID 解析为 manifest 路径并生成首页链接。
+# Context 限制 href 深度，文档缺译时沿用 manifest source 回退。
 function New-HomeDocCards {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -730,6 +786,7 @@ function New-HomeDocCards {
   return ($items -join "`n")
 }
 
+# 对每个本地化反馈分类做 HTML 编码并生成 select option。
 function New-FeedbackOptions {
   param([Parameter(Mandatory = $true)]$Options)
 
@@ -741,6 +798,7 @@ function New-FeedbackOptions {
   return ($items -join "`n")
 }
 
+# 将首页亮点文本渲染为安全的独立 span 列表。
 function New-HeroHighlights {
   param([Parameter(Mandatory = $true)]$Highlights)
 
@@ -752,6 +810,7 @@ function New-HeroHighlights {
   return ($items -join "`n")
 }
 
+# 将本地化 runtime 步骤的 label/description 映射为有序展示项。
 function New-RuntimeSteps {
   param([Parameter(Mandatory = $true)]$Steps)
 
@@ -768,9 +827,12 @@ function New-RuntimeSteps {
   return ($items -join "`n")
 }
 
+# 生成开发进度时间线，并只接受 CSS/语义已定义的四种状态。
+# 未知状态立即抛错，避免生成缺样式且含义不明的进度节点。
 function New-ProgressStages {
   param([Parameter(Mandatory = $true)]$Stages)
 
+  # 此集合同时是内容 schema 与 CSS class 白名单，新增状态必须同步模板样式和验证器。
   $allowedStatuses = @("complete", "current", "next", "later")
   $items = New-Object System.Collections.Generic.List[string]
   foreach ($stage in $Stages) {
@@ -793,6 +855,7 @@ function New-ProgressStages {
   return ($items -join "`n")
 }
 
+# 将后续工作文本编码为列表项，保持 locale 文件中的顺序。
 function New-ProgressNextItems {
   param([Parameter(Mandatory = $true)]$Items)
 
@@ -804,6 +867,7 @@ function New-ProgressNextItems {
   return ($output -join "`n")
 }
 
+# 生成 docs 索引的语言入口，并根据 default/detailed-source/translation 标注内容权威层级。
 function New-LanguageList {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -833,6 +897,7 @@ function New-LanguageList {
   return ($items -join "`n")
 }
 
+# 为 docs 索引的每个文档生成所有启用语言链接；路径解析统一遵守 manifest 回退规则。
 function New-DocumentLinks {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -866,6 +931,7 @@ $($actions -join "`n")
   return ($items -join "`n")
 }
 
+# 第一阶段只读取并验证全部共享输入；Assert-BlogData 通过前不写任何页面。
 $manifest = Read-JsonFile -Path $ManifestPath
 $locales = @($manifest.locales | Where-Object { $_.enabled -ne $false })
 $homeTemplate = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $TemplateRoot "home.html")
@@ -878,6 +944,7 @@ $blogCategories = @($blogData.categories)
 $blogPosts = @($blogData.posts)
 Assert-BlogData -Manifest $manifest -Locales $locales -Categories $blogCategories -Posts $blogPosts
 
+# 第二阶段按 locale 生成首页。默认语言写根 index，其他语言写 <locale>/index。
 foreach ($locale in $locales) {
   $localeCode = [string]$locale.code
   $localeJsonPath = Join-Path $LocaleRoot "$localeCode.json"
@@ -894,6 +961,7 @@ foreach ($locale in $locales) {
     Join-Path $WebsiteRoot "$localeCode/index.html"
   }
 
+  # 首页语言切换使用站点绝对路径；浏览器会从当前页面正确解析根/locale 入口。
   $homeHrefByLocale = @{}
   foreach ($targetLocale in $locales) {
     $homeHrefByLocale[[string]$targetLocale.code] = Get-LocaleHomePath -Manifest $manifest -LocaleCode ([string]$targetLocale.code)
@@ -915,6 +983,8 @@ foreach ($locale in $locales) {
   $canonicalUrl = Join-SiteUrl -BaseUrl $manifest.siteUrl -Path (Get-LocaleHomePath -Manifest $manifest -LocaleCode $localeCode)
   $localePosts = @($blogPosts | Where-Object { $_.locale -eq $localeCode })
 
+  # 模板 token 是生成首页的完整契约：动态文本先 Html 编码，结构化 HTML 由 New-* 函数生成。
+  # Apply-Template 会拒绝任何遗漏 token，因此新增模板字段必须在这里显式接线。
   $homeTokens = @{
     lang = Html $localeCode
     dir = Html $locale.dir
@@ -998,10 +1068,12 @@ foreach ($locale in $locales) {
   Write-Utf8NoBom -Path $outputPath -Content (Apply-Template -Template $homeTemplate -Tokens $homeTokens)
 }
 
+# Docs 索引固定使用默认语言元数据，作为 /docs/ 的 canonical 入口。
 $defaultLocaleCode = [string]$manifest.defaultLocale
 $defaultLocale = @($locales | Where-Object { $_.code -eq $defaultLocaleCode }) | Select-Object -First 1
 $defaultLocaleData = Read-JsonFile -Path (Join-Path $LocaleRoot "$defaultLocaleCode.json")
 $docsHrefByLocale = @{}
+# Docs 索引语言切换映射到各语言 README；默认语言仍使用 /docs/ 当前页。
 foreach ($targetLocale in $locales) {
   $targetCode = [string]$targetLocale.code
   $docsHrefByLocale[$targetCode] = if ($targetCode -eq $manifest.defaultLocale) {
@@ -1011,6 +1083,7 @@ foreach ($targetLocale in $locales) {
   }
 }
 
+# Docs 索引 token 映射只包含已编码文本或生成片段，并由未解析 token 检查兜底。
 $docsIndexTokens = @{
   lang = Html $defaultLocaleCode
   dir = Html $defaultLocale.dir
@@ -1048,6 +1121,7 @@ $docsIndexTokens = @{
 
 Write-Utf8NoBom -Path (Join-Path $WebsiteRoot "docs/index.html") -Content (Apply-Template -Template $docsTemplate -Tokens $docsIndexTokens)
 
+# 第三阶段为每个 locale 生成博客索引、全部分类页和该语言文章页。
 foreach ($locale in $locales) {
   $localeCode = [string]$locale.code
   $localeData = Read-JsonFile -Path (Join-Path $LocaleRoot "$localeCode.json")
@@ -1057,6 +1131,7 @@ foreach ($locale in $locales) {
 
   $blogIndexPath = Get-BlogIndexSitePath -Manifest $manifest -LocaleCode $localeCode
   $blogIndexFromKind = "blog-index"
+  # 博客索引 token 统一使用 locale 感知 canonical、相对导航和语言切换映射。
   $blogIndexTokens = @{
     lang = Html $localeCode
     dir = Html $locale.dir
@@ -1098,6 +1173,7 @@ foreach ($locale in $locales) {
     $categoryPosts = @($localePosts | Where-Object { $_.category -eq $categoryId })
     $categorySitePath = Get-BlogCategorySitePath -Manifest $manifest -LocaleCode $localeCode -CategoryId $categoryId
     $categoryFromKind = "blog-category"
+    # 分类页 token 的相对链接深度不同于索引页，必须全部基于 categoryFromKind 计算。
     $categoryTokens = @{
       lang = Html $localeCode
       dir = Html $locale.dir
@@ -1142,6 +1218,8 @@ foreach ($locale in $locales) {
     $categoryPath = Get-BlogCategorySitePath -Manifest $manifest -LocaleCode $localeCode -CategoryId ([string]$post.category)
     $contentPath = Join-Path $Root (([string]$post.contentPath) -replace "/", [System.IO.Path]::DirectorySeparatorChar)
     $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $contentPath
+    # 文章正文来自受 Assert-BlogData 校验的内容文件；content 保留为可信 HTML 片段，
+    # 其余动态 metadata 全部进行 HTML 编码并生成 canonical/hreflang。
     $postTokens = @{
       lang = Html $localeCode
       dir = Html $locale.dir

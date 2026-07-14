@@ -1,3 +1,7 @@
+//! 对提供者输出执行有界采集、预览裁剪和证据持久化。
+//!
+//! 原始字节在进入预览与制品存储前统一脱敏；达到上限会保留已采集前缀并标记截断，而不是
+//! 继续无界读取。制品写入失败会作为调用错误返回，避免审计记录声称存在实际未落盘的证据。
 //! Bounded provider stream capture and artifact evidence.
 
 use crate::supervisor::redact_provider_session_tokens;
@@ -7,42 +11,66 @@ use std::env;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "bounded provider stream capture with redacted artifact evidence";
 
+/// 定义 `DEFAULT_STREAM_CHUNK_SIZE_BYTES` 常量。
 pub const DEFAULT_STREAM_CHUNK_SIZE_BYTES: usize = 8 * 1024;
+/// 定义 `DEFAULT_STREAM_PREVIEW_LIMIT_BYTES` 常量。
 pub const DEFAULT_STREAM_PREVIEW_LIMIT_BYTES: usize = 4 * 1024;
 
+/// 定义单路提供者输出的读取、预览和可选制品存储边界。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderStreamConfig {
+    /// 记录 `stream_name` 字段对应的值。
     pub stream_name: String,
+    /// 允许从该流保留的最大字节数；超过部分不会进入内存或制品。
     pub output_limit_bytes: usize,
+    /// 返回给调用方的预览上限，实际取值还会受输出总上限约束。
     pub preview_limit_bytes: usize,
+    /// 记录 `chunk_size_bytes` 字段对应的值。
     pub chunk_size_bytes: usize,
+    /// 记录 `artifact_root` 字段对应的值。
     pub artifact_root: Option<PathBuf>,
+    /// 记录 `artifact_key` 字段对应的值。
     pub artifact_key: Option<String>,
+    /// 记录 `content_type` 字段对应的值。
     pub content_type: String,
 }
 
+/// 描述一次有界采集的脱敏预览、计数与可选持久化证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderStreamCapture {
+    /// 记录 `stream_name` 字段对应的值。
     pub stream_name: String,
+    /// 记录 `preview` 字段对应的值。
     pub preview: Vec<u8>,
+    /// 记录截断前实际保留的原始字节数，不包含被丢弃的尾部。
     pub captured_bytes: usize,
+    /// 记录 `chunk_count` 字段对应的值。
     pub chunk_count: usize,
+    /// 表示输入仍有数据但已触及输出上限。
     pub truncated: bool,
+    /// 记录 `artifact` 字段对应的值。
     pub artifact: Option<ProviderStreamArtifact>,
 }
 
+/// 表示 `ProviderStreamArtifact` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderStreamArtifact {
+    /// 记录 `key` 字段对应的值。
     pub key: String,
+    /// 记录 `digest` 字段对应的值。
     pub digest: String,
+    /// 记录 `size_bytes` 字段对应的值。
     pub size_bytes: usize,
+    /// 记录 `content_type` 字段对应的值。
     pub content_type: String,
 }
 
 impl ProviderStreamConfig {
+    /// 创建并初始化当前类型的实例。
     pub fn new(stream_name: impl Into<String>, output_limit_bytes: usize) -> Self {
         Self {
             stream_name: stream_name.into(),
@@ -55,16 +83,19 @@ impl ProviderStreamConfig {
         }
     }
 
+    /// 设置 `preview_limit` 并返回更新后的实例。
     pub fn with_preview_limit(mut self, preview_limit_bytes: usize) -> Self {
         self.preview_limit_bytes = preview_limit_bytes;
         self
     }
 
+    /// 设置 `chunk_size` 并返回更新后的实例。
     pub fn with_chunk_size(mut self, chunk_size_bytes: usize) -> Self {
         self.chunk_size_bytes = chunk_size_bytes;
         self
     }
 
+    /// 设置 `artifact` 并返回更新后的实例。
     pub fn with_artifact(
         mut self,
         artifact_root: impl Into<PathBuf>,
@@ -79,6 +110,7 @@ impl ProviderStreamConfig {
 }
 
 impl ProviderStreamCapture {
+    /// 执行 `empty` 对应的处理逻辑。
     pub fn empty(stream_name: impl Into<String>) -> Self {
         Self {
             stream_name: stream_name.into(),
@@ -90,11 +122,13 @@ impl ProviderStreamCapture {
         }
     }
 
+    /// 执行 `preview_text` 对应的处理逻辑。
     pub fn preview_text(&self) -> String {
         String::from_utf8_lossy(&self.preview).into_owned()
     }
 }
 
+/// 分块读取到 EOF 或输出上限；读取错误不返回部分成功结果。
 pub fn collect_provider_stream(
     mut reader: impl Read,
     config: ProviderStreamConfig,
@@ -118,6 +152,7 @@ pub fn collect_provider_stream(
         chunk_count = chunk_count.saturating_add(1);
         let remaining = config.output_limit_bytes.saturating_sub(captured.len());
         if read > remaining {
+            // 只保留仍在预算内的前缀，随后立即停止读取，避免对无限流持续占用资源。
             captured.extend_from_slice(&buffer[..remaining]);
             truncated = true;
             break;
@@ -128,6 +163,7 @@ pub fn collect_provider_stream(
     capture_provider_bytes(config, captured, chunk_count, truncated, sensitive_values)
 }
 
+/// 将已采集字节统一截断、脱敏并持久化，再从同一脱敏内容生成预览。
 pub fn capture_provider_bytes(
     config: ProviderStreamConfig,
     mut bytes: Vec<u8>,
@@ -141,6 +177,7 @@ pub fn capture_provider_bytes(
         truncated = true;
     }
     let captured_bytes = bytes.len();
+    // 制品和预览共享同一脱敏结果，防止两条输出路径出现不同的凭据暴露语义。
     let redacted = redact_provider_stream_bytes(bytes, sensitive_values);
     let preview_limit = config.preview_limit_bytes.min(config.output_limit_bytes);
     let preview_len = redacted.len().min(preview_limit);
@@ -156,6 +193,7 @@ pub fn capture_provider_bytes(
     })
 }
 
+/// 执行 `provider_stream_audit` 对应的处理逻辑。
 pub fn provider_stream_audit(capture: &ProviderStreamCapture) -> Vec<String> {
     let prefix = format!("stream.{}", capture.stream_name);
     let mut audit = vec![
@@ -170,6 +208,7 @@ pub fn provider_stream_audit(capture: &ProviderStreamCapture) -> Vec<String> {
     audit
 }
 
+/// 执行 `provider_stream_summary_json` 对应的处理逻辑。
 pub fn provider_stream_summary_json(capture: &ProviderStreamCapture) -> String {
     format!(
         "{{\"stream\":{},\"bytes\":{},\"chunks\":{},\"truncated\":{},\"preview\":{},\"artifact\":{}}}",
@@ -186,6 +225,7 @@ pub fn provider_stream_summary_json(capture: &ProviderStreamCapture) -> String {
     )
 }
 
+/// 执行 `provider_stream_artifact_json` 对应的处理逻辑。
 pub fn provider_stream_artifact_json(artifact: &ProviderStreamArtifact) -> String {
     format!(
         "{{\"key\":{},\"digest\":{},\"size_bytes\":{},\"content_type\":{}}}",
@@ -196,6 +236,7 @@ pub fn provider_stream_artifact_json(artifact: &ProviderStreamArtifact) -> Strin
     )
 }
 
+/// 执行 `provider_stream_key` 对应的处理逻辑。
 pub fn provider_stream_key(
     namespace: &str,
     adapter_id: &str,
@@ -211,6 +252,7 @@ pub fn provider_stream_key(
     )
 }
 
+/// 执行 `default_provider_artifact_root` 对应的处理逻辑。
 pub fn default_provider_artifact_root(source_path: &str) -> PathBuf {
     let source_path = PathBuf::from(source_path);
     if let Some(project_root) = project_root_from_manifest_path(&source_path) {
@@ -219,6 +261,7 @@ pub fn default_provider_artifact_root(source_path: &str) -> PathBuf {
     env::temp_dir().join("eva-provider-artifacts")
 }
 
+/// 执行 `json_string` 对应的处理逻辑。
 pub fn json_string(value: &str) -> String {
     let mut escaped = String::from("\"");
     for character in value.chars() {
@@ -235,6 +278,7 @@ pub fn json_string(value: &str) -> String {
     escaped
 }
 
+/// 校验 `validate_stream_config` 对应的约束，不满足时返回明确错误。
 fn validate_stream_config(config: &ProviderStreamConfig) -> Result<(), EvaError> {
     if config.stream_name.trim().is_empty() {
         return Err(EvaError::invalid_argument(
@@ -267,6 +311,7 @@ fn validate_stream_config(config: &ProviderStreamConfig) -> Result<(), EvaError>
     }
 }
 
+/// 执行 `persist_stream_artifact` 对应的处理逻辑。
 fn persist_stream_artifact(
     config: &ProviderStreamConfig,
     bytes: Vec<u8>,
@@ -285,6 +330,7 @@ fn persist_stream_artifact(
     Ok(Some(ProviderStreamArtifact::from(record)))
 }
 
+/// 替换清单凭据和监督器会话令牌；非 UTF-8 输入以有损文本形式进入可审计输出。
 pub(crate) fn redact_provider_stream_bytes(bytes: Vec<u8>, sensitive_values: &[String]) -> Vec<u8> {
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     for value in sensitive_values {
@@ -295,6 +341,7 @@ pub(crate) fn redact_provider_stream_bytes(bytes: Vec<u8>, sensitive_values: &[S
     redact_provider_session_tokens(&text).into_bytes()
 }
 
+/// 执行 `project_root_from_manifest_path` 对应的处理逻辑。
 fn project_root_from_manifest_path(path: &Path) -> Option<PathBuf> {
     let config_dir = path.parent()?.parent()?;
     if config_dir.file_name().and_then(|value| value.to_str()) == Some("config") {
@@ -303,6 +350,7 @@ fn project_root_from_manifest_path(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// 执行 `safe_segment` 对应的处理逻辑。
 fn safe_segment(value: &str) -> String {
     let mut segment = value
         .bytes()
@@ -321,6 +369,7 @@ fn safe_segment(value: &str) -> String {
 }
 
 impl From<ArtifactRecord> for ProviderStreamArtifact {
+    /// 执行 `from` 对应的处理逻辑。
     fn from(record: ArtifactRecord) -> Self {
         Self {
             key: record.key,
@@ -331,12 +380,14 @@ impl From<ArtifactRecord> for ProviderStreamArtifact {
     }
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 验证 `provider_stream_truncates_preview_and_writes_redacted_artifact` 场景下的预期行为。
     #[test]
     fn provider_stream_truncates_preview_and_writes_redacted_artifact() {
         let root = test_root("truncated");
@@ -366,6 +417,7 @@ mod tests {
             .exists());
     }
 
+    /// 验证 `provider_stream_redacts_artifact_bytes` 场景下的预期行为。
     #[test]
     fn provider_stream_redacts_artifact_bytes() {
         let root = test_root("redaction");
@@ -390,16 +442,20 @@ mod tests {
         assert!(artifact.contains("[REDACTED]"));
     }
 
+    /// 表示 `TestRoot` 数据结构。
     struct TestRoot {
+        /// 记录 `path` 字段对应的值。
         path: PathBuf,
     }
 
     impl Drop for TestRoot {
+        /// 停止或释放 `drop` 管理的资源。
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
 
+    /// 执行 `test_root` 对应的处理逻辑。
     fn test_root(name: &str) -> TestRoot {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

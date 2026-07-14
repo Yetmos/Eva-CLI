@@ -1,3 +1,8 @@
+//! 将能力调用映射为经过授权的适配器提供者调用。
+//!
+//! 提供者计划按确定顺序逐个尝试，只有可重试的不可用、超时或限流失败才允许回退；权限、
+//! 参数等不可重试错误会立即停止。所有适配器报告最终归一化为稳定的能力响应，避免把传输
+//! 私有错误结构直接泄露给上层。
 //! Adapter-backed CapabilityHostApi implementation.
 
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport, AdapterRuntime};
@@ -7,17 +12,23 @@ use eva_core::{
 };
 use eva_policy::PermissionSet;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "adapter-backed capability invocation and response normalization";
 
+/// 组合能力路由、适配器运行时和显式权限集的宿主实现。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterBackedCapabilityHost {
+    /// 记录 `router` 字段对应的值。
     router: CapabilityRouter,
+    /// 记录 `runtime` 字段对应的值。
     runtime: AdapterRuntime,
+    /// 记录 `permissions` 字段对应的值。
     permissions: PermissionSet,
 }
 
 impl AdapterBackedCapabilityHost {
+    /// 创建并初始化当前类型的实例。
     pub fn new(
         router: CapabilityRouter,
         runtime: AdapterRuntime,
@@ -30,24 +41,29 @@ impl AdapterBackedCapabilityHost {
         }
     }
 
+    /// 执行 `router` 对应的受控流程。
     pub fn router(&self) -> &CapabilityRouter {
         &self.router
     }
 
+    /// 执行 `runtime` 对应的受控流程。
     pub fn runtime(&self) -> &AdapterRuntime {
         &self.runtime
     }
 
+    /// 返回 `permissions` 对应的数据视图。
     pub fn permissions(&self) -> &PermissionSet {
         &self.permissions
     }
 }
 
 impl CapabilityHostApi for AdapterBackedCapabilityHost {
+    /// 执行 `invoke` 对应的受控流程。
     fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
         self.invoke_with_provider(request, None)
     }
 
+    /// 按授权计划顺序调用提供者，并只对明确标记为可重试的失败执行回退。
     fn invoke_with_provider(
         &self,
         request: InvokeRequest,
@@ -58,6 +74,7 @@ impl CapabilityHostApi for AdapterBackedCapabilityHost {
 }
 
 impl AdapterBackedCapabilityHost {
+    /// 执行 `invoke_with_provider` 对应的受控流程。
     pub fn invoke_with_provider(
         &self,
         request: InvokeRequest,
@@ -86,6 +103,7 @@ impl AdapterBackedCapabilityHost {
 
         let request_id = request.request_id().clone();
         let mut last_retryable_error = None;
+        // 候选顺序已由选择器稳定化；这里不得重新排序，否则会改变回退和审计语义。
         for candidate in &plan.providers {
             match self.invoke_provider(&request, &candidate.provider) {
                 Ok(report) if report.status == "completed" => {
@@ -124,6 +142,7 @@ impl AdapterBackedCapabilityHost {
 }
 
 impl AdapterBackedCapabilityHost {
+    /// 执行 `invoke_provider` 对应的受控流程。
     fn invoke_provider(
         &self,
         request: &InvokeRequest,
@@ -145,6 +164,7 @@ impl AdapterBackedCapabilityHost {
     }
 }
 
+/// 将传输报告归一化为能力响应；非完成状态统一转换为结构化失败。
 pub fn response_from_report(report: AdapterInvokeReport) -> InvokeResponse {
     let request_id = report.request_id.clone();
     match report.status.as_str() {
@@ -154,6 +174,7 @@ pub fn response_from_report(report: AdapterInvokeReport) -> InvokeResponse {
     }
 }
 
+/// 执行 `response_from_error` 对应的处理逻辑。
 pub fn response_from_error(request_id: eva_core::RequestId, error: EvaError) -> InvokeResponse {
     if error.kind() == ErrorKind::Timeout {
         InvokeResponse::timeout_with_error(request_id, error)
@@ -162,11 +183,13 @@ pub fn response_from_error(request_id: eva_core::RequestId, error: EvaError) -> 
     }
 }
 
+/// 仅允许不可用、超时及带可重试标记的错误触发下一提供者。
 /// Returns whether adapter-backed capability invocation may try the next provider.
 pub fn is_retryable_provider_failure(error: &EvaError) -> bool {
     error.is_retryable()
 }
 
+/// 执行 `report_error` 对应的处理逻辑。
 fn report_error(report: AdapterInvokeReport) -> EvaError {
     let kind = match report.status.as_str() {
         "timeout" => ErrorKind::Timeout,
@@ -181,6 +204,7 @@ fn report_error(report: AdapterInvokeReport) -> EvaError {
         .with_context("status", report.status)
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,14 +215,17 @@ mod tests {
     use eva_core::{CapabilityId, CapabilityName, InvokeInput, InvokeStatus, RequestId};
     use std::collections::BTreeMap;
 
+    /// 执行 `capability` 对应的处理逻辑。
     fn capability(value: &str) -> CapabilityName {
         CapabilityName::parse(value).unwrap()
     }
 
+    /// 执行 `adapter` 对应的处理逻辑。
     fn adapter(value: &str) -> AdapterId {
         AdapterId::parse(value).unwrap()
     }
 
+    /// 验证 `response_from_report_maps_completed_report` 场景下的预期行为。
     #[test]
     fn response_from_report_maps_completed_report() {
         let response = response_from_report(report("completed", "ok"));
@@ -207,6 +234,7 @@ mod tests {
         assert_eq!(response.output().unwrap().as_text(), Some("ok"));
     }
 
+    /// 验证 `response_from_report_maps_timeout_with_safe_context` 场景下的预期行为。
     #[test]
     fn response_from_report_maps_timeout_with_safe_context() {
         let response = response_from_report(report("timeout", "late"));
@@ -225,6 +253,7 @@ mod tests {
             .any(|(key, value)| key == "adapter_id" && value == "builtin-test"));
     }
 
+    /// 验证 `adapter_backed_host_invokes_authorized_provider` 场景下的预期行为。
     #[test]
     fn adapter_backed_host_invokes_authorized_provider() {
         let host = host_with_builtin_adapter(true);
@@ -245,6 +274,7 @@ mod tests {
             .contains("controlled-envelope"));
     }
 
+    /// 验证 `adapter_backed_trait_invokes_explicit_provider` 场景下的预期行为。
     #[test]
     fn adapter_backed_trait_invokes_explicit_provider() {
         let host = host_with_builtin_adapter(true);
@@ -268,6 +298,7 @@ mod tests {
             .contains("builtin-test"));
     }
 
+    /// 验证 `adapter_backed_host_returns_failed_response_for_denied_provider` 场景下的预期行为。
     #[test]
     fn adapter_backed_host_returns_failed_response_for_denied_provider() {
         let host = host_with_permissions(
@@ -290,6 +321,7 @@ mod tests {
         );
     }
 
+    /// 验证 `adapter_backed_host_normalizes_disabled_provider_to_failed_response` 场景下的预期行为。
     #[test]
     fn adapter_backed_host_normalizes_disabled_provider_to_failed_response() {
         let host = host_with_builtin_adapter(false);
@@ -308,6 +340,7 @@ mod tests {
         );
     }
 
+    /// 验证 `adapter_backed_host_falls_back_after_retryable_report_failure` 场景下的预期行为。
     #[test]
     fn adapter_backed_host_falls_back_after_retryable_report_failure() {
         let host = host_with_provider_selection_and_handles(
@@ -343,6 +376,7 @@ mod tests {
             .contains("builtin-test"));
     }
 
+    /// 验证 `adapter_backed_host_stops_after_non_retryable_provider_error` 场景下的预期行为。
     #[test]
     fn adapter_backed_host_stops_after_non_retryable_provider_error() {
         let host = host_with_provider_selection_and_handles(
@@ -380,6 +414,7 @@ mod tests {
             .any(|(key, value)| key == "provider" && value == "stdio-invalid"));
     }
 
+    /// 验证 `adapter_backed_host_preserves_last_retryable_error_when_all_providers_fail` 场景下的预期行为。
     #[test]
     fn adapter_backed_host_preserves_last_retryable_error_when_all_providers_fail() {
         let host = host_with_provider_selection_and_handles(
@@ -417,6 +452,7 @@ mod tests {
             .any(|(key, value)| key == "provider" && value == "stdio-fail-b"));
     }
 
+    /// 验证 `adapter_backed_host_falls_back_after_retryable_rate_limit_gate` 场景下的预期行为。
     #[test]
     fn adapter_backed_host_falls_back_after_retryable_rate_limit_gate() {
         let mut rate_limited = stdio_handle("stdio-rate", Some(test_command()), success_args());
@@ -467,6 +503,7 @@ mod tests {
             .contains("builtin-test"));
     }
 
+    /// 执行 `host_with_builtin_adapter` 对应的处理逻辑。
     fn host_with_builtin_adapter(enabled: bool) -> AdapterBackedCapabilityHost {
         host_with_permissions_and_handle(
             PermissionSet::deny_all()
@@ -477,10 +514,12 @@ mod tests {
         )
     }
 
+    /// 执行 `host_with_permissions` 对应的处理逻辑。
     fn host_with_permissions(permissions: PermissionSet) -> AdapterBackedCapabilityHost {
         host_with_permissions_and_handle(permissions, builtin_handle(true))
     }
 
+    /// 执行 `host_with_permissions_and_handle` 对应的处理逻辑。
     fn host_with_permissions_and_handle(
         permissions: PermissionSet,
         handle: AdapterHandle,
@@ -497,6 +536,7 @@ mod tests {
         )
     }
 
+    /// 执行 `host_with_provider_selection_and_handles` 对应的处理逻辑。
     fn host_with_provider_selection_and_handles(
         permissions: PermissionSet,
         provider_selection: CapabilityProviderSelection,
@@ -524,6 +564,7 @@ mod tests {
         )
     }
 
+    /// 执行 `builtin_handle` 对应的处理逻辑。
     fn builtin_handle(enabled: bool) -> AdapterHandle {
         AdapterHandle {
             id: adapter("builtin-test"),
@@ -566,6 +607,7 @@ mod tests {
         }
     }
 
+    /// 执行 `stdio_handle` 对应的处理逻辑。
     fn stdio_handle(id: &str, command: Option<&str>, args: Vec<String>) -> AdapterHandle {
         let mut handle = builtin_handle(true);
         handle.id = adapter(id);
@@ -576,16 +618,19 @@ mod tests {
         handle
     }
 
+    /// 执行 `test_command` 对应的处理逻辑。
     #[cfg(windows)]
     fn test_command() -> &'static str {
         "powershell"
     }
 
+    /// 执行 `test_command` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn test_command() -> &'static str {
         "sh"
     }
 
+    /// 执行 `fail_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn fail_args() -> Vec<String> {
         vec![
@@ -595,11 +640,13 @@ mod tests {
         ]
     }
 
+    /// 执行 `fail_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn fail_args() -> Vec<String> {
         vec!["-c".to_owned(), "exit 7".to_owned()]
     }
 
+    /// 执行 `success_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn success_args() -> Vec<String> {
         vec![
@@ -609,11 +656,13 @@ mod tests {
         ]
     }
 
+    /// 执行 `success_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn success_args() -> Vec<String> {
         vec!["-c".to_owned(), "printf stdio-ok".to_owned()]
     }
 
+    /// 执行 `report` 对应的处理逻辑。
     fn report(status: &str, output: &str) -> AdapterInvokeReport {
         AdapterInvokeReport {
             request_id: RequestId::parse("req-report").unwrap(),

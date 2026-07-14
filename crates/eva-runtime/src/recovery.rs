@@ -1,3 +1,8 @@
+//! 根据持久化任务、事件日志和提供者进程快照恢复守护进程重启后的可判定状态。
+//!
+//! 恢复不会假定崩溃前的内存执行仍可继续：非终态任务被标记为中断，带死信的任务进入可
+//! 重驱态，活动提供者进程统一标记为重启中断。死信重驱在发布前检查原事件确认状态、到期
+//! 时间和最新 replay 记录，以事件日志作为跨重启幂等边界。
 //! V1.6.4 runtime crash recovery coordinator.
 
 use eva_core::{EvaError, EventId};
@@ -9,87 +14,141 @@ use eva_storage::{
     TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
 };
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "runtime restart recovery over durable task evidence";
 
+/// 无状态恢复协调器；所有恢复事实均来自调用方提供的持久化存储。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeRecoveryCoordinator;
 
+/// 定义本轮恢复判定死信是否到期的逻辑时间。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeRecoveryOptions {
+    /// 只有 `next_attempt_after_ms` 不晚于该时间的死信才允许重驱。
     pub redrive_ready_at_ms: u64,
 }
 
+/// 汇总任务、死信、提供者进程及退避计划的恢复决定和审计证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeRecoveryReport {
+    /// 记录 `scanned_tasks` 字段对应的值。
     pub scanned_tasks: usize,
+    /// 记录 `recovered_tasks` 字段对应的值。
     pub recovered_tasks: Vec<RecoveredTask>,
+    /// 记录 `unchanged_tasks` 字段对应的值。
     pub unchanged_tasks: Vec<String>,
+    /// 记录 `recovered_snapshots` 字段对应的值。
     pub recovered_snapshots: Vec<TaskStateSnapshot>,
+    /// 记录 `redriven_events` 字段对应的值。
     pub redriven_events: Vec<RecoveredEvent>,
+    /// 记录 `skipped_redrive_events` 字段对应的值。
     pub skipped_redrive_events: Vec<SkippedRedriveEvent>,
+    /// 记录 `scanned_provider_processes` 字段对应的值。
     pub scanned_provider_processes: usize,
+    /// 记录 `recovered_provider_processes` 字段对应的值。
     pub recovered_provider_processes: Vec<RecoveredProviderProcess>,
+    /// 记录 `unchanged_provider_processes` 字段对应的值。
     pub unchanged_provider_processes: Vec<String>,
+    /// 记录 `provider_backoff_tasks` 字段对应的值。
     pub provider_backoff_tasks: Vec<ProviderBackoffTask>,
+    /// 记录 `skipped_provider_tasks` 字段对应的值。
     pub skipped_provider_tasks: Vec<SkippedProviderTask>,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 记录一个非终态任务在重启前后的状态转换。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredTask {
+    /// 记录 `task_id` 字段对应的值。
     pub task_id: String,
+    /// 记录 `previous_status` 字段对应的值。
     pub previous_status: String,
+    /// 记录 `status` 字段对应的值。
     pub status: String,
+    /// 表示任务因持有死信进入 `recovering`，但不保证本轮确实完成了重驱。
     pub redrive_candidate: bool,
 }
 
+/// 记录一次已成功写入持久化事件总线的死信重驱。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredEvent {
+    /// 记录 `task_id` 字段对应的值。
     pub task_id: String,
+    /// 记录 `event_id` 字段对应的值。
     pub event_id: String,
+    /// 记录 `replay_event_id` 字段对应的值。
     pub replay_event_id: String,
+    /// 记录 `sequence` 字段对应的值。
     pub sequence: u64,
+    /// 记录 `topic` 字段对应的值。
     pub topic: String,
 }
 
+/// 表示 `SkippedRedriveEvent` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedRedriveEvent {
+    /// 记录 `task_id` 字段对应的值。
     pub task_id: String,
+    /// 记录 `event_id` 字段对应的值。
     pub event_id: String,
+    /// 记录 `reason` 字段对应的值。
     pub reason: String,
 }
 
+/// 表示 `RecoveredProviderProcess` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredProviderProcess {
+    /// 记录 `session_id` 字段对应的值。
     pub session_id: String,
+    /// 记录 `provider_process_id` 字段对应的值。
     pub provider_process_id: String,
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: String,
+    /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: String,
+    /// 记录 `previous_health` 字段对应的值。
     pub previous_health: String,
+    /// 记录 `health` 字段对应的值。
     pub health: String,
+    /// 记录 `task_id` 字段对应的值。
     pub task_id: String,
+    /// 记录 `task_status` 字段对应的值。
     pub task_status: Option<String>,
+    /// 记录 `retry_scheduled` 字段对应的值。
     pub retry_scheduled: bool,
 }
 
+/// 描述因提供者会话中断而交给调度器延后重试的任务决定。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderBackoffTask {
+    /// 记录 `task_id` 字段对应的值。
     pub task_id: String,
+    /// 记录 `session_id` 字段对应的值。
     pub session_id: String,
+    /// 记录 `next_attempt` 字段对应的值。
     pub next_attempt: u32,
+    /// 记录 `due_after_ms` 字段对应的值。
     pub due_after_ms: u64,
+    /// 记录 `reason` 字段对应的值。
     pub reason: String,
 }
 
+/// 表示 `SkippedProviderTask` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedProviderTask {
+    /// 记录 `task_id` 字段对应的值。
     pub task_id: String,
+    /// 记录 `session_id` 字段对应的值。
     pub session_id: String,
+    /// 记录 `reason` 字段对应的值。
     pub reason: String,
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl RuntimeRecoveryCoordinator {
+    /// 仅在内存中分类并转换任务快照；终态任务保持不变，也不在此方法落盘或重驱。
     pub fn recover_snapshots(&self, snapshots: Vec<TaskStateSnapshot>) -> RuntimeRecoveryReport {
         let scanned_tasks = snapshots.len();
         let mut recovered_tasks = Vec::new();
@@ -102,6 +161,7 @@ impl RuntimeRecoveryCoordinator {
                 unchanged_tasks.push(snapshot.task_id);
                 continue;
             };
+            // 只有带持久化死信的非终态任务具备重驱证据；其他非终态任务只能判为中断。
             let redrive_candidate = status == "recovering";
             snapshot.status = status.to_owned();
             snapshot.push_log(
@@ -139,6 +199,7 @@ impl RuntimeRecoveryCoordinator {
         }
     }
 
+    /// 执行 `recover_task_store` 对应的恢复或重驱流程。
     pub fn recover_task_store(
         &self,
         store: &mut FileSystemTaskStateStore,
@@ -148,6 +209,10 @@ impl RuntimeRecoveryCoordinator {
         Ok(report)
     }
 
+    /// 先关联并中断活动提供者进程，再一次性持久化更新后的任务快照。
+    ///
+    /// 此顺序使提供者退避决定能够写进同一任务快照；若进程表更新失败，任务快照尚未落盘，
+    /// 调用方可在下次启动重新执行恢复。
     pub fn recover_task_store_with_provider_processes(
         &self,
         store: &mut FileSystemTaskStateStore,
@@ -159,6 +224,7 @@ impl RuntimeRecoveryCoordinator {
         Ok(report)
     }
 
+    /// 执行 `recover_task_store_with_audit` 对应的恢复或重驱流程。
     pub fn recover_task_store_with_audit(
         &self,
         store: &mut FileSystemTaskStateStore,
@@ -173,6 +239,10 @@ impl RuntimeRecoveryCoordinator {
         Ok(report)
     }
 
+    /// 先依据持久化事件日志执行幂等重驱，再保存包含 replay 证据的任务快照。
+    ///
+    /// 若事件已发布但快照写入失败，下次恢复会通过最新 replay 记录跳过重复发布，随后报告
+    /// `already_redriven` 或相应在途状态。
     pub fn recover_task_store_with_redrive(
         &self,
         store: &mut FileSystemTaskStateStore,
@@ -185,6 +255,7 @@ impl RuntimeRecoveryCoordinator {
         Ok(report)
     }
 
+    /// 执行 `recover_task_store_with_redrive_and_audit` 对应的恢复或重驱流程。
     pub fn recover_task_store_with_redrive_and_audit(
         &self,
         store: &mut FileSystemTaskStateStore,
@@ -201,6 +272,7 @@ impl RuntimeRecoveryCoordinator {
         Ok(report)
     }
 
+    /// 登记 `record_recovery_audit` 对应的数据或状态。
     pub fn record_recovery_audit(
         &self,
         audit_sink: &mut impl AuditSink,
@@ -211,6 +283,7 @@ impl RuntimeRecoveryCoordinator {
     }
 }
 
+/// 只转换崩溃时可能仍在推进的状态；完成、失败等终态返回 `None` 并保持原样。
 fn recovery_status(snapshot: &TaskStateSnapshot) -> Option<&'static str> {
     match snapshot.status.as_str() {
         "queued" | "running" | "cancelling" if !snapshot.dead_letters.is_empty() => {
@@ -221,6 +294,7 @@ fn recovery_status(snapshot: &TaskStateSnapshot) -> Option<&'static str> {
     }
 }
 
+/// 逐个覆盖恢复快照；首次写入失败即停止，报告不会声称全部持久化成功。
 fn persist_recovered_snapshots(
     store: &mut FileSystemTaskStateStore,
     report: &mut RuntimeRecoveryReport,
@@ -235,6 +309,7 @@ fn persist_recovered_snapshots(
     Ok(())
 }
 
+/// 对每个恢复任务的死信执行完整幂等门禁，并仅在总线成功返回 receipt 后记录 replay。
 fn redrive_recovered_events(
     report: &mut RuntimeRecoveryReport,
     bus: &mut DurableEventBus,
@@ -288,6 +363,7 @@ fn redrive_recovered_events(
                 continue;
             }
 
+            // 原事件已确认意味着业务处理完成，重驱会产生重复副作用，必须跳过。
             match bus.event_log_status(&event_id) {
                 Some(EventLogStatus::Acked) => {
                     skip_redrive(
@@ -309,6 +385,7 @@ fn redrive_recovered_events(
                     continue;
                 }
             }
+            // 最新 replay 是跨崩溃幂等键：无论已确认、在途还是失败，都不在恢复阶段重复发布。
             if let Some(replay) = bus.latest_replay_record(&event_id) {
                 let reason = match replay.status {
                     EventLogStatus::Acked => "already_redriven",
@@ -324,6 +401,7 @@ fn redrive_recovered_events(
                 continue;
             }
 
+            // 总线先持久化 replay；只有取得 receipt 后才把关联证据追加到任务快照。
             let receipt = bus.redrive_dead_letter(&event_id)?;
             snapshot.replayed_events.push(TaskStateReplaySnapshot {
                 event_id: receipt.event_id.as_str().to_owned(),
@@ -361,6 +439,7 @@ fn redrive_recovered_events(
     Ok(())
 }
 
+/// 执行 `skip_redrive` 对应的处理逻辑。
 fn skip_redrive(
     skipped_redrive_events: &mut Vec<SkippedRedriveEvent>,
     task_id: String,
@@ -374,6 +453,7 @@ fn skip_redrive(
     });
 }
 
+/// 执行 `recovery_audit_event` 对应的恢复或重驱流程。
 fn recovery_audit_event(trace: TraceFields, report: &RuntimeRecoveryReport) -> AuditEvent {
     AuditEvent::new(AuditAction::RuntimeRecovered, AuditOutcome::Ok, trace)
         .with_message("runtime recovery checkpoint completed")
@@ -395,6 +475,10 @@ fn recovery_audit_event(trace: TraceFields, report: &RuntimeRecoveryReport) -> A
         )
 }
 
+/// 将每个仍活动的提供者快照标记为重启中断，并尝试把中断关联回对应任务。
+///
+/// 非活动进程保持不变；每个活动进程在报告成功前必须完成进程表 upsert，避免仍被误判为
+/// 运行中。任务退避计划只描述调度决定，本模块不会直接重启提供者。
 fn recover_provider_processes(
     report: &mut RuntimeRecoveryReport,
     process_table: &mut impl ProviderProcessTable,
@@ -461,6 +545,7 @@ fn recover_provider_processes(
     Ok(())
 }
 
+/// 将提供者会话关联到同请求标识的恢复任务，并按重启策略选择退避或普通中断。
 fn recover_provider_task(
     report: &mut RuntimeRecoveryReport,
     process: &ProviderProcessSnapshot,
@@ -517,6 +602,7 @@ fn recover_provider_task(
     Some(snapshot.status.clone())
 }
 
+/// 同时要求允许的重启策略、显式退避时长和剩余重试次数，才生成调度退避任务。
 fn provider_backoff_decision(
     process: &ProviderProcessSnapshot,
     snapshot: &TaskStateSnapshot,
@@ -547,10 +633,12 @@ fn provider_backoff_decision(
     })
 }
 
+/// 执行 `provider_restart_policy_allows_backoff` 对应的处理逻辑。
 fn provider_restart_policy_allows_backoff(policy: &str) -> bool {
     matches!(policy, "scheduler_backoff" | "retry_backoff" | "retryable")
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,6 +654,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 验证 `recovery_marks_incomplete_tasks_without_touching_terminal_tasks` 场景下的预期行为。
     #[test]
     fn recovery_marks_incomplete_tasks_without_touching_terminal_tasks() {
         let coordinator = RuntimeRecoveryCoordinator;
@@ -586,6 +675,7 @@ mod tests {
             .any(|entry| entry.message.contains("after restart")));
     }
 
+    /// 验证 `recovery_marks_cancelling_tasks_as_interrupted` 场景下的预期行为。
     #[test]
     fn recovery_marks_cancelling_tasks_as_interrupted() {
         let coordinator = RuntimeRecoveryCoordinator;
@@ -598,6 +688,7 @@ mod tests {
         assert_eq!(report.recovered_snapshots[0].status, "interrupted");
     }
 
+    /// 验证 `recovery_marks_dead_letter_tasks_as_recovering` 场景下的预期行为。
     #[test]
     fn recovery_marks_dead_letter_tasks_as_recovering() {
         let coordinator = RuntimeRecoveryCoordinator;
@@ -617,6 +708,7 @@ mod tests {
         assert_eq!(report.recovered_snapshots[0].status, "recovering");
     }
 
+    /// 验证 `recovery_persists_task_store_updates` 场景下的预期行为。
     #[test]
     fn recovery_persists_task_store_updates() {
         let root = test_root("store");
@@ -643,6 +735,7 @@ mod tests {
             .any(|entry| entry == "runtime.recovery:persisted:1"));
     }
 
+    /// 验证 `recovery_audit_covers_clean_start_smoke` 场景下的预期行为。
     #[test]
     fn recovery_audit_covers_clean_start_smoke() {
         let root = test_root("audit-clean-start");
@@ -673,6 +766,7 @@ mod tests {
             .any(|field| field == &("scanned_tasks".to_owned(), "0".to_owned())));
     }
 
+    /// 验证 `recovery_redrives_unacked_dead_letters_and_records_task_replay` 场景下的预期行为。
     #[test]
     fn recovery_redrives_unacked_dead_letters_and_records_task_replay() {
         let root = test_root("redrive-durable");
@@ -731,6 +825,7 @@ mod tests {
         }
     }
 
+    /// 验证 `recovery_audit_covers_restart_redrive_smoke` 场景下的预期行为。
     #[test]
     fn recovery_audit_covers_restart_redrive_smoke() {
         let root = test_root("audit-restart-redrive");
@@ -787,6 +882,7 @@ mod tests {
         }
     }
 
+    /// 验证 `recovery_skips_redrive_for_acked_original_events` 场景下的预期行为。
     #[test]
     fn recovery_skips_redrive_for_acked_original_events() {
         let root = test_root("redrive-acked");
@@ -834,6 +930,7 @@ mod tests {
         }
     }
 
+    /// 验证 `recovery_skips_redrive_until_policy_is_due` 场景下的预期行为。
     #[test]
     fn recovery_skips_redrive_until_policy_is_due() {
         let root = test_root("redrive-policy");
@@ -888,6 +985,7 @@ mod tests {
         }
     }
 
+    /// 验证 `recovery_skips_dead_letter_after_scheduler_retry_dispatched_replay` 场景下的预期行为。
     #[test]
     fn recovery_skips_dead_letter_after_scheduler_retry_dispatched_replay() {
         let root = test_root("redrive-already-dispatched");
@@ -940,6 +1038,7 @@ mod tests {
         }
     }
 
+    /// 验证 `recovery_reports_corrupt_task_store_smoke` 场景下的预期行为。
     #[test]
     fn recovery_reports_corrupt_task_store_smoke() {
         let root = test_root("corrupt-task-store");
@@ -959,6 +1058,7 @@ mod tests {
         assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
     }
 
+    /// 验证 `recovery_interrupts_active_provider_process_and_preserves_task` 场景下的预期行为。
     #[test]
     fn recovery_interrupts_active_provider_process_and_preserves_task() {
         let root = test_root("provider-interrupted");
@@ -1010,6 +1110,7 @@ mod tests {
             .any(|entry| entry == "provider.recovery:restart_scan"));
     }
 
+    /// 验证 `recovery_schedules_provider_backoff_only_when_restart_policy_allows_it` 场景下的预期行为。
     #[test]
     fn recovery_schedules_provider_backoff_only_when_restart_policy_allows_it() {
         let root = test_root("provider-backoff");
@@ -1056,6 +1157,7 @@ mod tests {
         );
     }
 
+    /// 返回 `snapshot` 对应的数据视图。
     fn snapshot(task_id: &str, status: &str) -> TaskStateSnapshot {
         TaskStateSnapshot {
             task_id: task_id.to_owned(),
@@ -1081,6 +1183,7 @@ mod tests {
         }
     }
 
+    /// 执行 `dead_letter` 对应的处理逻辑。
     fn dead_letter(event_id: &str) -> TaskStateDeadLetterSnapshot {
         TaskStateDeadLetterSnapshot {
             event_id: event_id.to_owned(),
@@ -1091,6 +1194,7 @@ mod tests {
         }
     }
 
+    /// 执行 `event` 对应的处理逻辑。
     fn event(id: &str) -> Event {
         Event::new(
             EventId::parse(id).unwrap(),
@@ -1099,6 +1203,7 @@ mod tests {
         )
     }
 
+    /// 执行 `provider_process` 对应的处理逻辑。
     fn provider_process(
         session_id: &str,
         request_id: &str,
@@ -1120,22 +1225,29 @@ mod tests {
         snapshot
     }
 
+    /// 表示 `TestRoot` 数据结构。
     struct TestRoot {
+        /// 记录 `path` 字段对应的值。
         path: PathBuf,
     }
 
+    /// 为相关类型实现其约定的行为与方法。
     impl TestRoot {
+        /// 返回 `path` 对应的数据视图。
         fn path(&self) -> &Path {
             &self.path
         }
     }
 
+    /// 为相关类型实现其约定的行为与方法。
     impl Drop for TestRoot {
+        /// 停止、取消或释放 `drop` 管理的状态。
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
 
+    /// 执行 `test_root` 对应的处理逻辑。
     fn test_root(name: &str) -> TestRoot {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

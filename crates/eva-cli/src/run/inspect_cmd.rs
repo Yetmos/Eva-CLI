@@ -1,3 +1,5 @@
+//! Inspect 子命令：查看已验证项目摘要或持久化后端诊断，不修改运行时状态。
+
 use super::{
     json_string, parse_common_options, parse_u64_option, required_option, success_envelope,
     trace_for, write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_OK,
@@ -11,19 +13,28 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Inspect 已解析选项。
 pub(super) struct InspectOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 要检查的状态边界。
     subject: InspectSubject,
+    /// 持久化诊断所需的后端根目录。
     durable_backend: Option<PathBuf>,
+    /// 判断 dead-letter 是否可重放的时间基准。
     redrive_ready_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Inspect 的两个互斥目标，防止项目摘要与持久化诊断字段混杂。
 enum InspectSubject {
+    /// 项目配置与只读 runtime summary。
     Project,
+    /// 持久化后端布局、迁移和 dead-letter 状态。
     Durable,
 }
 
+/// 解析 inspect subject 及专用选项；历史项目 subject 名称统一映射为 `Project`。
 pub(super) fn parse_inspect_options(args: &[String]) -> Result<InspectOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut subject = InspectSubject::Project;
@@ -64,6 +75,10 @@ pub(super) fn parse_inspect_options(args: &[String]) -> Result<InspectOptions, E
     })
 }
 
+/// 执行选定的只读检查。
+///
+/// Durable 模式必须显式提供后端路径，避免意外检查当前目录；两种模式的失败都通过
+/// `write_command_error` 保持输出格式与退出码一致。
 pub(super) fn execute_inspect<W, E>(
     options: InspectOptions,
     stdout: &mut W,
@@ -125,6 +140,7 @@ where
     }
 }
 
+/// 输出项目、清单、路由和服务状态摘要。
 fn write_inspect<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -209,6 +225,7 @@ fn write_inspect<W: Write>(
     }
 }
 
+/// 输出持久化后端 schema、迁移、事件日志和 redrive 诊断。
 fn write_durable_inspect<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -253,6 +270,7 @@ fn write_durable_inspect<W: Write>(
     }
 }
 
+/// 将持久化诊断编码为稳定 JSON 对象。
 fn durable_diagnostics_json(report: &DurableDiagnosticsReport) -> String {
     format!(
         "{{\"backend_path\":{},\"backend_mode\":{},\"schema_version\":{},\"layout_version\":{},\"migration_status\":{},\"migration_locked\":{},\"event_log_records\":{},\"dead_letter_count\":{},\"pending_redrive_count\":{}}}",

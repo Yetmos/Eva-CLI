@@ -1,3 +1,8 @@
+//! 在隔离工作目录中执行经过清单和输入模式校验的工作流技能。
+//!
+//! 运行器命令必须命中白名单且不经 shell；路径段会规范化并限制在工作根与制品根内，防止
+//! 技能通过相对路径逃逸。stdout、stderr 与声明制品统一执行大小限制和凭据脱敏，只有实际
+//! 持久化成功的制品才会进入证据报告。
 //! Workflow skill Adapter transport runner.
 
 use crate::manifest::{AdapterHandle, SkillInputSchema};
@@ -21,101 +26,167 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
     "controlled workflow skill execution with schema gates and artifact evidence";
 
+/// 定义技能进程、隔离工作目录、输出和制品存储的执行边界。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillRunnerConfig {
+    /// 记录 `allowed_commands` 字段对应的值。
     pub allowed_commands: BTreeSet<String>,
+    /// 记录 `timeout_ms` 字段对应的值。
     pub timeout_ms: u64,
+    /// 记录 `output_limit_bytes` 字段对应的值。
     pub output_limit_bytes: usize,
+    /// 记录 `preview_limit_bytes` 字段对应的值。
     pub preview_limit_bytes: usize,
+    /// 记录 `stream_chunk_size_bytes` 字段对应的值。
     pub stream_chunk_size_bytes: usize,
+    /// 记录 `artifact_root` 字段对应的值。
     pub artifact_root: PathBuf,
+    /// 记录 `work_root` 字段对应的值。
     pub work_root: PathBuf,
 }
 
+/// 表示 `SkillRunnerInvocation` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillRunnerInvocation {
+    /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
+    /// 记录 `skill_id` 字段对应的值。
     pub skill_id: String,
+    /// 记录 `entry_type` 字段对应的值。
     pub entry_type: String,
+    /// 记录 `command` 字段对应的值。
     pub command: Option<String>,
+    /// 记录 `args` 字段对应的值。
     pub args: Vec<String>,
+    /// 记录 `env` 字段对应的值。
     pub env: BTreeMap<String, String>,
+    /// 记录 `input` 字段对应的值。
     pub input: String,
 }
 
+/// 表示 `SkillRunReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillRunReport {
+    /// 记录 `runner` 字段对应的值。
     pub runner: String,
+    /// 记录 `status` 字段对应的值。
     pub status: SkillRunStatus,
+    /// 记录 `exit_code` 字段对应的值。
     pub exit_code: Option<i32>,
+    /// 记录 `stdout` 字段对应的值。
     pub stdout: Vec<u8>,
+    /// 记录 `stderr` 字段对应的值。
     pub stderr: Vec<u8>,
+    /// 记录 `stdout_stream` 字段对应的值。
     pub stdout_stream: ProviderStreamCapture,
+    /// 记录 `stderr_stream` 字段对应的值。
     pub stderr_stream: ProviderStreamCapture,
+    /// 记录 `duration_ms` 字段对应的值。
     pub duration_ms: u128,
+    /// 记录 `working_dir` 字段对应的值。
     pub working_dir: PathBuf,
+    /// 记录 `artifact_root` 字段对应的值。
     pub artifact_root: PathBuf,
+    /// 记录 `artifacts` 字段对应的值。
     pub artifacts: Vec<SkillArtifactEvidence>,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 表示 `SkillArtifactEvidence` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillArtifactEvidence {
+    /// 记录 `key` 字段对应的值。
     pub key: String,
+    /// 记录 `digest` 字段对应的值。
     pub digest: String,
+    /// 记录 `size_bytes` 字段对应的值。
     pub size_bytes: usize,
+    /// 记录 `content_type` 字段对应的值。
     pub content_type: String,
 }
 
+/// 定义 `SkillRunStatus` 可取的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillRunStatus {
+    /// 表示 `Completed` 枚举分支。
     Completed,
+    /// 表示 `Failed` 枚举分支。
     Failed,
+    /// 表示 `Timeout` 枚举分支。
     Timeout,
+    /// 表示 `OutputLimitExceeded` 枚举分支。
     OutputLimitExceeded,
 }
 
+/// 无状态技能运行器；每次运行创建独立工作目录与证据集合。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SkillRunner;
 
+/// 表示 `RunPaths` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RunPaths {
+    /// 记录 `working_dir` 字段对应的值。
     working_dir: PathBuf,
+    /// 记录 `artifact_dir` 字段对应的值。
     artifact_dir: PathBuf,
+    /// 记录 `artifact_root` 字段对应的值。
     artifact_root: PathBuf,
 }
 
+/// 表示 `RawSkillRunReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RawSkillRunReport {
+    /// 记录 `runner` 字段对应的值。
     runner: String,
+    /// 记录 `status` 字段对应的值。
     status: SkillRunStatus,
+    /// 记录 `exit_code` 字段对应的值。
     exit_code: Option<i32>,
+    /// 记录 `stdout` 字段对应的值。
     stdout: Vec<u8>,
+    /// 记录 `stderr` 字段对应的值。
     stderr: Vec<u8>,
+    /// 记录 `stdout_stream` 字段对应的值。
     stdout_stream: ProviderStreamCapture,
+    /// 记录 `stderr_stream` 字段对应的值。
     stderr_stream: ProviderStreamCapture,
+    /// 记录 `duration_ms` 字段对应的值。
     duration_ms: u128,
+    /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
 }
 
+/// 表示 `CredentialEnvValues` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CredentialEnvValues {
+    /// 记录 `values` 字段对应的值。
     values: BTreeMap<String, String>,
+    /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
 }
 
+/// 定义 `ParsedJsonValue` 可取的状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParsedJsonValue {
-    String(String),
+    /// 表示 `String` 枚举分支。
+    String(
+        /// 保存已完成 JSON 转义解析的字符串内容。
+        String,
+    ),
+    /// 表示 `Other` 枚举分支。
     Other,
 }
 
 impl SkillRunnerConfig {
+    /// 创建并初始化当前类型的实例。
     pub fn new(
         allowed_commands: impl IntoIterator<Item = impl Into<String>>,
         timeout_ms: u64,
@@ -139,6 +210,7 @@ impl SkillRunnerConfig {
 }
 
 impl SkillRunStatus {
+    /// 将当前值按 `as_str` 约定的形式转换。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -150,6 +222,7 @@ impl SkillRunStatus {
 }
 
 impl SkillRunner {
+    /// 校验配置并准备工作目录，执行选定运行器后统一持久化输出与声明制品。
     pub fn run(
         &self,
         config: &SkillRunnerConfig,
@@ -202,6 +275,7 @@ impl SkillRunner {
     }
 }
 
+/// 校验技能种类、运行时门禁和输入模式，再绑定本次请求的凭据与隔离路径。
 pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
@@ -313,6 +387,7 @@ pub fn invoke(
     })
 }
 
+/// 校验 `validate_runner_config` 对应的约束，不满足时返回明确错误。
 fn validate_runner_config(
     config: &SkillRunnerConfig,
     invocation: &SkillRunnerInvocation,
@@ -341,6 +416,7 @@ fn validate_runner_config(
     Ok(())
 }
 
+/// 创建调用专属的工作和制品目录，并把原始输入作为可追踪证据写入工作目录。
 fn prepare_run_paths(
     config: &SkillRunnerConfig,
     invocation: &SkillRunnerInvocation,
@@ -367,6 +443,7 @@ fn prepare_run_paths(
     })
 }
 
+/// 执行 `run_builtin_codex_skill` 对应的受控流程。
 fn run_builtin_codex_skill(
     paths: &RunPaths,
     invocation: &SkillRunnerInvocation,
@@ -410,6 +487,7 @@ fn run_builtin_codex_skill(
     })
 }
 
+/// 不经 shell 启动技能命令，并发排空两路输出；超时或任一路触限都会回收子进程。
 fn run_process(
     config: &SkillRunnerConfig,
     paths: &RunPaths,
@@ -436,6 +514,7 @@ fn run_process(
         "EVA_REQUEST_ID".to_owned(),
         invocation.request_id.as_str().to_owned(),
     );
+    // `command` 已命中白名单，参数按独立 argv 传递，不解释管道、重定向或变量展开。
     let mut child = Command::new(command)
         .args(&invocation.args)
         .envs(env_values)
@@ -585,6 +664,7 @@ fn run_process(
     }
 }
 
+/// 执行 `raw_process_report` 对应的处理逻辑。
 fn raw_process_report(
     command: &str,
     status: SkillRunStatus,
@@ -616,6 +696,7 @@ fn raw_process_report(
     }
 }
 
+/// 持久化标准流、运行报告和技能声明制品，返回的证据只包含已成功写入的记录。
 fn persist_run_artifacts(
     paths: &RunPaths,
     invocation: &SkillRunnerInvocation,
@@ -672,6 +753,7 @@ fn persist_run_artifacts(
     Ok(artifacts)
 }
 
+/// 递归收集普通文件；拒绝符号链接并对每个文件脱敏，防止越界读取和凭据泄露。
 fn collect_artifact_dir(
     store: &mut FileSystemArtifactStore,
     root_dir: &Path,
@@ -697,6 +779,7 @@ fn collect_artifact_dir(
                 .with_context("io_error", error.to_string())
         })?;
         if metadata.file_type().is_symlink() {
+            // 即使链接目标仍在目录内也统一拒绝，避免检查与读取之间的目标替换竞态。
             return Err(
                 EvaError::permission_denied("skill artifact symlink is not allowed")
                     .with_context("path", path.display().to_string()),
@@ -736,6 +819,7 @@ fn collect_artifact_dir(
     Ok(())
 }
 
+/// 将相对路径转换为制品键，只接受普通且可移植的安全路径段。
 fn relative_artifact_key(relative: &Path) -> Result<String, EvaError> {
     let mut segments = Vec::new();
     for component in relative.components() {
@@ -770,6 +854,7 @@ fn relative_artifact_key(relative: &Path) -> Result<String, EvaError> {
     Ok(segments.join("/"))
 }
 
+/// 执行 `evidence_from_record` 对应的处理逻辑。
 fn evidence_from_record(record: ArtifactRecord) -> SkillArtifactEvidence {
     SkillArtifactEvidence {
         key: record.key,
@@ -779,6 +864,7 @@ fn evidence_from_record(record: ArtifactRecord) -> SkillArtifactEvidence {
     }
 }
 
+/// 执行 `evidence_from_stream_artifact` 对应的处理逻辑。
 fn evidence_from_stream_artifact(artifact: &ProviderStreamArtifact) -> SkillArtifactEvidence {
     SkillArtifactEvidence {
         key: artifact.key.clone(),
@@ -788,6 +874,7 @@ fn evidence_from_stream_artifact(artifact: &ProviderStreamArtifact) -> SkillArti
     }
 }
 
+/// 执行 `provider_stream_artifact_from_skill_evidence` 对应的处理逻辑。
 fn provider_stream_artifact_from_skill_evidence(
     evidence: &SkillArtifactEvidence,
 ) -> ProviderStreamArtifact {
@@ -799,6 +886,7 @@ fn provider_stream_artifact_from_skill_evidence(
     }
 }
 
+/// 校验 `validate_skill_input` 对应的约束，不满足时返回明确错误。
 fn validate_skill_input(handle: &AdapterHandle, input: &str) -> Result<(), EvaError> {
     let schema = handle.skill_input_schema.as_ref().ok_or_else(|| {
         EvaError::permission_denied("Skill adapter is missing input schema")
@@ -823,6 +911,7 @@ fn validate_skill_input(handle: &AdapterHandle, input: &str) -> Result<(), EvaEr
     })
 }
 
+/// 校验 `validate_object_schema` 对应的约束，不满足时返回明确错误。
 fn validate_object_schema(
     schema: &SkillInputSchema,
     object: &BTreeMap<String, ParsedJsonValue>,
@@ -859,18 +948,24 @@ fn validate_object_schema(
     Ok(())
 }
 
+/// 读取或解析 `parse_json_object` 所需的数据，失败时保留错误语义。
 fn parse_json_object(input: &str) -> Result<BTreeMap<String, ParsedJsonValue>, EvaError> {
     let mut parser = JsonObjectParser::new(input);
     parser.parse_object()
 }
 
+/// 表示 `JsonObjectParser` 数据结构。
 struct JsonObjectParser<'a> {
+    /// 记录 `input` 字段对应的值。
     input: &'a str,
+    /// 记录 `chars` 字段对应的值。
     chars: Vec<char>,
+    /// 记录 `index` 字段对应的值。
     index: usize,
 }
 
 impl<'a> JsonObjectParser<'a> {
+    /// 创建并初始化当前类型的实例。
     fn new(input: &'a str) -> Self {
         Self {
             input,
@@ -879,6 +974,7 @@ impl<'a> JsonObjectParser<'a> {
         }
     }
 
+    /// 读取或解析 `parse_object` 所需的数据，失败时保留错误语义。
     fn parse_object(&mut self) -> Result<BTreeMap<String, ParsedJsonValue>, EvaError> {
         self.skip_whitespace();
         self.expect('{')?;
@@ -914,6 +1010,7 @@ impl<'a> JsonObjectParser<'a> {
         Ok(object)
     }
 
+    /// 读取或解析 `parse_string` 所需的数据，失败时保留错误语义。
     fn parse_string(&mut self) -> Result<String, EvaError> {
         self.expect('"')?;
         let mut value = String::new();
@@ -958,6 +1055,7 @@ impl<'a> JsonObjectParser<'a> {
         ))
     }
 
+    /// 执行 `consume_non_string_value` 对应的处理逻辑。
     fn consume_non_string_value(&mut self) -> Result<(), EvaError> {
         let start = self.index;
         let mut nested_depth = 0_i32;
@@ -1000,12 +1098,14 @@ impl<'a> JsonObjectParser<'a> {
         Ok(())
     }
 
+    /// 执行 `skip_whitespace` 对应的处理逻辑。
     fn skip_whitespace(&mut self) {
         while matches!(self.peek(), Some(value) if value.is_whitespace()) {
             self.index += 1;
         }
     }
 
+    /// 执行 `expect` 对应的处理逻辑。
     fn expect(&mut self, expected: char) -> Result<(), EvaError> {
         if self.consume(expected) {
             Ok(())
@@ -1017,6 +1117,7 @@ impl<'a> JsonObjectParser<'a> {
         }
     }
 
+    /// 执行 `consume` 对应的处理逻辑。
     fn consume(&mut self, expected: char) -> bool {
         if self.peek() == Some(expected) {
             self.index += 1;
@@ -1026,16 +1127,19 @@ impl<'a> JsonObjectParser<'a> {
         }
     }
 
+    /// 执行 `peek` 对应的处理逻辑。
     fn peek(&self) -> Option<char> {
         self.chars.get(self.index).copied()
     }
 
+    /// 执行 `next` 对应的处理逻辑。
     fn next(&mut self) -> Option<char> {
         let value = self.peek()?;
         self.index += 1;
         Some(value)
     }
 
+    /// 执行 `byte_index` 对应的处理逻辑。
     fn byte_index(&self) -> usize {
         self.chars
             .iter()
@@ -1045,11 +1149,23 @@ impl<'a> JsonObjectParser<'a> {
     }
 }
 
+/// 定义 `ReaderMessage` 可取的状态。
 enum ReaderMessage {
-    Output { capture: ProviderStreamCapture },
-    ReadError { stream: String, error: String },
+    /// 表示 `Output` 枚举分支。
+    Output {
+        /// 已完成脱敏和截断处理的单个 runner 输出流捕获结果。
+        capture: ProviderStreamCapture,
+    },
+    /// 表示 `ReadError` 枚举分支。
+    ReadError {
+        /// 读取失败的 runner 输出流名称，例如 `stdout` 或 `stderr`。
+        stream: String,
+        /// 底层读取错误转换得到的可审计文本。
+        error: String,
+    },
 }
 
+/// 执行 `spawn_reader` 对应的受控流程。
 fn spawn_reader(
     config: ProviderStreamConfig,
     reader: impl Read + Send + 'static,
@@ -1072,6 +1188,7 @@ fn spawn_reader(
     });
 }
 
+/// 执行 `skill_stream_config` 对应的处理逻辑。
 fn skill_stream_config(
     config: &SkillRunnerConfig,
     invocation: &SkillRunnerInvocation,
@@ -1092,11 +1209,13 @@ fn skill_stream_config(
         )
 }
 
+/// 执行 `kill_child` 对应的处理逻辑。
 fn kill_child(child: &mut std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
 }
 
+/// 执行 `credential_env_values` 对应的处理逻辑。
 fn credential_env_values(names: &[String]) -> CredentialEnvValues {
     let mut values = BTreeMap::new();
     let mut audit = Vec::new();
@@ -1112,6 +1231,7 @@ fn credential_env_values(names: &[String]) -> CredentialEnvValues {
     CredentialEnvValues { values, audit }
 }
 
+/// 校验 `validate_input_size` 对应的约束，不满足时返回明确错误。
 fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaError> {
     if let Some(limit) = handle.max_prompt_bytes {
         if input.len() > limit {
@@ -1124,10 +1244,12 @@ fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaErr
     Ok(())
 }
 
+/// 执行 `timeout_ms` 对应的处理逻辑。
 fn timeout_ms(handle: &AdapterHandle) -> u64 {
     handle.timeout_ms.unwrap_or(30_000)
 }
 
+/// 执行 `output_limit_bytes` 对应的处理逻辑。
 fn output_limit_bytes(handle: &AdapterHandle) -> usize {
     handle
         .output_limit_bytes
@@ -1135,6 +1257,7 @@ fn output_limit_bytes(handle: &AdapterHandle) -> usize {
         .unwrap_or(64 * 1024)
 }
 
+/// 执行 `artifact_root` 对应的处理逻辑。
 fn artifact_root(handle: &AdapterHandle) -> PathBuf {
     if let Some(root) = &handle.skill_artifact_root {
         return expand_home(root);
@@ -1146,6 +1269,7 @@ fn artifact_root(handle: &AdapterHandle) -> PathBuf {
     env::temp_dir().join("eva-skill-artifacts")
 }
 
+/// 执行 `project_root_from_manifest_path` 对应的处理逻辑。
 fn project_root_from_manifest_path(path: &Path) -> Option<PathBuf> {
     let config_dir = path.parent()?.parent()?;
     if config_dir.file_name().and_then(|value| value.to_str()) == Some("config") {
@@ -1154,6 +1278,7 @@ fn project_root_from_manifest_path(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// 执行 `expand_home` 对应的处理逻辑。
 fn expand_home(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) {
@@ -1163,6 +1288,7 @@ fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// 执行 `sensitive_values` 对应的处理逻辑。
 fn sensitive_values<'a>(values: impl IntoIterator<Item = &'a String>) -> Vec<String> {
     values
         .into_iter()
@@ -1171,6 +1297,7 @@ fn sensitive_values<'a>(values: impl IntoIterator<Item = &'a String>) -> Vec<Str
         .collect()
 }
 
+/// 执行 `safe_segment` 对应的处理逻辑。
 fn safe_segment(value: &str) -> String {
     let mut segment = value
         .bytes()
@@ -1188,6 +1315,7 @@ fn safe_segment(value: &str) -> String {
     segment
 }
 
+/// 执行 `skill_output_json` 对应的处理逻辑。
 fn skill_output_json(skill: &str, run: &SkillRunReport) -> String {
     format!(
         "{{\"transport\":\"skill\",\"skill\":{},\"runner\":{},\"status\":{},\"exit_code\":{},\"stdout\":{},\"stderr\":{},\"duration_ms\":{},\"working_dir\":{},\"artifact_root\":{},\"artifacts\":{}}}",
@@ -1206,6 +1334,7 @@ fn skill_output_json(skill: &str, run: &SkillRunReport) -> String {
     )
 }
 
+/// 执行 `artifact_json` 对应的处理逻辑。
 fn artifact_json(artifact: &SkillArtifactEvidence) -> String {
     format!(
         "{{\"key\":{},\"digest\":{},\"size_bytes\":{},\"content_type\":{}}}",
@@ -1216,6 +1345,7 @@ fn artifact_json(artifact: &SkillArtifactEvidence) -> String {
     )
 }
 
+/// 执行 `run_report_artifact_json` 对应的受控流程。
 fn run_report_artifact_json(raw: &RawSkillRunReport) -> String {
     format!(
         "{{\"runner\":{},\"status\":{},\"exit_code\":{},\"duration_ms\":{},\"stdout\":{},\"stderr\":{},\"audit\":{}}}",
@@ -1231,10 +1361,12 @@ fn run_report_artifact_json(raw: &RawSkillRunReport) -> String {
     )
 }
 
+/// 执行 `json_array` 对应的处理逻辑。
 fn json_array(values: impl IntoIterator<Item = String>) -> String {
     format!("[{}]", values.into_iter().collect::<Vec<_>>().join(","))
 }
 
+/// 执行 `json_string` 对应的处理逻辑。
 fn json_string(value: &str) -> String {
     let mut escaped = String::from("\"");
     for character in value.chars() {
@@ -1251,6 +1383,7 @@ fn json_string(value: &str) -> String {
     escaped
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1260,6 +1393,7 @@ mod tests {
     use eva_core::{CapabilityName, ErrorKind};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 验证 `skill_schema_requires_declared_fields` 场景下的预期行为。
     #[test]
     fn skill_schema_requires_declared_fields() {
         let root = test_root("schema-required");
@@ -1270,6 +1404,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     }
 
+    /// 验证 `skill_schema_rejects_enum_values_before_runner_start` 场景下的预期行为。
     #[test]
     fn skill_schema_rejects_enum_values_before_runner_start() {
         let root = test_root("schema-enum");
@@ -1281,6 +1416,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     }
 
+    /// 验证 `builtin_codex_skill_writes_artifact_evidence` 场景下的预期行为。
     #[test]
     fn builtin_codex_skill_writes_artifact_evidence() {
         let root = test_root("builtin");
@@ -1304,6 +1440,7 @@ mod tests {
         assert!(root.path.join("objects").exists());
     }
 
+    /// 验证 `process_skill_runner_collects_artifacts_and_redacts_env` 场景下的预期行为。
     #[test]
     fn process_skill_runner_collects_artifacts_and_redacts_env() {
         let root = test_root("process");
@@ -1356,6 +1493,7 @@ mod tests {
         assert!(artifact.contains("[REDACTED]"));
     }
 
+    /// 验证 `process_skill_runner_records_failure_evidence` 场景下的预期行为。
     #[test]
     fn process_skill_runner_records_failure_evidence() {
         let root = test_root("failure");
@@ -1383,6 +1521,7 @@ mod tests {
             .contains("skill/code-review-skill/req-skill-failure/run-report"));
     }
 
+    /// 验证 `process_skill_runner_reports_timeout` 场景下的预期行为。
     #[test]
     fn process_skill_runner_reports_timeout() {
         let root = test_root("timeout");
@@ -1407,6 +1546,7 @@ mod tests {
         assert!(report.audit.contains(&"skill.status:timeout".to_owned()));
     }
 
+    /// 验证 `artifact_collection_rejects_uncontrolled_relative_paths` 场景下的预期行为。
     #[test]
     fn artifact_collection_rejects_uncontrolled_relative_paths() {
         let root = test_root("bad-artifact");
@@ -1429,26 +1569,35 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     }
 
+    /// 表示 `TestRoot` 数据结构。
     #[derive(Debug)]
     struct TestRoot {
+        /// 记录 `path` 字段对应的值。
         path: PathBuf,
     }
 
     impl Drop for TestRoot {
+        /// 停止或释放 `drop` 管理的资源。
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
 
+    /// 为测试提供可解引用为真实适配器句柄的轻量包装。
     #[derive(Debug, Clone)]
-    struct TestSkillHandle(AdapterHandle);
+    struct TestSkillHandle(
+        /// 保存被测技能运行时使用的底层适配器句柄。
+        AdapterHandle,
+    );
 
     impl TestSkillHandle {
+        /// 设置 `credential_env` 并返回更新后的实例。
         fn with_credential_env(mut self, env_name: &str) -> AdapterHandle {
             self.0.credential_env = vec![env_name.to_owned()];
             self.0
         }
 
+        /// 设置 `timeout_ms` 并返回更新后的实例。
         fn with_timeout_ms(mut self, timeout_ms: u64) -> AdapterHandle {
             self.0.timeout_ms = Some(timeout_ms);
             self.0
@@ -1456,13 +1605,16 @@ mod tests {
     }
 
     impl std::ops::Deref for TestSkillHandle {
+        /// 为 `Target` 定义类型别名。
         type Target = AdapterHandle;
 
+        /// 执行 `deref` 对应的处理逻辑。
         fn deref(&self) -> &Self::Target {
             &self.0
         }
     }
 
+    /// 执行 `skill_handle` 对应的处理逻辑。
     fn skill_handle(
         command: Option<String>,
         args: Vec<String>,
@@ -1532,6 +1684,7 @@ mod tests {
         })
     }
 
+    /// 执行 `test_root` 对应的处理逻辑。
     fn test_root(name: &str) -> TestRoot {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1545,16 +1698,19 @@ mod tests {
         }
     }
 
+    /// 执行 `test_command` 对应的处理逻辑。
     #[cfg(windows)]
     fn test_command() -> &'static str {
         "powershell"
     }
 
+    /// 执行 `test_command` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn test_command() -> &'static str {
         "sh"
     }
 
+    /// 执行 `artifact_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn artifact_args(secret: &str) -> Vec<String> {
         vec![
@@ -1566,6 +1722,7 @@ mod tests {
         ]
     }
 
+    /// 执行 `artifact_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn artifact_args(secret: &str) -> Vec<String> {
         vec![
@@ -1576,6 +1733,7 @@ mod tests {
         ]
     }
 
+    /// 执行 `fail_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn fail_args() -> Vec<String> {
         vec![
@@ -1585,11 +1743,13 @@ mod tests {
         ]
     }
 
+    /// 执行 `fail_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn fail_args() -> Vec<String> {
         vec!["-c".to_owned(), "printf failure >&2; exit 7".to_owned()]
     }
 
+    /// 执行 `sleep_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn sleep_args() -> Vec<String> {
         vec![
@@ -1599,11 +1759,13 @@ mod tests {
         ]
     }
 
+    /// 执行 `sleep_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn sleep_args() -> Vec<String> {
         vec!["-c".to_owned(), "sleep 0.2; printf done".to_owned()]
     }
 
+    /// 执行 `bad_artifact_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn bad_artifact_args() -> Vec<String> {
         vec![
@@ -1613,6 +1775,7 @@ mod tests {
         ]
     }
 
+    /// 执行 `bad_artifact_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn bad_artifact_args() -> Vec<String> {
         vec![

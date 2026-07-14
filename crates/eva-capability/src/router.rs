@@ -1,3 +1,7 @@
+//! 为能力请求生成确定的提供者计划，并在返回前执行权限门禁。
+//!
+//! 显式提供者只影响候选顺序，不会绕过能力清单或运行时权限；无效目标、禁用能力和空计划
+//! 均在进入适配器运行时前失败。
 //! Capability routing before provider execution.
 
 use crate::host_api::CapabilityHostApi;
@@ -7,28 +11,35 @@ use crate::CapabilityPermissionGate;
 use eva_core::{AdapterId, EvaError, InvokeOutput, InvokeRequest, InvokeResponse, InvokeTarget};
 use eva_policy::PermissionSet;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "capability routing before provider execution";
 
+/// 表示 `CapabilityRouter` 数据结构。
 /// V0.4 router for builtin capabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityRouter {
+    /// 记录 `registry` 字段对应的值。
     registry: CapabilityRegistry,
 }
 
 impl CapabilityRouter {
+    /// 创建并初始化当前类型的实例。
     pub fn new(registry: CapabilityRegistry) -> Self {
         Self { registry }
     }
 
+    /// 设置 `v04_builtins` 并返回更新后的实例。
     pub fn with_v04_builtins() -> Self {
         Self::new(CapabilityRegistry::with_v04_builtins())
     }
 
+    /// 执行 `registry` 对应的处理逻辑。
     pub fn registry(&self) -> &CapabilityRegistry {
         &self.registry
     }
 
+    /// 执行 `provider_plan` 对应的处理逻辑。
     pub fn provider_plan(
         &self,
         request: &InvokeRequest,
@@ -39,6 +50,7 @@ impl CapabilityRouter {
         Ok(descriptor.provider_plan(explicit_provider))
     }
 
+    /// 执行 `authorized_provider_plan` 对应的处理逻辑。
     pub fn authorized_provider_plan(
         &self,
         request: &InvokeRequest,
@@ -50,6 +62,7 @@ impl CapabilityRouter {
         Ok(plan)
     }
 
+    /// 执行 `invoke_descriptor` 对应的受控流程。
     fn invoke_descriptor(
         &self,
         descriptor: &CapabilityDescriptor,
@@ -75,6 +88,7 @@ impl CapabilityRouter {
         ))
     }
 
+    /// 执行 `descriptor_for_request` 对应的处理逻辑。
     fn descriptor_for_request(
         &self,
         request: &InvokeRequest,
@@ -93,6 +107,7 @@ impl CapabilityRouter {
         })
     }
 
+    /// 校验 `ensure_enabled` 对应的约束，不满足时返回明确错误。
     fn ensure_enabled(&self, descriptor: &CapabilityDescriptor) -> Result<(), EvaError> {
         if descriptor.enabled {
             return Ok(());
@@ -104,12 +119,14 @@ impl CapabilityRouter {
 }
 
 impl CapabilityHostApi for CapabilityRouter {
+    /// 执行 `invoke` 对应的受控流程。
     fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
         let descriptor = self.descriptor_for_request(&request)?;
         self.invoke_descriptor(descriptor, request)
     }
 }
 
+/// 按 `escape_json` 的协议约定生成输出。
 fn escape_json(value: &str) -> String {
     let mut escaped = String::new();
     for character in value.chars() {
@@ -125,6 +142,7 @@ fn escape_json(value: &str) -> String {
     escaped
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +150,7 @@ mod tests {
     use eva_core::{CapabilityId, CapabilityName, ErrorKind, InvokeInput, RequestId};
     use eva_policy::PermissionSet;
 
+    /// 验证 `builtin_config_lint_returns_completed_response` 场景下的预期行为。
     #[test]
     fn builtin_config_lint_returns_completed_response() {
         let router = CapabilityRouter::with_v04_builtins();
@@ -152,6 +171,7 @@ mod tests {
             .contains("valid"));
     }
 
+    /// 验证 `provider_plan_rejects_disabled_capability_before_selection` 场景下的预期行为。
     #[test]
     fn provider_plan_rejects_disabled_capability_before_selection() {
         let mut registry = CapabilityRegistry::new();
@@ -176,6 +196,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     }
 
+    /// 验证 `authorized_provider_plan_rejects_denied_provider` 场景下的预期行为。
     #[test]
     fn authorized_provider_plan_rejects_denied_provider() {
         let mut registry = CapabilityRegistry::new();
@@ -214,6 +235,7 @@ mod tests {
             .any(|(key, value)| key == "gate" && value == "adapter"));
     }
 
+    /// 验证 `authorized_provider_plan_preserves_explicit_provider_source` 场景下的预期行为。
     #[test]
     fn authorized_provider_plan_preserves_explicit_provider_source() {
         let mut registry = CapabilityRegistry::new();

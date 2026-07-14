@@ -1,3 +1,7 @@
+//! 在不切换活动代际的前提下影子加载一组 Lua 脚本。
+//!
+//! 每个候选先通过沙箱和受限 VM 健康检查，失败按脚本记录并使整代拒绝；报告只描述候选
+//! 健康度，不在本模块提交代际切换，从而给上层保留原子提升或回滚的决定权。
 //! Lua generation swap and rollback boundaries.
 
 use crate::bindings::{LuaHost, LuaHostContext};
@@ -11,55 +15,83 @@ use eva_core::{
 use std::rc::Rc;
 use std::time::Duration;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "Lua generation swap and rollback boundaries";
 
+/// 表示 `LuaGeneration` 数据结构。
 /// Read-only Lua generation marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LuaGeneration {
+    /// 记录 `generation_id` 字段对应的值。
     pub generation_id: GenerationId,
+    /// 记录 `script_count` 字段对应的值。
     pub script_count: usize,
 }
 
+/// 表示 `LuaShadowCandidate` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LuaShadowCandidate {
+    /// 记录 `agent_id` 字段对应的值。
     pub agent_id: AgentId,
+    /// 记录 `script` 字段对应的值。
     pub script: LuaScript,
 }
 
+/// 定义 `LuaShadowLoadStatus` 可取的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LuaShadowLoadStatus {
+    /// 表示 `Healthy` 枚举分支。
     Healthy,
+    /// 表示 `Rejected` 枚举分支。
     Rejected,
 }
 
+/// 表示 `LuaShadowScriptReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LuaShadowScriptReport {
+    /// 记录 `agent_id` 字段对应的值。
     pub agent_id: AgentId,
+    /// 记录 `status` 字段对应的值。
     pub status: LuaShadowLoadStatus,
+    /// 记录 `note` 字段对应的值。
     pub note: Option<String>,
+    /// 记录 `error_kind` 字段对应的值。
     pub error_kind: Option<String>,
+    /// 记录 `provider_code` 字段对应的值。
     pub provider_code: Option<String>,
+    /// 记录 `message` 字段对应的值。
     pub message: Option<String>,
+    /// 记录 `observation_count` 字段对应的值。
     pub observation_count: usize,
 }
 
+/// 表示 `LuaShadowLoadReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LuaShadowLoadReport {
+    /// 记录 `generation_id` 字段对应的值。
     pub generation_id: GenerationId,
+    /// 记录 `script_count` 字段对应的值。
     pub script_count: usize,
+    /// 记录 `status` 字段对应的值。
     pub status: LuaShadowLoadStatus,
+    /// 记录 `scripts` 字段对应的值。
     pub scripts: Vec<LuaShadowScriptReport>,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 表示 `LuaShadowLoader` 数据结构。
 #[derive(Debug, Clone)]
 pub struct LuaShadowLoader {
+    /// 记录 `host` 字段对应的值。
     host: LuaHost<MluaVmAdapter>,
+    /// 记录 `limits` 字段对应的值。
     limits: LuaExecutionLimits,
 }
 
 impl LuaGeneration {
+    /// 创建并初始化当前类型的实例。
     pub fn new(generation_id: GenerationId, script_count: usize) -> Self {
         Self {
             generation_id,
@@ -69,12 +101,14 @@ impl LuaGeneration {
 }
 
 impl LuaShadowCandidate {
+    /// 创建并初始化当前类型的实例。
     pub fn new(agent_id: AgentId, script: LuaScript) -> Self {
         Self { agent_id, script }
     }
 }
 
 impl LuaShadowLoadStatus {
+    /// 将当前值按 `as_str` 约定的形式转换。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Healthy => "healthy",
@@ -84,6 +118,7 @@ impl LuaShadowLoadStatus {
 }
 
 impl LuaShadowLoader {
+    /// 创建并初始化当前类型的实例。
     pub fn new() -> Self {
         Self {
             host: LuaHost::new(),
@@ -91,11 +126,13 @@ impl LuaShadowLoader {
         }
     }
 
+    /// 设置 `limits` 并返回更新后的实例。
     pub fn with_limits(mut self, limits: LuaExecutionLimits) -> Self {
         self.limits = limits;
         self
     }
 
+    /// 执行 `shadow_load_generation` 对应的处理逻辑。
     pub fn shadow_load_generation(
         &self,
         generation_id: GenerationId,
@@ -168,15 +205,18 @@ impl LuaShadowLoader {
 }
 
 impl Default for LuaShadowLoader {
+    /// 创建采用默认影子执行限制的加载器。
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// 表示 `ShadowCapabilityHost` 数据结构。
 #[derive(Debug, Default)]
 struct ShadowCapabilityHost;
 
 impl CapabilityHostApi for ShadowCapabilityHost {
+    /// 执行 `invoke` 对应的受控流程。
     fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
         Ok(InvokeResponse::completed(
             request.request_id().clone(),
@@ -185,6 +225,7 @@ impl CapabilityHostApi for ShadowCapabilityHost {
     }
 }
 
+/// 执行 `default_shadow_limits` 对应的处理逻辑。
 fn default_shadow_limits() -> LuaExecutionLimits {
     LuaExecutionLimits::with_timeout(Duration::from_millis(250))
         .with_instruction_budget_limit(100_000)
@@ -192,6 +233,7 @@ fn default_shadow_limits() -> LuaExecutionLimits {
         .with_hook_instruction_interval(100)
 }
 
+/// 执行 `shadow_health_event` 对应的处理逻辑。
 fn shadow_health_event(generation_id: &GenerationId, agent_id: &AgentId) -> Event {
     Event::new(
         EventId::parse("evt-shadow-health").expect("static shadow health event id is valid"),
@@ -205,19 +247,23 @@ fn shadow_health_event(generation_id: &GenerationId, agent_id: &AgentId) -> Even
     .with_target(EventTarget::Agent(agent_id.clone()))
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
     use eva_core::ErrorKind;
 
+    /// 执行 `generation` 对应的处理逻辑。
     fn generation() -> GenerationId {
         GenerationId::parse("gen-shadow-1").unwrap()
     }
 
+    /// 执行 `agent` 对应的处理逻辑。
     fn agent() -> AgentId {
         AgentId::parse("root-agent").unwrap()
     }
 
+    /// 验证 `shadow_load_reports_healthy_candidate_without_promoting` 场景下的预期行为。
     #[test]
     fn shadow_load_reports_healthy_candidate_without_promoting() {
         let script = LuaScript::from_source(
@@ -251,6 +297,7 @@ mod tests {
         assert!(!report.audit.iter().any(|item| item.contains("promoted")));
     }
 
+    /// 验证 `shadow_load_rejects_forbidden_script_without_switching_generation` 场景下的预期行为。
     #[test]
     fn shadow_load_rejects_forbidden_script_without_switching_generation() {
         let script = LuaScript::from_source(

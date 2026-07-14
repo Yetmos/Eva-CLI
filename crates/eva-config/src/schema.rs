@@ -1,3 +1,4 @@
+//! JSON Schema 路径、受支持规则与配置对齐验证。
 //! JSON Schema path and alignment helpers.
 
 use crate::eva_yaml::ConfigRoots;
@@ -6,20 +7,29 @@ use serde_yaml::{Mapping, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// 本模块的架构职责：加载 Schema，并在强类型解析前验证配置结构和字段位置。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "load schemas and validate parsed configuration structures";
 
+/// Schema 根目录下约定的配置 Schema 文件路径。
 /// Expected schema file paths under a schema root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaPaths {
+    /// 主 `eva.yaml` Schema。
     pub eva: PathBuf,
+    /// Agent 清单 Schema。
     pub agent: PathBuf,
+    /// Adapter 清单 Schema。
     pub adapter: PathBuf,
+    /// Capability 清单 Schema。
     pub capability: PathBuf,
+    /// Policy 文档 Schema。
     pub policy: PathBuf,
+    /// Topic 路由 Schema。
     pub routes: PathBuf,
 }
 
+/// 根据已解析配置根返回固定 Schema 文件路径。
 /// Returns the canonical schema file paths for a resolved config root.
 pub fn schema_paths(roots: &ConfigRoots) -> SchemaPaths {
     SchemaPaths {
@@ -32,6 +42,10 @@ pub fn schema_paths(roots: &ConfigRoots) -> SchemaPaths {
     }
 }
 
+/// 按配置类别为主配置和全部拆分文件运行对应 Schema 验证。
+///
+/// 任一文件失败即停止，不继续构建部分强类型项目配置；输入文件顺序由上层排序，
+/// 因此首个失败位置稳定。
 pub fn validate_config_files_with_schemas(
     roots: &ConfigRoots,
     eva_config_path: &Path,
@@ -58,6 +72,7 @@ pub fn validate_config_files_with_schemas(
     validate_yaml_file_with_schema(route_path, &schemas.routes, "Topic routes")
 }
 
+/// 读取一份 YAML/JSON 数据和 Schema，并从根字段递归验证。
 pub fn validate_yaml_file_with_schema(
     data_path: &Path,
     schema_path: &Path,
@@ -73,6 +88,7 @@ pub fn validate_yaml_file_with_schema(
     validate_schema_node(&data, &schema, &context, &FieldPath::root())
 }
 
+/// `eva-config` 当前接受的 Adapter 传输值。
 /// Adapter transport values currently accepted by `eva-config`.
 pub const ADAPTER_TRANSPORT_VALUES: &[&str] = &[
     "builtin",
@@ -85,27 +101,39 @@ pub const ADAPTER_TRANSPORT_VALUES: &[&str] = &[
     "lua_capability",
 ];
 
+/// `eva-config` 当前接受的 Capability 类别值。
 /// Capability kind values currently accepted by `eva-config`.
 pub const CAPABILITY_KIND_VALUES: &[&str] =
     &["adapter_capability", "lua_capability", "mcp_tool", "skill"];
 
+/// `eva-config` 当前接受的 Topic 路由投递模式。
 /// Topic route delivery values currently accepted by `eva-config`.
 pub const ROUTE_DELIVERY_VALUES: &[&str] = &["fanout", "compete"];
 
+/// 贯穿递归验证的配置类型和源文件上下文。
 struct SchemaValidationContext<'a> {
+    /// 被验证配置类别。
     config_type: &'static str,
+    /// 数据文件路径。
     data_path: &'a Path,
+    /// Schema 文件路径。
     schema_path: &'a Path,
 }
 
+/// 以点号属性和数组下标表示的稳定字段位置。
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct FieldPath(String);
+struct FieldPath(
+    /// 不含根展示符 `$` 的内部路径；空串表示根，其余值由属性名和数组下标组成。
+    String,
+);
 
 impl FieldPath {
+    /// 创建用 `$` 展示的根字段路径。
     fn root() -> Self {
         Self(String::new())
     }
 
+    /// 返回追加对象属性后的字段路径。
     fn property(&self, name: &str) -> Self {
         if self.0.is_empty() {
             Self(name.to_owned())
@@ -114,10 +142,12 @@ impl FieldPath {
         }
     }
 
+    /// 返回追加数组下标后的字段路径。
     fn index(&self, index: usize) -> Self {
         Self(format!("{}[{index}]", self.as_str()))
     }
 
+    /// 返回错误上下文使用的字段位置，空内部值映射为 `$`。
     fn as_str(&self) -> &str {
         if self.0.is_empty() {
             "$"
@@ -127,6 +157,7 @@ impl FieldPath {
     }
 }
 
+/// 读取 JSON Schema；JSON 是 YAML 子集，因此复用 serde_yaml 值模型。
 fn read_schema(schema_path: &Path, config_type: &'static str) -> Result<Value, EvaError> {
     let content = fs::read_to_string(schema_path).map_err(|error| {
         EvaError::not_found("failed to read JSON Schema")
@@ -146,6 +177,7 @@ fn read_schema(schema_path: &Path, config_type: &'static str) -> Result<Value, E
     })
 }
 
+/// 读取待验证 YAML，并保留语法错误行列信息。
 fn read_data(data_path: &Path, config_type: &'static str) -> Result<Value, EvaError> {
     let content = fs::read_to_string(data_path).map_err(|error| {
         EvaError::not_found("failed to read configuration file")
@@ -168,6 +200,11 @@ fn read_data(data_path: &Path, config_type: &'static str) -> Result<Value, EvaEr
     })
 }
 
+/// 按固定顺序递归验证当前 Schema 节点支持的规则。
+///
+/// 先验证 type/enum/pattern/minProperties，再验证对象 required/properties/additionalProperties，
+/// 最后递归数组 items。首个违规立即返回带字段路径的错误；未实现的 Schema 功能不会
+/// 被假装支持，pattern 仅允许显式白名单。
 fn validate_schema_node(
     data: &Value,
     schema: &Value,
@@ -205,6 +242,7 @@ fn validate_schema_node(
     Ok(())
 }
 
+/// 验证单一或联合 `type` 规则。
 fn validate_type(
     data: &Value,
     schema: &Mapping,
@@ -238,6 +276,7 @@ fn validate_type(
     ))
 }
 
+/// 验证值与 Schema 枚举中的任一完整值相等。
 fn validate_enum(
     data: &Value,
     schema: &Mapping,
@@ -259,6 +298,7 @@ fn validate_enum(
     ))
 }
 
+/// 对字符串应用当前验证器明确支持的 pattern。
 fn validate_pattern(
     data: &Value,
     schema: &Mapping,
@@ -283,6 +323,7 @@ fn validate_pattern(
     ))
 }
 
+/// 验证对象至少包含指定属性数量。
 fn validate_min_properties(
     data: &Value,
     schema: &Mapping,
@@ -307,6 +348,7 @@ fn validate_min_properties(
     ))
 }
 
+/// 验证对象所有必填属性存在，并定位到缺失属性路径。
 fn validate_required(
     data: &Mapping,
     schema: &Mapping,
@@ -330,6 +372,7 @@ fn validate_required(
     Ok(())
 }
 
+/// 对数据中存在的已声明属性递归验证其子 Schema。
 fn validate_properties(
     data: &Mapping,
     schema: &Mapping,
@@ -350,6 +393,7 @@ fn validate_properties(
     Ok(())
 }
 
+/// 当 `additionalProperties=false` 时拒绝未声明键和非字符串键。
 fn validate_additional_properties(
     data: &Mapping,
     schema: &Mapping,
@@ -388,10 +432,12 @@ fn validate_additional_properties(
     Ok(())
 }
 
+/// 从 Schema Mapping 读取字符串键。
 fn schema_get<'a>(schema: &'a Mapping, key: &str) -> Option<&'a Value> {
     schema.get(Value::String(key.to_owned()))
 }
 
+/// 判断 YAML 值是否符合受支持的 JSON Schema 类型名。
 fn value_matches_type(value: &Value, expected: &str) -> bool {
     match expected {
         "object" => value.as_mapping().is_some(),
@@ -407,6 +453,7 @@ fn value_matches_type(value: &Value, expected: &str) -> bool {
     }
 }
 
+/// 返回错误消息使用的实际 YAML 值类型名。
 fn value_type(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -419,6 +466,7 @@ fn value_type(value: &Value) -> &'static str {
     }
 }
 
+/// 将单一或联合 Schema 类型渲染为稳定标签。
 fn schema_type_label(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
@@ -431,6 +479,7 @@ fn schema_type_label(value: &Value) -> String {
     }
 }
 
+/// 将字符串枚举渲染为补救提示列表。
 fn enum_values(values: &[Value]) -> String {
     values
         .iter()
@@ -439,6 +488,10 @@ fn enum_values(values: &[Value]) -> String {
         .join(", ")
 }
 
+/// 执行白名单中的简单 Schema 正则语义。
+///
+/// 不引入完整正则引擎；遇到未知 pattern 明确返回 Unsupported，防止跳过 Schema 约束
+/// 并错误接受配置。
 fn matches_supported_pattern(pattern: &str, value: &str) -> Result<bool, EvaError> {
     match pattern {
         "^/.+" => Ok(value.starts_with('/') && value.len() > 1),
@@ -454,6 +507,7 @@ fn matches_supported_pattern(pattern: &str, value: &str) -> Result<bool, EvaErro
     }
 }
 
+/// 验证标识首字符为 ASCII 字母数字，其余为字母数字或 `_.-`。
 fn matches_stable_id_pattern(value: &str) -> bool {
     let mut bytes = value.bytes();
     let Some(first) = bytes.next() else {
@@ -463,6 +517,7 @@ fn matches_stable_id_pattern(value: &str) -> bool {
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
 }
 
+/// 构造包含数据、Schema、字段、规则和修复建议的统一违规错误。
 fn schema_violation(
     context: &SchemaValidationContext<'_>,
     field: &FieldPath,
@@ -480,6 +535,7 @@ fn schema_violation(
 }
 
 #[cfg(test)]
+/// Schema 路径、枚举对齐和稳定错误位置测试。
 mod tests {
     use super::*;
     use crate::eva_yaml::load_eva_config;
@@ -489,11 +545,13 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 返回包含示例 Schema 的工作区根目录。
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
 
     #[test]
+    /// 验证约定 Schema 路径均指向示例文件。
     fn schema_paths_point_to_sample_schemas() {
         let root = workspace_root();
         let config = load_eva_config(root.join("config").join("eva.yaml")).unwrap();
@@ -509,6 +567,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证公开枚举值与强类型解析器保持一致。
     fn enum_values_match_supported_manifest_values() {
         assert!(ADAPTER_TRANSPORT_VALUES.contains(&"stdio"));
         assert!(ADAPTER_TRANSPORT_VALUES.contains(&"mcp"));
@@ -524,6 +583,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证缺失必填字段报告稳定字段位置和建议。
     fn validator_reports_required_field_with_stable_location() {
         let root = test_temp_dir("schema-required");
         let schema = root.join("agent.schema.json");
@@ -554,6 +614,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证嵌套路由中的额外属性被精确定位并拒绝。
     fn validator_rejects_additional_properties_in_nested_route_rule() {
         let root = test_temp_dir("schema-additional");
         let schema = root.join("routes.schema.json");
@@ -604,6 +665,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证枚举不匹配错误包含允许值提示。
     fn validator_rejects_schema_enum_mismatch() {
         let root = test_temp_dir("schema-enum");
         let schema = root.join("adapter.schema.json");
@@ -632,6 +694,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// 断言错误上下文包含指定键值。
     fn assert_context(error: &EvaError, key: &str, value: &str) {
         assert!(
             error
@@ -644,6 +707,7 @@ mod tests {
         );
     }
 
+    /// 创建进程和时间戳隔离的临时测试目录。
     fn test_temp_dir(name: &str) -> PathBuf {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

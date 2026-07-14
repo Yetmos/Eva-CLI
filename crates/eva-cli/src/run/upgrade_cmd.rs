@@ -1,3 +1,5 @@
+//! 代际升级检查与 apply 子命令；通过计划确认、策略、锁、健康和 supervisor handoff 保护发布指针。
+
 use super::{
     json_array, json_string, lock_store_ref, lock_store_ref_json, option_json,
     parse_common_options, required_option, rollback_plan_json, success_envelope, trace_for,
@@ -23,57 +25,101 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Upgrade 子命令及其已解析选项。
 pub(super) enum UpgradeCommand {
-    Check(UpgradeCheckOptions),
-    Apply(UpgradeApplyOptions),
+    /// 生成代际排空、迁移和回滚预检报告。
+    Check(
+        /// 已解析的 Agent、目标代际、发布引用、证据目录与公共选项。
+        UpgradeCheckOptions,
+    ),
+    /// 在全部门禁通过后执行 supervisor handoff。
+    Apply(
+        /// 已解析的升级目标、证据、锁、操作者、健康检查与公共选项。
+        UpgradeApplyOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Upgrade check 的源/目标代际与发布引用。
 pub(super) struct UpgradeCheckOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 当前运行时代际 ID。
     from_generation: String,
+    /// 目标运行时代际 ID。
     to_generation: String,
+    /// 当前发布引用。
     from_release: String,
+    /// 目标发布引用。
     to_release: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Upgrade apply 的高风险门禁和持久化选项。
 pub(super) struct UpgradeApplyOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// Upgrade apply plan 文件路径。
     plan: Option<PathBuf>,
+    /// 必须与 plan ID 匹配的确认令牌。
     confirm: Option<String>,
+    /// 获取升级独占锁的目录。
     lock_store: Option<PathBuf>,
+    /// 可选 supervisor state/release pointer 存储目录。
     state_store: Option<PathBuf>,
+    /// 可选目标 runtime 二进制，用于版本烟测。
     runtime_binary: Option<PathBuf>,
+    /// 升级锁 owner。
     owner: String,
+    /// 注入的目标 runtime 健康结果。
     health: UpgradeApplyHealthOption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Upgrade check 的组合预检报告。
 struct UpgradeCheckReport {
+    /// ready 或 blocked 聚合状态。
     status: String,
+    /// Supervisor 代际状态报告。
     supervisor: SupervisorReport,
+    /// 当前代际排空计划。
     drain: DrainPlan,
+    /// 失败 handoff 的回滚计划。
     rollback: RollbackPlan,
+    /// 配置/状态迁移预检。
     migration: MigrationPreflight,
+    /// 操作者执行步骤。
     steps: Vec<String>,
+    /// 已识别风险。
     risks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Upgrade apply 协调结果及实际存储/交接证据。
 struct UpgradeApplyResult {
+    /// UpgradeApplyCoordinator 的门禁与锁报告。
     report: UpgradeApplyReport,
+    /// 实际使用的锁存储描述。
     lock_store: LockStoreRef,
+    /// 可选 supervisor state store 描述。
     state_store: Option<LockStoreRef>,
+    /// 配置 state store 时产生的可选 supervisor handoff 报告。
     handoff: Option<SupervisorHandoffReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// CLI 可注入的 upgrade apply 健康探测结果。
 pub(super) enum UpgradeApplyHealthOption {
+    /// 目标运行时健康。
     Healthy,
-    Failed(String),
+    /// 目标运行时不健康及诊断消息。
+    Failed(
+        /// 目标运行时健康检查失败时保留的诊断消息。
+        String,
+    ),
 }
 
+/// 解析 `upgrade check|apply` 子命令。
 pub(super) fn parse_upgrade_command(args: &[String]) -> Result<UpgradeCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -88,6 +134,7 @@ pub(super) fn parse_upgrade_command(args: &[String]) -> Result<UpgradeCommand, E
     }
 }
 
+/// 执行升级预检或 apply，并根据门禁/回滚状态选择稳定退出码。
 pub(super) fn execute_upgrade<W, E>(
     command: UpgradeCommand,
     stdout: &mut W,
@@ -133,6 +180,7 @@ where
     }
 }
 
+/// 解析并校验 upgrade check 的源/目标代际。
 fn parse_upgrade_check_options(args: &[String]) -> Result<UpgradeCheckOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut from_generation = "gen-v13".to_owned();
@@ -173,6 +221,7 @@ fn parse_upgrade_check_options(args: &[String]) -> Result<UpgradeCheckOptions, E
     })
 }
 
+/// 解析 apply 计划、确认、锁/state store、runtime 二进制和健康输入。
 fn parse_upgrade_apply_options(args: &[String]) -> Result<UpgradeApplyOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut plan = None;
@@ -250,6 +299,7 @@ fn parse_upgrade_apply_options(args: &[String]) -> Result<UpgradeApplyOptions, E
     })
 }
 
+/// 解析 upgrade 健康结果及兼容别名。
 fn parse_upgrade_apply_health(value: &str) -> Result<UpgradeApplyHealthOption, EvaError> {
     match value {
         "healthy" | "pass" | "passed" => Ok(UpgradeApplyHealthOption::Healthy),
@@ -266,6 +316,7 @@ fn parse_upgrade_apply_health(value: &str) -> Result<UpgradeApplyHealthOption, E
     }
 }
 
+/// 构造 supervisor、排空、迁移和回滚预检，不执行任何代际或 pointer 变更。
 fn create_upgrade_check(options: &UpgradeCheckOptions) -> Result<UpgradeCheckReport, EvaError> {
     let active = RuntimeGeneration::new(
         GenerationId::parse(&options.from_generation)?,
@@ -318,6 +369,10 @@ fn create_upgrade_check(options: &UpgradeCheckOptions) -> Result<UpgradeCheckRep
     })
 }
 
+/// 执行 upgrade apply 的确认、策略、锁、健康和可选 supervisor handoff。
+///
+/// 计划确认在锁前验证；默认策略和 release pointer 策略均在 handoff 前执行。只有提供 state
+/// store 且 runtime probe/健康门禁通过时才提交 pointer；失败 handoff 必须保留回滚证据。
 fn create_upgrade_apply(options: &UpgradeApplyOptions) -> Result<UpgradeApplyResult, EvaError> {
     let plan_path = options.plan.as_ref().ok_or_else(|| {
         EvaError::invalid_argument("upgrade apply requires --plan")
@@ -418,6 +473,8 @@ fn create_upgrade_apply(options: &UpgradeApplyOptions) -> Result<UpgradeApplyRes
     })
 }
 
+/// 执行目标 runtime 二进制的 `--version` 烟测并捕获所有失败为报告数据。
+/// 该探测不把启动/非零退出/非 UTF-8 输出转换为 panic，确保升级协调器能统一阻断 handoff。
 fn probe_runtime_binary(path: &Path) -> RuntimeBinaryProbe {
     let binary_path = path.display().to_string();
     if !path.exists() {
@@ -516,6 +573,7 @@ fn probe_runtime_binary(path: &Path) -> RuntimeBinaryProbe {
     }
 }
 
+/// 读取并解析 upgrade apply plan，并在失败上附加文件路径上下文。
 fn read_upgrade_apply_plan(path: &Path) -> Result<UpgradeApplyPlan, EvaError> {
     let data = fs::read_to_string(path).map_err(|error| {
         let message = if error.kind() == std::io::ErrorKind::NotFound {
@@ -531,6 +589,7 @@ fn read_upgrade_apply_plan(path: &Path) -> Result<UpgradeApplyPlan, EvaError> {
         .map_err(|error| error.with_context("plan", path.display().to_string()))
 }
 
+/// 解析稳定逐行 upgrade plan 格式，允许 UTF-8 BOM 并要求所有关键代际/发布字段。
 pub(super) fn parse_upgrade_apply_plan(data: &str) -> Result<UpgradeApplyPlan, EvaError> {
     let mut plan_id = None;
     let mut from_generation = None;
@@ -577,6 +636,7 @@ pub(super) fn parse_upgrade_apply_plan(data: &str) -> Result<UpgradeApplyPlan, E
     )
 }
 
+/// 输出升级预检的 supervisor、排空、迁移、回滚、步骤和风险。
 fn write_upgrade_check<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -601,6 +661,7 @@ fn write_upgrade_check<W: Write>(
     }
 }
 
+/// 输出 upgrade apply 的门禁、锁、handoff、pointer mutation 和回滚证据。
 fn write_upgrade_apply<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -646,6 +707,7 @@ fn write_upgrade_apply<W: Write>(
     }
 }
 
+/// 写出面向操作者的目标、最终状态、变更事实和回滚路径摘要。
 fn write_upgrade_apply_operator_summary_text<W: Write>(
     writer: &mut W,
     result: &UpgradeApplyResult,
@@ -666,6 +728,7 @@ fn write_upgrade_apply_operator_summary_text<W: Write>(
     write_risk_lines_text(writer, &risks)
 }
 
+/// 生成升级源/目标代际和发布引用的紧凑描述。
 fn upgrade_apply_target(result: &UpgradeApplyResult) -> String {
     format!(
         "{} -> {}",
@@ -674,6 +737,7 @@ fn upgrade_apply_target(result: &UpgradeApplyResult) -> String {
     )
 }
 
+/// 依据 handoff、health 和 coordinator 状态选择最终状态文本。
 fn upgrade_apply_final_state(result: &UpgradeApplyResult) -> &str {
     result
         .handoff
@@ -682,6 +746,7 @@ fn upgrade_apply_final_state(result: &UpgradeApplyResult) -> &str {
         .unwrap_or(result.report.status.as_str())
 }
 
+/// 描述 handoff 失败或未执行时的回滚路径。
 fn upgrade_apply_rollback_path(result: &UpgradeApplyResult) -> String {
     if let Some(handoff) = &result.handoff {
         if let Some(rollback) = &handoff.rollback_plan {
@@ -702,6 +767,7 @@ fn upgrade_apply_rollback_path(result: &UpgradeApplyResult) -> String {
     "none; no supervisor handoff mutation executed".to_owned()
 }
 
+/// 聚合 coordinator 与 handoff 风险，并补充未执行 pointer mutation 的说明。
 fn upgrade_apply_risks(result: &UpgradeApplyResult) -> Vec<String> {
     let mut risks = result.report.risks.clone();
     if let Some(handoff) = &result.handoff {
@@ -710,6 +776,7 @@ fn upgrade_apply_risks(result: &UpgradeApplyResult) -> Vec<String> {
     risks
 }
 
+/// 将完整 upgrade apply 证据编码为稳定 JSON。
 fn upgrade_apply_json(result: &UpgradeApplyResult) -> String {
     format!(
         "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"lock_store\":{},\"state_store\":{},\"lock\":{},\"handoff\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
@@ -735,6 +802,7 @@ fn upgrade_apply_json(result: &UpgradeApplyResult) -> String {
     )
 }
 
+/// 仅在 handoff 明确提交 release pointer 时报告 mutation 已执行。
 fn upgrade_apply_mutation_executed(result: &UpgradeApplyResult) -> bool {
     result
         .handoff
@@ -743,6 +811,7 @@ fn upgrade_apply_mutation_executed(result: &UpgradeApplyResult) -> bool {
         .unwrap_or(false)
 }
 
+/// 将 supervisor handoff、runtime probe、pointer mutation 和 rollback 编码为 JSON。
 fn supervisor_handoff_json(report: &SupervisorHandoffReport) -> String {
     format!(
         "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"runtime_binary\":{},\"active_generation\":{},\"previous_generation\":{},\"release_ref\":{},\"release_pointer\":{},\"rollback_plan\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
@@ -770,6 +839,7 @@ fn supervisor_handoff_json(report: &SupervisorHandoffReport) -> String {
     )
 }
 
+/// 将目标 runtime 二进制烟测报告编码为 JSON。
 fn runtime_binary_probe_json(probe: &RuntimeBinaryProbe) -> String {
     format!(
         "{{\"binary_path\":{},\"status\":{},\"audit\":{}}}",
@@ -779,6 +849,7 @@ fn runtime_binary_probe_json(probe: &RuntimeBinaryProbe) -> String {
     )
 }
 
+/// 将 release pointer mutation 的前后值和提交事实编码为 JSON。
 fn release_pointer_mutation_json(mutation: &ReleasePointerMutation) -> String {
     format!(
         "{{\"pointer_path\":{},\"previous_generation\":{},\"active_generation\":{},\"release_ref\":{},\"status\":{},\"audit\":{}}}",
@@ -791,6 +862,7 @@ fn release_pointer_mutation_json(mutation: &ReleasePointerMutation) -> String {
     )
 }
 
+/// 将升级锁的 plan、owner 和状态编码为 JSON。
 fn upgrade_apply_lock_json(lock: &UpgradeApplyLock) -> String {
     format!(
         "{{\"lock_id\":{},\"plan_id\":{},\"owner\":{},\"from_generation\":{},\"to_generation\":{},\"status\":{},\"audit\":{}}}",
@@ -804,6 +876,7 @@ fn upgrade_apply_lock_json(lock: &UpgradeApplyLock) -> String {
     )
 }
 
+/// 将升级预检组合报告编码为 JSON。
 fn upgrade_check_json(report: &UpgradeCheckReport) -> String {
     format!(
         "{{\"status\":{},\"mutation_executed\":false,\"supervisor\":{},\"drain\":{},\"rollback\":{},\"migration\":{},\"steps\":{},\"risks\":{}}}",
@@ -817,6 +890,7 @@ fn upgrade_check_json(report: &UpgradeCheckReport) -> String {
     )
 }
 
+/// 将 supervisor 代际状态报告编码为 JSON。
 fn supervisor_report_json(report: &SupervisorReport) -> String {
     format!(
         "{{\"active_generation\":{},\"candidate_generation\":{},\"healthy\":{},\"audit\":{}}}",
@@ -827,6 +901,7 @@ fn supervisor_report_json(report: &SupervisorReport) -> String {
     )
 }
 
+/// 将升级排空计划编码为 JSON。
 fn drain_plan_json(plan: &DrainPlan) -> String {
     format!(
         "{{\"generation_id\":{},\"inflight_tasks\":{},\"timeout_ms\":{},\"accepts_new_work\":{},\"status\":{},\"audit\":{}}}",
@@ -839,6 +914,7 @@ fn drain_plan_json(plan: &DrainPlan) -> String {
     )
 }
 
+/// 将配置/状态迁移预检步骤、风险和审计编码为 JSON。
 fn migration_preflight_json(report: &MigrationPreflight) -> String {
     format!(
         "{{\"package_id\":{},\"status\":{},\"warnings\":{},\"audit\":{}}}",

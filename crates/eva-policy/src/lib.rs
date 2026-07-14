@@ -1,3 +1,4 @@
+//! 中文：策略域解析、权限收窄、沙箱合并和运行时决策的统一边界。
 //! Policy evaluation and permission narrowing boundary.
 
 pub mod domains;

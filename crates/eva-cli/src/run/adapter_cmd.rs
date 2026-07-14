@@ -1,3 +1,5 @@
+//! Adapter 列表与探测子命令：从已验证清单构建只读运行时视图，不启动外部 provider。
+
 use super::{
     join_capabilities, json_array, json_string, parse_common_options, required_option,
     success_envelope, trace_for, write_command_error, write_error_kind, CommonOptions,
@@ -10,19 +12,34 @@ use eva_observability::TraceFields;
 use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Adapter 子命令及其已解析选项。
 pub(super) enum AdapterCommand {
-    List(CommonOptions),
-    Probe(AdapterProbeOptions),
+    /// 列出项目声明的 Adapter 句柄。
+    List(
+        /// Adapter 列表命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
+    /// 按 Adapter ID 或 capability 路由探测 provider。
+    Probe(
+        /// 已解析的 Adapter 标识、capability 过滤条件与公共选项。
+        AdapterProbeOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Adapter 探测选项；显式 Adapter ID 优先于 capability/provider 组合。
 pub(super) struct AdapterProbeOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 要直接探测的可选 Adapter ID。
     adapter_id: Option<String>,
+    /// 未指定 Adapter 时用于选路的可选 capability。
     capability: Option<String>,
+    /// capability 选路时偏好的可选 provider ID。
     provider: Option<String>,
 }
 
+/// 解析 `adapter list|probe`，未知子命令保留在错误上下文中。
 pub(super) fn parse_adapter_command(args: &[String]) -> Result<AdapterCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -37,6 +54,7 @@ pub(super) fn parse_adapter_command(args: &[String]) -> Result<AdapterCommand, E
     }
 }
 
+/// 提取探测专用选项，并把公共选项交由统一解析器严格校验。
 fn parse_adapter_probe_options(args: &[String]) -> Result<AdapterProbeOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut adapter_id = None;
@@ -71,6 +89,7 @@ fn parse_adapter_probe_options(args: &[String]) -> Result<AdapterProbeOptions, E
     })
 }
 
+/// 加载项目并执行只读 Adapter 命令；失败按统一命令错误契约写入 stderr。
 pub(super) fn execute_adapter<W, E>(
     command: AdapterCommand,
     stdout: &mut W,
@@ -117,6 +136,10 @@ where
     }
 }
 
+/// 执行 Adapter 探测选路。
+///
+/// 显式 Adapter ID 表示精确探测；否则按 capability 和可选 provider 规划。默认 capability
+/// 是受控静态值，解析 `unwrap` 不接收用户输入，因此不会形成用户可触发 panic。
 fn probe_adapter_runtime(
     runtime: &AdapterRuntime,
     options: &AdapterProbeOptions,
@@ -138,6 +161,7 @@ fn probe_adapter_runtime(
     runtime.probe_capability(capability, provider)
 }
 
+/// 按文本或 JSON 输出 Adapter 列表。
 fn write_adapter_list<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -170,6 +194,7 @@ fn write_adapter_list<W: Write>(
     }
 }
 
+/// 输出 Adapter 探测结果，并保持 transport、状态和能力集合字段稳定。
 fn write_adapter_probe<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -200,6 +225,7 @@ fn write_adapter_probe<W: Write>(
     }
 }
 
+/// 将 Adapter 运行时句柄投影为稳定 JSON 列表，不暴露内部注册表对象。
 fn adapter_list_json(runtime: &AdapterRuntime) -> String {
     let entries = runtime.list().into_iter().map(|handle| {
         format!(
@@ -219,6 +245,7 @@ fn adapter_list_json(runtime: &AdapterRuntime) -> String {
     format!("{{\"adapters\":{}}}", json_array(entries))
 }
 
+/// 将单次 Adapter 探测报告编码为 JSON。
 fn adapter_probe_json(report: &AdapterProbeReport) -> String {
     format!(
         "{{\"adapter_id\":{},\"transport\":{},\"status\":{},\"capabilities\":{},\"detail\":{}}}",

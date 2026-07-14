@@ -1,3 +1,4 @@
+//! 中文：事件发布、确认、死信和恢复能力的 EventBus 边界。
 //! EventBus boundary for publication and recovery.
 
 pub mod bus;

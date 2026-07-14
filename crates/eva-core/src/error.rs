@@ -57,6 +57,7 @@ impl ErrorKind {
 }
 
 impl fmt::Display for ErrorKind {
+    /// 输出稳定 snake_case 分类码，供 CLI 与日志直接复用。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -65,7 +66,10 @@ impl fmt::Display for ErrorKind {
 /// 中文：Provider 私有错误码，只作为数据透传，不解释其协议含义。
 /// English: Provider-specific error code kept as data, without interpreting its protocol.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ProviderCode(String);
+pub struct ProviderCode(
+    /// 已去除首尾空白且非空的 provider 私有错误码。
+    String,
+);
 
 impl ProviderCode {
     /// 中文：输入 trim 后非空时创建 provider code。
@@ -88,6 +92,7 @@ impl ProviderCode {
 }
 
 impl fmt::Display for ProviderCode {
+    /// 原样输出已规范化的 provider code，不在核心层解释其含义。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -283,6 +288,7 @@ impl EvaError {
 }
 
 impl fmt::Display for EvaError {
+    /// 以稳定分类和人类可读消息展示错误；结构化上下文由专用输出层处理。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.kind, self.message)
     }
@@ -291,10 +297,12 @@ impl fmt::Display for EvaError {
 impl std::error::Error for EvaError {}
 
 #[cfg(test)]
+/// 错误分类、重试、展示和上下文语义的回归测试。
 mod tests {
     use super::*;
 
     #[test]
+    /// 验证调用方输入错误默认不可重试，防止无意义重放。
     fn invalid_argument_is_not_retryable_by_default() {
         let error = EvaError::invalid_argument("bad topic");
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
@@ -302,6 +310,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证超时默认可重试，以支持上层退避策略。
     fn timeout_is_retryable_by_default() {
         let error = EvaError::timeout("provider timed out");
         assert_eq!(error.kind(), ErrorKind::Timeout);
@@ -309,12 +318,14 @@ mod tests {
     }
 
     #[test]
+    /// 验证错误展示同时包含稳定分类与消息。
     fn error_display_contains_kind_and_message() {
         let error = EvaError::not_found("missing adapter");
         assert_eq!(error.to_string(), "not_found: missing adapter");
     }
 
     #[test]
+    /// 验证 provider code 可缺省，设置后按去空白值保留。
     fn provider_code_is_optional() {
         let without_code = EvaError::unavailable("provider offline");
         assert!(without_code.provider_code().is_none());
@@ -324,6 +335,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证附加诊断上下文不会改变错误分类。
     fn context_does_not_change_kind() {
         let error = EvaError::conflict("generation changed").with_context("generation", "gen-2");
 
@@ -335,6 +347,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证特殊运行时语义可以显式覆盖默认重试判断。
     fn retryable_can_be_overridden() {
         let error = EvaError::internal("transient executor failure").with_retryable(true);
         assert!(error.is_retryable());

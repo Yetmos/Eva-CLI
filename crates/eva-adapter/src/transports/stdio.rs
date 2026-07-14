@@ -1,5 +1,11 @@
+//! 在不经过 shell 的前提下启动命令白名单中的 stdio 提供者。
+//!
+//! 标准输出和标准错误由独立读取线程并行采集，主线程以同一截止时间等待两路结果；超时、
+//! 读取失败或任一路超过输出上限时都会终止并回收子进程。凭据仅从允许的环境变量和本次
+//! 会话作用域注入，采集结果与审计内容在返回前完成脱敏。
 //! Stdio transport runner contract.
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "stdio command transport with separated command and args";
 
@@ -21,49 +27,78 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// 定义 stdio 子进程启动和两路输出采集的硬边界。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StdioRunnerConfig {
+    /// 保存允许直接传给 `Command::new` 的完整命令文本，不做 shell 展开。
     pub allowed_commands: BTreeSet<String>,
+    /// 记录 `timeout_ms` 字段对应的值。
     pub timeout_ms: u64,
+    /// 记录 `output_limit_bytes` 字段对应的值。
     pub output_limit_bytes: usize,
+    /// 记录 `preview_limit_bytes` 字段对应的值。
     pub preview_limit_bytes: usize,
+    /// 记录 `stream_chunk_size_bytes` 字段对应的值。
     pub stream_chunk_size_bytes: usize,
+    /// 记录 `artifact_root` 字段对应的值。
     pub artifact_root: Option<PathBuf>,
+    /// 记录 `artifact_key_prefix` 字段对应的值。
     pub artifact_key_prefix: Option<String>,
 }
 
+/// 表示 `StdioInvocation` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StdioInvocation {
+    /// 记录 `command` 字段对应的值。
     pub command: String,
+    /// 记录 `args` 字段对应的值。
     pub args: Vec<String>,
+    /// 记录 `env` 字段对应的值。
     pub env: BTreeMap<String, String>,
+    /// 记录 `input` 字段对应的值。
     pub input: Vec<u8>,
 }
 
+/// 汇总子进程终态及 stdout、stderr 两路独立的有界采集证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StdioRunReport {
+    /// 记录 `command` 字段对应的值。
     pub command: String,
+    /// 记录 `args` 字段对应的值。
     pub args: Vec<String>,
+    /// 记录 `status` 字段对应的值。
     pub status: StdioRunStatus,
+    /// 记录 `exit_code` 字段对应的值。
     pub exit_code: Option<i32>,
+    /// 记录 `stdout` 字段对应的值。
     pub stdout: Vec<u8>,
+    /// 记录 `stderr` 字段对应的值。
     pub stderr: Vec<u8>,
+    /// 记录 `stdout_stream` 字段对应的值。
     pub stdout_stream: ProviderStreamCapture,
+    /// 记录 `stderr_stream` 字段对应的值。
     pub stderr_stream: ProviderStreamCapture,
+    /// 记录 `duration_ms` 字段对应的值。
     pub duration_ms: u128,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 定义 `StdioRunStatus` 可取的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StdioRunStatus {
+    /// 表示 `Completed` 枚举分支。
     Completed,
+    /// 表示 `OutputLimitExceeded` 枚举分支。
     OutputLimitExceeded,
 }
 
+/// 无状态的 stdio 运行器；每次调用独占其子进程和读取线程。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StdioRunner;
 
 impl StdioRunnerConfig {
+    /// 创建并初始化当前类型的实例。
     pub fn new(
         allowed_commands: impl IntoIterator<Item = impl Into<String>>,
         timeout_ms: u64,
@@ -83,6 +118,7 @@ impl StdioRunnerConfig {
         }
     }
 
+    /// 设置 `artifact_sink` 并返回更新后的实例。
     pub fn with_artifact_sink(
         mut self,
         artifact_root: impl Into<PathBuf>,
@@ -95,6 +131,7 @@ impl StdioRunnerConfig {
 }
 
 impl StdioInvocation {
+    /// 创建并初始化当前类型的实例。
     pub fn new(command: impl Into<String>) -> Self {
         Self {
             command: command.into(),
@@ -104,16 +141,19 @@ impl StdioInvocation {
         }
     }
 
+    /// 设置 `args` 并返回更新后的实例。
     pub fn with_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.args = args.into_iter().map(Into::into).collect();
         self
     }
 
+    /// 设置 `env` 并返回更新后的实例。
     pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
         self.env = env;
         self
     }
 
+    /// 设置 `input` 并返回更新后的实例。
     pub fn with_input(mut self, input: impl Into<Vec<u8>>) -> Self {
         self.input = input.into();
         self
@@ -121,6 +161,7 @@ impl StdioInvocation {
 }
 
 impl StdioRunStatus {
+    /// 将当前值按 `as_str` 约定的形式转换。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -130,6 +171,7 @@ impl StdioRunStatus {
 }
 
 impl StdioRunner {
+    /// 校验命令与输出上限后直接启动子进程，并保证异常路径执行终止与回收。
     pub fn run(
         &self,
         config: &StdioRunnerConfig,
@@ -139,6 +181,7 @@ impl StdioRunner {
 
         let started_at = Instant::now();
         let sensitive_values = sensitive_values(invocation.env.values());
+        // 命令与参数分别传递，不拼接 shell 字符串，从边界上禁止 shell 注入语义。
         let mut child = Command::new(&invocation.command)
             .args(&invocation.args)
             .envs(&invocation.env)
@@ -173,6 +216,7 @@ impl StdioRunner {
             EvaError::internal("stdio provider stderr was not available")
                 .with_context("command", &invocation.command)
         })?;
+        // 两路管道必须并发排空，避免子进程因任一路缓冲区写满而与父进程互相等待。
         let (sender, receiver) = mpsc::channel();
         spawn_reader(
             stream_config(config, "stdout"),
@@ -226,6 +270,7 @@ impl StdioRunner {
                         stderr_capture = capture;
                     }
                     if truncated {
+                        // 任一路触限都终止整个子进程；另一流可能只包含触限前已收到的证据。
                         kill_child(&mut child);
                         let audit =
                             stdio_audit(config, &stdout_capture, &stderr_capture, Some(&stream));
@@ -294,6 +339,7 @@ impl StdioRunner {
     }
 }
 
+/// 将已授权适配器调用转换为 stdio 运行器配置，并仅注入本次会话范围内的凭据。
 pub fn invoke(
     handle: &AdapterHandle,
     invocation: RuntimeAdapterInvocation,
@@ -375,11 +421,23 @@ pub fn invoke(
     })
 }
 
+/// 定义 `ReaderMessage` 可取的状态。
 enum ReaderMessage {
-    Output { capture: ProviderStreamCapture },
-    ReadError { stream: String, error: String },
+    /// 表示 `Output` 枚举分支。
+    Output {
+        /// 已完成脱敏和截断处理的单个输出流捕获结果。
+        capture: ProviderStreamCapture,
+    },
+    /// 表示 `ReadError` 枚举分支。
+    ReadError {
+        /// 读取失败的输出流名称，例如 `stdout` 或 `stderr`。
+        stream: String,
+        /// 底层读取错误转换得到的可审计文本。
+        error: String,
+    },
 }
 
+/// 校验 `validate_invocation` 对应的约束，不满足时返回明确错误。
 fn validate_invocation(
     config: &StdioRunnerConfig,
     invocation: &StdioInvocation,
@@ -401,6 +459,7 @@ fn validate_invocation(
     Ok(())
 }
 
+/// 为单路管道启动读取线程；线程只通过通道返回完整采集或稳定错误，不修改共享状态。
 fn spawn_reader(
     config: ProviderStreamConfig,
     reader: impl Read + Send + 'static,
@@ -423,6 +482,7 @@ fn spawn_reader(
     });
 }
 
+/// 执行 `stream_config` 对应的处理逻辑。
 fn stream_config(config: &StdioRunnerConfig, stream_name: &str) -> ProviderStreamConfig {
     let mut stream_config = ProviderStreamConfig::new(stream_name, config.output_limit_bytes)
         .with_preview_limit(config.preview_limit_bytes)
@@ -437,6 +497,7 @@ fn stream_config(config: &StdioRunnerConfig, stream_name: &str) -> ProviderStrea
     stream_config
 }
 
+/// 执行 `stdio_audit` 对应的处理逻辑。
 fn stdio_audit(
     config: &StdioRunnerConfig,
     stdout: &ProviderStreamCapture,
@@ -455,17 +516,22 @@ fn stdio_audit(
     audit
 }
 
+/// 尽力终止并等待子进程，确保超时和输出触限路径不会留下后台进程。
 fn kill_child(child: &mut std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
 }
 
+/// 表示 `CredentialEnvValues` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CredentialEnvValues {
+    /// 记录 `values` 字段对应的值。
     values: BTreeMap<String, String>,
+    /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
 }
 
+/// 执行 `credential_env_values` 对应的处理逻辑。
 fn credential_env_values(names: &[String]) -> CredentialEnvValues {
     let mut values = BTreeMap::new();
     let mut audit = Vec::new();
@@ -481,6 +547,7 @@ fn credential_env_values(names: &[String]) -> CredentialEnvValues {
     CredentialEnvValues { values, audit }
 }
 
+/// 校验 `validate_input_size` 对应的约束，不满足时返回明确错误。
 fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaError> {
     if let Some(limit) = handle.max_prompt_bytes {
         if input.len() > limit {
@@ -495,10 +562,12 @@ fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaErr
     Ok(())
 }
 
+/// 执行 `timeout_ms` 对应的处理逻辑。
 fn timeout_ms(handle: &AdapterHandle) -> u64 {
     handle.timeout_ms.unwrap_or(30_000)
 }
 
+/// 执行 `output_limit_bytes` 对应的处理逻辑。
 fn output_limit_bytes(handle: &AdapterHandle) -> usize {
     handle
         .output_limit_bytes
@@ -506,6 +575,7 @@ fn output_limit_bytes(handle: &AdapterHandle) -> usize {
         .unwrap_or(64 * 1024)
 }
 
+/// 执行 `sensitive_values` 对应的处理逻辑。
 fn sensitive_values<'a>(values: impl IntoIterator<Item = &'a String>) -> Vec<String> {
     values
         .into_iter()
@@ -514,6 +584,7 @@ fn sensitive_values<'a>(values: impl IntoIterator<Item = &'a String>) -> Vec<Str
         .collect()
 }
 
+/// 按 `escape_json` 的协议约定生成输出。
 fn escape_json(value: &str) -> String {
     let mut escaped = String::from("\"");
     for character in value.chars() {
@@ -530,11 +601,13 @@ fn escape_json(value: &str) -> String {
     escaped
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
     use eva_core::ErrorKind;
 
+    /// 验证 `runner_denies_non_allowlisted_command` 场景下的预期行为。
     #[test]
     fn runner_denies_non_allowlisted_command() {
         let config = StdioRunnerConfig::new(["definitely-denied"], 1_000, 1024);
@@ -545,6 +618,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     }
 
+    /// 验证 `runner_times_out_slow_provider` 场景下的预期行为。
     #[test]
     fn runner_times_out_slow_provider() {
         let config = StdioRunnerConfig::new([test_command()], 1, 4096);
@@ -555,6 +629,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::Timeout);
     }
 
+    /// 验证 `runner_reports_output_limit` 场景下的预期行为。
     #[test]
     fn runner_reports_output_limit() {
         let config = StdioRunnerConfig::new([test_command()], 5_000, 4);
@@ -566,6 +641,7 @@ mod tests {
         assert_eq!(report.stdout, b"abcd");
     }
 
+    /// 验证 `runner_completes_allowlisted_command_without_shell` 场景下的预期行为。
     #[test]
     fn runner_completes_allowlisted_command_without_shell() {
         let config = StdioRunnerConfig::new([test_command()], 5_000, 4096);
@@ -579,6 +655,7 @@ mod tests {
         assert!(report.audit.contains(&"shell:false".to_owned()));
     }
 
+    /// 验证 `runner_redacts_injected_env_from_output_streams` 场景下的预期行为。
     #[test]
     fn runner_redacts_injected_env_from_output_streams() {
         let config = StdioRunnerConfig::new([test_command()], 5_000, 4096);
@@ -596,16 +673,19 @@ mod tests {
         assert!(String::from_utf8_lossy(&report.stdout).contains("[REDACTED]"));
     }
 
+    /// 执行 `test_command` 对应的处理逻辑。
     #[cfg(windows)]
     fn test_command() -> &'static str {
         "powershell"
     }
 
+    /// 执行 `test_command` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn test_command() -> &'static str {
         "sh"
     }
 
+    /// 执行 `sleep_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn sleep_args() -> Vec<&'static str> {
         vec![
@@ -615,11 +695,13 @@ mod tests {
         ]
     }
 
+    /// 执行 `sleep_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn sleep_args() -> Vec<&'static str> {
         vec!["-c", "sleep 0.2; printf done"]
     }
 
+    /// 执行 `output_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn output_args(output: &str) -> Vec<String> {
         vec![
@@ -629,6 +711,7 @@ mod tests {
         ]
     }
 
+    /// 执行 `output_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn output_args(output: &str) -> Vec<String> {
         vec!["-c".to_owned(), format!("printf '{output}'")]

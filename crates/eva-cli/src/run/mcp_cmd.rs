@@ -1,3 +1,5 @@
+//! MCP Adapter 列表与 allowlist 探测子命令；不会启动或调用真实外部服务器。
+
 use super::{
     join_capabilities, json_array, json_string, parse_common_options, required_option,
     success_envelope, trace_for, write_command_error, write_error_kind, CommonOptions,
@@ -11,18 +13,32 @@ use eva_observability::TraceFields;
 use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// MCP 子命令及其已解析选项。
 pub(super) enum McpCommand {
-    List(CommonOptions),
-    Probe(McpProbeOptions),
+    /// 列出 MCP transport Adapter 及允许的工具。
+    List(
+        /// MCP 列表命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
+    /// 在内存客户端中探测一个 allowlist 工具。
+    Probe(
+        /// 已解析的 Adapter、工具名、载荷与公共选项。
+        McpProbeOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// MCP 工具探测选项。
 pub(super) struct McpProbeOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 必须解析为 MCP transport 的 Adapter ID。
     adapter_id: String,
+    /// 可选工具名；缺省时使用清单中的第一个工具。
     tool: Option<String>,
 }
 
+/// 解析 `mcp list|probe`，未知子命令返回不支持错误。
 pub(super) fn parse_mcp_command(args: &[String]) -> Result<McpCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -36,6 +52,7 @@ pub(super) fn parse_mcp_command(args: &[String]) -> Result<McpCommand, EvaError>
     }
 }
 
+/// 解析 MCP 探测选项，并保留 `github-mcp` 作为兼容默认 Adapter。
 fn parse_mcp_probe_options(args: &[String]) -> Result<McpProbeOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut adapter_id = None;
@@ -64,6 +81,7 @@ fn parse_mcp_probe_options(args: &[String]) -> Result<McpProbeOptions, EvaError>
     })
 }
 
+/// 加载 Adapter 运行时并执行只读 MCP 命令。
 pub(super) fn execute_mcp<W, E>(
     command: McpCommand,
     stdout: &mut W,
@@ -106,6 +124,10 @@ where
     }
 }
 
+/// 在清单 allowlist 边界内探测工具。
+///
+/// 先验证 Adapter 存在且 transport 为 MCP，再从显式工具或 allowlist 首项选取目标；
+/// `InMemoryMcpClient` 只验证授权与协议数据，不会产生外部网络或进程副作用。
 fn probe_mcp_runtime(
     runtime: &AdapterRuntime,
     options: &McpProbeOptions,
@@ -137,6 +159,7 @@ fn probe_mcp_runtime(
     Ok(client.probe_tool(&tool))
 }
 
+/// 输出 MCP Adapter、allowlist 工具和 capability 集合。
 fn write_mcp_list<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -171,6 +194,7 @@ fn write_mcp_list<W: Write>(
     }
 }
 
+/// 输出单个 MCP 工具探测结果。
 fn write_mcp_probe<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -194,6 +218,7 @@ fn write_mcp_probe<W: Write>(
     }
 }
 
+/// 将 MCP transport 句柄过滤并编码为稳定 JSON。
 fn mcp_list_json(runtime: &AdapterRuntime) -> String {
     let entries = runtime
         .list()
@@ -216,6 +241,7 @@ fn mcp_list_json(runtime: &AdapterRuntime) -> String {
     format!("{{\"mcp_adapters\":{}}}", json_array(entries))
 }
 
+/// 将 MCP 探测报告编码为 JSON。
 fn mcp_probe_json(report: &McpProbeReport) -> String {
     format!(
         "{{\"adapter_id\":{},\"tool\":{},\"status\":{},\"message\":{}}}",

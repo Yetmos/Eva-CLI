@@ -1,3 +1,8 @@
+//! 适配器运行时的统一授权调用入口。
+//!
+//! 外部进程和网络传输必须先经路由、监督器准入与高风险策略判定，运行时才签发仅绑定本次
+//! 请求的凭据作用域。无论传输成功还是失败，已取得的执行槽都会进入完成态；可观测性写入
+//! 采用尽力而为语义，不会覆盖适配器调用本身的结果。
 //! Authorized Adapter runtime probes and controlled invocation envelopes.
 
 use crate::manifest::AdapterHandle;
@@ -19,49 +24,78 @@ use eva_storage::{FileSystemProviderProcessTable, ProviderProcessSnapshot};
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "authorized transport execution with timeout and audit";
 
+/// 描述一次尚未路由的能力调用及其调用方可设置参数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterInvocation {
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
+    /// 记录 `capability` 字段对应的值。
     pub capability: CapabilityName,
+    /// 记录 `provider` 字段对应的值。
     pub provider: Option<AdapterId>,
+    /// 记录 `input` 字段对应的值。
     pub input: String,
+    /// 保存运行时监督器签发的内部凭据作用域；公共调用方不能直接构造或注入该值。
     credential_scope: Option<ProviderCredentialScope>,
 }
 
+/// 表示 `AdapterProbeReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterProbeReport {
+    /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
+    /// 记录 `transport` 字段对应的值。
     pub transport: AdapterTransport,
+    /// 记录 `status` 字段对应的值。
     pub status: String,
+    /// 记录 `capabilities` 字段对应的值。
     pub capabilities: Vec<CapabilityName>,
+    /// 记录 `detail` 字段对应的值。
     pub detail: String,
 }
 
+/// 表示 `AdapterInvokeReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterInvokeReport {
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
+    /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
+    /// 记录 `transport` 字段对应的值。
     pub transport: AdapterTransport,
+    /// 记录 `capability` 字段对应的值。
     pub capability: CapabilityName,
+    /// 记录 `status` 字段对应的值。
     pub status: String,
+    /// 记录 `output` 字段对应的值。
     pub output: String,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
+    /// 记录 `trace` 字段对应的值。
     pub trace: TraceFields,
 }
 
+/// 聚合适配器路由、策略判定、进程监督和可选可观测性后端的调用运行时。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterRuntime {
+    /// 保存从项目清单解析出的已授权适配器句柄。
     registry: AdapterRegistry,
+    /// 按能力与显式提供者请求选择登记句柄。
     router: AdapterRouter,
+    /// 以内部可变性串行推进执行槽、限流窗口和熔断状态。
     supervisor: RefCell<InMemoryProviderSupervisor>,
+    /// 在签发外部提供者凭据前执行高风险策略判定。
     policy_gate: RuntimePolicyGate,
+    /// 指定尽力而为的审计、指标和追踪落盘目录；未配置时不产生落盘副作用。
     observability_backend: Option<PathBuf>,
 }
 
 impl AdapterInvocation {
+    /// 创建并初始化当前类型的实例。
     pub fn new(request_id: RequestId, capability: CapabilityName) -> Self {
         Self {
             request_id,
@@ -72,25 +106,30 @@ impl AdapterInvocation {
         }
     }
 
+    /// 设置 `provider` 并返回更新后的实例。
     pub fn with_provider(mut self, provider: AdapterId) -> Self {
         self.provider = Some(provider);
         self
     }
 
+    /// 设置 `input` 并返回更新后的实例。
     pub fn with_input(mut self, input: impl Into<String>) -> Self {
         self.input = input.into();
         self
     }
 
+    /// 设置 `credential_scope` 并返回更新后的实例。
     pub(crate) fn with_credential_scope(mut self, scope: ProviderCredentialScope) -> Self {
         self.credential_scope = Some(scope);
         self
     }
 
+    /// 执行 `credential_scope` 对应的处理逻辑。
     pub fn credential_scope(&self) -> Option<&ProviderCredentialScope> {
         self.credential_scope.as_ref()
     }
 
+    /// 执行 `trace_for_adapter` 对应的处理逻辑。
     pub fn trace_for_adapter(&self, adapter_id: &AdapterId) -> TraceFields {
         TraceFields::default()
             .with_request_id(self.request_id.clone())
@@ -105,6 +144,7 @@ impl AdapterInvocation {
 }
 
 impl AdapterRuntime {
+    /// 根据输入构造当前类型，作为 `from_registry` 的标准入口。
     pub fn from_registry(registry: AdapterRegistry) -> Self {
         Self::from_registry_with_policy(
             registry,
@@ -112,6 +152,7 @@ impl AdapterRuntime {
         )
     }
 
+    /// 根据输入构造当前类型，作为 `from_registry_with_policy` 的标准入口。
     fn from_registry_with_policy(
         registry: AdapterRegistry,
         policy_gate: RuntimePolicyGate,
@@ -123,6 +164,7 @@ impl AdapterRuntime {
         )
     }
 
+    /// 根据输入构造当前类型，作为 `from_registry_with_policy_and_supervisor` 的标准入口。
     fn from_registry_with_policy_and_supervisor(
         registry: AdapterRegistry,
         policy_gate: RuntimePolicyGate,
@@ -138,6 +180,7 @@ impl AdapterRuntime {
         }
     }
 
+    /// 根据输入构造当前类型，作为 `from_project` 的标准入口。
     pub fn from_project(project: &ProjectConfig) -> Result<Self, EvaError> {
         let registry = AdapterRegistry::from_project(project)?;
         let policy_gate = RuntimePolicyGate::from_project(project)?;
@@ -145,6 +188,7 @@ impl AdapterRuntime {
             .with_observability_backend(default_observability_backend(project)))
     }
 
+    /// 根据输入构造当前类型，作为 `from_project_with_provider_process_table` 的标准入口。
     pub fn from_project_with_provider_process_table(
         project: &ProjectConfig,
         process_table: FileSystemProviderProcessTable,
@@ -159,6 +203,7 @@ impl AdapterRuntime {
         .with_observability_backend(default_observability_backend(project)))
     }
 
+    /// 根据输入构造当前类型，作为 `from_registry_with_provider_process_table` 的标准入口。
     pub fn from_registry_with_provider_process_table(
         registry: AdapterRegistry,
         process_table: FileSystemProviderProcessTable,
@@ -170,27 +215,33 @@ impl AdapterRuntime {
         )
     }
 
+    /// 执行 `registry` 对应的处理逻辑。
     pub fn registry(&self) -> &AdapterRegistry {
         &self.registry
     }
 
+    /// 执行 `router` 对应的受控流程。
     pub fn router(&self) -> &AdapterRouter {
         &self.router
     }
 
+    /// 返回 `list` 对应的数据视图。
     pub fn list(&self) -> Vec<&crate::manifest::AdapterHandle> {
         self.registry.list()
     }
 
+    /// 执行 `provider_processes` 对应的处理逻辑。
     pub fn provider_processes(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError> {
         self.supervisor.borrow().processes()
     }
 
+    /// 设置 `observability_backend` 并返回更新后的实例。
     pub fn with_observability_backend(mut self, root: impl Into<PathBuf>) -> Self {
         self.observability_backend = Some(root.into());
         self
     }
 
+    /// 执行 `probe_adapter` 对应的处理逻辑。
     pub fn probe_adapter(&self, adapter_id: &AdapterId) -> Result<AdapterProbeReport, EvaError> {
         let handle = self.registry.get(adapter_id).ok_or_else(|| {
             EvaError::not_found("Adapter provider does not exist")
@@ -209,6 +260,7 @@ impl AdapterRuntime {
         })
     }
 
+    /// 执行 `probe_capability` 对应的处理逻辑。
     pub fn probe_capability(
         &self,
         capability: CapabilityName,
@@ -222,6 +274,7 @@ impl AdapterRuntime {
         self.probe_adapter(&route.handle.id)
     }
 
+    /// 路由并执行调用；拒绝调用方伪造的凭据作用域，再按传输类型决定是否进入监督流程。
     pub fn invoke(&self, invocation: AdapterInvocation) -> Result<AdapterInvokeReport, EvaError> {
         if invocation.credential_scope().is_some() {
             return Err(EvaError::permission_denied(
@@ -241,6 +294,11 @@ impl AdapterRuntime {
         dispatch_transport(&handle, invocation)
     }
 
+    /// 在执行槽和策略授权边界内调用外部提供者。
+    ///
+    /// 准入失败时不会创建凭据作用域；取得槽后，即使策略拒绝或传输失败也必须调用
+    /// `complete` 释放槽并更新熔断状态。完成记录失败会作为本次调用错误返回，因为此时
+    /// 无法保证监督器看到的生命周期与实际执行一致。
     fn invoke_supervised(
         &self,
         handle: crate::manifest::AdapterHandle,
@@ -252,6 +310,7 @@ impl AdapterRuntime {
                 self.policy_gate
                     .adapter_retry_backoff_ms(&invocation.capability),
             );
+        // 先占用受监督执行槽，确保后续凭据会话受并发、速率和熔断限制约束。
         let slot = match self.supervisor.borrow_mut().acquire(execution_request) {
             Ok(slot) => slot,
             Err(error) => {
@@ -276,6 +335,7 @@ impl AdapterRuntime {
         );
         let policy_audit = policy_decision.audit.clone();
         if !policy_decision.allowed {
+            // 策略拒绝发生在槽创建之后，因此必须先完成失败快照再向调用方返回拒绝。
             let snapshot = self.supervisor.borrow_mut().complete(
                 &slot,
                 ProviderExecutionOutcome {
@@ -298,6 +358,7 @@ impl AdapterRuntime {
         }
         let result =
             dispatch_transport(&handle, invocation.with_credential_scope(credential_scope));
+        // 两个终态分支都释放同一个槽；任何新分支都必须维持这一对称性。
         match result {
             Ok(mut report) => {
                 let snapshot = self
@@ -339,6 +400,7 @@ impl AdapterRuntime {
         }
     }
 
+    /// 登记 `record_provider_observability` 对应的数据或状态。
     fn record_provider_observability(
         &self,
         handle: &AdapterHandle,
@@ -410,6 +472,7 @@ impl AdapterRuntime {
     }
 }
 
+/// 执行 `default_observability_backend` 对应的处理逻辑。
 fn default_observability_backend(project: &ProjectConfig) -> PathBuf {
     let data_dir = project
         .eva
@@ -424,6 +487,7 @@ fn default_observability_backend(project: &ProjectConfig) -> PathBuf {
     }
 }
 
+/// 将已完成路由和授权的调用分派到唯一传输实现，不在此处重复选择提供者。
 fn dispatch_transport(
     handle: &crate::manifest::AdapterHandle,
     invocation: AdapterInvocation,
@@ -440,6 +504,7 @@ fn dispatch_transport(
     }
 }
 
+/// 执行 `should_supervise` 对应的处理逻辑。
 fn should_supervise(transport: AdapterTransport) -> bool {
     matches!(
         transport,
@@ -450,6 +515,7 @@ fn should_supervise(transport: AdapterTransport) -> bool {
     )
 }
 
+/// 执行 `append_supervisor_audit` 对应的处理逻辑。
 fn append_supervisor_audit(audit: &mut Vec<String>, snapshot: &ProviderProcessSnapshot) {
     audit.push(format!("provider.session:{}", snapshot.session_id));
     audit.push(format!("provider.process:{}", snapshot.provider_process_id));
@@ -461,6 +527,7 @@ fn append_supervisor_audit(audit: &mut Vec<String>, snapshot: &ProviderProcessSn
     audit.push("provider.slot:released".to_owned());
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,10 +550,12 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::thread;
 
+    /// 执行 `workspace_root` 对应的处理逻辑。
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
 
+    /// 验证 `runtime_invokes_skill_adapter_with_controlled_runner` 场景下的预期行为。
     #[test]
     fn runtime_invokes_skill_adapter_with_controlled_runner() {
         let project = load_project_config(workspace_root()).unwrap();
@@ -534,6 +603,7 @@ mod tests {
         assert_eq!(processes[0].adapter_id.as_str(), "code-review-skill");
     }
 
+    /// 验证 `runtime_invokes_stdio_adapter_with_redacted_env` 场景下的预期行为。
     #[test]
     fn runtime_invokes_stdio_adapter_with_redacted_env() {
         let env_name = "EVA_TEST_STDIO_SECRET_RUNTIME";
@@ -573,6 +643,7 @@ mod tests {
         assert!(report.audit.contains(&"shell:false".to_owned()));
     }
 
+    /// 验证 `runtime_writes_provider_observability_when_backend_is_configured` 场景下的预期行为。
     #[test]
     fn runtime_writes_provider_observability_when_backend_is_configured() {
         let root = temp_root("provider-observability");
@@ -605,6 +676,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证 `runtime_rejects_cross_provider_credential_scope_before_start` 场景下的预期行为。
     #[test]
     fn runtime_rejects_cross_provider_credential_scope_before_start() {
         let handle = stdio_handle(
@@ -632,6 +704,7 @@ mod tests {
         assert!(error.message().contains("credential session"));
     }
 
+    /// 验证 `runtime_rejects_disabled_stdio_provider_before_start` 场景下的预期行为。
     #[test]
     fn runtime_rejects_disabled_stdio_provider_before_start() {
         let runtime = runtime_with_handle(stdio_handle(
@@ -655,6 +728,7 @@ mod tests {
         assert!(runtime.provider_processes().unwrap().is_empty());
     }
 
+    /// 验证 `runtime_releases_provider_slot_when_stdio_start_fails` 场景下的预期行为。
     #[test]
     fn runtime_releases_provider_slot_when_stdio_start_fails() {
         let runtime = runtime_with_handle(stdio_handle(
@@ -690,6 +764,7 @@ mod tests {
             .any(|entry| entry == "provider.supervisor.failed"));
     }
 
+    /// 验证 `runtime_can_mirror_provider_processes_to_durable_table` 场景下的预期行为。
     #[test]
     fn runtime_can_mirror_provider_processes_to_durable_table() {
         let root = temp_root("durable-provider-table");
@@ -730,6 +805,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证 `runtime_blocks_new_provider_process_while_circuit_is_open` 场景下的预期行为。
     #[test]
     fn runtime_blocks_new_provider_process_while_circuit_is_open() {
         let mut handle = stdio_handle(true, "definitely-not-started", Vec::new(), Vec::new());
@@ -769,6 +845,7 @@ mod tests {
         assert_eq!(processes[0].health, "circuit_open");
     }
 
+    /// 验证 `runtime_invokes_http_adapter_and_redacts_credential_header` 场景下的预期行为。
     #[test]
     fn runtime_invokes_http_adapter_and_redacts_credential_header() {
         let env_name = "EVA_TEST_HTTP_SECRET_RUNTIME";
@@ -847,6 +924,7 @@ mod tests {
             .contains(&"credential.session_token:redacted".to_owned()));
     }
 
+    /// 验证 `runtime_invokes_mcp_http_adapter_with_auth_headers` 场景下的预期行为。
     #[test]
     fn runtime_invokes_mcp_http_adapter_with_auth_headers() {
         let env_name = "EVA_TEST_MCP_HTTP_SECRET_RUNTIME";
@@ -928,20 +1006,24 @@ mod tests {
             .contains(&"mcp.http.exchange_count:3".to_owned()));
     }
 
+    /// 执行 `runtime_with_handle` 对应的受控流程。
     fn runtime_with_handle(handle: AdapterHandle) -> AdapterRuntime {
         AdapterRuntime::from_registry(registry_with_handle(handle))
     }
 
+    /// 执行 `registry_with_handle` 对应的处理逻辑。
     fn registry_with_handle(handle: AdapterHandle) -> AdapterRegistry {
         let mut registry = AdapterRegistry::new();
         registry.register(handle).unwrap();
         registry
     }
 
+    /// 执行 `http_header_end` 对应的处理逻辑。
     fn http_header_end(bytes: &[u8]) -> Option<usize> {
         bytes.windows(4).position(|window| window == b"\r\n\r\n")
     }
 
+    /// 执行 `http_content_length` 对应的处理逻辑。
     fn http_content_length(header: &str) -> usize {
         header
             .lines()
@@ -956,6 +1038,7 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// 执行 `http_header_value` 对应的处理逻辑。
     fn http_header_value(request: &str, header_name: &str) -> Option<String> {
         request.lines().find_map(|line| {
             let (name, value) = line.split_once(':')?;
@@ -967,6 +1050,7 @@ mod tests {
         })
     }
 
+    /// 读取或解析 `read_http_request` 所需的数据，失败时保留错误语义。
     fn read_http_request(stream: &mut std::net::TcpStream) -> String {
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(1)))
@@ -995,6 +1079,7 @@ mod tests {
         String::from_utf8_lossy(&request_bytes).into_owned()
     }
 
+    /// 执行 `temp_root` 对应的处理逻辑。
     fn temp_root(name: &str) -> PathBuf {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1008,6 +1093,7 @@ mod tests {
         root
     }
 
+    /// 执行 `stdio_handle` 对应的处理逻辑。
     fn stdio_handle(
         enabled: bool,
         command: impl Into<String>,
@@ -1055,6 +1141,7 @@ mod tests {
         }
     }
 
+    /// 执行 `http_handle` 对应的处理逻辑。
     fn http_handle(
         endpoint: String,
         headers: BTreeMap<String, String>,
@@ -1101,6 +1188,7 @@ mod tests {
         }
     }
 
+    /// 执行 `mcp_http_handle` 对应的处理逻辑。
     fn mcp_http_handle(endpoint: String, headers: BTreeMap<String, String>) -> AdapterHandle {
         AdapterHandle {
             id: AdapterId::parse("mcp-http-test").unwrap(),
@@ -1143,16 +1231,19 @@ mod tests {
         }
     }
 
+    /// 执行 `test_command` 对应的处理逻辑。
     #[cfg(windows)]
     fn test_command() -> &'static str {
         "powershell"
     }
 
+    /// 执行 `test_command` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn test_command() -> &'static str {
         "sh"
     }
 
+    /// 执行 `env_echo_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn env_echo_args(env_name: &str) -> Vec<String> {
         vec![
@@ -1164,6 +1255,7 @@ mod tests {
         ]
     }
 
+    /// 执行 `env_echo_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn env_echo_args(env_name: &str) -> Vec<String> {
         vec![
@@ -1174,6 +1266,7 @@ mod tests {
         ]
     }
 
+    /// 执行 `ok_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn ok_args() -> Vec<String> {
         vec![
@@ -1183,6 +1276,7 @@ mod tests {
         ]
     }
 
+    /// 执行 `ok_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn ok_args() -> Vec<String> {
         vec!["-c".to_owned(), "printf ok".to_owned()]

@@ -1,3 +1,5 @@
+//! Capability 注册、provider 规划、探测和受控调用子命令。
+
 use super::{
     json_array, json_string, option_json, parse_common_options, required_option, success_envelope,
     trace_for, write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_OK,
@@ -20,98 +22,169 @@ use eva_policy::{
 };
 use std::io::Write;
 
+/// 未显式指定时使用的已知 capability。
 const DEFAULT_CAPABILITY: &str = "repo.analyze";
+/// Capability 调用的默认审计请求 ID。
 const DEFAULT_REQUEST_ID: &str = "req-capability-1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Capability 子命令及其已解析选项。
 pub(super) enum CapabilityCommand {
-    List(CommonOptions),
-    Probe(CapabilityProbeOptions),
-    Call(CapabilityCallOptions),
+    /// 列出已注册 capability 与 provider 计划。
+    List(
+        /// capability 列表命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
+    /// 探测 capability 的候选 provider。
+    Probe(
+        /// 已解析的 capability 名称、可选 Adapter 过滤条件与公共选项。
+        CapabilityProbeOptions,
+    ),
+    /// dry-run 或在显式确认后调用 capability。
+    Call(
+        /// 已解析的 capability 调用目标、载荷、确认标志与公共选项。
+        CapabilityCallOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Capability 探测选项。
 pub(super) struct CapabilityProbeOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 要探测的规范 capability 名称。
     capability: String,
+    /// 可选显式 provider Adapter ID。
     provider: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Capability 调用选项，默认保持 dry-run 语义。
 pub(super) struct CapabilityCallOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 要调用的 capability 名称。
     capability: String,
+    /// 可选显式 provider Adapter ID。
     provider: Option<String>,
+    /// 调用输入文本。
     input: String,
+    /// 调用和审计请求 ID。
     request_id: String,
+    /// 必须与 request ID 精确匹配的可选确认值。
     confirm: Option<String>,
+    /// 即使确认存在也禁止执行调用的显式 dry-run 标志。
     dry_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Capability 列表报告。
 struct CapabilityListReport {
+    /// 按项目 manifest 顺序排列的 capability 项。
     capabilities: Vec<CapabilityListEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Capability manifest 与派生 provider 计划的输出投影。
 struct CapabilityListEntry {
+    /// Manifest 稳定 ID。
     manifest_id: String,
+    /// 面向用户的名称。
     name: String,
+    /// Manifest 版本。
     version: String,
+    /// 规范 capability 名称。
     capability: String,
+    /// Capability 实现类别。
     kind: String,
+    /// Manifest 启用状态。
     enabled: bool,
+    /// Descriptor 声明的主 provider 文本。
     provider: String,
+    /// 按优先级排序的 provider 候选。
     providers: Vec<ProviderPlanEntry>,
+    /// Provider 必须具备的 Adapter capability。
     required_adapter_capabilities: Vec<String>,
+    /// Manifest 来源路径。
     manifest_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Capability 探测结果及权限门禁证据。
 struct CapabilityProbeReport {
+    /// ready 或 degraded 状态。
     status: String,
+    /// 已探测 capability 名称。
     capability: String,
+    /// Router 生成的 provider 计划。
     provider_plan: CapabilityProviderPlan,
+    /// 各候选 provider 的探测结果。
     providers: Vec<ProviderProbeEntry>,
+    /// Manifest 派生权限门禁结果。
     permission_gate: GateReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Capability dry-run 或真实调用的完整报告。
 struct CapabilityCallReport {
+    /// executed 或 dry_run 状态。
     status: String,
+    /// 调用请求 ID。
     request_id: String,
+    /// 规范 capability 名称。
     capability: String,
+    /// 输入 UTF-8 字节数。
     input_size: usize,
+    /// Router 生成的 provider 计划。
     provider_plan: CapabilityProviderPlan,
+    /// Manifest 派生权限门禁结果。
     permission_gate: GateReport,
+    /// 各 provider 的运行时策略决策。
     runtime_policy: Vec<PolicyDecision>,
+    /// 确认值是否与请求 ID 匹配。
     confirmed: bool,
+    /// 是否实际调用了 host/runtime。
     invocation_executed: bool,
+    /// 是否发生外部状态变更；当前 capability CLI 路径固定为 false。
     mutation_executed: bool,
+    /// 真实调用时的可选响应。
     response: Option<InvokeResponse>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Provider 计划中的候选及来源。
 struct ProviderPlanEntry {
+    /// 适配器提供方标识。
     provider: String,
+    /// 候选来源，例如 manifest 或显式覆盖。
     source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 单个 provider 的只读探测结果。
 struct ProviderProbeEntry {
+    /// 适配器提供方标识。
     provider: String,
+    /// 候选来源。
     source: String,
+    /// 探测状态。
     status: String,
+    /// 可用时的 Adapter transport。
     transport: Option<String>,
+    /// 成功详情或失败消息。
     detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 简化的权限门禁结果。
 struct GateReport {
+    /// 派生权限是否允许计划。
     allowed: bool,
+    /// 可审计的允许或拒绝原因。
     reason: String,
 }
 
+/// 解析 `capability list|probe|call` 子命令。
 pub(super) fn parse_capability_command(args: &[String]) -> Result<CapabilityCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -129,6 +202,7 @@ pub(super) fn parse_capability_command(args: &[String]) -> Result<CapabilityComm
     }
 }
 
+/// 加载项目后执行 Capability 命令；所有门禁拒绝通过统一错误契约返回。
 pub(super) fn execute_capability<W, E>(
     command: CapabilityCommand,
     stdout: &mut W,
@@ -193,6 +267,7 @@ where
     }
 }
 
+/// 解析 capability/provider 探测选项，并校验两个强类型名称。
 fn parse_capability_probe_options(args: &[String]) -> Result<CapabilityProbeOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut capability = None;
@@ -230,6 +305,7 @@ fn parse_capability_probe_options(args: &[String]) -> Result<CapabilityProbeOpti
     })
 }
 
+/// 解析调用输入、请求、确认与 dry-run 选项；重复 capability 由专用 setter 拒绝。
 fn parse_capability_call_options(args: &[String]) -> Result<CapabilityCallOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut capability = None;
@@ -292,6 +368,7 @@ fn parse_capability_call_options(args: &[String]) -> Result<CapabilityCallOption
     })
 }
 
+/// 按 manifest 顺序将项目 capability 与注册表 descriptor 合并为列表报告。
 fn create_capability_list(
     project: &ProjectConfig,
     registry: &CapabilityRegistry,
@@ -304,6 +381,8 @@ fn create_capability_list(
     Ok(CapabilityListReport { capabilities })
 }
 
+/// 生成 provider 计划、派生最小权限并逐个探测候选。
+/// 权限门禁在探测前执行，避免未授权 provider 即使只读也被访问。
 fn create_capability_probe(
     project: &ProjectConfig,
     options: &CapabilityProbeOptions,
@@ -339,6 +418,10 @@ fn create_capability_probe(
     })
 }
 
+/// 规划并可选执行 capability 调用。
+///
+/// 确认必须与 request ID 精确匹配；Manifest 权限和 RuntimePolicyGate 均在 host 调用前
+/// 完成。只有 `confirmed && !dry_run` 才执行，其他路径仍返回完整计划而无副作用。
 fn create_capability_call(
     project: &ProjectConfig,
     options: &CapabilityCallOptions,
@@ -411,6 +494,7 @@ fn create_capability_call(
     })
 }
 
+/// 从项目 manifest 构建 CapabilityRegistry，重复或无效 descriptor 直接失败。
 fn capability_registry_from_project(
     project: &ProjectConfig,
 ) -> Result<CapabilityRegistry, EvaError> {
@@ -421,6 +505,7 @@ fn capability_registry_from_project(
     Ok(registry)
 }
 
+/// 将单个 manifest 与其 descriptor/provider 计划投影为列表项。
 fn capability_list_entry(
     manifest: &CapabilityManifest,
     registry: &CapabilityRegistry,
@@ -445,6 +530,7 @@ fn capability_list_entry(
     })
 }
 
+/// 精确查找 capability descriptor；未注册时返回带名称上下文的 NotFound。
 fn descriptor_for<'a>(
     registry: &'a CapabilityRegistry,
     capability: &CapabilityName,
@@ -455,6 +541,7 @@ fn descriptor_for<'a>(
     })
 }
 
+/// 从 provider 计划派生最小权限集合，只允许目标 capability、依赖能力和 manifest provider。
 fn permissions_for_plan(plan: &CapabilityProviderPlan) -> PermissionSet {
     let mut permissions = PermissionSet::deny_all().allow_capability(plan.capability.clone());
     for capability in &plan.required_adapter_capabilities {
@@ -466,6 +553,7 @@ fn permissions_for_plan(plan: &CapabilityProviderPlan) -> PermissionSet {
     permissions
 }
 
+/// 逐个探测 provider；单个 provider 故障降为 blocked 项而不丢失其他候选结果。
 fn probe_providers(
     runtime: &AdapterRuntime,
     plan: &CapabilityProviderPlan,
@@ -496,6 +584,7 @@ fn probe_providers(
         .collect()
 }
 
+/// 为每个 provider 构造 AdapterInvoke 决策，并对 Skill transport 追加 SkillRun 门禁。
 fn runtime_policy_decisions(
     project: &ProjectConfig,
     runtime: &AdapterRuntime,
@@ -533,6 +622,7 @@ fn runtime_policy_decisions(
     Ok(decisions)
 }
 
+/// 将内部 provider 候选投影为稳定输出项。
 fn provider_plan_entries(plan: &CapabilityProviderPlan) -> Vec<ProviderPlanEntry> {
     plan.providers
         .iter()
@@ -543,6 +633,7 @@ fn provider_plan_entries(plan: &CapabilityProviderPlan) -> Vec<ProviderPlanEntry
         .collect()
 }
 
+/// 设置唯一 capability 参数，拒绝位置参数与选项重复指定。
 fn set_capability_once(slot: &mut Option<String>, value: String) -> Result<(), EvaError> {
     if slot.is_some() {
         return Err(EvaError::invalid_argument("duplicate capability"));
@@ -551,6 +642,7 @@ fn set_capability_once(slot: &mut Option<String>, value: String) -> Result<(), E
     Ok(())
 }
 
+/// 输出 capability 清单和 provider 计划。
 fn write_capability_list<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -593,6 +685,7 @@ fn write_capability_list<W: Write>(
     }
 }
 
+/// 输出 provider 探测与权限门禁结果。
 fn write_capability_probe<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -630,6 +723,7 @@ fn write_capability_probe<W: Write>(
     }
 }
 
+/// 输出调用计划、确认、执行事实、策略决策和可选响应。
 fn write_capability_call<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -665,11 +759,13 @@ fn write_capability_call<W: Write>(
     }
 }
 
+/// 将 Capability 列表报告编码为 JSON。
 fn capability_list_json(report: &CapabilityListReport) -> String {
     let entries = report.capabilities.iter().map(capability_list_entry_json);
     format!("{{\"capabilities\":{}}}", json_array(entries))
 }
 
+/// 将单个 Capability 列表项编码为 JSON。
 fn capability_list_entry_json(entry: &CapabilityListEntry) -> String {
     format!(
         "{{\"manifest_id\":{},\"name\":{},\"version\":{},\"capability\":{},\"kind\":{},\"enabled\":{},\"provider\":{},\"providers\":{},\"required_adapter_capabilities\":{},\"manifest_path\":{}}}",
@@ -691,6 +787,7 @@ fn capability_list_entry_json(entry: &CapabilityListEntry) -> String {
     )
 }
 
+/// 将 Capability 探测报告编码为 JSON。
 fn capability_probe_json(report: &CapabilityProbeReport) -> String {
     format!(
         "{{\"status\":{},\"capability\":{},\"provider_plan\":{},\"providers\":{},\"permission_gate\":{}}}",
@@ -702,6 +799,7 @@ fn capability_probe_json(report: &CapabilityProbeReport) -> String {
     )
 }
 
+/// 将 Capability 调用报告编码为 JSON，明确区分 invocation 与 mutation。
 fn capability_call_json(report: &CapabilityCallReport) -> String {
     format!(
         "{{\"status\":{},\"request_id\":{},\"capability\":{},\"input_size\":{},\"provider_plan\":{},\"permission_gate\":{},\"runtime_policy\":{},\"confirmed\":{},\"invocation_executed\":{},\"mutation_executed\":{},\"response\":{}}}",
@@ -723,6 +821,7 @@ fn capability_call_json(report: &CapabilityCallReport) -> String {
     )
 }
 
+/// 将 provider 计划及 allowlist/依赖字段编码为 JSON。
 fn provider_plan_json(plan: &CapabilityProviderPlan) -> String {
     format!(
         "{{\"capability\":{},\"providers\":{},\"manifest_allowed_providers\":{},\"required_adapter_capabilities\":{}}}",
@@ -747,6 +846,7 @@ fn provider_plan_json(plan: &CapabilityProviderPlan) -> String {
     )
 }
 
+/// 将单个 provider 计划候选编码为 JSON。
 fn provider_plan_entry_json(entry: &ProviderPlanEntry) -> String {
     format!(
         "{{\"provider\":{},\"source\":{}}}",
@@ -755,6 +855,7 @@ fn provider_plan_entry_json(entry: &ProviderPlanEntry) -> String {
     )
 }
 
+/// 将单个 provider 探测结果编码为 JSON。
 fn provider_probe_entry_json(entry: &ProviderProbeEntry) -> String {
     format!(
         "{{\"provider\":{},\"source\":{},\"status\":{},\"transport\":{},\"detail\":{}}}",
@@ -766,6 +867,7 @@ fn provider_probe_entry_json(entry: &ProviderProbeEntry) -> String {
     )
 }
 
+/// 将简化门禁结果编码为 JSON。
 fn gate_json(gate: &GateReport) -> String {
     format!(
         "{{\"allowed\":{},\"reason\":{}}}",
@@ -774,6 +876,7 @@ fn gate_json(gate: &GateReport) -> String {
     )
 }
 
+/// 将 RuntimePolicyGate 决策及审计字段编码为 JSON。
 fn policy_decision_json(decision: &PolicyDecision) -> String {
     format!(
         "{{\"action\":{},\"allowed\":{},\"reason\":{},\"audit\":{}}}",
@@ -784,6 +887,7 @@ fn policy_decision_json(decision: &PolicyDecision) -> String {
     )
 }
 
+/// 将 InvokeResponse 的状态、输出和结构化错误编码为 JSON。
 fn invoke_response_json(response: &InvokeResponse) -> String {
     format!(
         "{{\"request_id\":{},\"status\":{},\"output\":{},\"error\":{}}}",
@@ -807,6 +911,7 @@ fn invoke_response_json(response: &InvokeResponse) -> String {
     )
 }
 
+/// 将 InvokeStatus 映射为稳定小写状态值。
 fn invoke_status(status: InvokeStatus) -> &'static str {
     match status {
         InvokeStatus::Accepted => "accepted",

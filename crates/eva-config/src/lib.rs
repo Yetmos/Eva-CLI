@@ -1,9 +1,15 @@
+//! 项目配置加载、Schema 验证、规范化与跨文件一致性边界。
 //! Configuration loading and normalization boundary.
 
+/// 主 `eva.yaml` 强类型配置。
 pub mod eva_yaml;
+/// Agent、Adapter 和 Capability 清单模型。
 pub mod manifest;
+/// 策略文档加载模型。
 pub mod policy;
+/// 路由表加载模型。
 pub mod routes;
+/// 配置文件 Schema 验证器。
 pub mod schema;
 
 use crate::eva_yaml::{ConfigRoots, EvaConfig};
@@ -34,29 +40,45 @@ pub use manifest::capability::{CapabilityKind, RawCapabilityKind};
 pub use routes::{RawRouteDelivery, RouteDelivery, RouteRule};
 pub use schema::{schema_paths, SchemaPaths};
 
+/// 由 `eva.yaml` 与拆分清单组装的项目级配置。
 /// Project-level configuration assembled from `eva.yaml` and split manifests.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectConfig {
+    /// 用于解析拆分配置路径的规范化项目根。
     /// Canonical project root used for resolving split configuration roots.
     pub project_root: PathBuf,
+    /// 已加载主配置文件路径。
     /// Path to the loaded `eva.yaml` file.
     pub eva_config_path: PathBuf,
+    /// 解析并规范化后的主配置。
     /// Parsed main configuration.
     pub eva: EvaConfig,
+    /// 已相对项目根解析的配置根路径。
     /// Config roots resolved against `project_root`.
     pub roots: ConfigRoots,
+    /// 已加载的 Agent 清单。
     /// Loaded Agent manifests.
     pub agents: Vec<AgentManifest>,
+    /// 已加载的 Adapter 清单。
     /// Loaded Adapter manifests.
     pub adapters: Vec<AdapterManifest>,
+    /// 已加载的 Capability 清单。
     /// Loaded capability manifests.
     pub capabilities: Vec<CapabilityManifest>,
+    /// 已加载的策略文档。
     /// Loaded policy documents.
     pub policies: Vec<PolicyDocument>,
+    /// 已加载的路由表。
     /// Loaded route table.
     pub routes: RouteConfig,
 }
 
+/// 从项目根加载、验证并交叉检查最小完整配置集合。
+///
+/// 顺序为：规范化项目根、加载主配置、枚举拆分文件、先用 Schema 验证原始 YAML，
+/// 再构建强类型清单，最后检查跨文件引用。Schema 先行保证语义加载器只处理结构合法
+/// 数据；任一阶段失败都不返回部分 `ProjectConfig`。文件列表排序后加载，使重复项错误
+/// 与输出顺序跨平台稳定。
 /// Loads the minimum project configuration set from a project root directory.
 pub fn load_project_config(project_root: impl AsRef<Path>) -> Result<ProjectConfig, EvaError> {
     let project_root = normalize_existing_dir(project_root.as_ref(), "project root")?;
@@ -114,6 +136,7 @@ pub fn load_project_config(project_root: impl AsRef<Path>) -> Result<ProjectConf
     Ok(project)
 }
 
+/// 检查单文件加载阶段不可见的目录、唯一性和交叉引用一致性。
 /// Checks cross-file consistency that is not visible while loading one file.
 pub fn validate_project_config(project: &ProjectConfig) -> Result<(), EvaError> {
     validate_roots(project)?;
@@ -129,6 +152,7 @@ pub fn validate_project_config(project: &ProjectConfig) -> Result<(), EvaError> 
     Ok(())
 }
 
+/// 读取 UTF-8 YAML 文件并反序列化，统一映射 I/O 与位置化语法错误。
 pub(crate) fn read_yaml_file<T>(
     path: impl AsRef<Path>,
     config_type: &'static str,
@@ -141,6 +165,7 @@ where
     serde_yaml::from_str(&content).map_err(|error| yaml_error(error, path, config_type))
 }
 
+/// 构造包含配置类型、路径和字段的参数错误。
 pub(crate) fn invalid_config(
     config_type: &'static str,
     path: &Path,
@@ -153,6 +178,7 @@ pub(crate) fn invalid_config(
         .with_context("field", field.into())
 }
 
+/// 在保留原错误种类的同时附加配置类型、路径和字段上下文。
 pub(crate) fn with_field_context(
     error: EvaError,
     config_type: &'static str,
@@ -165,6 +191,7 @@ pub(crate) fn with_field_context(
         .with_context("field", field.into())
 }
 
+/// 要求字符串非空、首尾无空白，并返回原值。
 pub(crate) fn require_non_empty(
     value: String,
     config_type: &'static str,
@@ -190,6 +217,7 @@ pub(crate) fn require_non_empty(
     }
 }
 
+/// 要求路径的 OS 字符串表示非空。
 pub(crate) fn require_non_empty_path(
     value: PathBuf,
     config_type: &'static str,
@@ -208,6 +236,7 @@ pub(crate) fn require_non_empty_path(
     }
 }
 
+/// 验证全部拆分配置目录和路由文件实际存在。
 fn validate_roots(project: &ProjectConfig) -> Result<(), EvaError> {
     require_existing_dir(&project.roots.agent_dir, "agent_dir")?;
     require_existing_dir(&project.roots.adapter_dir, "adapter_dir")?;
@@ -218,6 +247,7 @@ fn validate_roots(project: &ProjectConfig) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 检查 Agent 标识唯一，并在冲突时同时报告两份源路径。
 fn validate_unique_agents(agents: &[AgentManifest]) -> Result<(), EvaError> {
     let mut seen = BTreeMap::new();
     for agent in agents {
@@ -232,6 +262,7 @@ fn validate_unique_agents(agents: &[AgentManifest]) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 检查 Adapter 标识唯一，并在冲突时同时报告两份源路径。
 fn validate_unique_adapters(adapters: &[AdapterManifest]) -> Result<(), EvaError> {
     let mut seen = BTreeMap::new();
     for adapter in adapters {
@@ -246,6 +277,7 @@ fn validate_unique_adapters(adapters: &[AdapterManifest]) -> Result<(), EvaError
     Ok(())
 }
 
+/// 检查 Capability 清单标识唯一。
 fn validate_unique_capabilities(capabilities: &[CapabilityManifest]) -> Result<(), EvaError> {
     let mut seen = BTreeMap::new();
     for capability in capabilities {
@@ -260,6 +292,7 @@ fn validate_unique_capabilities(capabilities: &[CapabilityManifest]) -> Result<(
     Ok(())
 }
 
+/// 验证所有 Agent 父子引用指向已加载 Agent。
 fn validate_agent_references(agents: &[AgentManifest]) -> Result<(), EvaError> {
     let known = agents
         .iter()
@@ -289,6 +322,7 @@ fn validate_agent_references(agents: &[AgentManifest]) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 将相对脚本路径按各自清单目录解析，并要求目标是现有文件。
 fn validate_agent_scripts(agents: &[AgentManifest]) -> Result<(), EvaError> {
     for agent in agents {
         let manifest_dir = agent.path.parent().unwrap_or_else(|| Path::new(""));
@@ -308,6 +342,10 @@ fn validate_agent_scripts(agents: &[AgentManifest]) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 验证 Agent 权限中的 Provider 与能力引用在项目内有声明。
+///
+/// 能力可以由 Adapter 直接暴露，也可以由 Capability 清单声明；任何未知引用都会
+/// 附带建议并失败关闭，避免权限拼写错误在运行时悄然扩大或缩小能力面。
 fn validate_agent_permission_references(project: &ProjectConfig) -> Result<(), EvaError> {
     let adapters = project
         .adapters
@@ -366,6 +404,7 @@ fn validate_agent_permission_references(project: &ProjectConfig) -> Result<(), E
     Ok(())
 }
 
+/// 验证每份 Capability 的所有 Provider 引用均指向已加载 Adapter。
 fn validate_capability_providers(project: &ProjectConfig) -> Result<(), EvaError> {
     let adapters = project
         .adapters
@@ -389,6 +428,7 @@ fn validate_capability_providers(project: &ProjectConfig) -> Result<(), EvaError
     Ok(())
 }
 
+/// 强制解析所有 Hardware Adapter 扩展，使非法硬件字段在启动前暴露。
 fn validate_hardware_adapter_configs(adapters: &[AdapterManifest]) -> Result<(), EvaError> {
     for adapter in adapters {
         adapter.hardware_config()?;
@@ -396,6 +436,7 @@ fn validate_hardware_adapter_configs(adapters: &[AdapterManifest]) -> Result<(),
     Ok(())
 }
 
+/// 验证每条路由的目标 Agent 均存在。
 fn validate_route_agents(project: &ProjectConfig) -> Result<(), EvaError> {
     let agents = project
         .agents
@@ -417,6 +458,7 @@ fn validate_route_agents(project: &ProjectConfig) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 递归查找具有指定文件名的普通文件并按路径排序。
 fn find_named_files(root: &Path, filename: &str) -> Result<Vec<PathBuf>, EvaError> {
     let mut files = Vec::new();
     collect_files(root, &mut files, &|path| {
@@ -426,6 +468,7 @@ fn find_named_files(root: &Path, filename: &str) -> Result<Vec<PathBuf>, EvaErro
     Ok(files)
 }
 
+/// 递归查找 `.yaml` 或 `.yml` 普通文件并按路径排序。
 fn find_yaml_files(root: &Path) -> Result<Vec<PathBuf>, EvaError> {
     let mut files = Vec::new();
     collect_files(root, &mut files, &is_yaml_file)?;
@@ -433,6 +476,10 @@ fn find_yaml_files(root: &Path) -> Result<Vec<PathBuf>, EvaError> {
     Ok(files)
 }
 
+/// 深度优先收集满足谓词的普通文件。
+///
+/// 只跟随 `read_dir` 返回的目录项类型，不把非文件节点加入结果；任何目录读取错误
+/// 立即传播，避免以不完整配置集合继续启动。
 fn collect_files(
     root: &Path,
     files: &mut Vec<PathBuf>,
@@ -454,6 +501,7 @@ fn collect_files(
     Ok(())
 }
 
+/// 判断路径扩展名是否为受支持 YAML 拼写。
 fn is_yaml_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|extension| extension.to_str()),
@@ -461,6 +509,7 @@ fn is_yaml_file(path: &Path) -> bool {
     )
 }
 
+/// 规范化现有目录路径并拒绝非目录目标。
 fn normalize_existing_dir(path: &Path, field: &'static str) -> Result<PathBuf, EvaError> {
     let path = fs::canonicalize(path).map_err(|error| io_error(error, path, field))?;
     if path.is_dir() {
@@ -472,6 +521,7 @@ fn normalize_existing_dir(path: &Path, field: &'static str) -> Result<PathBuf, E
     }
 }
 
+/// 要求配置路径指向现有目录。
 fn require_existing_dir(path: &Path, field: &'static str) -> Result<(), EvaError> {
     if path.is_dir() {
         Ok(())
@@ -484,6 +534,7 @@ fn require_existing_dir(path: &Path, field: &'static str) -> Result<(), EvaError
     }
 }
 
+/// 要求配置路径指向现有普通文件。
 fn require_existing_file(path: &Path, field: &'static str) -> Result<(), EvaError> {
     if path.is_file() {
         Ok(())
@@ -494,6 +545,7 @@ fn require_existing_file(path: &Path, field: &'static str) -> Result<(), EvaErro
     }
 }
 
+/// 将 NotFound 与其他 I/O 错误映射为稳定 EvaError 种类并附带路径。
 fn io_error(error: std::io::Error, path: &Path, config_type: &'static str) -> EvaError {
     let message = format!("failed to read {config_type}");
     let base = if error.kind() == std::io::ErrorKind::NotFound {
@@ -505,6 +557,7 @@ fn io_error(error: std::io::Error, path: &Path, config_type: &'static str) -> Ev
         .with_context("io_error", error.to_string())
 }
 
+/// 将 YAML 语法错误映射为参数错误，并在可用时附加行列位置。
 fn yaml_error(error: serde_yaml::Error, path: &Path, config_type: &'static str) -> EvaError {
     let mut eva_error = EvaError::invalid_argument("failed to parse YAML")
         .with_context("config_type", config_type)
@@ -519,16 +572,19 @@ fn yaml_error(error: serde_yaml::Error, path: &Path, config_type: &'static str) 
 }
 
 #[cfg(test)]
+/// 项目配置聚合、Schema 和跨文件引用验证测试。
 mod tests {
     use super::*;
     use eva_core::ErrorKind;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 返回包含示例配置的工作区根目录。
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
 
     #[test]
+    /// 验证所有配置根、清单、策略和路由可组成完整项目。
     fn project_config_loads_all_config_roots() {
         let project = load_project_config(workspace_root()).unwrap();
 
@@ -542,6 +598,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证重复 Agent 标识在项目级校验中被拒绝。
     fn validate_project_config_rejects_duplicate_agent_id() {
         let mut project = load_project_config(workspace_root()).unwrap();
         let duplicate = project.agents[0].clone();
@@ -553,6 +610,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证路由引用未知 Agent 时失败关闭。
     fn validate_project_config_rejects_unknown_route_agent() {
         let mut project = load_project_config(workspace_root()).unwrap();
         project.routes.routes[0]
@@ -565,6 +623,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Schema 禁止的额外属性在语义加载前被拒绝。
     fn load_project_config_rejects_schema_additional_property() {
         let root = minimal_project("schema-additional", "codex-cli");
         fs::write(
@@ -589,6 +648,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Agent 权限引用未知 Provider 时返回稳定上下文。
     fn load_project_config_rejects_unknown_agent_permission_provider() {
         let root = minimal_project("missing-provider", "missing-adapter");
 
@@ -607,6 +667,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证未知硬件驱动类别在项目加载阶段被拒绝。
     fn load_project_config_rejects_unknown_hardware_driver_kind() {
         let root = minimal_project("bad-hardware-driver", "codex-cli");
         fs::write(
@@ -640,6 +701,7 @@ routing: {}
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// 断言错误上下文包含指定键值。
     fn assert_context(error: &EvaError, key: &str, value: &str) {
         assert!(
             error
@@ -652,6 +714,7 @@ routing: {}
         );
     }
 
+    /// 创建带最小配置和可控 Agent Provider 引用的临时项目。
     fn minimal_project(name: &str, agent_provider: &str) -> PathBuf {
         let root = test_temp_dir(name);
         let config = root.join("config");
@@ -735,6 +798,7 @@ routing: {}
         root
     }
 
+    /// 写入最小测试项目所需的 Schema 文件。
     fn write_minimal_schemas(schema_dir: &Path) {
         fs::write(
             schema_dir.join("eva.schema.json"),
@@ -768,6 +832,7 @@ routing: {}
         .unwrap();
     }
 
+    /// 创建进程和时间戳隔离的临时目录路径。
     fn test_temp_dir(name: &str) -> PathBuf {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

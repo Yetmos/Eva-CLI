@@ -1,3 +1,5 @@
+//! 类型化事件发布子命令；在进入内存或 durable EventBus 前完成所有 ID、目标和 payload 校验。
+
 use super::{
     json_string, option_json, parse_common_options, required_option, success_envelope, trace_for,
     write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_OK,
@@ -14,53 +16,106 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// `eva emit` 的完整已解析命令。
 pub(super) struct EmitCommand {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 必须解析为具体绝对 Topic 的事件路径。
     topic: String,
+    /// 可选事件 ID；缺省按当前时间生成。
     event_id: Option<String>,
+    /// 可选请求关联 ID。
     request_id: Option<String>,
+    /// 可选运行时代际 ID。
     generation_id: Option<String>,
+    /// 可选事件链根 ID。
     correlation_id: Option<String>,
+    /// 可选直接父事件 ID。
     causation_id: Option<String>,
+    /// 互斥的事件投递目标。
     target: EmitTarget,
+    /// 互斥的事件 payload 表示。
     payload: EmitPayload,
+    /// 可选 durable backend 根；缺省发布到进程内 EventBus。
     durable_backend: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// CLI 层尚未强类型化的互斥目标，解析完成后转换为 `EventTarget`。
 enum EmitTarget {
+    /// 未指定显式目标时广播。
     #[default]
     Broadcast,
-    Agent(String),
-    Capability(String),
-    Adapter(String),
+    /// 定向 Agent ID 文本。
+    Agent(
+        /// 接收事件的目标 Agent 标识。
+        String,
+    ),
+    /// 定向 Capability 名称文本。
+    Capability(
+        /// 接收事件的目标 capability 名称。
+        String,
+    ),
+    /// 定向 Adapter ID 文本。
+    Adapter(
+        /// 接收事件的目标 Adapter 标识。
+        String,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// CLI 接受的互斥 payload 输入形式。
 enum EmitPayload {
+    /// 显式或默认空 payload。
     #[default]
     Empty,
-    Text(String),
-    BytesHex(String),
+    /// UTF-8 文本 payload。
+    Text(
+        /// 按 UTF-8 字节发送的原始文本内容。
+        String,
+    ),
+    /// 十六进制编码的二进制 payload。
+    BytesHex(
+        /// 等待校验并解码的十六进制字符串。
+        String,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// EventBus 发布回执及用户输入 metadata 的稳定输出投影。
 struct EmitReport {
+    /// 实际 EventBus 后端种类。
     backend_kind: String,
+    /// durable 后端路径；内存后端为空。
     backend_path: Option<String>,
+    /// EventBus 接受的事件 ID。
     event_id: String,
+    /// 已校验 topic。
     topic: String,
+    /// 后端分配的发布序列号。
     sequence: u64,
+    /// broadcast、agent、capability 或 adapter。
     target_kind: String,
+    /// 定向目标的可选稳定值。
     target_value: Option<String>,
+    /// empty、text 或 bytes。
     payload_kind: String,
+    /// payload 的实际字节数。
     payload_size: usize,
+    /// 可选请求关联 ID。
     request_id: Option<String>,
+    /// 可选代际 ID。
     generation_id: Option<String>,
+    /// 可选 correlation ID。
     correlation_id: Option<String>,
+    /// 可选 causation ID。
     causation_id: Option<String>,
 }
 
+/// 解析 emit 的 topic、metadata、目标、payload 与后端选项。
+///
+/// 目标和 payload 通过专用 setter 保证最多出现一种；解析末尾再次强类型校验，确保发布阶段
+/// 不会接收到含糊输入。首个非选项参数兼容作为 topic。
 pub(super) fn parse_emit_command(args: &[String]) -> Result<EmitCommand, EvaError> {
     let mut passthrough = Vec::new();
     let mut topic = None;
@@ -208,6 +263,7 @@ pub(super) fn parse_emit_command(args: &[String]) -> Result<EmitCommand, EvaErro
     })
 }
 
+/// 发布事件并按实际命令输出格式报告回执或结构化错误。
 pub(super) fn execute_emit<W, E>(
     command: EmitCommand,
     stdout: &mut W,
@@ -227,6 +283,8 @@ where
     }
 }
 
+/// 将 CLI 值转换为核心事件、附加 trace metadata 并发布到选定 EventBus。
+/// 所有强类型解析在调用 `publish_to_bus` 前完成，因此失败不会留下部分持久化事件。
 fn publish_emit(command: &EmitCommand) -> Result<EmitReport, EvaError> {
     let topic = Topic::parse(&command.topic)?;
     let event_id_value = command.event_id.clone().unwrap_or_else(default_event_id);
@@ -280,6 +338,7 @@ fn publish_emit(command: &EmitCommand) -> Result<EmitReport, EvaError> {
     })
 }
 
+/// 根据可选根目录选择 durable 或内存 EventBus，并返回统一发布回执与后端描述。
 fn publish_to_bus(
     event: Event,
     durable_backend: Option<&Path>,
@@ -300,6 +359,7 @@ fn publish_to_bus(
     }
 }
 
+/// 将 CLI payload 转换为核心不透明 payload；hex 失败返回参数错误。
 fn event_payload(payload: &EmitPayload) -> Result<EventPayload, EvaError> {
     match payload {
         EmitPayload::Empty => Ok(EventPayload::empty()),
@@ -308,6 +368,7 @@ fn event_payload(payload: &EmitPayload) -> Result<EventPayload, EvaError> {
     }
 }
 
+/// 将 CLI 目标文本解析为对应强类型核心目标。
 fn event_target(target: &EmitTarget) -> Result<EventTarget, EvaError> {
     match target {
         EmitTarget::Broadcast => Ok(EventTarget::Broadcast),
@@ -317,6 +378,7 @@ fn event_target(target: &EmitTarget) -> Result<EventTarget, EvaError> {
     }
 }
 
+/// 计算输出使用的 payload 类型和真实字节数，不暴露 payload 内容。
 fn payload_summary(payload: &EmitPayload) -> Result<(String, usize), EvaError> {
     match payload {
         EmitPayload::Empty => Ok(("empty".to_owned(), 0)),
@@ -325,6 +387,7 @@ fn payload_summary(payload: &EmitPayload) -> Result<(String, usize), EvaError> {
     }
 }
 
+/// 将核心目标投影为稳定 kind/value 对。
 fn target_summary(target: &EventTarget) -> (String, Option<String>) {
     match target {
         EventTarget::Broadcast => ("broadcast".to_owned(), None),
@@ -336,6 +399,7 @@ fn target_summary(target: &EventTarget) -> (String, Option<String>) {
     }
 }
 
+/// 输出发布回执、后端、目标和 payload 摘要。
 fn write_emit<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -364,6 +428,7 @@ fn write_emit<W: Write>(
     }
 }
 
+/// 将目标 kind/value 组合为紧凑文本表示。
 fn target_text(report: &EmitReport) -> String {
     match &report.target_value {
         Some(value) => format!("{}:{value}", report.target_kind),
@@ -371,6 +436,7 @@ fn target_text(report: &EmitReport) -> String {
     }
 }
 
+/// 将发布报告编码为稳定 JSON，不包含原始 payload 内容。
 fn emit_report_json(report: &EmitReport) -> String {
     format!(
         "{{\"status\":\"published\",\"backend\":{{\"kind\":{},\"path\":{}}},\"event_id\":{},\"topic\":{},\"sequence\":{},\"target\":{{\"kind\":{},\"value\":{}}},\"payload\":{{\"kind\":{},\"size\":{}}},\"metadata\":{{\"request_id\":{},\"generation_id\":{},\"correlation_id\":{},\"causation_id\":{}}}}}",
@@ -390,6 +456,7 @@ fn emit_report_json(report: &EmitReport) -> String {
     )
 }
 
+/// 以 Unix 时间秒和纳秒生成进程内默认事件 ID；系统时钟异常时安全回退为 epoch。
 fn default_event_id() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -397,6 +464,7 @@ fn default_event_id() -> String {
     format!("evt-cli-emit-{}-{}", now.as_secs(), now.subsec_nanos())
 }
 
+/// 设置只允许出现一次的选项，重复时返回明确参数错误。
 fn set_once(slot: &mut Option<String>, value: String, name: &'static str) -> Result<(), EvaError> {
     if slot.is_some() {
         return Err(EvaError::invalid_argument(format!("duplicate {name}")));
@@ -405,6 +473,7 @@ fn set_once(slot: &mut Option<String>, value: String, name: &'static str) -> Res
     Ok(())
 }
 
+/// 从默认广播替换为一个显式目标，并拒绝多个目标选项组合。
 fn replace_target(current: EmitTarget, next: EmitTarget) -> Result<EmitTarget, EvaError> {
     if !matches!(current, EmitTarget::Broadcast) {
         return Err(EvaError::invalid_argument(
@@ -414,6 +483,7 @@ fn replace_target(current: EmitTarget, next: EmitTarget) -> Result<EmitTarget, E
     Ok(next)
 }
 
+/// 设置唯一 payload 形式；即使两次都指定 empty 也视为重复输入。
 fn set_payload(
     current: &mut EmitPayload,
     payload_set: &mut bool,
@@ -429,6 +499,7 @@ fn set_payload(
     Ok(())
 }
 
+/// 在发布前对显式目标执行相应强类型校验。
 fn validate_target(target: &EmitTarget) -> Result<(), EvaError> {
     match target {
         EmitTarget::Broadcast => Ok(()),
@@ -438,6 +509,7 @@ fn validate_target(target: &EmitTarget) -> Result<(), EvaError> {
     }
 }
 
+/// 在发布前验证二进制 hex payload；其他 payload 无额外格式约束。
 fn validate_payload(payload: &EmitPayload) -> Result<(), EvaError> {
     if let EmitPayload::BytesHex(value) = payload {
         hex_decode(value)?;
@@ -445,6 +517,7 @@ fn validate_payload(payload: &EmitPayload) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 将偶数长度 ASCII hex 解码为字节；失败保留 payload 上下文且不做宽松修正。
 fn hex_decode(value: &str) -> Result<Vec<u8>, EvaError> {
     if !value.len().is_multiple_of(2) {
         return Err(
@@ -462,6 +535,7 @@ fn hex_decode(value: &str) -> Result<Vec<u8>, EvaError> {
     Ok(bytes)
 }
 
+/// 将一个 ASCII 十六进制字符转换为 4 bit 值。
 fn hex_nibble(value: u8) -> Result<u8, EvaError> {
     match value {
         b'0'..=b'9' => Ok(value - b'0'),

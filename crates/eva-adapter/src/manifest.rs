@@ -1,3 +1,4 @@
+//! 本模块提供 `manifest` 相关实现。
 //! Adapter runtime handle representation.
 
 use eva_config::manifest::adapter::AdapterManifest;
@@ -7,94 +8,156 @@ use eva_core::{AdapterId, CapabilityId, CapabilityName, EvaError};
 use eva_mcp::{McpProcessSpec, McpServerTransport, McpSessionConfig};
 use std::collections::BTreeMap;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "Adapter manifest runtime representation";
 
+/// 定义 `AdapterHealth` 可取的状态。
 /// Lightweight health state carried by a registered Adapter handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterHealth {
+    /// 表示 `Ready` 枚举分支。
     Ready,
+    /// 表示 `Disabled` 枚举分支。
     Disabled,
 }
 
+/// 表示 `AdapterCapabilityBinding` 数据结构。
 /// Runtime binding between one Eva capability manifest and one Adapter handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterCapabilityBinding {
+    /// 记录 `capability_id` 字段对应的值。
     pub capability_id: Option<CapabilityId>,
+    /// 记录 `capability` 字段对应的值。
     pub capability: CapabilityName,
+    /// 记录 `kind` 字段对应的值。
     pub kind: CapabilityKind,
+    /// 记录 `provider` 字段对应的值。
     pub provider: AdapterId,
+    /// 记录 `mcp_tool` 字段对应的值。
     pub mcp_tool: Option<String>,
 }
 
+/// 表示 `SkillInputSchema` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillInputSchema {
+    /// 记录 `schema_type` 字段对应的值。
     pub schema_type: Option<String>,
+    /// 记录 `required` 字段对应的值。
     pub required: Vec<String>,
+    /// 记录 `properties` 字段对应的值。
     pub properties: BTreeMap<String, SkillInputProperty>,
 }
 
+/// 表示 `SkillInputProperty` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillInputProperty {
+    /// 记录 `value_type` 字段对应的值。
     pub value_type: Option<String>,
+    /// 记录 `enum_values` 字段对应的值。
     pub enum_values: Vec<String>,
 }
 
+/// 表示 `AdapterRateLimit` 数据结构。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdapterRateLimit {
+    /// 记录 `max_requests` 字段对应的值。
     pub max_requests: u32,
+    /// 记录 `window_ms` 字段对应的值。
     pub window_ms: u64,
 }
 
+/// 表示 `AdapterCircuitBreaker` 数据结构。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdapterCircuitBreaker {
+    /// 记录 `failure_threshold` 字段对应的值。
     pub failure_threshold: u32,
+    /// 记录 `recovery_window_ms` 字段对应的值。
     pub recovery_window_ms: u64,
 }
 
+/// 表示 `AdapterHandle` 数据结构。
 /// Authorized runtime handle derived from configuration, not from discovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterHandle {
+    /// 记录 `id` 字段对应的值。
     pub id: AdapterId,
+    /// 记录 `name` 字段对应的值。
     pub name: String,
+    /// 记录 `version` 字段对应的值。
     pub version: String,
+    /// 记录 `enabled` 字段对应的值。
     pub enabled: bool,
+    /// 记录 `transport` 字段对应的值。
     pub transport: AdapterTransport,
+    /// 记录 `capabilities` 字段对应的值。
     pub capabilities: Vec<CapabilityName>,
+    /// 记录 `source_path` 字段对应的值。
     pub source_path: String,
+    /// 记录 `command` 字段对应的值。
     pub command: Option<String>,
+    /// 记录 `args` 字段对应的值。
     pub args: Vec<String>,
+    /// 记录 `endpoint` 字段对应的值。
     pub endpoint: Option<String>,
+    /// 记录 `method` 字段对应的值。
     pub method: Option<String>,
+    /// 记录 `credential_env` 字段对应的值。
     pub credential_env: Vec<String>,
+    /// 记录 `timeout_ms` 字段对应的值。
     pub timeout_ms: Option<u64>,
+    /// 记录 `max_concurrency` 字段对应的值。
     pub max_concurrency: Option<usize>,
+    /// 记录 `output_limit_bytes` 字段对应的值。
     pub output_limit_bytes: Option<usize>,
+    /// 记录 `max_prompt_bytes` 字段对应的值。
     pub max_prompt_bytes: Option<usize>,
+    /// 记录 `rate_limit` 字段对应的值。
     pub rate_limit: Option<AdapterRateLimit>,
+    /// 记录 `circuit_breaker` 字段对应的值。
     pub circuit_breaker: Option<AdapterCircuitBreaker>,
+    /// 记录 `headers` 字段对应的值。
     pub headers: BTreeMap<String, String>,
+    /// 记录 `mcp_server_transport` 字段对应的值。
     pub mcp_server_transport: Option<String>,
+    /// 记录 `mcp_command` 字段对应的值。
     pub mcp_command: Option<String>,
+    /// 记录 `mcp_args` 字段对应的值。
     pub mcp_args: Vec<String>,
+    /// 记录 `mcp_tools` 字段对应的值。
     pub mcp_tools: Vec<String>,
+    /// 记录 `skill_id` 字段对应的值。
     pub skill_id: Option<String>,
+    /// 记录 `skill_kind` 字段对应的值。
     pub skill_kind: Option<String>,
+    /// 记录 `skill_runtime_gate` 字段对应的值。
     pub skill_runtime_gate: Option<String>,
+    /// 记录 `skill_path` 字段对应的值。
     pub skill_path: Option<String>,
+    /// 记录 `skill_entry_type` 字段对应的值。
     pub skill_entry_type: Option<String>,
+    /// 记录 `skill_runner_command` 字段对应的值。
     pub skill_runner_command: Option<String>,
+    /// 记录 `skill_runner_args` 字段对应的值。
     pub skill_runner_args: Vec<String>,
+    /// 记录 `skill_artifact_root` 字段对应的值。
     pub skill_artifact_root: Option<String>,
+    /// 记录 `skill_input_schema` 字段对应的值。
     pub skill_input_schema: Option<SkillInputSchema>,
+    /// 记录 `hardware_logical_name` 字段对应的值。
     pub hardware_logical_name: Option<String>,
+    /// 记录 `hardware_device_class` 字段对应的值。
     pub hardware_device_class: Option<String>,
+    /// 记录 `hardware_driver_id` 字段对应的值。
     pub hardware_driver_id: Option<String>,
+    /// 记录 `hardware_driver_kind` 字段对应的值。
     pub hardware_driver_kind: Option<String>,
+    /// 记录 `bindings` 字段对应的值。
     pub bindings: Vec<AdapterCapabilityBinding>,
 }
 
 impl AdapterHealth {
+    /// 将当前值按 `as_str` 约定的形式转换。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Ready => "ready",
@@ -104,6 +167,7 @@ impl AdapterHealth {
 }
 
 impl AdapterHandle {
+    /// 根据输入构造当前类型，作为 `from_manifest` 的标准入口。
     pub fn from_manifest(manifest: &AdapterManifest) -> Self {
         let hardware_config = manifest.hardware_config().ok().flatten();
         Self {
@@ -204,6 +268,7 @@ impl AdapterHandle {
         }
     }
 
+    /// 执行 `health` 对应的处理逻辑。
     pub fn health(&self) -> AdapterHealth {
         if self.enabled {
             AdapterHealth::Ready
@@ -212,6 +277,7 @@ impl AdapterHandle {
         }
     }
 
+    /// 执行 `supports` 对应的处理逻辑。
     pub fn supports(&self, capability: &CapabilityName) -> bool {
         self.capabilities.iter().any(|entry| entry == capability)
             || self
@@ -220,6 +286,7 @@ impl AdapterHandle {
                 .any(|entry| &entry.capability == capability)
     }
 
+    /// 登记 `add_binding` 对应的数据或状态。
     pub fn add_binding(&mut self, binding: AdapterCapabilityBinding) {
         if !self.bindings.iter().any(|existing| {
             existing.capability == binding.capability && existing.provider == binding.provider
@@ -233,18 +300,21 @@ impl AdapterHandle {
         }
     }
 
+    /// 执行 `binding_for` 对应的处理逻辑。
     pub fn binding_for(&self, capability: &CapabilityName) -> Option<&AdapterCapabilityBinding> {
         self.bindings
             .iter()
             .find(|binding| &binding.capability == capability)
     }
 
+    /// 执行 `mcp_tool_for` 对应的处理逻辑。
     pub fn mcp_tool_for(&self, capability: &CapabilityName) -> Option<&str> {
         self.binding_for(capability)
             .and_then(|binding| binding.mcp_tool.as_deref())
             .or_else(|| self.mcp_tools.first().map(String::as_str))
     }
 
+    /// 执行 `mcp_session_config` 对应的处理逻辑。
     pub fn mcp_session_config(&self) -> Result<McpSessionConfig, EvaError> {
         let command = self.mcp_command.as_deref().ok_or_else(|| {
             EvaError::invalid_argument("MCP adapter is missing a process command")
@@ -256,12 +326,14 @@ impl AdapterHandle {
         McpSessionConfig::new(self.id.clone(), server_transport, process)
     }
 
+    /// 执行 `skill_name` 对应的处理逻辑。
     pub fn skill_name(&self) -> Option<&str> {
         self.skill_id.as_deref()
     }
 }
 
 impl AdapterRateLimit {
+    /// 根据输入构造当前类型，作为 `from_manifest` 的标准入口。
     fn from_manifest(manifest: &AdapterManifest) -> Option<Self> {
         let max_requests = manifest
             .deep_extra_u64(&["limits", "rate_limit", "max_requests"])
@@ -284,6 +356,7 @@ impl AdapterRateLimit {
 }
 
 impl AdapterCircuitBreaker {
+    /// 根据输入构造当前类型，作为 `from_manifest` 的标准入口。
     fn from_manifest(manifest: &AdapterManifest) -> Option<Self> {
         let failure_threshold = manifest
             .deep_extra_u64(&["limits", "circuit_breaker", "failure_threshold"])
@@ -302,11 +375,13 @@ impl AdapterCircuitBreaker {
     }
 }
 
+/// 执行 `nonzero_usize` 对应的处理逻辑。
 fn nonzero_usize(value: Option<usize>) -> Option<usize> {
     value.filter(|value| *value > 0)
 }
 
 impl AdapterCapabilityBinding {
+    /// 根据输入构造当前类型，作为 `from_manifest` 的标准入口。
     pub fn from_manifest(provider: AdapterId, manifest: &CapabilityManifest) -> Self {
         Self {
             capability_id: Some(manifest.id.clone()),
@@ -318,6 +393,7 @@ impl AdapterCapabilityBinding {
     }
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,10 +401,12 @@ mod tests {
     use eva_config::manifest::adapter::load_adapter_manifest;
     use std::path::{Path, PathBuf};
 
+    /// 执行 `workspace_root` 对应的处理逻辑。
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
 
+    /// 执行 `temp_root` 对应的处理逻辑。
     fn temp_root(name: &str) -> PathBuf {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -340,6 +418,7 @@ mod tests {
         ))
     }
 
+    /// 验证 `handle_reads_mcp_and_skill_extensions` 场景下的预期行为。
     #[test]
     fn handle_reads_mcp_and_skill_extensions() {
         let project = load_project_config(workspace_root()).unwrap();
@@ -380,6 +459,7 @@ mod tests {
         );
     }
 
+    /// 验证 `handle_reads_mcp_http_endpoint_and_headers` 场景下的预期行为。
     #[test]
     fn handle_reads_mcp_http_endpoint_and_headers() {
         let root = temp_root("mcp-http");
@@ -425,6 +505,7 @@ routing: {}
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// 验证 `handle_reads_hardware_identity_extensions` 场景下的预期行为。
     #[test]
     fn handle_reads_hardware_identity_extensions() {
         let project = load_project_config(workspace_root()).unwrap();
@@ -445,6 +526,7 @@ routing: {}
         assert_eq!(handle.hardware_driver_kind.as_deref(), Some("simulated"));
     }
 
+    /// 验证 `handle_reads_stdio_and_http_runtime_fields` 场景下的预期行为。
     #[test]
     fn handle_reads_stdio_and_http_runtime_fields() {
         let project = load_project_config(workspace_root()).unwrap();

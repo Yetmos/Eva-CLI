@@ -1,3 +1,5 @@
+//! 恢复计划、应用与回滚子命令；通过确认、备份证据、策略、锁和健康检查保护文件变更。
+
 use super::{
     artifact_store_ref, artifact_store_ref_json, backup_cmd, json_array, json_string,
     lock_store_ref, lock_store_ref_json, parse_common_options, required_option, rollback_plan_json,
@@ -30,116 +32,208 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Restore 子命令及其已解析选项。
 pub(super) enum RestoreCommand {
-    Plan(RestorePlanOptions),
-    Apply(RestoreApplyOptions),
-    Rollback(RestoreRollbackOptions),
+    /// 从发布前快照生成恢复计划。
+    Plan(
+        /// 已解析的快照、请求、发布引用、产物存储与公共选项。
+        RestorePlanOptions,
+    ),
+    /// 校验并可选执行 staged restore mutation。
+    Apply(
+        /// 已解析的计划、确认、存储、锁、健康检查与执行模式。
+        RestoreApplyOptions,
+    ),
+    /// 使用前置备份和事务日志回滚失败的 staged mutation。
+    Rollback(
+        /// 已解析的计划、确认、存储、锁、事务日志与健康检查选项。
+        RestoreRollbackOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 恢复计划创建选项。
 pub(super) struct RestorePlanOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 作为恢复源的快照 ID。
     snapshot_id: String,
+    /// 关联备份、快照和审计的请求 ID。
     request_id: String,
+    /// 快照对应的发布引用。
     release_ref: String,
+    /// 可选文件系统 ArtifactStore。
     artifact_store: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 恢复应用选项，包含所有高风险门禁输入。
 pub(super) struct RestoreApplyOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 恢复应用计划文件路径。
     plan: Option<PathBuf>,
+    /// 必须与 plan ID 匹配的确认令牌。
     confirm: Option<String>,
+    /// 备份和 mutation source 所在 ArtifactStore。
     artifact_store: Option<PathBuf>,
+    /// 获取 restore apply 锁并保存事务日志的目录。
     lock_store: Option<PathBuf>,
+    /// 仅验证证据和计划，不获取 apply 锁或执行变更。
     dry_run: bool,
+    /// 写入锁记录的操作者/进程标识。
     owner: String,
+    /// 模拟或报告 apply 后健康检查结果。
     health: RestoreApplyHealthOption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 恢复回滚选项。
 pub(super) struct RestoreRollbackOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 原始 restore apply 计划路径。
     plan: Option<PathBuf>,
+    /// 必须与 plan ID 匹配的确认令牌。
     confirm: Option<String>,
+    /// 包含目标备份和前置备份的 ArtifactStore。
     artifact_store: Option<PathBuf>,
+    /// 获取 rollback 锁和写回滚日志的目录。
     lock_store: Option<PathBuf>,
+    /// 可选显式 apply transaction log；缺省从 lock store 推导。
     transaction_log: Option<PathBuf>,
+    /// 回滚锁 owner。
     owner: String,
+    /// 执行回滚前必须通过的健康门禁。
     health: RestoreApplyHealthOption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 恢复计划、前置备份与快照的组合结果。
 struct RestorePlanResult {
+    /// 创建快照前的已验证备份。
     backup: BackupCreateResult,
+    /// 发布前快照。
     snapshot: ReleaseSnapshot,
+    /// 由快照派生的恢复计划。
     plan: RestorePlan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Restore apply dry-run 的计划、验证报告和存储描述。
 struct RestoreApplyDryRunResult {
+    /// 从文件解析的强类型 apply 计划。
     plan: RestoreApplyPlan,
+    /// 备份、digest、前置证据和 mutation 的验证报告。
     report: RestoreApplyDryRunReport,
+    /// 实际读取的 ArtifactStore 描述。
     artifact_store: ArtifactStoreRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Restore apply 的协调器、文件 mutation 和回滚规划结果。
 struct RestoreApplyResult {
+    /// 锁、策略、健康和 apply 决策报告。
     report: RestoreApplyReport,
+    /// apply 前完成的 dry-run 验证证据。
     dry_run: RestoreApplyDryRunReport,
+    /// 读取备份的 ArtifactStore。
     artifact_store: ArtifactStoreRef,
+    /// 获取 apply 锁的 LockStore。
     lock_store: LockStoreRef,
+    /// 计划包含文件步骤时的可选 mutation 事务报告。
     mutation_apply: Option<RestoreMutationApplyReport>,
+    /// 健康检查失败时生成的可选代际回滚计划。
     rollback_plan: Option<RollbackPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Restore rollback 的完整证据包。
 struct RestoreRollbackResult {
+    /// 原始 apply 计划。
     plan: RestoreApplyPlan,
+    /// 回滚前复用的 dry-run 验证证据。
     dry_run: RestoreApplyDryRunReport,
+    /// 文件回滚引擎报告。
     rollback: RestoreRollbackApplyReport,
+    /// 已获取的独占 rollback 锁。
     lock: eva_backup::RestoreApplyLock,
+    /// 回滚前健康检查结果。
     health: RestoreApplyHealthCheck,
+    /// 前置备份所在 ArtifactStore。
     artifact_store: ArtifactStoreRef,
+    /// rollback 锁和日志所在 LockStore。
     lock_store: LockStoreRef,
+    /// 聚合策略、证据、锁和引擎的审计条目。
     audit: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 面向操作者的统一确认摘要，明确计划、变更与回滚事实。
 struct RestoreOperatorConfirmation {
+    /// restore.apply 或 restore.rollback。
     command: String,
+    /// 被确认的 plan ID。
     plan_id: String,
+    /// 操作者应核对的确认令牌。
     confirm_token: String,
+    /// 文件 mutation 的目标根目录。
     target_root: String,
+    /// 受影响文件/步骤数量。
     affected_count: usize,
+    /// 所有门禁是否允许 apply。
     apply_allowed: bool,
+    /// 计划是否包含 mutation。
     mutation_planned: bool,
+    /// mutation 是否已实际执行。
     mutation_executed: bool,
+    /// 当前结果是否要求回滚。
     rollback_required: bool,
+    /// 回滚是否已实际执行。
     rollback_executed: bool,
+    /// 不可逆操作警告；当前实现强调 staged/rollback 边界。
     irreversible_warning: String,
+    /// 面向操作者的下一步动作。
     next_action: String,
 }
 
+/// 构造统一操作者确认摘要所需的借用输入，避免不同命令字段漂移。
 struct RestoreOperatorConfirmationInput<'a> {
+    /// 命令名。
     command: &'a str,
+    /// 恢复计划标识。
     plan_id: &'a str,
+    /// Mutation 目标根。
     target_root: &'a str,
+    /// 受影响条目数。
     affected_count: usize,
+    /// Apply 门禁结果。
     apply_allowed: bool,
+    /// 是否规划 mutation。
     mutation_planned: bool,
+    /// 是否执行 mutation。
     mutation_executed: bool,
+    /// 是否要求回滚。
     rollback_required: bool,
+    /// 是否已执行回滚。
     rollback_executed: bool,
+    /// 下一步说明。
     next_action: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// CLI 可注入的恢复后健康结果，用于验证成功与失败/回滚路径。
 pub(super) enum RestoreApplyHealthOption {
+    /// 健康检查通过。
     Healthy,
-    Failed(String),
+    /// 健康检查失败及诊断消息。
+    Failed(
+        /// 健康检查失败时保留的诊断消息。
+        String,
+    ),
 }
 
+/// 解析 `restore plan|apply|rollback` 子命令。
 pub(super) fn parse_restore_command(args: &[String]) -> Result<RestoreCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -157,6 +251,10 @@ pub(super) fn parse_restore_command(args: &[String]) -> Result<RestoreCommand, E
     }
 }
 
+/// 执行恢复命令并按变更/回滚结果选择退出码。
+///
+/// Dry-run 永不进入锁和 mutation 路径；apply 返回 rollback_required 或门禁禁止时使用
+/// runtime-unavailable 退出码；rollback 只有明确 `rolled_back` 才返回成功。
 pub(super) fn execute_restore<W, E>(
     command: RestoreCommand,
     stdout: &mut W,
@@ -267,6 +365,7 @@ where
     }
 }
 
+/// 解析恢复计划的快照、请求、发布和 ArtifactStore 选项。
 fn parse_restore_plan_options(args: &[String]) -> Result<RestorePlanOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut snapshot_id = "snapshot-v14".to_owned();
@@ -310,6 +409,7 @@ fn parse_restore_plan_options(args: &[String]) -> Result<RestorePlanOptions, Eva
     })
 }
 
+/// 解析 apply 计划、确认、两类 store、owner、dry-run 和健康结果。
 fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut plan = None;
@@ -374,6 +474,7 @@ fn parse_restore_apply_options(args: &[String]) -> Result<RestoreApplyOptions, E
     })
 }
 
+/// 解析 rollback 所需计划、确认、前置备份、锁和可选事务日志。
 fn parse_restore_rollback_options(args: &[String]) -> Result<RestoreRollbackOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut plan = None;
@@ -443,6 +544,7 @@ fn parse_restore_rollback_options(args: &[String]) -> Result<RestoreRollbackOpti
     })
 }
 
+/// 解析恢复健康检查的兼容别名，未知值作为参数错误返回。
 fn parse_restore_apply_health(value: &str) -> Result<RestoreApplyHealthOption, EvaError> {
     match value {
         "healthy" | "pass" | "passed" => Ok(RestoreApplyHealthOption::Healthy),
@@ -456,6 +558,8 @@ fn parse_restore_apply_health(value: &str) -> Result<RestoreApplyHealthOption, E
     }
 }
 
+/// 创建已验证备份和发布前快照，再由快照派生恢复计划。
+/// 任一前置步骤失败都会阻止后续计划产生。
 fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult, EvaError> {
     let snapshot_options = snapshot_cmd::SnapshotCreateOptions {
         common: options.common.clone(),
@@ -474,6 +578,10 @@ fn create_restore_plan(options: &RestorePlanOptions) -> Result<RestorePlanResult
     })
 }
 
+/// 验证 restore apply 的计划、确认令牌、目标备份和前置备份证据。
+///
+/// 这里不获取锁、不执行 mutation。确认不匹配按 PermissionDenied 返回；缺失产物按 NotFound
+/// 返回；只有两份归档均存在且 digest/计划校验通过才产生 dry-run 报告。
 fn create_restore_apply_dry_run(
     options: &RestoreApplyOptions,
 ) -> Result<RestoreApplyDryRunResult, EvaError> {
@@ -527,6 +635,11 @@ fn create_restore_apply_dry_run(
     })
 }
 
+/// 在 dry-run 证据之上执行策略、健康、锁和 staged file mutation 协调。
+///
+/// 顺序不可交换：先完整 dry-run，再加载策略并获取 apply 锁，只有 coordinator 返回
+/// `apply_allowed` 且计划声明 mutation 才调用文件引擎。引擎部分失败会停止后续步骤、标记
+/// rollback_required 并保留事务日志；健康失败另行生成代际 rollback plan。
 fn create_restore_apply(
     options: &RestoreApplyOptions,
     trace: &TraceFields,
@@ -636,6 +749,10 @@ fn create_restore_apply(
     })
 }
 
+/// 使用前置备份和 apply transaction log 执行 staged mutation 回滚。
+///
+/// 复用 dry-run 验证，随后要求策略允许和健康检查通过，再获取独占 rollback 锁。只有前置
+/// 归档 digest 验证成功后才进入引擎；回滚审计聚合策略、归档和每个文件恢复步骤。
 fn create_restore_rollback(
     options: &RestoreRollbackOptions,
     trace: &TraceFields,
@@ -758,16 +875,26 @@ fn create_restore_rollback(
     })
 }
 
+/// Restore 边界写入 best-effort 可观测性 pipeline 的最小事实集合。
 struct RestoreObservabilityRecord<'a> {
+    /// restore.apply 或 restore.rollback。
     command: &'a str,
+    /// 关联计划 ID。
     plan_id: &'a str,
+    /// 最终状态。
     status: &'a str,
+    /// Apply 门禁结果。
     apply_allowed: bool,
+    /// 文件 mutation 是否执行。
     mutation_executed: bool,
+    /// 是否需要后续回滚。
     rollback_required: bool,
+    /// 文件回滚是否执行。
     rollback_executed: bool,
 }
 
+/// 以 best-effort 语义记录 restore audit、metric 和 span。
+/// 可观测性故障不得覆盖已完成的恢复/回滚结果，因此本函数吞掉 sink 错误并且不返回 Result。
 fn record_restore_observability(
     project: &ProjectConfig,
     trace: &TraceFields,
@@ -826,6 +953,7 @@ fn record_restore_observability(
     );
 }
 
+/// 从项目 data_dir 推导 restore 可观测性目录，并正确解析相对路径。
 fn restore_observability_backend(project: &ProjectConfig) -> PathBuf {
     let data_dir = project
         .eva
@@ -840,6 +968,7 @@ fn restore_observability_backend(project: &ProjectConfig) -> PathBuf {
     }
 }
 
+/// 将计划中的 mutation target root 解析为绝对路径；相对值以项目根为基准。
 fn resolve_restore_mutation_target_root(project_root: &Path, target_root: &str) -> PathBuf {
     let target = PathBuf::from(target_root);
     if target.is_absolute() {
@@ -849,6 +978,8 @@ fn resolve_restore_mutation_target_root(project_root: &Path, target_root: &str) 
     }
 }
 
+/// 预加载 mutation 步骤引用的唯一源产物。
+/// 缺少任何 source 时在文件写入前失败，避免执行中途才发现不完整输入。
 fn load_restore_mutation_sources(
     plan: &RestoreApplyPlan,
     artifact_store_path: &Path,
@@ -872,6 +1003,7 @@ fn load_restore_mutation_sources(
     Ok(sources)
 }
 
+/// 读取并解析 restore apply 计划文件，并在所有失败上附加路径上下文。
 fn read_restore_apply_plan(path: &Path) -> Result<RestoreApplyPlan, EvaError> {
     let data = fs::read_to_string(path).map_err(|error| {
         let message = if error.kind() == std::io::ErrorKind::NotFound {
@@ -887,6 +1019,10 @@ fn read_restore_apply_plan(path: &Path) -> Result<RestoreApplyPlan, EvaError> {
         .map_err(|error| error.with_context("plan", path.display().to_string()))
 }
 
+/// 解析稳定的逐行 restore apply plan 格式。
+///
+/// 解析器允许 UTF-8 BOM 并拒绝缺失必填字段、未知 mutation 操作和不完整前置备份证据；
+/// 结构化 API 构造器负责最终跨字段校验，防止文本入口绕过领域约束。
 pub(super) fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, EvaError> {
     let mut plan_id = None;
     let mut backup_artifact_id = None;
@@ -953,6 +1089,7 @@ pub(super) fn parse_restore_apply_plan(data: &str) -> Result<RestoreApplyPlan, E
     Ok(plan)
 }
 
+/// 解析单条 staged mutation 步骤及其目标、来源和预期 digest。
 fn parse_restore_mutation_step(value: &str) -> Result<RestoreMutationStep, EvaError> {
     let parts = value.split('|').collect::<Vec<_>>();
     if parts.len() != 6 {
@@ -973,6 +1110,7 @@ fn parse_restore_mutation_step(value: &str) -> Result<RestoreMutationStep, EvaEr
     )
 }
 
+/// 将 mutation 文本格式中的空值规范为 None。
 fn optional_mutation_field(value: &str) -> Option<String> {
     match value {
         "" | "-" | "none" | "null" => None,
@@ -980,6 +1118,7 @@ fn optional_mutation_field(value: &str) -> Option<String> {
     }
 }
 
+/// 输出恢复计划及其前置备份和快照证据。
 fn write_restore_plan<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -1006,6 +1145,7 @@ fn write_restore_plan<W: Write>(
     }
 }
 
+/// 输出 dry-run 验证、mutation 计划、风险和操作者确认摘要。
 fn write_restore_apply_dry_run<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -1073,6 +1213,7 @@ fn write_restore_apply_dry_run<W: Write>(
     }
 }
 
+/// 输出 apply 协调器、文件事务、健康和可选回滚计划结果。
 fn write_restore_apply<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -1157,6 +1298,7 @@ fn write_restore_apply<W: Write>(
     }
 }
 
+/// 输出文件回滚结果、锁、健康、审计和操作者确认摘要。
 fn write_restore_rollback<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -1221,6 +1363,7 @@ fn write_restore_rollback<W: Write>(
     }
 }
 
+/// 根据 dry-run mutation 计划描述预期回滚路径。
 fn restore_apply_dry_run_rollback_path(report: &RestoreApplyDryRunReport) -> String {
     format!(
         "pre_restore_backup={};rollback_manifest_entries={}",
@@ -1229,6 +1372,7 @@ fn restore_apply_dry_run_rollback_path(report: &RestoreApplyDryRunReport) -> Str
     )
 }
 
+/// 汇总 dry-run 原始风险并补充 mutation/回滚操作风险。
 fn restore_apply_dry_run_risks(report: &RestoreApplyDryRunReport) -> Vec<String> {
     if report.mutation_plan.mutation_planned {
         vec![
@@ -1243,6 +1387,7 @@ fn restore_apply_dry_run_risks(report: &RestoreApplyDryRunReport) -> Vec<String>
     }
 }
 
+/// 依据 mutation 与 coordinator 结果选择面向操作者的最终状态。
 fn restore_apply_final_state(result: &RestoreApplyResult) -> &str {
     result
         .mutation_apply
@@ -1251,6 +1396,7 @@ fn restore_apply_final_state(result: &RestoreApplyResult) -> &str {
         .unwrap_or(result.report.status.as_str())
 }
 
+/// 描述 apply 结果对应的文件或代际回滚路径。
 fn restore_apply_rollback_path(result: &RestoreApplyResult) -> String {
     if let Some(rollback) = &result.rollback_plan {
         return format!(
@@ -1266,6 +1412,7 @@ fn restore_apply_rollback_path(result: &RestoreApplyResult) -> String {
     "none; no mutation executed".to_owned()
 }
 
+/// 描述 rollback 结果及其日志/前置备份路径。
 fn restore_rollback_path(result: &RestoreRollbackResult) -> String {
     format!(
         "transaction_log={};rollback_log={}",
@@ -1273,6 +1420,7 @@ fn restore_rollback_path(result: &RestoreRollbackResult) -> String {
     )
 }
 
+/// 汇总 rollback 引擎风险和未完全恢复时的后续风险。
 fn restore_rollback_risks(result: &RestoreRollbackResult) -> Vec<String> {
     let mut risks = vec!["rollback rewrites target files from pre-restore archive".to_owned()];
     if !result.rollback.rollback_executed {
@@ -1281,6 +1429,7 @@ fn restore_rollback_risks(result: &RestoreRollbackResult) -> Vec<String> {
     risks
 }
 
+/// 将恢复计划、快照和前置备份编码为 JSON。
 fn restore_plan_json(result: &RestorePlanResult) -> String {
     format!(
         "{{\"snapshot\":{},\"backup\":{},\"plan\":{{\"snapshot_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":false,\"steps\":{},\"risks\":{},\"audit\":{}}}}}",
@@ -1295,10 +1444,12 @@ fn restore_plan_json(result: &RestorePlanResult) -> String {
     )
 }
 
+/// 将 dry-run 结果和 ArtifactStore 描述编码为 JSON。
 fn restore_apply_dry_run_json(result: &RestoreApplyDryRunResult) -> String {
     restore_apply_dry_run_report_json(&result.report, &result.artifact_store)
 }
 
+/// 将 dry-run 验证报告、mutation 计划与确认摘要编码为 JSON。
 fn restore_apply_dry_run_report_json(
     report: &RestoreApplyDryRunReport,
     artifact_store: &ArtifactStoreRef,
@@ -1323,6 +1474,7 @@ fn restore_apply_dry_run_report_json(
     )
 }
 
+/// 将 restore apply 的门禁、锁、事务、回滚与确认事实编码为 JSON。
 fn restore_apply_json(result: &RestoreApplyResult) -> String {
     format!(
         "{{\"plan_id\":{},\"status\":{},\"apply_allowed\":{},\"mutation_executed\":{},\"mutation_plan\":{},\"mutation_apply\":{},\"operator_confirmation\":{},\"backup_artifact_key\":{},\"pre_restore_backup_artifact_key\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"steps\":{},\"risks\":{},\"audit\":{},\"rollback_plan\":{}}}",
@@ -1356,6 +1508,7 @@ fn restore_apply_json(result: &RestoreApplyResult) -> String {
     )
 }
 
+/// 将 restore rollback 的证据、锁、健康和审计编码为 JSON。
 fn restore_rollback_json(result: &RestoreRollbackResult) -> String {
     format!(
         "{{\"plan_id\":{},\"status\":{},\"mutation_executed\":{},\"rollback_executed\":{},\"rollback\":{},\"mutation_plan\":{},\"operator_confirmation\":{},\"lock\":{},\"health\":{{\"healthy\":{},\"message\":{}}},\"artifact_store\":{},\"lock_store\":{},\"dry_run\":{},\"audit\":{}}}",
@@ -1376,6 +1529,7 @@ fn restore_rollback_json(result: &RestoreRollbackResult) -> String {
     )
 }
 
+/// 将文件回滚引擎报告编码为 JSON。
 fn restore_rollback_apply_json(report: &RestoreRollbackApplyReport) -> String {
     format!(
         "{{\"plan_id\":{},\"target_root\":{},\"status\":{},\"rollback_executed\":{},\"completed_steps\":{},\"failed_step\":{},\"transaction_log_path\":{},\"rollback_log_path\":{},\"transaction_status\":{},\"transaction_log\":{},\"rollback_log\":{},\"audit\":{}}}",
@@ -1394,12 +1548,14 @@ fn restore_rollback_apply_json(report: &RestoreRollbackApplyReport) -> String {
     )
 }
 
+/// 从 dry-run 组合结果构造统一操作者确认摘要。
 fn restore_apply_dry_run_operator_confirmation(
     result: &RestoreApplyDryRunResult,
 ) -> RestoreOperatorConfirmation {
     restore_apply_dry_run_report_operator_confirmation(&result.report)
 }
 
+/// 从 dry-run 报告构造尚未执行 mutation 的确认摘要。
 fn restore_apply_dry_run_report_operator_confirmation(
     report: &RestoreApplyDryRunReport,
 ) -> RestoreOperatorConfirmation {
@@ -1418,6 +1574,7 @@ fn restore_apply_dry_run_report_operator_confirmation(
     })
 }
 
+/// 从真实 apply 结果构造包含执行和回滚事实的确认摘要。
 fn restore_apply_operator_confirmation(result: &RestoreApplyResult) -> RestoreOperatorConfirmation {
     let rollback_required = result
         .mutation_apply
@@ -1447,6 +1604,7 @@ fn restore_apply_operator_confirmation(result: &RestoreApplyResult) -> RestoreOp
     })
 }
 
+/// 从 rollback 结果构造确认摘要，突出 rollback_executed 事实。
 fn restore_rollback_operator_confirmation(
     result: &RestoreRollbackResult,
 ) -> RestoreOperatorConfirmation {
@@ -1469,6 +1627,7 @@ fn restore_rollback_operator_confirmation(
     })
 }
 
+/// 集中构造 restore 操作者确认契约，保证 apply/dry-run/rollback 字段语义一致。
 fn restore_operator_confirmation(
     input: RestoreOperatorConfirmationInput<'_>,
 ) -> RestoreOperatorConfirmation {
@@ -1489,6 +1648,7 @@ fn restore_operator_confirmation(
     }
 }
 
+/// 将操作者确认摘要编码为 JSON。
 fn restore_operator_confirmation_json(confirmation: &RestoreOperatorConfirmation) -> String {
     format!(
         "{{\"command\":{},\"plan_id\":{},\"confirm_token\":{},\"target_root\":{},\"affected_count\":{},\"apply_allowed\":{},\"mutation_planned\":{},\"mutation_executed\":{},\"rollback_required\":{},\"rollback_executed\":{},\"irreversible_warning\":{},\"next_action\":{}}}",
@@ -1507,6 +1667,7 @@ fn restore_operator_confirmation_json(confirmation: &RestoreOperatorConfirmation
     )
 }
 
+/// 以稳定逐行字段写出操作者确认摘要。
 fn write_restore_operator_confirmation_text<W: Write>(
     writer: &mut W,
     confirmation: &RestoreOperatorConfirmation,
@@ -1552,6 +1713,7 @@ fn write_restore_operator_confirmation_text<W: Write>(
     writeln!(writer, "next_action: {}", confirmation.next_action).map_err(write_error_kind)
 }
 
+/// 将 staged mutation 事务结果编码为 JSON。
 fn restore_mutation_apply_json(report: &RestoreMutationApplyReport) -> String {
     format!(
         "{{\"plan_id\":{},\"target_root\":{},\"status\":{},\"mutation_executed\":{},\"rollback_required\":{},\"completed_steps\":{},\"failed_step\":{},\"transaction_log_path\":{},\"transaction_log\":{},\"audit\":{}}}",
@@ -1568,6 +1730,7 @@ fn restore_mutation_apply_json(report: &RestoreMutationApplyReport) -> String {
     )
 }
 
+/// 将单个 mutation 事务条目编码为 JSON。
 fn restore_transaction_entry_json(entry: &RestoreMutationTransactionEntry) -> String {
     format!(
         "{{\"sequence\":{},\"operation\":{},\"relative_path\":{},\"status\":{},\"digest\":{},\"message\":{}}}",
@@ -1580,6 +1743,7 @@ fn restore_transaction_entry_json(entry: &RestoreMutationTransactionEntry) -> St
     )
 }
 
+/// 将 staged mutation 目标、步骤、风险和审计编码为 JSON。
 fn restore_mutation_plan_json(plan: &RestoreStagedMutationPlan) -> String {
     format!(
         "{{\"plan_id\":{},\"target_root\":{},\"mutation_planned\":{},\"mutation_executed\":{},\"steps\":{},\"affected_paths\":{},\"preview\":{},\"preflight_hash\":{},\"rollback_manifest\":{},\"audit\":{}}}",
@@ -1596,6 +1760,7 @@ fn restore_mutation_plan_json(plan: &RestoreStagedMutationPlan) -> String {
     )
 }
 
+/// 将单个 mutation 步骤及其预期 digest 编码为 JSON。
 fn restore_mutation_step_json(step: &RestoreMutationStep) -> String {
     format!(
         "{{\"operation\":{},\"relative_path\":{},\"source_artifact_key\":{},\"expected_digest\":{},\"pre_restore_digest\":{},\"target_kind\":{}}}",
@@ -1608,6 +1773,7 @@ fn restore_mutation_step_json(step: &RestoreMutationStep) -> String {
     )
 }
 
+/// 将单个文件回滚条目编码为 JSON。
 fn restore_rollback_entry_json(entry: &RestoreRollbackEntry) -> String {
     format!(
         "{{\"relative_path\":{},\"action\":{},\"pre_restore_digest\":{}}}",
@@ -1617,10 +1783,12 @@ fn restore_rollback_entry_json(entry: &RestoreRollbackEntry) -> String {
     )
 }
 
+/// 将可选字符串编码为 JSON 字符串或 `null`。
 fn option_json(value: Option<&str>) -> String {
     value.map(json_string).unwrap_or_else(|| "null".to_owned())
 }
 
+/// 将 restore apply/rollback 锁的 owner、plan 和状态编码为 JSON。
 fn restore_apply_lock_json(lock: &eva_backup::RestoreApplyLock) -> String {
     format!(
         "{{\"lock_id\":{},\"plan_id\":{},\"owner\":{},\"status\":{},\"audit\":{}}}",

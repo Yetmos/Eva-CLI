@@ -1,3 +1,4 @@
+//! 生产基准测试证据的解析与验证契约。
 //! Production benchmark evidence verification contracts.
 
 use crate::checklist::ReleaseGateStatus;
@@ -5,46 +6,74 @@ use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// 本模块的架构职责：将可复现的性能测量绑定到发布来源并生成预算门禁。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "production benchmark evidence contract";
 
+/// 当前支持的基准测试证据清单格式。
 pub const BENCHMARK_EVIDENCE_FORMAT: &str = "eva.release.benchmark_evidence.v1";
 
+/// 一个组件指标的生产环境基准测量。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseBenchmarkMeasurement {
+    /// 被测组件或操作的稳定键。
     pub component: String,
+    /// 被测指标的人类可读名称。
     pub metric: String,
+    /// 发布允许的最大毫秒数。
     pub budget_ms: u64,
+    /// 本次证据观测到的毫秒数。
     pub observed_ms: u64,
+    /// 聚合观测使用的非零样本数。
     pub sample_count: u64,
+    /// 生成测量的具体命令。
     pub command: String,
+    /// 运行命令的机器或 CI 环境描述。
     pub environment: String,
 }
 
+/// 与版本、标签和完整提交绑定的基准测试证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseBenchmarkEvidence {
+    /// 证据清单格式版本。
     pub format: String,
+    /// 被测发布版本。
     pub version: String,
+    /// 被测来源标签。
     pub source_tag: String,
+    /// 被测来源完整提交哈希。
     pub source_commit: String,
+    /// 基准测试任务的总体状态。
     pub benchmark_status: String,
+    /// 一项或多项生产测量。
     pub measurements: Vec<ReleaseBenchmarkMeasurement>,
 }
 
+/// 基准证据的预算回归验证结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseBenchmarkVerificationReport {
+    /// `verified` 或 `blocked` 状态。
     pub status: String,
+    /// 证据对应发布版本。
     pub version: String,
+    /// 证据对应来源标签。
     pub source_tag: String,
+    /// 证据对应来源提交。
     pub source_commit: String,
+    /// 原始基准任务状态。
     pub benchmark_status: String,
+    /// 全部测量。
     pub measurements: Vec<ReleaseBenchmarkMeasurement>,
+    /// 观测值超过预算的测量。
     pub regressions: Vec<ReleaseBenchmarkMeasurement>,
+    /// 缺失、失败或回归带来的具体风险。
     pub risks: Vec<String>,
+    /// 来源、总体状态和逐测量审计记录。
     pub audit: Vec<String>,
 }
 
 impl ReleaseBenchmarkMeasurement {
+    /// 校验组件、非零预算、样本数和环境后创建测量。
     pub fn new(
         component: impl Into<String>,
         metric: impl Into<String>,
@@ -79,6 +108,7 @@ impl ReleaseBenchmarkMeasurement {
         })
     }
 
+    /// 根据观测值是否超过预算计算发布门禁状态。
     pub fn status(&self) -> ReleaseGateStatus {
         if self.observed_ms <= self.budget_ms {
             ReleaseGateStatus::Pass
@@ -87,6 +117,7 @@ impl ReleaseBenchmarkMeasurement {
         }
     }
 
+    /// 转换为通用性能预算，同时保留命令、样本数和环境证据。
     pub fn to_budget(&self) -> PerformanceBudget {
         PerformanceBudget::new(
             self.component.clone(),
@@ -102,6 +133,7 @@ impl ReleaseBenchmarkMeasurement {
 }
 
 impl ReleaseBenchmarkEvidence {
+    /// 创建与发布来源绑定且状态受约束的基准证据。
     pub fn new(
         version: impl Into<String>,
         source_tag: impl Into<String>,
@@ -123,6 +155,10 @@ impl ReleaseBenchmarkEvidence {
         })
     }
 
+    /// 从严格键值清单解析测量，并通过构造器重新执行全部约束。
+    ///
+    /// 重复字段、缺失索引字段、未知格式和非法数值均失败关闭；数字索引排序保证
+    /// 测量顺序稳定。
     pub fn parse_manifest(data: &str) -> Result<Self, EvaError> {
         let fields = parse_key_value_manifest(data)?;
         if required(&fields, "format")? != BENCHMARK_EVIDENCE_FORMAT {
@@ -171,6 +207,10 @@ impl ReleaseBenchmarkEvidence {
         )
     }
 
+    /// 验证任务状态、非空测量集合以及每项预算。
+    ///
+    /// 只有任务状态明确为 passed、至少有一个测量且没有超预算项时才通过。空证据
+    /// 或 skipped 状态不会因为“没有回归”而被误判为成功。
     pub fn verify(&self) -> ReleaseBenchmarkVerificationReport {
         let mut risks = Vec::new();
         if self.benchmark_status != "passed" {
@@ -230,6 +270,9 @@ impl ReleaseBenchmarkEvidence {
         }
     }
 
+    /// 将基准测量转换为发布性能基线报告。
+    ///
+    /// 转换沿用相同的 passed、非空和全部预算内条件，保证两个报告表面结论一致。
     pub fn to_performance_report(&self) -> PerformanceBaselineReport {
         let budgets = self
             .measurements
@@ -257,6 +300,7 @@ impl ReleaseBenchmarkEvidence {
         }
     }
 
+    /// 以稳定字段和测量顺序序列化基准证据清单。
     pub fn to_manifest(&self) -> String {
         let mut lines = vec![
             format!("format={}", self.format),
@@ -296,6 +340,7 @@ impl ReleaseBenchmarkEvidence {
     }
 }
 
+/// 解析允许 BOM、空行和注释的严格键值清单，并拒绝重复键。
 fn parse_key_value_manifest(data: &str) -> Result<BTreeMap<String, String>, EvaError> {
     let mut fields = BTreeMap::new();
     for line in data.lines() {
@@ -328,6 +373,7 @@ fn parse_key_value_manifest(data: &str) -> Result<BTreeMap<String, String>, EvaE
     Ok(fields)
 }
 
+/// 读取必填基准证据字段。
 fn required(fields: &BTreeMap<String, String>, key: &str) -> Result<String, EvaError> {
     fields.get(key).cloned().ok_or_else(|| {
         EvaError::invalid_argument("release benchmark evidence is missing required field")
@@ -335,6 +381,7 @@ fn required(fields: &BTreeMap<String, String>, key: &str) -> Result<String, EvaE
     })
 }
 
+/// 读取指定测量索引下的必填复合字段。
 fn required_indexed(
     fields: &BTreeMap<String, String>,
     prefix: &str,
@@ -344,6 +391,7 @@ fn required_indexed(
     required(fields, &format!("{prefix}.{index}.{field}"))
 }
 
+/// 从复合键收集指定前缀下的有效数字索引并排序去重。
 fn indexed_fields(fields: &BTreeMap<String, String>, prefix: &str) -> BTreeSet<usize> {
     fields
         .keys()
@@ -353,6 +401,7 @@ fn indexed_fields(fields: &BTreeMap<String, String>, prefix: &str) -> BTreeSet<u
         .collect()
 }
 
+/// 解析无符号 64 位基准数值。
 fn parse_u64(value: String) -> Result<u64, EvaError> {
     value.parse::<u64>().map_err(|error| {
         EvaError::invalid_argument("benchmark integer field must be a u64")
@@ -361,6 +410,7 @@ fn parse_u64(value: String) -> Result<u64, EvaError> {
     })
 }
 
+/// 校验基准任务状态属于受支持集合。
 fn validate_status(value: String) -> Result<String, EvaError> {
     let value = validate_token("benchmark status", value)?;
     if matches!(value.as_str(), "passed" | "failed" | "blocked" | "skipped") {
@@ -373,6 +423,7 @@ fn validate_status(value: String) -> Result<String, EvaError> {
     }
 }
 
+/// 校验发布版本为非空且不含空白的单个标记。
 fn validate_version(value: String) -> Result<String, EvaError> {
     let value = validate_non_empty("release version", value)?;
     if value.contains(char::is_whitespace) {
@@ -384,6 +435,7 @@ fn validate_version(value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验组件键不会包含路径分隔符或遍历片段。
 fn validate_metric_key(field: &str, value: String) -> Result<String, EvaError> {
     let value = validate_token(field, value)?;
     if value.contains('/') || value.contains('\\') || value.contains("..") {
@@ -395,6 +447,7 @@ fn validate_metric_key(field: &str, value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验不允许包含空白的稳定证据标记。
 fn validate_token(field: &str, value: String) -> Result<String, EvaError> {
     let value = validate_non_empty(field, value)?;
     if value.contains(char::is_whitespace) {
@@ -406,6 +459,7 @@ fn validate_token(field: &str, value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验文本非空且首尾无空白。
 fn validate_non_empty(field: &str, value: String) -> Result<String, EvaError> {
     if value.trim().is_empty() || value.trim() != value {
         return Err(
@@ -416,6 +470,7 @@ fn validate_non_empty(field: &str, value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验来源提交为完整 40 字符十六进制哈希。
 fn validate_commit(value: String) -> Result<String, EvaError> {
     let value = validate_token("release source commit", value)?;
     if value.len() != 40 || !value.chars().all(|ch| ch.is_ascii_hexdigit()) {
@@ -428,11 +483,14 @@ fn validate_commit(value: String) -> Result<String, EvaError> {
 }
 
 #[cfg(test)]
+/// 基准证据清单往返、预算回归和报告转换测试。
 mod tests {
     use super::*;
 
+    /// 测试证据使用的完整来源提交。
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
+    /// 构造具有指定观测值的测试测量。
     fn measurement(observed_ms: u64) -> ReleaseBenchmarkMeasurement {
         ReleaseBenchmarkMeasurement::new(
             "release.check",
@@ -446,6 +504,7 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造指定任务状态和观测值的测试证据。
     fn evidence(status: &str, observed_ms: u64) -> ReleaseBenchmarkEvidence {
         ReleaseBenchmarkEvidence::new(
             "1.11.5-alpha",
@@ -458,6 +517,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证预算内证据可往返清单并通过门禁。
     fn benchmark_evidence_round_trips_and_verifies() {
         let parsed =
             ReleaseBenchmarkEvidence::parse_manifest(&evidence("passed", 120).to_manifest())
@@ -471,6 +531,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证超预算测量被列为回归并阻塞发布。
     fn benchmark_regression_blocks_verification() {
         let report = evidence("passed", 250).verify();
 
@@ -483,6 +544,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证基准证据转换后的性能报告保持相同预算结论。
     fn benchmark_evidence_can_feed_performance_report() {
         let report = evidence("passed", 120).to_performance_report();
 

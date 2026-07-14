@@ -1,3 +1,5 @@
+//! 可信来源发现子命令；发现候选只用于展示，不授予任何运行时句柄。
+
 use super::{
     json_array, json_string, option_json, parse_common_options, success_envelope, trace_for,
     write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_OK,
@@ -9,10 +11,16 @@ use eva_observability::TraceFields;
 use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Discovery 子命令集合。
 pub(super) enum DiscoveryCommand {
-    Scan(CommonOptions),
+    /// 扫描项目配置声明的可信发现来源。
+    Scan(
+        /// 发现扫描命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
 }
 
+/// 解析 `discovery scan` 与公共选项。
 pub(super) fn parse_discovery_command(args: &[String]) -> Result<DiscoveryCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -26,6 +34,7 @@ pub(super) fn parse_discovery_command(args: &[String]) -> Result<DiscoveryComman
     }
 }
 
+/// 加载项目并执行发现扫描；配置失败使用统一错误信封。
 pub(super) fn execute_discovery<W, E>(
     command: DiscoveryCommand,
     stdout: &mut W,
@@ -53,6 +62,7 @@ where
     }
 }
 
+/// 输出候选及每个来源的状态、耗时和拒绝原因，便于区分空结果与来源故障。
 fn write_discovery_scan<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -106,6 +116,7 @@ fn write_discovery_scan<W: Write>(
     }
 }
 
+/// 将发现报告编码为 JSON，同时明确候选不会自动获得句柄。
 fn discovery_scan_json(report: &DiscoveryScanReport) -> String {
     let candidates = &report.candidates;
     let entries = candidates.iter().map(|candidate| {
@@ -134,6 +145,7 @@ fn discovery_scan_json(report: &DiscoveryScanReport) -> String {
     )
 }
 
+/// 将单个发现来源的缓存键、超时和拒绝统计编码为 JSON。
 fn discovery_source_report_json(report: &DiscoverySourceReport) -> String {
     let rejected_count = report
         .candidates

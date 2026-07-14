@@ -1,22 +1,33 @@
+//! 中文：记忆和知识进入上下文前的敏感数据脱敏。
 //! Sensitive data redaction before context injection.
 
 use crate::knowledge_service::{KnowledgeItem, KnowledgeSearchResult, KnowledgeSource};
 use crate::memory_service::MemoryRecord;
 use eva_policy::RedactionPolicyDomain;
 
+/// 中文：本模块在不修改原记录的前提下替换常见凭据令牌并统计替换次数。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "redact sensitive memory and knowledge before context use";
 
+/// 中文：一次文本脱敏的输出和替换计数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedactedText {
+    /// 中文：应用策略后的文本。
     pub value: String,
+    /// 中文：被替换的敏感令牌数量。
     pub replacement_count: usize,
 }
 
+/// 中文：使用默认策略脱敏一段文本。
 pub fn redact_sensitive_text(input: &str) -> RedactedText {
     redact_sensitive_text_with_policy(input, &RedactionPolicyDomain::default())
 }
 
+/// 中文：使用指定策略按空白分隔令牌执行脱敏，并保持令牌原始顺序。
+///
+/// 关闭策略时原样返回；启用时只识别完整令牌中的敏感前缀或 `key=value`、`key:value`
+/// 形式，避免把普通正文中的子串任意替换。重新连接会规范化空白，因此该函数用于上下文
+/// 文本而非需要字节级保真的原始制品。
 pub fn redact_sensitive_text_with_policy(
     input: &str,
     policy: &RedactionPolicyDomain,
@@ -43,10 +54,12 @@ pub fn redact_sensitive_text_with_policy(
     }
 }
 
+/// 中文：使用默认策略克隆并脱敏一条记忆记录的值。
 pub fn redact_memory_record(record: &MemoryRecord) -> (MemoryRecord, usize) {
     redact_memory_record_with_policy(record, &RedactionPolicyDomain::default())
 }
 
+/// 中文：使用指定策略克隆记忆记录，仅替换值字段并返回替换数量。
 pub fn redact_memory_record_with_policy(
     record: &MemoryRecord,
     policy: &RedactionPolicyDomain,
@@ -57,10 +70,12 @@ pub fn redact_memory_record_with_policy(
     (record, redacted.replacement_count)
 }
 
+/// 中文：使用默认策略脱敏知识搜索结果中的摘要和正文。
 pub fn redact_knowledge_result(result: &KnowledgeSearchResult) -> (KnowledgeSearchResult, usize) {
     redact_knowledge_result_with_policy(result, &RedactionPolicyDomain::default())
 }
 
+/// 中文：克隆搜索结果，脱敏摘要与正文并合计替换次数。
 pub fn redact_knowledge_result_with_policy(
     result: &KnowledgeSearchResult,
     policy: &RedactionPolicyDomain,
@@ -76,10 +91,15 @@ pub fn redact_knowledge_result_with_policy(
     )
 }
 
+/// 中文：使用默认策略脱敏完整知识条目。
 pub fn redact_knowledge_item(item: &KnowledgeItem) -> (KnowledgeItem, usize) {
     redact_knowledge_item_with_policy(item, &RedactionPolicyDomain::default())
 }
 
+/// 中文：脱敏知识来源 URI、标题、摘要和正文，并重新计算来源内容指纹。
+///
+/// `KnowledgeSource::new` 使用已脱敏正文重建来源，确保后续索引和缓存不会继续携带由
+/// 原始敏感内容计算的标识；返回计数覆盖所有四个文本表面。
 pub fn redact_knowledge_item_with_policy(
     item: &KnowledgeItem,
     policy: &RedactionPolicyDomain,
@@ -105,6 +125,7 @@ pub fn redact_knowledge_item_with_policy(
     )
 }
 
+/// 中文：按令牌前缀或敏感键值形式判断单个令牌，并最多计为一次替换。
 fn redact_token(token: &str, policy: &RedactionPolicyDomain) -> (String, usize) {
     let lower = token.to_ascii_lowercase();
     if policy
@@ -129,6 +150,7 @@ fn redact_token(token: &str, policy: &RedactionPolicyDomain) -> (String, usize) 
     (token.to_owned(), 0)
 }
 
+/// 中文：清理键名外围标点、统一小写后检查是否包含任一敏感片段。
 fn is_sensitive_key(key: &str, policy: &RedactionPolicyDomain) -> bool {
     let key = key
         .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-')
@@ -144,6 +166,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// 中文：验证等号、冒号和令牌前缀三种敏感形式均被替换。
     fn redact_sensitive_key_value_tokens() {
         let redacted = redact_sensitive_text("token=abc keep password:secret sk-live");
 
@@ -155,6 +178,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证策略可扩展敏感键、前缀和替换文本。
     fn redaction_policy_can_extend_keys_and_prefixes() {
         let mut policy = RedactionPolicyDomain {
             replacement: "[MASKED]".to_owned(),
@@ -178,6 +202,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证关闭脱敏时文本和替换计数保持不变。
     fn disabled_redaction_policy_leaves_text_unchanged() {
         let policy = RedactionPolicyDomain {
             enabled: false,

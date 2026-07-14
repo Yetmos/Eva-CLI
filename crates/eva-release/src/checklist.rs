@@ -1,3 +1,4 @@
+//! 发布就绪度检查清单的聚合与闭环报告。
 //! Release readiness checklist aggregation.
 
 use crate::artifact::{
@@ -12,17 +13,24 @@ use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
 use eva_mcp::{McpCompatibilityMatrix, McpCompatibilityReport};
 
+/// 当前就绪度基线对应的语义版本。
 const CURRENT_RELEASE_VERSION: &str = "1.11.5-alpha";
+/// 面向报告文本的当前发布标签。
 const CURRENT_RELEASE_LABEL: &str = "V1.11.5-alpha";
 
+/// 单个发布门禁的标准化结论。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseGateStatus {
+    /// 证据满足当前发布要求。
     Pass,
+    /// 存在需跟踪风险，但不阻塞当前发布级别。
     Warn,
+    /// 必要证据缺失或失败，必须阻止发布。
     Blocked,
 }
 
 impl ReleaseGateStatus {
+    /// 返回用于报告和审计的稳定状态字符串。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pass => "pass",
@@ -31,81 +39,126 @@ impl ReleaseGateStatus {
         }
     }
 
+    /// 判断状态是否应阻塞发布。
     pub const fn is_blocking(self) -> bool {
         matches!(self, Self::Blocked)
     }
 
+    /// 判断状态是否为非阻塞警告。
     pub const fn is_warning(self) -> bool {
         matches!(self, Self::Warn)
     }
 }
 
+/// 一个发布要求及其证据、必要性和补救措施。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseGate {
+    /// 门禁的稳定全局标识。
     pub id: String,
+    /// 门禁所属能力或风险域。
     pub domain: String,
+    /// 当前证据得出的门禁状态。
     pub status: ReleaseGateStatus,
+    /// 该门禁是否参与总体 ready/blocked 判定。
     pub required: bool,
+    /// 门禁目的与结论摘要。
     pub summary: String,
+    /// 支撑结论的命令、工件或审计记录。
     pub evidence: Vec<String>,
+    /// 未通过或警告状态下的后续动作。
     pub remediation: Vec<String>,
 }
 
+/// 一个操作系统目标的命令、路径和 CI 就绪度。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformReadiness {
+    /// 标准化操作系统名称。
     pub os: String,
+    /// CI 和文档使用的默认 shell。
     pub shell: String,
+    /// 该平台需要覆盖的路径语义。
     pub path_model: String,
+    /// 平台烟雾测试结论。
     pub status: ReleaseGateStatus,
+    /// 在该平台必须运行的发布命令。
     pub required_commands: Vec<String>,
+    /// CI 覆盖和平台限制说明。
     pub notes: Vec<String>,
 }
 
+/// 一个长任务、取消、升级或恢复的稳定性场景。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StabilityScenario {
+    /// 场景的稳定标识。
     pub id: String,
+    /// 场景当前门禁状态。
     pub status: ReleaseGateStatus,
+    /// 需要成立的稳定性行为。
     pub scenario: String,
+    /// 支撑行为的测试或命令证据。
     pub evidence: Vec<String>,
+    /// 故障发生后对操作者承诺的恢复语义。
     pub recovery_contract: String,
 }
 
+/// V1.x alpha 内部闭环要求与生产外部依赖的分离报告。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct V1xClosureReport {
+    /// `ready_with_external_blockers` 或 `blocked` 状态。
     pub status: String,
+    /// 闭环范围和外部依赖边界摘要。
     pub summary: String,
+    /// 必须纳入 alpha 闭环的门禁标识。
     pub required_gate_ids: Vec<String>,
+    /// 当前已明确通过的必需门禁。
     pub passed_required_gate_ids: Vec<String>,
+    /// 报告中完全缺失的必需门禁。
     pub missing_required_gate_ids: Vec<String>,
+    /// 存在但未达到 Pass 的必需门禁。
     pub blocking_required_gate_ids: Vec<String>,
+    /// 只有提供真实发布证据时才加入的生产门禁。
     pub optional_production_gate_ids: Vec<String>,
+    /// 凭据、平台环境和真实设施等仓库外阻塞项。
     pub blocked_external_items: Vec<String>,
 }
 
+/// 一个目标平台范围的完整发布就绪度报告。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseReadinessReport {
+    /// 报告对应发布版本。
     pub version: String,
+    /// `ready` 或 `blocked` 总体状态。
     pub status: String,
+    /// `all` 或单个操作系统目标。
     pub target: String,
+    /// 目标范围内的平台就绪度。
     pub platforms: Vec<PlatformReadiness>,
+    /// 关键故障与恢复场景。
     pub stability: Vec<StabilityScenario>,
+    /// 内置及可选外部证据转换出的全部门禁。
     pub gates: Vec<ReleaseGate>,
+    /// V1.x alpha 内部闭环报告。
     pub closure: V1xClosureReport,
+    /// 聚合过程和可选外部证据审计记录。
     pub audit: Vec<String>,
 }
 
+/// 构建当前发布加固报告和兼容性基线的无状态服务。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ReleaseHardeningService;
 
 impl ReleaseHardeningService {
+    /// 创建当前 V1.x 发布加固服务。
     pub fn v15() -> Self {
         Self
     }
 
+    /// 只使用仓库内置基线生成指定平台范围的就绪度报告。
     pub fn readiness(&self, target: impl Into<String>) -> Result<ReleaseReadinessReport, EvaError> {
         self.readiness_inner(target.into(), None, None, None, None)
     }
 
+    /// 在内置基线中加入签名工件和来源证明门禁。
     pub fn readiness_with_artifact_evidence(
         &self,
         target: impl Into<String>,
@@ -114,6 +167,7 @@ impl ReleaseHardeningService {
         self.readiness_inner(target.into(), Some(evidence), None, None, None)
     }
 
+    /// 在内置基线中加入多平台分发门禁。
     pub fn readiness_with_distribution_evidence(
         &self,
         target: impl Into<String>,
@@ -122,6 +176,7 @@ impl ReleaseHardeningService {
         self.readiness_inner(target.into(), None, Some(evidence), None, None)
     }
 
+    /// 在内置基线中加入外部安全扫描门禁。
     pub fn readiness_with_security_scan_evidence(
         &self,
         target: impl Into<String>,
@@ -130,6 +185,7 @@ impl ReleaseHardeningService {
         self.readiness_inner(target.into(), None, None, Some(evidence), None)
     }
 
+    /// 在内置基线中加入生产基准测试门禁。
     pub fn readiness_with_benchmark_evidence(
         &self,
         target: impl Into<String>,
@@ -138,6 +194,7 @@ impl ReleaseHardeningService {
         self.readiness_inner(target.into(), None, None, None, Some(evidence))
     }
 
+    /// 一次性聚合任意组合的生产发布证据。
     pub fn readiness_with_release_evidence(
         &self,
         target: impl Into<String>,
@@ -155,6 +212,13 @@ impl ReleaseHardeningService {
         )
     }
 
+    /// 校验目标、构建全部内置门禁、验证可选证据并计算最终状态。
+    ///
+    /// 聚合顺序固定：平台/稳定性、内置安全/性能/迁移、各运行时能力门禁、可选外部
+    /// 证据，最后生成 V1.x closure 门禁。可选生产证据仅在传入时成为 required 门禁；
+    /// 一旦传入却验证失败，就会阻塞总体状态。总体只检查 `required && blocked`，Warn
+    /// 会被计数但不阻塞。closure 只覆盖预定义的 alpha 内部门禁，将凭据和真实设施
+    /// 明确列为外部阻塞，避免错误宣称生产条件已经满足。
     fn readiness_inner(
         &self,
         target: String,
@@ -175,6 +239,7 @@ impl ReleaseHardeningService {
             .with_context("target", target));
         }
 
+        // 先生成所有内部基线门禁，closure 才能检查是否有缺失或未通过项。
         let platforms = self.platforms(&target);
         let security = self.security_review();
         let performance = self.performance_baseline();
@@ -206,6 +271,7 @@ impl ReleaseHardeningService {
         gates.push(hardware_safety_release_gate());
         gates.push(observability_policy_gate());
         gates.push(public_json_contract_gate());
+        // 外部证据不在未提供时伪造通过；一旦提供，就转成 required 发布门禁。
         let artifact_report = artifact_evidence
             .map(|evidence| evidence.verify(&ReleaseArtifactSigningKey::local_development()));
         if let Some(report) = artifact_report.as_ref() {
@@ -223,6 +289,7 @@ impl ReleaseHardeningService {
         if let Some(report) = benchmark_report.as_ref() {
             gates.push(release_benchmark_gate(report));
         }
+        // closure 门禁必须最后加入，避免它把自身当成闭环前置条件。
         let closure = v1x_closure_report(&gates);
         gates.push(v1x_closure_gate(&closure));
 
@@ -253,6 +320,10 @@ impl ReleaseHardeningService {
         })
     }
 
+    /// 返回当前版本内置的高风险边界安全审查。
+    ///
+    /// passed 项表示仓库内已有可引用证据；tracked 项保留非阻塞警告和未来补救措施，
+    /// 不会伪装为已经实现真实服务管理器等生产集成。
     pub fn security_review(&self) -> SecurityReviewReport {
         SecurityReviewReport {
             version: CURRENT_RELEASE_VERSION.to_owned(),
@@ -339,6 +410,10 @@ impl ReleaseHardeningService {
         }
     }
 
+    /// 返回用于静态发布烟雾的契约性能预算。
+    ///
+    /// 这些值是当前内存实现的发布阈值，不是运行中的微基准结果；真实基准证据应通过
+    /// `ReleaseBenchmarkEvidence` 作为独立 required 门禁传入。
     pub fn performance_baseline(&self) -> PerformanceBaselineReport {
         let budgets = vec![
             PerformanceBudget::new(
@@ -402,6 +477,7 @@ impl ReleaseHardeningService {
         }
     }
 
+    /// 为非空源/目标版本生成当前兼容迁移指南。
     pub fn migration_guide(
         &self,
         from: impl Into<String>,
@@ -460,6 +536,7 @@ impl ReleaseHardeningService {
         })
     }
 
+    /// 构造三平台就绪度矩阵，并按请求目标筛选。
     fn platforms(&self, target: &str) -> Vec<PlatformReadiness> {
         let all = vec![
             PlatformReadiness {
@@ -506,6 +583,7 @@ impl ReleaseHardeningService {
         }
     }
 
+    /// 返回任务、取消、升级和持久恢复的内置稳定性场景。
     fn stability_scenarios(&self) -> Vec<StabilityScenario> {
         vec![
             StabilityScenario {
@@ -558,6 +636,7 @@ impl ReleaseHardeningService {
         ]
     }
 
+    /// 将平台、稳定性和文档基线转换为核心 required 门禁。
     fn core_gates(
         &self,
         platforms: &[PlatformReadiness],
@@ -613,6 +692,10 @@ impl ReleaseHardeningService {
     }
 }
 
+/// 合并内置基线与实际提供的外部证据审计记录。
+///
+/// 未提供的可选报告不会生成虚假的 verified 标记；已提供报告的原始审计会完整追加，
+/// 使最终报告可追溯到扫描器、工件、分发和基准来源。
 fn release_audit(
     artifact_report: Option<&ReleaseArtifactVerificationReport>,
     distribution_report: Option<&ReleaseDistributionVerificationReport>,
@@ -679,6 +762,7 @@ fn release_audit(
     audit
 }
 
+/// 将签名工件和来源证明验证报告转换为 required 发布门禁。
 fn release_artifact_provenance_gate(report: &ReleaseArtifactVerificationReport) -> ReleaseGate {
     let mut evidence = vec![
         format!("artifact:{}", report.artifact_name),
@@ -708,6 +792,7 @@ fn release_artifact_provenance_gate(report: &ReleaseArtifactVerificationReport) 
     }
 }
 
+/// 将多平台分发验证报告转换为 required 发布门禁。
 fn release_distribution_gate(report: &ReleaseDistributionVerificationReport) -> ReleaseGate {
     let mut evidence = vec![
         format!("version:{}", report.version),
@@ -750,6 +835,7 @@ fn release_distribution_gate(report: &ReleaseDistributionVerificationReport) -> 
     }
 }
 
+/// 将外部扫描验证报告转换为 required 安全门禁。
 fn release_security_scan_gate(report: &ReleaseSecurityScanVerificationReport) -> ReleaseGate {
     let mut evidence = vec![
         format!("scanner:{}", report.scanner),
@@ -788,6 +874,7 @@ fn release_security_scan_gate(report: &ReleaseSecurityScanVerificationReport) ->
     }
 }
 
+/// 将生产基准验证报告转换为 required 性能门禁。
 fn release_benchmark_gate(report: &ReleaseBenchmarkVerificationReport) -> ReleaseGate {
     let mut evidence = vec![
         format!("benchmark_status:{}", report.benchmark_status),
@@ -825,6 +912,7 @@ fn release_benchmark_gate(report: &ReleaseBenchmarkVerificationReport) -> Releas
 }
 
 impl ReleaseReadinessReport {
+    /// 统计 required 且处于 Blocked 的门禁数量。
     pub fn blocking_count(&self) -> usize {
         self.gates
             .iter()
@@ -832,6 +920,7 @@ impl ReleaseReadinessReport {
             .count()
     }
 
+    /// 统计所有处于 Warn 的门禁数量，无论是否 required。
     pub fn warning_count(&self) -> usize {
         self.gates
             .iter()
@@ -840,6 +929,9 @@ impl ReleaseReadinessReport {
     }
 }
 
+/// 以 Blocked 优先、Warn 次之的规则归并一组门禁状态。
+///
+/// 空输入按 Pass 处理；调用方只应对已经建立存在性约束的内置集合使用该函数。
 fn status_from<I>(statuses: I) -> ReleaseGateStatus
 where
     I: IntoIterator<Item = ReleaseGateStatus>,
@@ -858,6 +950,7 @@ where
     }
 }
 
+/// 将内置安全发现映射为发布门禁，高/严重级别才标为 required。
 fn security_gate(finding: &SecurityFinding) -> ReleaseGate {
     ReleaseGate {
         id: finding.id.clone(),
@@ -870,6 +963,7 @@ fn security_gate(finding: &SecurityFinding) -> ReleaseGate {
     }
 }
 
+/// 将一个性能预算映射为 required 发布门禁。
 fn performance_gate(budget: &PerformanceBudget) -> ReleaseGate {
     ReleaseGate {
         id: format!("PERF-{}", budget.component.replace('.', "-").to_uppercase()),
@@ -887,6 +981,7 @@ fn performance_gate(budget: &PerformanceBudget) -> ReleaseGate {
     }
 }
 
+/// 根据是否存在破坏性变化构造迁移兼容门禁。
 fn migration_gate(guide: &MigrationGuide) -> ReleaseGate {
     ReleaseGate {
         id: "REL-MIGRATION-001".to_owned(),
@@ -912,6 +1007,7 @@ fn migration_gate(guide: &MigrationGuide) -> ReleaseGate {
     }
 }
 
+/// 构造持久化后端布局和恢复边界门禁。
 fn durable_backend_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-BACKEND-001".to_owned(),
@@ -931,6 +1027,7 @@ fn durable_backend_gate() -> ReleaseGate {
     }
 }
 
+/// 构造持久 EventBus 重放与死信处理门禁。
 fn durable_eventbus_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-EVENTBUS-001".to_owned(),
@@ -952,6 +1049,7 @@ fn durable_eventbus_gate() -> ReleaseGate {
     }
 }
 
+/// 构造持久任务审计工件门禁。
 fn durable_task_audit_artifact_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-STORES-001".to_owned(),
@@ -975,6 +1073,7 @@ fn durable_task_audit_artifact_gate() -> ReleaseGate {
     }
 }
 
+/// 构造运行时重启恢复和重投证据门禁。
 fn durable_runtime_recovery_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-RECOVERY-001".to_owned(),
@@ -997,6 +1096,7 @@ fn durable_runtime_recovery_gate() -> ReleaseGate {
     }
 }
 
+/// 构造持久诊断命令与损坏数据失败语义门禁。
 fn durable_diagnostics_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-DIAGNOSTICS-001".to_owned(),
@@ -1018,6 +1118,7 @@ fn durable_diagnostics_gate() -> ReleaseGate {
     }
 }
 
+/// 构造 Lua 虚拟机真实执行边界门禁。
 fn lua_vm_execution_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-LUA-VM-EXECUTION-001".to_owned(),
@@ -1040,6 +1141,7 @@ fn lua_vm_execution_gate() -> ReleaseGate {
     }
 }
 
+/// 构造 Lua 受控宿主绑定门禁。
 fn lua_host_bindings_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-LUA-HOST-BINDINGS-001".to_owned(),
@@ -1063,6 +1165,7 @@ fn lua_host_bindings_gate() -> ReleaseGate {
     }
 }
 
+/// 构造 Lua 指令、内存和超时资源限制门禁。
 fn lua_resource_limits_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-LUA-RESOURCE-LIMITS-001".to_owned(),
@@ -1086,6 +1189,7 @@ fn lua_resource_limits_gate() -> ReleaseGate {
     }
 }
 
+/// 构造 Lua 热重载生命周期和失败回退门禁。
 fn lua_hot_reload_lifecycle_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-LUA-HOT-RELOAD-001".to_owned(),
@@ -1110,6 +1214,7 @@ fn lua_hot_reload_lifecycle_gate() -> ReleaseGate {
     }
 }
 
+/// 构造签名及可选密封备份归档门禁。
 fn signed_backup_archive_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-BACKUP-ARCHIVE-001".to_owned(),
@@ -1130,6 +1235,7 @@ fn signed_backup_archive_gate() -> ReleaseGate {
     }
 }
 
+/// 构造恢复应用的证据、策略、锁、健康和事务回滚门禁。
 fn restore_apply_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-RESTORE-APPLY-GATE-001".to_owned(),
@@ -1152,6 +1258,7 @@ fn restore_apply_gate() -> ReleaseGate {
     }
 }
 
+/// 构造蓝绿 Supervisor 交接与发布指针顺序门禁。
 fn supervisor_handoff_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-SUPERVISOR-HANDOFF-001".to_owned(),
@@ -1174,6 +1281,7 @@ fn supervisor_handoff_gate() -> ReleaseGate {
     }
 }
 
+/// 构造操作系统服务管理器抽象边界门禁。
 fn service_manager_abstraction_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-SERVICE-MANAGER-ABSTRACTION-001".to_owned(),
@@ -1195,6 +1303,7 @@ fn service_manager_abstraction_gate() -> ReleaseGate {
     }
 }
 
+/// 构造守护进程启动、状态、关闭和恢复就绪门禁。
 fn daemon_runtime_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DAEMON-RUNTIME-001".to_owned(),
@@ -1222,6 +1331,10 @@ fn daemon_runtime_gate() -> ReleaseGate {
     }
 }
 
+/// 根据 MCP 兼容矩阵是否存在且验证通过构造门禁。
+///
+/// 缺失报告直接 Blocked；存在报告时只有总体兼容状态通过才 Pass，并保留各客户端
+/// 证据。这样“未运行矩阵”不会被误解为“没有不兼容项”。
 fn mcp_compatibility_matrix_gate(report: Option<&McpCompatibilityReport>) -> ReleaseGate {
     match report {
         Some(report) => {
@@ -1269,6 +1382,7 @@ fn mcp_compatibility_matrix_gate(report: Option<&McpCompatibilityReport>) -> Rel
     }
 }
 
+/// 构造外部 Provider 启动、监控与退出隔离门禁。
 fn provider_supervision_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-PROVIDER-SUPERVISION-001".to_owned(),
@@ -1294,6 +1408,7 @@ fn provider_supervision_gate() -> ReleaseGate {
     }
 }
 
+/// 构造硬件权限、租约、模拟器和热插拔安全门禁。
 fn hardware_safety_release_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-HARDWARE-SAFETY-001".to_owned(),
@@ -1321,6 +1436,7 @@ fn hardware_safety_release_gate() -> ReleaseGate {
     }
 }
 
+/// 构造公共 JSON 信封和兼容性差异套件门禁。
 fn public_json_contract_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-JSON-CONTRACT-001".to_owned(),
@@ -1347,6 +1463,7 @@ fn public_json_contract_gate() -> ReleaseGate {
     }
 }
 
+/// 构造可观测性字段、脱敏、导出与保留策略门禁。
 fn observability_policy_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-OBSERVABILITY-POLICY-001".to_owned(),
@@ -1370,6 +1487,7 @@ fn observability_policy_gate() -> ReleaseGate {
     }
 }
 
+/// 返回 V1.x alpha 闭环必须明确存在并通过的稳定门禁标识集合。
 fn v1x_closure_required_gate_ids() -> Vec<&'static str> {
     vec![
         "REL-DAEMON-RUNTIME-001",
@@ -1383,6 +1501,12 @@ fn v1x_closure_required_gate_ids() -> Vec<&'static str> {
     ]
 }
 
+/// 对必需门禁执行显式存在性和 Pass 状态检查，生成闭环报告。
+///
+/// Warn 也被视为未闭环，而不是仅检查 Blocked；缺失门禁单独报告。只有所有预定义
+/// 内部门禁均 Pass 时状态才是 ready_with_external_blockers。生产签名凭据、分发仓库、
+/// 平台服务环境、硬件夹具和数据库 sink 保留在外部阻塞列表，不影响 alpha 内部闭环，
+/// 但报告也不会声称这些生产条件已完成。
 fn v1x_closure_report(gates: &[ReleaseGate]) -> V1xClosureReport {
     let required_gate_ids: Vec<String> = v1x_closure_required_gate_ids()
         .into_iter()
@@ -1435,6 +1559,7 @@ fn v1x_closure_report(gates: &[ReleaseGate]) -> V1xClosureReport {
     }
 }
 
+/// 将闭环报告转换为最终 required 门禁，并展开内部和外部证据。
 fn v1x_closure_gate(closure: &V1xClosureReport) -> ReleaseGate {
     let mut evidence = vec![
         format!("closure.status:{}", closure.status),
@@ -1486,6 +1611,7 @@ fn v1x_closure_gate(closure: &V1xClosureReport) -> ReleaseGate {
     }
 }
 
+/// 返回每个平台发布矩阵必须运行的基础烟雾命令。
 fn smoke_commands() -> Vec<String> {
     vec![
         "cargo fmt --check".to_owned(),
@@ -1500,13 +1626,17 @@ fn smoke_commands() -> Vec<String> {
 }
 
 #[cfg(test)]
+/// 内置门禁、闭环计算及四类外部发布证据的聚合测试。
 mod tests {
     use super::*;
 
+    /// 工件和其他外部证据共用的完整来源提交。
     const ARTIFACT_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+    /// 测试发布工件使用的合法 SHA-256 摘要。
     const ARTIFACT_DIGEST: &str =
         "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df";
 
+    /// 构造可选择 signed 标志的发布工件证据。
     fn artifact_evidence(signed: bool) -> ReleaseArtifactEvidence {
         let key = ReleaseArtifactSigningKey::local_development();
         let artifact = crate::artifact::ReleaseArtifactSubject::new(
@@ -1547,6 +1677,7 @@ mod tests {
         evidence
     }
 
+    /// 构造指定操作系统和状态的安装烟雾证据。
     fn install_smoke(
         os: &str,
         target: &str,
@@ -1568,6 +1699,7 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造指定状态的包管理器演练证据。
     fn package_dry_run(status: &str) -> crate::distribution::ReleasePackageDryRunEvidence {
         crate::distribution::ReleasePackageDryRunEvidence::new(
             "ghcr",
@@ -1579,6 +1711,7 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造覆盖三平台的分发证据，并允许替换包演练状态。
     fn distribution_evidence(
         package_status: &str,
     ) -> crate::distribution::ReleaseDistributionEvidence {
@@ -1617,6 +1750,7 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造指定严重级别的外部安全扫描发现。
     fn security_scan_finding(severity: &str) -> crate::scanner::ReleaseSecurityScanFinding {
         crate::scanner::ReleaseSecurityScanFinding::new(
             "RUSTSEC-0000-0000",
@@ -1629,6 +1763,7 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造指定发现列表的 passed 安全扫描证据。
     fn security_scan_evidence(
         status: &str,
         findings: Vec<crate::scanner::ReleaseSecurityScanFinding>,
@@ -1646,6 +1781,7 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造指定观测耗时的基准测量。
     fn benchmark_measurement(observed_ms: u64) -> crate::benchmark::ReleaseBenchmarkMeasurement {
         crate::benchmark::ReleaseBenchmarkMeasurement::new(
             "release.check",
@@ -1659,6 +1795,7 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造包含单项测量的 passed 基准证据。
     fn benchmark_evidence(
         status: &str,
         observed_ms: u64,
@@ -1674,6 +1811,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证默认内置 required 门禁没有阻塞项。
     fn readiness_has_no_blocking_required_gates() {
         let report = ReleaseHardeningService::v15().readiness("all").unwrap();
 
@@ -1888,6 +2026,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证缺失 MCP 兼容矩阵时对应门禁失败关闭。
     fn mcp_compatibility_gate_blocks_missing_matrix() {
         let gate = mcp_compatibility_matrix_gate(None);
 
@@ -1900,6 +2039,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Provider 监督门禁记录当前实现边界。
     fn provider_supervision_gate_records_current_boundaries() {
         let gate = provider_supervision_gate();
 
@@ -1915,6 +2055,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 alpha 硬件门禁接受明确标注的模拟器安全证据。
     fn hardware_safety_release_gate_accepts_alpha_simulator_only_evidence() {
         let gate = hardware_safety_release_gate();
 
@@ -1945,6 +2086,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证公共 JSON 门禁记录加法兼容差异套件。
     fn public_json_contract_gate_records_additive_diff_suite() {
         let gate = public_json_contract_gate();
 
@@ -1975,6 +2117,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证可观测性门禁记录当前保留策略边界。
     fn observability_policy_gate_records_v1164_boundary() {
         let gate = observability_policy_gate();
 
@@ -2000,6 +2143,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证外部生产阻塞项被记录但不阻塞 alpha 内部闭环。
     fn v1x_closure_gate_records_external_blockers_without_blocking_alpha() {
         let mcp_report = McpCompatibilityMatrix::v1137_fixture().verify().unwrap();
         let gates = vec![
@@ -2039,6 +2183,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证有效签名工件证据使来源门禁通过。
     fn readiness_with_signed_artifact_evidence_passes_release_artifact_gate() {
         let evidence = artifact_evidence(true);
         let report = ReleaseHardeningService::v15()
@@ -2057,6 +2202,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证未签名工件证据会阻塞来源门禁。
     fn readiness_with_unsigned_artifact_evidence_blocks_release_artifact_gate() {
         let evidence = artifact_evidence(false);
         let report = ReleaseHardeningService::v15()
@@ -2076,6 +2222,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证完整分发证据使分发门禁通过。
     fn readiness_with_distribution_evidence_passes_release_distribution_gate() {
         let evidence = distribution_evidence("passed");
         let report = ReleaseHardeningService::v15()
@@ -2094,6 +2241,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证失败包演练会阻塞分发门禁。
     fn readiness_with_failed_package_dry_run_blocks_release_distribution_gate() {
         let evidence = distribution_evidence("failed");
         let report = ReleaseHardeningService::v15()
@@ -2117,6 +2265,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证工件和分发证据可同时加入并通过各自门禁。
     fn readiness_with_artifact_and_distribution_evidence_passes_both_gates() {
         let artifact = artifact_evidence(true);
         let distribution = distribution_evidence("passed");
@@ -2140,6 +2289,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证干净外部安全扫描证据使扫描门禁通过。
     fn readiness_with_clean_security_scan_evidence_passes_gate() {
         let evidence = security_scan_evidence("passed", Vec::new());
         let report = ReleaseHardeningService::v15()
@@ -2158,6 +2308,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证高严重级别外部发现会阻塞扫描门禁。
     fn readiness_with_high_security_scan_finding_blocks_gate() {
         let evidence = security_scan_evidence("passed", vec![security_scan_finding("high")]);
         let report = ReleaseHardeningService::v15()
@@ -2180,6 +2331,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证预算内生产基准证据使基准门禁通过。
     fn readiness_with_benchmark_evidence_passes_gate() {
         let evidence = benchmark_evidence("passed", 120);
         let report = ReleaseHardeningService::v15()
@@ -2198,6 +2350,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证超预算生产测量会阻塞基准门禁。
     fn readiness_with_benchmark_regression_blocks_gate() {
         let evidence = benchmark_evidence("passed", 250);
         let report = ReleaseHardeningService::v15()
@@ -2221,6 +2374,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证四类有效外部证据可同时通过各自 required 门禁。
     fn readiness_with_all_release_evidence_passes_release_gates() {
         let artifact = artifact_evidence(true);
         let distribution = distribution_evidence("passed");
@@ -2251,6 +2405,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证就绪度报告可筛选到单个操作系统。
     fn readiness_can_filter_target_platform() {
         let report = ReleaseHardeningService::v15().readiness("windows").unwrap();
 
@@ -2259,6 +2414,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证未知平台目标在聚合前被拒绝。
     fn readiness_rejects_unknown_target_platform() {
         let error = ReleaseHardeningService::v15()
             .readiness("unix")

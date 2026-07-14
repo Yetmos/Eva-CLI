@@ -1,3 +1,5 @@
+//! 守护进程启动与 control mailbox 子命令；集中解析路径、请求和生命周期操作。
+
 use super::{
     json_array, json_string, option_json, parse_common_options, required_option, success_envelope,
     trace_for, write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_OK,
@@ -15,35 +17,62 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Daemon 顶层命令；控制类操作共享同一传输与输出路径。
 pub(super) enum DaemonCommand {
-    Start(DaemonCliOptions),
+    /// 启动并验证本地 daemon 边界。
+    Start(
+        /// 已解析的 daemon 路径、前台模式、烟测退出标志与公共选项。
+        DaemonCliOptions,
+    ),
+    /// 向已运行 daemon 发送一条控制请求。
     Control {
+        /// daemon 路径、请求和公共 CLI 选项。
         options: DaemonCliOptions,
+        /// 协议层控制操作。
         operation: DaemonControlOperation,
+        /// 输出信封使用的稳定命令名。
         command: &'static str,
+        /// trace 使用的稳定 span ID。
         span: &'static str,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Daemon 启动和控制共享的 CLI 选项。
 pub(super) struct DaemonCliOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 持久化后端根目录覆盖。
     durable_backend: Option<PathBuf>,
+    /// daemon 状态目录覆盖。
     state_dir: Option<PathBuf>,
+    /// daemon 独占锁目录覆盖。
     lock_dir: Option<PathBuf>,
+    /// daemon pid 文件目录覆盖。
     pid_dir: Option<PathBuf>,
+    /// 可观测性后端目录覆盖。
     observability_backend: Option<PathBuf>,
+    /// 控制请求的可选显式 ID。
     request_id: Option<String>,
+    /// submit/cancel 操作的可选任务 ID。
     task_id: Option<String>,
+    /// cancel 操作的可选原因。
     reason: Option<String>,
+    /// drain/reload 操作的可选计划 ID。
     plan_id: Option<String>,
+    /// drain/reload 操作的可选代际 ID。
     generation_id: Option<String>,
+    /// 等待 control mailbox 响应的毫秒预算。
     control_timeout_ms: u64,
+    /// 是否以前台模式运行 daemon。
     foreground: bool,
+    /// 是否启用开发模式边界。
     dev_mode: bool,
+    /// 启动烟测后是否自动关闭。
     shutdown_after_smoke: bool,
 }
 
+/// 解析 daemon start/status/stop/submit/cancel/drain/reload，并为控制操作绑定稳定协议元数据。
 pub(super) fn parse_daemon_command(args: &[String]) -> Result<DaemonCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -99,6 +128,10 @@ pub(super) fn parse_daemon_command(args: &[String]) -> Result<DaemonCommand, Eva
     }
 }
 
+/// 执行 daemon 启动或发送控制请求。
+///
+/// 启动路径先加载并解析项目相对路径，再进入 `start_daemon`；控制路径先创建 trace 与请求，
+/// 再等待 mailbox 响应。两条路径都不会把 transport 细节泄漏到顶层分发器。
 pub(super) fn execute_daemon<W, E>(
     command: DaemonCommand,
     stdout: &mut W,
@@ -159,6 +192,7 @@ where
     }
 }
 
+/// 解析 daemon 路径、控制 payload、超时和运行模式，并预先校验显式请求 ID。
 fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut durable_backend = None;
@@ -276,6 +310,7 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
     })
 }
 
+/// 将 CLI 覆盖合并进项目默认 DaemonStartOptions，并最终解析为项目绝对路径。
 fn daemon_options_from_cli(
     project: &ProjectConfig,
     cli: &DaemonCliOptions,
@@ -302,6 +337,7 @@ fn daemon_options_from_cli(
     Ok(options.resolve_against_project(&project.project_root))
 }
 
+/// 为每类控制操作提供稳定默认请求 ID，便于 trace 和审计关联。
 fn default_control_request_id(operation: DaemonControlOperation) -> &'static str {
     match operation {
         DaemonControlOperation::Status => "req-daemon-status",
@@ -313,6 +349,7 @@ fn default_control_request_id(operation: DaemonControlOperation) -> &'static str
     }
 }
 
+/// 构造 control mailbox 请求，并只附加与具体操作相关的可选 payload 字段。
 fn daemon_control_request(
     operation: DaemonControlOperation,
     options: &DaemonCliOptions,
@@ -335,6 +372,7 @@ fn daemon_control_request(
     request
 }
 
+/// 输出 daemon 启动、恢复、provider、可观测性、热插拔和维护摘要。
 fn write_daemon_start<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -401,6 +439,7 @@ fn write_daemon_start<W: Write>(
     }
 }
 
+/// 输出 control 响应，明确区分请求接受、daemon 可用和真实变更事实。
 fn write_daemon_control<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -431,6 +470,7 @@ fn write_daemon_control<W: Write>(
     }
 }
 
+/// 将完整 daemon 启动报告编码为稳定 JSON。
 fn daemon_start_json(report: &DaemonStartReport) -> String {
     let shutdown = report
         .shutdown
@@ -459,6 +499,7 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
     )
 }
 
+/// 将 durable runtime 恢复扫描、重放和跳过统计编码为 JSON。
 fn recovery_json(report: &eva_runtime::RuntimeRecoveryReport) -> String {
     format!(
         "{{\"scanned_tasks\":{},\"recovered_tasks\":{},\"unchanged_tasks\":{},\"redriven_events\":{},\"skipped_redrive_events\":{},\"scanned_provider_processes\":{},\"recovered_provider_processes\":{},\"unchanged_provider_processes\":{},\"provider_backoff_tasks\":{},\"skipped_provider_tasks\":{},\"audit\":{}}}",
@@ -501,6 +542,7 @@ fn recovery_json(report: &eva_runtime::RuntimeRecoveryReport) -> String {
     )
 }
 
+/// 将一条恢复任务证据编码为 JSON。
 fn recovered_task_json(task: &eva_runtime::RecoveredTask) -> String {
     format!(
         "{{\"task_id\":{},\"previous_status\":{},\"status\":{},\"redrive_candidate\":{}}}",
@@ -511,6 +553,7 @@ fn recovered_task_json(task: &eva_runtime::RecoveredTask) -> String {
     )
 }
 
+/// 将一条恢复事件证据编码为 JSON。
 fn recovered_event_json(event: &eva_runtime::RecoveredEvent) -> String {
     format!(
         "{{\"task_id\":{},\"event_id\":{},\"replay_event_id\":{},\"sequence\":{},\"topic\":{}}}",
@@ -522,6 +565,7 @@ fn recovered_event_json(event: &eva_runtime::RecoveredEvent) -> String {
     )
 }
 
+/// 将一条跳过重放的事件及原因编码为 JSON。
 fn skipped_redrive_event_json(event: &eva_runtime::SkippedRedriveEvent) -> String {
     format!(
         "{{\"task_id\":{},\"event_id\":{},\"reason\":{}}}",
@@ -531,6 +575,7 @@ fn skipped_redrive_event_json(event: &eva_runtime::SkippedRedriveEvent) -> Strin
     )
 }
 
+/// 将一个恢复后的 provider 进程状态编码为 JSON。
 fn recovered_provider_process_json(process: &eva_runtime::RecoveredProviderProcess) -> String {
     format!(
         "{{\"session_id\":{},\"provider_process_id\":{},\"request_id\":{},\"adapter_id\":{},\"previous_health\":{},\"health\":{},\"task_id\":{},\"task_status\":{},\"retry_scheduled\":{}}}",
@@ -546,6 +591,7 @@ fn recovered_provider_process_json(process: &eva_runtime::RecoveredProviderProce
     )
 }
 
+/// 将 provider backoff 队列任务编码为 JSON。
 fn provider_backoff_task_json(task: &eva_runtime::ProviderBackoffTask) -> String {
     format!(
         "{{\"task_id\":{},\"session_id\":{},\"next_attempt\":{},\"due_after_ms\":{},\"reason\":{}}}",
@@ -557,6 +603,7 @@ fn provider_backoff_task_json(task: &eva_runtime::ProviderBackoffTask) -> String
     )
 }
 
+/// 将恢复时跳过的 provider 任务及原因编码为 JSON。
 fn skipped_provider_task_json(task: &eva_runtime::SkippedProviderTask) -> String {
     format!(
         "{{\"task_id\":{},\"session_id\":{},\"reason\":{}}}",
@@ -566,6 +613,7 @@ fn skipped_provider_task_json(task: &eva_runtime::SkippedProviderTask) -> String
     )
 }
 
+/// 将 daemon control 响应及可选操作证据编码为 JSON。
 fn daemon_control_json(report: &DaemonControlResponse) -> String {
     let state = report
         .state
@@ -598,6 +646,7 @@ fn daemon_control_json(report: &DaemonControlResponse) -> String {
     )
 }
 
+/// 将 daemon 解析后的状态、锁、pid 和 control 路径编码为 JSON。
 fn daemon_paths_json(paths: &DaemonPathReport) -> String {
     format!(
         "{{\"durable_backend_root\":{},\"observability_backend_root\":{},\"state_dir\":{},\"lock_dir\":{},\"pid_dir\":{},\"control_request_dir\":{},\"control_response_dir\":{},\"state_file\":{},\"hardware_hotplug_state_file\":{},\"lock_file\":{},\"pid_file\":{}}}",
@@ -615,6 +664,7 @@ fn daemon_paths_json(paths: &DaemonPathReport) -> String {
     )
 }
 
+/// 将 daemon 硬件热插拔订阅报告编码为 JSON。
 fn hardware_hotplug_json(report: &eva_hardware::HardwareHotplugSubscriberReport) -> String {
     format!(
         "{{\"status\":{},\"watcher_kind\":{},\"devices_seen\":{},\"events_published\":{},\"state\":{},\"raw_handles_exposed\":{},\"audit\":{}}}",
@@ -628,6 +678,7 @@ fn hardware_hotplug_json(report: &eva_hardware::HardwareHotplugSubscriberReport)
     )
 }
 
+/// 将 daemon 记忆清理与知识重建报告编码为 JSON。
 fn memory_maintenance_json(report: &eva_runtime::DaemonMemoryMaintenanceReport) -> String {
     format!(
         "{{\"status\":{},\"memory_gc\":{},\"knowledge_rebuild\":{},\"audit\":{}}}",
@@ -638,6 +689,7 @@ fn memory_maintenance_json(report: &eva_runtime::DaemonMemoryMaintenanceReport) 
     )
 }
 
+/// 将记忆压缩/过期清理统计编码为 JSON。
 fn memory_gc_json(report: &eva_memory::MemoryCompactionReport) -> String {
     format!(
         "{{\"status\":{},\"lock_path\":{},\"checkpoint_path\":{},\"scanned_records\":{},\"records_kept\":{},\"expired_removed\":{},\"recovered_checkpoint\":{},\"audit\":{}}}",
@@ -652,6 +704,7 @@ fn memory_gc_json(report: &eva_memory::MemoryCompactionReport) -> String {
     )
 }
 
+/// 将知识索引重建 checkpoint 统计编码为 JSON。
 fn knowledge_rebuild_json(report: &eva_memory::KnowledgeRebuildCheckpointReport) -> String {
     format!(
         "{{\"status\":{},\"lock_path\":{},\"checkpoint_path\":{},\"items_indexed\":{},\"recovered_checkpoint\":{},\"audit\":{}}}",
@@ -664,6 +717,7 @@ fn knowledge_rebuild_json(report: &eva_memory::KnowledgeRebuildCheckpointReport)
     )
 }
 
+/// 将单个热插拔发布回执编码为 JSON。
 fn hotplug_event_json(report: &eva_hardware::HotplugPublishReport) -> String {
     format!(
         "{{\"event_id\":{},\"sequence\":{},\"topic\":{},\"device_id\":{},\"action\":{},\"previous\":{},\"next\":{},\"reason\":{}}}",
@@ -678,6 +732,7 @@ fn hotplug_event_json(report: &eva_hardware::HotplugPublishReport) -> String {
     )
 }
 
+/// 将热插拔设备状态快照编码为 JSON。
 fn hotplug_state_json(state: &eva_hardware::HardwareHotplugDeviceState) -> String {
     format!(
         "{{\"device_id\":{},\"bus\":{},\"health\":{},\"source_path\":{}}}",
@@ -688,6 +743,7 @@ fn hotplug_state_json(state: &eva_hardware::HardwareHotplugDeviceState) -> Strin
     )
 }
 
+/// 将 daemon 启动策略门禁结果编码为 JSON。
 fn daemon_policy_json(policy: &DaemonPolicyReport) -> String {
     format!(
         "{{\"status\":{},\"source_count\":{},\"effective_layers\":{}}}",
@@ -702,6 +758,7 @@ fn daemon_policy_json(policy: &DaemonPolicyReport) -> String {
     )
 }
 
+/// 将 durable backend 布局和迁移状态编码为 JSON。
 fn durable_backend_json(report: &DurableBackendReport) -> String {
     format!(
         "{{\"schema_version\":{},\"layout_version\":{},\"mode\":{},\"migration_locked\":{},\"root\":{},\"event_dir\":{},\"state_dir\":{},\"task_dir\":{},\"audit_dir\":{},\"artifact_dir\":{}}}",
@@ -718,6 +775,7 @@ fn durable_backend_json(report: &DurableBackendReport) -> String {
     )
 }
 
+/// 将 daemon 可观测性 pipeline 摘要编码为 JSON。
 fn observability_json(report: &eva_observability::ObservabilitySmokeReport) -> String {
     format!(
         "{{\"backend_root\":{},\"degraded\":{},\"degraded_reasons\":{},\"audit_events\":{},\"metric_points\":{},\"otel_spans\":{},\"continuity_key\":{}}}",
@@ -731,6 +789,7 @@ fn observability_json(report: &eva_observability::ObservabilitySmokeReport) -> S
     )
 }
 
+/// 将 daemon 持久化状态记录编码为 JSON。
 fn daemon_state_json(state: &DaemonStateRecord) -> String {
     format!(
         "{{\"status\":{},\"mode\":{},\"pid\":{},\"generation_id\":{},\"project_root\":{},\"started_at_ms\":{},\"stopped_at_ms\":{}}}",
@@ -747,6 +806,7 @@ fn daemon_state_json(state: &DaemonStateRecord) -> String {
     )
 }
 
+/// 将 daemon 关闭步骤、风险和审计证据编码为 JSON。
 fn shutdown_json(report: &eva_runtime::ShutdownReport) -> String {
     format!(
         "{{\"already_shutdown\":{},\"request_count\":{},\"phase\":{}}}",

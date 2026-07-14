@@ -1,3 +1,4 @@
+//! 中文：策略域解析、有效层构建和高风险运行时门禁决策。
 //! Policy domain parsing and runtime gate decisions.
 
 use crate::{EffectivePolicy, PermissionSet, PolicyLayer, SandboxPolicy};
@@ -6,147 +7,238 @@ use eva_core::{AdapterId, AgentId, CapabilityName, EvaError, Topic, TopicPattern
 use serde_yaml::{Mapping, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// 中文：从 `config/policies/*.yaml` 加载并规范化后的全部类型化策略域。
 /// Typed policy domains loaded from `config/policies/*.yaml`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PolicyDomainSet {
+    /// 中文：参与解析的策略文档数量，供诊断确认配置来源。
     pub source_count: usize,
+    /// 中文：Adapter、Skill 和重试相关策略。
     pub adapter: AdapterPolicyDomain,
+    /// 中文：记忆写入前的脱敏策略。
     pub memory: MemoryPolicyDomain,
+    /// 中文：硬件发现、绑定和热插拔策略。
     pub hardware: HardwarePolicyDomain,
+    /// 中文：MCP 服务及逐工具访问策略。
     pub mcp_server: McpServerPolicyDomain,
+    /// 中文：必须显式放行的高风险运行时动作集合。
     pub runtime: RuntimePolicyDomain,
+    /// 中文：Lua 执行环境的资源和副作用约束。
     pub lua_sandbox: SandboxPolicy,
+    /// 中文：由各策略域派生、用于计算最终权限交集的有序层。
     layers: Vec<PolicyLayer>,
 }
 
+/// 中文：Adapter 默认权限、显式例外、Skill 和重试策略的聚合域。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AdapterPolicyDomain {
+    /// 中文：适用于所有 Adapter 的权限上界。
     pub defaults: PermissionSet,
+    /// 中文：被明确允许写入工作区的 Adapter 标识。
     pub allow_write_workspace: BTreeSet<AdapterId>,
+    /// 中文：无论 Provider 如何选择都禁止调用的 capability。
     pub deny_capabilities: BTreeSet<CapabilityName>,
+    /// 中文：Skill 发现和执行门禁配置。
     pub skill: SkillPolicy,
+    /// 中文：Adapter 调用失败后的重试配置。
     pub retry: RetryPolicyDomain,
 }
 
+/// 中文：Skill 清单、来源和运行时门禁策略。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillPolicy {
+    /// 中文：是否要求每个 Skill 声明输入输出结构。
     pub require_schema: bool,
+    /// 中文：是否接受用户主目录下的本地 Skill。
     pub allow_user_local_skills: bool,
+    /// 中文：Skill 可以选择的稳定运行时门禁名称。
     pub allowed_runtime_gates: BTreeSet<String>,
+    /// 中文：按 Skill 类型名称阻止的来源类别。
     pub deny_kinds: BTreeSet<String>,
 }
 
+/// 中文：Adapter 调用的默认尝试上限和按 capability 覆盖项。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RetryPolicyDomain {
+    /// 中文：未配置 capability 覆盖时使用的最大尝试次数。
     pub default_max_attempts: u32,
+    /// 中文：按 capability 名称索引的重试覆盖策略。
     pub capabilities: BTreeMap<CapabilityName, CapabilityRetryPolicy>,
 }
 
+/// 中文：单个 capability 的最大尝试次数和可选固定退避时间。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityRetryPolicy {
+    /// 中文：包括首次调用在内的最大尝试次数。
     pub max_attempts: u32,
+    /// 中文：两次尝试之间的可选等待毫秒数。
     pub backoff_ms: Option<u64>,
 }
 
+/// 中文：硬件功能总开关、资源声明和访问白名单策略。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardwarePolicyDomain {
+    /// 中文：是否启用硬件运行时路径。
     pub enabled: bool,
+    /// 中文：是否允许绕过驱动抽象执行原始 I/O。
     pub allow_raw_io: bool,
+    /// 中文：设备声明模式，例如独占或共享。
     pub claim: String,
+    /// 中文：是否允许硬件通过网络桥接。
     pub network_bridge: bool,
+    /// 中文：硬件操作的可选最大超时毫秒数。
     pub max_timeout_ms: Option<u64>,
+    /// 中文：可绑定的硬件总线名称白名单；空集合表示不按总线限制。
     pub allowed_buses: BTreeSet<String>,
+    /// 中文：即使硬件功能开启也禁止的 capability。
     pub denied_capabilities: BTreeSet<CapabilityName>,
+    /// 中文：热插拔设备身份检查和事件策略。
     pub hotplug: HardwareHotplugPolicy,
 }
 
+/// 中文：硬件热插拔身份验证、隔离和事件发出策略。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardwareHotplugPolicy {
+    /// 中文：是否要求重新连接设备与已登记身份完全一致。
     pub require_identity_match: bool,
+    /// 中文：是否把未知设备置于隔离状态而非自动绑定。
     pub quarantine_unknown_devices: bool,
+    /// 中文：热插拔状态变化时允许发出的事件主题。
     pub emit_events: Vec<Topic>,
 }
 
+/// 中文：MCP 服务总开关、监听地址和逐工具策略。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct McpServerPolicyDomain {
+    /// 中文：是否允许启动 MCP 服务边界。
     pub enabled: bool,
+    /// 中文：可选监听地址，由配置层负责格式校验。
     pub bind: Option<String>,
+    /// 中文：按稳定工具名称索引的访问策略。
     pub tools: BTreeMap<String, McpToolPolicy>,
 }
 
+/// 中文：单个 MCP 工具的主体、资源和超时白名单。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct McpToolPolicy {
+    /// 中文：工具是否可被运行时调用。
     pub enabled: bool,
+    /// 中文：允许调用该工具的 Agent；空集合表示不按 Agent 限制。
     pub allowed_agents: BTreeSet<AgentId>,
+    /// 中文：允许经该工具调用的 capability。
     pub allowed_capabilities: BTreeSet<CapabilityName>,
+    /// 中文：允许经该工具选择的 Provider/Adapter。
     pub allowed_providers: BTreeSet<AdapterId>,
+    /// 中文：工具可发出或操作的主题模式。
     pub allowed_topics: Vec<TopicPattern>,
+    /// 中文：该工具调用的可选最大超时毫秒数。
     pub timeout_ms: Option<u64>,
 }
 
+/// 中文：需要配置显式授权才可执行的高风险运行时动作域。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RuntimePolicyDomain {
+    /// 中文：明确允许的高风险动作；未列入集合即默认拒绝。
     pub allow_high_risk_actions: BTreeSet<HighRiskAction>,
 }
 
+/// 中文：记忆子系统当前支持的策略集合。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemoryPolicyDomain {
+    /// 中文：持久化和审计前应用的敏感信息脱敏规则。
     pub redaction: RedactionPolicyDomain,
 }
 
+/// 中文：敏感键名、令牌前缀和替换文本组成的脱敏策略。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedactionPolicyDomain {
+    /// 中文：是否启用自动脱敏。
     pub enabled: bool,
+    /// 中文：发生脱敏时是否记录不含原始秘密的审计事件。
     pub audit_redactions: bool,
+    /// 中文：替换敏感值时使用的固定文本。
     pub replacement: String,
+    /// 中文：键名中触发脱敏的大小写归一化片段。
     pub sensitive_key_fragments: BTreeSet<String>,
+    /// 中文：值以这些前缀开头时视为敏感令牌。
     pub sensitive_token_prefixes: BTreeSet<String>,
 }
 
+/// 中文：策略门禁能够识别并审计的稳定高风险动作。
 /// Stable high-risk runtime actions understood by the policy gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HighRiskAction {
+    /// 中文：调用外部 Adapter capability。
     AdapterInvoke,
+    /// 中文：建立携带 Provider 凭据的受限会话。
     ProviderCredentialSession,
+    /// 中文：通过 MCP 调用注册工具。
     McpToolCall,
+    /// 中文：通过 MCP 向事件总线发出主题事件。
     McpTopicEmit,
+    /// 中文：运行发现到的 Skill。
     SkillRun,
+    /// 中文：把物理设备绑定到运行时驱动。
     HardwareBind,
+    /// 中文：执行绕过普通驱动约束的原始硬件 I/O。
     HardwareRawIo,
+    /// 中文：创建可能包含运行状态的备份。
     BackupCreate,
+    /// 中文：把恢复计划实际应用到项目。
     RestoreApply,
+    /// 中文：应用版本升级及其文件变更。
     UpgradeApply,
+    /// 中文：修改发布指针或当前版本标记。
     ReleasePointerMutation,
+    /// 中文：在 Supervisor 代际之间移交控制权。
     SupervisorHandoff,
 }
 
+/// 中文：一次高风险策略判定所需的动作和可选作用域上下文。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimePolicyRequest {
+    /// 中文：必须判定的高风险动作。
     pub action: HighRiskAction,
+    /// 中文：MCP 工具或 Skill 运行时门禁名称。
     pub tool: Option<String>,
+    /// 中文：发起动作的可选 Agent 身份。
     pub agent: Option<AgentId>,
+    /// 中文：动作涉及的可选 capability。
     pub capability: Option<CapabilityName>,
+    /// 中文：实际执行动作的可选 Provider。
     pub provider: Option<AdapterId>,
+    /// 中文：承载会话或调用的可选 Adapter。
     pub adapter: Option<AdapterId>,
+    /// 中文：事件发出动作涉及的可选主题。
     pub topic: Option<Topic>,
+    /// 中文：硬件动作涉及的可选总线名称。
     pub bus: Option<String>,
+    /// 中文：调用方请求的可选超时毫秒数。
     pub timeout_ms: Option<u64>,
 }
 
+/// 中文：一次策略判定的允许标志、原因和稳定审计证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyDecision {
+    /// 中文：本次判定对应的动作。
     pub action: HighRiskAction,
+    /// 中文：动作是否获准继续执行。
     pub allowed: bool,
+    /// 中文：面向操作员的具体判定原因。
     pub reason: String,
+    /// 中文：可直接写入审计后端的稳定键值记录。
     pub audit: Vec<String>,
 }
 
+/// 中文：持有规范化策略域并对运行时请求执行默认拒绝判定的门禁。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimePolicyGate {
+    /// 中文：构造时加载的不可变策略域快照。
     domains: PolicyDomainSet,
 }
 
 impl Default for SkillPolicy {
+    /// 中文：默认要求 Schema、拒绝用户本地 Skill，仅允许普通运行门禁。
     fn default() -> Self {
         Self {
             require_schema: true,
@@ -158,6 +250,7 @@ impl Default for SkillPolicy {
 }
 
 impl Default for HardwarePolicyDomain {
+    /// 中文：默认完全关闭硬件和原始 I/O，并采用独占设备声明。
     fn default() -> Self {
         Self {
             enabled: false,
@@ -173,6 +266,7 @@ impl Default for HardwarePolicyDomain {
 }
 
 impl Default for HardwareHotplugPolicy {
+    /// 中文：默认要求身份匹配并隔离未知设备，不自动发出事件。
     fn default() -> Self {
         Self {
             require_identity_match: true,
@@ -183,6 +277,7 @@ impl Default for HardwareHotplugPolicy {
 }
 
 impl Default for RedactionPolicyDomain {
+    /// 中文：默认启用脱敏和审计，并覆盖常见凭据键名及 `sk-` 令牌。
     fn default() -> Self {
         Self {
             enabled: true,
@@ -205,10 +300,16 @@ impl Default for RedactionPolicyDomain {
 }
 
 impl PolicyDomainSet {
+    /// 中文：从已加载项目配置中的策略文档构建类型化策略域。
     pub fn from_project(project: &ProjectConfig) -> Result<Self, EvaError> {
         Self::from_documents(&project.policies)
     }
 
+    /// 中文：解析策略文档并派生最终权限计算所需的有序策略层。
+    ///
+    /// 同名域按文档遍历顺序采用后值，未知域由配置兼容层忽略；只有会影响权限或沙箱
+    /// 上界的域才形成 `PolicyLayer`。没有任何可合并层时补入默认拒绝层，确保后续交集
+    /// 计算永远不会因空集合而得到宽松策略。
     pub fn from_documents(documents: &[PolicyDocument]) -> Result<Self, EvaError> {
         let mut domains = Self {
             source_count: documents.len(),
@@ -268,16 +369,19 @@ impl PolicyDomainSet {
         Ok(domains)
     }
 
+    /// 中文：返回用于有效策略计算的有序层。
     pub fn layers(&self) -> &[PolicyLayer] {
         &self.layers
     }
 
+    /// 中文：对已派生层求交集，得到不可扩张的最终权限和沙箱策略。
     pub fn effective_policy(&self) -> Result<EffectivePolicy, EvaError> {
         EffectivePolicy::from_layers(self.layers.clone())
     }
 }
 
 impl HighRiskAction {
+    /// 中文：返回配置、协议和审计日志使用的稳定动作名称。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AdapterInvoke => "adapter.invoke",
@@ -295,6 +399,7 @@ impl HighRiskAction {
         }
     }
 
+    /// 中文：从稳定动作名称解析枚举，未知名称作为配置错误拒绝。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "adapter.invoke" => Ok(Self::AdapterInvoke),
@@ -318,6 +423,7 @@ impl HighRiskAction {
 }
 
 impl RuntimePolicyRequest {
+    /// 中文：创建只包含动作的请求，其余作用域由对应判定器按需要求。
     pub fn new(action: HighRiskAction) -> Self {
         Self {
             action,
@@ -332,41 +438,49 @@ impl RuntimePolicyRequest {
         }
     }
 
+    /// 中文：附加 MCP 工具或 Skill 运行门禁名称。
     pub fn with_tool(mut self, value: impl Into<String>) -> Self {
         self.tool = Some(value.into());
         self
     }
 
+    /// 中文：附加发起动作的 Agent 身份。
     pub fn with_agent(mut self, value: AgentId) -> Self {
         self.agent = Some(value);
         self
     }
 
+    /// 中文：附加动作涉及的 capability。
     pub fn with_capability(mut self, value: CapabilityName) -> Self {
         self.capability = Some(value);
         self
     }
 
+    /// 中文：附加实际执行动作的 Provider。
     pub fn with_provider(mut self, value: AdapterId) -> Self {
         self.provider = Some(value);
         self
     }
 
+    /// 中文：附加承载调用或凭据会话的 Adapter。
     pub fn with_adapter(mut self, value: AdapterId) -> Self {
         self.adapter = Some(value);
         self
     }
 
+    /// 中文：附加 MCP 发出动作的目标主题。
     pub fn with_topic(mut self, value: Topic) -> Self {
         self.topic = Some(value);
         self
     }
 
+    /// 中文：附加硬件操作使用的总线名称。
     pub fn with_bus(mut self, value: impl Into<String>) -> Self {
         self.bus = Some(value.into());
         self
     }
 
+    /// 中文：附加调用方请求的超时毫秒数。
     pub fn with_timeout_ms(mut self, value: u64) -> Self {
         self.timeout_ms = Some(value);
         self
@@ -374,6 +488,7 @@ impl RuntimePolicyRequest {
 }
 
 impl PolicyDecision {
+    /// 中文：把判定转换为控制流结果；拒绝时携带动作、原因和审计轨迹。
     pub fn ensure_allowed(&self) -> Result<(), EvaError> {
         if self.allowed {
             Ok(())
@@ -389,18 +504,22 @@ impl PolicyDecision {
 }
 
 impl RuntimePolicyGate {
+    /// 中文：从项目策略文档创建运行时门禁，解析失败时不产生部分门禁。
     pub fn from_project(project: &ProjectConfig) -> Result<Self, EvaError> {
         Ok(Self::new(PolicyDomainSet::from_project(project)?))
     }
 
+    /// 中文：使用已经规范化的策略域快照创建门禁。
     pub fn new(domains: PolicyDomainSet) -> Self {
         Self { domains }
     }
 
+    /// 中文：返回门禁使用的策略域，只允许调用方读取和诊断。
     pub fn domains(&self) -> &PolicyDomainSet {
         &self.domains
     }
 
+    /// 中文：查询指定 capability 的 Adapter 重试退避时间；没有覆盖时返回 `None`。
     pub fn adapter_retry_backoff_ms(&self, capability: &CapabilityName) -> Option<u64> {
         self.domains
             .adapter
@@ -410,6 +529,10 @@ impl RuntimePolicyGate {
             .and_then(|policy| policy.backoff_ms)
     }
 
+    /// 中文：按动作类型分派到专用判定器，并返回带审计证据的确定性结果。
+    ///
+    /// 每个专用判定器都采用默认拒绝：动作需要的作用域缺失、目标未声明、功能关闭或
+    /// 请求突破资源上限时均不得继续。只有完整通过对应检查的请求才构造允许结果。
     pub fn decide(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         match request.action {
             HighRiskAction::McpToolCall => self.decide_mcp_tool_call(request),
@@ -429,6 +552,7 @@ impl RuntimePolicyGate {
         }
     }
 
+    /// 中文：判定 Adapter capability 是否未被全局禁止且超时位于默认上限内。
     fn decide_adapter_invoke(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         let action = request.action;
         if let Some(capability) = &request.capability {
@@ -449,6 +573,9 @@ impl RuntimePolicyGate {
         allowed(action, "adapter request is within policy domain")
     }
 
+    /// 中文：要求凭据会话同时声明 Adapter 和 Provider，且二者必须是同一身份。
+    ///
+    /// 该相等约束阻止已认证会话跨 Provider 复用，从边界上避免凭据混淆和权限串用。
     fn decide_provider_credential_session(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         let action = request.action;
         let Some(adapter) = &request.adapter else {
@@ -472,6 +599,7 @@ impl RuntimePolicyGate {
         )
     }
 
+    /// 中文：判定 Skill 请求的运行时门禁是否被显式列入允许集合。
     fn decide_skill_run(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         let action = request.action;
         let Some(gate) = request.tool.as_deref() else {
@@ -489,6 +617,9 @@ impl RuntimePolicyGate {
         allowed(action, "skill runtime gate is allowed")
     }
 
+    /// 中文：逐项验证 MCP 服务、工具开关、Agent、capability、Provider 和超时约束。
+    ///
+    /// 各身份白名单为空时表示该维度不限制；非空时请求携带的对应身份必须在集合内。
     fn decide_mcp_tool_call(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         let action = request.action;
         let Some(tool_name) = request.tool.as_deref() else {
@@ -539,6 +670,7 @@ impl RuntimePolicyGate {
         allowed(action, format!("MCP tool {tool_name} is allowed"))
     }
 
+    /// 中文：只允许启用的 `topic.emit` 工具向白名单模式匹配的主题发出事件。
     fn decide_mcp_topic_emit(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         let action = request.action;
         let Some(tool) = self.domains.mcp_server.tools.get("topic.emit") else {
@@ -560,6 +692,7 @@ impl RuntimePolicyGate {
         allowed(action, format!("topic {topic} is allowed"))
     }
 
+    /// 中文：判定硬件功能、总线、capability 和超时是否满足绑定策略。
     fn decide_hardware_bind(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         let action = request.action;
         if !self.domains.hardware.enabled {
@@ -595,6 +728,7 @@ impl RuntimePolicyGate {
         allowed(action, "hardware bind is within policy domain")
     }
 
+    /// 中文：原始硬件 I/O 必须同时满足硬件总开关和专用显式授权。
     fn decide_hardware_raw_io(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         let action = request.action;
         if !self.domains.hardware.enabled {
@@ -606,6 +740,7 @@ impl RuntimePolicyGate {
         self.decide_hardware_bind(request)
     }
 
+    /// 中文：对备份、恢复、升级、发布指针和移交动作执行显式白名单判定。
     fn decide_explicit_runtime_action(&self, request: RuntimePolicyRequest) -> PolicyDecision {
         let action = request.action;
         if self
@@ -624,6 +759,7 @@ impl RuntimePolicyGate {
     }
 }
 
+/// 中文：把 YAML Adapter 策略映射解析为默认权限、例外、Skill 和重试域。
 fn parse_adapter_policy(value: &Value) -> Result<AdapterPolicyDomain, EvaError> {
     let mapping = expect_mapping(value, "adapter_policy")?;
     let mut policy = AdapterPolicyDomain::default();
@@ -647,6 +783,7 @@ fn parse_adapter_policy(value: &Value) -> Result<AdapterPolicyDomain, EvaError> 
     Ok(policy)
 }
 
+/// 中文：解析 Adapter 默认布尔权限和超时上限，缺失字段保持默认拒绝。
 fn parse_permission_defaults(value: &Value, path: &'static str) -> Result<PermissionSet, EvaError> {
     let mapping = expect_mapping(value, path)?;
     let mut permissions = PermissionSet::deny_all();
@@ -666,6 +803,7 @@ fn parse_permission_defaults(value: &Value, path: &'static str) -> Result<Permis
     Ok(permissions)
 }
 
+/// 中文：解析 Skill Schema、来源、运行门禁和类型拒绝集合。
 fn parse_skill_policy(value: &Value) -> Result<SkillPolicy, EvaError> {
     let mapping = expect_mapping(value, "adapter_policy.skill")?;
     Ok(SkillPolicy {
@@ -687,6 +825,7 @@ fn parse_skill_policy(value: &Value) -> Result<SkillPolicy, EvaError> {
     })
 }
 
+/// 中文：解析默认重试上限及按 capability 索引的覆盖项。
 fn parse_retry_policy(value: &Value) -> Result<RetryPolicyDomain, EvaError> {
     let mapping = expect_mapping(value, "adapter_policy.retry")?;
     let mut retry = RetryPolicyDomain::default();
@@ -730,6 +869,7 @@ fn parse_retry_policy(value: &Value) -> Result<RetryPolicyDomain, EvaError> {
     Ok(retry)
 }
 
+/// 中文：解析记忆策略域；当前只包含可选脱敏子域。
 fn parse_memory_policy(value: &Value) -> Result<MemoryPolicyDomain, EvaError> {
     let mapping = expect_mapping(value, "memory_policy")?;
     let mut policy = MemoryPolicyDomain::default();
@@ -739,6 +879,7 @@ fn parse_memory_policy(value: &Value) -> Result<MemoryPolicyDomain, EvaError> {
     Ok(policy)
 }
 
+/// 中文：在安全默认值基础上解析脱敏开关、替换文本和敏感匹配集合。
 fn parse_redaction_policy(value: &Value) -> Result<RedactionPolicyDomain, EvaError> {
     let mapping = expect_mapping(value, "memory_policy.redaction")?;
     let mut policy = RedactionPolicyDomain::default();
@@ -779,6 +920,7 @@ fn parse_redaction_policy(value: &Value) -> Result<RedactionPolicyDomain, EvaErr
     Ok(policy)
 }
 
+/// 中文：解析硬件总开关、原始 I/O、声明方式、总线及热插拔策略。
 fn parse_hardware_policy(value: &Value) -> Result<HardwarePolicyDomain, EvaError> {
     let mapping = expect_mapping(value, "hardware_policy")?;
     let defaults = get(mapping, "defaults")
@@ -817,6 +959,7 @@ fn parse_hardware_policy(value: &Value) -> Result<HardwarePolicyDomain, EvaError
     Ok(policy)
 }
 
+/// 中文：解析热插拔身份校验、未知设备隔离和事件主题列表。
 fn parse_hardware_hotplug_policy(value: &Value) -> Result<HardwareHotplugPolicy, EvaError> {
     let mapping = expect_mapping(value, "hardware_policy.hotplug")?;
     Ok(HardwareHotplugPolicy {
@@ -839,6 +982,7 @@ fn parse_hardware_hotplug_policy(value: &Value) -> Result<HardwareHotplugPolicy,
     })
 }
 
+/// 中文：解析 MCP 服务开关、监听地址及具名工具策略映射。
 fn parse_mcp_server_policy(value: &Value) -> Result<McpServerPolicyDomain, EvaError> {
     let mapping = expect_mapping(value, "mcp_server")?;
     let mut policy = McpServerPolicyDomain {
@@ -860,6 +1004,7 @@ fn parse_mcp_server_policy(value: &Value) -> Result<McpServerPolicyDomain, EvaEr
     Ok(policy)
 }
 
+/// 中文：解析单个 MCP 工具的身份白名单、主题模式和超时限制。
 fn parse_mcp_tool_policy(value: &Value) -> Result<McpToolPolicy, EvaError> {
     let mapping = expect_mapping(value, "mcp_server.tools.*")?;
     Ok(McpToolPolicy {
@@ -884,6 +1029,7 @@ fn parse_mcp_tool_policy(value: &Value) -> Result<McpToolPolicy, EvaError> {
     })
 }
 
+/// 中文：解析高风险动作显式白名单，未知动作会使配置加载失败。
 fn parse_runtime_policy(value: &Value) -> Result<RuntimePolicyDomain, EvaError> {
     let mapping = expect_mapping(value, "runtime_policy")?;
     let actions = get(mapping, "allow_high_risk_actions")
@@ -905,6 +1051,7 @@ fn parse_runtime_policy(value: &Value) -> Result<RuntimePolicyDomain, EvaError> 
     })
 }
 
+/// 中文：在安全基线之上解析 Lua 禁用库、资源限制、外部副作用和校验开关。
 fn parse_lua_sandbox(value: &Value) -> Result<SandboxPolicy, EvaError> {
     let mapping = expect_mapping(value, "lua_sandbox")?;
     let mut sandbox = SandboxPolicy {
@@ -964,6 +1111,7 @@ fn parse_lua_sandbox(value: &Value) -> Result<SandboxPolicy, EvaError> {
     Ok(sandbox)
 }
 
+/// 中文：把硬件域中可参与全局交集计算的网络与超时约束投影为权限集合。
 fn hardware_permissions(policy: &HardwarePolicyDomain) -> PermissionSet {
     let mut permissions = PermissionSet::deny_all();
     permissions.network = policy.network_bridge;
@@ -971,6 +1119,7 @@ fn hardware_permissions(policy: &HardwarePolicyDomain) -> PermissionSet {
     permissions
 }
 
+/// 中文：构造允许判定，并生成稳定的动作、结论和原因审计记录。
 fn allowed(action: HighRiskAction, reason: impl Into<String>) -> PolicyDecision {
     let reason = reason.into();
     PolicyDecision {
@@ -985,6 +1134,7 @@ fn allowed(action: HighRiskAction, reason: impl Into<String>) -> PolicyDecision 
     }
 }
 
+/// 中文：构造拒绝判定，并生成与允许路径结构一致的审计记录。
 fn denied(action: HighRiskAction, reason: impl Into<String>) -> PolicyDecision {
     let reason = reason.into();
     PolicyDecision {
@@ -999,6 +1149,7 @@ fn denied(action: HighRiskAction, reason: impl Into<String>) -> PolicyDecision {
     }
 }
 
+/// 中文：要求 YAML 节点为映射，并在类型错误中附加配置路径。
 fn expect_mapping<'a>(value: &'a Value, path: &'static str) -> Result<&'a Mapping, EvaError> {
     value.as_mapping().ok_or_else(|| {
         EvaError::invalid_argument("policy domain field must be a mapping")
@@ -1006,10 +1157,12 @@ fn expect_mapping<'a>(value: &'a Value, path: &'static str) -> Result<&'a Mappin
     })
 }
 
+/// 中文：按字符串键从 YAML 映射读取可选值。
 fn get<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
     mapping.get(Value::String(key.to_owned()))
 }
 
+/// 中文：读取可选布尔字段；缺失时采用调用方给定的安全默认值。
 fn bool_field(
     mapping: &Mapping,
     key: &'static str,
@@ -1027,6 +1180,7 @@ fn bool_field(
         .map(|value| value.unwrap_or(default))
 }
 
+/// 中文：读取可选字符串字段；缺失时复制默认值。
 fn string_field(
     mapping: &Mapping,
     key: &'static str,
@@ -1039,6 +1193,7 @@ fn string_field(
         .map(|value| value.unwrap_or_else(|| default.to_owned()))
 }
 
+/// 中文：读取可选无符号整数字段，并拒绝负数或其他 YAML 类型。
 fn optional_u64_field(
     mapping: &Mapping,
     key: &'static str,
@@ -1054,6 +1209,7 @@ fn optional_u64_field(
         .transpose()
 }
 
+/// 中文：把可选字符串列表解析为有序去重集合；缺失时返回空集合。
 fn parse_string_set(
     value: Option<&Value>,
     path: &'static str,
@@ -1067,6 +1223,7 @@ fn parse_string_set(
         .collect()
 }
 
+/// 中文：校验非空无边缘空白的字符串列表，并统一转成小写集合。
 fn parse_lowercase_string_set(
     value: &Value,
     path: &'static str,
@@ -1086,6 +1243,7 @@ fn parse_lowercase_string_set(
         .collect()
 }
 
+/// 中文：把可选字符串列表解析为经过校验的 Agent 标识集合。
 fn parse_agent_set(
     value: Option<&Value>,
     path: &'static str,
@@ -1099,6 +1257,7 @@ fn parse_agent_set(
         .collect()
 }
 
+/// 中文：把可选字符串列表解析为经过校验的 Adapter 标识集合。
 fn parse_adapter_set(
     value: Option<&Value>,
     path: &'static str,
@@ -1112,6 +1271,7 @@ fn parse_adapter_set(
         .collect()
 }
 
+/// 中文：把可选字符串列表解析为经过校验的 capability 名称集合。
 fn parse_capability_set(
     value: Option<&Value>,
     path: &'static str,
@@ -1125,6 +1285,7 @@ fn parse_capability_set(
         .collect()
 }
 
+/// 中文：把可选字符串列表解析为保持配置顺序的具体主题。
 fn parse_topic_list(value: Option<&Value>, path: &'static str) -> Result<Vec<Topic>, EvaError> {
     let Some(value) = value else {
         return Ok(Vec::new());
@@ -1135,6 +1296,7 @@ fn parse_topic_list(value: Option<&Value>, path: &'static str) -> Result<Vec<Top
         .collect()
 }
 
+/// 中文：把可选字符串列表解析为保持配置顺序的主题匹配模式。
 fn parse_topic_pattern_list(
     value: Option<&Value>,
     path: &'static str,
@@ -1148,12 +1310,14 @@ fn parse_topic_pattern_list(
         .collect()
 }
 
+/// 中文：要求 YAML 节点为列表，并在错误中保留字段路径。
 fn sequence<'a>(value: &'a Value, path: &'static str) -> Result<&'a Vec<Value>, EvaError> {
     value.as_sequence().ok_or_else(|| {
         EvaError::invalid_argument("policy field must be a list").with_context("field", path)
     })
 }
 
+/// 中文：读取必需映射键，并拒绝空值或首尾空白以保证索引稳定。
 fn required_key<'a>(value: &'a Value, path: &'static str) -> Result<&'a str, EvaError> {
     let value = required_str(value, path)?;
     if value.trim().is_empty() || value.trim() != value {
@@ -1166,16 +1330,19 @@ fn required_key<'a>(value: &'a Value, path: &'static str) -> Result<&'a str, Eva
     }
 }
 
+/// 中文：要求 YAML 节点为字符串，并为类型错误附加字段路径。
 fn required_str<'a>(value: &'a Value, path: &'static str) -> Result<&'a str, EvaError> {
     value.as_str().ok_or_else(|| {
         EvaError::invalid_argument("policy field must be a string").with_context("field", path)
     })
 }
 
+/// 中文：把必需且稳定的映射键解析为 capability 名称。
 fn capability_key(value: &Value, path: &'static str) -> Result<CapabilityName, EvaError> {
     CapabilityName::parse(required_key(value, path)?)
 }
 
+/// 中文：由文档路径和域名生成可追溯的策略层名称，内存文档使用稳定默认前缀。
 fn layer_name(document: &PolicyDocument, domain: &str) -> String {
     if document.path.as_os_str().is_empty() {
         format!("policy.{domain}")
@@ -1191,19 +1358,23 @@ mod tests {
     use eva_core::ErrorKind;
     use std::path::{Path, PathBuf};
 
+    /// 中文：返回策略集成测试使用的工作区根目录。
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
 
+    /// 中文：解析测试使用的 capability 名称。
     fn capability(value: &str) -> CapabilityName {
         CapabilityName::parse(value).unwrap()
     }
 
+    /// 中文：解析测试使用的 Adapter 标识。
     fn adapter(value: &str) -> AdapterId {
         AdapterId::parse(value).unwrap()
     }
 
     #[test]
+    /// 中文：验证仓库样例策略的各类型化域和派生层均可正确加载。
     fn parses_sample_policy_domains() {
         let project = load_project_config(workspace_root()).unwrap();
         let domains = PolicyDomainSet::from_project(&project).unwrap();
@@ -1239,6 +1410,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证自定义脱敏配置会归一化敏感键并保留替换及审计开关。
     fn parses_memory_redaction_policy_domain() {
         let value = serde_yaml::from_str::<Value>(
             r#"
@@ -1280,6 +1452,7 @@ memory_policy:
     }
 
     #[test]
+    /// 中文：验证由策略域派生的有效策略不会扩张权限和沙箱限制。
     fn effective_policy_intersects_domain_layers() {
         let project = load_project_config(workspace_root()).unwrap();
         let domains = PolicyDomainSet::from_project(&project).unwrap();
@@ -1292,6 +1465,7 @@ memory_policy:
     }
 
     #[test]
+    /// 中文：验证符合工具、capability、Provider 和超时白名单的 MCP 调用获准。
     fn runtime_gate_allows_declared_mcp_adapter_invoke() {
         let project = load_project_config(workspace_root()).unwrap();
         let gate = RuntimePolicyGate::from_project(&project).unwrap();
@@ -1309,6 +1483,7 @@ memory_policy:
     }
 
     #[test]
+    /// 中文：验证 Adapter 与 Provider 相同时凭据会话获准且包含审计动作。
     fn runtime_gate_allows_provider_credential_session_for_matching_provider() {
         let gate = RuntimePolicyGate::new(PolicyDomainSet::default());
 
@@ -1326,6 +1501,7 @@ memory_policy:
     }
 
     #[test]
+    /// 中文：验证门禁可查询 capability 专属退避配置，未配置项返回空值。
     fn runtime_gate_exposes_adapter_retry_backoff_by_capability() {
         let domains =
             PolicyDomainSet::from_project(&load_project_config(workspace_root()).unwrap()).unwrap();
@@ -1342,6 +1518,7 @@ memory_policy:
     }
 
     #[test]
+    /// 中文：验证凭据会话不能跨 Provider 复用。
     fn runtime_gate_denies_provider_credential_session_cross_provider() {
         let gate = RuntimePolicyGate::new(PolicyDomainSet::default());
 
@@ -1357,6 +1534,7 @@ memory_policy:
     }
 
     #[test]
+    /// 中文：验证关闭的 MCP 主题发出能力产生可转换为权限错误的拒绝判定。
     fn runtime_gate_denies_disabled_mcp_topic_emit() {
         let project = load_project_config(workspace_root()).unwrap();
         let gate = RuntimePolicyGate::from_project(&project).unwrap();
@@ -1372,6 +1550,7 @@ memory_policy:
     }
 
     #[test]
+    /// 中文：验证原始硬件 I/O 在默认策略下被拒绝。
     fn runtime_gate_denies_hardware_raw_io_by_default() {
         let project = load_project_config(workspace_root()).unwrap();
         let gate = RuntimePolicyGate::from_project(&project).unwrap();
@@ -1387,6 +1566,7 @@ memory_policy:
     }
 
     #[test]
+    /// 中文：验证恢复应用等高风险动作必须由运行时策略显式放行。
     fn runtime_gate_requires_explicit_high_risk_allow() {
         let project = load_project_config(workspace_root()).unwrap();
         let gate = RuntimePolicyGate::from_project(&project).unwrap();
@@ -1398,6 +1578,7 @@ memory_policy:
     }
 
     #[test]
+    /// 中文：验证配置中的高风险动作白名单能够精确放行对应动作。
     fn runtime_policy_can_explicitly_allow_high_risk_action() {
         let value = serde_yaml::from_str::<Value>(
             r#"

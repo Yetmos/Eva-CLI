@@ -1,3 +1,8 @@
+//! 实现 MCP 的 JSON-RPC 客户端以及 stdio/HTTP 传输边界。
+//!
+//! 每次调用先校验工具允许列表，再完成初始化握手并发送工具请求。响应必须命中预期 id、
+//! 符合协议结构且不超过大小限制；stdio 的读取线程只传递有界行，超时、EOF、读取错误或
+//! 协议错配都会关闭子进程并映射为稳定错误，避免遗留失控会话。
 //! MCP JSON-RPC client transport.
 
 use crate::policy::McpAllowlist;
@@ -11,44 +16,68 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "MCP JSON-RPC client transport with stdio process boundaries";
 
+/// 定义 `DEFAULT_PROTOCOL_VERSION` 常量。
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
+/// 定义 `DEFAULT_REQUEST_TIMEOUT_MS` 常量。
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
+/// 定义 `DEFAULT_OUTPUT_LIMIT_BYTES` 常量。
 const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
 
+/// 表示 `McpJsonRpcClientConfig` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpJsonRpcClientConfig {
+    /// 记录 `protocol_version` 字段对应的值。
     pub protocol_version: String,
+    /// 记录 `client_name` 字段对应的值。
     pub client_name: String,
+    /// 记录 `client_version` 字段对应的值。
     pub client_version: String,
+    /// 记录 `request_timeout_ms` 字段对应的值。
     pub request_timeout_ms: u64,
+    /// 记录 `output_limit_bytes` 字段对应的值。
     pub output_limit_bytes: usize,
 }
 
+/// 表示 `McpJsonRpcClient` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpJsonRpcClient {
+    /// 记录 `adapter_id` 字段对应的值。
     adapter_id: AdapterId,
+    /// 记录 `allowlist` 字段对应的值。
     allowlist: McpAllowlist,
+    /// 记录 `config` 字段对应的值。
     config: McpJsonRpcClientConfig,
 }
 
+/// 表示 `McpJsonRpcCallReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpJsonRpcCallReport {
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
+    /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
+    /// 记录 `tool` 字段对应的值。
     pub tool: String,
+    /// 记录 `output` 字段对应的值。
     pub output: InvokeOutput,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 表示 `McpJsonRpcTool` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpJsonRpcTool {
+    /// 记录 `name` 字段对应的值。
     pub name: String,
 }
 
+/// 约定 `McpJsonRpcTransport` 实现需要满足的接口。
 pub trait McpJsonRpcTransport {
+    /// 执行 `exchange` 对应的处理逻辑。
     fn exchange(
         &mut self,
         expected_id: u64,
@@ -57,6 +86,7 @@ pub trait McpJsonRpcTransport {
         output_limit_bytes: usize,
     ) -> Result<String, EvaError>;
 
+    /// 执行 `notify` 对应的处理逻辑。
     fn notify(
         &mut self,
         notification: &str,
@@ -64,40 +94,56 @@ pub trait McpJsonRpcTransport {
         output_limit_bytes: usize,
     ) -> Result<(), EvaError>;
 
+    /// 执行 `audit` 对应的处理逻辑。
     fn audit(&self) -> Vec<String> {
         Vec::new()
     }
 }
 
+/// 表示 `McpStdioJsonRpcTransport` 数据结构。
 #[derive(Debug)]
 pub struct McpStdioJsonRpcTransport {
+    /// 记录 `child` 字段对应的值。
     child: Option<Child>,
+    /// 记录 `stdin` 字段对应的值。
     stdin: ChildStdin,
+    /// 记录 `receiver` 字段对应的值。
     receiver: mpsc::Receiver<ReaderMessage>,
+    /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
 }
 
+/// 表示 `McpHttpJsonRpcTransport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpHttpJsonRpcTransport {
+    /// 记录 `endpoint` 字段对应的值。
     endpoint: String,
+    /// 记录 `headers` 字段对应的值。
     headers: BTreeMap<String, String>,
+    /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
+    /// 记录 `exchange_count` 字段对应的值。
     exchange_count: usize,
+    /// 记录 `notification_count` 字段对应的值。
     notification_count: usize,
 }
 
+/// 表示 `JsonRpcResponse` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct JsonRpcResponse {
+    /// 记录 `result` 字段对应的值。
     result: String,
 }
 
 impl Default for McpJsonRpcClientConfig {
+    /// 创建采用默认协议版本、超时和响应上限的客户端配置。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl McpJsonRpcClientConfig {
+    /// 创建并初始化当前类型的实例。
     pub fn new() -> Self {
         Self {
             protocol_version: DEFAULT_PROTOCOL_VERSION.to_owned(),
@@ -108,26 +154,31 @@ impl McpJsonRpcClientConfig {
         }
     }
 
+    /// 设置 `protocol_version` 并返回更新后的实例。
     pub fn with_protocol_version(mut self, protocol_version: impl Into<String>) -> Self {
         self.protocol_version = protocol_version.into();
         self
     }
 
+    /// 设置 `client_name` 并返回更新后的实例。
     pub fn with_client_name(mut self, client_name: impl Into<String>) -> Self {
         self.client_name = client_name.into();
         self
     }
 
+    /// 设置 `client_version` 并返回更新后的实例。
     pub fn with_client_version(mut self, client_version: impl Into<String>) -> Self {
         self.client_version = client_version.into();
         self
     }
 
+    /// 设置 `request_timeout_ms` 并返回更新后的实例。
     pub fn with_request_timeout_ms(mut self, request_timeout_ms: u64) -> Self {
         self.request_timeout_ms = request_timeout_ms;
         self
     }
 
+    /// 设置 `output_limit_bytes` 并返回更新后的实例。
     pub fn with_output_limit_bytes(mut self, output_limit_bytes: usize) -> Self {
         self.output_limit_bytes = output_limit_bytes;
         self
@@ -135,6 +186,7 @@ impl McpJsonRpcClientConfig {
 }
 
 impl McpJsonRpcClient {
+    /// 创建并初始化当前类型的实例。
     pub fn new(adapter_id: AdapterId, allowlist: McpAllowlist) -> Self {
         Self {
             adapter_id,
@@ -143,15 +195,18 @@ impl McpJsonRpcClient {
         }
     }
 
+    /// 设置 `config` 并返回更新后的实例。
     pub fn with_config(mut self, config: McpJsonRpcClientConfig) -> Self {
         self.config = config;
         self
     }
 
+    /// 执行 `config` 对应的处理逻辑。
     pub fn config(&self) -> &McpJsonRpcClientConfig {
         &self.config
     }
 
+    /// 执行 `call_stdio` 对应的受控流程。
     pub fn call_stdio(
         &self,
         session_config: &McpSessionConfig,
@@ -176,6 +231,7 @@ impl McpJsonRpcClient {
         }
     }
 
+    /// 执行 `call_http` 对应的受控流程。
     pub fn call_http(
         &self,
         endpoint: &str,
@@ -189,6 +245,7 @@ impl McpJsonRpcClient {
         self.call_tool_with_transport(&mut transport, request_id, tool, input)
     }
 
+    /// 执行 `call_tool_with_transport` 对应的受控流程。
     pub fn call_tool_with_transport(
         &self,
         transport: &mut impl McpJsonRpcTransport,
@@ -277,6 +334,7 @@ impl McpJsonRpcClient {
 }
 
 impl McpStdioJsonRpcTransport {
+    /// 执行 `start` 对应的受控流程。
     pub fn start(config: &McpSessionConfig) -> Result<Self, EvaError> {
         validate_stdio_config(config)?;
         let started_at = Instant::now();
@@ -321,6 +379,7 @@ impl McpStdioJsonRpcTransport {
         })
     }
 
+    /// 停止或释放 `shutdown` 管理的资源。
     pub fn shutdown(&mut self) -> Vec<String> {
         let mut audit = Vec::new();
         if let Some(mut child) = self.child.take() {
@@ -333,6 +392,7 @@ impl McpStdioJsonRpcTransport {
 }
 
 impl McpJsonRpcTransport for McpStdioJsonRpcTransport {
+    /// 执行 `exchange` 对应的处理逻辑。
     fn exchange(
         &mut self,
         expected_id: u64,
@@ -419,6 +479,7 @@ impl McpJsonRpcTransport for McpStdioJsonRpcTransport {
         }
     }
 
+    /// 执行 `notify` 对应的处理逻辑。
     fn notify(
         &mut self,
         notification: &str,
@@ -435,12 +496,14 @@ impl McpJsonRpcTransport for McpStdioJsonRpcTransport {
             })
     }
 
+    /// 执行 `audit` 对应的处理逻辑。
     fn audit(&self) -> Vec<String> {
         self.audit.clone()
     }
 }
 
 impl McpHttpJsonRpcTransport {
+    /// 创建并初始化当前类型的实例。
     pub fn new(
         endpoint: impl Into<String>,
         headers: BTreeMap<String, String>,
@@ -476,6 +539,7 @@ impl McpHttpJsonRpcTransport {
 }
 
 impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
+    /// 执行 `exchange` 对应的处理逻辑。
     fn exchange(
         &mut self,
         expected_id: u64,
@@ -521,6 +585,7 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
         Ok(text)
     }
 
+    /// 执行 `notify` 对应的处理逻辑。
     fn notify(
         &mut self,
         notification: &str,
@@ -545,6 +610,7 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
         Ok(())
     }
 
+    /// 执行 `audit` 对应的处理逻辑。
     fn audit(&self) -> Vec<String> {
         let mut audit = self.audit.clone();
         audit.push(format!("mcp.http.exchange_count:{}", self.exchange_count));
@@ -557,19 +623,32 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
 }
 
 impl Drop for McpStdioJsonRpcTransport {
+    /// 停止或释放 `drop` 管理的资源。
     fn drop(&mut self) {
         self.shutdown();
     }
 }
 
+/// 定义 `ReaderMessage` 可取的状态。
 #[derive(Debug)]
 enum ReaderMessage {
-    Line(Vec<u8>),
+    /// 表示 `Line` 枚举分支。
+    Line(
+        /// 保存一行尚未执行 UTF-8 与 JSON-RPC 校验的原始字节。
+        Vec<u8>,
+    ),
+    /// 表示 `LimitExceeded` 枚举分支。
     LimitExceeded,
-    ReadError(String),
+    /// 表示 `ReadError` 枚举分支。
+    ReadError(
+        /// 保存读取线程产生且可跨通道传递的错误文本。
+        String,
+    ),
+    /// 表示 `Eof` 枚举分支。
     Eof,
 }
 
+/// 执行 `spawn_stdout_reader` 对应的受控流程。
 fn spawn_stdout_reader(
     stdout: impl std::io::Read + Send + 'static,
     sender: mpsc::Sender<ReaderMessage>,
@@ -607,24 +686,36 @@ fn spawn_stdout_reader(
     });
 }
 
+/// 表示 `HttpJsonRpcResponse` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HttpJsonRpcResponse {
+    /// 记录 `status_code` 字段对应的值。
     status_code: u16,
+    /// 记录 `body` 字段对应的值。
     body: Vec<u8>,
+    /// 记录 `body_truncated` 字段对应的值。
     body_truncated: bool,
 }
 
+/// 表示 `ParsedHttpUrl` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedHttpUrl {
+    /// 记录 `scheme` 字段对应的值。
     scheme: String,
+    /// 记录 `host` 字段对应的值。
     host: String,
+    /// 记录 `port` 字段对应的值。
     port: u16,
+    /// 记录 `path` 字段对应的值。
     path: String,
+    /// 记录 `authority` 字段对应的值。
     authority: String,
+    /// 记录 `origin` 字段对应的值。
     origin: String,
 }
 
 impl ParsedHttpUrl {
+    /// 读取或解析 `parse` 所需的数据，失败时保留错误语义。
     fn parse(url: &str) -> Result<Self, EvaError> {
         let (scheme, rest) = url
             .split_once("://")
@@ -669,6 +760,7 @@ impl ParsedHttpUrl {
     }
 }
 
+/// 读取或解析 `parse_http_authority` 所需的数据，失败时保留错误语义。
 fn parse_http_authority(scheme: &str, authority: &str) -> Result<(String, u16), EvaError> {
     let default_port = if scheme == "https" { 443 } else { 80 };
     if let Some((host, port)) = authority.rsplit_once(':') {
@@ -684,6 +776,7 @@ fn parse_http_authority(scheme: &str, authority: &str) -> Result<(String, u16), 
     Ok((authority.to_owned(), default_port))
 }
 
+/// 执行 `send_http_json_rpc_request` 对应的处理逻辑。
 fn send_http_json_rpc_request(
     endpoint: &str,
     headers: &BTreeMap<String, String>,
@@ -754,8 +847,10 @@ fn send_http_json_rpc_request(
     read_http_json_rpc_response(&mut stream, &parsed.origin, output_limit_bytes)
 }
 
+/// 定义 `HTTP_HEADER_LIMIT_BYTES` 常量。
 const HTTP_HEADER_LIMIT_BYTES: usize = 64 * 1024;
 
+/// 读取或解析 `read_http_json_rpc_response` 所需的数据，失败时保留错误语义。
 fn read_http_json_rpc_response(
     stream: &mut TcpStream,
     origin: &str,
@@ -822,6 +917,7 @@ fn read_http_json_rpc_response(
     })
 }
 
+/// 执行 `append_http_body` 对应的处理逻辑。
 fn append_http_body(
     chunk: &[u8],
     output_limit_bytes: usize,
@@ -840,10 +936,12 @@ fn append_http_body(
     }
 }
 
+/// 执行 `http_header_end` 对应的处理逻辑。
 fn http_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
+/// 读取或解析 `parse_http_status_code` 所需的数据，失败时保留错误语义。
 fn parse_http_status_code(head: &str) -> Result<u16, EvaError> {
     let status_line = head.lines().next().ok_or_else(|| {
         EvaError::unavailable("MCP HTTP server returned malformed response")
@@ -863,6 +961,7 @@ fn parse_http_status_code(head: &str) -> Result<u16, EvaError> {
         })
 }
 
+/// 校验 `validate_http_header` 对应的约束，不满足时返回明确错误。
 fn validate_http_header(name: &str, value: &str) -> Result<(), EvaError> {
     if name.trim().is_empty()
         || !name
@@ -883,6 +982,7 @@ fn validate_http_header(name: &str, value: &str) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 校验 `validate_client_config` 对应的约束，不满足时返回明确错误。
 fn validate_client_config(config: &McpJsonRpcClientConfig) -> Result<(), EvaError> {
     if config.protocol_version.trim().is_empty() {
         return Err(EvaError::invalid_argument(
@@ -907,6 +1007,7 @@ fn validate_client_config(config: &McpJsonRpcClientConfig) -> Result<(), EvaErro
     Ok(())
 }
 
+/// 校验 `validate_stdio_config` 对应的约束，不满足时返回明确错误。
 fn validate_stdio_config(config: &McpSessionConfig) -> Result<(), EvaError> {
     if config.server_transport != McpServerTransport::Stdio {
         return Err(EvaError::unsupported("unsupported MCP JSON-RPC transport")
@@ -937,12 +1038,14 @@ fn validate_stdio_config(config: &McpSessionConfig) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 执行 `next_json_rpc_id` 对应的处理逻辑。
 fn next_json_rpc_id(next: &mut u64) -> u64 {
     let id = *next;
     *next += 1;
     id
 }
 
+/// 执行 `initialize_request` 对应的处理逻辑。
 fn initialize_request(id: u64, config: &McpJsonRpcClientConfig) -> String {
     format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"initialize\",\"params\":{{\"protocolVersion\":{},\"capabilities\":{{}},\"clientInfo\":{{\"name\":{},\"version\":{}}}}}}}",
@@ -953,10 +1056,12 @@ fn initialize_request(id: u64, config: &McpJsonRpcClientConfig) -> String {
     )
 }
 
+/// 执行 `initialized_notification` 对应的处理逻辑。
 fn initialized_notification() -> String {
     "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}".to_owned()
 }
 
+/// 执行 `tools_list_request` 对应的处理逻辑。
 fn tools_list_request(id: u64) -> String {
     format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/list\",\"params\":{{}}}}",
@@ -964,6 +1069,7 @@ fn tools_list_request(id: u64) -> String {
     )
 }
 
+/// 执行 `tools_call_request` 对应的处理逻辑。
 fn tools_call_request(id: u64, tool: &str, input: &str) -> String {
     format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"tools/call\",\"params\":{{\"name\":{},\"arguments\":{}}}}}",
@@ -973,6 +1079,7 @@ fn tools_call_request(id: u64, tool: &str, input: &str) -> String {
     )
 }
 
+/// 执行 `tool_arguments_json` 对应的处理逻辑。
 fn tool_arguments_json(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -984,6 +1091,7 @@ fn tool_arguments_json(input: &str) -> String {
     }
 }
 
+/// 读取或解析 `parse_json_rpc_response` 所需的数据，失败时保留错误语义。
 fn parse_json_rpc_response(response: &str, expected_id: u64) -> Result<JsonRpcResponse, EvaError> {
     if json_string_field(response, "jsonrpc")?.as_deref() != Some("2.0") {
         return Err(protocol_error("MCP JSON-RPC response has invalid version")
@@ -1013,6 +1121,7 @@ fn parse_json_rpc_response(response: &str, expected_id: u64) -> Result<JsonRpcRe
     Ok(JsonRpcResponse { result })
 }
 
+/// 读取或解析 `parse_tools_list` 所需的数据，失败时保留错误语义。
 fn parse_tools_list(response: &JsonRpcResponse) -> Result<Vec<McpJsonRpcTool>, EvaError> {
     let tools = json_field_value(&response.result, "tools").ok_or_else(|| {
         protocol_error("MCP tools/list response is missing tools")
@@ -1035,6 +1144,7 @@ fn parse_tools_list(response: &JsonRpcResponse) -> Result<Vec<McpJsonRpcTool>, E
     Ok(names)
 }
 
+/// 执行 `map_json_rpc_error` 对应的处理逻辑。
 fn map_json_rpc_error(error: &str, expected_id: u64) -> EvaError {
     let code = json_i64_field(error, "code").ok().flatten().unwrap_or(0);
     let message = json_string_field(error, "message")
@@ -1048,6 +1158,7 @@ fn map_json_rpc_error(error: &str, expected_id: u64) -> EvaError {
         .with_context("json_rpc_message", truncate_context(&message))
 }
 
+/// 执行 `enforce_response_limit` 对应的处理逻辑。
 fn enforce_response_limit(response: &str, output_limit_bytes: usize) -> Result<(), EvaError> {
     if response.len() > output_limit_bytes {
         Err(
@@ -1061,17 +1172,21 @@ fn enforce_response_limit(response: &str, output_limit_bytes: usize) -> Result<(
     }
 }
 
+/// 执行 `protocol_error` 对应的处理逻辑。
 fn protocol_error(message: impl Into<String>) -> EvaError {
     EvaError::unavailable(message)
         .with_provider_code("mcp_protocol_error")
         .with_retryable(false)
 }
 
+/// 执行 `truncate_context` 对应的处理逻辑。
 fn truncate_context(value: &str) -> String {
+    /// 定义 `MAX_CONTEXT_CHARS` 常量。
     const MAX_CONTEXT_CHARS: usize = 120;
     value.chars().take(MAX_CONTEXT_CHARS).collect()
 }
 
+/// 执行 `json_field_value` 对应的处理逻辑。
 fn json_field_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     let pattern = format!("\"{key}\"");
     let position = text.find(&pattern)?;
@@ -1087,6 +1202,7 @@ fn json_field_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     Some(&text[value_start..value_end])
 }
 
+/// 执行 `json_value_end` 对应的处理逻辑。
 fn json_value_end(text: &str, start: usize) -> Option<usize> {
     match text[start..].chars().next()? {
         '"' => json_string_end(text, start),
@@ -1109,6 +1225,7 @@ fn json_value_end(text: &str, start: usize) -> Option<usize> {
     }
 }
 
+/// 执行 `json_string_end` 对应的处理逻辑。
 fn json_string_end(text: &str, start: usize) -> Option<usize> {
     let mut escaped = false;
     for (offset, character) in text[start + 1..].char_indices() {
@@ -1125,6 +1242,7 @@ fn json_string_end(text: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// 执行 `balanced_json_end` 对应的处理逻辑。
 fn balanced_json_end(text: &str, start: usize, open: char, close: char) -> Option<usize> {
     let mut depth = 0usize;
     let mut in_string = false;
@@ -1154,12 +1272,14 @@ fn balanced_json_end(text: &str, start: usize, open: char, close: char) -> Optio
     None
 }
 
+/// 执行 `json_string_field` 对应的处理逻辑。
 fn json_string_field(text: &str, key: &str) -> Result<Option<String>, EvaError> {
     json_field_value(text, key)
         .map(parse_json_string)
         .transpose()
 }
 
+/// 执行 `json_u64_field` 对应的处理逻辑。
 fn json_u64_field(text: &str, key: &str) -> Result<Option<u64>, EvaError> {
     json_field_value(text, key)
         .map(|value| {
@@ -1172,6 +1292,7 @@ fn json_u64_field(text: &str, key: &str) -> Result<Option<u64>, EvaError> {
         .transpose()
 }
 
+/// 执行 `json_i64_field` 对应的处理逻辑。
 fn json_i64_field(text: &str, key: &str) -> Result<Option<i64>, EvaError> {
     json_field_value(text, key)
         .map(|value| {
@@ -1184,6 +1305,7 @@ fn json_i64_field(text: &str, key: &str) -> Result<Option<i64>, EvaError> {
         .transpose()
 }
 
+/// 读取或解析 `parse_json_string` 所需的数据，失败时保留错误语义。
 fn parse_json_string(value: &str) -> Result<String, EvaError> {
     if !value.starts_with('"') {
         return Err(protocol_error("MCP JSON-RPC string field is invalid"));
@@ -1232,10 +1354,12 @@ fn parse_json_string(value: &str) -> Result<String, EvaError> {
     Err(protocol_error("MCP JSON-RPC string field is unterminated"))
 }
 
+/// 执行 `json_string` 对应的处理逻辑。
 fn json_string(value: &str) -> String {
     format!("\"{}\"", escape_json(value))
 }
 
+/// 按 `escape_json` 的协议约定生成输出。
 fn escape_json(value: &str) -> String {
     let mut escaped = String::new();
     for character in value.chars() {
@@ -1251,6 +1375,7 @@ fn escape_json(value: &str) -> String {
     escaped
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1260,14 +1385,19 @@ mod tests {
     use std::sync::mpsc::channel;
     use std::thread;
 
+    /// 表示 `FakeTransport` 数据结构。
     #[derive(Debug, Default)]
     struct FakeTransport {
+        /// 记录 `responses` 字段对应的值。
         responses: VecDeque<Result<String, EvaError>>,
+        /// 记录 `requests` 字段对应的值。
         requests: Vec<String>,
+        /// 记录 `notifications` 字段对应的值。
         notifications: Vec<String>,
     }
 
     impl FakeTransport {
+        /// 设置 `responses` 并返回更新后的实例。
         fn with_responses(responses: impl IntoIterator<Item = String>) -> Self {
             Self {
                 responses: responses.into_iter().map(Ok).collect(),
@@ -1276,6 +1406,7 @@ mod tests {
             }
         }
 
+        /// 设置 `error` 并返回更新后的实例。
         fn with_error(error: EvaError) -> Self {
             Self {
                 responses: [Err(error)].into_iter().collect(),
@@ -1286,6 +1417,7 @@ mod tests {
     }
 
     impl McpJsonRpcTransport for FakeTransport {
+        /// 执行 `exchange` 对应的处理逻辑。
         fn exchange(
             &mut self,
             _expected_id: u64,
@@ -1299,6 +1431,7 @@ mod tests {
                 .unwrap_or_else(|| Err(EvaError::unavailable("fake response missing")))
         }
 
+        /// 执行 `notify` 对应的处理逻辑。
         fn notify(
             &mut self,
             notification: &str,
@@ -1310,6 +1443,7 @@ mod tests {
         }
     }
 
+    /// 验证 `json_rpc_client_calls_fake_mcp_server_tool` 场景下的预期行为。
     #[test]
     fn json_rpc_client_calls_fake_mcp_server_tool() {
         let client = client(["list_issues"]);
@@ -1341,6 +1475,7 @@ mod tests {
         assert!(transport.notifications[0].contains("notifications/initialized"));
     }
 
+    /// 验证 `json_rpc_client_calls_fake_http_mcp_server_with_auth_header` 场景下的预期行为。
     #[test]
     fn json_rpc_client_calls_fake_http_mcp_server_with_auth_header() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1413,6 +1548,7 @@ mod tests {
             .any(|request| request.contains("\"method\":\"tools/call\"")));
     }
 
+    /// 验证 `blocked_tool_does_not_send_rpc` 场景下的预期行为。
     #[test]
     fn blocked_tool_does_not_send_rpc() {
         let client = client(["list_issues"]);
@@ -1432,6 +1568,7 @@ mod tests {
         assert!(transport.notifications.is_empty());
     }
 
+    /// 验证 `blocked_http_tool_is_rejected_before_endpoint_validation` 场景下的预期行为。
     #[test]
     fn blocked_http_tool_is_rejected_before_endpoint_validation() {
         let error = client(["list_issues"])
@@ -1447,6 +1584,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
     }
 
+    /// 验证 `json_rpc_error_object_maps_to_stable_provider_error` 场景下的预期行为。
     #[test]
     fn json_rpc_error_object_maps_to_stable_provider_error() {
         let client = client(["list_issues"]);
@@ -1473,6 +1611,7 @@ mod tests {
         );
     }
 
+    /// 验证 `oversized_response_has_stable_error` 场景下的预期行为。
     #[test]
     fn oversized_response_has_stable_error() {
         let client = client(["list_issues"]).with_config(
@@ -1501,6 +1640,7 @@ mod tests {
         );
     }
 
+    /// 验证 `transport_timeout_is_preserved` 场景下的预期行为。
     #[test]
     fn transport_timeout_is_preserved() {
         let client = client(["list_issues"]);
@@ -1519,6 +1659,7 @@ mod tests {
         assert_eq!(transport.requests.len(), 1);
     }
 
+    /// 执行 `client` 对应的处理逻辑。
     fn client(tools: impl IntoIterator<Item = &'static str>) -> McpJsonRpcClient {
         McpJsonRpcClient::new(
             AdapterId::parse("github-mcp").unwrap(),
@@ -1526,10 +1667,12 @@ mod tests {
         )
     }
 
+    /// 执行 `response` 对应的处理逻辑。
     fn response(id: u64, result: &str) -> String {
         format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}")
     }
 
+    /// 执行 `http_response` 对应的处理逻辑。
     fn http_response(status: u16, body: &str) -> String {
         format!(
             "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -1537,6 +1680,7 @@ mod tests {
         )
     }
 
+    /// 读取或解析 `read_test_http_request` 所需的数据，失败时保留错误语义。
     fn read_test_http_request(stream: &mut TcpStream) -> String {
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))

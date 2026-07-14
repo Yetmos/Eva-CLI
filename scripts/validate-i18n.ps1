@@ -1,7 +1,11 @@
 #!/usr/bin/env pwsh
+# 校验 i18n manifest、locale JSON、文档/资产映射以及已生成首页、docs 与博客页面的一致性。
+# 脚本只读取仓库内容；任一结构、路径、canonical/hreflang、模板或讨论嵌入契约不满足时，
+# 通过 Fail 抛出异常并以非零状态退出，使 CI 不会发布语言入口不完整或相互矛盾的站点。
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# 所有相对路径检查锚定仓库根，验证结果不受调用者当前目录影响。
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ManifestPath = Join-Path $Root "docs/_i18n/manifest.json"
 $LocaleRoot = Join-Path $Root "website/_i18n"
@@ -9,22 +13,27 @@ $WebsiteRoot = Join-Path $Root "website"
 $DocsRoot = Join-Path $Root "docs"
 $BlogDataPath = Join-Path $Root "website/_blog/posts.json"
 
+# 以 UTF-8 读取并解析 JSON；文件或语法错误由 Stop 策略直接终止验证。
 function Read-JsonFile {
   param([Parameter(Mandatory = $true)][string]$Path)
   return Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json
 }
 
+# 统一生成带 i18n 前缀的终止错误，保留具体 locale/文档/页面上下文。
 function Fail {
   param([Parameter(Mandatory = $true)][string]$Message)
   throw "i18n validation failed: $Message"
 }
 
+# 将 manifest 使用的 `/` 仓库相对路径转换为当前平台路径并检查存在性。
+# RelativePath 必须来自受信 manifest/博客数据；函数不接受站点 URL。
 function Test-RepoPath {
   param([Parameter(Mandatory = $true)][string]$RelativePath)
   $path = Join-Path $Root ($RelativePath -replace "/", [System.IO.Path]::DirectorySeparatorChar)
   return Test-Path -LiteralPath $path
 }
 
+# 安全读取 PSCustomObject 动态属性；缺失返回 null，供翻译状态和可选映射做显式判断。
 function Get-PropertyValue {
   param(
     [Parameter(Mandatory = $true)]$Object,
@@ -39,6 +48,7 @@ function Get-PropertyValue {
   return $property.Value
 }
 
+# 返回 locale 感知的博客索引 URL 路径；默认语言不带 locale 前缀。
 function Get-BlogIndexSitePath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -52,6 +62,7 @@ function Get-BlogIndexSitePath {
   return "/$LocaleCode/blog/"
 }
 
+# 根据已校验 CategoryId 构造语言分类页 URL 路径。
 function Get-BlogCategorySitePath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -62,6 +73,7 @@ function Get-BlogCategorySitePath {
   return "$(Get-BlogIndexSitePath -Manifest $Manifest -LocaleCode $LocaleCode)category/$CategoryId/"
 }
 
+# 根据 locale 与已校验 slug 构造文章 URL 路径。
 function Get-BlogPostSitePath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -72,6 +84,7 @@ function Get-BlogPostSitePath {
   return "$(Get-BlogIndexSitePath -Manifest $Manifest -LocaleCode $LocaleCode)$Slug/"
 }
 
+# 将博客索引 URL 语义映射到实际静态 index.html 路径。
 function Get-BlogIndexOutputPath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -85,6 +98,7 @@ function Get-BlogIndexOutputPath {
   return Join-Path $WebsiteRoot "$LocaleCode/blog/index.html"
 }
 
+# 将 locale/category 映射到实际分类页输出路径。
 function Get-BlogCategoryOutputPath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -99,6 +113,7 @@ function Get-BlogCategoryOutputPath {
   return Join-Path $WebsiteRoot "$LocaleCode/blog/category/$CategoryId/index.html"
 }
 
+# 将 locale/slug 映射到实际文章页输出路径。
 function Get-BlogPostOutputPath {
   param(
     [Parameter(Mandatory = $true)]$Manifest,
@@ -113,6 +128,7 @@ function Get-BlogPostOutputPath {
   return Join-Path $WebsiteRoot "$LocaleCode/blog/$Slug/index.html"
 }
 
+# 合并 canonical 基址与站点路径，并把边界规范为恰好一个斜线。
 function Join-SiteUrl {
   param(
     [Parameter(Mandatory = $true)][string]$BaseUrl,
@@ -127,6 +143,7 @@ function Join-SiteUrl {
   return "$base/$Path"
 }
 
+# 确保生成 HTML 不含未解析的 {{token}}；发现首个占位符即报告页面路径并终止。
 function Assert-NoTemplateToken {
   param(
     [Parameter(Mandatory = $true)][string]$Html,
@@ -138,6 +155,7 @@ function Assert-NoTemplateToken {
   }
 }
 
+# 第一阶段验证 manifest 根字段和启用 locale；后续所有映射都依赖这组权威数据。
 if (-not (Test-Path -LiteralPath $ManifestPath)) {
   Fail "Missing docs/_i18n/manifest.json."
 }
@@ -161,7 +179,9 @@ if ($null -eq $defaultLocale) {
   Fail "Default locale '$($manifest.defaultLocale)' is not present in enabled locales."
 }
 
+# 对每个启用 locale 同时校验语言元数据、locale JSON 必填成员和已生成首页契约。
 foreach ($locale in $locales) {
+  # 这些成员决定目录、语言切换可见文本、排版方向和翻译层级，均不可回退为空值。
   foreach ($field in @("code", "nativeLabel", "dir", "tier")) {
     if ([string]::IsNullOrWhiteSpace($locale.$field)) {
       Fail "Locale entry is missing '$field'."
@@ -178,6 +198,7 @@ foreach ($locale in $locales) {
   }
 
   $localeData = Read-JsonFile -Path $localeFile
+  # 顶层 locale 数据是模板 token 分区；缺任一分区都会造成页面部分未本地化。
   foreach ($path in @("meta", "brand", "nav", "home", "discussion", "docsIndex", "blog", "feedback", "footer")) {
     if ($null -eq (Get-PropertyValue -Object $localeData -Name $path)) {
       Fail "website/_i18n/$($locale.code).json missing '$path'."
@@ -269,12 +290,15 @@ foreach ($locale in $locales) {
     Fail "Generated home page for '$($locale.code)' still contains Firebase chat markup."
   }
 
+  # Giscus 当前只配置中文或英文 UI；其他 locale 显式回退英文，讨论线程身份仍保持共享。
   $expectedGiscusLang = if ($locale.code -eq "zh-CN") { "zh-CN" } else { "en" }
   if ($homeHtml -notmatch "data-lang=`"$([regex]::Escape($expectedGiscusLang))`"") {
     Fail "Generated home page for '$($locale.code)' has incorrect giscus language."
   }
 }
 
+# 第二阶段校验每个文档的 source、各非默认语言状态和 translation 路径一致性。
+# status=missing 允许无路径；其他状态必须有真实译文文件，防止状态与文件事实背离。
 foreach ($document in $manifest.documents) {
   if ([string]::IsNullOrWhiteSpace($document.id)) {
     Fail "A document entry is missing id."
@@ -316,6 +340,7 @@ if ($null -eq (Get-PropertyValue -Object $manifest -Name "assets")) {
   Fail "manifest.assets is required for localized content assets."
 }
 
+# 资产采用与文档相同的状态/路径规则，确保生成器的 source 回退有可用文件。
 foreach ($asset in $manifest.assets) {
   if ([string]::IsNullOrWhiteSpace($asset.id)) {
     Fail "An asset entry is missing id."
@@ -353,6 +378,7 @@ foreach ($asset in $manifest.assets) {
   }
 }
 
+# Architecture 图是首页关键本地化资产，除 manifest 映射有效外还要验证生成 HTML 实际引用。
 $architectureAsset = @($manifest.assets | Where-Object { $_.id -eq "architecture-diagram" }) | Select-Object -First 1
 if ($null -eq $architectureAsset) {
   Fail "Missing asset mapping for 'architecture-diagram'."
@@ -386,6 +412,7 @@ foreach ($locale in $locales) {
   }
 }
 
+# 第三阶段验证 /docs/ 只有英文 canonical index，避免部署时覆盖真实 docs 内容树。
 $docsIndexPath = Join-Path $WebsiteRoot "docs/index.html"
 if (-not (Test-Path -LiteralPath $docsIndexPath)) {
   Fail "Missing generated website/docs/index.html."
@@ -418,6 +445,7 @@ if (-not (Test-Path -LiteralPath $BlogDataPath)) {
   Fail "Missing website/_blog/posts.json."
 }
 
+# 第四阶段先验证博客元数据全局约束，再逐 locale 验证生成页和交叉语言链接。
 $blogData = Read-JsonFile -Path $BlogDataPath
 $blogCategories = @($blogData.categories)
 $blogPosts = @($blogData.posts)
@@ -429,6 +457,7 @@ if ($blogPosts.Count -eq 0) {
 }
 
 $localeCodes = @($locales | ForEach-Object { [string]$_.code })
+# HashSet 用于把分类 ID 全局唯一性与 slug 的 locale 内唯一性转成确定失败。
 $categoryIds = New-Object System.Collections.Generic.HashSet[string]
 foreach ($category in $blogCategories) {
   if ([string]::IsNullOrWhiteSpace($category.id)) {
@@ -444,6 +473,7 @@ foreach ($locale in $locales) {
   $slugsByLocale[[string]$locale.code] = New-Object System.Collections.Generic.HashSet[string]
 }
 
+# 所有文章必须引用启用 locale、已知分类、存在的内容文件和可解析日期。
 foreach ($post in $blogPosts) {
   foreach ($field in @("id", "locale", "slug", "title", "description", "date", "category", "contentPath")) {
     $value = Get-PropertyValue -Object $post -Name $field
@@ -471,6 +501,8 @@ foreach ($post in $blogPosts) {
   }
 }
 
+# 验证博客索引、每个分类和每篇文章的输出存在、token 已解析、canonical 正确；
+# 文章还必须为所有真实存在的同 ID 语言 sibling 提供 hreflang。
 foreach ($locale in $locales) {
   $localeCode = [string]$locale.code
   $blogIndexPath = Get-BlogIndexOutputPath -Manifest $manifest -LocaleCode $localeCode

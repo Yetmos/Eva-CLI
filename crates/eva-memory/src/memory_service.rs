@@ -1,3 +1,4 @@
+//! Agent 私有与全局 Memory 的可见性、TTL 和版本契约。
 //! Agent-private and global memory service contracts.
 
 use crate::observability::{record_memory_observation, MemoryObservation, MemoryOperation};
@@ -6,85 +7,134 @@ use eva_observability::{AuditSink, MetricSink, TraceFields};
 use eva_storage::StateVersion;
 use std::collections::BTreeMap;
 
+/// 本模块的架构职责：隔离 Agent 私有记忆，并提供受版本、保留和 TTL 约束的全局记忆。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "Agent and global memory service boundaries";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Memory 记录的读取可见性。
 pub enum MemoryVisibility {
+    /// 仅 owner Agent 可读取。
     Private,
+    /// 任意 Agent 均可读取。
     Global,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Memory 记录的生命周期保留类别。
 pub enum MemoryRetention {
+    /// 仅当前会话需要保留。
     Session,
+    /// 应由持久存储跨会话保存。
     Persistent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+/// Memory 值在磁盘格式中的压缩方式。
 pub enum MemoryCompression {
+    /// 原样存储 UTF-8 值。
     #[default]
     None,
+    /// 使用简单游程编码存储重复字符。
     RunLength,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 已写入、带版本和生命周期元数据的 Memory 记录。
 pub struct MemoryRecord {
+    /// 可见性分区内的稳定键。
     pub key: String,
+    /// 解压后的逻辑值。
     pub value: String,
+    /// 私有或全局可见性。
     pub visibility: MemoryVisibility,
+    /// 私有记录所有者；全局记录必须为 `None`。
     pub owner_agent: Option<AgentId>,
+    /// 会话或持久保留类别。
     pub retention: MemoryRetention,
+    /// 同一索引槽位内单调递增的状态版本。
     pub version: StateVersion,
+    /// 可选来源请求标识。
     pub request_id: Option<RequestId>,
+    /// 写入原因审计文本。
     pub audit_reason: String,
+    /// 记录创建时间，单位为 Unix epoch 毫秒。
     pub created_at_ms: u128,
+    /// 可选到期时间；达到该时间即不可见。
     pub expires_at_ms: Option<u128>,
+    /// 持久化时采用的压缩方式。
     pub compression: MemoryCompression,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 创建或覆盖 Memory 记录的输入。
 pub struct MemoryWrite {
+    /// 目标索引键。
     pub key: String,
+    /// 待保存逻辑值。
     pub value: String,
+    /// 目标可见性。
     pub visibility: MemoryVisibility,
+    /// 私有写入的所有者。
     pub owner_agent: Option<AgentId>,
+    /// 保留类别。
     pub retention: MemoryRetention,
+    /// 可选来源请求标识。
     pub request_id: Option<RequestId>,
+    /// 写入原因。
     pub audit_reason: String,
+    /// 创建时间毫秒值。
     pub created_at_ms: u128,
+    /// 可选到期时间毫秒值。
     pub expires_at_ms: Option<u128>,
+    /// 请求的磁盘压缩方式。
     pub compression: MemoryCompression,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 包含请求者与目标 owner 的 Memory 读取请求。
 pub struct MemoryReadRequest {
+    /// 发起读取的 Agent。
     pub requester: AgentId,
+    /// 可选请求追踪标识。
     pub request_id: Option<RequestId>,
+    /// 私有记录的目标 owner。
     pub owner_agent: Option<AgentId>,
+    /// 目标可见性分区。
     pub visibility: MemoryVisibility,
+    /// 目标 Memory 键。
     pub key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// 提供给某 Agent 的有界私有与全局 Memory 快照。
 pub struct MemorySnapshot {
+    /// 仅属于请求 Agent 的私有记录。
     pub private: Vec<MemoryRecord>,
+    /// 对所有 Agent 可见的全局记录。
     pub global: Vec<MemoryRecord>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// 按复合索引维护最新版本记录的进程内 Memory 服务。
 pub struct InMemoryMemoryService {
+    /// 可见性、owner 和逻辑键到最新记录的确定性映射。
     records: BTreeMap<MemoryIndexKey, MemoryRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// 隔离同名私有、全局及不同 Agent 私有记录的复合索引键。
 struct MemoryIndexKey {
+    /// 可见性分区。
     visibility: MemoryVisibility,
+    /// 私有 owner；全局记录为空。
     owner: Option<AgentId>,
+    /// 分区内逻辑键。
     key: String,
 }
 
 impl MemoryVisibility {
+    /// 返回稳定磁盘拼写。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Private => "private",
@@ -92,6 +142,7 @@ impl MemoryVisibility {
         }
     }
 
+    /// 解析受支持可见性，未知值失败关闭。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "private" => Ok(Self::Private),
@@ -103,6 +154,7 @@ impl MemoryVisibility {
 }
 
 impl MemoryRetention {
+    /// 返回稳定磁盘拼写。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Session => "session",
@@ -110,6 +162,7 @@ impl MemoryRetention {
         }
     }
 
+    /// 解析受支持保留类别。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "session" => Ok(Self::Session),
@@ -121,6 +174,7 @@ impl MemoryRetention {
 }
 
 impl MemoryCompression {
+    /// 返回稳定磁盘拼写。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -128,6 +182,7 @@ impl MemoryCompression {
         }
     }
 
+    /// 解析受支持压缩方式。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "none" => Ok(Self::None),
@@ -139,6 +194,7 @@ impl MemoryCompression {
 }
 
 impl MemoryWrite {
+    /// 创建默认会话保留、无 TTL 的私有写入。
     pub fn private(owner_agent: AgentId, key: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -154,6 +210,7 @@ impl MemoryWrite {
         }
     }
 
+    /// 创建默认持久保留、无 owner 的全局写入。
     pub fn global(key: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -169,32 +226,38 @@ impl MemoryWrite {
         }
     }
 
+    /// 关联来源请求标识。
     pub fn with_request_id(mut self, request_id: RequestId) -> Self {
         self.request_id = Some(request_id);
         self
     }
 
+    /// 覆盖写入审计原因。
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
         self.audit_reason = reason.into();
         self
     }
 
+    /// 覆盖记录保留类别。
     pub fn with_retention(mut self, retention: MemoryRetention) -> Self {
         self.retention = retention;
         self
     }
 
+    /// 设置显式创建时间。
     pub fn with_created_at_ms(mut self, created_at_ms: u128) -> Self {
         self.created_at_ms = created_at_ms;
         self
     }
 
+    /// 设置创建时间和 TTL，并用饱和加法避免溢出导致提前过期。
     pub fn with_ttl_ms(mut self, created_at_ms: u128, ttl_ms: u128) -> Self {
         self.created_at_ms = created_at_ms;
         self.expires_at_ms = Some(created_at_ms.saturating_add(ttl_ms));
         self
     }
 
+    /// 设置磁盘持久化压缩方式；不改变内存中的逻辑值。
     pub fn with_compression(mut self, compression: MemoryCompression) -> Self {
         self.compression = compression;
         self
@@ -202,6 +265,7 @@ impl MemoryWrite {
 }
 
 impl MemoryReadRequest {
+    /// 创建读取请求者自身私有记录的请求。
     pub fn private(requester: AgentId, key: impl Into<String>) -> Self {
         Self {
             owner_agent: Some(requester.clone()),
@@ -212,6 +276,7 @@ impl MemoryReadRequest {
         }
     }
 
+    /// 创建读取全局记录的请求。
     pub fn global(requester: AgentId, key: impl Into<String>) -> Self {
         Self {
             requester,
@@ -222,11 +287,13 @@ impl MemoryReadRequest {
         }
     }
 
+    /// 显式指定私有目标 owner；授权检查仍要求其等于 requester。
     pub fn with_owner_agent(mut self, owner_agent: AgentId) -> Self {
         self.owner_agent = Some(owner_agent);
         self
     }
 
+    /// 关联请求追踪标识。
     pub fn with_request_id(mut self, request_id: RequestId) -> Self {
         self.request_id = Some(request_id);
         self
@@ -234,10 +301,15 @@ impl MemoryReadRequest {
 }
 
 impl InMemoryMemoryService {
+    /// 创建空 Memory 服务。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 验证可见性/owner 不变量并写入同一复合索引的下一版本。
+    ///
+    /// 私有写入必须有 owner，全局写入禁止 owner。版本只在完全相同的 visibility、owner、
+    /// key 槽位递增，因此不同 Agent 的同名私有记录互不影响；校验失败时不修改映射。
     pub fn write(&mut self, write: MemoryWrite) -> Result<MemoryRecord, EvaError> {
         validate_memory_key(&write.key)?;
         if write.value.trim().is_empty() {
@@ -278,6 +350,7 @@ impl InMemoryMemoryService {
         Ok(record)
     }
 
+    /// 完成写入后记录审计和指标；观察写入失败会返回错误但不撤销已写 Memory。
     pub fn write_observed<S>(
         &mut self,
         write: MemoryWrite,
@@ -306,10 +379,15 @@ impl InMemoryMemoryService {
         Ok(record)
     }
 
+    /// 以兼容时间零读取记录。
     pub fn read(&self, request: &MemoryReadRequest) -> Result<Option<MemoryRecord>, EvaError> {
         self.read_at(request, 0)
     }
 
+    /// 授权后读取记录，并将到期记录视为不存在。
+    ///
+    /// TTL 过滤是只读操作，不在此删除持久记录；物理清理由显式 compaction 完成，避免
+    /// 普通读取产生隐藏写副作用。
     pub fn read_at(
         &self,
         request: &MemoryReadRequest,
@@ -329,6 +407,7 @@ impl InMemoryMemoryService {
             .cloned())
     }
 
+    /// 读取后记录审计和指标；观察失败不改变读取结果或存储。
     pub fn read_observed<S>(
         &self,
         request: &MemoryReadRequest,
@@ -352,10 +431,12 @@ impl InMemoryMemoryService {
         Ok(record)
     }
 
+    /// 以时间零列出请求 Agent 的全部私有记录。
     pub fn list_private(&self, requester: &AgentId) -> Vec<MemoryRecord> {
         self.list_private_at(requester, 0)
     }
 
+    /// 按键排序列出请求 Agent 尚未过期的私有记录。
     pub fn list_private_at(&self, requester: &AgentId, now_ms: u128) -> Vec<MemoryRecord> {
         let mut records = self
             .records
@@ -371,10 +452,12 @@ impl InMemoryMemoryService {
         records
     }
 
+    /// 以时间零列出全部全局记录。
     pub fn list_global(&self) -> Vec<MemoryRecord> {
         self.list_global_at(0)
     }
 
+    /// 按键排序列出尚未过期的全局记录。
     pub fn list_global_at(&self, now_ms: u128) -> Vec<MemoryRecord> {
         let mut records = self
             .records
@@ -388,6 +471,7 @@ impl InMemoryMemoryService {
         records
     }
 
+    /// 以时间零创建有界 Agent 快照。
     pub fn snapshot_for_agent(
         &self,
         requester: &AgentId,
@@ -397,6 +481,7 @@ impl InMemoryMemoryService {
         self.snapshot_for_agent_at(requester, private_limit, global_limit, 0)
     }
 
+    /// 分别限制私有/全局条目数并排除到期记录。
     pub fn snapshot_for_agent_at(
         &self,
         requester: &AgentId,
@@ -410,14 +495,19 @@ impl InMemoryMemoryService {
         }
     }
 
+    /// 返回包含到期记录在内的当前索引槽位数。
     pub fn len(&self) -> usize {
         self.records.len()
     }
 
+    /// 判断索引是否完全为空。
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
 
+    /// 强制私有读取的 requester 与 owner 完全一致。
+    ///
+    /// 即使调用者手工覆盖 `owner_agent`，也无法跨 Agent 读取；全局读取不使用 owner。
     fn authorize_read(&self, request: &MemoryReadRequest) -> Result<(), EvaError> {
         if request.visibility == MemoryVisibility::Private
             && request.owner_agent.as_ref() != Some(&request.requester)
@@ -438,6 +528,7 @@ impl InMemoryMemoryService {
         Ok(())
     }
 
+    /// 插入从持久存储恢复的完整记录并保留磁盘版本。
     pub fn insert_record(&mut self, record: MemoryRecord) -> Result<(), EvaError> {
         validate_memory_key(&record.key)?;
         let index = MemoryIndexKey::new(
@@ -451,6 +542,7 @@ impl InMemoryMemoryService {
 }
 
 impl MemoryRecord {
+    /// 判断到期时间是否已到；无 TTL 的记录永不过期。
     pub fn is_expired_at(&self, now_ms: u128) -> bool {
         self.expires_at_ms
             .map(|expires_at_ms| expires_at_ms <= now_ms)
@@ -459,6 +551,7 @@ impl MemoryRecord {
 }
 
 impl MemoryIndexKey {
+    /// 从可见性、owner 和逻辑键构造复合索引。
     fn new(visibility: MemoryVisibility, owner: Option<AgentId>, key: &str) -> Self {
         Self {
             visibility,
@@ -468,6 +561,7 @@ impl MemoryIndexKey {
     }
 }
 
+/// 校验 Memory 键非空、已裁剪且不超过 128 字节。
 fn validate_memory_key(key: &str) -> Result<(), EvaError> {
     if key.trim().is_empty() {
         return Err(EvaError::invalid_argument("memory key cannot be empty"));
@@ -483,11 +577,13 @@ fn validate_memory_key(key: &str) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 从已排序记录中取至多指定数量；零限制返回空集合。
 fn take_records(records: Vec<MemoryRecord>, limit: usize) -> Vec<MemoryRecord> {
     records.into_iter().take(limit).collect()
 }
 
 #[cfg(test)]
+/// 可见性隔离、版本、TTL 和可观测性测试。
 mod tests {
     use super::*;
     use eva_observability::{
@@ -495,28 +591,35 @@ mod tests {
     };
 
     #[derive(Debug, Default)]
+    /// 同时收集测试审计事件和指标点的 Sink。
     struct TestSink {
+        /// 内存审计 Sink。
         audit: InMemoryAuditSink,
+        /// 内存指标 Sink。
         metrics: InMemoryMetricSink,
     }
 
     impl AuditSink for TestSink {
+        /// 转发审计事件。
         fn record(&mut self, event: AuditEvent) -> Result<(), EvaError> {
             self.audit.record(event)
         }
     }
 
     impl MetricSink for TestSink {
+        /// 转发指标点。
         fn record(&mut self, point: MetricPoint) -> Result<(), EvaError> {
             self.metrics.record(point)
         }
     }
 
+    /// 解析测试 Agent 标识。
     fn agent(value: &str) -> AgentId {
         AgentId::parse(value).unwrap()
     }
 
     #[test]
+    /// 验证私有记录不能被其他 Agent 读取。
     fn private_memory_is_isolated_by_agent_id() {
         let mut service = InMemoryMemoryService::new();
         let owner = agent("root-agent");
@@ -537,6 +640,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证任意 Agent 均可读取全局记录。
     fn global_memory_is_visible_to_any_agent() {
         let mut service = InMemoryMemoryService::new();
         service
@@ -553,6 +657,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证同一复合索引的覆盖写递增版本。
     fn writes_increment_versions() {
         let mut service = InMemoryMemoryService::new();
         let owner = agent("root-agent");
@@ -568,6 +673,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证快照排除已到期记录而保留未到期记录。
     fn expired_memory_is_omitted_from_snapshots() {
         let mut service = InMemoryMemoryService::new();
         let owner = agent("root-agent");
@@ -585,6 +691,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证带观察的读写记录请求、Agent、审计和指标。
     fn memory_write_and_read_observed_record_request_agent_audit_and_metrics() {
         let mut service = InMemoryMemoryService::new();
         let mut sink = TestSink::default();

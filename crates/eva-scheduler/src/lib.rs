@@ -1,3 +1,4 @@
+//! 中文：调度器边界，负责把事件解析为投递计划并送入 Agent 邮箱。
 //! Scheduler boundary for routing events to Agent mailboxes.
 
 pub mod generation;

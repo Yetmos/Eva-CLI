@@ -16,10 +16,16 @@ pub enum EventPayload {
     Empty,
     /// 中文：UTF-8 文本 payload。
     /// English: UTF-8 text payload.
-    Text(String),
+    Text(
+        /// 按 UTF-8 保存且不在契约层解释 schema 的文本内容。
+        String,
+    ),
     /// 中文：二进制 payload。
     /// English: Binary payload.
-    Bytes(Vec<u8>),
+    Bytes(
+        /// 不在契约层解释格式的原始字节内容。
+        Vec<u8>,
+    ),
 }
 
 impl EventPayload {
@@ -71,24 +77,28 @@ impl EventPayload {
 }
 
 impl From<String> for EventPayload {
+    /// 将 owned UTF-8 文本包装为事件 payload，不做业务 schema 解释。
     fn from(value: String) -> Self {
         Self::text(value)
     }
 }
 
 impl From<&str> for EventPayload {
+    /// 复制借用文本并包装为事件 payload。
     fn from(value: &str) -> Self {
         Self::text(value)
     }
 }
 
 impl From<Vec<u8>> for EventPayload {
+    /// 接管二进制缓冲区作为不透明事件 payload。
     fn from(value: Vec<u8>) -> Self {
         Self::bytes(value)
     }
 }
 
 impl From<&[u8]> for EventPayload {
+    /// 复制借用字节切片并包装为不透明事件 payload。
     fn from(value: &[u8]) -> Self {
         Self::bytes(value.to_vec())
     }
@@ -104,13 +114,22 @@ pub enum EventTarget {
     Broadcast,
     /// 中文：将事件定向给某个 Agent。
     /// English: Direct the event to an Agent.
-    Agent(AgentId),
+    Agent(
+        /// 接收事件的 Agent 稳定标识。
+        AgentId,
+    ),
     /// 中文：将事件定向给某个 Capability。
     /// English: Direct the event to a Capability.
-    Capability(CapabilityName),
+    Capability(
+        /// 接收事件的 Capability 名称。
+        CapabilityName,
+    ),
     /// 中文：将事件定向给某个 Adapter。
     /// English: Direct the event to an Adapter.
-    Adapter(AdapterId),
+    Adapter(
+        /// 接收事件的 Adapter 稳定标识。
+        AdapterId,
+    ),
 }
 
 impl EventTarget {
@@ -195,6 +214,7 @@ pub struct EventMetadata {
 }
 
 impl Default for EventMetadata {
+    /// 使用当前时间和空链路信息创建默认 metadata；调用方可随后覆盖各可选字段。
     fn default() -> Self {
         Self {
             created_at: SystemTime::now(),
@@ -373,18 +393,22 @@ impl Event {
 }
 
 #[cfg(test)]
+/// Event 目标、payload、metadata 和因果链路的回归测试。
 mod tests {
     use super::*;
 
+    /// 将测试文本转换为已校验事件 ID，减少各用例的样板代码。
     fn event_id(value: &str) -> EventId {
         EventId::parse(value).unwrap()
     }
 
+    /// 将测试路径转换为已校验 topic。
     fn topic(value: &str) -> Topic {
         Topic::parse(value).unwrap()
     }
 
     #[test]
+    /// 验证构造事件所需的 ID、topic 与 payload 均可稳定读取。
     fn event_requires_id_topic_payload() {
         let event = Event::new(
             event_id("evt-1"),
@@ -398,6 +422,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证未指定目标时事件采用非定向广播语义。
     fn event_accepts_broadcast_target() {
         let event = Event::new(event_id("evt-1"), topic("/a/b"), EventPayload::empty());
         assert_eq!(event.target(), &EventTarget::Broadcast);
@@ -405,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Agent 定向目标会被识别为显式投递。
     fn event_accepts_agent_target() {
         let agent_id = AgentId::parse("agent-root").unwrap();
         let event = Event::new(event_id("evt-1"), topic("/a/b"), EventPayload::empty())
@@ -415,6 +441,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 capability 与 adapter 两类定向目标均受契约支持。
     fn event_accepts_capability_and_adapter_targets() {
         let capability = CapabilityName::parse("repo.summary").unwrap();
         let adapter = AdapterId::parse("adapter-cli").unwrap();
@@ -424,6 +451,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证派生子事件继承已有 correlation 根，避免链路被重新分组。
     fn child_event_preserves_correlation() {
         let root = Event::new(event_id("evt-root"), topic("/root"), EventPayload::empty())
             .with_trace(TraceContext::correlated(event_id("evt-correlation")));
@@ -440,6 +468,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证没有 correlation 时以父事件为链路根，并记录直接因果关系。
     fn child_event_sets_causation_to_parent() {
         let parent = Event::new(
             event_id("evt-parent"),
@@ -463,6 +492,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证请求和运行时代际信息保存在非业务 metadata 中。
     fn event_metadata_tracks_request_and_generation() {
         let request_id = RequestId::parse("req-1").unwrap();
         let generation_id = GenerationId::parse("gen-1").unwrap();
@@ -475,6 +505,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证文本与字节 payload 的便捷转换保持各自类型。
     fn payload_can_be_text_or_bytes() {
         assert_eq!(EventPayload::from("hello").as_text(), Some("hello"));
         assert_eq!(EventPayload::from(vec![1, 2]).as_bytes(), Some(&[1, 2][..]));

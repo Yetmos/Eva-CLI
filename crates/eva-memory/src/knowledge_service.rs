@@ -1,3 +1,4 @@
+//! Knowledge 条目索引、排序检索与外部 Provider 获取契约。
 //! Knowledge item indexing and retrieval contracts.
 
 use crate::observability::{record_memory_observation, MemoryObservation, MemoryOperation};
@@ -13,80 +14,131 @@ use eva_policy::{
 };
 use std::collections::BTreeMap;
 
+/// 本模块的架构职责：保存项目知识，并在策略、来源指纹和脱敏门禁后索引外部结果。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "project knowledge storage and retrieval";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct KnowledgeId(String);
+/// 可作为索引键和磁盘文件名组成部分的稳定 Knowledge 标识。
+pub struct KnowledgeId(
+    /// 通过非空、首尾空白和路径分隔符校验后的原始稳定 slug。
+    String,
+);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Knowledge 内容的来源与轻量指纹。
 pub struct KnowledgeSource {
+    /// 来源 URI 或本地逻辑位置。
     pub uri: String,
+    /// 面向检索结果的来源标题。
     pub title: String,
+    /// 根据原始内容字节计算的确定性轻量指纹。
     pub digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 可索引、可持久化的 Knowledge 条目。
 pub struct KnowledgeItem {
+    /// 条目稳定标识。
     pub id: KnowledgeId,
+    /// 来源元数据和内容指纹。
     pub source: KnowledgeSource,
+    /// 高权重检索摘要。
     pub summary: String,
+    /// 完整内容。
     pub content: String,
+    /// 排序去重后的分类标签。
     pub tags: Vec<String>,
+    /// 可选来源请求标识。
     pub request_id: Option<RequestId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Knowledge 检索条件与观察上下文。
 pub struct KnowledgeSearch {
+    /// 不区分 ASCII 大小写的子串查询。
     pub query: String,
+    /// 返回结果上限。
     pub limit: usize,
+    /// 结果必须同时包含的全部标签。
     pub required_tags: Vec<String>,
+    /// 可选请求追踪标识。
     pub request_id: Option<RequestId>,
+    /// 可选发起检索的 Agent。
     pub agent_id: Option<AgentId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 带确定性分数和命中字段说明的检索结果。
 pub struct KnowledgeSearchResult {
+    /// 命中的完整条目。
     pub item: KnowledgeItem,
+    /// 按字段权重累加的相关性分数。
     pub score: usize,
+    /// 参与计分的字段或标签。
     pub matched_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 通过受策略控制的 Adapter Provider 获取外部知识的请求。
 pub struct ExternalKnowledgeRetrievalRequest {
+    /// 调用和索引关联的请求标识。
     pub request_id: RequestId,
+    /// 发起高风险调用的 Agent。
     pub agent: AgentId,
+    /// 要调用的 Capability。
     pub capability: CapabilityName,
+    /// 显式 Provider Adapter。
     pub provider: AdapterId,
+    /// 发送给 Provider 的非空查询。
     pub query: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 外部 Knowledge 获取是否调用、校验、脱敏并索引的审计报告。
 pub struct ExternalKnowledgeRetrievalReport {
+    /// indexed、policy_denied、provider_failed/timeout 或 schema_rejected。
     pub status: String,
+    /// 请求标识字符串。
     pub request_id: String,
+    /// Capability 名称。
     pub capability: String,
+    /// Provider Adapter 标识。
     pub provider: String,
+    /// 查询字节长度，仅用于诊断而不回显内容。
     pub query_len: usize,
+    /// Provider 调用状态。
     pub invocation_status: String,
+    /// 成功加入索引的条目数。
     pub items_indexed: usize,
+    /// 成功加入索引的条目标识。
     pub indexed_ids: Vec<String>,
+    /// 入库前替换的敏感片段数量。
     pub redaction_count: usize,
+    /// Provider、URI、来源指纹和脱敏计数审计。
     pub source_audit: Vec<String>,
+    /// 策略、调用、Schema 和索引阶段审计。
     pub audit: Vec<String>,
+    /// 失败时的稳定错误类别。
     pub error_kind: Option<String>,
+    /// 失败时不含结构化上下文的错误消息。
     pub error_message: Option<String>,
 }
 
+/// Provider 输出使用的行式 Schema 格式。
 const KNOWLEDGE_RETRIEVAL_OUTPUT_FORMAT: &str = "eva.knowledge.retrieval.v1";
+/// 发送给 Provider 的查询载荷格式。
 const KNOWLEDGE_RETRIEVAL_QUERY_FORMAT: &str = "eva.knowledge.query.v1";
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// 按 KnowledgeId 有序索引条目的进程内服务。
 pub struct InMemoryKnowledgeService {
+    /// 稳定标识到唯一条目的确定性映射。
     items: BTreeMap<KnowledgeId, KnowledgeItem>,
 }
 
 impl KnowledgeId {
+    /// 校验标识非空、已裁剪且不含路径分隔符。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         if value.trim().is_empty() {
             return Err(EvaError::invalid_argument("knowledge id cannot be empty"));
@@ -99,12 +151,16 @@ impl KnowledgeId {
         Ok(Self(value.to_owned()))
     }
 
+    /// 返回原始稳定标识。
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 impl KnowledgeSource {
+    /// 创建来源并从内容字节计算确定性轻量指纹。
+    ///
+    /// 指纹用于变更检测和审计，不是抗碰撞安全摘要，不能替代工件完整性校验。
     pub fn new(uri: impl Into<String>, title: impl Into<String>, bytes: &[u8]) -> Self {
         Self {
             uri: uri.into(),
@@ -115,6 +171,7 @@ impl KnowledgeSource {
 }
 
 impl KnowledgeItem {
+    /// 创建摘要和内容均非空的无标签条目。
     pub fn new(
         id: KnowledgeId,
         source: KnowledgeSource,
@@ -138,6 +195,7 @@ impl KnowledgeItem {
         })
     }
 
+    /// 添加非空且未重复标签，并排序保证持久化和检索确定性。
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         let tag = tag.into();
         if !tag.trim().is_empty() && !self.tags.contains(&tag) {
@@ -147,6 +205,7 @@ impl KnowledgeItem {
         self
     }
 
+    /// 关联来源请求标识。
     pub fn with_request_id(mut self, request_id: RequestId) -> Self {
         self.request_id = Some(request_id);
         self
@@ -154,6 +213,7 @@ impl KnowledgeItem {
 }
 
 impl KnowledgeSearch {
+    /// 创建默认最多返回八项的查询。
     pub fn new(query: impl Into<String>) -> Self {
         Self {
             query: query.into(),
@@ -164,21 +224,25 @@ impl KnowledgeSearch {
         }
     }
 
+    /// 设置结果上限；零值会得到空结果。
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit;
         self
     }
 
+    /// 添加一个必须同时存在的标签条件。
     pub fn with_required_tag(mut self, tag: impl Into<String>) -> Self {
         self.required_tags.push(tag.into());
         self
     }
 
+    /// 关联请求追踪标识。
     pub fn with_request_id(mut self, request_id: RequestId) -> Self {
         self.request_id = Some(request_id);
         self
     }
 
+    /// 关联发起检索的 Agent。
     pub fn with_agent_id(mut self, agent_id: AgentId) -> Self {
         self.agent_id = Some(agent_id);
         self
@@ -186,10 +250,12 @@ impl KnowledgeSearch {
 }
 
 impl InMemoryKnowledgeService {
+    /// 创建空 Knowledge 索引。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 插入唯一条目；重复标识返回冲突且不覆盖原内容。
     pub fn index(&mut self, item: KnowledgeItem) -> Result<(), EvaError> {
         if self.items.contains_key(&item.id) {
             return Err(EvaError::conflict("knowledge item already exists")
@@ -199,10 +265,16 @@ impl InMemoryKnowledgeService {
         Ok(())
     }
 
+    /// 按标识返回条目副本。
     pub fn get(&self, id: &KnowledgeId) -> Option<KnowledgeItem> {
         self.items.get(id).cloned()
     }
 
+    /// 按全部标签过滤并执行确定性加权子串检索。
+    ///
+    /// query 统一转为 ASCII 小写；id/title/summary 每项命中加 3，tag 加 2，content 加 1。
+    /// 结果先按分数降序，再按 KnowledgeId 升序打破平局，最后截断 limit，因此相同索引
+    /// 和查询在不同运行中顺序稳定。
     pub fn search(&self, search: &KnowledgeSearch) -> Result<Vec<KnowledgeSearchResult>, EvaError> {
         if search.query.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -226,6 +298,7 @@ impl InMemoryKnowledgeService {
         Ok(results)
     }
 
+    /// 检索后记录查询长度、结果数和可选 Agent/请求；观察失败不修改索引。
     pub fn search_observed<S>(
         &self,
         search: &KnowledgeSearch,
@@ -249,10 +322,12 @@ impl InMemoryKnowledgeService {
         Ok(results)
     }
 
+    /// 按 KnowledgeId 顺序返回可用于持久化重建的条目副本。
     pub fn snapshot_items(&self) -> Vec<KnowledgeItem> {
         self.items.values().cloned().collect()
     }
 
+    /// 从条目集合重建索引，重复标识使整个构造失败。
     pub fn rebuild_from_items(items: Vec<KnowledgeItem>) -> Result<Self, EvaError> {
         let mut service = Self::new();
         for item in items {
@@ -261,16 +336,19 @@ impl InMemoryKnowledgeService {
         Ok(service)
     }
 
+    /// 返回索引条目数。
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
+    /// 判断索引是否为空。
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 }
 
 impl ExternalKnowledgeRetrievalRequest {
+    /// 创建绑定 Agent、Capability、Provider 和查询的外部获取请求。
     pub fn new(
         request_id: RequestId,
         agent: AgentId,
@@ -287,6 +365,7 @@ impl ExternalKnowledgeRetrievalRequest {
         }
     }
 
+    /// 为 AdapterInvoke 高风险动作计算运行时策略决策。
     pub fn policy_decision(&self, gate: &RuntimePolicyGate) -> PolicyDecision {
         gate.decide(
             RuntimePolicyRequest::new(HighRiskAction::AdapterInvoke)
@@ -297,6 +376,7 @@ impl ExternalKnowledgeRetrievalRequest {
         )
     }
 
+    /// 使用默认脱敏策略执行外部获取。
     pub fn execute(
         &self,
         gate: &RuntimePolicyGate,
@@ -306,6 +386,11 @@ impl ExternalKnowledgeRetrievalRequest {
         self.execute_with_redaction_policy(gate, host, knowledge, &RedactionPolicyDomain::default())
     }
 
+    /// 按策略、Provider、Schema、脱敏、索引的严格顺序执行获取。
+    ///
+    /// 策略拒绝时不调用 Provider；调用错误、非成功状态、非文本输出或 Schema 错误均
+    /// 返回 items_indexed=0 的报告，不污染索引。只有完整解析后才脱敏并计算来源审计，
+    /// 最后一次性调用 index；重复 id 冲突作为错误传播，也不会覆盖已有知识。
     pub fn execute_with_redaction_policy(
         &self,
         gate: &RuntimePolicyGate,
@@ -318,6 +403,7 @@ impl ExternalKnowledgeRetrievalRequest {
                 "external knowledge retrieval query cannot be empty",
             ));
         }
+        // 高风险策略必须先于任何外部 Provider 副作用。
         let decision = self.policy_decision(gate);
         if !decision.allowed {
             return Ok(self.skipped_report(
@@ -337,6 +423,7 @@ impl ExternalKnowledgeRetrievalRequest {
             InvokeInput::text(self.query_payload()),
         )
         .with_metadata(InvokeMetadata::new().with_caller(self.agent.clone()));
+        // Provider 失败和业务失败都转换为可审计跳过报告，禁止解析或索引部分输出。
         let response = match host.invoke_with_provider(request, Some(self.provider.clone())) {
             Ok(response) => response,
             Err(error) => {
@@ -396,6 +483,7 @@ impl ExternalKnowledgeRetrievalRequest {
                 ))
             }
         };
+        // Schema 完整接受后再脱敏；未经脱敏的外部文本永不进入索引。
         let (item, redaction_count) = if *redaction_policy == RedactionPolicyDomain::default() {
             redact_knowledge_item(&item)
         } else {
@@ -431,6 +519,7 @@ impl ExternalKnowledgeRetrievalRequest {
         })
     }
 
+    /// 将查询、Agent 和请求标识十六进制编码为稳定行式载荷。
     pub fn query_payload(&self) -> String {
         format!(
             "format={KNOWLEDGE_RETRIEVAL_QUERY_FORMAT}\nquery={}\nagent={}\nrequest_id={}\n",
@@ -440,6 +529,7 @@ impl ExternalKnowledgeRetrievalRequest {
         )
     }
 
+    /// 构造未索引任何条目的失败或拒绝报告。
     fn skipped_report(
         &self,
         status: &str,
@@ -465,6 +555,10 @@ impl ExternalKnowledgeRetrievalRequest {
     }
 }
 
+/// 将 Knowledge 条目序列化为 Provider 输出格式。
+///
+/// 所有自由文本按 UTF-8 字节十六进制编码，标签可重复键表达，避免换行或 `=` 破坏
+/// 行式边界。
 pub fn render_retrieval_item(item: &KnowledgeItem) -> String {
     let mut lines = vec![
         format!("format={KNOWLEDGE_RETRIEVAL_OUTPUT_FORMAT}"),
@@ -481,6 +575,10 @@ pub fn render_retrieval_item(item: &KnowledgeItem) -> String {
     lines.join("\n")
 }
 
+/// 严格解析 Provider 输出，并用实际 content 重算来源指纹。
+///
+/// 不信任 Provider 传入 digest；解析器从解码后的 content 构造 KnowledgeSource。格式、
+/// 必填字段、十六进制或 UTF-8 任一无效都会阻止索引。
 fn parse_retrieval_item(data: &str, request_id: &RequestId) -> Result<KnowledgeItem, EvaError> {
     let fields = parse_multimap(data)?;
     if first_field(&fields, "format")? != KNOWLEDGE_RETRIEVAL_OUTPUT_FORMAT {
@@ -508,6 +606,7 @@ fn parse_retrieval_item(data: &str, request_id: &RequestId) -> Result<KnowledgeI
     Ok(item)
 }
 
+/// 解析允许重复键的行式字段映射，供多标签表示使用。
 fn parse_multimap(data: &str) -> Result<BTreeMap<String, Vec<String>>, EvaError> {
     let mut fields = BTreeMap::new();
     for line in data.lines().filter(|line| !line.trim().is_empty()) {
@@ -524,6 +623,7 @@ fn parse_multimap(data: &str) -> Result<BTreeMap<String, Vec<String>>, EvaError>
     Ok(fields)
 }
 
+/// 读取必填字段的第一个值。
 fn first_field<'a>(
     fields: &'a BTreeMap<String, Vec<String>>,
     key: &str,
@@ -538,6 +638,7 @@ fn first_field<'a>(
         })
 }
 
+/// 将 UTF-8 文本按字节编码为小写十六进制。
 fn encode_field(value: &str) -> String {
     value
         .as_bytes()
@@ -547,6 +648,7 @@ fn encode_field(value: &str) -> String {
         .join("")
 }
 
+/// 严格十六进制解码并验证 UTF-8。
 fn decode_field(value: &str) -> Result<String, EvaError> {
     if !value.len().is_multiple_of(2) {
         return Err(EvaError::invalid_argument(
@@ -566,6 +668,7 @@ fn decode_field(value: &str) -> Result<String, EvaError> {
         .map_err(|_| EvaError::invalid_argument("knowledge retrieval field is not utf8"))
 }
 
+/// 将调用状态映射为稳定报告字符串。
 fn invoke_status(status: InvokeStatus) -> &'static str {
     match status {
         InvokeStatus::Accepted => "accepted",
@@ -576,10 +679,12 @@ fn invoke_status(status: InvokeStatus) -> &'static str {
     }
 }
 
+/// 要求条目包含查询声明的全部标签。
 fn has_required_tags(item: &KnowledgeItem, required_tags: &[String]) -> bool {
     required_tags.iter().all(|tag| item.tags.contains(tag))
 }
 
+/// 计算字段加权子串分数；零分条目不进入结果集。
 fn score_item(item: &KnowledgeItem, query: &str) -> Option<KnowledgeSearchResult> {
     let mut score = 0;
     let mut matched_by = Vec::new();
@@ -608,6 +713,7 @@ fn score_item(item: &KnowledgeItem, query: &str) -> Option<KnowledgeSearchResult
     })
 }
 
+/// 计算长度与字节和组成的轻量来源指纹。
 fn lightweight_digest(bytes: &[u8]) -> String {
     let sum = bytes
         .iter()
@@ -616,11 +722,13 @@ fn lightweight_digest(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+/// Knowledge 排序、重建及外部获取失败隔离测试。
 mod tests {
     use super::*;
     use eva_core::{InvokeOutput, InvokeResponse};
     use eva_policy::PolicyDomainSet;
 
+    /// 构造固定来源的测试 Knowledge 条目。
     fn item(id: &str, summary: &str, content: &str) -> KnowledgeItem {
         KnowledgeItem::new(
             KnowledgeId::parse(id).unwrap(),
@@ -631,33 +739,42 @@ mod tests {
         .unwrap()
     }
 
+    /// 解析测试请求标识。
     fn request_id(value: &str) -> RequestId {
         RequestId::parse(value).unwrap()
     }
 
+    /// 解析测试 Agent 标识。
     fn agent(value: &str) -> AgentId {
         AgentId::parse(value).unwrap()
     }
 
+    /// 解析测试 Capability 名称。
     fn capability(value: &str) -> CapabilityName {
         CapabilityName::parse(value).unwrap()
     }
 
+    /// 解析测试 Adapter 标识。
     fn adapter(value: &str) -> AdapterId {
         AdapterId::parse(value).unwrap()
     }
 
     #[derive(Debug, Clone)]
+    /// 断言显式 Provider 和请求上下文并返回预设响应的测试 Host。
     struct FakeRetrievalHost {
+        /// 调用必须指定的 Provider。
         expected_provider: AdapterId,
+        /// Provider 应返回的响应。
         response: InvokeResponse,
     }
 
     impl CapabilityHostApi for FakeRetrievalHost {
+        /// 使用预期 Provider 委托调用。
         fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
             self.invoke_with_provider(request, Some(self.expected_provider.clone()))
         }
 
+        /// 验证 Provider、目标、查询格式和 caller 后返回响应。
         fn invoke_with_provider(
             &self,
             request: InvokeRequest,
@@ -675,6 +792,7 @@ mod tests {
         }
     }
 
+    /// 构造固定外部 Knowledge 获取请求。
     fn retrieval_request() -> ExternalKnowledgeRetrievalRequest {
         ExternalKnowledgeRetrievalRequest::new(
             request_id("req-knowledge-1"),
@@ -685,6 +803,7 @@ mod tests {
         )
     }
 
+    /// 用预设响应构造测试 Host。
     fn retrieval_host(response: InvokeResponse) -> FakeRetrievalHost {
         FakeRetrievalHost {
             expected_provider: adapter("retrieval-provider"),
@@ -693,6 +812,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证查询、标签过滤和相关性排序。
     fn indexes_and_searches_by_query_and_tag() {
         let mut service = InMemoryKnowledgeService::new();
         service
@@ -711,6 +831,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证重复 KnowledgeId 不会覆盖已有条目。
     fn duplicate_ids_are_rejected() {
         let mut service = InMemoryKnowledgeService::new();
         service.index(item("memory-plan", "one", "body")).unwrap();
@@ -721,6 +842,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证索引可从持久条目集合确定性重建。
     fn knowledge_index_can_be_rebuilt_from_items() {
         let mut service = InMemoryKnowledgeService::new();
         service
@@ -739,6 +861,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证外部获取必须经过运行时策略门禁。
     fn external_retrieval_requires_runtime_policy_gate() {
         let mut domains = PolicyDomainSet::default();
         domains
@@ -761,6 +884,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Provider 结果脱敏后索引并记录来源指纹。
     fn external_retrieval_indexes_redacted_provider_result_with_source_audit() {
         let mut knowledge = InMemoryKnowledgeService::new();
         let request = retrieval_request();
@@ -809,6 +933,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证自定义策略在索引前驱动脱敏。
     fn external_retrieval_uses_policy_driven_redaction_before_indexing() {
         let mut knowledge = InMemoryKnowledgeService::new();
         let request = retrieval_request();
@@ -853,6 +978,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Schema 无效的 Provider 输出不会污染索引。
     fn external_retrieval_schema_rejection_does_not_pollute_index() {
         let mut knowledge = InMemoryKnowledgeService::new();
         let request = retrieval_request();
@@ -876,6 +1002,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Provider 超时不会污染索引。
     fn external_retrieval_timeout_does_not_pollute_index() {
         let mut knowledge = InMemoryKnowledgeService::new();
         let request = retrieval_request();
@@ -900,6 +1027,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Provider 失败响应不会污染索引。
     fn external_retrieval_failed_response_does_not_pollute_index() {
         let mut knowledge = InMemoryKnowledgeService::new();
         let request = retrieval_request();
@@ -924,6 +1052,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证策略拒绝会跳过 Provider 调用和索引。
     fn external_retrieval_policy_denial_skips_provider_and_index() {
         let mut domains = PolicyDomainSet::default();
         domains

@@ -1,3 +1,5 @@
+//! 持久化任务状态、日志和取消子命令；同时支持项目本地与 durable backend 存储。
+
 use super::{
     exit_code_for_error, json_array, json_string, option_json, parse_common_options,
     required_option, success_envelope, trace_for, write_error, write_error_kind, CommonOptions,
@@ -15,20 +17,39 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Task 子命令及其共享选项。
 pub(super) enum TaskCommand {
-    Status(TaskOptions),
-    Logs(TaskOptions),
-    Cancel(TaskOptions),
+    /// 读取任务状态快照。
+    Status(
+        /// 已解析的请求标识、后端路径与公共选项。
+        TaskOptions,
+    ),
+    /// 读取任务日志、dead-letter 与 replay 记录。
+    Logs(
+        /// 已解析的请求标识、后端路径与公共选项。
+        TaskOptions,
+    ),
+    /// 请求取消任务并持久化更新后的快照。
+    Cancel(
+        /// 已解析的请求标识、后端路径与公共选项。
+        TaskOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 任务查询和取消的共享选项。
 pub(super) struct TaskOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 可选任务 ID；缺省由 store 选择最新任务。
     task_id: Option<String>,
+    /// 取消命令使用的可选原因。
     reason: Option<String>,
+    /// 可选 durable backend 根；缺省使用项目本地任务目录。
     durable_backend: Option<PathBuf>,
 }
 
+/// 解析 `task status|logs|cancel` 和共享选项。
 pub(super) fn parse_task_command(args: &[String]) -> Result<TaskCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -44,6 +65,7 @@ pub(super) fn parse_task_command(args: &[String]) -> Result<TaskCommand, EvaErro
     }
 }
 
+/// 执行任务读取或取消，并按错误分类返回稳定退出码。
 pub(super) fn execute_task<W, E>(
     command: TaskCommand,
     stdout: &mut W,
@@ -109,6 +131,7 @@ where
     }
 }
 
+/// 将基础运行报告中的任务状态写入所选 store；run 命令成功前必须完成此步骤。
 pub(super) fn write_task_snapshot(
     project_root: &Path,
     durable_backend: Option<&Path>,
@@ -119,10 +142,12 @@ pub(super) fn write_task_snapshot(
     store.write(&snapshot)
 }
 
+/// 将基础运行报告的任务部分转换为与 task 命令相同的 JSON 契约。
 pub(super) fn task_snapshot_json_from_report(report: &BasicRunReport) -> String {
     task_snapshot_json(&TaskStateSnapshot::from(&report.task))
 }
 
+/// 解析任务 ID、取消原因和后端路径，并委托公共选项解析器处理其余参数。
 fn parse_task_options(args: &[String]) -> Result<TaskOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut task_id = None;
@@ -167,6 +192,7 @@ fn parse_task_options(args: &[String]) -> Result<TaskOptions, EvaError> {
     })
 }
 
+/// 以只读访问模式打开所选 store 并读取指定或最新任务。
 fn read_task_snapshot(
     project_root: &Path,
     durable_backend: Option<&Path>,
@@ -175,6 +201,10 @@ fn read_task_snapshot(
     open_task_state_store(project_root, durable_backend, TaskStoreAccess::Read)?.read(task_id)
 }
 
+/// 在持久化快照上应用取消请求。
+///
+/// 终态任务只记录被拒绝的迟到取消，不重写终态；非终态任务切换为 cancelled 并记录原因。
+/// 更新完成后才写回 store，因此调用者拿到的快照与持久化状态一致。
 fn cancel_task_snapshot(
     project_root: &Path,
     durable_backend: Option<&Path>,
@@ -202,11 +232,15 @@ fn cancel_task_snapshot(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 打开 durable backend 时所需的最小访问权限。
 enum TaskStoreAccess {
+    /// 查询路径使用只读后端，禁止隐式迁移或写入。
     Read,
+    /// 快照保存和取消路径需要读写后端。
     Write,
 }
 
+/// 根据可选 durable root 打开任务 store，并按操作选择只读或读写后端选项。
 fn open_task_state_store(
     project_root: &Path,
     durable_backend: Option<&Path>,
@@ -226,6 +260,7 @@ fn open_task_state_store(
     ))
 }
 
+/// 将任务错误映射为退出码并写出统一错误信封。
 fn write_task_error<W: Write>(
     stderr: &mut W,
     output: OutputFormat,
@@ -238,6 +273,7 @@ fn write_task_error<W: Write>(
     Ok(exit_code)
 }
 
+/// 输出任务状态、重试、错误和取消摘要。
 fn write_task_status<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -273,6 +309,7 @@ fn write_task_status<W: Write>(
     }
 }
 
+/// 输出任务日志以及 dead-letter/replay 记录。
 fn write_task_logs<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -301,6 +338,7 @@ fn write_task_logs<W: Write>(
     }
 }
 
+/// 输出取消是否被接受及取消后的任务快照。
 fn write_task_cancel<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -323,6 +361,7 @@ fn write_task_cancel<W: Write>(
     }
 }
 
+/// 将任务日志视图编码为 JSON。
 fn task_logs_json(snapshot: &TaskStateSnapshot) -> String {
     format!(
         "{{\"task_id\":{},\"status\":{},\"logs\":{}}}",
@@ -332,6 +371,7 @@ fn task_logs_json(snapshot: &TaskStateSnapshot) -> String {
     )
 }
 
+/// 将完整任务状态快照编码为稳定 JSON。
 fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
     format!(
         "{{\"task_id\":{},\"status\":{},\"attempts\":{},\"retry_policy\":{{\"max_attempts\":{}}},\"cancellation\":{{\"requested\":{},\"accepted\":{},\"reason\":{}}},\"error\":{},\"logs\":{},\"dead_letters\":{},\"replayed_events\":{}}}",
@@ -349,6 +389,7 @@ fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
     )
 }
 
+/// 将任务的可选结构化错误字段编码为 JSON 或 `null`。
 fn task_error_json(snapshot: &TaskStateSnapshot) -> String {
     match (&snapshot.error_kind, &snapshot.error_message) {
         (Some(kind), Some(message)) => format!(
@@ -360,6 +401,7 @@ fn task_error_json(snapshot: &TaskStateSnapshot) -> String {
     }
 }
 
+/// 将一条任务日志记录编码为 JSON。
 fn task_log_json(entry: &TaskStateLogSnapshot) -> String {
     format!(
         "{{\"sequence\":{},\"level\":{},\"message\":{}}}",
@@ -369,6 +411,7 @@ fn task_log_json(entry: &TaskStateLogSnapshot) -> String {
     )
 }
 
+/// 将一条 dead-letter 快照编码为 JSON。
 fn dead_letter_json(entry: &TaskStateDeadLetterSnapshot) -> String {
     format!(
         "{{\"event_id\":{},\"topic\":{},\"reason_kind\":{},\"reason\":{},\"replay_count\":{}}}",
@@ -380,6 +423,7 @@ fn dead_letter_json(entry: &TaskStateDeadLetterSnapshot) -> String {
     )
 }
 
+/// 将一条 dead-letter replay 结果编码为 JSON。
 fn replay_json(entry: &TaskStateReplaySnapshot) -> String {
     format!(
         "{{\"event_id\":{},\"sequence\":{},\"topic\":{}}}",

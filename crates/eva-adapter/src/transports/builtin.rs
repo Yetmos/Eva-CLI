@@ -1,12 +1,15 @@
+//! 本模块提供 `builtin` 相关实现。
 //! Built-in local Adapter transport envelopes.
 
 use crate::manifest::AdapterHandle;
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
 use eva_core::EvaError;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "built-in local Adapter transport";
 
+/// 执行 `invoke` 对应的受控流程。
 pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,

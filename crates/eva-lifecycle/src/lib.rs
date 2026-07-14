@@ -1,11 +1,19 @@
+//! 运行时生命周期与代际管理边界。
 //! Runtime lifecycle and generation management boundary.
 
+/// 升级应用锁的获取与持久化。
 pub mod apply_lock;
+/// 旧运行时代际的排空计划与证据。
 pub mod drain;
+/// 运行时代际状态机。
 pub mod generation;
+/// 蓝绿 Supervisor 交接与发布指针写入。
 pub mod handoff;
+/// 失败交接后的回滚规划。
 pub mod rollback;
+/// 操作系统服务管理器抽象与测试适配器。
 pub mod service_manager;
+/// 进程内 Supervisor 所有权模型。
 pub mod supervisor;
 
 pub use apply_lock::{

@@ -1,3 +1,4 @@
+//! 恢复应用的验证、暂存变更、锁、策略、健康门禁与回滚边界。
 //! Restore apply validation, staged mutation planning, lock, policy, and health gate boundaries.
 
 use crate::archive::digest_bytes;
@@ -10,173 +11,290 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+/// 本模块的架构职责：在持久备份工件之上建立恢复应用的证据、互斥和失败回滚边界。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
     "restore apply validation, lock, policy, and health gate over durable backup artifacts";
 
+/// 在破坏性恢复前创建的当前状态备份证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreRestoreBackupEvidence {
+    /// 前置备份在备份命名空间内的工件标识。
     pub backup_artifact_id: String,
+    /// 前置备份工件的预期 SHA-256 摘要。
     pub backup_digest: String,
 }
 
+/// 恢复来源、前置安全备份及目标文件变更的完整计划。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreApplyPlan {
+    /// 用于确认、锁和事务日志关联的稳定计划标识。
     pub plan_id: String,
+    /// 作为恢复数据来源的备份工件标识。
     pub backup_artifact_id: String,
+    /// 恢复来源工件的预期摘要。
     pub backup_digest: String,
+    /// 恢复前当前状态的备份证据；进入应用门禁前必须存在。
     pub pre_restore_backup: Option<PreRestoreBackupEvidence>,
+    /// 所有相对变更路径必须受限于此目标根目录。
     pub mutation_target_root: String,
+    /// 按声明顺序执行并按逆序回滚的文件变更步骤。
     pub mutation_steps: Vec<RestoreMutationStep>,
 }
 
+/// 恢复应用演练的双备份校验和变更预览报告。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreApplyDryRunReport {
+    /// 被验证计划标识。
     pub plan_id: String,
+    /// 恢复来源工件的完整存储键。
     pub backup_artifact_key: String,
+    /// 计划声明的恢复来源摘要。
     pub expected_digest: String,
+    /// 从恢复来源工件确认的实际摘要。
     pub actual_digest: String,
+    /// 前置安全备份的完整存储键。
     pub pre_restore_backup_artifact_key: String,
+    /// 计划声明的前置备份摘要。
     pub pre_restore_expected_digest: String,
+    /// 从前置备份工件确认的实际摘要。
     pub pre_restore_actual_digest: String,
+    /// 演练校验状态。
     pub status: String,
+    /// 是否允许直接执行变更；演练报告固定为 `false`。
     pub apply_allowed: bool,
+    /// 已规范化且带预检摘要的暂存变更计划。
     pub mutation_plan: RestoreStagedMutationPlan,
+    /// 双工件校验和变更规划审计记录。
     pub audit: Vec<String>,
 }
 
+/// 恢复引擎支持的文件变更操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreMutationOperation {
+    /// 目标必须不存在，随后从工件复制新文件。
     Copy,
+    /// 目标必须匹配恢复前摘要，随后删除文件。
     Delete,
+    /// 目标必须匹配恢复前摘要，随后用工件内容替换。
     Replace,
 }
 
+/// 恢复变更允许的目标节点类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreMutationTargetKind {
+    /// 普通文件；符号链接和其他节点类别均被拒绝。
     File,
 }
 
+/// 一个经过字段组合校验的恢复文件变更步骤。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreMutationStep {
+    /// 要执行的复制、删除或替换操作。
     pub operation: RestoreMutationOperation,
+    /// 相对于目标根目录的正斜杠路径。
     pub relative_path: String,
+    /// 复制或替换时读取的源工件键。
     pub source_artifact_key: Option<String>,
+    /// 复制或替换后内容必须匹配的摘要。
     pub expected_digest: Option<String>,
+    /// 删除或替换前现有目标必须匹配的摘要。
     pub pre_restore_digest: Option<String>,
+    /// 目标节点类别，当前只能是普通文件。
     pub target_kind: RestoreMutationTargetKind,
 }
 
+/// 暂存计划中每一步对应的逆向恢复说明。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreRollbackEntry {
+    /// 需要回退的相对路径。
     pub relative_path: String,
+    /// 删除新复制文件或恢复旧内容的动作名。
     pub action: String,
+    /// 需要从前置备份恢复时的旧内容摘要。
     pub pre_restore_digest: Option<String>,
 }
 
+/// 可审计、可复现但尚未执行的文件变更计划。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreStagedMutationPlan {
+    /// 原始恢复计划标识。
     pub plan_id: String,
+    /// 经语法校验的目标根目录。
     pub target_root: String,
+    /// 是否声明至少一个文件变更步骤。
     pub mutation_planned: bool,
+    /// 是否已经执行文件变更；暂存阶段固定为 `false`。
     pub mutation_executed: bool,
+    /// 保留声明顺序的已校验变更步骤。
     pub steps: Vec<RestoreMutationStep>,
+    /// 排序去重后的受影响相对路径。
     pub affected_paths: Vec<String>,
+    /// 面向审核者的逐步骤预览。
     pub preview: Vec<String>,
+    /// 绑定计划、目标、步骤和回滚清单的确定性摘要。
     pub preflight_hash: String,
+    /// 每一步的逆向恢复要求。
     pub rollback_manifest: Vec<RestoreRollbackEntry>,
+    /// 暂存和预检过程的审计记录。
     pub audit: Vec<String>,
 }
 
+/// 事务日志中一个恢复或回滚步骤的状态记录。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreMutationTransactionEntry {
+    /// 步骤在本次正向或逆向执行中的序号。
     pub sequence: usize,
+    /// 正向或回滚操作名称。
     pub operation: String,
+    /// 受影响的相对路径。
     pub relative_path: String,
+    /// `started`、`committed` 或 `failed` 状态。
     pub status: String,
+    /// 提交后内容或被删除旧内容的摘要证据。
     pub digest: Option<String>,
+    /// 失败时经过行式日志转义的诊断消息。
     pub message: Option<String>,
 }
 
+/// 正向恢复文件变更事务的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreMutationApplyReport {
+    /// 被执行计划标识。
     pub plan_id: String,
+    /// 规范化后的实际目标根目录。
     pub target_root: String,
+    /// `applied` 或 `rollback_required` 状态。
     pub status: String,
+    /// 是否至少有一个文件系统变更已发生。
     pub mutation_executed: bool,
+    /// 是否必须运行回滚引擎恢复一致状态。
     pub rollback_required: bool,
+    /// 已成功提交的步骤数量。
     pub completed_steps: usize,
+    /// 首个失败步骤的相对路径。
     pub failed_step: Option<String>,
+    /// 持久事务日志路径。
     pub transaction_log_path: String,
+    /// 本次调用产生的已提交和失败条目。
     pub transaction_log: Vec<RestoreMutationTransactionEntry>,
+    /// 事务总体结果的审计记录。
     pub audit: Vec<String>,
 }
 
+/// 失败恢复事务的逆向回滚结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreRollbackApplyReport {
+    /// 被回滚的恢复计划标识。
     pub plan_id: String,
+    /// 规范化后的实际目标根目录。
     pub target_root: String,
+    /// `rolled_back` 或 `rollback_failed` 状态。
     pub status: String,
+    /// 是否至少执行了一个逆向文件变更。
     pub rollback_executed: bool,
+    /// 已成功提交的逆向步骤数量。
     pub completed_steps: usize,
+    /// 首个失败逆向步骤的相对路径。
     pub failed_step: Option<String>,
+    /// 正向恢复事务日志路径。
     pub transaction_log_path: String,
+    /// 独立回滚事务日志路径。
     pub rollback_log_path: String,
+    /// 被回滚正向事务的最终状态。
     pub transaction_status: String,
+    /// 从正向日志解析出的事务条目。
     pub transaction_log: Vec<RestoreMutationTransactionEntry>,
+    /// 本次逆向执行产生的条目。
     pub rollback_log: Vec<RestoreMutationTransactionEntry>,
+    /// 回滚结果和人工恢复要求的审计记录。
     pub audit: Vec<String>,
 }
 
+/// 从前置备份归档解析出的单个旧文件内容。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestorePreRestoreArchiveEntry {
+    /// 文件在恢复目标根目录下的相对路径。
     pub relative_path: String,
+    /// 恢复操作开始前保存的原始字节。
     pub bytes: Vec<u8>,
+    /// 从原始字节重新计算的摘要。
     pub digest: String,
+    /// 备份清单中的敏感或脱敏标记。
     pub redacted: bool,
 }
 
+/// 经摘要和格式验证的前置备份归档视图。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestorePreRestoreArchive {
+    /// 原始备份工件键。
     pub artifact_key: String,
+    /// 调用方提供的预期工件摘要。
     pub expected_digest: String,
+    /// 从工件记录和字节确认的实际摘要。
     pub actual_digest: String,
+    /// 按相对路径索引的恢复前文件内容。
     pub entries: BTreeMap<String, RestorePreRestoreArchiveEntry>,
+    /// 归档验证和解析审计记录。
     pub audit: Vec<String>,
 }
 
+/// 与恢复计划绑定的排他应用锁。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreApplyLock {
+    /// 由计划标识派生的锁标识。
     pub lock_id: String,
+    /// 被锁定的恢复计划标识。
     pub plan_id: String,
+    /// 获取锁的稳定主体标识。
     pub owner: String,
+    /// 当前锁状态。
     pub status: String,
+    /// 锁获取及用途审计记录。
     pub audit: Vec<String>,
 }
 
+/// 进入破坏性恢复前的健康门禁结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreApplyHealthCheck {
+    /// 当前环境是否允许继续恢复。
     pub healthy: bool,
+    /// 健康说明或失败原因。
     pub message: String,
 }
 
+/// 证据、策略、锁和健康检查完成后的恢复应用门禁报告。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreApplyReport {
+    /// 被门禁的恢复计划标识。
     pub plan_id: String,
+    /// `gated` 或 `blocked` 状态。
     pub status: String,
+    /// 是否允许后续显式执行文件变更。
     pub apply_allowed: bool,
+    /// 本协调器是否执行了文件变更；固定为 `false`。
     pub mutation_executed: bool,
+    /// 演练阶段生成的不可变暂存计划。
     pub mutation_plan: RestoreStagedMutationPlan,
+    /// 已获取的应用锁证据。
     pub lock: RestoreApplyLock,
+    /// 健康门禁结果。
     pub health: RestoreApplyHealthCheck,
+    /// 已验证恢复来源工件键。
     pub backup_artifact_key: String,
+    /// 已验证前置备份工件键。
     pub pre_restore_backup_artifact_key: String,
+    /// 已完成及后续必须完成的步骤。
     pub steps: Vec<String>,
+    /// 独立发布指针和交接门禁等剩余风险。
     pub risks: Vec<String>,
+    /// 证据、策略、锁和健康门禁审计记录。
     pub audit: Vec<String>,
 }
 
+/// 恢复应用锁存储的最小接口。
 pub trait RestoreApplyLockStore {
+    /// 以排他语义为恢复计划获取应用锁。
     fn acquire_lock(
         &mut self,
         plan: &RestoreApplyPlan,
@@ -184,32 +302,42 @@ pub trait RestoreApplyLockStore {
     ) -> Result<RestoreApplyLock, EvaError>;
 }
 
+/// 单进程协调和测试使用的内存恢复锁存储。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct InMemoryRestoreApplyLockStore {
+    /// 按计划标识保存且不会自动释放的锁。
     locks: BTreeMap<String, RestoreApplyLock>,
 }
 
+/// 通过排他创建文件实现跨进程恢复互斥的存储。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSystemRestoreApplyLockStore {
+    /// 应用锁和回滚锁的共同根目录。
     root: PathBuf,
 }
 
+/// 验证双备份证据并生成演练报告的无状态服务。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RestoreApplyValidator;
 
+/// 聚合策略、锁和健康检查但不执行文件变更的门禁协调器。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RestoreApplyCoordinator;
 
+/// 规范化变更步骤并生成预检摘要和回滚清单的规划器。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RestoreStagedMutationPlanner;
 
+/// 按事务日志执行暂存文件变更的正向引擎。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RestoreMutationEngine;
 
+/// 根据正向日志和前置备份逆序恢复文件的回滚引擎。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RestoreRollbackEngine;
 
 impl RestoreApplyPlan {
+    /// 校验稳定标识和来源摘要后创建尚无前置证据及变更步骤的计划。
     pub fn new(
         plan_id: impl Into<String>,
         backup_artifact_id: impl Into<String>,
@@ -235,19 +363,23 @@ impl RestoreApplyPlan {
         })
     }
 
+    /// 返回恢复来源在备份命名空间中的完整工件键。
     pub fn backup_artifact_key(&self) -> String {
         format!("backup/{}", self.backup_artifact_id)
     }
 
+    /// 返回由计划标识派生的应用锁标识。
     pub fn lock_id(&self) -> String {
         format!("restore-apply-{}", self.plan_id)
     }
 
+    /// 附加恢复前当前状态的安全备份证据。
     pub fn with_pre_restore_backup(mut self, evidence: PreRestoreBackupEvidence) -> Self {
         self.pre_restore_backup = Some(evidence);
         self
     }
 
+    /// 校验并设置所有文件变更受限的目标根目录。
     pub fn with_mutation_target_root(
         mut self,
         target_root: impl Into<String>,
@@ -256,6 +388,7 @@ impl RestoreApplyPlan {
         Ok(self)
     }
 
+    /// 设置已经由构造器完成字段组合校验的变更步骤。
     pub fn with_mutation_steps(mut self, steps: Vec<RestoreMutationStep>) -> Self {
         self.mutation_steps = steps;
         self
@@ -263,6 +396,7 @@ impl RestoreApplyPlan {
 }
 
 impl PreRestoreBackupEvidence {
+    /// 校验备份标识和 SHA-256 摘要后创建前置安全证据。
     pub fn new(
         backup_artifact_id: impl Into<String>,
         backup_digest: impl Into<String>,
@@ -283,12 +417,14 @@ impl PreRestoreBackupEvidence {
         })
     }
 
+    /// 返回前置备份在备份命名空间中的完整工件键。
     pub fn backup_artifact_key(&self) -> String {
         format!("backup/{}", self.backup_artifact_id)
     }
 }
 
 impl RestoreApplyHealthCheck {
+    /// 构造允许继续进入应用门禁的健康结果。
     pub fn healthy() -> Self {
         Self {
             healthy: true,
@@ -296,6 +432,7 @@ impl RestoreApplyHealthCheck {
         }
     }
 
+    /// 构造带非空原因的失败健康结果。
     pub fn failed(message: impl Into<String>) -> Result<Self, EvaError> {
         let message = message.into();
         if message.trim().is_empty() {
@@ -311,6 +448,7 @@ impl RestoreApplyHealthCheck {
 }
 
 impl RestoreMutationOperation {
+    /// 返回写入预检摘要和事务日志的稳定操作名。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Copy => "copy",
@@ -319,6 +457,7 @@ impl RestoreMutationOperation {
         }
     }
 
+    /// 从持久日志或清单字符串解析操作。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "copy" => Ok(Self::Copy),
@@ -333,12 +472,14 @@ impl RestoreMutationOperation {
 }
 
 impl RestoreMutationTargetKind {
+    /// 返回写入预检摘要的稳定目标类别名。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::File => "file",
         }
     }
 
+    /// 解析目标类别并显式拒绝符号链接。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "file" => Ok(Self::File),
@@ -355,6 +496,7 @@ impl RestoreMutationTargetKind {
 }
 
 impl RestoreMutationStep {
+    /// 创建目标必须不存在的文件复制步骤。
     pub fn copy_file(
         relative_path: impl Into<String>,
         source_artifact_key: impl Into<String>,
@@ -370,6 +512,7 @@ impl RestoreMutationStep {
         )
     }
 
+    /// 创建先校验旧摘要再删除文件的步骤。
     pub fn delete_file(
         relative_path: impl Into<String>,
         pre_restore_digest: impl Into<String>,
@@ -384,6 +527,7 @@ impl RestoreMutationStep {
         )
     }
 
+    /// 创建先校验旧摘要再以工件内容替换文件的步骤。
     pub fn replace_file(
         relative_path: impl Into<String>,
         source_artifact_key: impl Into<String>,
@@ -400,6 +544,10 @@ impl RestoreMutationStep {
         )
     }
 
+    /// 校验路径、摘要和操作特有字段组合后创建通用步骤。
+    ///
+    /// Copy 必须有来源和新摘要且不能有旧摘要；Delete 只能有旧摘要；Replace 三者
+    /// 必须齐全。提前固定这些不变量可让执行引擎在碰触文件系统前失败关闭。
     pub fn new(
         operation: RestoreMutationOperation,
         relative_path: impl Into<String>,
@@ -489,20 +637,27 @@ impl RestoreMutationStep {
 }
 
 impl InMemoryRestoreApplyLockStore {
+    /// 创建空的内存恢复锁存储。
     pub fn new() -> Self {
         Self::default()
     }
 }
 
 impl FileSystemRestoreApplyLockStore {
+    /// 创建以指定目录为持久化边界的恢复锁存储。
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
+    /// 返回锁文件根目录。
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// 为失败恢复事务获取与应用锁分离的排他回滚锁。
+    ///
+    /// 独立后缀允许同一计划在保留应用锁证据的同时进入一次回滚；`create_new` 是
+    /// 跨进程竞争的线性化点。载荷写入失败时锁文件仍保留，以失败关闭避免重复回滚。
     pub fn acquire_rollback_lock(
         &mut self,
         plan: &RestoreApplyPlan,
@@ -543,6 +698,7 @@ impl FileSystemRestoreApplyLockStore {
 }
 
 impl RestoreApplyLockStore for InMemoryRestoreApplyLockStore {
+    /// 若计划尚未持锁则记录锁，否则返回冲突。
     fn acquire_lock(
         &mut self,
         plan: &RestoreApplyPlan,
@@ -558,6 +714,9 @@ impl RestoreApplyLockStore for InMemoryRestoreApplyLockStore {
 }
 
 impl RestoreApplyLockStore for FileSystemRestoreApplyLockStore {
+    /// 通过 `create_new` 排他创建应用锁文件，保证并发进程只有一个成功。
+    ///
+    /// 写入锁载荷失败时不会删除已创建文件，避免状态不明时第二个进程重新进入恢复。
     fn acquire_lock(
         &mut self,
         plan: &RestoreApplyPlan,
@@ -596,6 +755,11 @@ impl RestoreApplyLockStore for FileSystemRestoreApplyLockStore {
 }
 
 impl RestoreApplyValidator {
+    /// 验证恢复来源与前置安全备份，并生成绝不允许执行的演练报告。
+    ///
+    /// 两份工件先分别核对完整键，再从实际字节验证摘要；缺少前置备份证据或工件会
+    /// 立即失败。只有双证据通过后才规划文件变更和预检摘要。该阶段不获取锁、不做
+    /// 策略判断，也不接触目标文件系统，`apply_allowed` 始终为 `false`。
     pub fn dry_run(
         &self,
         plan: &RestoreApplyPlan,
@@ -664,6 +828,10 @@ impl RestoreApplyValidator {
 }
 
 impl RestoreStagedMutationPlanner {
+    /// 从已校验步骤生成确定性预览、影响路径、回滚清单和预检摘要。
+    ///
+    /// 受影响路径排序去重，但执行步骤保留声明顺序；预检摘要同时绑定原始顺序与
+    /// 规范化路径集合，使后续回滚日志无法被替换为另一份“看似等价”的计划。
     pub fn plan(&self, plan: &RestoreApplyPlan) -> Result<RestoreStagedMutationPlan, EvaError> {
         let target_root = validate_restore_target_root(plan.mutation_target_root.clone())?;
         let mut affected_paths = BTreeSet::new();
@@ -712,6 +880,13 @@ impl RestoreStagedMutationPlanner {
 }
 
 impl RestoreMutationEngine {
+    /// 按暂存顺序执行文件变更，并在每一步前后追加事务日志。
+    ///
+    /// 引擎先创建并规范化目标根目录，然后初始化包含 plan id 和 preflight hash 的
+    /// 日志。每步先记录 started，再执行受路径/摘要约束的变更，成功后记录 committed。
+    /// 首个失败会停止后续步骤并写入 rollback_required；若失败发生在删除旧文件之后，
+    /// `mutation_executed` 仍为真。跨多个步骤不具备整体原子性，事务日志和前置备份
+    /// 是唯一回滚依据，调用方必须在报告要求时立即运行回滚引擎。
     pub fn apply(
         &self,
         plan: &RestoreStagedMutationPlan,
@@ -741,6 +916,7 @@ impl RestoreMutationEngine {
                     .with_context("io_error", error.to_string())
             })?;
         }
+        // 先持久化计划身份与预检摘要，确保任何文件变更都能追溯到确切计划。
         fs::write(
             transaction_log_path,
             restore_transaction_log_header(plan, &root_canonical),
@@ -757,6 +933,7 @@ impl RestoreMutationEngine {
         let mut transaction_log = Vec::new();
         let mut mutation_executed = false;
         for (sequence, step) in plan.steps.iter().enumerate() {
+            // started 记录必须先于文件系统操作，崩溃恢复据此识别未确认步骤。
             append_restore_transaction_log(
                 transaction_log_path,
                 &RestoreMutationTransactionEntry {
@@ -786,6 +963,7 @@ impl RestoreMutationEngine {
                     };
                     append_restore_transaction_log(transaction_log_path, &failed_entry)?;
                     transaction_log.push(failed_entry);
+                    // 失败即停止；已提交步骤不会在正向引擎中自动撤销。
                     append_restore_transaction_status(
                         transaction_log_path,
                         "rollback_required",
@@ -832,6 +1010,12 @@ impl RestoreMutationEngine {
 }
 
 impl RestoreRollbackEngine {
+    /// 验证失败事务身份后，按已执行步骤的逆序恢复前置备份内容。
+    ///
+    /// 仅接受 plan id、preflight hash 均匹配且状态为 rollback_required 的日志。回滚
+    /// 候选按正向日志逆序生成；执行前还会验证当前文件仍是正向恢复产生的内容，
+    /// 防止覆盖故障后其他进程的新写入。删除/替换的旧内容必须来自摘要匹配的前置
+    /// 归档。任一步回滚失败即停止并返回 manual recovery required，不假装整体原子。
     pub fn apply(
         &self,
         plan: &RestoreStagedMutationPlan,
@@ -844,6 +1028,7 @@ impl RestoreRollbackEngine {
         let transaction_log_path = transaction_log_path.as_ref();
         let rollback_log_path = rollback_log_path.as_ref();
         let transaction = parse_restore_transaction_log(transaction_log_path)?;
+        // 事务身份、计划摘要和失败状态必须全部吻合，不能用任意日志驱动文件恢复。
         if transaction.plan_id != plan.plan_id {
             return Err(
                 EvaError::conflict("restore rollback transaction plan mismatch")
@@ -885,6 +1070,7 @@ impl RestoreRollbackEngine {
                     .with_context("io_error", error.to_string())
             })?;
         }
+        // 独立回滚日志保留逆向执行证据，不覆盖原始正向事务日志。
         fs::write(
             rollback_log_path,
             format!(
@@ -906,6 +1092,7 @@ impl RestoreRollbackEngine {
         let mut rollback_executed = false;
         for (index, candidate) in rollback_candidates.iter().enumerate() {
             let step = &candidate.step;
+            // 与正向事务相同，每个逆向操作先记录 started，再触碰目标文件。
             append_restore_transaction_log(
                 rollback_log_path,
                 &RestoreMutationTransactionEntry {
@@ -989,6 +1176,12 @@ impl RestoreRollbackEngine {
 }
 
 impl RestoreApplyCoordinator {
+    /// 在策略放行后获取锁，并根据健康结果给出最终执行门禁。
+    ///
+    /// 调用方必须传入先前演练报告；本方法自身不重新读取工件，也不执行暂存变更。
+    /// 策略检查先于锁获取，避免被拒请求占用持久锁；锁成功后健康失败会保留锁并
+    /// 返回 blocked，采用失败关闭语义阻止并发重试越过已记录的失败状态。只有健康
+    /// 通过才令 `apply_allowed` 为真，实际文件执行仍需显式调用变更引擎。
     pub fn apply<S: RestoreApplyLockStore>(
         &self,
         store: &mut S,
@@ -998,6 +1191,7 @@ impl RestoreApplyCoordinator {
         health: RestoreApplyHealthCheck,
         owner: &str,
     ) -> Result<RestoreApplyReport, EvaError> {
+        // 高风险策略拒绝必须发生在任何持久锁状态写入之前。
         policy_decision.ensure_allowed()?;
         let lock = store.acquire_lock(plan, owner)?;
         let mut audit = vec![
@@ -1058,6 +1252,7 @@ impl RestoreApplyCoordinator {
     }
 }
 
+/// 校验会参与锁文件名和事务关联的稳定标识。
 fn validate_token(field: &'static str, value: String) -> Result<String, EvaError> {
     if value.trim().is_empty() || value.trim() != value {
         return Err(EvaError::invalid_argument(
@@ -1076,6 +1271,10 @@ fn validate_token(field: &'static str, value: String) -> Result<String, EvaError
     Ok(value)
 }
 
+/// 校验恢复目标根目录文本非空、已裁剪且不含遍历或空字节。
+///
+/// 执行阶段还会对实际目录做 canonicalize 并逐段拒绝符号链接；本函数只负责计划
+/// 载荷的可移植语法边界。
 fn validate_restore_target_root(value: String) -> Result<String, EvaError> {
     if value.trim().is_empty() || value.trim() != value || value.contains('\0') {
         return Err(EvaError::invalid_argument(
@@ -1092,6 +1291,10 @@ fn validate_restore_target_root(value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验恢复路径是只含普通组件的正斜杠相对路径。
+///
+/// 拒绝盘符、根目录、`.`、`..`、空组件、反斜杠和平台分隔字符，确保拼接后不会
+/// 直接逃逸目标根。执行阶段仍须逐段检查符号链接以抵御间接逃逸。
 fn validate_restore_relative_path(field: &'static str, value: String) -> Result<String, EvaError> {
     if value.trim().is_empty() || value.trim() != value || value.contains('\0') {
         return Err(EvaError::invalid_argument(
@@ -1132,10 +1335,12 @@ fn validate_restore_relative_path(field: &'static str, value: String) -> Result<
     Ok(value)
 }
 
+/// 复用恢复相对路径约束校验源工件键。
 fn validate_restore_artifact_key(value: String) -> Result<String, EvaError> {
     validate_restore_relative_path("source_artifact_key", value)
 }
 
+/// 校验恢复摘要使用已裁剪的 SHA-256 格式前缀。
 fn validate_restore_digest(field: &'static str, value: String) -> Result<String, EvaError> {
     if !value.starts_with("sha256:") || value.trim() != value {
         return Err(
@@ -1147,6 +1352,7 @@ fn validate_restore_digest(field: &'static str, value: String) -> Result<String,
     Ok(value)
 }
 
+/// 为操作缺少必要可选字段时生成包含步骤上下文的错误。
 fn require_some(
     field: &'static str,
     value: Option<&str>,
@@ -1164,6 +1370,7 @@ fn require_some(
     )
 }
 
+/// 将一个变更步骤格式化为不执行操作的审核预览。
 fn mutation_preview(step: &RestoreMutationStep) -> String {
     match step.operation {
         RestoreMutationOperation::Copy => format!(
@@ -1187,6 +1394,7 @@ fn mutation_preview(step: &RestoreMutationStep) -> String {
     }
 }
 
+/// 从正向变更推导对应的逆向恢复动作。
 fn rollback_entry(step: &RestoreMutationStep) -> RestoreRollbackEntry {
     match step.operation {
         RestoreMutationOperation::Copy => RestoreRollbackEntry {
@@ -1204,6 +1412,7 @@ fn rollback_entry(step: &RestoreMutationStep) -> RestoreRollbackEntry {
     }
 }
 
+/// 以固定顺序编码计划、路径集合和回滚清单，供预检摘要绑定。
 fn canonical_mutation_plan_payload(
     plan: &RestoreApplyPlan,
     target_root: &str,
@@ -1249,12 +1458,16 @@ fn canonical_mutation_plan_payload(
     payload
 }
 
+/// 区分“步骤失败且未变更”与“替换已删旧文件后失败”的内部错误。
 #[derive(Debug)]
 struct RestoreMutationStepFailure {
+    /// 保留完整上下文的实际错误。
     error: EvaError,
+    /// 失败前是否已经发生需要回滚的文件系统变更。
     mutation_executed: bool,
 }
 
+/// 生成绑定计划、规范化根目录和预检摘要的事务日志头。
 fn restore_transaction_log_header(plan: &RestoreStagedMutationPlan, root: &Path) -> String {
     format!(
         "restore-mutation-transaction:v1\nplan_id={}\ntarget_root={}\npreflight_hash={}\n",
@@ -1264,6 +1477,11 @@ fn restore_transaction_log_header(plan: &RestoreStagedMutationPlan, root: &Path)
     )
 }
 
+/// 执行一个已校验恢复步骤并返回 committed 日志条目。
+///
+/// Copy 拒绝覆盖现有目标；Delete 和 Replace 在变更前验证旧摘要；Copy 和 Replace
+/// 还会验证源工件记录摘要及计划摘要。Replace 传播删除旧目标后提交新文件失败的
+/// 特殊状态，使上层即使没有 committed 条目也能要求回滚。
 fn apply_restore_mutation_step(
     sequence: usize,
     root: &Path,
@@ -1316,6 +1534,11 @@ fn apply_restore_mutation_step(
 }
 
 impl RestorePreRestoreArchive {
+    /// 验证备份工件摘要并解析恢复前文件内容。
+    ///
+    /// 解析器只接受 v1 行式归档，逐条校验相对路径、十六进制字节和声明大小；未知
+    /// 元数据字段被忽略以支持向前兼容。每个解析条目的摘要均从实际字节重算，供
+    /// 回滚时与计划中的 pre_restore_digest 再次绑定。
     pub fn parse(record: &ArtifactRecord, expected_digest: &str) -> Result<Self, EvaError> {
         let verification = ManifestVerifier::verify_artifact(record, expected_digest)?;
         let payload = std::str::from_utf8(&record.bytes).map_err(|error| {
@@ -1386,20 +1609,27 @@ impl RestorePreRestoreArchive {
         })
     }
 
+    /// 按相对路径查找恢复前文件内容。
     pub fn entry(&self, relative_path: &str) -> Option<&RestorePreRestoreArchiveEntry> {
         self.entries.get(relative_path)
     }
 }
 
+/// 解析行式归档时尚未完成字段校验的临时条目。
 #[derive(Debug, Default)]
 struct PendingArchiveEntry {
+    /// 待校验相对路径。
     path: Option<String>,
+    /// 清单声明字节数。
     size: Option<usize>,
+    /// 可选敏感或脱敏标记。
     redacted: Option<bool>,
+    /// 已解码原始字节。
     bytes: Option<Vec<u8>>,
 }
 
 impl PendingArchiveEntry {
+    /// 判断是否已经读取当前条目的任一字段。
     fn has_any_field(&self) -> bool {
         self.path.is_some()
             || self.size.is_some()
@@ -1407,6 +1637,7 @@ impl PendingArchiveEntry {
             || self.bytes.is_some()
     }
 
+    /// 要求必要字段齐全、校验路径和大小后完成条目。
     fn finish(self, artifact_key: &str) -> Result<RestorePreRestoreArchiveEntry, EvaError> {
         let relative_path = validate_restore_relative_path(
             "pre_restore_archive_entry_path",
@@ -1443,14 +1674,24 @@ impl PendingArchiveEntry {
     }
 }
 
+/// 从持久日志解析出的正向恢复事务状态。
 struct ParsedRestoreTransactionLog {
+    /// 日志声明的计划标识。
     plan_id: String,
+    /// 日志声明的暂存计划摘要。
     preflight_hash: String,
+    /// 日志最后一次写入的总体状态。
     status: String,
+    /// 日志声明是否发生过文件变更。
     mutation_executed: bool,
+    /// 按写入顺序解析的步骤状态条目。
     entries: Vec<RestoreMutationTransactionEntry>,
 }
 
+/// 解析并验证正向恢复事务日志的必要头字段和步骤格式。
+///
+/// 同一键重复时保留最后值，从而读取追加写入的最终 status；缺少任何恢复身份或
+/// 总体状态字段都会失败，避免以截断日志驱动回滚。
 fn parse_restore_transaction_log(path: &Path) -> Result<ParsedRestoreTransactionLog, EvaError> {
     let data = fs::read_to_string(path).map_err(|error| {
         let message = if error.kind() == std::io::ErrorKind::NotFound {
@@ -1520,6 +1761,7 @@ fn parse_restore_transaction_log(path: &Path) -> Result<ParsedRestoreTransaction
     })
 }
 
+/// 解析以竖线分隔的六字段事务步骤记录。
 fn parse_restore_transaction_step(
     value: &str,
     path: &Path,
@@ -1560,12 +1802,19 @@ fn parse_restore_transaction_step(
     })
 }
 
+/// 一个需要逆向处理的正向步骤及其特殊失败阶段。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RestoreRollbackCandidate {
+    /// 原始暂存计划中的正向步骤。
     step: RestoreMutationStep,
+    /// Replace 是否可能已删除旧文件但未提交新文件。
     failed_replace: bool,
 }
 
+/// 交叉验证事务条目与暂存计划，并按逆序生成回滚候选。
+///
+/// 正常只回滚 committed 步骤；若 Replace 的失败报告表明已经发生变更，也必须加入
+/// 候选，以恢复可能已被删除的旧文件。任何序号、路径或操作不一致均视为日志篡改。
 fn rollback_candidates(
     plan: &RestoreStagedMutationPlan,
     transaction: &ParsedRestoreTransactionLog,
@@ -1610,6 +1859,7 @@ fn rollback_candidates(
     Ok(candidates)
 }
 
+/// 返回正向步骤对应的稳定回滚操作名。
 fn rollback_operation_name(step: &RestoreMutationStep) -> &'static str {
     match step.operation {
         RestoreMutationOperation::Copy => "rollback_delete",
@@ -1617,6 +1867,10 @@ fn rollback_operation_name(step: &RestoreMutationStep) -> &'static str {
     }
 }
 
+/// 执行一个逆向步骤，并在覆盖或删除前验证当前状态未发生漂移。
+///
+/// Copy 的回滚删除正向写入的新文件；Delete/Replace 从前置归档恢复旧字节。后两者
+/// 同时验证归档条目摘要与计划旧摘要，防止使用错误前置备份。
 fn apply_restore_rollback_step(
     sequence: usize,
     root: &Path,
@@ -1681,6 +1935,7 @@ fn apply_restore_rollback_step(
     }
 }
 
+/// 在回滚删除新复制文件前验证其内容仍是计划写入版本。
 fn verify_current_digest_for_rollback(
     target_path: &Path,
     expected_digest: Option<&str>,
@@ -1708,6 +1963,11 @@ fn verify_current_digest_for_rollback(
     Ok(())
 }
 
+/// 判断 Delete/Replace 的当前目标状态是否可安全恢复旧内容。
+///
+/// Delete 允许目标仍不存在或已是旧内容；Replace 允许新内容、旧内容，或在已知
+/// “删旧后失败”阶段目标不存在。任何第三方写入产生的其他摘要都会阻塞回滚，避免
+/// 静默覆盖故障发生后的有效数据。
 fn verify_restore_rollback_restore_target(
     target_path: &Path,
     step: &RestoreMutationStep,
@@ -1767,6 +2027,7 @@ fn verify_restore_rollback_restore_target(
     }
 }
 
+/// 构造一个成功提交的逆向事务日志条目。
 fn rollback_committed_entry(
     sequence: usize,
     step: &RestoreMutationStep,
@@ -1782,6 +2043,7 @@ fn rollback_committed_entry(
     }
 }
 
+/// 解析前置归档条目的非负字节数。
 fn parse_archive_entry_size(value: &str, artifact_key: &str) -> Result<usize, EvaError> {
     value.parse::<usize>().map_err(|error| {
         EvaError::conflict("pre-restore archive entry size is invalid")
@@ -1791,6 +2053,7 @@ fn parse_archive_entry_size(value: &str, artifact_key: &str) -> Result<usize, Ev
     })
 }
 
+/// 将偶数字符长度的十六进制文本解码为原始字节。
 fn hex_decode(value: &str) -> Result<Vec<u8>, EvaError> {
     if !value.len().is_multiple_of(2) {
         return Err(EvaError::conflict("hex payload length must be even"));
@@ -1804,6 +2067,7 @@ fn hex_decode(value: &str) -> Result<Vec<u8>, EvaError> {
     Ok(bytes)
 }
 
+/// 将单个 ASCII 十六进制字符转换为四位数值。
 fn hex_nibble(byte: u8) -> Result<u8, EvaError> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
@@ -1816,6 +2080,7 @@ fn hex_nibble(byte: u8) -> Result<u8, EvaError> {
     }
 }
 
+/// 将变更前失败包装为尚未发生文件系统变更的步骤错误。
 fn step_error(error: EvaError) -> RestoreMutationStepFailure {
     RestoreMutationStepFailure {
         error,
@@ -1823,6 +2088,11 @@ fn step_error(error: EvaError) -> RestoreMutationStepFailure {
     }
 }
 
+/// 从规范化根目录逐段构造目标路径，并拒绝任何现存符号链接组件。
+///
+/// 该检查覆盖中间目录和最终目标，防止语法合法的相对路径经符号链接逃逸根目录。
+/// 检查与后续写入之间仍存在文件系统竞态，因此调用方应在受控、无不可信并发写入
+/// 的恢复窗口中运行引擎。
 fn checked_restore_target_path(root: &Path, relative_path: &str) -> Result<PathBuf, EvaError> {
     let mut cursor = root.to_path_buf();
     for segment in relative_path.split('/') {
@@ -1840,6 +2110,7 @@ fn checked_restore_target_path(root: &Path, relative_path: &str) -> Result<PathB
     Ok(cursor)
 }
 
+/// 查找源工件，并同时验证实际字节、记录摘要和步骤预期摘要。
 fn checked_restore_source_artifact<'a>(
     step: &RestoreMutationStep,
     source_artifacts: &'a BTreeMap<String, ArtifactRecord>,
@@ -1870,6 +2141,7 @@ fn checked_restore_source_artifact<'a>(
     Ok(&artifact.bytes)
 }
 
+/// 在删除或替换前验证目标仍与演练时的恢复前摘要一致。
 fn verify_existing_target_digest(
     target_path: &Path,
     step: &RestoreMutationStep,
@@ -1901,6 +2173,11 @@ fn verify_existing_target_digest(
     Ok(())
 }
 
+/// 通过同目录临时文件和 rename 提交新文件内容。
+///
+/// 同目录 rename 在常见本地文件系统中提供单路径可见性的原子替换，但本函数不执行
+/// fsync，因此不承诺断电持久性。Copy 路径会先确保目标不存在；失败时尽力清理临时
+/// 文件，事务日志仍是恢复判断依据。
 fn write_restore_bytes_atomically(
     target_path: &Path,
     relative_path: &str,
@@ -1940,11 +2217,19 @@ fn write_restore_bytes_atomically(
     })
 }
 
+/// 表示替换失败以及旧目标是否已经被删除。
 struct ReplaceFailure {
+    /// 带文件路径上下文的实际错误。
     error: EvaError,
+    /// 删除旧目标后提交新文件失败时为 `true`。
     mutation_executed: bool,
 }
 
+/// 暂存新内容、删除旧目标，再以 rename 提交替换。
+///
+/// Windows 等平台无法直接 rename 覆盖现有文件，因此这里显式先删除旧文件。这意味
+/// 替换在删除和 rename 之间不是原子的；若第二步失败会标记 `mutation_executed=true`，
+/// 强制上层使用前置备份回滚，不能把失败误判为未发生变更。
 fn replace_restore_target_atomically(
     target_path: &Path,
     relative_path: &str,
@@ -1991,6 +2276,7 @@ fn replace_restore_target_atomically(
     })
 }
 
+/// 构造一个成功提交的正向事务日志条目。
 fn committed_entry(
     sequence: usize,
     step: &RestoreMutationStep,
@@ -2006,6 +2292,10 @@ fn committed_entry(
     }
 }
 
+/// 以追加方式写入转义后的单个事务步骤记录。
+///
+/// 日志写入失败会中断流程；当前实现不调用 fsync，进程崩溃时最后一条记录可能未
+/// 持久化，恢复工具应结合文件系统状态和 started 记录保守判断。
 fn append_restore_transaction_log(
     path: &Path,
     entry: &RestoreMutationTransactionEntry,
@@ -2040,6 +2330,7 @@ fn append_restore_transaction_log(
     })
 }
 
+/// 向事务日志追加总体状态和是否已变更标记。
 fn append_restore_transaction_status(
     path: &Path,
     status: &str,
@@ -2067,6 +2358,7 @@ fn append_restore_transaction_status(
     })
 }
 
+/// 转义会破坏行式日志字段边界的换行和竖线字符。
 fn stable_log_value(value: &str) -> String {
     value
         .chars()
@@ -2077,6 +2369,7 @@ fn stable_log_value(value: &str) -> String {
         .collect()
 }
 
+/// 校验所有者并构造与计划和备份绑定的恢复锁证据。
 fn build_restore_lock(plan: &RestoreApplyPlan, owner: &str) -> Result<RestoreApplyLock, EvaError> {
     let owner = validate_token("owner", owner.to_owned())?;
     Ok(RestoreApplyLock {
@@ -2092,14 +2385,17 @@ fn build_restore_lock(plan: &RestoreApplyPlan, owner: &str) -> Result<RestoreApp
     })
 }
 
+/// 返回指定计划的恢复应用锁文件路径。
 fn restore_lock_path(root: &Path, plan_id: &str) -> PathBuf {
     root.join(format!("{plan_id}.restore.lock"))
 }
 
+/// 返回指定计划的独立恢复回滚锁文件路径。
 fn restore_rollback_lock_path(root: &Path, plan_id: &str) -> PathBuf {
     root.join(format!("{plan_id}.restore.rollback.lock"))
 }
 
+/// 将锁、计划、来源备份和前置备份编码为行式审计载荷。
 fn restore_lock_payload(plan: &RestoreApplyPlan, lock: &RestoreApplyLock) -> String {
     let pre_restore = plan
         .pre_restore_backup
@@ -2117,6 +2413,7 @@ fn restore_lock_payload(plan: &RestoreApplyPlan, lock: &RestoreApplyLock) -> Str
     )
 }
 
+/// 构造恢复应用锁已存在的冲突错误。
 fn restore_lock_conflict(plan_id: &str, lock_path: Option<&Path>) -> EvaError {
     let mut error =
         EvaError::conflict("restore apply lock already exists").with_context("plan_id", plan_id);
@@ -2126,12 +2423,14 @@ fn restore_lock_conflict(plan_id: &str, lock_path: Option<&Path>) -> EvaError {
     error
 }
 
+/// 构造恢复回滚锁已存在的冲突错误。
 fn restore_rollback_lock_conflict(plan_id: &str, lock_path: &Path) -> EvaError {
     EvaError::conflict("restore rollback lock already exists")
         .with_context("plan_id", plan_id)
         .with_context("lock_path", lock_path.display().to_string())
 }
 
+/// 根据健康门禁结果生成恢复应用阶段的可审计步骤列表。
 fn restore_apply_steps(health_passed: bool) -> Vec<String> {
     let mut steps = vec![
         "match restore apply confirmation to plan id".to_owned(),
@@ -2151,6 +2450,7 @@ fn restore_apply_steps(health_passed: bool) -> Vec<String> {
 }
 
 #[cfg(test)]
+/// 恢复演练、文件事务、回滚以及策略和锁门禁的端到端测试。
 mod tests {
     use super::*;
     use eva_policy::{HighRiskAction, PolicyDecision};
@@ -2158,6 +2458,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 创建进程与时间戳隔离的临时文件系统根目录。
     fn test_temp_dir(name: &str) -> PathBuf {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2169,6 +2470,7 @@ mod tests {
         path
     }
 
+    /// 构造允许恢复应用高风险动作的测试策略决策。
     fn allowed_policy() -> PolicyDecision {
         PolicyDecision {
             action: HighRiskAction::RestoreApply,
@@ -2178,6 +2480,7 @@ mod tests {
         }
     }
 
+    /// 构造拒绝恢复应用高风险动作的测试策略决策。
     fn denied_policy() -> PolicyDecision {
         PolicyDecision {
             action: HighRiskAction::RestoreApply,
@@ -2187,6 +2490,7 @@ mod tests {
         }
     }
 
+    /// 构造摘要匹配的恢复计划、来源工件和前置备份工件。
     fn matching_plan_and_artifacts() -> (RestoreApplyPlan, ArtifactRecord, ArtifactRecord) {
         let artifact = ArtifactRecord::new("backup/backup-1", b"ok".as_slice());
         let pre_restore = ArtifactRecord::new("backup/pre-restore-1", b"before".as_slice());
@@ -2199,6 +2503,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证恢复来源摘要不匹配时演练失败关闭。
     fn dry_run_rejects_digest_mismatch() {
         let plan = RestoreApplyPlan::new("plan-1", "backup-1", "sha256:wrong").unwrap();
         let artifact = ArtifactRecord::new("backup/backup-1", b"ok".as_slice());
@@ -2215,6 +2520,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证演练同时校验恢复来源和前置安全备份。
     fn dry_run_validates_matching_backup_and_pre_restore_evidence() {
         let digest = "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df";
         let pre_restore = ArtifactRecord::new("backup/pre-restore-1", b"before".as_slice());
@@ -2240,6 +2546,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证暂存规划的预览、预检摘要和回滚清单可复现。
     fn staged_mutation_planner_builds_reproducible_preview_and_rollback_manifest() {
         let artifact = ArtifactRecord::new("backup/backup-1", b"archive".as_slice());
         let pre_restore = ArtifactRecord::new("backup/pre-restore-1", b"before".as_slice());
@@ -2300,6 +2607,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证路径逃逸和符号链接目标在执行前被拒绝。
     fn staged_mutation_planner_rejects_path_escape_and_symlink_targets() {
         let digest = ArtifactRecord::new("backup/config", b"config".as_slice()).digest;
 
@@ -2324,6 +2632,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证复制、删除、替换按序执行并留下事务日志。
     fn mutation_engine_applies_staged_copy_delete_replace_with_transaction_log() {
         let target_root = test_temp_dir("mutation-apply");
         fs::create_dir_all(target_root.join("bin")).unwrap();
@@ -2387,6 +2696,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证首个失败停止后续步骤并显式要求回滚。
     fn mutation_engine_stops_on_failure_and_marks_rollback_required() {
         let target_root = test_temp_dir("mutation-failure");
         fs::create_dir_all(target_root.join("bin")).unwrap();
@@ -2442,6 +2752,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证回滚引擎按逆序从前置归档恢复已提交步骤。
     fn rollback_engine_restores_committed_steps_from_pre_restore_archive() {
         let target_root = test_temp_dir("rollback-apply");
         fs::create_dir_all(target_root.join("bin")).unwrap();
@@ -2518,6 +2829,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证故障后目标内容漂移会阻止回滚覆盖。
     fn rollback_engine_rejects_current_digest_drift() {
         let target_root = test_temp_dir("rollback-drift");
         fs::create_dir_all(target_root.join("bin")).unwrap();
@@ -2582,6 +2894,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证缺少恢复前备份证据时演练不能通过。
     fn dry_run_requires_pre_restore_evidence() {
         let digest = "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df";
         let plan = RestoreApplyPlan::new("plan-1", "backup-1", digest).unwrap();
@@ -2595,6 +2908,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证策略拒绝发生在应用锁获取之前。
     fn restore_apply_gate_requires_policy_approval() {
         let (plan, artifact, pre_restore) = matching_plan_and_artifacts();
         let dry_run = RestoreApplyValidator
@@ -2617,6 +2931,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证双证据、策略和健康通过后只放开执行门禁。
     fn restore_apply_gate_acquires_lock_after_evidence_policy_and_health() {
         let (plan, artifact, pre_restore) = matching_plan_and_artifacts();
         let dry_run = RestoreApplyValidator
@@ -2642,6 +2957,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证同一恢复计划的重复应用锁产生冲突。
     fn restore_apply_gate_reports_lock_conflict() {
         let (plan, artifact, pre_restore) = matching_plan_and_artifacts();
         let dry_run = RestoreApplyValidator
@@ -2674,6 +2990,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证获取锁后健康失败仍阻止变更并要求回滚规划。
     fn restore_apply_health_failure_blocks_apply_after_lock() {
         let (plan, artifact, pre_restore) = matching_plan_and_artifacts();
         let dry_run = RestoreApplyValidator

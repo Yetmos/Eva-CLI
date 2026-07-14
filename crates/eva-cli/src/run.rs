@@ -1,26 +1,49 @@
+//! CLI 命令解析、输出信封和进程退出码映射，是所有子命令共享的协议边界。
 //! CLI command parsing, output envelopes, and process exit mapping.
 
+// Adapter 子命令的参数、执行与序列化实现。
 mod adapter_cmd;
+// Agent 生命周期子命令实现。
 mod agent_cmd;
+// 备份创建子命令实现。
 mod backup_cmd;
+// Capability 列表、探测和调用实现。
 mod capability_cmd;
+// 配置校验子命令实现。
 mod config_cmd;
+// 守护进程启动与控制子命令实现。
 mod daemon_cmd;
+// 可信来源发现子命令实现。
 mod discovery_cmd;
+// Doctor 自检子命令的输出适配。
 mod doctor_cmd;
+// 类型化事件发布子命令实现。
 mod emit_cmd;
+// 硬件枚举、探测和绑定计划实现。
 mod hardware_cmd;
+// 项目与持久化状态检查子命令实现。
 mod inspect_cmd;
+// MCP 列表与探测子命令实现。
 mod mcp_cmd;
+// 请求级记忆上下文子命令实现。
 mod memory_cmd;
+// 可观测性烟测子命令实现。
 mod observability_cmd;
+// 发布门禁与证据检查子命令实现。
 mod release_cmd;
+// 恢复计划、应用和回滚子命令实现。
 mod restore_cmd;
+// 基础事件循环运行子命令实现。
 mod run_cmd;
+// Skill 列表与受控执行子命令实现。
 mod skill_cmd;
+// 发布快照创建与晋升计划实现。
 mod snapshot_cmd;
+// 持久化任务查询和取消子命令实现。
 mod task_cmd;
+// 代际升级检查与应用子命令实现。
 mod upgrade_cmd;
+// 版本与发布契约输出实现。
 mod version_cmd;
 
 use adapter_cmd::AdapterCommand;
@@ -50,22 +73,35 @@ use std::path::{Path, PathBuf};
 use task_cmd::TaskCommand;
 use upgrade_cmd::UpgradeCommand;
 
+/// 本模块的架构职责：统一解析命令，并把内部结果映射为稳定输出和退出码。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
     "parse Eva CLI commands and map results to stable output and exit codes";
 
+/// 命令成功的稳定进程退出码。
 const EXIT_OK: i32 = 0;
+/// 未归类内部故障的稳定退出码。
 const EXIT_INTERNAL: i32 = 1;
+/// 配置、参数值或状态冲突错误的稳定退出码。
 const EXIT_CONFIG: i32 = 2;
+/// 策略拒绝操作的稳定退出码。
 const EXIT_POLICY: i32 = 3;
+/// 当前运行时版本不支持所请求能力的稳定退出码。
 const EXIT_RUNTIME_UNAVAILABLE: i32 = 4;
+/// 外部 provider 超时或不可用的稳定退出码。
 const EXIT_EXTERNAL_UNAVAILABLE: i32 = 5;
+/// CLI 语法或命令解析失败的标准 usage 退出码。
 const EXIT_USAGE: i32 = 64;
+/// 构建时注入的 crate 版本，是 `version` 输出的权威来源。
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// 当前发布成熟度标签。
 const RELEASE_STATUS: &str = "alpha";
+/// 面向用户的历史发布标签；与 Cargo 版本分别维护以保留既有输出契约。
 const RELEASE_LABEL: &str = "V1.11.5-alpha";
+/// 汇总当前二进制包含的运行时能力代际，用于版本诊断而不参与功能开关。
 const RELEASE_RUNTIME_MODE: &str =
     "in_memory_v1.0 + external_capability_v1.1 + context_v1.2 + hardware_v1.3 + lifecycle_v1.4 + release_v1.5 + durable_backend_v1.6.1 + durable_eventbus_v1.6.2 + durable_task_audit_artifact_v1.6.3 + durable_runtime_recovery_v1.6.4 + durable_diagnostics_v1.6.5 + lua_vm_execution_v1.7.1 + lua_host_bindings_v1.7.2 + lua_resource_limits_v1.7.3 + lua_hot_reload_lifecycle_v1.7.4 + adapter_mcp_skill_runtime_v1.8 + policy_discovery_memory_observability_v1.9 + hardware_apply_paths_v1.10 + release_distribution_cli_split_v1.11.4 + cli_runtime_commands_v1.11.5 + daemon_process_boundary_v1.12.1 + daemon_control_mailbox_v1.12.2 + durable_task_lifecycle_v1.12.3 + scheduler_retry_dispatch_v1.12.4 + agent_daemon_drain_reload_v1.12.5 + daemon_release_gate_v1.12.6 + provider_supervisor_v1.13.1 + provider_credential_session_v1.13.2 + provider_limits_circuit_breaker_v1.13.3 + provider_stream_artifact_v1.13.4 + provider_execution_recovery_v1.13.5 + mcp_http_auth_v1.13.6 + mcp_compat_matrix_v1.13.7 + provider_supervision_release_gate_v1.13.8 + restore_staged_mutation_planner_v1.14.1 + restore_file_mutation_engine_v1.14.2 + restore_rollback_apply_v1.14.3 + restore_operator_confirmation_v1.14.4 + service_manager_abstraction_v1.14.5 + hardware_os_permission_provider_v1.15.1 + hardware_hotplug_subscriber_v1.15.4 + hardware_safety_release_gate_v1.15.5 + memory_knowledge_maintenance_v1.15.6 + knowledge_retrieval_provider_v1.15.7 + memory_redaction_audit_v1.15.8 + runtime_audit_sink_wiring_v1.16.1 + tracing_subscriber_bridge_v1.16.2 + opentelemetry_sdk_exporter_v1.16.3 + observability_retention_policy_v1.16.4 + run_command_module_split_v1.17.1 + operator_execution_fields_v1.17.2 + operator_apply_text_v1.17.3 + json_contract_diff_suite_v1.17.4 + v1x_closure_gate_v1.17.6";
+/// 当前发布声明支持的 CLI 契约清单，版本命令按此顺序稳定输出。
 const RELEASE_CONTRACTS: &[&str] = &[
     "doctor",
     "config validate",
@@ -100,12 +136,17 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "capability list/probe/call",
 ];
 
+/// 根二进制使用的进程入口；执行后以命令映射出的稳定退出码结束进程。
 /// Process entry point for the root binary shim.
 pub fn run() {
     let exit_code = run_with_args(env::args_os().skip(1), &mut io::stdout(), &mut io::stderr());
     std::process::exit(exit_code);
 }
 
+/// 可测试的 CLI 入口，通过注入参数和输出 writer 避免测试直接终止进程。
+///
+/// 参数解析错误固定使用 usage 退出码；命令执行错误则按 `ErrorKind` 映射。
+/// 输出失败不会覆盖原始业务退出语义，因为入口已尽力写出诊断后返回确定的码。
 /// Testable CLI entry point.
 pub fn run_with_args<I, W, E>(args: I, stdout: &mut W, stderr: &mut E) -> i32
 where
@@ -152,6 +193,8 @@ where
     }
 }
 
+/// 将已解析命令分发到唯一子命令实现，保持解析与执行阶段的错误边界清晰。
+/// `Help` 已在入口短路，若到达这里说明内部控制流违反约束，因此显式不可达。
 fn execute<W, E>(command: Command, stdout: &mut W, stderr: &mut E) -> Result<i32, EvaError>
 where
     W: Write,
@@ -189,50 +232,153 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 已解析的顶层命令；各变体携带完成语法校验后的专用选项。
 enum Command {
+    /// 打印静态帮助文本，不进入命令执行层。
     Help,
-    Version(CommonOptions),
-    Doctor(CommonOptions),
-    ConfigValidate(CommonOptions),
-    Inspect(InspectOptions),
-    Run(RunOptions),
-    Emit(EmitCommand),
-    Daemon(DaemonCommand),
-    Agent(AgentCommand),
-    Capability(CapabilityCommand),
-    Task(TaskCommand),
-    Adapter(AdapterCommand),
-    Mcp(McpCommand),
-    Skill(SkillCommand),
-    Discovery(DiscoveryCommand),
-    Memory(MemoryCommand),
-    Observability(ObservabilityCommand),
-    Hardware(HardwareCommand),
-    Backup(BackupCommand),
-    Snapshot(SnapshotCommand),
-    Restore(RestoreCommand),
-    Upgrade(UpgradeCommand),
-    Release(ReleaseCommand),
+    /// 输出版本与发布契约。
+    Version(
+        /// 版本命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
+    /// 运行环境和配置自检。
+    Doctor(
+        /// 自检命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
+    /// 加载并验证拆分配置。
+    ConfigValidate(
+        /// 配置校验命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
+    /// 检查项目或持久化运行时状态。
+    Inspect(
+        /// 已解析的检查对象、项目根目录与输出格式。
+        InspectOptions,
+    ),
+    /// 执行基础事件循环示例。
+    Run(
+        /// 已解析的运行步数、间隔、项目根目录与输出格式。
+        RunOptions,
+    ),
+    /// 发布类型化入口事件。
+    Emit(
+        /// 已解析的事件类型、投递目标与载荷配置。
+        EmitCommand,
+    ),
+    /// 启动或控制守护进程。
+    Daemon(
+        /// 已解析的 daemon 启动或控制子命令。
+        DaemonCommand,
+    ),
+    /// 查询或变更 Agent 生命周期。
+    Agent(
+        /// 已解析的 Agent 状态、排空或重载子命令。
+        AgentCommand,
+    ),
+    /// 列表、探测或调用 capability。
+    Capability(
+        /// 已解析的 capability 列表、探测或调用子命令。
+        CapabilityCommand,
+    ),
+    /// 查询日志、状态或取消持久化任务。
+    Task(
+        /// 已解析的任务状态、日志或取消子命令。
+        TaskCommand,
+    ),
+    /// 列表或探测 Adapter。
+    Adapter(
+        /// 已解析的 Adapter 列表或探测子命令。
+        AdapterCommand,
+    ),
+    /// 列表或探测 MCP 工具。
+    Mcp(
+        /// 已解析的 MCP 工具列表或探测子命令。
+        McpCommand,
+    ),
+    /// 列表或运行受控 Skill。
+    Skill(
+        /// 已解析的 Skill 列表或运行子命令。
+        SkillCommand,
+    ),
+    /// 扫描可信发现来源。
+    Discovery(
+        /// 已解析的可信来源扫描子命令。
+        DiscoveryCommand,
+    ),
+    /// 构建请求级记忆上下文。
+    Memory(
+        /// 已解析的记忆上下文构建子命令。
+        MemoryCommand,
+    ),
+    /// 执行可观测性烟测。
+    Observability(
+        /// 已解析的可观测性烟测子命令。
+        ObservabilityCommand,
+    ),
+    /// 列表、探测或规划硬件绑定。
+    Hardware(
+        /// 已解析的硬件列表、探测或绑定子命令。
+        HardwareCommand,
+    ),
+    /// 创建并验证备份产物。
+    Backup(
+        /// 已解析的备份创建子命令。
+        BackupCommand,
+    ),
+    /// 创建或规划晋升发布快照。
+    Snapshot(
+        /// 已解析的快照创建或晋升子命令。
+        SnapshotCommand,
+    ),
+    /// 规划、应用或回滚恢复操作。
+    Restore(
+        /// 已解析的恢复规划、应用或回滚子命令。
+        RestoreCommand,
+    ),
+    /// 检查或应用代际升级。
+    Upgrade(
+        /// 已解析的升级检查或应用子命令。
+        UpgradeCommand,
+    ),
+    /// 执行发布门禁与兼容性检查。
+    Release(
+        /// 已解析的发布检查、安全评审、性能或迁移子命令。
+        ReleaseCommand,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 所有子命令共享的项目定位和输出格式选项。
 struct CommonOptions {
+    /// 命令读取配置和相对资源的项目根目录。
     project_root: PathBuf,
+    /// 文本或机器可读 JSON 输出模式。
     output: OutputFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// CLI 支持的稳定输出格式集合。
 enum OutputFormat {
+    /// 面向操作者的逐行文本。
     Text,
+    /// 面向自动化的单行 JSON 信封。
     Json,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 对产物存储后端的可序列化引用，避免把具体 store 实现泄漏到 CLI 契约。
 struct ArtifactStoreRef {
+    /// 后端种类，例如 `filesystem` 或 `in_memory`。
     kind: String,
+    /// 文件系统后端的可选路径；内存后端固定为空。
     path: Option<String>,
 }
 
+/// 将原始 OS 参数转换为 UTF-8 并解析为顶层命令。
+///
+/// 非 UTF-8 参数在协议边界直接失败；帮助标志优先于其他参数，以保持常见 CLI 体验。
+/// 子命令的细节校验委托给对应模块，未知顶层命令保留原值作为错误上下文。
 fn parse_command<I>(args: I) -> Result<Command, EvaError>
 where
     I: IntoIterator<Item = OsString>,
@@ -313,6 +459,7 @@ where
     }
 }
 
+/// 读取必须跟随选项名的值；缺失时返回带选项名的统一参数错误。
 fn required_option<'a>(
     args: &'a [String],
     index: usize,
@@ -322,6 +469,7 @@ fn required_option<'a>(
         .ok_or_else(|| EvaError::invalid_argument(format!("missing value for {name}")))
 }
 
+/// 解析 u64 数值选项，并在失败时保留选项名与原始值上下文。
 fn parse_u64_option(name: &'static str, value: &str) -> Result<u64, EvaError> {
     value.parse::<u64>().map_err(|_| {
         EvaError::invalid_argument("option must be an unsigned integer")
@@ -330,6 +478,7 @@ fn parse_u64_option(name: &'static str, value: &str) -> Result<u64, EvaError> {
     })
 }
 
+/// 解析平台大小的非负计数选项，并在失败时返回结构化参数错误。
 fn parse_usize_option(name: &'static str, value: &str) -> Result<usize, EvaError> {
     value.parse::<usize>().map_err(|_| {
         EvaError::invalid_argument("option must be an unsigned integer")
@@ -339,11 +488,15 @@ fn parse_usize_option(name: &'static str, value: &str) -> Result<usize, EvaError
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 对互斥锁存储后端的可序列化引用，用于向操作者说明实际锁边界。
 struct LockStoreRef {
+    /// 后端种类，例如 `filesystem` 或 `in_memory`。
     kind: String,
+    /// 文件系统锁目录；内存锁实现没有路径。
     path: Option<String>,
 }
 
+/// 根据可选路径描述实际产物存储实现；缺省路径明确表示进程内存后端。
 fn artifact_store_ref(path: Option<&Path>) -> ArtifactStoreRef {
     match path {
         Some(path) => ArtifactStoreRef {
@@ -357,6 +510,7 @@ fn artifact_store_ref(path: Option<&Path>) -> ArtifactStoreRef {
     }
 }
 
+/// 根据可选路径描述实际锁存储实现；该信息进入操作审计输出。
 fn lock_store_ref(path: Option<&Path>) -> LockStoreRef {
     match path {
         Some(path) => LockStoreRef {
@@ -370,6 +524,7 @@ fn lock_store_ref(path: Option<&Path>) -> LockStoreRef {
     }
 }
 
+/// 按错误分类计算退出码并写出子命令错误，供各命令保持一致失败语义。
 fn write_command_error<W: Write>(
     stderr: &mut W,
     output: OutputFormat,
@@ -382,6 +537,7 @@ fn write_command_error<W: Write>(
     Ok(exit_code)
 }
 
+/// 解析项目根与输出格式两个公共选项，拒绝任何未消费参数。
 fn parse_common_options(args: &[String]) -> Result<CommonOptions, EvaError> {
     let mut options = default_common_options(OutputFormat::Text)?;
     let mut index = 0;
@@ -412,6 +568,7 @@ fn parse_common_options(args: &[String]) -> Result<CommonOptions, EvaError> {
     Ok(options)
 }
 
+/// 以当前工作目录构造公共选项；无法读取 cwd 属于内部环境故障而非用户语法错误。
 fn default_common_options(output: OutputFormat) -> Result<CommonOptions, EvaError> {
     let project_root = env::current_dir().map_err(|error| {
         EvaError::internal("failed to read current directory")
@@ -424,6 +581,7 @@ fn default_common_options(output: OutputFormat) -> Result<CommonOptions, EvaErro
 }
 
 impl OutputFormat {
+    /// 解析稳定输出格式别名；`human` 仅作为 `text` 的兼容别名。
     fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "text" | "human" => Ok(Self::Text),
@@ -435,6 +593,7 @@ impl OutputFormat {
     }
 }
 
+/// 将产物存储引用写为文本字段；只有文件系统后端才输出路径。
 fn write_artifact_store_ref<W: Write>(
     writer: &mut W,
     artifact_store: &ArtifactStoreRef,
@@ -446,6 +605,7 @@ fn write_artifact_store_ref<W: Write>(
     Ok(())
 }
 
+/// 将锁存储引用写为文本字段；保持与 JSON 引用相同的缺省语义。
 fn write_lock_store_ref<W: Write>(
     writer: &mut W,
     lock_store: &LockStoreRef,
@@ -457,6 +617,7 @@ fn write_lock_store_ref<W: Write>(
     Ok(())
 }
 
+/// 将产物存储引用编码为稳定 JSON 对象。
 fn artifact_store_ref_json(artifact_store: &ArtifactStoreRef) -> String {
     format!(
         "{{\"kind\":{},\"path\":{}}}",
@@ -465,6 +626,7 @@ fn artifact_store_ref_json(artifact_store: &ArtifactStoreRef) -> String {
     )
 }
 
+/// 将锁存储引用编码为稳定 JSON 对象。
 fn lock_store_ref_json(lock_store: &LockStoreRef) -> String {
     format!(
         "{{\"kind\":{},\"path\":{}}}",
@@ -473,6 +635,7 @@ fn lock_store_ref_json(lock_store: &LockStoreRef) -> String {
     )
 }
 
+/// 将跨命令共享的回滚计划编码为稳定 JSON，完整保留步骤、风险和审计证据。
 fn rollback_plan_json(plan: &RollbackPlan) -> String {
     format!(
         "{{\"from_generation\":{},\"to_generation\":{},\"snapshot_id\":{},\"reason\":{},\"status\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
@@ -487,6 +650,7 @@ fn rollback_plan_json(plan: &RollbackPlan) -> String {
     )
 }
 
+/// 将 capability 名称按输入顺序连接为文本列表，不重新排序路由优先级。
 fn join_capabilities(capabilities: &[CapabilityName]) -> String {
     capabilities
         .iter()
@@ -495,10 +659,15 @@ fn join_capabilities(capabilities: &[CapabilityName]) -> String {
         .join(",")
 }
 
+/// 将可选字符串编码为 JSON 字符串或字面量 `null`。
 fn option_json(value: Option<&str>) -> String {
     value.map(json_string).unwrap_or_else(|| "null".to_owned())
 }
 
+/// 按所选格式写出统一错误契约。
+///
+/// 文本模式逐项展示上下文和建议；JSON 模式使用稳定信封。任何 writer 故障都会转换为
+/// `EvaError::Internal`，从而不会把底层 `io::Error` 泄漏出 CLI 边界。
 fn write_error<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -531,6 +700,7 @@ fn write_error<W: Write>(
     }
 }
 
+/// 包装成功数据为所有 JSON 子命令共用的顶层信封；`data_json` 必须已是合法 JSON。
 fn success_envelope(command: &str, exit_code: i32, data_json: &str, trace: &TraceFields) -> String {
     format!(
         "{{\"ok\":true,\"command\":{},\"exit_code\":{},\"data\":{},\"trace\":{}}}",
@@ -541,6 +711,7 @@ fn success_envelope(command: &str, exit_code: i32, data_json: &str, trace: &Trac
     )
 }
 
+/// 将结构化 Eva 错误、退出码、建议和 trace 编码为稳定失败信封。
 fn error_envelope(command: &str, exit_code: i32, error: &EvaError, trace: &TraceFields) -> String {
     let provider_code = error
         .provider_code()
@@ -572,6 +743,7 @@ fn error_envelope(command: &str, exit_code: i32, error: &EvaError, trace: &Trace
     )
 }
 
+/// 为 CLI 操作创建最小 trace 字段；调用点只传静态、已知合法的 span ID。
 fn trace_for(span_id: &str) -> TraceFields {
     TraceFields::default().with_span_id(
         SpanId::parse(span_id)
@@ -579,6 +751,7 @@ fn trace_for(span_id: &str) -> TraceFields {
     )
 }
 
+/// 将 trace 键值编码为 JSON 对象，供成功和失败信封共享。
 fn trace_json(trace: &TraceFields) -> String {
     let fields = trace
         .entries()
@@ -588,6 +761,7 @@ fn trace_json(trace: &TraceFields) -> String {
     format!("{{{}}}", fields.join(","))
 }
 
+/// 对字符串执行完整 JSON 转义并加引号；所有手写 JSON 构造器必须经过此入口。
 pub(crate) fn json_string(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len() + 2);
     escaped.push('"');
@@ -608,6 +782,7 @@ pub(crate) fn json_string(value: &str) -> String {
     escaped
 }
 
+/// 将一组已经编码为 JSON 的值连接成数组，不对元素进行二次加引号。
 pub(crate) fn json_array<I>(values: I) -> String
 where
     I: IntoIterator<Item = String>,
@@ -615,10 +790,15 @@ where
     format!("[{}]", values.into_iter().collect::<Vec<_>>().join(","))
 }
 
+/// 使用平台原生展示规则生成路径文本，集中保持 CLI 路径输出一致。
 pub(crate) fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// 将跨 crate 的错误分类映射为 CLI 稳定退出码。
+///
+/// 此映射是外部自动化契约：策略拒绝、运行时不支持和 provider 不可用必须保持可区分；
+/// 输入、缺失资源和状态冲突共同归入配置类错误。
 fn exit_code_for_error(error: &EvaError) -> i32 {
     match error.kind() {
         ErrorKind::PermissionDenied => EXIT_POLICY,
@@ -629,6 +809,7 @@ fn exit_code_for_error(error: &EvaError) -> i32 {
     }
 }
 
+/// 选择面向操作者的恢复建议；错误上下文中的显式建议优先于按分类生成的默认文本。
 fn suggestion_for_error(error: &EvaError) -> String {
     if let Some((_, suggestion)) = error
         .context()
@@ -655,10 +836,12 @@ fn suggestion_for_error(error: &EvaError) -> String {
     }
 }
 
+/// 将输出 writer 的 I/O 故障映射为带底层消息上下文的内部错误。
 fn write_error_kind(error: io::Error) -> EvaError {
     EvaError::internal("failed to write CLI output").with_context("io_error", error.to_string())
 }
 
+/// 以稳定索引格式写出风险列表，便于人工阅读和脚本按行定位。
 fn write_risk_lines_text<W: Write>(writer: &mut W, risks: &[String]) -> Result<(), EvaError> {
     writeln!(writer, "risk_count: {}", risks.len()).map_err(write_error_kind)?;
     for (index, risk) in risks.iter().enumerate() {
@@ -667,6 +850,7 @@ fn write_risk_lines_text<W: Write>(writer: &mut W, risks: &[String]) -> Result<(
     Ok(())
 }
 
+/// 返回编译期静态帮助文本；与解析器支持的命令和退出码契约保持同步。
 fn help_text() -> &'static str {
     concat!(
         "Eva CLI\n\n",
@@ -751,6 +935,7 @@ fn help_text() -> &'static str {
 }
 
 #[cfg(test)]
+/// 跨子命令的 CLI 输出、退出码、持久化与高风险门禁集成回归测试。
 mod tests {
     use super::*;
     use eva_storage::{ArtifactStore, FileSystemArtifactStore};
@@ -760,10 +945,12 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    /// 返回仓库根目录，供 CLI 集成测试读取真实示例配置和 schema。
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
 
+    /// 以内存 stdout/stderr 运行 CLI，返回退出码和 UTF-8 输出以便断言完整协议。
     fn run_cli(args: &[&str]) -> (i32, String, String) {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -775,6 +962,7 @@ mod tests {
         )
     }
 
+    /// 为并行测试创建包含进程和时间后缀的独立临时目录。
     fn test_temp_dir(name: &str) -> PathBuf {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -786,6 +974,7 @@ mod tests {
         path
     }
 
+    /// 从测试生成的稳定 JSON 文本中提取已知字符串字段；仅用于受控 fixture 输出。
     fn extract_json_value(data: &str, prefix: &str) -> String {
         let start = data.find(prefix).expect("json value prefix should exist") + prefix.len();
         let end = data[start..]
@@ -794,6 +983,7 @@ mod tests {
         data[start..start + end].to_owned()
     }
 
+    /// 等待 daemon 状态、锁和 pid 边界全部就绪，限制轮询次数以防测试无限挂起。
     fn wait_for_daemon_files(state: &Path, locks: &Path, pids: &Path) {
         for _ in 0..100 {
             let state_running = fs::read_to_string(state.join("daemon.state"))
@@ -810,6 +1000,7 @@ mod tests {
         panic!("daemon files did not become available");
     }
 
+    /// 递归复制测试项目 fixture，保留文件层级但不共享可变状态。
     fn copy_dir(from: &Path, to: &Path) {
         fs::create_dir_all(to).unwrap();
         for entry in fs::read_dir(from).unwrap() {
@@ -824,6 +1015,7 @@ mod tests {
         }
     }
 
+    /// 创建 restore apply 计划、目标备份和前置备份的最小一致 fixture。
     fn restore_apply_fixture(
         name: &str,
         plan_id: &str,
@@ -850,6 +1042,7 @@ mod tests {
         (artifact_root, plan_path)
     }
 
+    /// 复制项目并只放开 restore apply 策略，用于隔离门禁之后的事务路径。
     fn project_with_restore_apply_allowed(name: &str) -> PathBuf {
         let root = workspace_root();
         let fixture = test_temp_dir(name);
@@ -862,6 +1055,7 @@ mod tests {
         fixture
     }
 
+    /// 复制项目并只放开 upgrade/pointer 策略，用于测试锁和 handoff 行为。
     fn project_with_upgrade_apply_allowed(name: &str) -> PathBuf {
         let root = workspace_root();
         let fixture = test_temp_dir(name);
@@ -874,6 +1068,7 @@ mod tests {
         fixture
     }
 
+    /// 创建包含确认 ID 和代际信息的 upgrade apply 计划文件。
     fn upgrade_apply_plan_fixture(name: &str, plan_id: &str) -> (PathBuf, PathBuf) {
         let root = test_temp_dir(name);
         let plan_path = root.join("upgrade.plan");
@@ -888,6 +1083,7 @@ mod tests {
         (root, plan_path)
     }
 
+    /// 创建可切换签名有效性的发布产物证据 fixture。
     fn release_artifact_evidence_fixture(name: &str, signed: bool) -> (PathBuf, PathBuf) {
         let root = test_temp_dir(name);
         let evidence_path = root.join("release-artifact.evidence");
@@ -933,6 +1129,7 @@ mod tests {
         (root, evidence_path)
     }
 
+    /// 创建指定 package 状态的跨平台分发与安装烟测证据。
     fn release_distribution_evidence_fixture(
         name: &str,
         package_status: &str,
@@ -998,6 +1195,7 @@ mod tests {
         (root, evidence_path)
     }
 
+    /// 创建指定扫描状态和最高严重度的安全扫描证据。
     fn release_security_scan_evidence_fixture(
         name: &str,
         scan_status: &str,
@@ -1035,6 +1233,7 @@ mod tests {
         (root, evidence_path)
     }
 
+    /// 创建指定状态和观测延迟的 benchmark 证据，用于预算边界测试。
     fn release_benchmark_evidence_fixture(
         name: &str,
         status: &str,
@@ -1067,6 +1266,7 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// 创建可执行的 runtime `--version` 替身，验证 upgrade 二进制烟测协议。
     fn executable_runtime_binary_fixture(name: &str) -> (PathBuf, PathBuf) {
         let root = test_temp_dir(name);
         let binary_path = root.join("eva-runtime-smoke.sh");
@@ -1083,6 +1283,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证示例项目配置校验的 JSON 成功信封和计数字段。
     fn config_validate_json_succeeds_for_sample_project() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -1102,6 +1303,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 schema 违规会返回 usage/config 语义并保留具体规则上下文。
     fn config_validate_json_reports_schema_rule_context() {
         let root = workspace_root();
         let fixture = test_temp_dir("config-schema-json");
@@ -1138,6 +1340,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 inspect 文本报告包含只读 no-op runtime 摘要。
     fn inspect_text_reports_noop_runtime() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) =
@@ -1150,6 +1353,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证未知顶层命令使用稳定 usage 退出码且错误写入 stderr。
     fn unknown_command_is_usage_error() {
         let (exit_code, _stdout, stderr) = run_cli(&["missing"]);
 
@@ -1158,6 +1362,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证文本和 JSON emit 均发布同一强类型事件及 metadata 契约。
     fn emit_text_and_json_publish_typed_event() {
         let (exit_code, stdout, stderr) = run_cli(&[
             "emit",
@@ -1212,6 +1417,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证指定 durable backend 时 emit 真实持久化事件并报告后端路径。
     fn emit_can_publish_to_durable_backend() {
         let root = test_temp_dir("emit-durable");
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -1248,6 +1454,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 daemon 前台烟测报告锁、状态、pid、恢复、策略和关闭边界。
     fn daemon_start_foreground_smoke_reports_verified_boundaries() {
         let project = workspace_root();
         let root = test_temp_dir("daemon-start");
@@ -1339,6 +1546,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 CLI 可通过 control mailbox 完成 daemon 状态查询和关闭往返。
     fn daemon_control_status_and_shutdown_round_trip_via_cli() {
         let project = workspace_root();
         let root = test_temp_dir("daemon-control-cli");
@@ -1480,6 +1688,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 daemon 锁冲突在状态写入前失败，不留下伪启动记录。
     fn daemon_start_lock_conflict_does_not_write_state() {
         let project = workspace_root();
         let root = test_temp_dir("daemon-lock");
@@ -1521,6 +1730,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证无效 durable backend 在 daemon 状态持久化前阻断启动。
     fn daemon_start_bad_durable_backend_does_not_write_state() {
         let project = workspace_root();
         let root = test_temp_dir("daemon-bad-durable");
@@ -1566,6 +1776,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Agent 状态 JSON 合并 manifest、层级、订阅与生命周期字段。
     fn agent_status_reports_manifest_and_lifecycle_json() {
         let root = workspace_root();
         let (text_exit, text_stdout, text_stderr) = run_cli(&[
@@ -1605,6 +1816,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 daemon 不可用时 Agent drain 只输出计划且 mutation 标记为 false。
     fn agent_drain_outputs_drain_plan_without_runtime_mutation() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -1637,6 +1849,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证本地 Agent reload 报告源/目标代际和前代最终状态。
     fn agent_reload_outputs_generation_swap_evidence() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -1672,6 +1885,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 daemon 可用时 Agent drain/reload 使用真实 control mutation 路径。
     fn agent_drain_and_reload_use_daemon_mutation_when_available() {
         let project = workspace_root();
         let root = test_temp_dir("agent-daemon-mutation");
@@ -1801,6 +2015,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 capability list/probe JSON 包含 provider 计划、来源和权限门禁。
     fn capability_list_and_probe_report_provider_plan_json() {
         let root = workspace_root();
         let (list_exit, list_stdout, list_stderr) = run_cli(&[
@@ -1839,6 +2054,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 capability call 默认 dry-run，只有匹配确认后才执行内置调用。
     fn capability_call_dry_run_and_confirmed_builtin_paths() {
         let root = workspace_root();
         let (dry_exit, dry_stdout, dry_stderr) = run_cli(&[
@@ -1892,6 +2108,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证显式 provider 不在 manifest allowlist 时在调用前被拒绝。
     fn capability_call_rejects_provider_outside_manifest_allowlist() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -1917,6 +2134,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 basic 示例完整运行并输出可查询的 JSON 任务报告。
     fn run_basic_example_json_succeeds() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -1945,6 +2163,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证项目本地任务快照可被 status/logs 查询并接受取消更新。
     fn task_status_logs_and_cancel_use_persisted_basic_report() {
         let root = workspace_root();
         let task_id = "req-test-v05";
@@ -2006,6 +2225,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证任务命令在 durable backend 上保持与本地 store 相同的读写契约。
     fn task_commands_can_use_durable_backend_task_store() {
         let root = workspace_root();
         let durable_root = test_temp_dir("durable-task-store");
@@ -2084,6 +2304,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 durable inspect 报告布局、迁移、事件日志和 dead-letter 诊断。
     fn inspect_durable_reports_backend_diagnostics_json() {
         let root = workspace_root();
         let durable_root = test_temp_dir("durable-inspect");
@@ -2127,6 +2348,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证启动即取消的 basic 运行持久化 cancelled 终态而非成功状态。
     fn run_cancelled_basic_example_reports_cancelled_task() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -2148,11 +2370,13 @@ mod tests {
     }
 
     #[test]
+    /// 验证公共 JSON 字符串编码器正确转义引号、反斜线和控制字符。
     fn json_string_escapes_control_characters() {
         assert_eq!(json_string("a\"b\\c\n"), "\"a\\\"b\\\\c\\n\"");
     }
 
     #[test]
+    /// 验证版本文本与 JSON 同时报告既有 alpha 标签和 CLI runtime 契约。
     fn version_text_and_json_report_v1115_cli_runtime_commands_alpha() {
         let (text_exit, text_stdout, text_stderr) = run_cli(&["--version"]);
         assert_eq!(text_exit, EXIT_OK, "{text_stderr}");
@@ -2222,6 +2446,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证发布 readiness JSON 显式包含 durable recovery gate 和 blocker 统计。
     fn release_check_json_reports_recovery_gate() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -2289,6 +2514,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证有效签名产物证据使对应发布 gate 通过。
     fn release_check_with_signed_artifact_evidence_passes_gate() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2314,6 +2540,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证未签名产物证据形成 blocker 并返回配置类退出码。
     fn release_check_with_unsigned_artifact_evidence_blocks_gate() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2340,6 +2567,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证成功分发/安装烟测证据使跨平台分发 gate 通过。
     fn release_check_with_distribution_evidence_passes_gate() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2366,6 +2594,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证失败分发证据阻断发布而不被内置基线掩盖。
     fn release_check_with_failed_distribution_evidence_blocks_gate() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2391,6 +2620,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证无阻塞发现的安全扫描证据使扫描 gate 通过。
     fn release_check_with_security_scan_evidence_passes_gate() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2416,6 +2646,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证高严重度安全发现形成发布 blocker。
     fn release_check_with_high_security_scan_finding_blocks_gate() {
         let root = workspace_root();
         let (evidence_root, evidence_path) = release_security_scan_evidence_fixture(
@@ -2444,6 +2675,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证预算内 benchmark 实测证据使性能 gate 通过。
     fn release_check_with_benchmark_evidence_passes_gate() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2469,6 +2701,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 benchmark 回归在综合 readiness 中形成 blocker。
     fn release_check_with_benchmark_regression_blocks_gate() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2494,6 +2727,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 release perf 优先使用外部观测值而非内置基线。
     fn release_perf_with_benchmark_evidence_uses_observed_measurements() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2520,6 +2754,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证超预算 benchmark 返回 runtime-unavailable 退出码。
     fn release_perf_with_benchmark_regression_returns_runtime_exit() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2545,6 +2780,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 benchmark 自身失败状态即使数值存在也阻断性能发布。
     fn release_perf_with_failed_benchmark_status_returns_runtime_exit() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
@@ -2569,6 +2805,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Adapter、MCP、Skill 和 Discovery 外部能力命令均提供稳定 JSON。
     fn v11_external_capability_commands_report_json() {
         let root = workspace_root();
         let root = root.to_str().unwrap();
@@ -2654,6 +2891,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 MCP allowlist 外工具在探测阶段被策略边界拒绝。
     fn mcp_probe_blocks_unlisted_tool_with_policy_exit() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -2674,6 +2912,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 discovery JSON 区分来源状态、候选和拒绝原因。
     fn discovery_scan_json_reports_source_statuses() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -2706,6 +2945,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Skill 调用输出将 Adapter 审计与 Invoke trace 连续关联。
     fn skill_run_json_links_adapter_audit_to_invocation_trace() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -2732,6 +2972,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 memory context 同时返回私有、全局和知识三类受限内容。
     fn memory_context_reports_private_global_and_knowledge() {
         let root = workspace_root();
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -2758,6 +2999,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 durable memory 后端执行脱敏和过期过滤后再构建上下文。
     fn memory_context_can_use_durable_backend_with_redaction_and_expiration() {
         let root = workspace_root();
         let durable_root = test_temp_dir("memory-durable");
@@ -2801,6 +3043,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 memory context 写入包含请求与 Agent 关联的可观测性记录。
     fn memory_context_writes_request_agent_observability() {
         let root = workspace_root();
         let request_id = format!(
@@ -2844,6 +3087,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 observability smoke 持久化信号并显式报告 best-effort 降级状态。
     fn observability_smoke_writes_backend_and_reports_degraded_mode() {
         let backend = test_temp_dir("observability");
         let (exit_code, stdout, stderr) = run_cli(&[
@@ -2960,6 +3204,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证硬件 list/probe/bind 输出候选与 plan-first、无物理 mutation 事实。
     fn hardware_commands_report_candidates_and_bind_plan() {
         let root = workspace_root();
         let root = root.to_str().unwrap();
@@ -3008,6 +3253,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 V1.4 backup/snapshot/restore 计划命令输出完整 JSON 证据链。
     fn v14_backup_lifecycle_commands_report_json() {
         let root = workspace_root();
         let root = root.to_str().unwrap();
@@ -3037,6 +3283,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 snapshot promote 只生成 release pointer 计划，不执行 pointer mutation。
     fn snapshot_promote_plans_release_pointer_without_apply() {
         let root = workspace_root();
         let artifact_root = test_temp_dir("snapshot-promote-ok");
@@ -3070,6 +3317,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 snapshot 确认值不匹配时在晋升计划前返回冲突。
     fn snapshot_promote_rejects_mismatched_confirmation() {
         let root = workspace_root();
         let artifact_root = test_temp_dir("snapshot-promote-confirm");
@@ -3099,6 +3347,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 snapshot promote 缺少显式确认时拒绝执行。
     fn snapshot_promote_requires_confirmation() {
         let root = workspace_root();
 
@@ -3120,6 +3369,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证非 dry-run restore apply 在策略检查前先要求 lock store。
     fn restore_apply_requires_lock_store_before_policy_gate() {
         let root = workspace_root();
         let (artifact_root, plan_path) = restore_apply_fixture(
@@ -3154,6 +3404,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证默认策略拒绝 restore apply 且不会创建锁或 mutation 状态。
     fn restore_apply_default_policy_denies_without_locking() {
         let root = workspace_root();
         let (artifact_root, plan_path) = restore_apply_fixture(
@@ -3193,6 +3444,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证策略、锁和健康门禁全部通过时 restore apply 被允许。
     fn restore_apply_gates_when_policy_lock_and_health_pass() {
         let project = project_with_restore_apply_allowed("restore-apply-allowed-project");
         let (artifact_root, plan_path) = restore_apply_fixture(
@@ -3245,6 +3497,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证声明 staged steps 的 restore plan 真实执行文件事务并记录日志。
     fn restore_apply_executes_staged_mutation_when_plan_declares_steps() {
         let project = project_with_restore_apply_allowed("restore-apply-mutation-project");
         let artifact_root = test_temp_dir("restore-apply-mutation-artifacts");
@@ -3333,6 +3586,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证失败 staged mutation 可从 transaction log 和前置备份恢复原文件。
     fn restore_rollback_restores_failed_staged_mutation_from_transaction_log() {
         let project = project_with_restore_apply_allowed("restore-rollback-project");
         let artifact_root = test_temp_dir("restore-rollback-artifacts");
@@ -3440,6 +3694,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 restore apply 健康失败产生代际 rollback plan 而非报告成功。
     fn restore_apply_health_failure_emits_rollback_plan() {
         let project = project_with_restore_apply_allowed("restore-apply-health-project");
         let (artifact_root, plan_path) = restore_apply_fixture(
@@ -3484,6 +3739,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 restore apply 独占锁冲突被报告且第二次操作不执行 mutation。
     fn restore_apply_reports_lock_conflict() {
         let project = project_with_restore_apply_allowed("restore-apply-conflict-project");
         let (artifact_root, plan_path) = restore_apply_fixture(
@@ -3541,6 +3797,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 upgrade apply 获取并报告文件系统独占锁。
     fn upgrade_apply_acquires_filesystem_lock() {
         let root = workspace_root();
         let lock_root = test_temp_dir("upgrade-apply-lock");
@@ -3607,6 +3864,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证策略、健康和 state store 通过时 handoff 提交 release pointer。
     fn upgrade_apply_handoff_commits_release_pointer_when_policy_health_and_state_store_pass() {
         let project = project_with_upgrade_apply_allowed("upgrade-apply-allowed-project");
         let (plan_root, plan_path) =
@@ -3650,6 +3908,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    /// 验证 upgrade handoff 在提交 pointer 前运行目标 runtime `--version` 烟测。
     fn upgrade_apply_handoff_runs_runtime_binary_version_smoke() {
         let project = project_with_upgrade_apply_allowed("upgrade-apply-runtime-project");
         let (plan_root, plan_path) =
@@ -3693,6 +3952,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证目标 runtime 二进制缺失时在 release pointer mutation 前阻断 handoff。
     fn upgrade_apply_handoff_missing_runtime_binary_blocks_before_pointer_mutation() {
         let project = project_with_upgrade_apply_allowed("upgrade-apply-missing-runtime-project");
         let (plan_root, plan_path) =
@@ -3737,6 +3997,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 handoff 健康失败生成回滚证据且不提交 release pointer。
     fn upgrade_apply_handoff_health_failure_emits_rollback_without_pointer_mutation() {
         let project = project_with_upgrade_apply_allowed("upgrade-apply-health-project");
         let (plan_root, plan_path) =
@@ -3777,6 +4038,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证默认策略在 state store 和 pointer 变更前拒绝 upgrade apply。
     fn upgrade_apply_handoff_default_policy_denies_before_state_mutation() {
         let root = workspace_root();
         let (plan_root, plan_path) =
@@ -3813,6 +4075,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 upgrade 独占锁冲突阻止第二个 apply 协调器进入 handoff。
     fn upgrade_apply_reports_lock_conflict() {
         let root = workspace_root();
         let lock_root = test_temp_dir("upgrade-apply-conflict");
@@ -3865,6 +4128,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 upgrade 确认值必须与 plan ID 精确匹配。
     fn upgrade_apply_rejects_mismatched_confirmation() {
         let root = workspace_root();
         let lock_root = test_temp_dir("upgrade-apply-confirm");
@@ -3900,6 +4164,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 upgrade 计划解析器兼容带 UTF-8 BOM 的文件。
     fn upgrade_apply_plan_allows_utf8_bom() {
         let plan = upgrade_cmd::parse_upgrade_apply_plan(
             "\u{feff}plan_id=plan-bom\nfrom_generation=gen-v14\nto_generation=gen-v15\nfrom_release=1.4.0\nto_release=1.5.1\n",
@@ -3911,6 +4176,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 restore dry-run 校验 durable 备份 digest 和 manifest 证据。
     fn restore_apply_dry_run_validates_durable_backup() {
         let root = workspace_root();
         let artifact_root = test_temp_dir("restore-apply-ok");
@@ -3959,6 +4225,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 restore dry-run 输出 staged mutation 目标、步骤和回滚计划。
     fn restore_apply_dry_run_reports_staged_mutation_plan() {
         let root = workspace_root();
         let artifact_root = test_temp_dir("restore-apply-staged");
@@ -4098,6 +4365,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 restore apply 计划解析器兼容 UTF-8 BOM。
     fn restore_apply_plan_allows_utf8_bom() {
         let plan = restore_cmd::parse_restore_apply_plan(
             "\u{feff}plan_id=plan-bom\nbackup_artifact_id=apply-bom\nbackup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\npre_restore_backup_artifact_id=pre-apply-bom\npre_restore_backup_digest=sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df\n",
@@ -4116,6 +4384,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 restore dry-run 缺少前置备份字段时在校验阶段失败。
     fn restore_apply_dry_run_requires_pre_restore_evidence() {
         let root = workspace_root();
         let artifact_root = test_temp_dir("restore-apply-no-pre");
@@ -4158,6 +4427,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证目标备份产物缺失时 dry-run 返回 NotFound 而不获取锁。
     fn restore_apply_dry_run_reports_missing_backup() {
         let root = workspace_root();
         let artifact_root = test_temp_dir("restore-apply-missing");
@@ -4200,6 +4470,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证前置备份产物缺失时 dry-run 明确报告对应 artifact key。
     fn restore_apply_dry_run_reports_missing_pre_restore_backup() {
         let root = workspace_root();
         let artifact_root = test_temp_dir("restore-apply-missing-pre");
@@ -4242,6 +4513,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证备份 digest 不匹配时 dry-run 拒绝进入 apply 协调器。
     fn restore_apply_dry_run_reports_digest_mismatch() {
         let root = workspace_root();
         let artifact_root = test_temp_dir("restore-apply-mismatch");
@@ -4296,6 +4568,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 V1.4 backup/snapshot/restore 可使用真实文件系统 ArtifactStore。
     fn v14_backup_lifecycle_can_use_filesystem_artifact_store() {
         let root = workspace_root();
         let root = root.to_str().unwrap();
@@ -4363,6 +4636,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 V1.5 release check/security/perf/migration 均输出稳定 JSON 契约。
     fn v15_release_hardening_commands_report_json() {
         let root = workspace_root();
         let root = root.to_str().unwrap();

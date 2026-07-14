@@ -1,65 +1,106 @@
+//! 发布分发证据与安装烟雾验证契约。
 //! Release distribution evidence and installer smoke verification contracts.
 
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// 本模块的架构职责：验证多平台安装流程、文档和包管理器演练证据。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
     "release distribution and package-manager dry-run evidence contract";
 
+/// 当前支持的发布分发证据清单格式。
 pub const DISTRIBUTION_EVIDENCE_FORMAT: &str = "eva.release.distribution_evidence.v1";
 
+/// 一个操作系统和目标平台上的完整安装生命周期烟雾证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseInstallSmokeEvidence {
+    /// 标准化操作系统名称。
     pub os: String,
+    /// Rust target triple 或等价平台目标。
     pub target: String,
+    /// 被安装的发布包文件名。
     pub artifact: String,
+    /// zip、tar.gz 等包装格式。
     pub package_format: String,
+    /// 实际执行的安装命令。
     pub install_command: String,
+    /// 安装后验证命令。
     pub smoke_command: String,
+    /// 实际验证的卸载命令。
     pub uninstall_command: String,
+    /// 实际验证的升级命令。
     pub upgrade_command: String,
+    /// 整个安装生命周期的结果状态。
     pub status: String,
 }
 
+/// 发布包在某个包管理器中的非破坏性演练证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleasePackageDryRunEvidence {
+    /// 包管理器或制品平台标识。
     pub manager: String,
+    /// 被验证的包名或镜像引用。
     pub package: String,
+    /// 演练覆盖的平台目标。
     pub target: String,
+    /// 生成证据的 dry-run 或 inspect 命令。
     pub command: String,
+    /// 演练结果状态。
     pub status: String,
 }
 
+/// 与发布来源绑定的分发文档、平台烟雾和包演练证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseDistributionEvidence {
+    /// 证据清单格式版本。
     pub format: String,
+    /// 被验证发布版本。
     pub version: String,
+    /// 被验证来源标签。
     pub source_tag: String,
+    /// 被验证来源完整提交哈希。
     pub source_commit: String,
+    /// 安装文档的仓库相对 Markdown 路径。
     pub install_doc: String,
+    /// 卸载文档的仓库相对 Markdown 路径。
     pub uninstall_doc: String,
+    /// 升级文档的仓库相对 Markdown 路径。
     pub upgrade_doc: String,
+    /// 各操作系统的安装生命周期烟雾证据。
     pub install_smokes: Vec<ReleaseInstallSmokeEvidence>,
+    /// 一项或多项包管理器演练证据。
     pub package_dry_runs: Vec<ReleasePackageDryRunEvidence>,
 }
 
+/// 分发证据的发布门禁验证结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseDistributionVerificationReport {
+    /// `verified` 或 `blocked` 状态。
     pub status: String,
+    /// 证据对应发布版本。
     pub version: String,
+    /// 证据对应来源标签。
     pub source_tag: String,
+    /// 证据对应来源提交。
     pub source_commit: String,
+    /// 全部平台烟雾证据。
     pub platform_smokes: Vec<ReleaseInstallSmokeEvidence>,
+    /// 全部包管理器演练证据。
     pub package_dry_runs: Vec<ReleasePackageDryRunEvidence>,
+    /// 三类分发文档路径是否齐全。
     pub install_docs_verified: bool,
+    /// 是否至少有一项且全部包管理器演练通过。
     pub package_dry_runs_verified: bool,
+    /// 缺失平台、失败烟雾或失败演练的具体风险。
     pub risks: Vec<String>,
+    /// 来源、文档和逐项证据审计记录。
     pub audit: Vec<String>,
 }
 
 impl ReleaseInstallSmokeEvidence {
     #[allow(clippy::too_many_arguments)]
+    /// 校验平台、工件、命令和状态后创建安装烟雾证据。
     pub fn new(
         os: impl Into<String>,
         target: impl Into<String>,
@@ -96,12 +137,14 @@ impl ReleaseInstallSmokeEvidence {
         })
     }
 
+    /// 判断完整安装生命周期是否明确通过。
     pub fn is_passed(&self) -> bool {
         self.status == "passed"
     }
 }
 
 impl ReleasePackageDryRunEvidence {
+    /// 校验包管理器、目标、命令和状态后创建演练证据。
     pub fn new(
         manager: impl Into<String>,
         package: impl Into<String>,
@@ -123,6 +166,7 @@ impl ReleasePackageDryRunEvidence {
         })
     }
 
+    /// 判断包管理器演练是否明确通过。
     pub fn is_passed(&self) -> bool {
         self.status == "passed"
     }
@@ -130,6 +174,7 @@ impl ReleasePackageDryRunEvidence {
 
 impl ReleaseDistributionEvidence {
     #[allow(clippy::too_many_arguments)]
+    /// 创建与版本和完整来源提交绑定的分发证据。
     pub fn new(
         version: impl Into<String>,
         source_tag: impl Into<String>,
@@ -159,6 +204,10 @@ impl ReleaseDistributionEvidence {
         })
     }
 
+    /// 从严格键值清单解析平台烟雾和包演练证据。
+    ///
+    /// 重复字段、缺失复合字段、未知格式和非法平台/状态均失败关闭；数字索引排序
+    /// 保证不同解析运行得到相同的证据顺序。
     pub fn parse_manifest(data: &str) -> Result<Self, EvaError> {
         let fields = parse_key_value_manifest(data)?;
         if required(&fields, "format")? != DISTRIBUTION_EVIDENCE_FORMAT {
@@ -210,6 +259,11 @@ impl ReleaseDistributionEvidence {
         )
     }
 
+    /// 验证 Windows、Linux、macOS 均有通过烟雾，并检查文档和包演练。
+    ///
+    /// 每个必需操作系统至少需要一项 passed；同一系统存在失败证据也会记录风险。
+    /// 包管理器证据必须非空且全部 passed，文档路径必须三类齐全。只有没有任何风险
+    /// 才返回 verified，避免缺失平台被当作未发现错误。
     pub fn verify(&self) -> ReleaseDistributionVerificationReport {
         let mut risks = Vec::new();
         let mut passed_platforms = BTreeSet::new();
@@ -295,6 +349,7 @@ impl ReleaseDistributionEvidence {
         }
     }
 
+    /// 以稳定字段、烟雾和演练顺序序列化分发证据。
     pub fn to_manifest(&self) -> String {
         let mut lines = vec![
             format!("format={}", self.format),
@@ -342,6 +397,7 @@ impl ReleaseDistributionEvidence {
     }
 }
 
+/// 解析允许 BOM、空行和注释的严格键值清单，并拒绝重复键。
 fn parse_key_value_manifest(data: &str) -> Result<BTreeMap<String, String>, EvaError> {
     let mut fields = BTreeMap::new();
     for line in data.lines() {
@@ -374,6 +430,7 @@ fn parse_key_value_manifest(data: &str) -> Result<BTreeMap<String, String>, EvaE
     Ok(fields)
 }
 
+/// 读取必填分发证据字段。
 fn required(fields: &BTreeMap<String, String>, key: &str) -> Result<String, EvaError> {
     fields.get(key).cloned().ok_or_else(|| {
         EvaError::invalid_argument("release distribution evidence is missing required field")
@@ -381,6 +438,7 @@ fn required(fields: &BTreeMap<String, String>, key: &str) -> Result<String, EvaE
     })
 }
 
+/// 读取指定证据索引下的必填复合字段。
 fn required_indexed(
     fields: &BTreeMap<String, String>,
     prefix: &str,
@@ -390,6 +448,7 @@ fn required_indexed(
     required(fields, &format!("{prefix}.{index}.{field}"))
 }
 
+/// 从复合键收集指定前缀下的有效数字索引并排序去重。
 fn indexed_fields(fields: &BTreeMap<String, String>, prefix: &str) -> BTreeSet<usize> {
     fields
         .keys()
@@ -399,6 +458,7 @@ fn indexed_fields(fields: &BTreeMap<String, String>, prefix: &str) -> BTreeSet<u
         .collect()
 }
 
+/// 校验操作系统属于发布矩阵支持的三类平台。
 fn validate_os(value: String) -> Result<String, EvaError> {
     let value = validate_token("release install os", value)?;
     if matches!(value.as_str(), "windows" | "linux" | "macos") {
@@ -411,6 +471,7 @@ fn validate_os(value: String) -> Result<String, EvaError> {
     }
 }
 
+/// 校验烟雾或演练状态属于受支持集合。
 fn validate_status(value: String) -> Result<String, EvaError> {
     let value = validate_token("release distribution evidence status", value)?;
     if matches!(value.as_str(), "passed" | "blocked" | "failed" | "skipped") {
@@ -423,6 +484,7 @@ fn validate_status(value: String) -> Result<String, EvaError> {
     }
 }
 
+/// 校验文档路径是无遍历的仓库相对 Markdown 路径。
 fn validate_doc_path(field: &str, value: String) -> Result<String, EvaError> {
     let value = validate_non_empty(field, value)?;
     if value.contains("..") || value.contains('\\') || !value.ends_with(".md") {
@@ -434,6 +496,7 @@ fn validate_doc_path(field: &str, value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验发布版本为非空且不含空白的单个标记。
 fn validate_version(value: String) -> Result<String, EvaError> {
     let value = validate_non_empty("release version", value)?;
     if value.contains(char::is_whitespace) {
@@ -445,6 +508,7 @@ fn validate_version(value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验不允许包含空白的稳定证据标记。
 fn validate_token(field: &str, value: String) -> Result<String, EvaError> {
     let value = validate_non_empty(field, value)?;
     if value.contains(char::is_whitespace) {
@@ -456,6 +520,7 @@ fn validate_token(field: &str, value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验文本非空且首尾无空白。
 fn validate_non_empty(field: &str, value: String) -> Result<String, EvaError> {
     if value.trim().is_empty() || value.trim() != value {
         return Err(
@@ -466,6 +531,7 @@ fn validate_non_empty(field: &str, value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验安装工件为不含路径分隔符或遍历片段的文件名。
 fn validate_artifact_name(value: String) -> Result<String, EvaError> {
     let value = validate_token("release install artifact", value)?;
     if value.contains('/') || value.contains('\\') || value.contains("..") {
@@ -477,6 +543,7 @@ fn validate_artifact_name(value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
+/// 校验来源提交为完整 40 字符十六进制哈希。
 fn validate_commit(value: String) -> Result<String, EvaError> {
     let value = validate_token("release source commit", value)?;
     if value.len() != 40 || !value.chars().all(|ch| ch.is_ascii_hexdigit()) {
@@ -489,11 +556,14 @@ fn validate_commit(value: String) -> Result<String, EvaError> {
 }
 
 #[cfg(test)]
+/// 分发证据清单往返、平台覆盖和包演练门禁测试。
 mod tests {
     use super::*;
 
+    /// 测试证据使用的完整来源提交。
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
+    /// 构造指定平台、工件和状态的安装烟雾证据。
     fn smoke(
         os: &str,
         target: &str,
@@ -515,6 +585,7 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造指定状态的包管理器演练证据。
     fn dry_run(status: &str) -> ReleasePackageDryRunEvidence {
         ReleasePackageDryRunEvidence::new(
             "ghcr",
@@ -526,6 +597,7 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造覆盖三平台且演练通过的完整分发证据。
     fn distribution_evidence() -> ReleaseDistributionEvidence {
         ReleaseDistributionEvidence::new(
             "1.11.5-alpha",
@@ -563,6 +635,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证完整证据可往返清单并通过全部分发门禁。
     fn distribution_evidence_round_trips_and_verifies() {
         let evidence =
             ReleaseDistributionEvidence::parse_manifest(&distribution_evidence().to_manifest())
@@ -577,6 +650,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证任一必需操作系统缺少通过烟雾会阻塞分发。
     fn missing_platform_smoke_blocks_distribution_verification() {
         let mut evidence = distribution_evidence();
         evidence.install_smokes.retain(|smoke| smoke.os != "linux");
@@ -591,6 +665,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证包管理器演练失败会阻塞分发证据。
     fn failed_package_dry_run_blocks_distribution_verification() {
         let mut evidence = distribution_evidence();
         evidence.package_dry_runs = vec![dry_run("failed")];

@@ -1,3 +1,4 @@
+//! 中文：追踪、指标、审计、后端桥接和保留策略的统一可观察性边界。
 //! Observability boundary for tracing, metrics, and audit.
 
 pub mod audit;

@@ -1,3 +1,4 @@
+//! 本模块提供 `hardware` 相关实现。
 //! Hardware Adapter transport with device identity and hotplug policy.
 
 use crate::manifest::AdapterHandle;
@@ -8,10 +9,12 @@ use eva_hardware::{
     HardwareDriverRegistry, SimulatedDriver,
 };
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
     "hardware Adapter transport with device identity and hotplug policy";
 
+/// 执行 `invoke` 对应的受控流程。
 pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
@@ -77,6 +80,7 @@ pub fn invoke(
     })
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,6 +89,7 @@ mod tests {
     use eva_core::{AdapterId, CapabilityName};
     use std::collections::BTreeMap;
 
+    /// 验证 `hardware_transport_returns_simulated_audit_only` 场景下的预期行为。
     #[test]
     fn hardware_transport_returns_simulated_audit_only() {
         let mut handle = AdapterHandle {

@@ -1,3 +1,8 @@
+//! 使用 OpenTelemetry OTLP/HTTP SDK 执行一次有界 trace 与 metrics 导出并生成降级报告。
+//!
+//! 配置错误直接返回失败；collector 构建、刷新或关闭失败则记录降级并返回报告。指标先按
+//! 批大小选择保留头部或尾部，再限制每点标签数；trace 的 SDK 批处理队列同样受批大小约束，
+//! `force_flush` 与 `shutdown` 均成功后才计为已导出。
 //! OpenTelemetry SDK exporter smoke wiring.
 
 use crate::{MetricKind, MetricLabels, MetricPoint, TraceFields};
@@ -12,57 +17,96 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
+/// 定义 `DEFAULT_ENDPOINT` 常量。
 const DEFAULT_ENDPOINT: &str = "http://localhost:4318";
+/// 定义 `DEFAULT_BATCH_SIZE` 常量。
 const DEFAULT_BATCH_SIZE: usize = 32;
+/// 定义 `DEFAULT_TIMEOUT_MS` 常量。
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
+/// 定义 `DEFAULT_MAX_METRIC_LABELS` 常量。
 const DEFAULT_MAX_METRIC_LABELS: usize = 8;
 
+/// 定义指标输入超过本次批大小时保留哪一侧的数据。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenTelemetryDropPolicy {
+    /// 保留最早的一个批次，丢弃其后的新指标点。
     DropNew,
+    /// 丢弃最早的超额点，保留最新的一个批次。
     DropOldest,
 }
 
+/// 定义 OTLP/HTTP 端点、认证、批处理和指标基数上限。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenTelemetryExporterConfig {
+    /// 记录 `endpoint` 字段对应的值。
     pub endpoint: String,
+    /// 仅作为 `authorization` 请求头传给 exporter；报告只暴露是否配置，不暴露原值。
     pub auth_header: Option<String>,
+    /// 同时限制本轮指标点数量及 trace SDK 队列/导出批大小。
     pub batch_size: usize,
+    /// 记录 `timeout_ms` 字段对应的值。
     pub timeout_ms: u64,
+    /// 仅决定超额指标点保留头部还是尾部，不改变 SDK 对 span 队列的内部策略。
     pub drop_policy: OpenTelemetryDropPolicy,
+    /// 每个指标点最多导出的标签数，超额标签计入报告但不使导出失败。
     pub max_metric_labels: usize,
 }
 
+/// 表示 `OpenTelemetryExporterReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenTelemetryExporterReport {
+    /// 记录 `endpoint` 字段对应的值。
     pub endpoint: String,
+    /// 记录 `protocol` 字段对应的值。
     pub protocol: String,
+    /// 记录 `sdk` 字段对应的值。
     pub sdk: String,
+    /// 记录 `auth_configured` 字段对应的值。
     pub auth_configured: bool,
+    /// 记录 `batch_size` 字段对应的值。
     pub batch_size: usize,
+    /// 记录 `timeout_ms` 字段对应的值。
     pub timeout_ms: u64,
+    /// 记录 `drop_policy` 字段对应的值。
     pub drop_policy: String,
+    /// 记录 `max_metric_labels` 字段对应的值。
     pub max_metric_labels: usize,
+    /// 记录 `spans_attempted` 字段对应的值。
     pub spans_attempted: usize,
+    /// 记录 `spans_exported` 字段对应的值。
     pub spans_exported: usize,
+    /// 记录 `metric_points_attempted` 字段对应的值。
     pub metric_points_attempted: usize,
+    /// 记录 `metric_points_exported` 字段对应的值。
     pub metric_points_exported: usize,
+    /// 记录 `metric_points_dropped` 字段对应的值。
     pub metric_points_dropped: usize,
+    /// 记录 `metric_labels_exported` 字段对应的值。
     pub metric_labels_exported: usize,
+    /// 记录 `metric_labels_dropped` 字段对应的值。
     pub metric_labels_dropped: usize,
+    /// 记录 `degraded` 字段对应的值。
     pub degraded: bool,
+    /// 记录 `degraded_reasons` 字段对应的值。
     pub degraded_reasons: Vec<String>,
+    /// 记录 `continuity_key` 字段对应的值。
     pub continuity_key: Option<String>,
 }
 
+/// 表示 `PreparedMetricPoint` 数据结构。
 #[derive(Debug, Clone)]
 struct PreparedMetricPoint {
+    /// 记录 `point` 字段对应的值。
     point: MetricPoint,
+    /// 记录 `labels` 字段对应的值。
     labels: MetricLabels,
+    /// 记录 `dropped_labels` 字段对应的值。
     dropped_labels: usize,
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl Default for OpenTelemetryExporterConfig {
+    /// 创建采用该类型默认配置的实例。
     fn default() -> Self {
         Self {
             endpoint: DEFAULT_ENDPOINT.to_owned(),
@@ -75,7 +119,9 @@ impl Default for OpenTelemetryExporterConfig {
     }
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl OpenTelemetryExporterConfig {
+    /// 创建并初始化当前类型的实例。
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
@@ -83,36 +129,43 @@ impl OpenTelemetryExporterConfig {
         }
     }
 
+    /// 设置 `endpoint` 并返回更新后的实例。
     pub fn with_endpoint(mut self, value: impl Into<String>) -> Self {
         self.endpoint = value.into();
         self
     }
 
+    /// 设置 `auth_header` 并返回更新后的实例。
     pub fn with_auth_header(mut self, value: impl Into<String>) -> Self {
         self.auth_header = Some(value.into());
         self
     }
 
+    /// 设置 `batch_size` 并返回更新后的实例。
     pub fn with_batch_size(mut self, value: usize) -> Self {
         self.batch_size = value;
         self
     }
 
+    /// 设置 `timeout_ms` 并返回更新后的实例。
     pub fn with_timeout_ms(mut self, value: u64) -> Self {
         self.timeout_ms = value;
         self
     }
 
+    /// 设置 `drop_policy` 并返回更新后的实例。
     pub fn with_drop_policy(mut self, value: OpenTelemetryDropPolicy) -> Self {
         self.drop_policy = value;
         self
     }
 
+    /// 设置 `max_metric_labels` 并返回更新后的实例。
     pub fn with_max_metric_labels(mut self, value: usize) -> Self {
         self.max_metric_labels = value;
         self
     }
 
+    /// 判断 `validate` 对应的条件是否成立。
     pub fn validate(&self) -> Result<(), EvaError> {
         if self.endpoint.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -138,7 +191,9 @@ impl OpenTelemetryExporterConfig {
     }
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl OpenTelemetryDropPolicy {
+    /// 解析或检查 `parse` 对应的数据，并报告无效格式。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "drop-new" | "drop_new" => Ok(Self::DropNew),
@@ -151,6 +206,7 @@ impl OpenTelemetryDropPolicy {
         }
     }
 
+    /// 执行 `as_str` 对应的处理逻辑。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DropNew => "drop-new",
@@ -159,12 +215,15 @@ impl OpenTelemetryDropPolicy {
     }
 }
 
+/// 为相关类型实现其约定的行为与方法。
 impl fmt::Display for OpenTelemetryDropPolicy {
+    /// 执行 `fmt` 对应的处理逻辑。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
+/// 校验配置、预处理指标，再分别尝试 trace 和 metrics 导出；单个信号失败不阻止另一信号。
 pub fn run_opentelemetry_exporter_smoke(
     config: OpenTelemetryExporterConfig,
     trace: &TraceFields,
@@ -214,6 +273,7 @@ pub fn run_opentelemetry_exporter_smoke(
     Ok(report)
 }
 
+/// 构建有界批处理 span processor，创建单个 smoke span，并同步刷新、关闭 provider。
 fn export_trace(
     config: &OpenTelemetryExporterConfig,
     trace: &TraceFields,
@@ -265,12 +325,14 @@ fn export_trace(
         |_| {},
     );
 
+    // 只有队列刷新和 provider 关闭都成功，才能确认该 span 已离开本进程。
     match provider.force_flush().and_then(|_| provider.shutdown()) {
         Ok(()) => report.spans_exported = 1,
         Err(error) => record_degradation(report, format!("trace export failed: {error}")),
     }
 }
 
+/// 将预处理后的指标按类型记录到 SDK，并以刷新和关闭结果决定整批是否计为导出。
 fn export_metrics(
     config: &OpenTelemetryExporterConfig,
     metric_points: &[PreparedMetricPoint],
@@ -330,6 +392,7 @@ fn export_metrics(
     }
 }
 
+/// 按丢弃策略截取至单批大小，并对每个保留点独立裁剪标签。
 fn prepare_metric_points(
     metric_points: &[MetricPoint],
     config: &OpenTelemetryExporterConfig,
@@ -357,6 +420,7 @@ fn prepare_metric_points(
     (prepared, dropped_points)
 }
 
+/// 返回 `headers` 对应的数据视图。
 fn headers(config: &OpenTelemetryExporterConfig) -> HashMap<String, String> {
     let mut headers = HashMap::new();
     if let Some(value) = config
@@ -369,6 +433,7 @@ fn headers(config: &OpenTelemetryExporterConfig) -> HashMap<String, String> {
     headers
 }
 
+/// 返回 `signal_endpoint` 对应的数据视图。
 fn signal_endpoint(base: &str, signal_path: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     if trimmed.ends_with(signal_path) {
@@ -378,12 +443,14 @@ fn signal_endpoint(base: &str, signal_path: &str) -> String {
     }
 }
 
+/// 写入或导出 `record_degradation` 对应的可观测性记录。
 fn record_degradation(report: &mut OpenTelemetryExporterReport, reason: String) {
     if !report.degraded_reasons.contains(&reason) {
         report.degraded_reasons.push(reason);
     }
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,19 +462,25 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    /// 表示 `FakeCollectorRecord` 数据结构。
     #[derive(Debug, Clone, Default)]
     struct FakeCollectorRecord {
+        /// 记录 `path` 字段对应的值。
         path: String,
+        /// 记录 `authorization` 字段对应的值。
         authorization: Option<String>,
+        /// 记录 `body_len` 字段对应的值。
         body_len: usize,
     }
 
+    /// 执行 `sample_trace` 对应的处理逻辑。
     fn sample_trace() -> TraceFields {
         TraceFields::default()
             .with_request_id(RequestId::parse("req-otel-smoke").unwrap())
             .with_span_id(SpanId::parse("otel-smoke").unwrap())
     }
 
+    /// 执行 `sample_metrics` 对应的处理逻辑。
     fn sample_metrics() -> Vec<MetricPoint> {
         vec![
             MetricPoint::new(
@@ -439,6 +512,7 @@ mod tests {
         ]
     }
 
+    /// 执行 `start_fake_collector` 对应的处理逻辑。
     fn start_fake_collector(
         expected_requests: usize,
     ) -> (
@@ -470,6 +544,7 @@ mod tests {
         (endpoint, records, handle)
     }
 
+    /// 执行 `handle_connection` 对应的受控流程。
     fn handle_connection(mut stream: TcpStream, records: &Arc<Mutex<Vec<FakeCollectorRecord>>>) {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -515,6 +590,7 @@ mod tests {
             stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
     }
 
+    /// 执行 `request_complete` 对应的处理逻辑。
     fn request_complete(data: &[u8]) -> bool {
         let Some(header_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
             return false;
@@ -533,6 +609,7 @@ mod tests {
         data.len() >= header_end + 4 + content_length
     }
 
+    /// 验证 `opentelemetry_exporter_smoke_reaches_fake_collector` 场景下的预期行为。
     #[test]
     fn opentelemetry_exporter_smoke_reaches_fake_collector() {
         let (endpoint, records, handle) = start_fake_collector(3);
@@ -563,6 +640,7 @@ mod tests {
             .all(|record| record.authorization.as_deref() == Some("Bearer test-token")));
     }
 
+    /// 验证 `opentelemetry_exporter_degrades_when_collector_is_unavailable` 场景下的预期行为。
     #[test]
     fn opentelemetry_exporter_degrades_when_collector_is_unavailable() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -580,6 +658,7 @@ mod tests {
         assert!(!report.degraded_reasons.is_empty());
     }
 
+    /// 验证 `opentelemetry_exporter_applies_batch_and_label_limits` 场景下的预期行为。
     #[test]
     fn opentelemetry_exporter_applies_batch_and_label_limits() {
         let (prepared, dropped_points) = prepare_metric_points(

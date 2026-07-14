@@ -1,3 +1,8 @@
+//! 在受控 `mlua` 虚拟机中执行代理的 `on_event` 处理器。
+//!
+//! VM 只加载 table、string、UTF-8 与 math 标准库，并移除 `rawset`；上下文快照通过只读
+//! 代理暴露。指令钩子共同执行截止时间、指令预算和取消检查，内存由 VM 硬限制；这些终止
+//! 原因会映射为稳定错误码，脚本看不到宿主路径或原始内部错误。
 //! Lua VM adapter boundary for executing controlled Agent scripts.
 
 use crate::bindings::{LuaEventResult, LuaHostContext, LuaHostObservation};
@@ -18,45 +23,62 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "execute Lua on_event handlers behind a VM adapter boundary";
 
+/// 定义 `LUA_TIMEOUT_MARKER` 常量。
 const LUA_TIMEOUT_MARKER: &str = "eva_lua_timeout";
+/// 定义 `LUA_INSTRUCTION_BUDGET_MARKER` 常量。
 const LUA_INSTRUCTION_BUDGET_MARKER: &str = "eva_lua_instruction_budget_exceeded";
+/// 定义 `LUA_CANCELLED_MARKER` 常量。
 const LUA_CANCELLED_MARKER: &str = "eva_lua_cancelled";
+/// 定义 `DEFAULT_HOOK_INSTRUCTION_INTERVAL` 常量。
 const DEFAULT_HOOK_INSTRUCTION_INTERVAL: u32 = 1_000;
 
+/// 表示 `LuaCancellationToken` 数据结构。
 /// Shared cancellation token checked by the Lua VM hook.
 #[derive(Debug, Clone, Default)]
 pub struct LuaCancellationToken {
+    /// 记录 `cancelled` 字段对应的值。
     cancelled: Arc<AtomicBool>,
 }
 
 impl LuaCancellationToken {
+    /// 创建并初始化当前类型的实例。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 执行 `cancel` 对应的处理逻辑。
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
+    /// 判断 `is_cancelled` 对应的条件是否成立。
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
 }
 
+/// 表示 `LuaExecutionLimits` 数据结构。
 /// Execution limits applied inside the Lua VM boundary.
 #[derive(Debug, Clone)]
 pub struct LuaExecutionLimits {
+    /// 记录 `timeout` 字段对应的值。
     pub timeout: Option<Duration>,
+    /// 记录 `instruction_budget` 字段对应的值。
     pub instruction_budget: Option<u64>,
+    /// 记录 `memory_limit_bytes` 字段对应的值。
     pub memory_limit_bytes: Option<usize>,
+    /// 记录 `cancellation_token` 字段对应的值。
     pub cancellation_token: Option<LuaCancellationToken>,
+    /// 记录 `hook_instruction_interval` 字段对应的值。
     pub hook_instruction_interval: u32,
 }
 
 impl LuaExecutionLimits {
+    /// 执行 `none` 对应的处理逻辑。
     pub const fn none() -> Self {
         Self {
             timeout: None,
@@ -67,6 +89,7 @@ impl LuaExecutionLimits {
         }
     }
 
+    /// 设置 `timeout` 并返回更新后的实例。
     pub const fn with_timeout(timeout: Duration) -> Self {
         Self {
             timeout: Some(timeout),
@@ -77,6 +100,7 @@ impl LuaExecutionLimits {
         }
     }
 
+    /// 设置 `instruction_budget` 并返回更新后的实例。
     pub const fn with_instruction_budget(instruction_budget: u64) -> Self {
         Self {
             timeout: None,
@@ -87,11 +111,13 @@ impl LuaExecutionLimits {
         }
     }
 
+    /// 设置 `instruction_budget_limit` 并返回更新后的实例。
     pub const fn with_instruction_budget_limit(mut self, instruction_budget: u64) -> Self {
         self.instruction_budget = Some(instruction_budget);
         self
     }
 
+    /// 设置 `memory_limit_bytes` 并返回更新后的实例。
     pub const fn with_memory_limit_bytes(memory_limit_bytes: usize) -> Self {
         Self {
             timeout: None,
@@ -102,16 +128,19 @@ impl LuaExecutionLimits {
         }
     }
 
+    /// 设置 `memory_limit` 并返回更新后的实例。
     pub const fn with_memory_limit(mut self, memory_limit_bytes: usize) -> Self {
         self.memory_limit_bytes = Some(memory_limit_bytes);
         self
     }
 
+    /// 设置 `cancellation_token` 并返回更新后的实例。
     pub fn with_cancellation_token(mut self, cancellation_token: LuaCancellationToken) -> Self {
         self.cancellation_token = Some(cancellation_token);
         self
     }
 
+    /// 设置 `hook_instruction_interval` 并返回更新后的实例。
     pub const fn with_hook_instruction_interval(mut self, interval: u32) -> Self {
         self.hook_instruction_interval = interval;
         self
@@ -119,13 +148,16 @@ impl LuaExecutionLimits {
 }
 
 impl Default for LuaExecutionLimits {
+    /// 创建采用该类型默认资源限制的实例。
     fn default() -> Self {
         Self::none()
     }
 }
 
+/// 约定 `LuaVmAdapter` 实现需要满足的接口。
 /// Adapter trait for Lua VM implementations.
 pub trait LuaVmAdapter {
+    /// 执行 `run_on_event_with_limits` 对应的受控流程。
     fn run_on_event_with_limits(
         &self,
         script: &LuaScript,
@@ -134,6 +166,7 @@ pub trait LuaVmAdapter {
         limits: LuaExecutionLimits,
     ) -> Result<LuaEventResult, EvaError>;
 
+    /// 执行 `run_on_event` 对应的受控流程。
     fn run_on_event(
         &self,
         script: &LuaScript,
@@ -143,6 +176,7 @@ pub trait LuaVmAdapter {
         self.run_on_event_with_limits(script, event, ctx, LuaExecutionLimits::default())
     }
 
+    /// 执行 `run_on_event_with_tools_and_limits` 对应的受控流程。
     fn run_on_event_with_tools_and_limits(
         &self,
         script: &LuaScript,
@@ -155,6 +189,7 @@ pub trait LuaVmAdapter {
         self.run_on_event_with_limits(script, event, ctx, limits)
     }
 
+    /// 执行 `run_on_event_with_tools` 对应的受控流程。
     fn run_on_event_with_tools(
         &self,
         script: &LuaScript,
@@ -172,11 +207,13 @@ pub trait LuaVmAdapter {
     }
 }
 
+/// 表示 `MluaVmAdapter` 数据结构。
 /// `mlua`-backed VM adapter used by the V1.7.1 execution boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MluaVmAdapter;
 
 impl LuaVmAdapter for MluaVmAdapter {
+    /// 执行 `run_on_event_with_limits` 对应的受控流程。
     fn run_on_event_with_limits(
         &self,
         script: &LuaScript,
@@ -187,6 +224,7 @@ impl LuaVmAdapter for MluaVmAdapter {
         self.run_on_event_inner(script, event, ctx, None, limits)
     }
 
+    /// 执行 `run_on_event_with_tools_and_limits` 对应的受控流程。
     fn run_on_event_with_tools_and_limits(
         &self,
         script: &LuaScript,
@@ -200,6 +238,7 @@ impl LuaVmAdapter for MluaVmAdapter {
 }
 
 impl MluaVmAdapter {
+    /// 执行 `run_on_event_inner` 对应的受控流程。
     fn run_on_event_inner(
         &self,
         script: &LuaScript,
@@ -234,6 +273,7 @@ impl MluaVmAdapter {
     }
 }
 
+/// 执行 `controlled_lua` 对应的处理逻辑。
 fn controlled_lua() -> Result<Lua, EvaError> {
     let lua = Lua::new_with(
         StdLib::TABLE | StdLib::STRING | StdLib::UTF8 | StdLib::MATH,
@@ -246,6 +286,7 @@ fn controlled_lua() -> Result<Lua, EvaError> {
     Ok(lua)
 }
 
+/// 执行 `install_execution_limits` 对应的处理逻辑。
 fn install_execution_limits(lua: &Lua, limits: &LuaExecutionLimits) -> Result<(), EvaError> {
     if let Some(memory_limit_bytes) = limits.memory_limit_bytes {
         lua.set_memory_limit(memory_limit_bytes)
@@ -289,6 +330,7 @@ fn install_execution_limits(lua: &Lua, limits: &LuaExecutionLimits) -> Result<()
     Ok(())
 }
 
+/// 执行 `lua_timeout_error` 对应的处理逻辑。
 fn lua_timeout_error(limits: &LuaExecutionLimits) -> EvaError {
     let timeout_ms = if let Some(timeout) = limits.timeout {
         timeout.as_millis().to_string()
@@ -301,6 +343,7 @@ fn lua_timeout_error(limits: &LuaExecutionLimits) -> EvaError {
         .with_context("timeout_ms", timeout_ms)
 }
 
+/// 执行 `lua_instruction_budget_error` 对应的处理逻辑。
 fn lua_instruction_budget_error(limits: &LuaExecutionLimits) -> EvaError {
     let instruction_budget = limits
         .instruction_budget
@@ -312,6 +355,7 @@ fn lua_instruction_budget_error(limits: &LuaExecutionLimits) -> EvaError {
         .with_context("instruction_budget", instruction_budget)
 }
 
+/// 执行 `lua_memory_limit_error` 对应的处理逻辑。
 fn lua_memory_limit_error(limits: &LuaExecutionLimits) -> EvaError {
     let memory_limit_bytes = limits
         .memory_limit_bytes
@@ -323,6 +367,7 @@ fn lua_memory_limit_error(limits: &LuaExecutionLimits) -> EvaError {
         .with_context("memory_limit_bytes", memory_limit_bytes)
 }
 
+/// 执行 `lua_cancelled_error` 对应的处理逻辑。
 fn lua_cancelled_error() -> EvaError {
     EvaError::conflict("Lua on_event was cancelled")
         .with_provider_code("lua_cancelled")
@@ -330,6 +375,7 @@ fn lua_cancelled_error() -> EvaError {
         .with_context("lua_phase", "handler")
 }
 
+/// 判断 `is_lua_timeout_error` 对应的条件是否成立。
 fn is_lua_timeout_error(error: &mlua::Error) -> bool {
     match error {
         mlua::Error::RuntimeError(message) => message == LUA_TIMEOUT_MARKER,
@@ -338,6 +384,7 @@ fn is_lua_timeout_error(error: &mlua::Error) -> bool {
     }
 }
 
+/// 判断 `is_lua_instruction_budget_error` 对应的条件是否成立。
 fn is_lua_instruction_budget_error(error: &mlua::Error) -> bool {
     match error {
         mlua::Error::RuntimeError(message) => message == LUA_INSTRUCTION_BUDGET_MARKER,
@@ -346,6 +393,7 @@ fn is_lua_instruction_budget_error(error: &mlua::Error) -> bool {
     }
 }
 
+/// 判断 `is_lua_cancelled_error` 对应的条件是否成立。
 fn is_lua_cancelled_error(error: &mlua::Error) -> bool {
     match error {
         mlua::Error::RuntimeError(message) => message == LUA_CANCELLED_MARKER,
@@ -354,6 +402,7 @@ fn is_lua_cancelled_error(error: &mlua::Error) -> bool {
     }
 }
 
+/// 判断 `is_lua_memory_limit_error` 对应的条件是否成立。
 fn is_lua_memory_limit_error(error: &mlua::Error) -> bool {
     match error {
         mlua::Error::MemoryError(_) => true,
@@ -362,6 +411,7 @@ fn is_lua_memory_limit_error(error: &mlua::Error) -> bool {
     }
 }
 
+/// 执行 `on_event_handler` 对应的处理逻辑。
 fn on_event_handler<'lua>(lua: &'lua Lua, loaded: Value<'lua>) -> Result<Function<'lua>, EvaError> {
     if let Value::Table(table) = loaded {
         if let Some(handler) = table
@@ -400,6 +450,7 @@ fn on_event_handler<'lua>(lua: &'lua Lua, loaded: Value<'lua>) -> Result<Functio
     )
 }
 
+/// 执行 `event_table` 对应的处理逻辑。
 fn event_table<'lua>(lua: &'lua Lua, event: &Event) -> Result<Table<'lua>, EvaError> {
     readonly_table(lua, |table| {
         table
@@ -421,6 +472,7 @@ fn event_table<'lua>(lua: &'lua Lua, event: &Event) -> Result<Table<'lua>, EvaEr
     })
 }
 
+/// 执行 `ctx_table` 对应的处理逻辑。
 fn ctx_table<'lua>(
     lua: &'lua Lua,
     event: &Event,
@@ -464,6 +516,7 @@ fn ctx_table<'lua>(
     })
 }
 
+/// 执行 `tools_table` 对应的处理逻辑。
 fn tools_table<'lua>(
     lua: &'lua Lua,
     event: &Event,
@@ -524,10 +577,12 @@ fn tools_table<'lua>(
     })
 }
 
+/// 执行 `trace_to_core_trace` 对应的处理逻辑。
 fn trace_to_core_trace(trace: &TraceFields) -> TraceContext {
     TraceContext::new(trace.correlation_id.clone(), trace.causation_id.clone())
 }
 
+/// 执行 `lua_value_to_json` 对应的处理逻辑。
 fn lua_value_to_json(value: Value<'_>) -> Result<String, EvaError> {
     match value {
         Value::Nil => Ok("null".to_owned()),
@@ -546,6 +601,7 @@ fn lua_value_to_json(value: Value<'_>) -> Result<String, EvaError> {
     }
 }
 
+/// 执行 `lua_table_to_json` 对应的处理逻辑。
 fn lua_table_to_json(table: Table<'_>) -> Result<String, EvaError> {
     let mut array_entries = BTreeMap::new();
     let mut object_entries = Vec::new();
@@ -599,6 +655,7 @@ fn lua_table_to_json(table: Table<'_>) -> Result<String, EvaError> {
     ))
 }
 
+/// 执行 `tool_response_table` 对应的处理逻辑。
 fn tool_response_table<'lua>(
     lua: &'lua Lua,
     response: &eva_core::InvokeResponse,
@@ -622,6 +679,7 @@ fn tool_response_table<'lua>(
     Ok(table)
 }
 
+/// 执行 `invoke_status` 对应的受控流程。
 fn invoke_status(status: InvokeStatus) -> &'static str {
     match status {
         InvokeStatus::Accepted => "accepted",
@@ -632,6 +690,7 @@ fn invoke_status(status: InvokeStatus) -> &'static str {
     }
 }
 
+/// 执行 `json_string` 对应的处理逻辑。
 fn json_string(value: &str) -> String {
     let mut output = String::with_capacity(value.len() + 2);
     output.push('"');
@@ -650,16 +709,19 @@ fn json_string(value: &str) -> String {
     output
 }
 
+/// 执行 `json_value_error` 对应的处理逻辑。
 fn json_value_error(message: impl Into<String>) -> EvaError {
     EvaError::invalid_argument(message)
         .with_provider_code("lua_tool_json_error")
         .with_context("lua_phase", "tool_call")
 }
 
+/// 执行 `map_lua_value_error` 对应的处理逻辑。
 fn map_lua_value_error(_: mlua::Error) -> EvaError {
     json_value_error("Lua value could not be converted to JSON")
 }
 
+/// 执行 `host_table` 对应的处理逻辑。
 fn host_table<'lua>(
     lua: &'lua Lua,
     event: &Event,
@@ -698,10 +760,12 @@ fn host_table<'lua>(
     })
 }
 
+/// 执行 `trace_fields` 对应的处理逻辑。
 fn trace_fields(event: &Event, ctx: &LuaHostContext) -> TraceFields {
     TraceFields::from_event(event).with_agent_id(ctx.agent_id.clone())
 }
 
+/// 执行 `request_table` 对应的处理逻辑。
 fn request_table<'lua>(lua: &'lua Lua, event: &Event) -> Result<Table<'lua>, EvaError> {
     readonly_table(lua, |table| {
         table
@@ -724,6 +788,7 @@ fn request_table<'lua>(lua: &'lua Lua, event: &Event) -> Result<Table<'lua>, Eva
     })
 }
 
+/// 执行 `trace_table` 对应的处理逻辑。
 fn trace_table<'lua>(lua: &'lua Lua, event: &Event) -> Result<Table<'lua>, EvaError> {
     readonly_table(lua, |table| {
         if let Some(correlation_id) = event.metadata().trace().correlation_id() {
@@ -740,6 +805,7 @@ fn trace_table<'lua>(lua: &'lua Lua, event: &Event) -> Result<Table<'lua>, EvaEr
     })
 }
 
+/// 执行 `memory_table` 对应的处理逻辑。
 fn memory_table<'lua>(lua: &'lua Lua, ctx: &LuaHostContext) -> Result<Table<'lua>, EvaError> {
     readonly_table(lua, |table| {
         table
@@ -758,6 +824,7 @@ fn memory_table<'lua>(lua: &'lua Lua, ctx: &LuaHostContext) -> Result<Table<'lua
     })
 }
 
+/// 执行 `audit_table` 对应的处理逻辑。
 fn audit_table<'lua>(lua: &'lua Lua, ctx: &LuaHostContext) -> Result<Table<'lua>, EvaError> {
     readonly_table(lua, |table| {
         for (index, entry) in ctx.context.audit.iter().enumerate() {
@@ -769,6 +836,7 @@ fn audit_table<'lua>(lua: &'lua Lua, ctx: &LuaHostContext) -> Result<Table<'lua>
     })
 }
 
+/// 读取或解析 `readonly_table` 所需的数据，失败时保留错误语义。
 fn readonly_table<'lua, F>(lua: &'lua Lua, populate: F) -> Result<Table<'lua>, EvaError>
 where
     F: FnOnce(&Table<'lua>) -> Result<(), EvaError>,
@@ -800,6 +868,7 @@ where
     Ok(proxy)
 }
 
+/// 执行 `result_table` 对应的处理逻辑。
 fn result_table(result: Value<'_>) -> Result<Table<'_>, EvaError> {
     match result {
         Value::Table(table) => Ok(table),
@@ -811,6 +880,7 @@ fn result_table(result: Value<'_>) -> Result<Table<'_>, EvaError> {
     }
 }
 
+/// 执行 `lua_result` 对应的处理逻辑。
 fn lua_result(
     table: Table<'_>,
     event: &Event,
@@ -857,18 +927,21 @@ fn lua_result(
     })
 }
 
+/// 执行 `map_host_setup_error` 对应的处理逻辑。
 fn map_host_setup_error(_: mlua::Error) -> EvaError {
     EvaError::internal("Lua VM host setup failed")
         .with_provider_code("lua_host_setup_error")
         .with_context("lua_phase", "host_setup")
 }
 
+/// 执行 `map_memory_limit_setup_error` 对应的处理逻辑。
 fn map_memory_limit_setup_error(_: mlua::Error) -> EvaError {
     EvaError::unsupported("Lua memory limit is not available")
         .with_provider_code("lua_memory_limit_unavailable")
         .with_context("lua_phase", "host_setup")
 }
 
+/// 执行 `map_load_error` 对应的处理逻辑。
 fn map_load_error(error: mlua::Error, limits: &LuaExecutionLimits) -> EvaError {
     if is_lua_memory_limit_error(&error) {
         return lua_memory_limit_error(limits).with_context("lua_phase", "load");
@@ -894,6 +967,7 @@ fn map_load_error(error: mlua::Error, limits: &LuaExecutionLimits) -> EvaError {
     }
 }
 
+/// 执行 `map_handler_error` 对应的处理逻辑。
 fn map_handler_error(error: mlua::Error, limits: &LuaExecutionLimits) -> EvaError {
     if is_lua_memory_limit_error(&error) {
         return lua_memory_limit_error(limits);
@@ -912,10 +986,12 @@ fn map_handler_error(error: mlua::Error, limits: &LuaExecutionLimits) -> EvaErro
         .with_context("lua_phase", "handler")
 }
 
+/// 执行 `map_tool_error` 对应的处理逻辑。
 fn map_tool_error(error: EvaError) -> mlua::Error {
     mlua::Error::RuntimeError(format!("Eva tool call failed: {}", error.message()))
 }
 
+/// 执行 `map_result_error` 对应的处理逻辑。
 fn map_result_error(_: mlua::Error) -> EvaError {
     EvaError::invalid_argument("Lua on_event returned an invalid result")
         .with_provider_code("lua_result_error")

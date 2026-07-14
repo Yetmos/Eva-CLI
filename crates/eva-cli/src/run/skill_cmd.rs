@@ -1,3 +1,5 @@
+//! Skill 列表与受控调用子命令；执行前必须经过项目策略门禁。
+
 use super::{
     join_capabilities, json_array, json_string, option_json, parse_common_options, required_option,
     success_envelope, trace_for, trace_json, write_command_error, write_error_kind, CommonOptions,
@@ -11,21 +13,38 @@ use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Skill 子命令及其已解析选项。
 pub(super) enum SkillCommand {
-    List(CommonOptions),
-    Run(SkillRunOptions),
+    /// 列出 Skill transport Adapter。
+    List(
+        /// Skill 列表命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
+    /// 通过 AdapterRuntime 运行一个受控 Skill capability。
+    Run(
+        /// 已解析的 Adapter、Skill、载荷、确认标志与公共选项。
+        SkillRunOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Skill 调用选项；可用 Adapter ID 或 Skill ID 选择 provider。
 pub(super) struct SkillRunOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 显式 Adapter provider ID，优先级最高。
     adapter_id: Option<String>,
+    /// 未指定 Adapter 时用于查找 Skill transport 的 Skill ID。
     skill_id: Option<String>,
+    /// 可选 capability；缺省使用受控工作流能力。
     capability: Option<String>,
+    /// 透传给 Adapter 的输入文本。
     input: String,
+    /// 用于调用审计和 trace 关联的请求 ID。
     request_id: String,
 }
 
+/// 解析 `skill list|run` 子命令。
 pub(super) fn parse_skill_command(args: &[String]) -> Result<SkillCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -39,6 +58,7 @@ pub(super) fn parse_skill_command(args: &[String]) -> Result<SkillCommand, EvaEr
     }
 }
 
+/// 加载项目和 Adapter 运行时后执行 Skill 命令，失败使用统一命令错误契约。
 pub(super) fn execute_skill<W, E>(
     command: SkillCommand,
     stdout: &mut W,
@@ -87,6 +107,7 @@ where
     }
 }
 
+/// 解析 Skill 调用选项并在进入运行时前校验请求 ID。
 fn parse_skill_run_options(args: &[String]) -> Result<SkillRunOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut adapter_id = None;
@@ -134,6 +155,10 @@ fn parse_skill_run_options(args: &[String]) -> Result<SkillRunOptions, EvaError>
     })
 }
 
+/// 选择 Skill provider、执行高风险策略门禁并发起 Adapter 调用。
+///
+/// 显式 Adapter ID 优先；否则按 Skill ID 查找。只有实际选中的 Skill transport 才检查
+/// `SkillRun` 门禁，拒绝会在调用前返回，保证未授权路径没有 provider 副作用。
 fn run_skill_runtime(
     runtime: &AdapterRuntime,
     project: &ProjectConfig,
@@ -180,6 +205,7 @@ fn run_skill_runtime(
     runtime.invoke(invocation)
 }
 
+/// 输出 Skill transport Adapter 与其 gate/capability 元数据。
 fn write_skill_list<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -215,6 +241,7 @@ fn write_skill_list<W: Write>(
     }
 }
 
+/// 输出 Skill 的 Adapter 调用报告，并保留调用 trace 和审计信息。
 fn write_adapter_invoke<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -241,6 +268,7 @@ fn write_adapter_invoke<W: Write>(
     }
 }
 
+/// 过滤并编码 Skill transport 句柄列表。
 fn skill_list_json(runtime: &AdapterRuntime) -> String {
     let entries = runtime
         .list()
@@ -260,6 +288,7 @@ fn skill_list_json(runtime: &AdapterRuntime) -> String {
     format!("{{\"skills\":{}}}", json_array(entries))
 }
 
+/// 将 Adapter 调用结果编码为稳定 JSON，包括审计与 trace。
 fn adapter_invoke_json(report: &AdapterInvokeReport) -> String {
     format!(
         "{{\"request_id\":{},\"adapter_id\":{},\"transport\":{},\"capability\":{},\"status\":{},\"output\":{},\"audit\":{},\"trace\":{}}}",

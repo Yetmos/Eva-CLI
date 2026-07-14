@@ -13,13 +13,22 @@ use std::time::Duration;
 pub enum InvokeTarget {
     /// 中文：调用指定 Agent。
     /// English: Invoke a specific Agent.
-    Agent(AgentId),
+    Agent(
+        /// 接收调用的 Agent 稳定标识。
+        AgentId,
+    ),
     /// 中文：调用命名 Capability，由上层路由决定 provider。
     /// English: Invoke a named Capability; upper routing decides the provider.
-    Capability(CapabilityName),
+    Capability(
+        /// 交由上层路由选择 provider 的 Capability 名称。
+        CapabilityName,
+    ),
     /// 中文：调用指定 Adapter。
     /// English: Invoke a specific Adapter.
-    Adapter(AdapterId),
+    Adapter(
+        /// 接收调用的 Adapter 稳定标识。
+        AdapterId,
+    ),
 }
 
 /// 中文：不透明 invoke 输入；复用 EventPayload 以保持事件与调用通道 payload 一致。
@@ -262,10 +271,12 @@ impl InvokeResponse {
         )
     }
 
+    /// 创建保留既有结构化错误的 timeout 响应，供 provider code 和诊断上下文透传。
     pub fn timeout_with_error(request_id: RequestId, error: EvaError) -> Self {
         Self::new(request_id, InvokeStatus::Timeout, None, Some(error))
     }
 
+    /// 汇总所有响应状态的公共构造路径，确保 metadata 始终存在且输出、错误由状态构造器约束。
     fn new(
         request_id: RequestId,
         status: InvokeStatus,
@@ -326,14 +337,17 @@ impl InvokeResponse {
 }
 
 #[cfg(test)]
+/// Invoke 请求、终态和结构化失败语义的回归测试。
 mod tests {
     use super::*;
 
+    /// 将测试文本转换为已校验请求 ID。
     fn request_id(value: &str) -> RequestId {
         RequestId::parse(value).unwrap()
     }
 
     #[test]
+    /// 验证 invoke 请求必须携带明确目标，并保留输入数据。
     fn invoke_request_requires_target() {
         let target = InvokeTarget::Agent(AgentId::parse("agent-root").unwrap());
         let request = InvokeRequest::new(request_id("req-1"), target, InvokeInput::text("run"));
@@ -344,6 +358,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 timeout、代际和调用方等调度 metadata 可附加到请求。
     fn invoke_request_accepts_metadata() {
         let target = InvokeTarget::Capability(CapabilityName::parse("repo.summary").unwrap());
         let metadata = InvokeMetadata::new()
@@ -362,6 +377,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 completed 是唯一成功终态且携带输出。
     fn completed_response_is_success() {
         let response = InvokeResponse::completed(request_id("req-1"), InvokeOutput::text("ok"));
 
@@ -372,6 +388,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 accepted 仅表示已接收，不能被误判为成功终态。
     fn accepted_response_is_not_terminal() {
         let response = InvokeResponse::accepted(request_id("req-1"));
 
@@ -382,6 +399,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 failed 响应保留原始结构化错误并标记为终态。
     fn failed_response_carries_error() {
         let error = EvaError::not_found("missing agent");
         let response = InvokeResponse::failed(request_id("req-1"), error.clone());
@@ -392,6 +410,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 timeout 是可重试的终态并始终携带诊断错误。
     fn timeout_response_is_terminal() {
         let response = InvokeResponse::timeout(request_id("req-1"), "agent timed out");
 
@@ -401,6 +420,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 timeout 构造器不会丢失 provider code 与上下文字段。
     fn timeout_response_can_preserve_structured_error_context() {
         let error = EvaError::timeout("provider timed out")
             .with_provider_code("adapter_status_timeout")
@@ -413,6 +433,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证取消未提供原因时仍生成可诊断的默认错误。
     fn cancelled_response_carries_default_reason() {
         let response = InvokeResponse::cancelled(request_id("req-1"), None);
 
@@ -422,6 +443,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 invoke 协议可区分 Agent、Capability 与 Adapter 三类目标。
     fn invoke_target_supports_agent_capability_and_adapter() {
         let agent = InvokeTarget::Agent(AgentId::parse("agent-root").unwrap());
         let capability = InvokeTarget::Capability(CapabilityName::parse("repo.summary").unwrap());

@@ -1,38 +1,61 @@
+//! 通过能力绑定和设备租约调用硬件驱动，隔离原始设备访问。
+//!
+//! 驱动注册表按稳定标识拒绝重复项；调用只传递受控操作封装。模拟器契约套件明确验证能力
+//! 不匹配会被拒绝、审计不允许原始 I/O，且输出不得泄露设备句柄或平台路径。
 //! Driver binding behind policy-controlled interfaces.
 
 use crate::registry::DeviceLease;
 use eva_core::{CapabilityName, EvaError, RequestId};
 use std::collections::BTreeMap;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "driver binding behind policy-controlled interfaces";
 
+/// 表示 `DriverBinding` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverBinding {
+    /// 记录 `driver_id` 字段对应的值。
     pub driver_id: String,
+    /// 记录 `capability` 字段对应的值。
     pub capability: CapabilityName,
+    /// 记录 `device_class` 字段对应的值。
     pub device_class: String,
+    /// 记录 `read_only` 字段对应的值。
     pub read_only: bool,
 }
 
+/// 表示 `DriverOperation` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverOperation {
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
+    /// 记录 `capability` 字段对应的值。
     pub capability: CapabilityName,
+    /// 记录 `input` 字段对应的值。
     pub input: String,
 }
 
+/// 表示 `DriverOutput` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverOutput {
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
+    /// 记录 `capability` 字段对应的值。
     pub capability: CapabilityName,
+    /// 记录 `status` 字段对应的值。
     pub status: String,
+    /// 记录 `output` 字段对应的值。
     pub output: String,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 约定 `HardwareDriver` 实现需要满足的接口。
 pub trait HardwareDriver {
+    /// 返回 `binding` 对应的数据视图。
     fn binding(&self) -> &DriverBinding;
+    /// 执行 `invoke` 对应的受控流程。
     fn invoke(
         &self,
         lease: &DeviceLease,
@@ -40,27 +63,39 @@ pub trait HardwareDriver {
     ) -> Result<DriverOutput, EvaError>;
 }
 
+/// 表示 `HardwareDriverRegistry` 数据结构。
 #[derive(Default)]
 pub struct HardwareDriverRegistry {
+    /// 记录 `drivers` 字段对应的值。
     drivers: BTreeMap<String, Box<dyn HardwareDriver>>,
 }
 
+/// 表示 `SimulatorContractReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimulatorContractReport {
+    /// 记录 `driver_id` 字段对应的值。
     pub driver_id: String,
+    /// 记录 `device_id` 字段对应的值。
     pub device_id: String,
+    /// 记录 `capability` 字段对应的值。
     pub capability: CapabilityName,
+    /// 记录 `raw_io_allowed` 字段对应的值。
     pub raw_io_allowed: bool,
+    /// 记录 `raw_handle_exposed` 字段对应的值。
     pub raw_handle_exposed: bool,
+    /// 记录 `capability_mismatch_rejected` 字段对应的值。
     pub capability_mismatch_rejected: bool,
 }
 
+/// 表示 `SimulatedDriver` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimulatedDriver {
+    /// 记录 `binding` 字段对应的值。
     binding: DriverBinding,
 }
 
 impl DriverBinding {
+    /// 创建并初始化当前类型的实例。
     pub fn new(
         driver_id: impl Into<String>,
         capability: CapabilityName,
@@ -83,6 +118,7 @@ impl DriverBinding {
 }
 
 impl DriverOperation {
+    /// 创建并初始化当前类型的实例。
     pub fn new(request_id: RequestId, capability: CapabilityName) -> Self {
         Self {
             request_id,
@@ -91,6 +127,7 @@ impl DriverOperation {
         }
     }
 
+    /// 设置 `input` 并返回更新后的实例。
     pub fn with_input(mut self, input: impl Into<String>) -> Self {
         self.input = input.into();
         self
@@ -98,16 +135,19 @@ impl DriverOperation {
 }
 
 impl SimulatedDriver {
+    /// 创建并初始化当前类型的实例。
     pub fn new(binding: DriverBinding) -> Self {
         Self { binding }
     }
 }
 
 impl HardwareDriverRegistry {
+    /// 创建并初始化当前类型的实例。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 登记 `register` 对应的数据或状态。
     pub fn register<D>(&mut self, driver: D) -> Result<(), EvaError>
     where
         D: HardwareDriver + 'static,
@@ -121,6 +161,7 @@ impl HardwareDriverRegistry {
         Ok(())
     }
 
+    /// 返回 `list_bindings` 对应的数据视图。
     pub fn list_bindings(&self) -> Vec<&DriverBinding> {
         self.drivers
             .values()
@@ -128,10 +169,12 @@ impl HardwareDriverRegistry {
             .collect()
     }
 
+    /// 返回 `binding` 对应的数据视图。
     pub fn binding(&self, driver_id: &str) -> Option<&DriverBinding> {
         self.drivers.get(driver_id).map(|driver| driver.binding())
     }
 
+    /// 执行 `invoke` 对应的受控流程。
     pub fn invoke(
         &self,
         driver_id: &str,
@@ -146,6 +189,7 @@ impl HardwareDriverRegistry {
     }
 }
 
+/// 执行 `run_simulator_contract_suite` 对应的受控流程。
 pub fn run_simulator_contract_suite<D>(
     driver: &D,
     lease: &DeviceLease,
@@ -191,10 +235,12 @@ where
 }
 
 impl HardwareDriver for SimulatedDriver {
+    /// 返回 `binding` 对应的数据视图。
     fn binding(&self) -> &DriverBinding {
         &self.binding
     }
 
+    /// 执行 `invoke` 对应的受控流程。
     fn invoke(
         &self,
         lease: &DeviceLease,
@@ -226,11 +272,13 @@ impl HardwareDriver for SimulatedDriver {
     }
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::DeviceId;
 
+    /// 验证 `simulated_driver_requires_matching_capability` 场景下的预期行为。
     #[test]
     fn simulated_driver_requires_matching_capability() {
         let binding = DriverBinding::new(
@@ -259,6 +307,7 @@ mod tests {
         assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
     }
 
+    /// 验证 `driver_registry_invokes_registered_simulator` 场景下的预期行为。
     #[test]
     fn driver_registry_invokes_registered_simulator() {
         let binding = DriverBinding::new(
@@ -293,6 +342,7 @@ mod tests {
         assert_eq!(registry.list_bindings().len(), 1);
     }
 
+    /// 验证 `simulator_contract_suite_rejects_raw_io_and_capability_bypass` 场景下的预期行为。
     #[test]
     fn simulator_contract_suite_rejects_raw_io_and_capability_bypass() {
         let binding = DriverBinding::new(

@@ -1,3 +1,8 @@
+//! 将适配器清单转换为受控 MCP 工具调用。
+//!
+//! 工具名先经过显式允许列表，HTTP 模式还要求与当前提供者、请求和能力完全匹配的凭据
+//! 作用域；这些检查均发生在启动进程或建立网络连接之前。协议响应大小与超时沿用适配器
+//! 限额，鉴权头的原值不会进入审计输出。
 //! MCP transport backed by eva-mcp JSON-RPC allowlist checks.
 
 use crate::manifest::AdapterHandle;
@@ -11,9 +16,11 @@ use eva_core::EvaError;
 use eva_mcp::{McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig, McpServerTransport};
 use std::collections::BTreeMap;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "MCP transport with tool, resource, and prompt allowlists";
 
+/// 执行 `invoke` 对应的受控流程。
 pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
@@ -127,6 +134,7 @@ pub fn invoke(
     })
 }
 
+/// 校验 `validate_input_size` 对应的约束，不满足时返回明确错误。
 fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaError> {
     if let Some(limit) = handle.max_prompt_bytes {
         if input.len() > limit {
@@ -141,13 +149,18 @@ fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaErr
     Ok(())
 }
 
+/// 表示 `McpHeaderPlan` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct McpHeaderPlan {
+    /// 记录 `headers` 字段对应的值。
     headers: BTreeMap<String, String>,
+    /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
+    /// 记录 `sensitive_values` 字段对应的值。
     sensitive_values: Vec<String>,
 }
 
+/// 执行 `mcp_http_headers` 对应的处理逻辑。
 fn mcp_http_headers(handle: &AdapterHandle) -> Result<McpHeaderPlan, EvaError> {
     let mut headers = BTreeMap::new();
     let mut audit = Vec::new();
@@ -179,10 +192,12 @@ fn mcp_http_headers(handle: &AdapterHandle) -> Result<McpHeaderPlan, EvaError> {
     })
 }
 
+/// 执行 `timeout_ms` 对应的处理逻辑。
 fn timeout_ms(handle: &AdapterHandle) -> u64 {
     handle.timeout_ms.unwrap_or(30_000)
 }
 
+/// 执行 `output_limit_bytes` 对应的处理逻辑。
 fn output_limit_bytes(handle: &AdapterHandle) -> usize {
     handle
         .output_limit_bytes
@@ -190,6 +205,7 @@ fn output_limit_bytes(handle: &AdapterHandle) -> usize {
         .unwrap_or(64 * 1024)
 }
 
+/// 执行 `json_string` 对应的处理逻辑。
 fn json_string(value: &str) -> String {
     let mut escaped = String::from("\"");
     for character in value.chars() {
@@ -206,6 +222,7 @@ fn json_string(value: &str) -> String {
     escaped
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +230,7 @@ mod tests {
     use eva_config::AdapterTransport;
     use eva_core::{CapabilityName, ErrorKind, RequestId};
 
+    /// 验证 `http_mcp_requires_provider_credential_scope_before_rpc` 场景下的预期行为。
     #[test]
     fn http_mcp_requires_provider_credential_scope_before_rpc() {
         let handle = http_mcp_handle(BTreeMap::new());
@@ -229,6 +247,7 @@ mod tests {
         assert!(error.message().contains("credential session"));
     }
 
+    /// 验证 `http_mcp_missing_auth_env_returns_policy_error` 场景下的预期行为。
     #[test]
     fn http_mcp_missing_auth_env_returns_policy_error() {
         let env_name = "EVA_TEST_MCP_HTTP_MISSING_AUTH";
@@ -259,6 +278,7 @@ mod tests {
         );
     }
 
+    /// 执行 `http_mcp_handle` 对应的处理逻辑。
     fn http_mcp_handle(headers: BTreeMap<String, String>) -> AdapterHandle {
         AdapterHandle {
             id: eva_core::AdapterId::parse("mcp-http-test").unwrap(),

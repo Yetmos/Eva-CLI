@@ -1,3 +1,5 @@
+//! 硬件发现、探测和绑定计划子命令；CLI 只验证逻辑路径，不直接打开原始设备 I/O。
+
 use super::{
     json_array, json_string, option_json, parse_common_options, required_option, success_envelope,
     trace_for, write_command_error, write_error_kind, write_risk_lines_text, CommonOptions,
@@ -14,40 +16,73 @@ use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use std::io::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Hardware 子命令及其已解析选项。
 pub(super) enum HardwareCommand {
-    List(CommonOptions),
-    Probe(HardwareProbeOptions),
-    Bind(HardwareBindOptions),
+    /// 列出配置与平台发现到的设备候选。
+    List(
+        /// 硬件列表命令共享的项目根目录与输出格式。
+        CommonOptions,
+    ),
+    /// 可选按 Adapter ID 过滤设备候选。
+    Probe(
+        /// 已解析的可选 Adapter 过滤条件与公共选项。
+        HardwareProbeOptions,
+    ),
+    /// 构造受策略和 OS 权限约束的绑定计划。
+    Bind(
+        /// 已解析的设备、Adapter、capability 与授权上下文。
+        HardwareBindOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 硬件探测选项。
 pub(super) struct HardwareProbeOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 可选 Adapter ID 过滤条件。
     adapter_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 硬件绑定规划选项。
 pub(super) struct HardwareBindOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 要绑定的硬件 Adapter ID。
     adapter_id: String,
+    /// 关联策略审计的请求 ID。
     request_id: String,
+    /// 是否验证 apply 路径；当前仍不执行物理设备变更。
     apply: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 硬件绑定的 plan-first 报告，明确记录门禁与未执行变更。
 struct HardwareBindPlan {
+    /// 目标 Adapter ID。
     adapter_id: AdapterId,
+    /// 审计请求 ID。
     request_id: RequestId,
+    /// planned、ready_to_apply、blocked 或 missing 状态。
     status: String,
+    /// 用户是否请求验证 apply 路径。
     apply: bool,
+    /// 是否发生物理变更；CLI 规划路径固定为 false。
     mutation_executed: bool,
+    /// 匹配到的可选设备候选。
     device: Option<DeviceCandidate>,
+    /// 对候选设备执行的可选 OS 权限检查。
     permission: Option<OsPermissionCheck>,
+    /// 后续运行时需要执行的绑定步骤。
     steps: Vec<String>,
+    /// 策略、权限和候选拒绝原因汇总。
     risks: Vec<String>,
+    /// RuntimePolicyGate 产生的审计条目。
     audit: Vec<String>,
 }
 
+/// 解析 `hardware list|probe|bind` 子命令。
 pub(super) fn parse_hardware_command(args: &[String]) -> Result<HardwareCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -63,6 +98,7 @@ pub(super) fn parse_hardware_command(args: &[String]) -> Result<HardwareCommand,
     }
 }
 
+/// 执行硬件发现或规划，并通过统一错误边界报告配置、策略和权限失败。
 pub(super) fn execute_hardware<W, E>(
     command: HardwareCommand,
     stdout: &mut W,
@@ -127,6 +163,7 @@ where
     }
 }
 
+/// 解析并预先校验可选 Adapter ID 过滤条件。
 fn parse_hardware_probe_options(args: &[String]) -> Result<HardwareProbeOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut adapter_id = None;
@@ -150,6 +187,7 @@ fn parse_hardware_probe_options(args: &[String]) -> Result<HardwareProbeOptions,
     })
 }
 
+/// 解析绑定目标、请求 ID 和显式 apply 标志。
 fn parse_hardware_bind_options(args: &[String]) -> Result<HardwareBindOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut adapter_id = "scale-main".to_owned();
@@ -181,6 +219,7 @@ fn parse_hardware_bind_options(args: &[String]) -> Result<HardwareBindOptions, E
     })
 }
 
+/// 按可选 Adapter ID 过滤候选；显式过滤无结果时返回 NotFound 而非空成功。
 fn probe_hardware_candidates(
     report: HardwareDiscoveryReport,
     adapter_id: Option<&str>,
@@ -198,6 +237,10 @@ fn probe_hardware_candidates(
     Ok(candidates)
 }
 
+/// 构造受 RuntimePolicyGate 和平台 OS 权限约束的硬件绑定计划。
+///
+/// 即使传入 `--apply`，此函数也只验证门禁并保持 `mutation_executed=false`；策略拒绝或权限
+/// 不足会把状态降为 blocked，且风险中保留可操作的修复信息。
 fn hardware_bind_plan(
     project: &ProjectConfig,
     options: &HardwareBindOptions,
@@ -299,6 +342,7 @@ fn hardware_bind_plan(
     })
 }
 
+/// 将发现候选投影为已注册设备视图，并使用当前进程的平台 provider 检查 OS 权限。
 fn hardware_permission_check(candidate: &DeviceCandidate) -> Result<OsPermissionCheck, EvaError> {
     let provider = PlatformOsPermissionProvider::current_process();
     let registered = RegisteredDevice {
@@ -310,6 +354,7 @@ fn hardware_permission_check(candidate: &DeviceCandidate) -> Result<OsPermission
     provider.check(&registered)
 }
 
+/// 输出发现到的硬件候选和拒绝原因。
 fn write_hardware_list<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -348,6 +393,7 @@ fn write_hardware_list<W: Write>(
     }
 }
 
+/// 输出过滤后的硬件探测候选。
 fn write_hardware_probe<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -383,6 +429,7 @@ fn write_hardware_probe<W: Write>(
     }
 }
 
+/// 输出绑定计划、风险、权限和 mutation 事实。
 fn write_hardware_bind<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -421,6 +468,7 @@ fn write_hardware_bind<W: Write>(
     }
 }
 
+/// 写出面向操作者的绑定目标、最终状态和明确的未执行变更摘要。
 fn write_hardware_operator_summary_text<W: Write>(
     writer: &mut W,
     plan: &HardwareBindPlan,
@@ -434,6 +482,7 @@ fn write_hardware_operator_summary_text<W: Write>(
     write_risk_lines_text(writer, &plan.risks)
 }
 
+/// 生成绑定计划的紧凑目标描述。
 fn hardware_bind_target(plan: &HardwareBindPlan) -> String {
     plan.device
         .as_ref()
@@ -447,6 +496,7 @@ fn hardware_bind_target(plan: &HardwareBindPlan) -> String {
         .unwrap_or_else(|| plan.adapter_id.as_str().to_owned())
 }
 
+/// 将设备候选集合编码为 JSON 数组包装对象。
 fn hardware_candidates_json(candidates: &[DeviceCandidate]) -> String {
     let entries = candidates.iter().map(hardware_candidate_json);
     format!(
@@ -456,6 +506,7 @@ fn hardware_candidates_json(candidates: &[DeviceCandidate]) -> String {
     )
 }
 
+/// 将单个设备候选及其身份、健康和拒绝信息编码为 JSON。
 fn hardware_candidate_json(candidate: &DeviceCandidate) -> String {
     format!(
         "{{\"device_id\":{},\"adapter_id\":{},\"logical_name\":{},\"device_class\":{},\"bus\":{},\"trust\":{},\"health\":{},\"vendor_id\":{},\"product_id\":{},\"serial\":{},\"protocol\":{},\"handle_granted\":{},\"rejected_reason\":{},\"source_path\":{}}}",
@@ -476,6 +527,7 @@ fn hardware_candidate_json(candidate: &DeviceCandidate) -> String {
     )
 }
 
+/// 将完整绑定计划、权限、步骤、风险和审计证据编码为 JSON。
 fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
     format!(
         "{{\"adapter_id\":{},\"request_id\":{},\"status\":{},\"apply\":{},\"mutation_executed\":{},\"device\":{},\"permission\":{},\"steps\":{},\"risks\":{},\"audit\":{}}}",
@@ -498,6 +550,7 @@ fn hardware_bind_plan_json(plan: &HardwareBindPlan) -> String {
     )
 }
 
+/// 将 OS 权限检查及 remediation 列表编码为 JSON。
 fn hardware_permission_json(permission: &OsPermissionCheck) -> String {
     format!(
         "{{\"device_id\":{},\"bus\":{},\"permission\":{},\"granted\":{},\"os\":{},\"user\":{},\"source\":{},\"device_path\":{},\"raw_device_path_exposed\":{},\"remediation\":{}}}",

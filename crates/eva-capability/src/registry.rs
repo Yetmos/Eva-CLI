@@ -1,3 +1,4 @@
+//! 本模块提供 `registry` 相关实现。
 //! Capability registration and lookup.
 
 use crate::selection::CapabilityProviderSelection;
@@ -5,26 +6,36 @@ use eva_config::manifest::capability::CapabilityManifest;
 use eva_core::{AdapterId, CapabilityId, CapabilityName, EvaError};
 use std::collections::BTreeMap;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "capability registration and lookup";
 
+/// 表示 `CapabilityDescriptor` 数据结构。
 /// Runtime descriptor for a capability entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityDescriptor {
+    /// 记录 `id` 字段对应的值。
     pub id: CapabilityId,
+    /// 记录 `name` 字段对应的值。
     pub name: CapabilityName,
+    /// 记录 `enabled` 字段对应的值。
     pub enabled: bool,
+    /// 记录 `provider` 字段对应的值。
     pub provider: String,
+    /// 记录 `provider_selection` 字段对应的值。
     pub provider_selection: CapabilityProviderSelection,
 }
 
+/// 表示 `CapabilityRegistry` 数据结构。
 /// In-memory descriptor registry.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CapabilityRegistry {
+    /// 记录 `by_name` 字段对应的值。
     by_name: BTreeMap<CapabilityName, CapabilityDescriptor>,
 }
 
 impl CapabilityDescriptor {
+    /// 执行 `builtin` 对应的处理逻辑。
     pub fn builtin(id: CapabilityId, name: CapabilityName) -> Self {
         Self {
             id,
@@ -35,6 +46,7 @@ impl CapabilityDescriptor {
         }
     }
 
+    /// 根据输入构造当前类型，作为 `from_manifest` 的标准入口。
     pub fn from_manifest(manifest: &CapabilityManifest) -> Self {
         let provider_selection = CapabilityProviderSelection::new(
             manifest.provider.clone(),
@@ -56,6 +68,7 @@ impl CapabilityDescriptor {
         }
     }
 
+    /// 执行 `provider_plan` 对应的处理逻辑。
     pub fn provider_plan(
         &self,
         explicit_provider: Option<AdapterId>,
@@ -66,10 +79,12 @@ impl CapabilityDescriptor {
 }
 
 impl CapabilityRegistry {
+    /// 创建并初始化当前类型的实例。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 设置 `v04_builtins` 并返回更新后的实例。
     pub fn with_v04_builtins() -> Self {
         let mut registry = Self::new();
         registry
@@ -87,6 +102,7 @@ impl CapabilityRegistry {
         registry
     }
 
+    /// 登记 `register` 对应的数据或状态。
     pub fn register(&mut self, descriptor: CapabilityDescriptor) -> Result<(), EvaError> {
         if self.by_name.contains_key(&descriptor.name) {
             return Err(EvaError::conflict("capability already registered")
@@ -96,19 +112,23 @@ impl CapabilityRegistry {
         Ok(())
     }
 
+    /// 返回 `get` 对应的数据视图。
     pub fn get(&self, name: &CapabilityName) -> Option<&CapabilityDescriptor> {
         self.by_name.get(name)
     }
 
+    /// 返回 `list` 对应的数据视图。
     pub fn list(&self) -> Vec<&CapabilityDescriptor> {
         self.by_name.values().collect()
     }
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证 `v04_builtins_include_config_lint` 场景下的预期行为。
     #[test]
     fn v04_builtins_include_config_lint() {
         let registry = CapabilityRegistry::with_v04_builtins();
@@ -118,6 +138,7 @@ mod tests {
             .is_some());
     }
 
+    /// 验证 `manifest_descriptor_preserves_provider_selection_metadata` 场景下的预期行为。
     #[test]
     fn manifest_descriptor_preserves_provider_selection_metadata() {
         let manifest = eva_config::manifest::capability::load_capability_manifest(

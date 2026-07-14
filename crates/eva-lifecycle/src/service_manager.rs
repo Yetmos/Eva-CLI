@@ -1,114 +1,182 @@
+//! 操作系统服务管理器的抽象边界。
 //! OS service-manager abstraction boundary.
 
 use crate::{RuntimeHealth, UpgradeApplyPlan};
 use eva_core::EvaError;
 
+/// 本模块的架构职责：定义服务管理器适配器、模拟交接及回滚证据边界。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
     "OS service-manager adapter trait, fake handoff, and rollback evidence boundary";
 
+/// 支持的操作系统服务管理器类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceManagerKind {
+    /// 只修改内存状态的开发与测试适配器。
     Fake,
+    /// Windows 服务控制管理器。
     WindowsService,
+    /// Linux systemd 服务管理器。
     Systemd,
+    /// macOS launchd 服务管理器。
     Launchd,
 }
 
+/// 项目中声明的服务管理器配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceManagerDefinition {
+    /// 是否允许使用该服务管理器配置。
     pub enabled: bool,
+    /// 目标服务管理器类别。
     pub kind: ServiceManagerKind,
+    /// 服务管理器中的稳定服务名称。
     pub service_name: String,
+    /// systemd、launchd 等平台使用的可选单元名称。
     pub unit_name: Option<String>,
+    /// 当前活动运行时二进制路径。
     pub runtime_binary: Option<String>,
+    /// 候选运行时二进制路径。
     pub candidate_runtime_binary: Option<String>,
+    /// 是否配置为随系统启动。
     pub start_on_boot: bool,
+    /// 交接时是否重启 Supervisor。
     pub restart_supervisor: bool,
 }
 
+/// 服务管理器当前配置和代际状态的检查报告。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceManagerStatusReport {
+    /// 被检查的服务管理器类别。
     pub kind: ServiceManagerKind,
+    /// 被检查的服务名称。
     pub service_name: String,
+    /// 服务配置是否启用。
     pub configured: bool,
+    /// 是否为真实平台适配器而非模拟实现。
     pub production_adapter: bool,
+    /// 当前活动代际标识。
     pub active_generation: Option<String>,
+    /// 当前活动发布引用。
     pub active_release: Option<String>,
+    /// 正在验证的候选代际标识。
     pub candidate_generation: Option<String>,
+    /// 检查操作的审计记录。
     pub audit: Vec<String>,
 }
 
+/// 服务管理器执行代际交接后的结果证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceManagerHandoffReport {
+    /// 对应的升级计划标识。
     pub plan_id: String,
+    /// 实际执行交接的服务管理器类别。
     pub kind: ServiceManagerKind,
+    /// 目标服务名称。
     pub service_name: String,
+    /// 交接状态。
     pub status: String,
+    /// 活动代际是否已经切换。
     pub handoff_executed: bool,
+    /// 是否需要调用方执行回滚。
     pub rollback_required: bool,
+    /// 报告结束时的活动代际。
     pub active_generation: String,
+    /// 交接前的活动代际。
     pub previous_generation: String,
+    /// 报告结束时的活动发布引用。
     pub release_ref: String,
+    /// 候选启动、健康门禁与提交的审计记录。
     pub audit: Vec<String>,
 }
 
+/// 服务管理器执行回滚后的结果证据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceManagerRollbackReport {
+    /// 对应的升级计划标识。
     pub plan_id: String,
+    /// 实际执行回滚的服务管理器类别。
     pub kind: ServiceManagerKind,
+    /// 目标服务名称。
     pub service_name: String,
+    /// 回滚状态。
     pub status: String,
+    /// 是否已恢复上一代际。
     pub rollback_executed: bool,
+    /// 回滚后的活动代际。
     pub active_generation: String,
+    /// 回滚后的活动发布引用。
     pub release_ref: String,
+    /// 触发回滚的非空原因。
     pub reason: String,
+    /// 回滚操作的审计记录。
     pub audit: Vec<String>,
 }
 
+/// 服务管理器状态检查请求。
 pub struct ServiceManagerInspectRequest<'a> {
+    /// 待检查的只读服务配置。
     pub definition: &'a ServiceManagerDefinition,
 }
 
+/// 服务管理器代际交接请求。
 pub struct ServiceManagerHandoffRequest<'a> {
+    /// 约束目标平台和服务名称的配置。
     pub definition: &'a ServiceManagerDefinition,
+    /// 提供源、目标代际及发布引用的升级计划。
     pub plan: &'a UpgradeApplyPlan,
+    /// 必须属于目标代际的候选健康结果。
     pub candidate_health: RuntimeHealth,
 }
 
+/// 服务管理器回滚请求。
 pub struct ServiceManagerRollbackRequest<'a> {
+    /// 约束目标平台和服务名称的配置。
     pub definition: &'a ServiceManagerDefinition,
+    /// 提供应恢复源代际及发布引用的升级计划。
     pub plan: &'a UpgradeApplyPlan,
+    /// 触发回滚的原因。
     pub reason: &'a str,
 }
 
+/// 隔离平台服务管理器差异的适配器接口。
 pub trait ServiceManagerAdapter {
+    /// 返回适配器实际实现的服务管理器类别。
     fn kind(&self) -> ServiceManagerKind;
 
+    /// 读取服务配置与当前代际状态，不执行交接。
     fn inspect(
         &self,
         request: ServiceManagerInspectRequest<'_>,
     ) -> Result<ServiceManagerStatusReport, EvaError>;
 
+    /// 在候选健康门禁通过后执行代际交接。
     fn handoff(
         &mut self,
         request: ServiceManagerHandoffRequest<'_>,
     ) -> Result<ServiceManagerHandoffReport, EvaError>;
 
+    /// 将活动代际恢复为升级计划的源代际。
     fn rollback(
         &mut self,
         request: ServiceManagerRollbackRequest<'_>,
     ) -> Result<ServiceManagerRollbackReport, EvaError>;
 }
 
+/// 只在内存中模拟服务交接的适配器。
+///
+/// 它拒绝所有真实平台类别，避免测试实现被误当成生产控制面。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FakeServiceManagerAdapter {
+    /// 模拟的当前活动代际。
     active_generation: Option<String>,
+    /// 模拟的当前活动发布引用。
     active_release: Option<String>,
+    /// 已启动但尚未通过健康门禁的候选代际。
     candidate_generation: Option<String>,
 }
 
 impl ServiceManagerKind {
+    /// 解析配置中的服务管理器类别及其兼容别名。
     pub fn parse(value: &str) -> Result<Self, EvaError> {
         match value {
             "fake" => Ok(Self::Fake),
@@ -122,6 +190,7 @@ impl ServiceManagerKind {
         }
     }
 
+    /// 返回用于配置和审计的稳定类别字符串。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Fake => "fake",
@@ -131,12 +200,14 @@ impl ServiceManagerKind {
         }
     }
 
+    /// 判断该类别是否应由真实平台适配器实现。
     pub fn production_adapter(self) -> bool {
         !matches!(self, Self::Fake)
     }
 }
 
 impl ServiceManagerDefinition {
+    /// 创建具有稳定非空服务名称的基础定义。
     pub fn new(
         enabled: bool,
         kind: ServiceManagerKind,
@@ -155,16 +226,19 @@ impl ServiceManagerDefinition {
         })
     }
 
+    /// 判断配置是否启用了真实平台服务管理器。
     pub fn production_adapter_enabled(&self) -> bool {
         self.enabled && self.kind.production_adapter()
     }
 }
 
 impl FakeServiceManagerAdapter {
+    /// 创建尚无活动代际的模拟适配器。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 创建预置活动代际与发布引用的模拟适配器。
     pub fn with_active_generation(
         generation: impl Into<String>,
         release: impl Into<String>,
@@ -176,6 +250,7 @@ impl FakeServiceManagerAdapter {
         }
     }
 
+    /// 拒绝把模拟适配器用于真实平台服务管理器类别。
     fn ensure_fake(definition: &ServiceManagerDefinition) -> Result<(), EvaError> {
         if definition.kind == ServiceManagerKind::Fake {
             Ok(())
@@ -188,6 +263,7 @@ impl FakeServiceManagerAdapter {
         }
     }
 
+    /// 确认服务管理器配置已显式启用。
     fn ensure_enabled(definition: &ServiceManagerDefinition) -> Result<(), EvaError> {
         if definition.enabled {
             Ok(())
@@ -199,10 +275,12 @@ impl FakeServiceManagerAdapter {
 }
 
 impl ServiceManagerAdapter for FakeServiceManagerAdapter {
+    /// 返回模拟适配器类别。
     fn kind(&self) -> ServiceManagerKind {
         ServiceManagerKind::Fake
     }
 
+    /// 返回当前模拟状态，不修改代际。
     fn inspect(
         &self,
         request: ServiceManagerInspectRequest<'_>,
@@ -226,6 +304,10 @@ impl ServiceManagerAdapter for FakeServiceManagerAdapter {
         })
     }
 
+    /// 模拟候选启动、健康门禁及活动代际切换。
+    ///
+    /// 候选健康失败时保留原活动代际并保留候选标识，返回需要回滚的阻塞报告；
+    /// 仅在健康通过后才同时更新活动代际与发布引用，并清除候选项。
     fn handoff(
         &mut self,
         request: ServiceManagerHandoffRequest<'_>,
@@ -277,6 +359,7 @@ impl ServiceManagerAdapter for FakeServiceManagerAdapter {
         })
     }
 
+    /// 模拟恢复升级计划中的源代际，并清除任何候选状态。
     fn rollback(
         &mut self,
         request: ServiceManagerRollbackRequest<'_>,
@@ -304,6 +387,7 @@ impl ServiceManagerAdapter for FakeServiceManagerAdapter {
     }
 }
 
+/// 校验服务名称和回滚原因等字段为已裁剪的非空单行文本。
 fn stable_non_empty(value: String, field: &'static str) -> Result<String, EvaError> {
     if value.trim().is_empty() {
         Err(
@@ -326,10 +410,12 @@ fn stable_non_empty(value: String, field: &'static str) -> Result<String, EvaErr
 }
 
 #[cfg(test)]
+/// 模拟服务管理器的交接、失败门禁与类别隔离测试。
 mod tests {
     use super::*;
     use eva_core::GenerationId;
 
+    /// 构造服务管理器测试使用的固定升级计划。
     fn plan() -> UpgradeApplyPlan {
         UpgradeApplyPlan::new(
             "plan-service",
@@ -342,6 +428,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证成功交接和显式回滚都留下可审计证据。
     fn fake_service_manager_handoff_and_rollback_are_auditable() {
         let definition =
             ServiceManagerDefinition::new(true, ServiceManagerKind::Fake, "eva-dev").unwrap();
@@ -383,6 +470,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证候选健康失败时不会切换活动代际。
     fn fake_service_manager_blocks_failed_candidate_without_switching_active() {
         let definition =
             ServiceManagerDefinition::new(true, ServiceManagerKind::Fake, "eva-dev").unwrap();
@@ -408,6 +496,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证模拟适配器拒绝执行真实平台服务管理器配置。
     fn fake_adapter_rejects_platform_service_manager_kind() {
         let definition =
             ServiceManagerDefinition::new(true, ServiceManagerKind::Systemd, "eva-prod").unwrap();

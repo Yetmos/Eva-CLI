@@ -1,3 +1,5 @@
+//! 请求级记忆上下文子命令：合并私有、全局记忆和知识检索，并执行脱敏与预算约束。
+
 use super::{
     display_path, json_array, json_string, option_json, parse_common_options, parse_usize_option,
     required_option, success_envelope, trace_for, write_command_error, write_error_kind,
@@ -19,22 +21,37 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Memory 子命令集合。
 pub(super) enum MemoryCommand {
-    Context(MemoryContextOptions),
+    /// 为一个 Agent 构建请求级上下文。
+    Context(
+        /// 已解析的 Agent、请求、会话、命名空间、预算与公共选项。
+        MemoryContextOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 记忆上下文构建选项。
 pub(super) struct MemoryContextOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 上下文所属 Agent ID。
     agent_id: String,
+    /// 用于知识检索的查询文本。
     query: String,
+    /// 关联 trace 和审计的请求 ID。
     request_id: String,
+    /// 私有记忆最大条目数。
     private_limit: usize,
+    /// 全局记忆最大条目数。
     global_limit: usize,
+    /// 知识检索最大条目数。
     knowledge_limit: usize,
+    /// 可选 durable backend；缺省使用进程内服务。
     durable_backend: Option<PathBuf>,
 }
 
+/// 解析唯一受支持的 `memory context` 子命令。
 pub(super) fn parse_memory_command(args: &[String]) -> Result<MemoryCommand, EvaError> {
     let (subcommand, rest) = args
         .split_first()
@@ -48,6 +65,7 @@ pub(super) fn parse_memory_command(args: &[String]) -> Result<MemoryCommand, Eva
     }
 }
 
+/// 加载项目、构建上下文并使用统一输出/错误契约返回结果。
 pub(super) fn execute_memory<W, E>(
     command: MemoryCommand,
     stdout: &mut W,
@@ -79,6 +97,7 @@ where
     }
 }
 
+/// 解析 Agent、查询、预算和后端选项，并在 I/O 前校验强类型 ID。
 fn parse_memory_context_options(args: &[String]) -> Result<MemoryContextOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut agent_id = "root-agent".to_owned();
@@ -152,6 +171,10 @@ fn parse_memory_context_options(args: &[String]) -> Result<MemoryContextOptions,
     })
 }
 
+/// 构建受策略和预算约束的请求级记忆上下文。
+///
+/// 先确认 Agent 属于项目，再从策略提取脱敏规则。文件系统与内存实现写入相同种子数据，
+/// 最终均交由 `ContextBuilder` 合并，从而保持后端切换不改变检索和截断语义。
 fn build_memory_context(
     project: &ProjectConfig,
     options: &MemoryContextOptions,
@@ -211,6 +234,7 @@ fn build_memory_context(
         )
 }
 
+/// 生成可重复的私有/全局记忆写入，供 CLI 烟测真实存储与脱敏路径。
 fn seeded_memory_writes(
     project: &ProjectConfig,
     agent_id: &AgentId,
@@ -253,6 +277,7 @@ fn seeded_memory_writes(
     ]
 }
 
+/// 生成与请求关联的知识样本，覆盖来源和检索元数据契约。
 fn seeded_knowledge_items(request_id: RequestId) -> Result<Vec<KnowledgeItem>, EvaError> {
     let items = [
         (
@@ -290,6 +315,7 @@ fn seeded_knowledge_items(request_id: RequestId) -> Result<Vec<KnowledgeItem>, E
         .collect()
 }
 
+/// 返回 Unix epoch 毫秒；系统时间早于 epoch 时安全退化为 0。
 fn current_time_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -297,6 +323,7 @@ fn current_time_ms() -> u128 {
         .unwrap_or_default()
 }
 
+/// 计算记忆操作的项目内可观测性后端路径。
 fn memory_observability_backend(project: &ProjectConfig) -> PathBuf {
     let data_dir = project
         .eva
@@ -311,6 +338,7 @@ fn memory_observability_backend(project: &ProjectConfig) -> PathBuf {
     }
 }
 
+/// 输出合并后的私有、全局、知识与 Lua 上下文摘要。
 fn write_memory_context<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -343,6 +371,7 @@ fn write_memory_context<W: Write>(
     }
 }
 
+/// 将完整 BuiltContext 编码为稳定 JSON。
 fn memory_context_json(context: &BuiltContext) -> String {
     format!(
         "{{\"request_id\":{},\"agent_id\":{},\"query\":{},\"totals\":{{\"items\":{},\"private_memory\":{},\"global_memory\":{},\"knowledge\":{},\"redactions\":{}}},\"memory\":{},\"global_memory\":{},\"knowledge\":{},\"lua_context\":{},\"audit\":{}}}",
@@ -362,6 +391,7 @@ fn memory_context_json(context: &BuiltContext) -> String {
     )
 }
 
+/// 将一条记忆记录及其保留、压缩和脱敏元数据编码为 JSON。
 fn memory_record_json(record: &MemoryRecord) -> String {
     format!(
         "{{\"key\":{},\"value\":{},\"visibility\":{},\"owner_agent\":{},\"retention\":{},\"version\":{},\"audit_reason\":{},\"created_at_ms\":{},\"expires_at_ms\":{},\"compression\":{}}}",
@@ -381,6 +411,7 @@ fn memory_record_json(record: &MemoryRecord) -> String {
     )
 }
 
+/// 将一条知识检索结果及相关性信息编码为 JSON。
 fn knowledge_result_json(result: &KnowledgeSearchResult) -> String {
     format!(
         "{{\"id\":{},\"title\":{},\"source\":{},\"digest\":{},\"summary\":{},\"score\":{},\"matched_by\":{}}}",
@@ -394,6 +425,7 @@ fn knowledge_result_json(result: &KnowledgeSearchResult) -> String {
     )
 }
 
+/// 将 Lua 可见的受限上下文视图编码为 JSON，避免暴露完整内部记录。
 fn lua_context_json(context: &BuiltContext) -> String {
     let snapshot = context.lua_summary();
     format!(

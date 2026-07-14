@@ -1,3 +1,4 @@
+//! 中文：状态、事件日志、审计、任务、Provider 进程和制品的统一存储边界。
 //! Storage boundary for state, event logs, and artifacts.
 
 pub mod artifact_store;

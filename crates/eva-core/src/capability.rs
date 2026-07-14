@@ -62,22 +62,27 @@ impl CapabilityName {
 }
 
 impl fmt::Display for CapabilityName {
+    /// 按已校验的原始名称展示 capability，保持配置和日志往返稳定。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.name)
     }
 }
 
 impl FromStr for CapabilityName {
+    /// 字符串解析失败时返回结构化 Eva 参数错误。
     type Err = EvaError;
 
+    /// 复用公共解析器，确保 trait 转换遵守点分段约束。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::parse(value)
     }
 }
 
 impl TryFrom<&str> for CapabilityName {
+    /// 借用字符串转换时使用的结构化错误类型。
     type Error = EvaError;
 
+    /// 校验借用字符串并创建 capability 名称。
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::parse(value)
     }
@@ -89,10 +94,16 @@ impl TryFrom<&str> for CapabilityName {
 pub enum ProviderHint {
     /// 中文：优先使用指定 Adapter。
     /// English: Prefer a specific Adapter.
-    Adapter(AdapterId),
+    Adapter(
+        /// 应优先选择的 Adapter 稳定标识。
+        AdapterId,
+    ),
     /// 中文：优先使用命名 provider；这里仅保存数据，不解释 provider 协议。
     /// English: Prefer a named provider; this value is data only and does not interpret provider protocols.
-    Named(String),
+    Named(
+        /// 由上层 registry 或 router 解释的 provider 名称。
+        String,
+    ),
 }
 
 impl ProviderHint {
@@ -106,6 +117,7 @@ impl ProviderHint {
 }
 
 impl fmt::Display for ProviderHint {
+    /// 将提示编码为稳定文本；`adapter:` 前缀用于消除命名 provider 的歧义。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Adapter(id) => write!(f, "adapter:{id}"),
@@ -118,7 +130,9 @@ impl fmt::Display for ProviderHint {
 /// English: Capability name plus an optional provider preference, separating what to invoke from who may run it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CapabilityRef {
+    // 已校验的调用能力名称，是路由决策的主键。
     name: CapabilityName,
+    // 可选的 provider 偏好；缺失不代表错误，而是允许上层自由选路。
     provider_hint: Option<ProviderHint>,
 }
 
@@ -154,6 +168,7 @@ impl CapabilityRef {
     }
 }
 
+/// 校验完整 capability 名称并逐段应用稳定字符约束。
 fn validate_capability_name(value: &str) -> Result<(), EvaError> {
     // 中文：Capability 名称会出现在配置和路由键里，因此拒绝空值与首尾空白。
     // English: Capability names appear in config and routing keys, so reject empty values and edge whitespace.
@@ -177,6 +192,7 @@ fn validate_capability_name(value: &str) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 校验单个 capability 分段；错误仍携带完整名称以便诊断。
 fn validate_capability_segment(full_name: &str, segment: &str) -> Result<(), EvaError> {
     if segment.is_empty() {
         return Err(capability_error(
@@ -200,6 +216,7 @@ fn validate_capability_segment(full_name: &str, segment: &str) -> Result<(), Eva
     Ok(())
 }
 
+/// 校验命名 provider 提示，防止路由数据被误当作命令参数。
 fn validate_provider_name(value: &str) -> Result<(), EvaError> {
     // 中文：Provider hint 是可选路由提示，不应携带空白分隔的命令或参数片段。
     // English: Provider hints are optional routing data and must not carry whitespace-separated commands or arguments.
@@ -213,15 +230,18 @@ fn validate_provider_name(value: &str) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 构造带原始 capability 上下文的统一参数错误。
 fn capability_error(value: &str, message: &str) -> EvaError {
     EvaError::invalid_argument(message).with_context("capability", value)
 }
 
 #[cfg(test)]
+/// Capability 名称、namespace 和 provider hint 契约的回归测试。
 mod tests {
     use super::*;
 
     #[test]
+    /// 验证合法点分名称可稳定展示并暴露各分段。
     fn capability_name_accepts_dot_segments() {
         let name = CapabilityName::parse("repo.summary").unwrap();
         assert_eq!(name.as_str(), "repo.summary");
@@ -230,12 +250,14 @@ mod tests {
     }
 
     #[test]
+    /// 验证空分段不会形成不可路由的 namespace。
     fn capability_name_rejects_empty_segment() {
         let error = CapabilityName::parse("repo..summary").unwrap_err();
         assert!(error.message().contains("empty segments"));
     }
 
     #[test]
+    /// 验证首段 namespace 查询使用精确匹配。
     fn capability_name_exposes_namespace() {
         let name = CapabilityName::parse("repo.summary").unwrap();
         assert_eq!(name.namespace(), "repo");
@@ -244,12 +266,14 @@ mod tests {
     }
 
     #[test]
+    /// 验证路径字符和非 ASCII 字符不会进入跨平台 capability 键。
     fn capability_name_rejects_unstable_chars() {
         assert!(CapabilityName::parse("repo.summary/read").is_err());
         assert!(CapabilityName::parse("repo.摘要").is_err());
     }
 
     #[test]
+    /// 验证 provider 提示保持可选，且设置后不会改变 capability 名称。
     fn capability_ref_keeps_provider_hint_optional() {
         let name = CapabilityName::parse("workflow.code_review").unwrap();
         let without_hint = CapabilityRef::new(name.clone());
@@ -265,6 +289,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证命名 provider 仅作为稳定数据展示，不触发协议解释。
     fn named_provider_hint_is_data_only() {
         let hint = ProviderHint::named("codex-cli").unwrap();
         assert_eq!(hint.to_string(), "codex-cli");

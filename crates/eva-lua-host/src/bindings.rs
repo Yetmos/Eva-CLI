@@ -1,3 +1,7 @@
+//! 构建 Lua 可见的事件、上下文、工具调用与可观测性绑定。
+//!
+//! 工具调用只能通过注入的 `CapabilityHostApi`，每次调用生成独立请求标识并服从取消与资源
+//! 限额。兼容静态解析器只在特定旧格式且 VM 无法处理时回退，不会吞掉权限或运行时错误。
 //! Typed host bindings exposed to the controlled Lua contract.
 
 use crate::loader::LuaScript;
@@ -9,53 +13,77 @@ use eva_memory::LuaContextSnapshot;
 use eva_observability::{AuditAction, AuditEvent, AuditOutcome, TraceFields};
 use std::rc::Rc;
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "typed host API bindings exposed to Lua";
 
+/// 表示 `LuaHostContext` 数据结构。
 /// Context passed to a Lua `on_event` handler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LuaHostContext {
+    /// 记录 `agent_id` 字段对应的值。
     pub agent_id: AgentId,
+    /// 记录 `context` 字段对应的值。
     pub context: LuaContextSnapshot,
 }
 
+/// 表示 `LuaHostObservation` 数据结构。
 /// Host observation emitted by `ctx.host.log` and `ctx.host.audit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LuaHostObservation {
+    /// 记录 `action` 字段对应的值。
     pub action: AuditAction,
+    /// 记录 `outcome` 字段对应的值。
     pub outcome: AuditOutcome,
+    /// 记录 `trace` 字段对应的值。
     pub trace: TraceFields,
+    /// 记录 `message` 字段对应的值。
     pub message: Option<String>,
+    /// 记录 `fields` 字段对应的值。
     pub fields: Vec<(String, String)>,
 }
 
+/// 表示 `LuaEventResult` 数据结构。
 /// Controlled result returned by the V0.4 Lua host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LuaEventResult {
+    /// 记录 `agent_id` 字段对应的值。
     pub agent_id: AgentId,
+    /// 记录 `status` 字段对应的值。
     pub status: String,
+    /// 记录 `topic` 字段对应的值。
     pub topic: Topic,
+    /// 记录 `note` 字段对应的值。
     pub note: Option<String>,
+    /// 记录 `capability` 字段对应的值。
     pub capability: Option<CapabilityName>,
+    /// 记录 `capability_input` 字段对应的值。
     pub capability_input: Option<String>,
+    /// 记录 `context` 字段对应的值。
     pub context: LuaContextSnapshot,
+    /// 记录 `observability` 字段对应的值。
     pub observability: Vec<LuaHostObservation>,
 }
 
+/// 表示 `LuaHost` 数据结构。
 /// Synchronous controlled Lua host facade.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LuaHost<A = MluaVmAdapter> {
+    /// 记录 `sandbox` 字段对应的值。
     sandbox: LuaSandboxPolicy,
+    /// 记录 `vm` 字段对应的值。
     vm: A,
 }
 
 impl LuaHost<MluaVmAdapter> {
+    /// 创建并初始化当前类型的实例。
     pub fn new() -> Self {
         Self::with_vm_adapter(MluaVmAdapter)
     }
 }
 
 impl<A> LuaHost<A> {
+    /// 设置 `vm_adapter` 并返回更新后的实例。
     pub fn with_vm_adapter(vm: A) -> Self {
         Self {
             sandbox: LuaSandboxPolicy::default(),
@@ -65,6 +93,7 @@ impl<A> LuaHost<A> {
 }
 
 impl<A: LuaVmAdapter> LuaHost<A> {
+    /// 执行 `run_on_event` 对应的受控流程。
     pub fn run_on_event(
         &self,
         script: &LuaScript,
@@ -74,6 +103,7 @@ impl<A: LuaVmAdapter> LuaHost<A> {
         self.run_on_event_with_limits(script, event, ctx, LuaExecutionLimits::default())
     }
 
+    /// 执行 `run_on_event_with_limits` 对应的受控流程。
     pub fn run_on_event_with_limits(
         &self,
         script: &LuaScript,
@@ -91,6 +121,7 @@ impl<A: LuaVmAdapter> LuaHost<A> {
         }
     }
 
+    /// 执行 `run_on_event_with_tools` 对应的受控流程。
     pub fn run_on_event_with_tools(
         &self,
         script: &LuaScript,
@@ -107,6 +138,7 @@ impl<A: LuaVmAdapter> LuaHost<A> {
         )
     }
 
+    /// 执行 `run_on_event_with_tools_and_limits` 对应的受控流程。
     pub fn run_on_event_with_tools_and_limits(
         &self,
         script: &LuaScript,
@@ -129,6 +161,7 @@ impl<A: LuaVmAdapter> LuaHost<A> {
     }
 }
 
+/// 读取或解析 `parse_static_on_event` 所需的数据，失败时保留错误语义。
 fn parse_static_on_event(
     script: &LuaScript,
     event: &Event,
@@ -169,6 +202,7 @@ fn parse_static_on_event(
     })
 }
 
+/// 执行 `should_attempt_static_fallback` 对应的处理逻辑。
 fn should_attempt_static_fallback(source: &str, error: &EvaError) -> bool {
     let is_load_failure = error
         .provider_code()
@@ -183,6 +217,7 @@ fn should_attempt_static_fallback(source: &str, error: &EvaError) -> bool {
 }
 
 impl LuaHostContext {
+    /// 创建并初始化当前类型的实例。
     pub fn new(agent_id: AgentId) -> Self {
         Self {
             agent_id,
@@ -190,6 +225,7 @@ impl LuaHostContext {
         }
     }
 
+    /// 设置 `context` 并返回更新后的实例。
     pub fn with_context(mut self, context: LuaContextSnapshot) -> Self {
         self.context = context;
         self
@@ -197,6 +233,7 @@ impl LuaHostContext {
 }
 
 impl LuaHostObservation {
+    /// 创建并初始化当前类型的实例。
     pub fn new(action: AuditAction, trace: TraceFields) -> Self {
         Self {
             action,
@@ -207,16 +244,19 @@ impl LuaHostObservation {
         }
     }
 
+    /// 设置 `message` 并返回更新后的实例。
     pub fn with_message(mut self, value: impl Into<String>) -> Self {
         self.message = Some(value.into());
         self
     }
 
+    /// 设置 `field` 并返回更新后的实例。
     pub fn with_field(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.fields.push((key.into(), value.into()));
         self
     }
 
+    /// 将当前值按 `to_audit_event` 约定的形式转换。
     pub fn to_audit_event(&self) -> AuditEvent {
         let mut event = AuditEvent::new(self.action, self.outcome, self.trace.clone());
         if let Some(message) = &self.message {
@@ -230,11 +270,13 @@ impl LuaHostObservation {
 }
 
 impl Default for LuaHost<MluaVmAdapter> {
+    /// 创建使用默认受控 VM 适配器的 Lua 宿主。
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// 读取或解析 `extract_string` 所需的数据，失败时保留错误语义。
 fn extract_string(source: &str, key: &str) -> Option<String> {
     let marker = format!("{key} =");
     let line = source.lines().find(|line| line.contains(&marker))?;
@@ -246,6 +288,7 @@ fn extract_string(source: &str, key: &str) -> Option<String> {
     Some(after_quote[..quote_end].to_owned())
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +304,7 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
+    /// 执行 `event` 对应的处理逻辑。
     fn event() -> Event {
         Event::new(
             EventId::parse("evt-1").unwrap(),
@@ -269,12 +313,16 @@ mod tests {
         )
     }
 
+    /// 表示 `CancellingToolHost` 数据结构。
     struct CancellingToolHost {
+        /// 记录 `token` 字段对应的值。
         token: LuaCancellationToken,
+        /// 记录 `calls` 字段对应的值。
         calls: Cell<u64>,
     }
 
     impl CancellingToolHost {
+        /// 创建并初始化当前类型的实例。
         fn new(token: LuaCancellationToken) -> Self {
             Self {
                 token,
@@ -282,12 +330,14 @@ mod tests {
             }
         }
 
+        /// 执行 `calls` 对应的受控流程。
         fn calls(&self) -> u64 {
             self.calls.get()
         }
     }
 
     impl CapabilityHostApi for CancellingToolHost {
+        /// 执行 `invoke` 对应的受控流程。
         fn invoke(&self, request: InvokeRequest) -> Result<InvokeResponse, EvaError> {
             self.calls.set(self.calls.get() + 1);
             self.token.cancel();
@@ -298,6 +348,7 @@ mod tests {
         }
     }
 
+    /// 验证 `on_event_extracts_static_result_fields` 场景下的预期行为。
     #[test]
     fn on_event_extracts_static_result_fields() {
         let script = LuaScript::from_source(
@@ -323,6 +374,7 @@ end
         assert_eq!(result.capability.unwrap().as_str(), "config.lint");
     }
 
+    /// 验证 `on_event_receives_controlled_context_snapshot` 场景下的预期行为。
     #[test]
     fn on_event_receives_controlled_context_snapshot() {
         let script = LuaScript::from_source(
@@ -348,6 +400,7 @@ end
         assert_eq!(result.context, snapshot);
     }
 
+    /// 验证 `on_event_receives_read_only_request_trace_and_memory_tables` 场景下的预期行为。
     #[test]
     fn on_event_receives_read_only_request_trace_and_memory_tables() {
         let script = LuaScript::from_source(
@@ -387,6 +440,7 @@ return root
         assert_eq!(result.context, snapshot);
     }
 
+    /// 验证 `on_event_cannot_mutate_memory_snapshot_table` 场景下的预期行为。
     #[test]
     fn on_event_cannot_mutate_memory_snapshot_table() {
         let script = LuaScript::from_source(
@@ -417,6 +471,7 @@ return root
         assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
     }
 
+    /// 验证 `on_event_cannot_rawset_memory_snapshot_table` 场景下的预期行为。
     #[test]
     fn on_event_cannot_rawset_memory_snapshot_table() {
         let script = LuaScript::from_source(
@@ -447,6 +502,7 @@ return root
         assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
     }
 
+    /// 验证 `on_event_host_log_and_audit_emit_traceable_observability` 场景下的预期行为。
     #[test]
     fn on_event_host_log_and_audit_emit_traceable_observability() {
         let script = LuaScript::from_source(
@@ -513,6 +569,7 @@ return root
         );
     }
 
+    /// 验证 `on_event_can_call_capability_through_ctx_tools` 场景下的预期行为。
     #[test]
     fn on_event_can_call_capability_through_ctx_tools() {
         let script = LuaScript::from_source(
@@ -544,6 +601,7 @@ return root
         assert!(output.contains("hello"));
     }
 
+    /// 验证 `on_event_tool_calls_use_distinct_request_ids` 场景下的预期行为。
     #[test]
     fn on_event_tool_calls_use_distinct_request_ids() {
         let script = LuaScript::from_source(
@@ -575,6 +633,7 @@ return root
         assert!(note.contains(":lua-tool:2:runtime.echo"));
     }
 
+    /// 验证 `on_event_rejects_unknown_ctx_tool_capability` 场景下的预期行为。
     #[test]
     fn on_event_rejects_unknown_ctx_tool_capability() {
         let script = LuaScript::from_source(
@@ -600,6 +659,7 @@ return root
         assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
     }
 
+    /// 验证 `on_event_rejects_disabled_ctx_tool_capability` 场景下的预期行为。
     #[test]
     fn on_event_rejects_disabled_ctx_tool_capability() {
         let script = LuaScript::from_source(
@@ -635,6 +695,7 @@ return root
         assert_eq!(error.provider_code().unwrap().as_str(), "lua_runtime_error");
     }
 
+    /// 验证 `on_event_infinite_loop_is_interrupted_by_timeout_limit` 场景下的预期行为。
     #[test]
     fn on_event_infinite_loop_is_interrupted_by_timeout_limit() {
         let script = LuaScript::from_source(
@@ -667,6 +728,7 @@ return root
             .any(|(key, value)| key == "timeout_ms" && value == "1"));
     }
 
+    /// 验证 `on_event_infinite_loop_is_interrupted_by_instruction_budget` 场景下的预期行为。
     #[test]
     fn on_event_infinite_loop_is_interrupted_by_instruction_budget() {
         let script = LuaScript::from_source(
@@ -702,6 +764,7 @@ return root
             .any(|(key, value)| key == "instruction_budget" && value == "10"));
     }
 
+    /// 验证 `on_event_cancellation_token_stops_before_second_tool_call` 场景下的预期行为。
     #[test]
     fn on_event_cancellation_token_stops_before_second_tool_call() {
         let script = LuaScript::from_source(
@@ -735,6 +798,7 @@ return root
         assert_eq!(tool_host.calls(), 1);
     }
 
+    /// 验证 `on_event_memory_growth_is_rejected_by_memory_budget` 场景下的预期行为。
     #[test]
     fn on_event_memory_growth_is_rejected_by_memory_budget() {
         let script = LuaScript::from_source(
@@ -768,6 +832,7 @@ return root
             .any(|(key, value)| key == "memory_limit_bytes" && value == "131072"));
     }
 
+    /// 验证 `ctx_tools_exposes_only_call_function` 场景下的预期行为。
     #[test]
     fn ctx_tools_exposes_only_call_function() {
         let script = LuaScript::from_source(
@@ -796,6 +861,7 @@ return root
         assert_eq!(result.status, "sealed");
     }
 
+    /// 验证 `real_vm_executes_lua_logic` 场景下的预期行为。
     #[test]
     fn real_vm_executes_lua_logic() {
         let script = LuaScript::from_source(
@@ -829,6 +895,7 @@ return root
         assert_eq!(result.note.as_deref(), Some("handled evt-1"));
     }
 
+    /// 验证 `real_vm_does_not_load_os_library` 场景下的预期行为。
     #[test]
     fn real_vm_does_not_load_os_library() {
         let script = LuaScript::from_source(
@@ -853,6 +920,7 @@ return root
         assert_eq!(result.status, "restricted");
     }
 
+    /// 验证 `syntax_error_maps_without_host_path` 场景下的预期行为。
     #[test]
     fn syntax_error_maps_without_host_path() {
         let script = LuaScript::from_source("function root.on_event(event, ctx)");
@@ -867,6 +935,7 @@ return root
         assert!(!error.message().contains(env!("CARGO_MANIFEST_DIR")));
     }
 
+    /// 验证 `runtime_error_maps_without_host_path` 场景下的预期行为。
     #[test]
     fn runtime_error_maps_without_host_path() {
         let script = LuaScript::from_source(
@@ -891,6 +960,7 @@ return root
         assert!(!error.message().contains(env!("CARGO_MANIFEST_DIR")));
     }
 
+    /// 验证 `static_parser_remains_compatibility_fallback` 场景下的预期行为。
     #[test]
     fn static_parser_remains_compatibility_fallback() {
         let script = LuaScript::from_source(

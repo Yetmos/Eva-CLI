@@ -1,25 +1,35 @@
+//! 中文：通过只收窄不扩张的方式合并多层权限和沙箱策略。
 //! Effective permission merging without expansion.
 
 use crate::{PermissionSet, SandboxPolicy};
 use eva_core::EvaError;
 
+/// 中文：参与有效策略计算的一层具名策略。
 /// One policy layer participating in effective policy calculation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyLayer {
+    /// 中文：用于审计和诊断的层名称。
     pub name: String,
+    /// 中文：该层允许的权限上界。
     pub permissions: PermissionSet,
+    /// 中文：该层施加的沙箱限制。
     pub sandbox: SandboxPolicy,
 }
 
+/// 中文：对全部策略层逐层取交集后得到的最终策略。
 /// Final policy obtained by intersecting all layers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectivePolicy {
+    /// 中文：所有层共同允许的最终权限。
     pub permissions: PermissionSet,
+    /// 中文：所有层合并后的最严格沙箱约束。
     pub sandbox: SandboxPolicy,
+    /// 中文：按参与合并顺序保存的层名称，供解释决策来源。
     pub layer_names: Vec<String>,
 }
 
 impl PolicyLayer {
+    /// 中文：从层名称、权限上界和沙箱约束创建策略层。
     pub fn new(
         name: impl Into<String>,
         permissions: PermissionSet,
@@ -34,6 +44,10 @@ impl PolicyLayer {
 }
 
 impl EffectivePolicy {
+    /// 中文：按输入顺序对策略层求交集；至少需要一层，避免空输入意外产生无限制策略。
+    ///
+    /// 布尔能力只能从允许变为拒绝，集合只能缩小，数值资源上限取更小值；因此后加入的
+    /// 项目或请求层无法突破系统层建立的安全边界。
     /// Intersects policy layers in order. At least one layer is required so the
     /// caller cannot accidentally construct an all-unbounded policy.
     pub fn from_layers(layers: impl IntoIterator<Item = PolicyLayer>) -> Result<Self, EvaError> {
@@ -59,11 +73,13 @@ impl EffectivePolicy {
         })
     }
 
+    /// 中文：把请求权限收窄到有效权限范围内，不返回越权部分。
     /// Returns a request narrowed by the effective permissions.
     pub fn narrow_request(&self, request: &PermissionSet) -> PermissionSet {
         self.permissions.narrowed_by(request)
     }
 
+    /// 中文：拒绝任何超出有效策略的请求，并在错误上下文中列出扩张字段。
     /// Rejects requests that ask for permissions outside the effective policy.
     pub fn ensure_request_allowed(&self, request: &PermissionSet) -> Result<(), EvaError> {
         let diff = request.diff_against(&self.permissions);
@@ -84,12 +100,14 @@ mod tests {
     use eva_core::ErrorKind;
 
     #[test]
+    /// 中文：验证空策略层集合不会产生默认放行策略。
     fn effective_policy_requires_at_least_one_layer() {
         let error = EffectivePolicy::from_layers([]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     }
 
     #[test]
+    /// 中文：验证权限、资源上限和层名称均按顺序正确合并。
     fn effective_policy_intersects_layers() {
         let system = PolicyLayer::new(
             "system",
@@ -117,6 +135,7 @@ mod tests {
     }
 
     #[test]
+    /// 中文：验证请求扩张会被拒绝并报告具体越权字段。
     fn request_expansion_is_rejected() {
         let policy = EffectivePolicy::from_layers([PolicyLayer::new(
             "system",

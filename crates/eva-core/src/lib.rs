@@ -8,13 +8,17 @@
 //! perform filesystem, network, shell, database, Lua, MCP, hardware, provider,
 //! or runtime orchestration work.
 
-// 中文：模块保持公开，方便下游按边界导入具体契约。
-// English: Modules stay public so downstream crates can import contracts by boundary.
+/// Capability 名称、引用和 provider hint 契约。
 pub mod capability;
+/// 结构化错误分类、上下文和 provider code 契约。
 pub mod error;
+/// 事件 payload、目标、metadata 和链路契约。
 pub mod event;
+/// 跨 crate 使用的强类型标识符契约。
 pub mod ids;
+/// Capability/Agent/Adapter 调用请求与响应契约。
 pub mod invoke;
+/// Topic 与订阅 pattern 解析和匹配契约。
 pub mod topic;
 
 // 中文：高频公共类型在 crate 根重新导出，作为下游的稳定入口。

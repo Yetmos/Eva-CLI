@@ -1,3 +1,5 @@
+//! 可观测性烟测子命令：验证本地 pipeline、tracing bridge 与可选 OpenTelemetry exporter。
+
 use super::{
     json_array, json_string, option_json, parse_common_options, parse_u64_option,
     parse_usize_option, required_option, success_envelope, trace_for, write_command_error,
@@ -15,31 +17,49 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Observability 子命令集合。
 pub(super) enum ObservabilityCommand {
-    Smoke(ObservabilitySmokeOptions),
+    /// 写入代表性 audit、metric 和 span，并报告各 sink 状态。
+    Smoke(
+        /// 已解析的后端路径、追踪接收端与公共选项。
+        ObservabilitySmokeOptions,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 可观测性烟测选项。
 pub(super) struct ObservabilitySmokeOptions {
+    /// 项目根和输出格式。
     common: CommonOptions,
+    /// 本地可观测性数据根目录。
     backend: PathBuf,
+    /// tracing bridge 的输出 sink。
     tracing_sink: ObservabilityTracingSink,
+    /// 仅在显式配置 endpoint 后启用的 OpenTelemetry exporter 配置。
     otel_config: Option<OpenTelemetryExporterConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// tracing bridge 支持的输出目标。
 enum ObservabilityTracingSink {
+    /// 将 bridge 事件持久化为 JSONL。
     Jsonl,
+    /// 将格式化事件写入开发控制台报告。
     DevConsole,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 一次烟测的组合结果，区分核心 pipeline、bridge 和可选 exporter。
 struct ObservabilitySmokeRun {
+    /// 本地 best-effort pipeline 汇总。
     report: ObservabilitySmokeReport,
+    /// tracing bridge 的投递报告。
     tracing_bridge: TracingBridgeReport,
+    /// 可选 OpenTelemetry exporter 报告。
     otel_exporter: Option<OpenTelemetryExporterReport>,
 }
 
+/// 解析唯一受支持的 `observability smoke` 子命令。
 pub(super) fn parse_observability_command(
     args: &[String],
 ) -> Result<ObservabilityCommand, EvaError> {
@@ -55,6 +75,7 @@ pub(super) fn parse_observability_command(
     }
 }
 
+/// 执行烟测并用固定请求 ID 关联所有观测信号。
 pub(super) fn execute_observability<W, E>(
     command: ObservabilityCommand,
     stdout: &mut W,
@@ -85,6 +106,8 @@ where
     }
 }
 
+/// 解析后端、bridge sink 和 OpenTelemetry 限额。
+/// 只有显式 endpoint 才启用 exporter，避免仅设置辅助参数时意外产生外部发送。
 fn parse_observability_smoke_options(
     args: &[String],
 ) -> Result<ObservabilitySmokeOptions, EvaError> {
@@ -163,6 +186,7 @@ fn parse_observability_smoke_options(
     })
 }
 
+/// 解析 tracing bridge sink 的稳定文本值。
 fn parse_tracing_sink(value: &str) -> Result<ObservabilityTracingSink, EvaError> {
     match value {
         "jsonl" => Ok(ObservabilityTracingSink::Jsonl),
@@ -173,6 +197,10 @@ fn parse_tracing_sink(value: &str) -> Result<ObservabilityTracingSink, EvaError>
     }
 }
 
+/// 向各可观测性边界写入代表性信号并收集降级报告。
+///
+/// 本地 pipeline 采用 best-effort 语义，但配置/编码错误仍返回失败；OpenTelemetry 仅在配置
+/// 存在时运行。所有 span 从同一 trace 派生，以验证跨 CLI、runtime 和 provider 的连续性。
 fn run_observability_smoke(
     options: &ObservabilitySmokeOptions,
     trace: &TraceFields,
@@ -251,6 +279,7 @@ fn run_observability_smoke(
     })
 }
 
+/// 输出 pipeline、bridge 和 exporter 的计数及降级状态。
 fn write_observability_smoke<W: Write>(
     writer: &mut W,
     output: OutputFormat,
@@ -308,6 +337,7 @@ fn write_observability_smoke<W: Write>(
     }
 }
 
+/// 将组合烟测报告编码为稳定 JSON。
 fn observability_smoke_json(run: &ObservabilitySmokeRun) -> String {
     format!(
         "{{\"backend_root\":{},\"degraded\":{},\"degraded_reasons\":{},\"audit_events\":{},\"metric_points\":{},\"otel_spans\":{},\"continuity_key\":{},\"tracing_bridge\":{},\"otel_exporter\":{}}}",
@@ -326,6 +356,7 @@ fn observability_smoke_json(run: &ObservabilitySmokeRun) -> String {
     )
 }
 
+/// 将 tracing bridge 的 span/event/audit 统计和连续性字段编码为 JSON。
 fn tracing_bridge_json(report: &TracingBridgeReport) -> String {
     format!(
         "{{\"sink\":{},\"spans\":{},\"events\":{},\"audit_events\":{},\"exported_spans\":{},\"duplicate_span_ids\":{},\"degraded\":{},\"degraded_reasons\":{},\"dev_console_lines\":{},\"continuity_key\":{}}}",
@@ -342,6 +373,7 @@ fn tracing_bridge_json(report: &TracingBridgeReport) -> String {
     )
 }
 
+/// 将 exporter 配置、尝试/成功/丢弃计数与降级原因编码为 JSON。
 fn otel_exporter_json(report: &OpenTelemetryExporterReport) -> String {
     format!(
         "{{\"endpoint\":{},\"protocol\":{},\"sdk\":{},\"auth_configured\":{},\"batch_size\":{},\"timeout_ms\":{},\"drop_policy\":{},\"max_metric_labels\":{},\"spans_attempted\":{},\"spans_exported\":{},\"metric_points_attempted\":{},\"metric_points_exported\":{},\"metric_points_dropped\":{},\"metric_labels_exported\":{},\"metric_labels_dropped\":{},\"degraded\":{},\"degraded_reasons\":{},\"continuity_key\":{}}}",

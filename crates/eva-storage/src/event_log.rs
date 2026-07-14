@@ -1,5 +1,7 @@
+//! Durable EventLog 的内存/文件系统实现、状态覆盖、重放和严格磁盘解码。
 //! Durable event log implementations.
 
+/// 本模块的架构职责：为事件分配稳定序号，持久化消费状态，并从 watermark 重放。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "durable event log interfaces and replay boundaries";
 
@@ -13,58 +15,85 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
+/// Durable event 根下保存序号文件的固定子目录。
 const EVENT_LOG_DIR: &str = "log";
+/// 事件记录文件扩展名；加载器忽略其他旁路文件。
 const EVENT_RECORD_EXTENSION: &str = "event";
+/// 当前逐行字段磁盘格式版本；未知版本严格拒绝。
 const EVENT_RECORD_VERSION: &str = "1";
 
+/// 单条事件记录的持久化消费生命周期。
 /// Lifecycle state for one event log record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventLogStatus {
+    /// 已追加但尚未被消费者确认。
     Appended,
+    /// 指定消费者已成功处理。
     Acked,
+    /// 指定消费者处理失败，并携带结构化错误。
     Failed,
 }
 
+/// EventBus 与 Agent 消费者共享的序号记录；ack/fail 会覆盖同一序号文件的状态。
 /// Append-only event log record used by EventBus and Agent consumers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventLogRecord {
+    /// 从 1 开始单调递增的日志序号。
     pub sequence: u64,
+    /// 完整强类型事件及 metadata。
     pub event: Event,
+    /// 当前消费状态。
     pub status: EventLogStatus,
+    /// ack/fail 后的可选消费者 Agent ID。
     pub consumer: Option<AgentId>,
+    /// Failed 状态的可选结构化错误；其他状态应为空。
     pub error: Option<EvaError>,
 }
 
+/// 运行时需要的 EventLog 追加、状态转换与重放行为。
 /// Event log behavior required by the V0.4 runtime loop.
 pub trait EventLog {
+    /// 追加唯一 event ID 并返回分配后的记录；重复 ID 返回 Conflict。
     fn append(&mut self, event: Event) -> Result<EventLogRecord, EvaError>;
+    /// 将既有记录转换为 Acked，记录消费者并清除旧错误。
     fn ack(&mut self, event_id: &EventId, consumer: AgentId) -> Result<EventLogRecord, EvaError>;
+    /// 将既有记录转换为 Failed，保留消费者与完整结构化错误。
     fn fail(
         &mut self,
         event_id: &EventId,
         consumer: AgentId,
         error: EvaError,
     ) -> Result<EventLogRecord, EvaError>;
+    /// 克隆返回 sequence 大于等于游标的记录；游标语义是包含式。
     fn replay_from(&self, sequence: u64) -> Vec<EventLogRecord>;
+    /// 返回当前最高已提交序号，空日志为 0。
     fn watermark(&self) -> u64;
 }
 
+/// 测试和 V0.4 基础运行时路径使用的内存日志。
 /// In-memory log used by tests and the V0.4 basic runtime path.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct InMemoryEventLog {
+    /// 当前最高已分配序号。
     next_sequence: u64,
+    /// 按追加顺序保存的记录。
     records: Vec<EventLogRecord>,
 }
 
+/// 位于 durable backend event 子树下的文件系统事件日志。
 /// Filesystem-backed event log rooted under the durable backend event dir.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSystemEventLog {
+    /// `.event` 文件所在目录。
     root: PathBuf,
+    /// 重开时从最高有效记录恢复的 watermark。
     next_sequence: u64,
+    /// 按 sequence 排序的内存索引。
     records: Vec<EventLogRecord>,
 }
 
 impl EventLogStatus {
+    /// 返回稳定磁盘状态码。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Appended => "appended",
@@ -73,6 +102,7 @@ impl EventLogStatus {
         }
     }
 
+    /// 严格解析磁盘状态；未知值返回 Conflict。
     fn from_storage(value: &str) -> Result<Self, EvaError> {
         match value {
             "appended" => Ok(Self::Appended),
@@ -86,6 +116,7 @@ impl EventLogStatus {
 }
 
 impl EventLogRecord {
+    /// 创建新追加记录，初态没有消费者或错误。
     fn appended(sequence: u64, event: Event) -> Self {
         Self {
             sequence,
@@ -98,14 +129,17 @@ impl EventLogRecord {
 }
 
 impl InMemoryEventLog {
+    /// 创建空内存日志。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 返回当前记录切片。
     pub fn records(&self) -> &[EventLogRecord] {
         &self.records
     }
 
+    /// 按 event ID 查找可变记录；缺失返回 NotFound。
     fn find_mut(&mut self, event_id: &EventId) -> Result<&mut EventLogRecord, EvaError> {
         self.records
             .iter_mut()
@@ -116,6 +150,7 @@ impl InMemoryEventLog {
             })
     }
 
+    /// 精确判断 event ID 是否已追加，用于幂等冲突保护。
     fn contains_event(&self, event_id: &EventId) -> bool {
         self.records
             .iter()
@@ -124,18 +159,23 @@ impl InMemoryEventLog {
 }
 
 impl FileSystemEventLog {
+    /// 从 durable layout 以可创建模式打开 event log。
     pub fn open(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
         Self::open_dir_with_mode(layout.event_dir.join(EVENT_LOG_DIR), true)
     }
 
+    /// 只读打开；目录缺失时返回空视图且不创建任何路径。
     pub fn open_read_only(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
         Self::open_dir_with_mode(layout.event_dir.join(EVENT_LOG_DIR), false)
     }
 
+    /// 从显式记录目录以可创建模式打开，供独立测试或嵌入使用。
     pub fn open_dir(root: impl Into<PathBuf>) -> Result<Self, EvaError> {
         Self::open_dir_with_mode(root, true)
     }
 
+    /// 打开目录、加载全部目标扩展名记录、排序并验证 sequence/event ID 唯一性。
+    /// 任何目标记录不可读或损坏都会使整个 open 失败，不返回部分日志。
     fn open_dir_with_mode(
         root: impl Into<PathBuf>,
         create_if_missing: bool,
@@ -174,15 +214,20 @@ impl FileSystemEventLog {
         })
     }
 
+    /// 返回按 sequence 排序的已加载记录。
     pub fn records(&self) -> &[EventLogRecord] {
         &self.records
     }
 
+    /// 以 20 位零填充序号生成记录路径，使字典序与重放顺序一致。
     fn record_path(&self, sequence: u64) -> PathBuf {
         self.root
             .join(format!("{sequence:020}.{EVENT_RECORD_EXTENSION}"))
     }
 
+    /// 将记录直接写入最终序号文件；append 创建，ack/fail 覆盖同一路径。
+    /// 当前没有临时文件 + rename 原子提交，也没有文件锁/CAS；调用方必须保证单写者，
+    /// 崩溃半写将在下次 strict open 时作为 Conflict/I/O 错误暴露。
     fn persist_record(&self, record: &EventLogRecord) -> Result<(), EvaError> {
         let path = self.record_path(record.sequence);
         fs::write(&path, record_to_storage(record)).map_err(|error| {
@@ -192,12 +237,14 @@ impl FileSystemEventLog {
         })
     }
 
+    /// 在内存索引中检查重复 event ID。
     fn contains_event(&self, event_id: &EventId) -> bool {
         self.records
             .iter()
             .any(|record| record.event.event_id() == event_id)
     }
 
+    /// 返回指定 event ID 的内存位置；缺失返回 NotFound，状态转换不会隐式追加。
     fn record_position(&self, event_id: &EventId) -> Result<usize, EvaError> {
         self.records
             .iter()
@@ -210,6 +257,7 @@ impl FileSystemEventLog {
 }
 
 impl EventLog for InMemoryEventLog {
+    /// 检查 ID 唯一后分配下一个序号并追加内存记录。
     fn append(&mut self, event: Event) -> Result<EventLogRecord, EvaError> {
         if self.contains_event(event.event_id()) {
             return Err(EvaError::conflict("event already exists in log")
@@ -222,6 +270,7 @@ impl EventLog for InMemoryEventLog {
         Ok(record)
     }
 
+    /// 原地标记成功消费并清除可能存在的旧失败错误。
     fn ack(&mut self, event_id: &EventId, consumer: AgentId) -> Result<EventLogRecord, EvaError> {
         let record = self.find_mut(event_id)?;
         record.status = EventLogStatus::Acked;
@@ -230,6 +279,7 @@ impl EventLog for InMemoryEventLog {
         Ok(record.clone())
     }
 
+    /// 原地标记消费失败并保存结构化错误。
     fn fail(
         &mut self,
         event_id: &EventId,
@@ -243,6 +293,7 @@ impl EventLog for InMemoryEventLog {
         Ok(record.clone())
     }
 
+    /// 按追加顺序返回包含游标的记录克隆。
     fn replay_from(&self, sequence: u64) -> Vec<EventLogRecord> {
         self.records
             .iter()
@@ -251,12 +302,15 @@ impl EventLog for InMemoryEventLog {
             .collect()
     }
 
+    /// 返回内存日志最高分配序号。
     fn watermark(&self) -> u64 {
         self.next_sequence
     }
 }
 
 impl EventLog for FileSystemEventLog {
+    /// 在持久化成功后才推进 watermark 和内存索引。
+    /// I/O 失败时可安全重试同一序号，但多进程并发写不受本类型保护。
     fn append(&mut self, event: Event) -> Result<EventLogRecord, EvaError> {
         if self.contains_event(event.event_id()) {
             return Err(EvaError::conflict("event already exists in log")
@@ -271,6 +325,7 @@ impl EventLog for FileSystemEventLog {
         Ok(record)
     }
 
+    /// 克隆旧记录、先持久化 Acked 状态，再替换内存项；写失败保留旧内存状态。
     fn ack(&mut self, event_id: &EventId, consumer: AgentId) -> Result<EventLogRecord, EvaError> {
         let position = self.record_position(event_id)?;
         let mut record = self.records[position].clone();
@@ -282,6 +337,7 @@ impl EventLog for FileSystemEventLog {
         Ok(record)
     }
 
+    /// 先持久化 Failed 状态与错误，再提交内存替换；失败不产生内存/磁盘成功假象。
     fn fail(
         &mut self,
         event_id: &EventId,
@@ -298,6 +354,7 @@ impl EventLog for FileSystemEventLog {
         Ok(record)
     }
 
+    /// 从已加载内存索引按包含式游标返回记录。
     fn replay_from(&self, sequence: u64) -> Vec<EventLogRecord> {
         self.records
             .iter()
@@ -306,11 +363,14 @@ impl EventLog for FileSystemEventLog {
             .collect()
     }
 
+    /// 返回最高已成功持久化的序号。
     fn watermark(&self) -> u64 {
         self.next_sequence
     }
 }
 
+/// 加载目录内所有 `.event` 文件；其他扩展名被忽略。
+/// 目标文件读取或解析失败会附加路径并终止 open，避免返回缺记录的伪完整 watermark。
 fn load_records(root: &Path) -> Result<Vec<EventLogRecord>, EvaError> {
     let mut records = Vec::new();
     for entry in fs::read_dir(root).map_err(|error| {
@@ -340,6 +400,8 @@ fn load_records(root: &Path) -> Result<Vec<EventLogRecord>, EvaError> {
     Ok(records)
 }
 
+/// 验证已加载记录的 sequence 与 event ID 分别唯一。
+/// 不要求序号连续，允许持久化失败或运维留下空洞；重复值会使重放/CAS 语义含糊，故拒绝。
 fn validate_loaded_records(records: &[EventLogRecord]) -> Result<(), EvaError> {
     let mut sequences = BTreeSet::new();
     let mut event_ids = BTreeSet::new();
@@ -360,6 +422,7 @@ fn validate_loaded_records(records: &[EventLogRecord]) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// 将记录序列化为 version=1 的唯一 key 逐行格式。
 fn record_to_storage(record: &EventLogRecord) -> String {
     let mut data = String::new();
     push_field(&mut data, "version", EVENT_RECORD_VERSION);
@@ -375,6 +438,8 @@ fn record_to_storage(record: &EventLogRecord) -> String {
     data
 }
 
+/// 严格解析单条记录，并通过核心强类型重新校验 ID、Topic、Capability 与 metadata。
+/// 未知版本/字段损坏最终以 Conflict 返回，不允许跳过字段后构造降级事件。
 fn record_from_storage(data: &str) -> Result<EventLogRecord, EvaError> {
     let fields = parse_fields(data)?;
     let version = require_field(&fields, "version")?;
@@ -402,6 +467,9 @@ fn record_from_storage(data: &str) -> Result<EventLogRecord, EvaError> {
     })
 }
 
+/// 将完整 Event 展平到稳定字段集合。
+/// 字符串使用 hex 以避免换行和 `=` 破坏格式；二进制 payload 直接 hex；SystemTime 采用
+/// 秒+纳秒保持精度，早于 epoch 时回退 epoch。
 fn push_event_fields(data: &mut String, event: &Event) {
     push_encoded_string(data, "event_id", event.event_id().as_str());
     push_encoded_string(data, "topic", event.topic().as_str());
@@ -476,6 +544,9 @@ fn push_event_fields(data: &mut String, event: &Event) {
     );
 }
 
+/// 从展平字段重建强类型 Event。
+/// target/payload kind 必须为已知枚举，纳秒值由 Duration 校验，所有可选 ID 再次解析；
+/// 任一字段损坏都阻止整个记录进入重放集合。
 fn event_from_fields(fields: &BTreeMap<String, String>) -> Result<Event, EvaError> {
     let event_id = EventId::parse(&decoded_required_string(fields, "event_id")?)?;
     let topic = Topic::parse(&decoded_required_string(fields, "topic")?)?;
@@ -545,6 +616,8 @@ fn event_from_fields(fields: &BTreeMap<String, String>) -> Result<Event, EvaErro
         .with_metadata(metadata))
 }
 
+/// 将可选 EvaError 展平为带 prefix 的 kind/message/retry/provider/context 字段。
+/// 无错误仍写空核心字段和 context_len=0，使磁盘 schema 固定且解析无需猜测字段缺失。
 fn push_error_fields(data: &mut String, prefix: &str, error: Option<&EvaError>) {
     if let Some(error) = error {
         push_field(data, &format!("{prefix}_kind"), error.kind().as_str());
@@ -581,6 +654,7 @@ fn push_error_fields(data: &mut String, prefix: &str, error: Option<&EvaError>) 
     }
 }
 
+/// 从带 prefix 字段重建可选结构化错误，并按声明长度逐项恢复上下文。
 fn error_from_fields(
     fields: &BTreeMap<String, String>,
     prefix: &str,
@@ -614,6 +688,7 @@ fn error_from_fields(
     Ok(Some(error))
 }
 
+/// 将稳定错误码映射回 ErrorKind；未知码表示记录版本内的损坏数据。
 fn error_kind_from_storage(value: &str) -> Result<ErrorKind, EvaError> {
     match value {
         "invalid_argument" => Ok(ErrorKind::InvalidArgument),
@@ -628,6 +703,8 @@ fn error_kind_from_storage(value: &str) -> Result<ErrorKind, EvaError> {
     }
 }
 
+/// 解析唯一 `key=value` 行到有序 map。
+/// key 必须非空且无边界空白；重复 key 由后值覆盖，当前序列化器不会产生重复字段。
 fn parse_fields(data: &str) -> Result<BTreeMap<String, String>, EvaError> {
     let mut fields = BTreeMap::new();
     for line in data.lines().filter(|line| !line.trim().is_empty()) {
@@ -647,6 +724,7 @@ fn parse_fields(data: &str) -> Result<BTreeMap<String, String>, EvaError> {
     Ok(fields)
 }
 
+/// 追加一条未编码 `key=value\n`；调用方负责 key/value 不破坏行格式。
 fn push_field(data: &mut String, key: &str, value: &str) {
     data.push_str(key);
     data.push('=');
@@ -654,10 +732,12 @@ fn push_field(data: &mut String, key: &str, value: &str) {
     data.push('\n');
 }
 
+/// 将 UTF-8 字符串编码为 hex 后追加，完全隔离分隔符和控制字符。
 fn push_encoded_string(data: &mut String, key: &str, value: &str) {
     push_field(data, key, &hex_encode(value.as_bytes()));
 }
 
+/// 可选字符串以空字段表示 None，非空 Some 值按 hex 写入；空字符串与 None 在磁盘上等价。
 fn push_optional_string(data: &mut String, key: &str, value: Option<&str>) {
     match value {
         Some(value) => push_encoded_string(data, key, value),
@@ -665,12 +745,14 @@ fn push_optional_string(data: &mut String, key: &str, value: Option<&str>) {
     }
 }
 
+/// 获取必填原始字段；缺失返回带字段名的 Conflict。
 fn require_field<'a>(fields: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, EvaError> {
     fields.get(key).map(String::as_str).ok_or_else(|| {
         EvaError::conflict("durable event log record field is missing").with_context("field", key)
     })
 }
 
+/// 获取并 hex/UTF-8 解码必填字符串，在失败上补充字段名。
 fn decoded_required_string(
     fields: &BTreeMap<String, String>,
     key: &str,
@@ -678,6 +760,7 @@ fn decoded_required_string(
     decode_string(require_field(fields, key)?).map_err(|error| error.with_context("field", key))
 }
 
+/// 读取可选 hex 字符串；字段缺失或空值均视为 None，以兼容显式空可选字段。
 fn optional_decoded_string(
     fields: &BTreeMap<String, String>,
     key: &str,
@@ -690,6 +773,7 @@ fn optional_decoded_string(
     }
 }
 
+/// 严格解析 u64 磁盘字段并报告字段名。
 fn parse_u64(value: &str, field: &str) -> Result<u64, EvaError> {
     value.parse::<u64>().map_err(|_| {
         EvaError::conflict("durable event log numeric field is invalid")
@@ -697,6 +781,7 @@ fn parse_u64(value: &str, field: &str) -> Result<u64, EvaError> {
     })
 }
 
+/// 严格解析 u32 字段，主要用于 SystemTime 纳秒部分。
 fn parse_u32(value: &str, field: &str) -> Result<u32, EvaError> {
     value.parse::<u32>().map_err(|_| {
         EvaError::conflict("durable event log numeric field is invalid")
@@ -704,6 +789,7 @@ fn parse_u32(value: &str, field: &str) -> Result<u32, EvaError> {
     })
 }
 
+/// 严格解析平台大小计数，主要用于错误 context 长度。
 fn parse_usize(value: &str, field: &str) -> Result<usize, EvaError> {
     value.parse::<usize>().map_err(|_| {
         EvaError::conflict("durable event log numeric field is invalid")
@@ -711,6 +797,7 @@ fn parse_usize(value: &str, field: &str) -> Result<usize, EvaError> {
     })
 }
 
+/// 只接受小写 `true`/`false`，拒绝宽松数值或大小写变体。
 fn parse_bool(value: &str, field: &str) -> Result<bool, EvaError> {
     match value {
         "true" => Ok(true),
@@ -722,12 +809,15 @@ fn parse_bool(value: &str, field: &str) -> Result<bool, EvaError> {
     }
 }
 
+/// 将 hex 解码为字节后严格验证 UTF-8。
 fn decode_string(value: &str) -> Result<String, EvaError> {
     String::from_utf8(hex_decode(value)?)
         .map_err(|_| EvaError::conflict("durable event log string field is not utf-8"))
 }
 
+/// 将任意字节编码为确定性小写 hex。
 fn hex_encode(bytes: &[u8]) -> String {
+    /// 小写半字节查找表，保证跨平台输出一致。
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -737,6 +827,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     encoded
 }
 
+/// 解码偶数长度 hex；奇数长度或非法数字均作为磁盘 Conflict。
 fn hex_decode(value: &str) -> Result<Vec<u8>, EvaError> {
     if !value.len().is_multiple_of(2) {
         return Err(EvaError::conflict("hex field has odd length"));
@@ -750,6 +841,7 @@ fn hex_decode(value: &str) -> Result<Vec<u8>, EvaError> {
     Ok(bytes)
 }
 
+/// 将单个 ASCII hex digit 转成半字节，兼容大小写输入。
 fn hex_value(value: u8) -> Result<u8, EvaError> {
     match value {
         b'0'..=b'9' => Ok(value - b'0'),
@@ -760,6 +852,7 @@ fn hex_value(value: u8) -> Result<u8, EvaError> {
 }
 
 #[cfg(test)]
+/// EventLog 序号、状态转换、结构化错误、重放和文件重开语义的回归测试。
 mod tests {
     use super::*;
     use crate::{DurableBackendOptions, FileSystemDurableBackend};
@@ -767,6 +860,7 @@ mod tests {
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 创建最小文本广播事件 fixture。
     fn event(id: &str) -> Event {
         Event::new(
             EventId::parse(id).unwrap(),
@@ -775,6 +869,7 @@ mod tests {
         )
     }
 
+    /// 创建覆盖二进制 payload、定向目标和完整 metadata 的事件 fixture。
     fn targeted_event(id: &str) -> Event {
         Event::new(
             EventId::parse(id).unwrap(),
@@ -795,6 +890,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 append 从 1 分配序号并同步推进 watermark。
     fn append_assigns_sequence_and_watermark() {
         let mut log = InMemoryEventLog::new();
 
@@ -807,6 +903,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 ack 保存消费者、清除错误并转换为 Acked。
     fn ack_marks_consumer() {
         let mut log = InMemoryEventLog::new();
         let event = event("evt-1");
@@ -822,6 +919,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 fail 完整保留 kind、retry、provider code 和错误上下文。
     fn fail_preserves_structured_error() {
         let mut log = InMemoryEventLog::new();
         let event = event("evt-1");
@@ -841,6 +939,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 replay 游标包含指定 sequence 且保持日志顺序。
     fn replay_returns_records_from_cursor() {
         let mut log = InMemoryEventLog::new();
         log.append(event("evt-1")).unwrap();
@@ -853,6 +952,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证文件日志重开后恢复事件 payload、target、metadata、序号和 watermark。
     fn filesystem_log_round_trip_survives_reopen() {
         let root = test_root("filesystem-round-trip");
         {
@@ -904,6 +1004,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Failed 状态与结构化错误覆盖同一序号文件并在重开后保持。
     fn filesystem_log_persists_failures() {
         let root = test_root("filesystem-failure");
         {
@@ -940,22 +1041,27 @@ mod tests {
         }
     }
 
+    /// 测试临时日志根目录所有者。
     struct TestRoot {
+        /// 唯一临时路径。
         path: PathBuf,
     }
 
     impl TestRoot {
+        /// 返回临时路径。
         fn path(&self) -> &Path {
             &self.path
         }
     }
 
     impl Drop for TestRoot {
+        /// 测试结束时尽力递归清理。
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
 
+    /// 用测试名、进程和时间构造并行安全路径。
     fn test_root(name: &str) -> TestRoot {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

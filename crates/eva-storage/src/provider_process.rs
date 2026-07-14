@@ -1,3 +1,4 @@
+//! Provider 进程/会话快照、文件表和 daemon 重启恢复契约。
 //! Provider process/session table contracts.
 
 use crate::DurableBackendLayout;
@@ -7,51 +8,79 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 本模块的架构职责：跨进程保存 provider 会话身份、健康、重启策略与审计链。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "provider process/session table snapshots";
 
+/// Supervisor 与重启恢复共享的可查询 provider 执行快照。
 /// Queryable provider execution state shared by supervisors and future recovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderProcessSnapshot {
+    /// Supervisor 分配的逻辑会话 ID，也是表的 upsert key。
     pub session_id: String,
+    /// 实际 provider 进程/槽位 ID。
     pub provider_process_id: String,
+    /// 触发 provider 执行的请求 ID。
     pub request_id: RequestId,
+    /// Provider 所属 Adapter ID。
     pub adapter_id: AdapterId,
+    /// 本会话执行的 capability。
     pub capability: CapabilityName,
+    /// stdio/http 等 transport 标识。
     pub transport: String,
+    /// 启动时 manifest 内容摘要，用于恢复时判断配置漂移。
     pub manifest_digest: String,
+    /// 诊断用启动命令文本；执行由 supervisor 负责。
     pub start_command: String,
+    /// running/failed/interrupted 等健康状态。
     pub health: String,
+    /// Supervisor 重启策略标识。
     pub restart_policy: String,
+    /// 可选重试退避毫秒数。
     pub retry_backoff_ms: Option<u64>,
+    /// 会话是否仍被视为活动；重启扫描会关闭遗留活动会话。
     pub active: bool,
+    /// 最近一次 provider 错误；重启中断不会覆盖已有根因。
     pub last_error: Option<String>,
+    /// 初次启动 epoch 毫秒。
     pub started_at_ms: u128,
+    /// 最近状态变化 epoch 毫秒。
     pub updated_at_ms: u128,
+    /// 按发生顺序保存的 supervisor/recovery 审计条目。
     pub audit: Vec<String>,
 }
 
+/// V1.13 supervisor 所需的 provider 会话表行为。
 /// Provider process/session table behavior required by V1.13 supervision.
 pub trait ProviderProcessTable {
+    /// 按 session ID 插入或覆盖快照；不提供跨写者 CAS。
     fn upsert(&mut self, snapshot: ProviderProcessSnapshot) -> Result<(), EvaError>;
+    /// 精确读取一个 session；缺失返回 NotFound。
     fn read(&self, session_id: &str) -> Result<ProviderProcessSnapshot, EvaError>;
+    /// 返回所有可解析快照；文件实现遇到任一损坏文件会整体失败。
     fn list(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError>;
 }
 
+/// 首版 provider supervisor 使用的内存进程表。
 /// In-memory process table used by the first provider supervisor baseline.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct InMemoryProviderProcessTable {
+    /// 按 session ID 有序保存，保证 list 结果确定。
     snapshots: BTreeMap<String, ProviderProcessSnapshot>,
 }
 
+/// Daemon 重启恢复使用的文件系统进程表。
 /// Filesystem-backed process table used by restart recovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSystemProviderProcessTable {
+    /// `.provider` 单快照文件目录。
     process_dir: PathBuf,
 }
 
 impl ProviderProcessSnapshot {
     #[allow(clippy::too_many_arguments)]
+    /// 创建活动 provider 会话初始快照。
+    /// 所有强类型 ID 由调用方提前校验；started/updated 使用同一时刻，审计链记录槽位、会话和进程。
     pub fn running(
         session_id: impl Into<String>,
         provider_process_id: impl Into<String>,
@@ -90,6 +119,8 @@ impl ProviderProcessSnapshot {
         }
     }
 
+    /// 释放 provider 槽位并转换为非活动终态。
+    /// health 不允许空值；有 last_error 记为 supervisor.failed，否则记为 completed。
     pub fn release(
         &mut self,
         health: impl Into<String>,
@@ -115,6 +146,8 @@ impl ProviderProcessSnapshot {
         Ok(())
     }
 
+    /// Daemon 重启恢复时把遗留活动会话标为 interrupted。
+    /// 已有 last_error 代表更接近根因的 provider 失败，必须保留；restart reason 仅追加到去换行审计链。
     pub fn mark_interrupted_after_restart(&mut self, reason: impl Into<String>) {
         let reason = reason.into();
         let previous_health = self.health.clone();
@@ -138,6 +171,7 @@ impl ProviderProcessSnapshot {
         self.audit.push("provider.health:interrupted".to_owned());
     }
 
+    /// 序列化为 version=1 逐行格式；可选值为空串，重复 audit 行保留顺序。
     pub fn to_storage(&self) -> String {
         let mut lines = vec![
             "version=1".to_owned(),
@@ -180,6 +214,9 @@ impl ProviderProcessSnapshot {
         lines.join("\n")
     }
 
+    /// 严格解析 version=1 快照并重新验证 RequestId、AdapterId 和 CapabilityName。
+    /// 未知字段/版本、数值/布尔损坏或任一核心字段缺失均返回 InvalidArgument；恢复不得跳过
+    /// 不完整进程状态后继续当作健康会话。
     pub fn from_storage(data: &str) -> Result<Self, EvaError> {
         let mut session_id = None;
         let mut provider_process_id = None;
@@ -290,10 +327,12 @@ impl ProviderProcessSnapshot {
 }
 
 impl InMemoryProviderProcessTable {
+    /// 创建空内存会话表。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 返回指定 Adapter 当前 active 的快照，保持 BTreeMap 的确定顺序。
     pub fn active_for_adapter(
         &self,
         adapter_id: &AdapterId,
@@ -307,22 +346,28 @@ impl InMemoryProviderProcessTable {
 }
 
 impl FileSystemProviderProcessTable {
+    /// 使用传统项目布局 `<root>/.eva/provider-processes` 创建表句柄。
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             process_dir: root.as_ref().join(".eva").join("provider-processes"),
         }
     }
 
+    /// 使用 durable backend state 子树创建表句柄。
     pub fn from_durable_layout(layout: &DurableBackendLayout) -> Self {
         Self {
             process_dir: layout.state_dir.join("provider-processes"),
         }
     }
 
+    /// 返回 provider 快照目录。
     pub fn process_dir(&self) -> &Path {
         &self.process_dir
     }
 
+    /// 将非空 session ID 映射为 `.provider` 文件名。
+    /// 不安全字符被 `-` 替换以阻止目录穿越；该编码不是一一映射，不同原值可能碰撞，
+    /// 因此调用方应使用稳定 slug，并不能把此路径映射视为强 CAS key。
     fn snapshot_path(&self, session_id: &str) -> Result<PathBuf, EvaError> {
         if session_id.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -336,6 +381,7 @@ impl FileSystemProviderProcessTable {
 }
 
 impl ProviderProcessTable for InMemoryProviderProcessTable {
+    /// 按 session ID 覆盖内存快照；空 ID 在修改 map 前拒绝。
     fn upsert(&mut self, snapshot: ProviderProcessSnapshot) -> Result<(), EvaError> {
         if snapshot.session_id.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -346,6 +392,7 @@ impl ProviderProcessTable for InMemoryProviderProcessTable {
         Ok(())
     }
 
+    /// 克隆读取指定会话，缺失返回带 session ID 的 NotFound。
     fn read(&self, session_id: &str) -> Result<ProviderProcessSnapshot, EvaError> {
         self.snapshots.get(session_id).cloned().ok_or_else(|| {
             EvaError::not_found("provider process session does not exist")
@@ -353,12 +400,16 @@ impl ProviderProcessTable for InMemoryProviderProcessTable {
         })
     }
 
+    /// 按 session ID 排序返回全部快照。
     fn list(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError> {
         Ok(self.snapshots.values().cloned().collect())
     }
 }
 
 impl ProviderProcessTable for FileSystemProviderProcessTable {
+    /// 创建目录并直接覆盖 session 的最终快照文件。
+    /// 当前无临时文件 rename、generation CAS 或文件锁；调用方必须保证单写者，崩溃半写会在
+    /// 后续 read/list 中作为解析错误暴露，不能被当作可恢复健康快照。
     fn upsert(&mut self, snapshot: ProviderProcessSnapshot) -> Result<(), EvaError> {
         if snapshot.session_id.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -381,6 +432,7 @@ impl ProviderProcessTable for FileSystemProviderProcessTable {
         })
     }
 
+    /// 读取并严格解析指定 session 文件；任何 I/O 缺失映射为 NotFound，格式错误附加路径。
     fn read(&self, session_id: &str) -> Result<ProviderProcessSnapshot, EvaError> {
         let path = self.snapshot_path(session_id)?;
         let data = fs::read_to_string(&path).map_err(|error| {
@@ -392,6 +444,8 @@ impl ProviderProcessTable for FileSystemProviderProcessTable {
             .map_err(|error| error.with_context("path", path.display().to_string()))
     }
 
+    /// 按文件路径排序加载所有 `.provider` 快照。
+    /// 目录缺失表示空表；任一目标文件损坏使整个列表失败，避免恢复遗漏活跃进程。
     fn list(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError> {
         let entries = match fs::read_dir(&self.process_dir) {
             Ok(entries) => entries,
@@ -434,6 +488,7 @@ impl ProviderProcessTable for FileSystemProviderProcessTable {
     }
 }
 
+/// 返回当前 epoch 毫秒；系统时钟早于 epoch 时回退 0。
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -441,6 +496,7 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+/// 严格解析小写布尔磁盘字段，并附加字段和值上下文。
 fn parse_bool(value: &str, field: &'static str) -> Result<bool, EvaError> {
     match value {
         "true" => Ok(true),
@@ -453,6 +509,7 @@ fn parse_bool(value: &str, field: &'static str) -> Result<bool, EvaError> {
     }
 }
 
+/// 将空串解析为 None，否则严格解析 u64 退避值。
 fn parse_optional_u64(value: &str, message: &'static str) -> Result<Option<u64>, EvaError> {
     if value.is_empty() {
         Ok(None)
@@ -464,6 +521,7 @@ fn parse_optional_u64(value: &str, message: &'static str) -> Result<Option<u64>,
     }
 }
 
+/// 将磁盘空串恢复为 None，非空值百分号解码。
 fn decode_optional_field(value: &str) -> Option<String> {
     if value.is_empty() {
         None
@@ -472,6 +530,7 @@ fn decode_optional_field(value: &str) -> Option<String> {
     }
 }
 
+/// 百分号编码逐行格式中的换行、分隔符和 `%` 本身。
 fn encode_field(value: &str) -> String {
     value
         .replace('%', "%25")
@@ -482,6 +541,7 @@ fn encode_field(value: &str) -> String {
         .replace('=', "%3D")
 }
 
+/// 以固定逆序恢复编码字符，最后处理 `%25` 避免二次解码。
 fn decode_field(value: &str) -> String {
     value
         .replace("%0A", "\n")
@@ -492,6 +552,7 @@ fn decode_field(value: &str) -> String {
         .replace("%25", "%")
 }
 
+/// 将 session ID 转为单文件名安全段；保留 ASCII slug 字符，其余逐字符替换为 `-`。
 fn safe_file_segment(value: &str) -> String {
     value
         .chars()
@@ -505,17 +566,20 @@ fn safe_file_segment(value: &str) -> String {
         .collect()
 }
 
+/// 将审计原因中的 CR/LF 替换为空格，保证一条原因不会伪造多条日志。
 fn sanitize_audit_value(value: &str) -> String {
     value.replace(['\n', '\r'], " ")
 }
 
 #[cfg(test)]
+/// Provider 会话 upsert、释放、文件重开、重启中断和损坏快照回归测试。
 mod tests {
     use super::*;
     use crate::{DurableBackendOptions, FileSystemDurableBackend};
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 创建 running provider 快照 fixture。
     fn snapshot(session: &str) -> ProviderProcessSnapshot {
         ProviderProcessSnapshot::running(
             session,
@@ -531,6 +595,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证内存表 upsert/list 及按 Adapter active 查询。
     fn process_table_upserts_and_lists_active_sessions() {
         let mut table = InMemoryProviderProcessTable::new();
         let adapter_id = AdapterId::parse("stdio-test").unwrap();
@@ -544,6 +609,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 release 保存 last_error 并追加失败审计链。
     fn process_table_release_records_last_error() {
         let mut table = InMemoryProviderProcessTable::new();
         let mut snapshot = snapshot("session-2");
@@ -571,6 +637,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证文件快照重开后保持全部字段与 retry backoff。
     fn filesystem_process_table_survives_reopen() {
         let root = test_root("filesystem-round-trip");
         let backend =
@@ -593,6 +660,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证重启中断保留既有 provider 根因并追加 recovery 审计。
     fn interrupted_provider_process_preserves_last_error_and_audit_chain() {
         let mut stored = snapshot("session-interrupted");
         stored.last_error = Some("provider stderr: safe error".to_owned());
@@ -618,6 +686,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 list 遇到缺核心字段的快照整体失败。
     fn filesystem_process_table_reports_corrupt_snapshot() {
         let root = test_root("filesystem-corrupt");
         let backend =
@@ -635,22 +704,27 @@ mod tests {
         assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
     }
 
+    /// 测试临时 durable root 所有者。
     struct TestRoot {
+        /// 唯一临时路径。
         path: PathBuf,
     }
 
     impl TestRoot {
+        /// 返回临时路径。
         fn path(&self) -> &Path {
             &self.path
         }
     }
 
     impl Drop for TestRoot {
+        /// 测试结束时尽力递归清理。
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
 
+    /// 用测试名、进程和时间构造并行安全路径。
     fn test_root(name: &str) -> TestRoot {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

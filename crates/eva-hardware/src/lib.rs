@@ -1,10 +1,17 @@
+//! 本模块提供 `lib` 相关实现。
 //! Hardware discovery and hotplug boundary.
 
+/// 声明 `discovery` 子模块。
 pub mod discovery;
+/// 声明 `driver` 子模块。
 pub mod driver;
+/// 声明 `hotplug` 子模块。
 pub mod hotplug;
+/// 声明 `lifecycle` 子模块。
 pub mod lifecycle;
+/// 声明 `registry` 子模块。
 pub mod registry;
+/// 声明 `state` 子模块。
 pub mod state;
 
 pub use discovery::{discover_project_devices, DeviceCandidate, HardwareDiscoveryReport};

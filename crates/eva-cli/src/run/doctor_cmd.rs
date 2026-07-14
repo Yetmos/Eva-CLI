@@ -1,3 +1,5 @@
+//! Doctor 子命令适配层：把只读检查报告映射为稳定退出码和输出格式。
+
 use super::{
     json_array, json_string, parse_common_options, success_envelope, trace_for, write_error_kind,
     CommonOptions, OutputFormat, EXIT_CONFIG, EXIT_OK,
@@ -7,10 +9,12 @@ use eva_core::EvaError;
 use eva_observability::TraceFields;
 use std::io::Write;
 
+/// Doctor 仅接受公共项目与输出选项。
 pub(super) fn parse_doctor_options(args: &[String]) -> Result<CommonOptions, EvaError> {
     parse_common_options(args)
 }
 
+/// 执行 Doctor 并在存在 Error 检查时返回配置类退出码；Warning 不阻塞成功。
 pub(super) fn execute_doctor<W: Write>(
     options: CommonOptions,
     stdout: &mut W,
@@ -26,6 +30,7 @@ pub(super) fn execute_doctor<W: Write>(
     Ok(exit_code)
 }
 
+/// 输出完整 Doctor 报告；JSON 模式同时给出错误和警告计数供自动化判断。
 fn write_doctor<W: Write>(
     writer: &mut W,
     output: OutputFormat,

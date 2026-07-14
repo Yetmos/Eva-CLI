@@ -1,3 +1,8 @@
+//! 协调硬件驱动租约、操作系统权限、热插拔事件和崩溃恢复。
+//!
+//! 启动顺序固定为运行时策略、操作系统权限、设备租约，前置检查失败不会占用设备；停止和
+//! 崩溃路径都先验证或取出活动会话，再释放租约并记录审计。热插拔事件只发布逻辑设备状态，
+//! 不暴露原始句柄或平台设备路径。
 //! Hardware driver lifecycle coordination.
 
 use crate::discovery::DeviceCandidate;
@@ -10,106 +15,168 @@ use eva_observability::{AuditAction, AuditEvent, AuditOutcome, AuditSink, TraceF
 use eva_policy::{HighRiskAction, RuntimePolicyGate, RuntimePolicyRequest};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
     "hardware driver lifecycle with OS permission, policy, lease, hotplug, and audit gates";
 
+/// 表示 `OsPermissionCheck` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OsPermissionCheck {
+    /// 记录 `device_id` 字段对应的值。
     pub device_id: DeviceId,
+    /// 记录 `bus` 字段对应的值。
     pub bus: String,
+    /// 记录 `permission` 字段对应的值。
     pub permission: String,
+    /// 记录 `granted` 字段对应的值。
     pub granted: bool,
+    /// 记录 `os` 字段对应的值。
     pub os: String,
+    /// 记录 `user` 字段对应的值。
     pub user: String,
+    /// 记录 `source` 字段对应的值。
     pub source: String,
+    /// 记录 `device_path` 字段对应的值。
     pub device_path: String,
+    /// 记录 `remediation` 字段对应的值。
     pub remediation: Vec<String>,
+    /// 记录 `raw_device_path_exposed` 字段对应的值。
     pub raw_device_path_exposed: bool,
 }
 
+/// 约定 `OsPermissionProvider` 实现需要满足的接口。
 pub trait OsPermissionProvider {
+    /// 校验 `check` 对应的约束，不满足时返回明确错误。
     fn check(&self, device: &RegisteredDevice) -> Result<OsPermissionCheck, EvaError>;
 }
 
+/// 表示 `StaticOsPermissionProvider` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticOsPermissionProvider {
+    /// 记录 `permission` 字段对应的值。
     permission: String,
+    /// 记录 `granted` 字段对应的值。
     granted: bool,
 }
 
+/// 表示 `PlatformOsPermissionProvider` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformOsPermissionProvider {
+    /// 记录 `os` 字段对应的值。
     os: String,
+    /// 记录 `user` 字段对应的值。
     user: String,
+    /// 记录 `default_granted` 字段对应的值。
     default_granted: bool,
 }
 
+/// 表示 `DriverStartRequest` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverStartRequest {
+    /// 记录 `device_id` 字段对应的值。
     pub device_id: DeviceId,
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
+    /// 记录 `capability` 字段对应的值。
     pub capability: CapabilityName,
+    /// 记录 `driver_id` 字段对应的值。
     pub driver_id: String,
+    /// 记录 `timeout_ms` 字段对应的值。
     pub timeout_ms: Option<u64>,
 }
 
+/// 定义 `DriverLifecycleState` 可取的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverLifecycleState {
+    /// 表示 `Opened` 枚举分支。
     Opened,
+    /// 表示 `Stopped` 枚举分支。
     Stopped,
+    /// 表示 `Crashed` 枚举分支。
     Crashed,
 }
 
+/// 表示 `DriverLifecycleReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverLifecycleReport {
+    /// 记录 `device_id` 字段对应的值。
     pub device_id: DeviceId,
+    /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
+    /// 记录 `driver_id` 字段对应的值。
     pub driver_id: String,
+    /// 记录 `state` 字段对应的值。
     pub state: DriverLifecycleState,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 表示 `ActiveDriverSession` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveDriverSession {
+    /// 记录 `lease` 字段对应的值。
     pub lease: DeviceLease,
+    /// 记录 `driver_id` 字段对应的值。
     pub driver_id: String,
+    /// 记录 `capability` 字段对应的值。
     pub capability: CapabilityName,
 }
 
+/// 表示 `HotplugPublishReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotplugPublishReport {
+    /// 记录 `event` 字段对应的值。
     pub event: HotplugEvent,
+    /// 记录 `receipt` 字段对应的值。
     pub receipt: EventReceipt,
 }
 
+/// 表示 `HardwareHotplugDeviceState` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardwareHotplugDeviceState {
+    /// 记录 `device_id` 字段对应的值。
     pub device_id: DeviceId,
+    /// 记录 `bus` 字段对应的值。
     pub bus: String,
+    /// 记录 `health` 字段对应的值。
     pub health: DeviceHealth,
+    /// 记录 `source_path` 字段对应的值。
     pub source_path: String,
 }
 
+/// 表示 `HardwareHotplugSubscriberReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardwareHotplugSubscriberReport {
+    /// 记录 `status` 字段对应的值。
     pub status: String,
+    /// 记录 `watcher_kind` 字段对应的值。
     pub watcher_kind: String,
+    /// 记录 `devices_seen` 字段对应的值。
     pub devices_seen: usize,
+    /// 记录 `events_published` 字段对应的值。
     pub events_published: Vec<HotplugPublishReport>,
+    /// 记录 `state` 字段对应的值。
     pub state: Vec<HardwareHotplugDeviceState>,
+    /// 记录 `raw_handles_exposed` 字段对应的值。
     pub raw_handles_exposed: bool,
+    /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
 }
 
+/// 表示 `HardwareLifecycleCoordinator` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardwareLifecycleCoordinator<P> {
+    /// 记录 `registry` 字段对应的值。
     registry: DeviceRegistry,
+    /// 记录 `permission_provider` 字段对应的值。
     permission_provider: P,
+    /// 记录 `active` 字段对应的值。
     active: BTreeMap<DeviceId, ActiveDriverSession>,
 }
 
 impl StaticOsPermissionProvider {
+    /// 执行 `granted` 对应的处理逻辑。
     pub fn granted(permission: impl Into<String>) -> Self {
         Self {
             permission: permission.into(),
@@ -117,6 +184,7 @@ impl StaticOsPermissionProvider {
         }
     }
 
+    /// 执行 `denied` 对应的处理逻辑。
     pub fn denied(permission: impl Into<String>) -> Self {
         Self {
             permission: permission.into(),
@@ -126,6 +194,7 @@ impl StaticOsPermissionProvider {
 }
 
 impl OsPermissionProvider for StaticOsPermissionProvider {
+    /// 校验 `check` 对应的约束，不满足时返回明确错误。
     fn check(&self, device: &RegisteredDevice) -> Result<OsPermissionCheck, EvaError> {
         Ok(OsPermissionCheck {
             device_id: device.identity.id.clone(),
@@ -148,6 +217,7 @@ impl OsPermissionProvider for StaticOsPermissionProvider {
 }
 
 impl PlatformOsPermissionProvider {
+    /// 执行 `current_process` 对应的处理逻辑。
     pub fn current_process() -> Self {
         Self {
             os: std::env::consts::OS.to_owned(),
@@ -156,6 +226,7 @@ impl PlatformOsPermissionProvider {
         }
     }
 
+    /// 创建并初始化当前类型的实例。
     pub fn new(os: impl Into<String>, user: impl Into<String>, default_granted: bool) -> Self {
         Self {
             os: os.into(),
@@ -166,12 +237,14 @@ impl PlatformOsPermissionProvider {
 }
 
 impl Default for PlatformOsPermissionProvider {
+    /// 创建基于当前进程与平台默认许可判定的提供者。
     fn default() -> Self {
         Self::current_process()
     }
 }
 
 impl OsPermissionProvider for PlatformOsPermissionProvider {
+    /// 校验 `check` 对应的约束，不满足时返回明确错误。
     fn check(&self, device: &RegisteredDevice) -> Result<OsPermissionCheck, EvaError> {
         let bus = device.identity.bus.as_str().to_owned();
         let permission = permission_name_for_bus(device.identity.bus.as_str()).to_owned();
@@ -196,6 +269,7 @@ impl OsPermissionProvider for PlatformOsPermissionProvider {
 }
 
 impl DriverStartRequest {
+    /// 创建并初始化当前类型的实例。
     pub fn new(
         device_id: DeviceId,
         request_id: RequestId,
@@ -211,6 +285,7 @@ impl DriverStartRequest {
         }
     }
 
+    /// 设置 `timeout_ms` 并返回更新后的实例。
     pub fn with_timeout_ms(mut self, value: u64) -> Self {
         self.timeout_ms = Some(value);
         self
@@ -218,6 +293,7 @@ impl DriverStartRequest {
 }
 
 impl DriverLifecycleState {
+    /// 将当前值按 `as_str` 约定的形式转换。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Opened => "opened",
@@ -231,6 +307,7 @@ impl<P> HardwareLifecycleCoordinator<P>
 where
     P: OsPermissionProvider,
 {
+    /// 创建并初始化当前类型的实例。
     pub fn new(registry: DeviceRegistry, permission_provider: P) -> Self {
         Self {
             registry,
@@ -239,14 +316,17 @@ where
         }
     }
 
+    /// 执行 `registry` 对应的处理逻辑。
     pub fn registry(&self) -> &DeviceRegistry {
         &self.registry
     }
 
+    /// 执行 `active_session` 对应的处理逻辑。
     pub fn active_session(&self, device_id: &DeviceId) -> Option<&ActiveDriverSession> {
         self.active.get(device_id)
     }
 
+    /// 执行 `start_driver` 对应的受控流程。
     pub fn start_driver<S>(
         &mut self,
         request: DriverStartRequest,
@@ -312,6 +392,7 @@ where
         Ok(report)
     }
 
+    /// 停止或释放 `stop_driver` 管理的资源。
     pub fn stop_driver<S>(
         &mut self,
         device_id: &DeviceId,
@@ -353,6 +434,7 @@ where
         Ok(report)
     }
 
+    /// 登记 `record_driver_crash` 对应的数据或状态。
     pub fn record_driver_crash<S>(
         &mut self,
         device_id: &DeviceId,
@@ -365,6 +447,7 @@ where
         self.record_crash(device_id, reason, "driver", audit_sink)
     }
 
+    /// 登记 `record_hotplug_watcher_crash` 对应的数据或状态。
     pub fn record_hotplug_watcher_crash<S>(
         &mut self,
         device_id: &DeviceId,
@@ -377,6 +460,7 @@ where
         self.record_crash(device_id, reason, "hotplug_watcher", audit_sink)
     }
 
+    /// 登记 `record_crash` 对应的数据或状态。
     fn record_crash<S>(
         &mut self,
         device_id: &DeviceId,
@@ -413,6 +497,7 @@ where
     }
 }
 
+/// 登记 `publish_hotplug_event` 对应的数据或状态。
 pub fn publish_hotplug_event<B, S>(
     machine: &mut HotplugStateMachine,
     bus: &mut B,
@@ -459,6 +544,7 @@ where
     Ok(HotplugPublishReport { event, receipt })
 }
 
+/// 执行 `run_hotplug_subscriber_once` 对应的受控流程。
 pub fn run_hotplug_subscriber_once<B, S>(
     candidates: &[DeviceCandidate],
     previous_state: &[HardwareHotplugDeviceState],
@@ -558,6 +644,7 @@ where
     })
 }
 
+/// 按 `render_hotplug_subscriber_state` 的协议约定生成输出。
 pub fn render_hotplug_subscriber_state(states: &[HardwareHotplugDeviceState]) -> String {
     let mut states = states.to_vec();
     states.sort_by(|left, right| left.device_id.cmp(&right.device_id));
@@ -574,6 +661,7 @@ pub fn render_hotplug_subscriber_state(states: &[HardwareHotplugDeviceState]) ->
     output
 }
 
+/// 读取或解析 `parse_hotplug_subscriber_state` 所需的数据，失败时保留错误语义。
 pub fn parse_hotplug_subscriber_state(
     data: &str,
 ) -> Result<Vec<HardwareHotplugDeviceState>, EvaError> {
@@ -619,14 +707,21 @@ pub fn parse_hotplug_subscriber_state(
     Ok(states)
 }
 
+/// 表示 `SubscriberEventInput` 数据结构。
 struct SubscriberEventInput<'a> {
+    /// 记录 `device_id` 字段对应的值。
     device_id: &'a DeviceId,
+    /// 记录 `previous_health` 字段对应的值。
     previous_health: DeviceHealth,
+    /// 记录 `action` 字段对应的值。
     action: HotplugAction,
+    /// 记录 `reason` 字段对应的值。
     reason: String,
+    /// 记录 `request_id_prefix` 字段对应的值。
     request_id_prefix: &'a str,
 }
 
+/// 登记 `publish_subscriber_event` 对应的数据或状态。
 fn publish_subscriber_event<B, S>(
     input: SubscriberEventInput<'_>,
     events_published: &mut Vec<HotplugPublishReport>,
@@ -656,6 +751,7 @@ where
     Ok(())
 }
 
+/// 执行 `hotplug_action_for_transition` 对应的处理逻辑。
 fn hotplug_action_for_transition(
     has_previous: bool,
     previous: DeviceHealth,
@@ -686,6 +782,7 @@ fn hotplug_action_for_transition(
     }
 }
 
+/// 执行 `transition_reason` 对应的处理逻辑。
 fn transition_reason(previous: DeviceHealth, current: DeviceHealth) -> String {
     format!(
         "manifest snapshot {} -> {}",
@@ -694,6 +791,7 @@ fn transition_reason(previous: DeviceHealth, current: DeviceHealth) -> String {
     )
 }
 
+/// 校验 `ensure_os_permission` 对应的约束，不满足时返回明确错误。
 fn ensure_os_permission(check: &OsPermissionCheck) -> Result<(), EvaError> {
     if check.granted {
         Ok(())
@@ -710,6 +808,7 @@ fn ensure_os_permission(check: &OsPermissionCheck) -> Result<(), EvaError> {
     }
 }
 
+/// 执行 `current_user` 对应的处理逻辑。
 fn current_user() -> String {
     std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
@@ -718,6 +817,7 @@ fn current_user() -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
+/// 执行 `permission_name_for_bus` 对应的处理逻辑。
 fn permission_name_for_bus(bus: &str) -> &'static str {
     match bus {
         "usb" => "usb-device-access",
@@ -729,6 +829,7 @@ fn permission_name_for_bus(bus: &str) -> &'static str {
     }
 }
 
+/// 执行 `permission_source` 对应的处理逻辑。
 fn permission_source(os: &str, bus: &str) -> String {
     match os {
         "windows" => "Windows device interface ACL or driver installation".to_owned(),
@@ -740,6 +841,7 @@ fn permission_source(os: &str, bus: &str) -> String {
     }
 }
 
+/// 执行 `permission_remediation` 对应的处理逻辑。
 fn permission_remediation(os: &str, bus: &str, user: &str, permission: &str) -> Vec<String> {
     let mut remediation = vec![format!(
         "grant {permission} to user {user} before starting a hardware driver"
@@ -770,6 +872,7 @@ fn permission_remediation(os: &str, bus: &str, user: &str, permission: &str) -> 
     remediation
 }
 
+/// 执行 `safe_device_locator` 对应的处理逻辑。
 fn safe_device_locator(device: &RegisteredDevice) -> String {
     format!(
         "logical://hardware/{}/{}",
@@ -778,6 +881,7 @@ fn safe_device_locator(device: &RegisteredDevice) -> String {
     )
 }
 
+/// 登记 `record_lifecycle_audit` 对应的数据或状态。
 fn record_lifecycle_audit<S>(
     audit_sink: &mut S,
     action: AuditAction,
@@ -797,11 +901,14 @@ where
     )
 }
 
+/// 执行 `json_escape` 对应的处理逻辑。
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// 按 `encode_field` 的协议约定生成输出。
 fn encode_field(value: &str) -> String {
+    /// 定义 `HEX` 常量。
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(value.len() * 2);
     for byte in value.as_bytes() {
@@ -811,6 +918,7 @@ fn encode_field(value: &str) -> String {
     encoded
 }
 
+/// 读取或解析 `decode_field` 所需的数据，失败时保留错误语义。
 fn decode_field(value: &str) -> Result<String, EvaError> {
     if !value.len().is_multiple_of(2) {
         return Err(EvaError::conflict(
@@ -831,6 +939,7 @@ fn decode_field(value: &str) -> Result<String, EvaError> {
     })
 }
 
+/// 声明 `tests` 子模块。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,6 +950,7 @@ mod tests {
     use eva_observability::InMemoryAuditSink;
     use eva_policy::PolicyDomainSet;
 
+    /// 执行 `policy_gate` 对应的处理逻辑。
     fn policy_gate() -> RuntimePolicyGate {
         let value: serde_yaml::Value = serde_yaml::from_str(
             r#"
@@ -858,6 +968,7 @@ hardware_policy:
         RuntimePolicyGate::new(PolicyDomainSet::from_documents(&[document]).unwrap())
     }
 
+    /// 执行 `registry` 对应的处理逻辑。
     fn registry() -> DeviceRegistry {
         let candidate =
             DeviceCandidate::for_adapter(AdapterId::parse("scale-main").unwrap(), "main-scale")
@@ -865,6 +976,7 @@ hardware_policy:
         DeviceRegistry::from_candidates(&[candidate]).unwrap()
     }
 
+    /// 执行 `start_request` 对应的受控流程。
     fn start_request() -> DriverStartRequest {
         DriverStartRequest::new(
             DeviceId::parse("scale-main:main-scale").unwrap(),
@@ -875,6 +987,7 @@ hardware_policy:
         .with_timeout_ms(1000)
     }
 
+    /// 验证 `lifecycle_checks_policy_os_permission_claim_and_audit` 场景下的预期行为。
     #[test]
     fn lifecycle_checks_policy_os_permission_claim_and_audit() {
         let mut coordinator = HardwareLifecycleCoordinator::new(
@@ -897,6 +1010,7 @@ hardware_policy:
         assert_eq!(audit.events[0].action, AuditAction::HardwareDriverStarted);
     }
 
+    /// 验证 `lifecycle_rejects_missing_os_permission_before_claim` 场景下的预期行为。
     #[test]
     fn lifecycle_rejects_missing_os_permission_before_claim() {
         let mut coordinator = HardwareLifecycleCoordinator::new(
@@ -918,6 +1032,7 @@ hardware_policy:
         assert!(audit.events.is_empty());
     }
 
+    /// 验证 `platform_permission_provider_reports_safe_diagnostics` 场景下的预期行为。
     #[test]
     fn platform_permission_provider_reports_safe_diagnostics() {
         let registry = registry();
@@ -938,6 +1053,7 @@ hardware_policy:
         assert!(check.remediation.iter().any(|item| item.contains("udev")));
     }
 
+    /// 验证 `platform_permission_denial_blocks_before_driver_claim` 场景下的预期行为。
     #[test]
     fn platform_permission_denial_blocks_before_driver_claim() {
         let mut coordinator = HardwareLifecycleCoordinator::new(
@@ -964,6 +1080,7 @@ hardware_policy:
         assert!(audit.events.is_empty());
     }
 
+    /// 验证 `lifecycle_stop_requires_matching_lease_and_releases` 场景下的预期行为。
     #[test]
     fn lifecycle_stop_requires_matching_lease_and_releases() {
         let mut coordinator = HardwareLifecycleCoordinator::new(
@@ -999,6 +1116,7 @@ hardware_policy:
         );
     }
 
+    /// 验证 `driver_crash_releases_lease_and_records_failed_audit` 场景下的预期行为。
     #[test]
     fn driver_crash_releases_lease_and_records_failed_audit() {
         let mut coordinator = HardwareLifecycleCoordinator::new(
@@ -1024,6 +1142,7 @@ hardware_policy:
         assert_eq!(audit.events[1].outcome, AuditOutcome::Failed);
     }
 
+    /// 验证 `hotplug_publish_emits_typed_eventbus_event` 场景下的预期行为。
     #[test]
     fn hotplug_publish_emits_typed_eventbus_event() {
         let mut machine =
@@ -1050,6 +1169,7 @@ hardware_policy:
         );
     }
 
+    /// 验证 `hotplug_subscriber_publishes_logical_state_without_raw_handles` 场景下的预期行为。
     #[test]
     fn hotplug_subscriber_publishes_logical_state_without_raw_handles() {
         let mut bus = InMemoryEventBus::new();
@@ -1095,6 +1215,7 @@ hardware_policy:
         assert_eq!(bus.receipts().len(), 1);
     }
 
+    /// 验证 `hotplug_subscriber_reports_remove_reconnect_and_fail_transitions` 场景下的预期行为。
     #[test]
     fn hotplug_subscriber_reports_remove_reconnect_and_fail_transitions() {
         let mut bus = InMemoryEventBus::new();
@@ -1149,6 +1270,7 @@ hardware_policy:
         assert_eq!(failed.events_published[0].event.action, HotplugAction::Fail);
     }
 
+    /// 验证 `hotplug_subscriber_state_round_trips` 场景下的预期行为。
     #[test]
     fn hotplug_subscriber_state_round_trips() {
         let state = vec![HardwareHotplugDeviceState {
@@ -1164,6 +1286,7 @@ hardware_policy:
         assert_eq!(parsed, state);
     }
 
+    /// 验证 `hotplug_watcher_crash_releases_active_lease` 场景下的预期行为。
     #[test]
     fn hotplug_watcher_crash_releases_active_lease() {
         let mut coordinator = HardwareLifecycleCoordinator::new(

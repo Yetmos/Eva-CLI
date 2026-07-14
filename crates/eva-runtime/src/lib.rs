@@ -1,3 +1,4 @@
+//! 中文：Eva 运行时的组合根，统一导出构建、守护进程、恢复、诊断和任务边界。
 //! Runtime composition root.
 
 pub mod basic;

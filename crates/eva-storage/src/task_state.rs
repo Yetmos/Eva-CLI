@@ -1,3 +1,4 @@
+//! 跨进程任务快照、生命周期状态、日志/dead-letter/replay 与文件系统存储实现。
 //! Durable task state contracts and filesystem implementation.
 
 use crate::DurableBackendLayout;
@@ -5,70 +6,109 @@ use eva_core::{EvaError, RequestId};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// 本模块的架构职责：让 runtime 与 CLI 通过稳定快照共享任务状态，而不共享进程内对象。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "durable task state interfaces and process-boundary snapshots";
 
+/// CLI task 命令与 runtime 跨进程使用的完整任务状态快照。
 /// Stored task summary used by CLI task commands across process boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskStateSnapshot {
+    /// 同时作为 RequestId 和文件名主键的任务 ID。
     pub task_id: String,
+    /// queued/running/cancelling/终态等稳定状态文本。
     pub status: String,
+    /// 已执行尝试次数。
     pub attempts: usize,
+    /// 重试策略允许的最大尝试次数。
     pub retry_max_attempts: usize,
+    /// 是否收到取消请求。
     pub cancel_requested: bool,
+    /// 取消请求是否在非终态被接受。
     pub cancel_accepted: bool,
+    /// 可选取消原因。
     pub cancel_reason: Option<String>,
+    /// 最近心跳 epoch 毫秒。
     pub heartbeat_at_ms: Option<u128>,
+    /// 可选任务 deadline epoch 毫秒。
     pub deadline_at_ms: Option<u128>,
+    /// Runtime 取消传播使用的可选 token。
     pub cancel_token: Option<String>,
+    /// 中断或恢复原因。
     pub interrupted_reason: Option<String>,
+    /// 失败/超时的稳定错误分类文本。
     pub error_kind: Option<String>,
+    /// 失败/超时的人类可读消息。
     pub error_message: Option<String>,
+    /// 有序生命周期与执行日志。
     pub logs: Vec<TaskStateLogSnapshot>,
+    /// 未能处理的事件摘要。
     pub dead_letters: Vec<TaskStateDeadLetterSnapshot>,
+    /// 已重放事件摘要。
     pub replayed_events: Vec<TaskStateReplaySnapshot>,
 }
 
+/// 一条持久化任务日志。
 /// Stored task log entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskStateLogSnapshot {
+    /// 从 1 开始、按当前日志长度分配的序号。
     pub sequence: u64,
+    /// info/warning/error 等级文本。
     pub level: String,
+    /// 百分号编码后写入磁盘的日志消息。
     pub message: String,
 }
 
+/// 一条持久化 dead-letter 摘要。
 /// Stored dead-letter summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskStateDeadLetterSnapshot {
+    /// 未处理事件 ID。
     pub event_id: String,
+    /// 原事件 topic。
     pub topic: String,
+    /// 失败原因分类。
     pub reason_kind: String,
+    /// 失败原因文本。
     pub reason: String,
+    /// 已尝试重放次数。
     pub replay_count: usize,
 }
 
+/// 一条成功/已记录 replay 摘要。
 /// Stored replay summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskStateReplaySnapshot {
+    /// 被重放事件 ID。
     pub event_id: String,
+    /// 重放来源日志序号。
     pub sequence: u64,
+    /// 被重放事件 topic。
     pub topic: String,
 }
 
+/// CLI/runtime 边界所需的 durable task state 行为。
 /// Durable task state behavior required by CLI/runtime boundaries.
 pub trait TaskStateStore {
+    /// 写入指定任务快照并更新 latest 别名；实现不承诺跨文件原子性。
     fn write(&mut self, snapshot: &TaskStateSnapshot) -> Result<(), EvaError>;
+    /// 按 task ID 读取，None 表示读取 latest 别名。
     fn read(&self, task_id: Option<&str>) -> Result<TaskStateSnapshot, EvaError>;
 }
 
+/// 保留既有 `.eva/tasks` 兼容布局的文件系统任务状态存储。
 /// Filesystem-backed task state store that preserves the existing `.eva/tasks` layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSystemTaskStateStore {
+    /// 项目或 durable backend 根，用于报告所属边界。
     project_root: PathBuf,
+    /// 实际 `.task` 文件目录。
     task_dir: PathBuf,
 }
 
 impl TaskStateSnapshot {
+    /// 创建已校验 task ID 的 queued 初始快照，重试上限默认为一次。
     pub fn queued(task_id: impl Into<String>) -> Result<Self, EvaError> {
         let task_id = task_id.into();
         RequestId::parse(&task_id)?;
@@ -92,6 +132,9 @@ impl TaskStateSnapshot {
         })
     }
 
+    /// 序列化为逐行任务格式。
+    /// 标量字段唯一；log/dead_letter/replay 以重复复合行保存顺序。特殊字符做百分号编码，
+    /// 可选值用空串表示 None。格式当前无显式 version，新增字段需保持旧解析器可忽略。
     pub fn to_storage(&self) -> String {
         let mut lines = vec![
             format!("task_id={}", encode_field(&self.task_id)),
@@ -178,6 +221,10 @@ impl TaskStateSnapshot {
         lines.join("\n")
     }
 
+    /// 解析任务快照并验证必填 task_id/status。
+    ///
+    /// 数值和复合字段 arity 严格校验；布尔值只有字面量 `true` 被视为 true；未知行被忽略以
+    /// 支持前向兼容。缺核心字段或损坏已知字段返回 InvalidArgument，不返回部分快照。
     pub fn from_storage(data: &str) -> Result<Self, EvaError> {
         let mut snapshot = Self {
             task_id: String::new(),
@@ -257,6 +304,8 @@ impl TaskStateSnapshot {
         Ok(snapshot)
     }
 
+    /// 在末尾追加日志，并以当前长度+1 分配序号。
+    /// 调用方应保持已有序号连续；本方法不扫描或修复外部构造的重复序号。
     pub fn push_log(&mut self, level: impl Into<String>, message: impl Into<String>) {
         self.logs.push(TaskStateLogSnapshot {
             sequence: self.logs.len() as u64 + 1,
@@ -265,6 +314,7 @@ impl TaskStateSnapshot {
         });
     }
 
+    /// 将任务标为 running，设置首个心跳、可选 deadline 和取消 token，并追加日志。
     pub fn mark_running(
         &mut self,
         heartbeat_at_ms: u128,
@@ -278,11 +328,14 @@ impl TaskStateSnapshot {
         self.push_log("info", "task marked running");
     }
 
+    /// 更新最近心跳并记录其时间；不自动改变任务状态。
     pub fn record_heartbeat(&mut self, heartbeat_at_ms: u128) {
         self.heartbeat_at_ms = Some(heartbeat_at_ms);
         self.push_log("info", format!("task heartbeat at {heartbeat_at_ms}"));
     }
 
+    /// 记录取消请求。
+    /// 非终态转换为 cancelling 且接受；终态保持原 status 并拒绝迟到取消，但仍保存请求与原因。
     pub fn request_cancel(&mut self, reason: impl Into<String>) {
         let reason = reason.into();
         self.cancel_requested = true;
@@ -300,6 +353,7 @@ impl TaskStateSnapshot {
         }
     }
 
+    /// 将任务转换为 cancelled 终态，并确保取消请求/接受标志一致。
     pub fn mark_cancelled(&mut self) {
         self.status = "cancelled".to_owned();
         self.cancel_requested = true;
@@ -307,6 +361,7 @@ impl TaskStateSnapshot {
         self.push_log("warning", "task marked cancelled");
     }
 
+    /// 将任务转换为 timed_out，记录超时时刻和稳定 timeout 错误。
     pub fn mark_timed_out(&mut self, now_ms: u128) {
         self.status = "timed_out".to_owned();
         self.heartbeat_at_ms = Some(now_ms);
@@ -315,6 +370,7 @@ impl TaskStateSnapshot {
         self.push_log("error", format!("task timed out at {now_ms}"));
     }
 
+    /// 将任务转换为 completed，更新尝试次数并清除旧错误。
     pub fn mark_completed(&mut self, attempts: usize) {
         self.status = "completed".to_owned();
         self.attempts = attempts;
@@ -323,6 +379,7 @@ impl TaskStateSnapshot {
         self.push_log("info", "task completed");
     }
 
+    /// 将任务转换为 failed，保存最终尝试次数和调用方提供的错误分类/消息。
     pub fn mark_failed(
         &mut self,
         attempts: usize,
@@ -336,6 +393,7 @@ impl TaskStateSnapshot {
         self.push_log("error", "task failed");
     }
 
+    /// 将任务标为 interrupted 终态并保存恢复诊断原因。
     pub fn mark_interrupted(&mut self, reason: impl Into<String>) {
         let reason = reason.into();
         self.status = "interrupted".to_owned();
@@ -343,6 +401,7 @@ impl TaskStateSnapshot {
         self.push_log("warning", format!("task interrupted: {reason}"));
     }
 
+    /// 将任务标为 recovering 非终态，保留触发恢复的中断原因。
     pub fn mark_recovering(&mut self, reason: impl Into<String>) {
         let reason = reason.into();
         self.status = "recovering".to_owned();
@@ -350,12 +409,14 @@ impl TaskStateSnapshot {
         self.push_log("warning", format!("task recovering: {reason}"));
     }
 
+    /// 判断 now 是否到达或超过 deadline；无 deadline 永不超时。
     pub fn deadline_expired(&self, now_ms: u128) -> bool {
         self.deadline_at_ms
             .map(|deadline| now_ms >= deadline)
             .unwrap_or(false)
     }
 
+    /// 判断状态是否禁止继续正常执行；interrupted 视为终态，recovering 不是。
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.status.as_str(),
@@ -365,6 +426,7 @@ impl TaskStateSnapshot {
 }
 
 impl FileSystemTaskStateStore {
+    /// 使用传统项目布局 `<root>/.eva/tasks` 创建 store。
     pub fn new(project_root: impl AsRef<Path>) -> Self {
         let project_root = project_root.as_ref().to_path_buf();
         let task_dir = project_root.join(".eva").join("tasks");
@@ -374,6 +436,7 @@ impl FileSystemTaskStateStore {
         }
     }
 
+    /// 使用 durable backend 的 task_dir 创建 store。
     pub fn from_durable_layout(layout: &DurableBackendLayout) -> Self {
         Self {
             project_root: layout.root.clone(),
@@ -381,14 +444,18 @@ impl FileSystemTaskStateStore {
         }
     }
 
+    /// 返回 store 所属项目/backend 根。
     pub fn project_root(&self) -> &Path {
         &self.project_root
     }
 
+    /// 克隆返回任务目录，供调用方检查或传递路径所有权。
     pub fn task_dir(&self) -> PathBuf {
         self.task_dir.clone()
     }
 
+    /// 按文件名排序加载所有 ID 快照，显式排除 `latest-basic.task` 别名避免重复。
+    /// 目录缺失返回空集合；任一 `.task` 文件损坏使列表整体失败，避免恢复漏掉任务。
     pub fn list_snapshots(&self) -> Result<Vec<TaskStateSnapshot>, EvaError> {
         let dir = self.task_dir();
         let entries = match fs::read_dir(&dir) {
@@ -432,6 +499,9 @@ impl FileSystemTaskStateStore {
             .collect()
     }
 
+    /// 对指定任务执行读-改-写并返回已提交快照。
+    /// 该操作没有 generation/CAS 或锁，多写者可能丢失更新；只适用于上层已串行化的任务 owner。
+    /// Closure 失败时不写盘；write 失败时返回错误而不声称更新成功。
     pub fn update_snapshot<F>(
         &mut self,
         task_id: &str,
@@ -446,10 +516,12 @@ impl FileSystemTaskStateStore {
         Ok(snapshot)
     }
 
+    /// 返回兼容 CLI “最近任务”查询的固定别名路径。
     fn latest_task_path(&self) -> PathBuf {
         self.task_dir().join("latest-basic.task")
     }
 
+    /// 校验 task ID 为 RequestId 后构造单层文件名，防止路径穿越。
     fn task_path(&self, task_id: &str) -> Result<PathBuf, EvaError> {
         RequestId::parse(task_id)?;
         Ok(self.task_dir().join(format!("{task_id}.task")))
@@ -457,6 +529,10 @@ impl FileSystemTaskStateStore {
 }
 
 impl TaskStateStore for FileSystemTaskStateStore {
+    /// 先写任务 ID 文件，再覆盖 latest 别名。
+    ///
+    /// 两次 `fs::write` 都直接写最终路径，没有临时文件 rename，也不是跨文件原子事务；第二步
+    /// 失败时 ID 快照可能已更新而 latest 仍旧。调用方收到错误后应按 ID 核实，不能假定回滚。
     fn write(&mut self, snapshot: &TaskStateSnapshot) -> Result<(), EvaError> {
         RequestId::parse(&snapshot.task_id)?;
         let dir = self.task_dir();
@@ -478,6 +554,8 @@ impl TaskStateStore for FileSystemTaskStateStore {
         })
     }
 
+    /// 读取 ID 快照或 latest 别名并严格解析。
+    /// 所有 I/O 失败当前映射为 NotFound 并附带建议；解析错误保持 InvalidArgument。
     fn read(&self, task_id: Option<&str>) -> Result<TaskStateSnapshot, EvaError> {
         let path = match task_id {
             Some(task_id) => self.task_path(task_id)?,
@@ -493,6 +571,8 @@ impl TaskStateStore for FileSystemTaskStateStore {
     }
 }
 
+/// 按 `|` 拆分复合磁盘字段，并要求精确 arity。
+/// 字段内容中的 `|` 已百分号编码，因此额外分段明确表示损坏格式。
 fn split_stored_fields(
     value: &str,
     expected: usize,
@@ -510,6 +590,7 @@ fn split_stored_fields(
     Ok(parts)
 }
 
+/// 严格解析 usize 计数，并在错误中保留字段名和原值。
 fn parse_stored_usize(name: &'static str, value: &str) -> Result<usize, EvaError> {
     value.parse::<usize>().map_err(|_| {
         EvaError::invalid_argument("stored task field is not an unsigned integer")
@@ -518,6 +599,7 @@ fn parse_stored_usize(name: &'static str, value: &str) -> Result<usize, EvaError
     })
 }
 
+/// 严格解析日志/replay 序号。
 fn parse_stored_u64(name: &'static str, value: &str) -> Result<u64, EvaError> {
     value.parse::<u64>().map_err(|_| {
         EvaError::invalid_argument("stored task field is not an unsigned integer")
@@ -526,6 +608,7 @@ fn parse_stored_u64(name: &'static str, value: &str) -> Result<u64, EvaError> {
     })
 }
 
+/// 将空串解析为 None，否则严格解析 epoch 毫秒 u128。
 fn parse_optional_stored_u128(name: &'static str, value: &str) -> Result<Option<u128>, EvaError> {
     if value.is_empty() {
         return Ok(None);
@@ -537,6 +620,7 @@ fn parse_optional_stored_u128(name: &'static str, value: &str) -> Result<Option<
     })
 }
 
+/// 将磁盘空串恢复为 None，非空值百分号解码。
 fn decode_optional_field(value: &str) -> Option<String> {
     if value.is_empty() {
         None
@@ -545,6 +629,7 @@ fn decode_optional_field(value: &str) -> Option<String> {
     }
 }
 
+/// 百分号编码换行、制表、`|`、`=` 和 `%`，保护逐行复合字段格式。
 fn encode_field(value: &str) -> String {
     value
         .replace('%', "%25")
@@ -555,6 +640,7 @@ fn encode_field(value: &str) -> String {
         .replace('=', "%3D")
 }
 
+/// 以固定逆序恢复特殊字符，最后解码 `%25` 防止二次展开。
 fn decode_field(value: &str) -> String {
     value
         .replace("%0A", "\n")
@@ -566,11 +652,13 @@ fn decode_field(value: &str) -> String {
 }
 
 #[cfg(test)]
+/// 任务快照重开、取消、durable 布局、列表、生命周期和损坏文件回归测试。
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    /// 验证按 ID 与 latest 跨 store 重建均得到相同快照。
     fn filesystem_task_state_survives_store_recreation() {
         let root = test_root("round-trip");
         let mut writer = FileSystemTaskStateStore::new(root.path());
@@ -587,6 +675,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证跨进程读改写可持久化取消标志、原因和追加日志。
     fn filesystem_task_state_updates_cancel_log_across_process_boundary() {
         let root = test_root("cancel");
         let mut writer = FileSystemTaskStateStore::new(root.path());
@@ -609,6 +698,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 store 可直接使用 durable backend 的 task_dir。
     fn filesystem_task_state_can_use_durable_backend_layout() {
         let root = test_root("durable-layout");
         let backend = crate::FileSystemDurableBackend::open(
@@ -632,6 +722,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证列表按文件名确定排序且不重复返回 latest 别名。
     fn filesystem_task_state_lists_snapshots_without_latest_duplicate() {
         let root = test_root("list");
         let mut writer = FileSystemTaskStateStore::new(root.path());
@@ -654,6 +745,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证任务目录尚未创建时列表为空而非错误。
     fn filesystem_task_state_lists_empty_missing_directory() {
         let root = test_root("list-missing");
         let store = FileSystemTaskStateStore::new(root.path());
@@ -662,6 +754,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证指定任务文件缺失映射为 NotFound。
     fn missing_task_state_is_not_found() {
         let root = test_root("missing");
         let store = FileSystemTaskStateStore::new(root.path());
@@ -672,6 +765,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证缺少 status 的不完整文件被拒绝。
     fn invalid_task_state_rejects_incomplete_files() {
         let error = TaskStateSnapshot::from_storage("task_id=req-only\n").unwrap_err();
 
@@ -679,6 +773,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 interrupted 被生命周期判断视为终态。
     fn interrupted_task_state_is_terminal() {
         let mut snapshot = sample_snapshot("req-task-state-interrupted");
         snapshot.status = "interrupted".to_owned();
@@ -687,6 +782,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证 running、heartbeat、deadline、cancel 和 timeout 的字段/日志转换。
     fn task_lifecycle_tracks_heartbeat_deadline_cancel_and_timeout() {
         let mut snapshot = TaskStateSnapshot::queued("req-task-lifecycle").unwrap();
 
@@ -712,6 +808,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证无 CAS update 在单写者场景写回取消状态和生命周期日志。
     fn filesystem_task_state_update_appends_lifecycle_log() {
         let root = test_root("lifecycle-update");
         let mut store = FileSystemTaskStateStore::new(root.path());
@@ -733,6 +830,7 @@ mod tests {
         assert_eq!(reread.cancel_reason.as_deref(), Some("operator cancel"));
     }
 
+    /// 创建包含日志和 replay 的 completed 快照 fixture。
     fn sample_snapshot(task_id: &str) -> TaskStateSnapshot {
         TaskStateSnapshot {
             task_id: task_id.to_owned(),
@@ -762,22 +860,27 @@ mod tests {
         }
     }
 
+    /// 测试临时项目根所有者。
     struct TestRoot {
+        /// 唯一临时路径。
         path: PathBuf,
     }
 
     impl TestRoot {
+        /// 返回临时路径。
         fn path(&self) -> &Path {
             &self.path
         }
     }
 
     impl Drop for TestRoot {
+        /// 测试结束时尽力递归清理。
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
 
+    /// 用测试名、进程和时间构造并行安全路径。
     fn test_root(name: &str) -> TestRoot {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
