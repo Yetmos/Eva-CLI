@@ -1,271 +1,162 @@
 # Eva-CLI Project Release Plan
 
-Date: 2026-07-06
-Scope: project release process, CI/DI gates, GitHub Packages, and Windows/macOS/Linux support
+Date: 2026-07-14
+Scope: CI, tag-driven release automation, evidence, GHCR, and native archive boundaries
 
-This document is the canonical project-level process for preparing, validating,
-publishing, and repairing an Eva-CLI release.
+This document describes what the repository currently executes. It does not treat a
+compiled readiness declaration, an expiring Actions artifact, or a planned signing
+provider as proof of a production release.
 
-In this document, CI/DI means:
+![Eva-CLI release workflow and evidence path](../../../assets/release-workflow-evidence-path.svg)
 
-- CI: continuous integration for pull requests and branch pushes.
-- DI: delivery/deployment integration, including GitHub Release publication,
-  GitHub Packages publication, release evidence capture, and documentation site
-  deployment.
+## Current Release State
 
-## Release Objectives
+| Item | Current fact |
+| --- | --- |
+| `main` | Cargo and CLI still identify the development line as `1.11.5-alpha`. The branch contains commits made after the tag. |
+| Latest tag | `v1.11.5-alpha` points to commit `9b86adf`. Its release workflow failed in the Ubuntu workspace tests; package, native archive, and publish jobs were skipped. No GitHub Release exists for this tag. |
+| Latest successful release | [`v1.11.4-alpha`](https://github.com/Yetmos/Eva-CLI/releases/tag/v1.11.4-alpha) completed the three-platform workflow and is the latest public GitHub Release. |
+| Native downloads | The successful workflow produced Windows, Linux, and macOS archives as GitHub Actions artifacts. They are not GitHub Release assets and expire according to Actions retention. |
+| Container | The successful workflow published `ghcr.io/yetmos/eva-cli:1.11.4-alpha`. |
 
-The release process must provide:
+The existing `v1.11.5-alpha` tag is not a movable marker for current `main`. A later
+release must use a new version and tag.
 
-- repeatable source release publication through Git tags and GitHub Releases;
-- cross-platform validation on Windows, macOS, and Linux before publication;
-- release evidence that can be reviewed after the release;
-- documentation and website validation before public delivery;
-- controlled GitHub Packages publication through GHCR for release tags that
-  contain package support;
-- a repair path that avoids rewriting public history after a release is visible.
+## Workflow And Output Boundaries
 
-The existing `v1.5.0` release remains source-only because its public tag predates
-the current workflow and must not be moved. Supported later tags can publish a
-GHCR image, unsigned Windows/Linux/macOS CLI archives, install-smoke evidence,
-`SHA256SUMS`, and a provenance bundle. Signed installers, platform notarization,
-and Homebrew/Winget/Apt publication remain external release blockers.
+`.github/workflows/release.yml` is triggered by a matching tag push or by manual
+dispatch against an existing tag. Every job checks out that tag, not the current
+branch head.
 
-## Release Channels
+The actual job order is:
 
-| Channel | Owner | Trigger | Output |
-| --- | --- | --- | --- |
-| CI | `.github/workflows/ci.yml` | Pull request, push to `main`/`master`, manual dispatch | Rust, CLI smoke, website, and i18n validation logs |
-| GitHub Release DI | `.github/workflows/release.yml` | Push a tag that follows the version management plan, or manually dispatch against an existing tag | GitHub Release, source archives, unsigned native CLI archives, checksums, provenance bundle, `release-evidence-*` artifact |
-| GitHub Packages DI | `.github/workflows/release.yml` | After release tag verification, or manual dispatch against an existing tag that contains package support | `ghcr.io/yetmos/eva-cli`, package digest, package metadata, package evidence |
-| Website DI | `.github/workflows/pages.yml` | Push changes under website, docs, assets, scripts, or the pages workflow | GitHub Pages deployment |
+1. `verify` runs on Ubuntu, Windows, and macOS.
+2. After all three verify jobs pass, `packages`, `native-windows`, `native-linux`,
+   and the two-entry `native-macos` matrix run in parallel.
+3. `publish` starts only after every preceding job succeeds. It builds and validates
+   the docs, generates executed evidence, uploads the combined evidence artifact,
+   and creates or updates the GitHub Release record.
 
-## Platform Matrix
+The destinations are different:
 
-Every release must keep the supported desktop platform matrix green.
+| Destination | What the workflow writes | Durability and access |
+| --- | --- | --- |
+| GitHub Release | Release title/body and GitHub-managed source archives | Public release record bound to the tag |
+| GitHub Actions artifacts | Native archives, per-target metadata, `SHA256SUMS`, scan/benchmark/distribution evidence, and the provenance bundle | Workflow artifacts with repository retention; not Release assets |
+| GHCR | Multi-platform OCI image and digest | Registry package; version tags can be repushed by a workflow rerun, so the digest is the content identity |
 
-| Platform | GitHub runner | Required shell assumptions | Required checks |
-| --- | --- | --- | --- |
-| Windows | `windows-latest` | PowerShell Core, Windows paths, no POSIX-only commands in release smoke | `cargo fmt`, `cargo clippy`, `cargo test`, CLI smoke, release gates |
-| macOS | `macos-latest` | PowerShell Core for repo scripts, POSIX filesystem behavior for Cargo | `cargo fmt`, `cargo clippy`, `cargo test`, CLI smoke, release gates |
-| Linux | `ubuntu-latest` | PowerShell Core for repo scripts, default CI host for website/page build | `cargo fmt`, `cargo clippy`, `cargo test`, CLI smoke, release gates, website build |
+The GHCR image is pushed before the final `publish` evidence gate. A later native or
+publish failure does not automatically remove that image. Operators must inspect all
+three destinations rather than infer atomic publication from one green job.
 
-The release plan treats a platform-specific failure as release blocking unless
-the failing check is explicitly documented as non-goal or experimental.
+## Gate Semantics
 
-## Branch And Version Contract
+The release process has two evidence levels.
 
-- Release commits land on `main` unless the repository default branch changes.
-- The root `Cargo.toml` package version and `[workspace.package].version` must
-  match the release tag without the leading `v`.
-- Stable release tags use `vMAJOR.MINOR.PATCH`, for example `v1.5.0`.
-- Alpha and beta tag forms follow the [Version Management Plan](version-management-plan.md), for example `v1.5.1-alpha` or `v1.5.1-beta.1`.
-- Annotated tags are preferred for public releases.
-- Once a GitHub Release has been published, repair through a patch release such
-  as `v1.5.1` instead of rewriting the public tag.
+### Repository-declared readiness
 
-## CI Gate
-
-The CI gate runs on pull requests, branch pushes, and manual dispatch. It must
-prove that the source tree is buildable and that the public command surface has
-not regressed.
-
-Required CI checks:
-
-```powershell
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-./scripts/validate-version-management.ps1
-./scripts/build-site-i18n.ps1
-./scripts/validate-i18n.ps1
-```
-
-The CI workflow also runs CLI smoke commands for version, doctor, config
-validation, runtime inspection, basic task execution, adapter/MCP/Skill
-diagnostics, discovery, memory context, hardware diagnostics, backup/snapshot,
-restore planning, upgrade checks, and release gates.
-
-## DI Gate
-
-The release DI gate runs from the immutable release tag. It must not publish a
-GitHub Release until all platform verification jobs pass.
-
-Required release DI checks:
+The following commands return reports assembled from code-defined gates, fixtures,
+and optional evidence inputs:
 
 ```powershell
 cargo run -- release check --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
 cargo run -- release migration --output json
-./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
 ```
 
-The publish job captures each command output into `release-evidence/` and
-uploads it as `release-evidence-${RELEASE_TAG}`. This artifact is the durable
-machine-readable release evidence for the tag.
+A base `release check` status of `ready` means that no required compiled gate is
+marked blocked. It does not execute CI, sign artifacts, contact production services,
+run real hardware, or prove that a GitHub Release was published. Its closure report
+may remain `ready_with_external_blockers`.
 
-For release tags that contain package support, the `packages` job must run after
-release verification and satisfy these requirements:
+### Workflow-executed evidence
 
-- workflow permissions include `contents: read` and `packages: write`;
-- use `GITHUB_TOKEN` by default for packages linked to this repository;
-- use a least-privilege PAT only when reading or writing packages across private
-  repositories requires it;
-- record package name, version, tag, digest, and registry URL in release
-  evidence;
-- update `latest` only for stable releases; alpha and beta releases publish only
-  prerelease tags;
-- run `eva --version` against the built container image before pushing the
-  multi-platform package;
-- package publication failure blocks the package channel for that version, but
-  must not move or rewrite an already public release tag.
+The final publish job additionally:
 
-Native release archives use the following evidence schema before installers are
-signed or uploaded:
+- runs `cargo audit --json` and converts the result to security scan evidence;
+- builds a release binary and measures `eva --version` and `eva release check` three
+  times against workflow budgets;
+- merges four native install-smoke reports and the GHCR digest inspection into
+  distribution evidence;
+- reruns `release check` with distribution, scanner, and benchmark evidence;
+- reruns `release perf` with measured benchmark evidence.
 
-```json
-{
-  "status": "published",
-  "version": "1.5.1",
-  "source_tag": "v1.5.1",
-  "source_sha": "<commit-sha>",
-  "artifacts": [
-    {
-      "target": "x86_64-pc-windows-msvc",
-      "archive": "eva-cli-1.5.1-x86_64-pc-windows-msvc.zip",
-      "format": "zip",
-      "binary": "eva.exe",
-      "checksum": "sha256:<digest>",
-      "signed": false,
-      "smoke_test": "passed"
-    }
-  ]
-}
-```
+The public JSON contract script exists, but neither CI nor the release workflow
+currently invokes `scripts/validate-cli-json-contracts.ps1`. A compiled
+`REL-JSON-CONTRACT-001` marker must not be reported as an executed workflow check.
 
-The Windows, Linux, and macOS archive jobs build and smoke-test each binary,
-publish per-target evidence, and merge it into
-`release-evidence/native-artifacts.json`. The publish job verifies downloaded
-archive digests, generates `SHA256SUMS`, and writes
-`release-evidence/provenance-bundle.json`. Archives remain explicitly unsigned
-until production signing/notarization credentials and handling are configured.
+## Platform And Artifact Matrix
 
-## Documentation And Website Gate
+| Purpose | Runner or target | Executed check or output |
+| --- | --- | --- |
+| Verification | `ubuntu-latest`, `windows-latest`, `macos-latest` | Format, clippy, workspace tests, version validation, and CLI smoke |
+| Windows archive | `x86_64-pc-windows-msvc` on `windows-latest` | Unsigned `.zip`, extracted `eva.exe --version` smoke |
+| Linux archive | `x86_64-unknown-linux-gnu` on `ubuntu-latest` | Unsigned glibc `.tar.gz`, extracted `eva --version` smoke |
+| macOS Intel archive | `x86_64-apple-darwin` on `macos-26-intel` | Unsigned and unnotarized `.tar.gz`, extracted smoke |
+| macOS Apple Silicon archive | `aarch64-apple-darwin` on `macos-26` | Unsigned and unnotarized `.tar.gz`, extracted smoke |
+| Container | `linux/amd64`, `linux/arm64` | Buildx push with provenance/SBOM settings; local image version smoke and pushed-digest metadata inspection |
 
-Documentation changes are release-relevant because the project currently ships
-source releases with documented command contracts. Before release publication:
-
-- update release notes, migration guidance, compatibility policy, and any
-  version-specific release plan;
-- keep the version management plan and current human-facing version label
-  aligned with `Cargo.toml`;
-- register new documentation in `docs/_i18n/manifest.json`;
-- keep Chinese and English document paths aligned with the existing docs tree;
-- run the localized website build and i18n validation scripts;
-- let the Pages workflow deploy only after the docs/site build succeeds.
+The workflow does not publish a Windows installer, macOS application bundle,
+Homebrew formula, Winget package, Apt repository, or crates.io package. It also does
+not run the pushed arm64 container.
 
 ## Release Procedure
 
-1. Prepare the release commit on `main`.
-2. Run the local preflight checks listed in the CI and DI gate sections.
-3. Push the release commit and verify CI is green on Windows, macOS, and Linux.
-4. Create an annotated release tag and push it to GitHub.
-5. Verify that the GitHub Release workflow completes and uploads release evidence.
-6. Verify that `release-evidence/package-ghcr.json` records the GHCR package
-   digest for tags with package support.
-7. Verify that the GitHub Release body, source archives, package links, and
-   documentation links match the release tag.
+1. Choose a new version that is not already tagged. Update both root Cargo versions,
+   the lock file, CLI release label/status, README version labels, release notes, and
+   translated documentation.
+2. Run the repository checks locally:
 
-## Artifact Matrix
+   ```powershell
+   cargo fmt --check
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo test --workspace
+   ./scripts/validate-version-management.ps1
+   ./scripts/build-site-i18n.ps1
+   ./scripts/validate-i18n.ps1
+   ```
 
-Current automation publishes unsigned native CLI archives and GHCR packages for
-supported tags. The remaining platform work is signing, notarization, installers,
-and OS package repositories:
+3. Push the release commit and confirm the complete CI matrix is green. The current
+   repository does not protect `main`, so this confirmation is an operator duty.
+4. Create an annotated tag as repository policy and push it. The version validator
+   checks the tag text against Cargo, but does not prove that the tag is annotated or
+   descended from `main`.
+5. Monitor every release job. Do not treat a successful package job as a completed
+   release.
+6. Confirm the final evidence-backed `release check` passed, then inspect the GitHub
+   Release record, GHCR digest, and Actions artifacts separately.
 
-| Platform | Target | Current and future output |
-| --- | --- | --- |
-| Windows | `x86_64-pc-windows-msvc` | Unsigned GitHub Release `.zip` now; signed installer after credentials are available |
-| macOS Intel | `x86_64-apple-darwin` | Unsigned GitHub Release `.tar.gz` now; signed/notarized bundle later |
-| macOS Apple Silicon | `aarch64-apple-darwin` | Unsigned GitHub Release `.tar.gz` now; signed/notarized bundle later |
-| Linux | `x86_64-unknown-linux-gnu` | Unsigned GitHub Release `.tar.gz` and checksum evidence now; package-manager integration later |
-| Container | `linux/amd64`, `linux/arm64` | GitHub Packages Container Registry: `ghcr.io/yetmos/eva-cli:<version>` |
-| Ecosystem packages | npm, NuGet, Maven/Gradle, RubyGems, and other GitHub Packages supported registries | Enable only after package metadata, install validation, and compatibility policy are ready |
+## Failure And Recovery
 
-Do not add unsigned installers to the public release path without updating the
-security review, compatibility policy, and rollback procedure.
+- Before pushing a tag, repair the commit and rerun CI.
+- After a tag is pushed, do not move or reuse it. Publish a new prerelease serial or
+  patch version, even when the GitHub Release record was never created.
+- If a failure occurs after the GHCR push, record the published digest and decide
+  explicitly whether it must be removed. A failed final job does not roll it back.
+- Manual dispatch reruns the code contained in the selected tag. It does not include
+  fixes made only on `main` and may update an existing Release body or registry tag.
+- Native archives remain unsigned. The workflow does not implement platform signing
+  or notarization. `RELEASE_SIGNING_KEY` must not be supplied until real key handling
+  exists; current code only records that signing is blocked.
 
-GitHub Packages is not a Cargo crate registry replacement. Public Rust crate
-publication should be evaluated separately for crates.io; GitHub Packages is
-for container images or package ecosystems supported by GitHub Packages.
+## Completion Criteria
 
-## Signing Provider Policy
+A release is complete only when evidence shows all of the following:
 
-Native archives are unsigned until the repository has platform signing
-credentials. Unsigned archives may be attached only when their Release body,
-artifact evidence, and archive README clearly say `signed: false`. They must not
-be described as installers.
+- the release commit passed the full CI matrix;
+- the tag matches the Cargo version and every release job passed;
+- the evidence-backed security, benchmark, and distribution checks passed;
+- the GitHub Release record exists for the immutable tag;
+- expected Actions artifacts exist and their retention limit is understood;
+- the GHCR digest and tags match `package-ghcr.json` when package publication ran;
+- the release notes state that native archives are unsigned and are Actions
+  artifacts rather than GitHub Release assets;
+- documentation and website validation passed.
 
-Windows signing requirements:
+## Related Documents
 
-- preferred provider: Microsoft Trusted Signing or another CI-compatible
-  hardware-backed signing service;
-- required secrets: `WINDOWS_SIGNING_PROVIDER`, provider-specific credential
-  secrets, and a timestamp service URL if the provider does not supply one;
-- verification: `signtool verify /pa /tw eva.exe` or provider-equivalent
-  verification before packaging signed installer artifacts.
-
-macOS signing requirements:
-
-- provider: Apple Developer ID Application certificate plus notarization;
-- required secrets: `APPLE_DEVELOPER_ID_CERTIFICATE_P12`,
-  `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `APPLE_ID`,
-  `APPLE_TEAM_ID`, and an app-specific password or App Store Connect API key;
-- verification: `codesign --verify --deep --strict`, `spctl --assess`, and
-  notarization status before publishing signed macOS artifacts.
-
-Linux signing requirements:
-
-- first milestone: sign `SHA256SUMS` or a provenance bundle rather than
-  individual `.tar.gz` files;
-- required secrets: `RELEASE_SIGNING_KEY` and `RELEASE_SIGNING_KEY_PASSPHRASE`
-  when a GPG/minisign-style key is selected;
-- verification: signature verification over `SHA256SUMS` before publishing the
-  signed checksum artifact.
-
-Failure policy:
-
-- signed artifact jobs must fail closed when credentials exist but signing or
-  verification fails;
-- missing signing credentials must leave the relevant signing rows blocked and
-  keep archive evidence marked `signed: false`;
-- never silently fall back from a failed signing attempt to a signed-looking
-  unsigned artifact;
-- a public tag must not be moved to repair signing. Publish a patch release.
-
-## Failure And Repair Policy
-
-If CI fails before tagging, fix the release branch and rerun CI. Do not create a
-release tag from a commit that has not passed the platform matrix.
-
-If the release workflow fails before the GitHub Release is visible, repair the
-commit, delete the local tag, delete the remote tag only if no public release
-exists, then recreate the tag from the repaired commit.
-
-If the GitHub Release is already public, keep the published tag immutable and
-ship a patch release.
-
-## Completion Evidence
-
-A release is complete only when all of the following evidence exists:
-
-- CI is green for Windows, macOS, and Linux on the release commit.
-- The release workflow is green for Windows, macOS, and Linux on the release tag.
-- The GitHub Release exists for the tag.
-- GitHub source archives are available.
-- Windows, Linux, and macOS native archives passed install smoke and are attached.
-- `SHA256SUMS`, `native-artifacts.json`, and `provenance-bundle.json` match the tag.
-- `release-evidence-${RELEASE_TAG}` is uploaded.
-- For tags with package support: the package registry page is reachable, the
-  digest matches release evidence, and pull smoke tests pass.
-- Documentation and website validation completed successfully.
+- [Version management](version-management-plan.md)
+- [GitHub Packages publishing](github-packages-publishing.md)
+- [Install, upgrade, and uninstall](install-upgrade-uninstall.md)
+- [Remaining V1.x production gaps](../planning/v1.x-incomplete-feature-inventory.md)

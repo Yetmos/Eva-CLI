@@ -1,49 +1,57 @@
 # Eva-CLI V1.6.2 Alpha Release Notes
 
-Status: alpha prerelease
-Tag: `v1.6.2-alpha`
+Language: English | [简体中文](../../zh-CN/release/V1.6.2-alpha发布说明.md)
 
-Eva-CLI V1.6.2-alpha continues the V1.6 durable runtime/storage line. It adds a
-filesystem durable EventLog and a durable EventBus redrive baseline on top of
-the V1.6.1 backend manifest and migration-lock layout.
+> Historical snapshot pinned to the immutable `v1.6.2-alpha` tag.
 
-## Highlights
+| Field | Recorded value |
+| --- | --- |
+| Date | 2026-07-07 |
+| Status | Alpha prerelease |
+| Tag | [`v1.6.2-alpha`](https://github.com/Yetmos/Eva-CLI/tree/v1.6.2-alpha) |
+| Commit | [`ec6d3e1`](https://github.com/Yetmos/Eva-CLI/commit/ec6d3e14c388) |
+| GitHub Release | [Published as prerelease](https://github.com/Yetmos/Eva-CLI/releases/tag/v1.6.2-alpha) |
+| Release workflow | [Run 28837592529](https://github.com/Yetmos/Eva-CLI/actions/runs/28837592529), successful |
 
-- Adds `FileSystemEventLog` under the durable backend `events/log` directory.
-- Persists publish, ack, fail, consumer, structured error, target, payload, and
-  event metadata fields across reopen.
-- Adds `DurableEventBus` and `FileSystemDeadLetterStore` for queryable
-  dead-letter records under `events/dead_letters`.
-- Adds durable redrive that creates `:replay-N` child event IDs and publishes
-  new delivery attempts.
-- Adds default `RedrivePolicy` fields for `retry_delay_ms` and
-  `next_attempt_after_ms`; the fields are serialized for compatibility, while
-  delayed scheduling remains future runtime/scheduler work.
-- Marks V1.6.2 complete in the V1.x real runtime implementation plan.
+## Included In The Tag
 
-## Compatibility
+- `FileSystemEventLog` under `events/log` with restart-readable event and
+  delivery metadata.
+- `DurableEventBus` and `FileSystemDeadLetterStore` under
+  `events/dead_letters`.
+- Redrive child IDs using `:replay-N` and persisted retry timing fields.
 
-V1.6.2-alpha does not change public CLI command names, JSON envelope shape,
-exit codes, or existing V1.5/V1.6.1 release commands. It remains an alpha
-checkpoint because durable task/audit stores, runtime crash recovery, scheduler
-backoff dispatch, and durable smoke diagnostics are still planned follow-up
-work.
+## Not Included
 
-## Verification
+`retry_delay_ms` and `next_attempt_after_ms` were compatibility metadata, not
+a delayed scheduler. This tag also omitted durable task/audit stores, runtime
+recovery, and durable diagnostics; later V1.6 tags supplied those slices.
 
-- `cargo fmt --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
-- `scripts/validate-i18n.ps1`
-- `cargo run -- --version`
-- `cargo run -- release check --output json`
+## Reproduce The Release
+
+```powershell
+git switch --detach v1.6.2-alpha
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test -p eva-eventbus -p eva-storage
+./scripts/validate-version-management.ps1 -Tag v1.6.2-alpha
+cargo run -- --version
+cargo run -- release check --output json
+```
 
 ## Artifacts
 
-- GitHub Release source archives.
-- Workflow `release-evidence-v1.6.2-alpha` artifact.
-- GHCR container package: `ghcr.io/yetmos/eva-cli:1.6.2-alpha` when the release
-  workflow publishes package evidence.
+- The GitHub Release has generated source archives and **0** uploaded assets.
+- Actions retained `release-evidence-v1.6.2-alpha`,
+  `package-evidence-v1.6.2-alpha`, and unsigned Linux/Windows/macOS native
+  archives with evidence; Actions retention is independent of the Release.
+- GHCR contains `ghcr.io/yetmos/eva-cli:1.6.2-alpha`.
 
-Signed installers, OS package-manager packages, destructive apply paths, full
-runtime crash recovery, and provenance bundles remain future release scope.
+The V1.6.2 release gate represented built-in evidence and did not execute CI,
+redrive scheduling, or a production durability test.
+
+## Current Documentation
+
+See the [user manual](../guide/user-manual.md), [current capability gaps](../planning/v1.x-incomplete-feature-inventory.md),
+and [implementation plan](../planning/v1.x-real-runtime-implementation-plan.md).

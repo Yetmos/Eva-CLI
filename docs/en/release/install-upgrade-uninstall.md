@@ -1,136 +1,181 @@
 # Eva-CLI Install, Upgrade, And Uninstall
 
-Date: 2026-07-08
-Scope: V1.11.2 native archive install smoke and package-manager dry-run evidence
+Date: 2026-07-14
+Scope: native workflow archives and the boundary between archive replacement and runtime generation handoff
 
-Eva-CLI V1.11.2 publishes native archive metadata for Windows, Linux, and
-macOS in the release workflow. The workflow verifies each archive by extracting
-it into a temporary install directory and running `eva --version` from that
-installed location. It also verifies the GHCR package metadata with a dry-run
-inspection before the GitHub Release evidence is uploaded.
+Eva-CLI currently has no system installer, package-manager installer, PATH manager,
+automatic downloader, self-updater, or uninstaller. Native delivery is a binary and
+README in a compressed GitHub Actions artifact.
 
-## Windows Archive
+![Eva-CLI archive installation boundary](../../../assets/archive-install-boundary.svg)
 
-Install:
+## Current Delivery Boundary
 
-```powershell
-Expand-Archive -LiteralPath eva-cli-<version>-x86_64-pc-windows-msvc.zip -DestinationPath eva-cli
-.\eva-cli\eva.exe --version
-```
+The latest successful native build is from the `v1.11.4-alpha` release workflow.
+It produced four archive artifacts:
 
-Upgrade:
+| Platform | Archive target | Format | Signing state |
+| --- | --- | --- | --- |
+| Windows | `x86_64-pc-windows-msvc` | `.zip` | Unsigned |
+| Linux | `x86_64-unknown-linux-gnu` | `.tar.gz` | Unsigned, glibc target |
+| macOS Intel | `x86_64-apple-darwin` | `.tar.gz` | Unsigned and unnotarized |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` | Unsigned and unnotarized |
 
-```powershell
-Remove-Item -LiteralPath eva-cli -Recurse -Force
-Expand-Archive -LiteralPath eva-cli-<new-version>-x86_64-pc-windows-msvc.zip -DestinationPath eva-cli
-.\eva-cli\eva.exe upgrade check --output json
-```
+These files are GitHub Actions artifacts, not assets attached to the GitHub Release.
+They require access to the successful workflow run and expire under repository
+artifact retention. The Release page itself currently provides GitHub-managed source
+archives only.
 
-Uninstall:
+The later `v1.11.5-alpha` tag did not produce native artifacts because its Ubuntu
+verification failed before the native jobs started.
 
-```powershell
-Remove-Item -LiteralPath eva-cli -Recurse -Force
-```
+## Archive Contents And Trust
 
-## Linux Archive
+Each native archive contains only:
 
-Install:
+- `eva.exe` or `eva`;
+- `README.txt` with the version smoke command and unsigned status.
 
-```bash
-mkdir -p eva-cli
-tar -C eva-cli -xzf eva-cli-<version>-x86_64-unknown-linux-gnu.tar.gz
-./eva-cli/eva --version
-```
+The workflow extracts each archive into a temporary directory and runs `--version`.
+The final evidence artifact contains per-target SHA-256 values and a generated
+`SHA256SUMS`. This proves that the workflow re-read the downloaded archives; it is not
+a platform signature, notarization, or long-term public download guarantee.
 
-Upgrade:
+Windows SmartScreen or macOS Gatekeeper may reject the unsigned binary. Do not bypass
+platform security controls merely to make the archive run. Use the source build or a
+future signed distribution when local policy requires trusted signing.
 
-```bash
-rm -rf eva-cli
-mkdir -p eva-cli
-tar -C eva-cli -xzf eva-cli-<new-version>-x86_64-unknown-linux-gnu.tar.gz
-./eva-cli/eva upgrade check --output json
-```
+## Obtain And Verify
 
-Uninstall:
+1. Open the successful [GitHub Release workflow](https://github.com/Yetmos/Eva-CLI/actions/workflows/release.yml)
+   run for the exact tag.
+2. Download the native artifact for the required target.
+3. Download `release-evidence-<tag>` from the same run and extract `SHA256SUMS`.
+4. Confirm the archive name and SHA-256 match before extraction.
 
-```bash
-rm -rf eva-cli
-```
-
-## macOS Archive
-
-Install:
-
-```bash
-mkdir -p eva-cli
-tar -C eva-cli -xzf eva-cli-<version>-<target>.tar.gz
-./eva-cli/eva --version
-```
-
-Upgrade:
-
-```bash
-rm -rf eva-cli
-mkdir -p eva-cli
-tar -C eva-cli -xzf eva-cli-<new-version>-<target>.tar.gz
-./eva-cli/eva upgrade check --output json
-```
-
-Uninstall:
-
-```bash
-rm -rf eva-cli
-```
-
-## Package Metadata Dry-Run
-
-The V1.11.2 release workflow verifies the GHCR package metadata without pulling
-or republishing the image:
-
-```bash
-docker buildx imagetools inspect ghcr.io/yetmos/eva-cli@sha256:<digest>
-```
-
-That command is recorded in `release-evidence/package-ghcr.json` and then
-copied into `release-evidence/release-distribution.evidence` as
-`package.0.command`. `eva release check --distribution-evidence` requires the
-dry-run status to be `passed`.
-
-## Release Evidence
-
-The release workflow generates `release-evidence/release-distribution.evidence`
-using this key/value schema:
-
-```text
-format=eva.release.distribution_evidence.v1
-version=<version>
-source_tag=<tag>
-source_commit=<full-sha>
-docs.install=docs/en/release/install-upgrade-uninstall.md
-docs.uninstall=docs/en/release/install-upgrade-uninstall.md
-docs.upgrade=docs/en/release/install-upgrade-uninstall.md
-smoke.0.os=windows
-smoke.0.target=x86_64-pc-windows-msvc
-smoke.0.artifact=eva-cli-<version>-x86_64-pc-windows-msvc.zip
-smoke.0.package_format=zip
-smoke.0.install_command=Expand-Archive ...
-smoke.0.smoke_command=eva --version
-smoke.0.uninstall_command=Remove the extracted Eva-CLI archive directory
-smoke.0.upgrade_command=Replace the archive contents and run eva upgrade check --output json
-smoke.0.status=passed
-package.0.manager=ghcr
-package.0.package=ghcr.io/yetmos/eva-cli
-package.0.target=linux/amd64+linux/arm64
-package.0.command=docker buildx imagetools inspect ghcr.io/yetmos/eva-cli@sha256:<digest>
-package.0.status=passed
-```
-
-The release gate is:
+Windows verification example:
 
 ```powershell
-cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --output json
+$Archive = "eva-cli-1.11.4-alpha-x86_64-pc-windows-msvc.zip"
+$Expected = ((Select-String -LiteralPath SHA256SUMS -Pattern ([regex]::Escape($Archive))).Line -split '\s+')[0]
+$Actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant()
+if ($Actual -ne $Expected) { throw "Eva-CLI archive checksum mismatch" }
 ```
 
-It blocks when any of these are missing or not passed: Windows install smoke,
-Linux install smoke, macOS install smoke, install/upgrade/uninstall docs, or
-package-manager dry-run evidence.
+Linux verification example:
+
+```bash
+archive=eva-cli-1.11.4-alpha-x86_64-unknown-linux-gnu.tar.gz
+expected="$(grep "  ${archive}$" SHA256SUMS | awk '{print $1}')"
+actual="$(sha256sum "$archive" | awk '{print $1}')"
+test -n "$expected" && test "$actual" = "$expected"
+```
+
+macOS uses the same evidence with `shasum -a 256 "$archive"` for the actual digest.
+
+## Install
+
+Extraction is the installation. Use a versioned directory so a new archive can be
+verified before the old binary is removed.
+
+Windows:
+
+```powershell
+$Version = "1.11.4-alpha"
+$InstallRoot = Join-Path $HOME "Applications\Eva-CLI\$Version"
+New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
+Expand-Archive -LiteralPath "eva-cli-$Version-x86_64-pc-windows-msvc.zip" -DestinationPath $InstallRoot -Force
+& (Join-Path $InstallRoot "eva.exe") --version
+```
+
+Linux:
+
+```bash
+version=1.11.4-alpha
+install_root="$HOME/.local/opt/eva-cli/$version"
+mkdir -p "$install_root"
+tar -C "$install_root" -xzf "eva-cli-$version-x86_64-unknown-linux-gnu.tar.gz"
+"$install_root/eva" --version
+```
+
+macOS:
+
+```bash
+version=1.11.4-alpha
+target=aarch64-apple-darwin # or x86_64-apple-darwin
+install_root="$HOME/.local/opt/eva-cli/$version"
+mkdir -p "$install_root"
+tar -C "$install_root" -xzf "eva-cli-$version-$target.tar.gz"
+"$install_root/eva" --version
+```
+
+Adding the selected directory to `PATH`, creating a wrapper, and managing shell
+profiles remain user-managed operations.
+
+## Upgrade
+
+Native archive upgrade is a manual binary replacement:
+
+1. keep the current versioned directory;
+2. download and checksum the new archive and evidence from the same tag workflow;
+3. extract it to a different versioned directory;
+4. run the new binary with `--version`;
+5. update the user-managed PATH entry, symlink, or wrapper;
+6. retain the old directory until normal commands have been checked, then remove it.
+
+Do not use `eva upgrade check` as proof that the newly extracted archive is installed.
+Its defaults model a synthetic `1.3.0` to `1.4.0` generation transition and its JSON
+reports `mutation_executed:false`; it does not inspect the binary that was just
+replaced. `eva --version` is the archive version check.
+
+## Runtime Upgrade Commands
+
+The `upgrade` CLI surface belongs to runtime lifecycle coordination, not package
+installation.
+
+```powershell
+eva upgrade check --from-release 1.11.4-alpha --to-release <new-version> --output json
+```
+
+Even with explicit release values, `check` constructs a diagnostic migration,
+drain, and rollback plan without starting a runtime process.
+
+`eva upgrade apply` requires a plan file, matching confirmation token, filesystem
+lock store, and policy approval. With a state store it can commit a generation handoff
+and release-pointer state after a runtime-binary version probe and health result. It
+does not download an archive, replace the installed executable, register an OS
+service, or operate a platform package manager.
+
+## Uninstall And Data
+
+If an Eva daemon is using the binary for a project, request shutdown before removing
+the selected version:
+
+```powershell
+eva daemon shutdown --project <project-path> --output json
+```
+
+Then remove the extracted version directory and any PATH entry, symlink, or wrapper
+you created. There is no repository-provided uninstall command.
+
+Removing the binary does not remove project data. `.eva/`, an explicitly selected
+durable backend, daemon state/lock/pid directories, observability data, backup
+artifacts, and lifecycle state may live outside the install directory. Inventory and
+retain or delete those paths separately according to the project's data policy.
+
+## Release Evidence Boundary
+
+The release workflow generates `release-distribution.evidence` for its final gate.
+It records the four archive smoke results, links this document as the install/upgrade/
+uninstall reference, and includes the GHCR digest metadata inspection status.
+
+That evidence is a release-operator artifact. Users do not need to recreate its
+key/value schema for a manual install, and a passed distribution gate does not mean
+that a public native installer or package repository exists.
+
+## Related Documents
+
+- [Project release plan](project-release-plan.md)
+- [GitHub Packages publishing](github-packages-publishing.md)
+- [Version management](version-management-plan.md)
+- [Process-level upgrade](../operations/process-level-upgrade.md)

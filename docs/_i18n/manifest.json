@@ -331,6 +331,39 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "release-history-boundary-diagram",
+      "title": "Release History and Current Boundary",
+      "source": "assets/release-history-boundary.svg",
+      "translations": {
+        "zh-CN": "assets/release-history-boundary.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "release-workflow-evidence-path-diagram",
+      "title": "Release Workflow and Evidence Path",
+      "source": "assets/release-workflow-evidence-path.svg",
+      "translations": {
+        "zh-CN": "assets/release-workflow-evidence-path.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "archive-install-boundary-diagram",
+      "title": "Archive Install Boundary",
+      "source": "assets/archive-install-boundary.svg",
+      "translations": {
+        "zh-CN": "assets/archive-install-boundary.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -659,7 +692,7 @@
     },
     {
       "id": "v1.0-known-limitations",
-      "title": "Eva-CLI V1.0 Known Limitations",
+      "title": "Eva-CLI V1.0 Capability Boundary (Historical)",
       "source": "docs/en/release/v1.0-known-limitations.md",
       "translations": {
         "zh-CN": "docs/zh-CN/release/V1.0已知限制.md"
@@ -676,7 +709,7 @@
     },
     {
       "id": "release-notes-v1.0.0",
-      "title": "Eva-CLI V1.0.0 Release Notes",
+      "title": "Eva-CLI V1.0.0 Source Checkpoint",
       "source": "docs/en/release/release-notes-v1.0.0.md",
       "translations": {
         "zh-CN": "docs/zh-CN/release/V1.0发布说明.md"
@@ -693,7 +726,7 @@
     },
     {
       "id": "v1.5-release-hardening",
-      "title": "Eva-CLI V1.5 Release Hardening",
+      "title": "Eva-CLI V1.5 Release Hardening (Historical)",
       "source": "docs/en/release/v1.5-release-hardening.md",
       "translations": {
         "zh-CN": "docs/zh-CN/release/V1.5发布加固.md"
@@ -710,7 +743,7 @@
     },
     {
       "id": "v1.5-migration-guide",
-      "title": "Eva-CLI V1.5 Migration Guide",
+      "title": "Eva-CLI V1.5 Migration Declaration (Historical)",
       "source": "docs/en/release/v1.5-migration-guide.md",
       "translations": {
         "zh-CN": "docs/zh-CN/release/V1.5迁移指南.md"
@@ -727,7 +760,7 @@
     },
     {
       "id": "v1.5-compatibility-policy",
-      "title": "Eva-CLI V1.5 Compatibility Policy",
+      "title": "Eva-CLI V1.5 Compatibility Policy (Historical)",
       "source": "docs/en/release/v1.5-compatibility-policy.md",
       "translations": {
         "zh-CN": "docs/zh-CN/release/V1.5兼容性策略.md"
@@ -812,7 +845,7 @@
     },
     {
       "id": "release-notes-v1.11.5",
-      "title": "Eva-CLI V1.11.5 Alpha Release Notes and V1.17 Closure Sync",
+      "title": "Eva-CLI V1.11.5 Alpha Tag Notes",
       "source": "docs/en/release/release-notes-v1.11.5.md",
       "translations": {
         "zh-CN": "docs/zh-CN/release/V1.11.5-alpha发布说明.md"
@@ -982,7 +1015,7 @@
     },
     {
       "id": "v1.5-release-acceptance",
-      "title": "Eva-CLI V1.5 Release Acceptance",
+      "title": "Eva-CLI V1.5.0 Release Acceptance (Historical Decision Record)",
       "source": "docs/en/release/v1.5-release-acceptance.md",
       "translations": {
         "zh-CN": "docs/zh-CN/release/V1.5发布验收记录.md"

@@ -1,110 +1,80 @@
-# Eva-CLI V1.11.5 Alpha Release Notes and V1.17 Sync
+# Eva-CLI V1.11.5 Alpha Tag Notes
 
-Status: alpha prerelease
-Tag: `v1.11.5-alpha`
+Language: English | [简体中文](../../zh-CN/release/V1.11.5-alpha发布说明.md)
 
-Eva-CLI V1.11.5-alpha completes the CLI runtime command completion slice. It
-adds operator-facing command surfaces for typed event emission, Agent lifecycle
-evidence, and capability provider routing while preserving the stable JSON
-envelope, trace fields, exit-code mapping, and plan-first safety boundary.
+> Historical snapshot pinned to `v1.11.5-alpha`. The tag exists, but its
+> release workflow failed and no GitHub Release was published. Current `main`
+> still reports `1.11.5-alpha` while containing later, untagged internal
+> evidence; those post-tag changes are not part of this snapshot.
 
-## Highlights
+![Release history boundary](../../../assets/release-history-boundary.svg)
 
-- Adds `eva emit`, which constructs typed `eva-core::Event` values and
-  publishes them to either the in-memory EventBus boundary or a V1.6 durable
-  backend EventBus log.
-- Adds `eva agent status`, `eva agent drain`, and `eva agent reload` over
-  ProjectConfig manifests, `AgentRuntime`, `AgentLifecycle`,
-  `DrainCoordinator`, and `GenerationController` evidence.
-- Adds `eva capability list`, `eva capability probe`, and `eva capability call`
-  over `CapabilityRegistry`, provider selection plans, permission gates,
-  runtime policy decisions, `CapabilityRouter`, and
-  `AdapterBackedCapabilityHost`.
-- Keeps `capability call` dry-run by default. A call executes only when
-  `--confirm <request-id>` matches the request id, and providers outside a
-  capability manifest allowlist are rejected before invocation.
-- Updates release metadata, release readiness docs, i18n manifest entries, and
-  the static website content to the `1.11.5-alpha` checkpoint.
+| Field | Recorded value |
+| --- | --- |
+| Date | 2026-07-09 |
+| Status | Alpha tag; remote release incomplete |
+| Tag | [`v1.11.5-alpha`](https://github.com/Yetmos/Eva-CLI/tree/v1.11.5-alpha) |
+| Commit | [`9b86adf`](https://github.com/Yetmos/Eva-CLI/commit/9b86adfda121) |
+| GitHub Release | None |
+| Release workflow | [Run 28991416907](https://github.com/Yetmos/Eva-CLI/actions/runs/28991416907), failed |
 
-## Compatibility
+The Windows and macOS verification jobs succeeded. The Ubuntu
+`Workspace tests` step failed, so native archive builds, package publication,
+and GitHub Release publication were skipped.
 
-V1.11.5-alpha is additive for public CLI commands, JSON envelopes, exit codes,
-and existing release evidence gates. Existing command groups keep their output
-shape. The new Agent commands are lifecycle evidence boundaries and do not
-restart a daemon, mutate a live scheduler, or apply a real hot reload. Confirmed
-capability calls remain controlled CLI invokes and still report
-`mutation_executed:false`.
+## Included In The Tag
 
-This is still an alpha checkpoint. Real database sink support, OS provider
-supervision, real hardware access, production daemon-driven hot-reload
-orchestration, signed installers, OS package repositories, and production
-signing or attestation credentials remain future release scope. V1.15.8 adds
-policy-driven memory redaction/audit JSONL evidence; V1.16.1 adds JSONL
-best-effort runtime audit wiring; V1.16.2 adds a tracing subscriber bridge into
-the existing JSONL/dev-console sinks; V1.16.3 adds explicit OpenTelemetry SDK
-OTLP trace/metrics exporter smoke and collector-degraded reporting; V1.16.4
-adds JSONL/durable-audit retention, rotation, max-size, and corrupt-record
-policy plus a database policy kind boundary. These are not a complete
-production telemetry backend with a real database sink or a production
-retrieval scheduler. V1.17.1 adds the `run_command_module_split_v1.17.1`
-runtime marker by moving `run --example basic` parser/runtime glue/task snapshot
-writing/output code into `run/run_cmd.rs` without changing the public text or
-JSON contract. V1.17.2 adds the `operator_execution_fields_v1.17.2` runtime
-marker and exposes top-level `mutation_executed` on restore, upgrade, and
-hardware operator outputs while preserving existing compatibility fields;
-`capability call` continues to show `invocation_executed` separately from
-`mutation_executed:false`. V1.17.3 adds the `operator_apply_text_v1.17.3`
-runtime marker and text-only operator summaries for restore, upgrade, and
-hardware high-risk paths. V1.17.4 adds the
-`json_contract_diff_suite_v1.17.4` runtime marker, golden subset JSON fixtures,
-`scripts/validate-cli-json-contracts.ps1`, and the required
-`REL-JSON-CONTRACT-001` readiness gate. Production release upload remains
-future work because it still needs signing/attestation and package repository
-credentials. V1.17.5 adds no runtime marker; it synchronizes the root README,
-documentation entry pages, user manuals, release notes, website i18n cards,
-generated localized site HTML, and `docs/_i18n/manifest.json` so the public docs
-describe the V1.12-V1.17 evidence line consistently. V1.17.6 adds the
-`v1x_closure_gate_v1.17.6` runtime marker, required
-`REL-OBSERVABILITY-POLICY-001` and `REL-V1X-CLOSURE-001` gates, and additive
-`release check` `closure` JSON. The closure report requires daemon, MCP,
-provider, restore, service-manager abstraction, hardware safety, observability
-policy, and public JSON contract gates to pass, while explicitly recording
-production signing credentials, package repository credentials, platform
-service-manager test environments, real hardware fixtures, and production
-database sink/retention scheduling as external blockers.
+- `eva emit` constructed typed events and published to the in-memory EventBus
+  or a configured V1.6 durable EventBus log.
+- `eva agent status`, `drain`, and `reload` exposed project/runtime lifecycle
+  evidence through the in-process command boundary.
+- `eva capability list`, `probe`, and `call` exposed registry, selection,
+  permission, policy, and adapter-backed host paths.
+- `capability call` remained dry-run unless `--confirm <request-id>` matched;
+  providers outside the manifest allowlist were rejected.
+- Version metadata and marker `cli_runtime_commands_v1.11.5` were pinned to
+  `1.11.5-alpha`.
 
-## Verification
+## Not Included
 
-- `cargo fmt --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
-- `cargo test -p eva-cli emit`
-- `cargo test -p eva-cli agent`
-- `cargo test -p eva-cli capability`
-- `cargo test -p eva-cli run_basic_example_json_succeeds`
-- `cargo test -p eva-cli task_`
-- `cargo test -p eva-cli restore_apply`
-- `cargo test -p eva-cli upgrade_apply`
-- `cargo test -p eva-cli hardware_commands_report_candidates_and_bind_plan`
-- `cargo test -p eva-release`
-- `scripts/validate-cli-json-contracts.ps1`
-- `scripts/build-site-i18n.ps1`
-- `scripts/validate-i18n.ps1`
-- `scripts/validate-version-management.ps1 -Tag v1.11.5-alpha`
-- `cargo run -- --version`
-- `cargo run -- release check --output json`
-- `cargo run -- emit /input/user --payload hello --output json`
-- `cargo run -- agent status --agent root-agent --output json`
-- `cargo run -- capability list --output json`
+Agent commands did not restart a daemon, mutate a live scheduler, or apply hot
+reload. Confirmed capability calls were controlled invocations and reported
+`mutation_executed:false`. The tag did not include the later V1.12-V1.17
+internal evidence, complete provider supervision, real hardware access,
+production service-manager apply, signed packages, or release upload.
+
+## Reproduce The Tag
+
+```powershell
+git switch --detach v1.11.5-alpha
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test -p eva-cli emit
+cargo test -p eva-cli agent
+cargo test -p eva-cli capability
+./scripts/validate-version-management.ps1 -Tag v1.11.5-alpha
+cargo run -- emit /input/user --payload hello --output json
+cargo run -- agent status --agent root-agent --output json
+cargo run -- capability list --output json
+cargo run -- release check --output json
+```
+
+These commands reproduce the tagged source locally; they do not change the
+recorded failure of the tag-triggered remote workflow.
 
 ## Artifacts
 
-- GitHub Release source archives.
-- Workflow `release-evidence-v1.11.5-alpha` artifact when the release workflow
-  completes.
-- GHCR container package: `ghcr.io/yetmos/eva-cli:1.11.5-alpha` when package
-  publication succeeds.
+- No GitHub Release exists, so there is no Release page and there are **0**
+  uploaded Release assets. GitHub can still synthesize repository archives for
+  the tag outside a Release record.
+- The failed workflow produced no release-evidence, package-evidence, or native
+  archive Actions artifacts.
+- GHCR has no `1.11.5-alpha` image.
+- The annotated Git tag and commit remain the immutable source evidence.
 
-Signed installers, OS package-manager packages, production provider
-supervision, destructive apply paths, and provenance bundles remain future
-release scope.
+## Current Documentation
+
+For current `main` behavior, use the [user manual](../guide/user-manual.md),
+[current capability gaps](../planning/v1.x-incomplete-feature-inventory.md),
+and [implementation plan](../planning/v1.x-real-runtime-implementation-plan.md).

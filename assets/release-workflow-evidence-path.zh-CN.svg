@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 发布 workflow 与 evidence 路径</title>
+  <desc id="desc">Tag 触发三平台验证，之后并行生成 GHCR 与 native Actions artifact，最后执行 evidence gate 并创建 GitHub Release 记录。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="132%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" fill="#f6f8fb"/>
+  <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
+  <text x="60" y="76" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#172033">发布 workflow 与 evidence 路径</text>
+  <text x="60" y="106" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" fill="#5f6f82">这是当前 main 配置的行为；仍需未来成功的 tagged run 才会产生这些输出。</text>
+
+  <g filter="url(#shadow)">
+    <rect x="45" y="175" width="190" height="250" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="45" y="175" width="190" height="8" rx="4" fill="#64748b"/>
+    <text x="65" y="218" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">触发</text>
+    <text x="65" y="260" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">推送 tag</text>
+    <text x="65" y="288" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">或手工 dispatch</text>
+    <text x="65" y="316" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Cargo 与 tag 完全匹配</text>
+    <rect x="65" y="367" width="150" height="34" rx="6" fill="#e2e8f0"/>
+    <text x="140" y="389" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#475569">不可变输入</text>
+  </g>
+  <path d="M235 300 H270" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="280" y="175" width="210" height="250" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="280" y="175" width="210" height="8" rx="4" fill="#0f766e"/>
+    <text x="300" y="218" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">验证</text>
+    <text x="300" y="260" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Windows</text>
+    <text x="300" y="288" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Linux</text>
+    <text x="300" y="316" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">macOS</text>
+    <text x="300" y="344" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">fmt、clippy、test、smoke</text>
+    <rect x="300" y="367" width="170" height="34" rx="6" fill="#ccfbf1"/>
+    <text x="385" y="389" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#0f766e">三平台必须全部通过</text>
+  </g>
+
+  <path d="M490 255 H530 V211 H555" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M490 345 H530 V389 H555" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="565" y="145" width="285" height="140" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="565" y="145" width="285" height="7" rx="4" fill="#7c3aed"/>
+    <text x="585" y="183" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="17" font-weight="700" fill="#172033">GHCR package job</text>
+    <text x="585" y="215" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">verify 后推送多平台 manifest</text>
+    <text x="585" y="241" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">Buildx provenance、SBOM、metadata inspect</text>
+    <text x="585" y="267" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">不是 arm64 pull/run 测试</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="565" y="325" width="285" height="140" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="565" y="325" width="285" height="7" rx="4" fill="#d97706"/>
+    <text x="585" y="363" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="17" font-weight="700" fill="#172033">Native archive job</text>
+    <text x="585" y="395" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">Windows zip；Linux/macOS tar.gz</text>
+    <text x="585" y="421" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">解压 + version smoke；未签名</text>
+    <text x="585" y="447" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">保存为 GitHub Actions artifact</text>
+  </g>
+
+  <path d="M850 215 H885 V260 H910" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M850 395 H885 V340 H910" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="920" y="175" width="235" height="250" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="920" y="175" width="235" height="8" rx="4" fill="#15803d"/>
+    <text x="940" y="218" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">Publish job</text>
+    <text x="940" y="258" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">下载 job artifact</text>
+    <text x="940" y="284" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">生成实跑 evidence</text>
+    <text x="940" y="310" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">带 evidence 重跑 gate</text>
+    <text x="940" y="336" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">上传 evidence artifact</text>
+    <text x="940" y="362" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">创建/更新 Release 记录</text>
+    <rect x="940" y="377" width="195" height="34" rx="6" fill="#dcfce7"/>
+    <text x="1037" y="399" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#166534">所有 job 通过后执行</text>
+  </g>
+
+  <rect x="45" y="505" width="1110" height="65" rx="8" fill="#fff1f2" stroke="#fecdd3"/>
+  <text x="69" y="531" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#be123c">当前边界</text>
+  <text x="69" y="554" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#881337">自定义 archive、SHA256SUMS 和 provenance bundle 不会上传为 Release asset；签名与公证尚未实现。</text>
+</svg>

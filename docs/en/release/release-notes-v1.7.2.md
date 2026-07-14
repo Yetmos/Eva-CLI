@@ -1,69 +1,60 @@
 # Eva-CLI V1.7.2 Alpha Release Notes
 
-Status: alpha prerelease
-Tag: `v1.7.2-alpha`
+Language: English | [简体中文](../../zh-CN/release/V1.7.2-alpha发布说明.md)
 
-Eva-CLI V1.7.2-alpha completes the V1.7.2 Lua host binding slice. It builds
-on the V1.7.1 real Lua VM boundary by exposing read-only request, trace, and
-memory context tables, Lua host observability, and a controlled `ctx.tools.call`
-path through `CapabilityHostApi`.
+> Historical snapshot pinned to the immutable `v1.7.2-alpha` tag.
 
-## Highlights
+| Field | Recorded value |
+| --- | --- |
+| Date | 2026-07-07 |
+| Status | Alpha prerelease |
+| Tag | [`v1.7.2-alpha`](https://github.com/Yetmos/Eva-CLI/tree/v1.7.2-alpha) |
+| Commit | [`01a9349`](https://github.com/Yetmos/Eva-CLI/commit/01a934974648) |
+| GitHub Release | [Published as prerelease](https://github.com/Yetmos/Eva-CLI/releases/tag/v1.7.2-alpha) |
+| Release workflow | [Run 28852757503](https://github.com/Yetmos/Eva-CLI/actions/runs/28852757503), successful |
 
-- Adds read-only `ctx.request`, `ctx.trace`, and `ctx.memory` tables while
-  retaining the V1.7.1 top-level context count fields for compatibility.
-- Removes the Lua global `rawset` entry to keep read-only context snapshots
-  from being bypassed by scripts.
-- Adds `ctx.host.log(level, message)` and `ctx.host.audit(message)`, producing
-  traceable `LuaHostObservation` records that runtime task logs and CLI JSON can
-  report.
-- Adds `LuaHost::run_on_event_with_tools` and `ctx.tools.call(capability,
-  value)`, routing through `CapabilityHostApi` without exposing raw provider,
-  file, socket, process, memory-service, knowledge-service, or audit-sink
-  handles.
-- Converts Lua nil, booleans, numbers, strings, arrays, and object tables into
-  JSON-compatible text payloads for capability invocation.
-- Returns a constrained Lua response table containing `request_id`, `status`,
-  `ok`, `output`, `error`, and `error_kind`.
-- Rejects unknown or disabled capability calls through the Lua host boundary.
-- Updates the basic example Lua script to call `config.lint` directly from
-  `ctx.tools.call` instead of returning a legacy `capability` field for a
-  runtime-side second pass.
-- Adds release gate `REL-LUA-HOST-BINDINGS-001` to `release check`.
+## Included In The Tag
 
-## Compatibility
+- Read-only `ctx.request`, `ctx.trace`, and `ctx.memory` tables; global
+  `rawset` was removed to protect the snapshot boundary.
+- `ctx.host.log` and `ctx.host.audit` producing `LuaHostObservation` records.
+- `ctx.tools.call` through `CapabilityHostApi` without exposing raw provider,
+  file, socket, process, memory, knowledge, or audit handles.
+- Constrained JSON-compatible request/response conversion and rejection of
+  unknown or disabled capabilities.
+- Compiled gate `REL-LUA-HOST-BINDINGS-001`.
 
-V1.7.2-alpha is additive for public CLI commands, JSON envelopes, and exit
-codes. Legacy `LuaEventResult` fields, the V1.7.1 static parser compatibility
-fallback, durable diagnostics, and release checks remain compatible.
+## Not Included
 
-It remains an alpha checkpoint because Lua timeout/instruction budgets, memory
-limits, shadow load, generation swap, rollback, real provider execution, signed
-installers, OS packages, destructive apply paths, and provenance bundles remain
-future work.
+The capability host boundary was not production provider supervision. This tag
+also omitted timeout, instruction and memory budgets, shadow load, generation
+swap, rollback execution, and destructive apply.
 
-## Verification
+## Reproduce The Release
 
-- `cargo fmt --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
-- `cargo test -p eva-lua-host`
-- `cargo test -p eva-runtime basic_example_runs_event_to_lua_and_capability`
-- `cargo test -p eva-cli run_basic_example_json_succeeds`
-- `cargo test -p eva-release`
-- `scripts/validate-i18n.ps1`
-- `scripts/validate-version-management.ps1 -Tag v1.7.2-alpha`
-- `cargo run -- --version`
-- `cargo run -- run --example basic --output json`
-- `cargo run -- release check --output json`
+```powershell
+git switch --detach v1.7.2-alpha
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test -p eva-lua-host
+cargo test -p eva-runtime basic_example_runs_event_to_lua_and_capability
+./scripts/validate-version-management.ps1 -Tag v1.7.2-alpha
+cargo run -- run --example basic --output json
+cargo run -- release check --output json
+```
 
 ## Artifacts
 
-- GitHub Release source archives.
-- Workflow `release-evidence-v1.7.2-alpha` artifact.
-- GHCR container package: `ghcr.io/yetmos/eva-cli:1.7.2-alpha` when the release
-  workflow publishes package evidence.
+- The GitHub Release has generated source archives and **0** uploaded assets.
+- Actions retained release/package evidence and unsigned Linux/Windows/macOS
+  native archives with evidence; they are retention-limited workflow artifacts.
+- GHCR contains `ghcr.io/yetmos/eva-cli:1.7.2-alpha`.
 
-Signed installers, OS package-manager packages, destructive apply paths,
-complete provider/runtime recovery, and provenance bundles remain future release
-scope.
+The host-binding gate checked built-in evidence and did not call a production
+provider fleet.
+
+## Current Documentation
+
+See the [user manual](../guide/user-manual.md), [current capability gaps](../planning/v1.x-incomplete-feature-inventory.md),
+and [implementation plan](../planning/v1.x-real-runtime-implementation-plan.md).

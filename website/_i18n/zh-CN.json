@@ -151,23 +151,23 @@
       },
       {
         "id": "v1.5-release-hardening",
-        "title": "V1.5 发布加固",
-        "description": "源码发布所需的发布准备度、安全、性能、迁移和兼容门禁。"
+        "title": "V1.5 发布加固（历史记录）",
+        "description": "v1.5.0 历史记录，区分编译内声明、fixture、可选 evidence 与 CI 实际执行。"
       },
       {
         "id": "github-packages-publishing",
         "title": "GitHub Packages 发布",
-        "description": "ghcr.io/yetmos/eva-cli 的 GHCR 交付契约、package tag、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证。"
+        "description": "真实 GHCR 顺序、digest 身份、evidence 语义、权限、消费者校验和 push 后失败边界。"
       },
       {
         "id": "install-upgrade-uninstall",
         "title": "安装、升级和卸载",
-        "description": "V1.11.2 native archive install smoke 路径、升级/卸载命令、release-distribution evidence 和 package-manager dry-run 门禁。"
+        "description": "手工获取 archive、校验 checksum、解压、替换、删除，以及项目数据继续保留的边界。"
       },
       {
         "id": "release-notes-v1.11.5",
-        "title": "V1.11.5 Alpha 发布说明与 V1.17 同步",
-        "description": "发布说明现在同时汇总 V1.12-V1.17 daemon、provider、restore、hardware、memory、observability、operator UX、public JSON contract 和 V1.x closure evidence。"
+        "title": "V1.11.5 Alpha Tag 说明",
+        "description": "已打 tag 的 emit、Agent 与 capability 检查点；Ubuntu 验证失败后 package、archive 和 GitHub Release 均未发布。"
       },
       {
         "id": "release-notes-v1.11.4",
@@ -335,47 +335,47 @@
       {
         "id": "project-release-plan",
         "title": "项目发布方案",
-        "description": "可复用的 CI/DI 流程、GitHub Packages 门禁、平台矩阵、发布证据、制品路线图、签名 provider 策略和修复策略。"
+        "description": "当前 tag workflow、三平台验证、GHCR、Actions artifact、evidence gate、Release 记录和失败策略。"
       },
       {
         "id": "version-management-plan",
         "title": "版本管理方案",
-        "description": "版本格式、状态映射、递增规则、GitHub tag、Release、Packages 和 milestone 工作流。"
+        "description": "Cargo/tag 形式、文件校验、operator policy、不可变身份，以及当前 main 与 tag 分叉。"
       },
       {
         "id": "github-packages-publishing",
         "title": "GitHub Packages 发布方案",
-        "description": "GHCR package 通道、tag 规则、发布证据、Buildx provenance/SBOM attestations、权限和拉取验证契约。"
+        "description": "真实 GHCR 顺序、tag/digest 规则、Buildx evidence、消费者验证和 push 后失败边界。"
       },
       {
         "id": "v1.0-known-limitations",
-        "title": "V1.0 已知限制",
-        "description": "V1.0 core 的支持范围，以及仍属于后续版本的高级 runtime 能力。"
+        "title": "V1.0 能力边界（历史记录）",
+        "description": "V1.0 源码里程碑的历史能力边界；仓库没有对应 V1.0 Git tag 或 GitHub Release。"
       },
       {
         "id": "release-notes-v1.0.0",
-        "title": "V1.0.0 发布说明",
-        "description": "核心发布 checkpoint、稳定命令、CI 门禁和明确非目标。"
+        "title": "V1.0.0 源码检查点",
+        "description": "早期 in-memory core 的历史源码检查点，没有对应 Git tag 或 GitHub Release。"
       },
       {
         "id": "v1.5-release-hardening",
-        "title": "V1.5 发布加固",
-        "description": "跨平台、安全、性能、迁移和兼容门禁的可执行发布验收检查。"
+        "title": "V1.5 发布加固（历史记录）",
+        "description": "v1.5.0 发布命令面，以及编译内声明、fixture、可选 evidence 与实跑检查的边界。"
       },
       {
         "id": "v1.5-migration-guide",
-        "title": "V1.5 迁移指南",
-        "description": "V1.4 到 V1.5 的兼容升级路径和验证命令。"
+        "title": "V1.5 迁移声明（历史记录）",
+        "description": "V1.4 内部里程碑到 v1.5.0 的历史迁移声明；release migration 不是自动 diff。"
       },
       {
         "id": "v1.5-compatibility-policy",
-        "title": "V1.5 兼容性策略",
-        "description": "V1.5 源码发布面的 JSON envelope、exit code、命令面和废弃窗口承诺。"
+        "title": "V1.5 兼容性策略（历史记录）",
+        "description": "v1.5.0 的历史兼容承诺，以及 policy、代码契约和测试覆盖之间的区别。"
       },
       {
         "id": "release-notes-v1.11.5",
-        "title": "V1.11.5 Alpha 发布说明与 V1.17 同步",
-        "description": "V1.11.5 alpha 发布说明，以及 V1.12-V1.17 daemon control、provider supervision、restore/hardware/operator safety、observability policy、JSON contract validation 和 closure report 的同步证据线。"
+        "title": "V1.11.5 Alpha Tag 说明",
+        "description": "已打 tag 的 emit、Agent 与 capability 检查点；Ubuntu 验证失败，未创建 GitHub Release。"
       },
       {
         "id": "release-notes-v1.11.4",
@@ -439,8 +439,8 @@
       },
       {
         "id": "v1.5-release-acceptance",
-        "title": "V1.5 发布验收记录",
-        "description": "V1.5.0 tag、GitHub Release、本地门禁结果、Pages 状态和不可变 tag 决策记录。"
+        "title": "V1.5.0 发布验收（历史记录）",
+        "description": "不可变 v1.5.0 tag、2026-07-06 留存证据、Release 记录和源码发布边界。"
       },
       {
         "id": "website-docs-i18n",

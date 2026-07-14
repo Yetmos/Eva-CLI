@@ -1,63 +1,60 @@
 # Eva-CLI V1.7.1 Alpha Release Notes
 
-Status: alpha prerelease
-Tag: `v1.7.1-alpha`
+Language: English | [简体中文](../../zh-CN/release/V1.7.1-alpha发布说明.md)
 
-Eva-CLI V1.7.1-alpha completes the V1.7.1 Lua VM execution-boundary slice.
-It upgrades `eva-lua-host` from static `on_event` field parsing to a real
-`mlua`-backed VM adapter while keeping the existing `LuaEventResult`, sandbox,
-and compatibility contracts intact.
+> Historical snapshot pinned to the immutable `v1.7.1-alpha` tag.
 
-## Highlights
+| Field | Recorded value |
+| --- | --- |
+| Date | 2026-07-07 |
+| Status | Alpha prerelease |
+| Tag | [`v1.7.1-alpha`](https://github.com/Yetmos/Eva-CLI/tree/v1.7.1-alpha) |
+| Commit | [`8b54135`](https://github.com/Yetmos/Eva-CLI/commit/8b54135a1375) |
+| GitHub Release | [Published as prerelease](https://github.com/Yetmos/Eva-CLI/releases/tag/v1.7.1-alpha) |
+| Release workflow | [Run 28847938482](https://github.com/Yetmos/Eva-CLI/actions/runs/28847938482), successful |
 
-- Adds `LuaVmAdapter` and `MluaVmAdapter` in `eva-lua-host`.
-- Uses vendored Lua 5.4 through `mlua` with `default-features = false`.
-- Loads only table, string, utf8, and math standard libraries for the first VM
-  boundary; `os`, `io`, `package`, and `debug` are not loaded.
-- Executes real Lua `on_event` handlers from `return root`, global `on_event`,
-  or `root.on_event` script shapes.
-- Injects a controlled event table and V1.2 context-count snapshot without raw
-  file, socket, process, memory-service, or provider handles.
-- Converts Lua result tables into the existing `LuaEventResult` fields so the
-  basic runtime and CLI JSON output remain compatible.
-- Maps compile errors to `lua_syntax_error` and handler failures to
-  `lua_runtime_error` without leaking host filesystem paths.
-- Keeps a compatibility fallback for legacy static-field scripts that are not
-  valid Lua chunks but match the old controlled contract.
-- Adds release gate `REL-LUA-VM-EXECUTION-001` to `release check`.
+## Included In The Tag
 
-## Compatibility
+- `MluaVmAdapter` with vendored Lua 5.4 and only table, string, utf8, and math
+  libraries loaded.
+- Real `on_event` execution for supported return/global/table script shapes.
+- Controlled event and context data without file, socket, process, memory
+  service, or provider handles.
+- Stable `lua_syntax_error` and `lua_runtime_error` mapping without host paths.
+- A compatibility fallback for legacy controlled scripts and compiled gate
+  `REL-LUA-VM-EXECUTION-001`.
 
-V1.7.1-alpha is additive for public CLI commands, JSON envelopes, and exit
-codes. Existing `run --example basic`, task diagnostics, durable diagnostics,
-and release checks remain compatible.
+## Not Included
 
-It remains an alpha checkpoint because `ctx.tools`, `ctx.host`, timeout and
-instruction budgets, memory limits, shadow load, generation swap, rollback,
-real provider execution, signed installers, OS packages, destructive apply
-paths, and provenance bundles remain future work.
+This tag did not contain `ctx.tools`, host log/audit bindings, execution
+budgets, shadow load, generation routing, or live provider execution. Later
+V1.7 tags added all of those boundaries except live provider execution.
 
-## Verification
+## Reproduce The Release
 
-- `cargo fmt --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
-- `cargo test -p eva-lua-host`
-- `cargo test -p eva-runtime basic_example_runs_event_to_lua_and_capability`
-- `cargo test -p eva-cli run_basic_example_json_succeeds`
-- `scripts/validate-i18n.ps1`
-- `scripts/validate-version-management.ps1 -Tag v1.7.1-alpha`
-- `cargo run -- --version`
-- `cargo run -- inspect durable --durable-backend .eva/local-durable-smoke --output json`
-- `cargo run -- release check --output json`
+```powershell
+git switch --detach v1.7.1-alpha
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test -p eva-lua-host
+cargo test -p eva-runtime basic_example_runs_event_to_lua_and_capability
+./scripts/validate-version-management.ps1 -Tag v1.7.1-alpha
+cargo run -- run --example basic --output json
+cargo run -- release check --output json
+```
 
 ## Artifacts
 
-- GitHub Release source archives.
-- Workflow `release-evidence-v1.7.1-alpha` artifact.
-- GHCR container package: `ghcr.io/yetmos/eva-cli:1.7.1-alpha` when the release
-  workflow publishes package evidence.
+- The GitHub Release has generated source archives and **0** uploaded assets.
+- Actions retained release/package evidence and unsigned Linux/Windows/macOS
+  native archives with evidence; they are retention-limited workflow artifacts.
+- GHCR contains `ghcr.io/yetmos/eva-cli:1.7.1-alpha`.
 
-Signed installers, OS package-manager packages, destructive apply paths,
-complete provider/runtime recovery, and provenance bundles remain future release
-scope.
+The Lua gate represented compiled fixture evidence, not production script
+isolation or provider validation.
+
+## Current Documentation
+
+See the [user manual](../guide/user-manual.md), [current capability gaps](../planning/v1.x-incomplete-feature-inventory.md),
+and [implementation plan](../planning/v1.x-real-runtime-implementation-plan.md).

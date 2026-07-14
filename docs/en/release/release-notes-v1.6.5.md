@@ -1,58 +1,60 @@
 # Eva-CLI V1.6.5 Alpha Release Notes
 
-Status: alpha prerelease
-Tag: `v1.6.5-alpha`
+Language: English | [简体中文](../../zh-CN/release/V1.6.5-alpha发布说明.md)
 
-Eva-CLI V1.6.5-alpha completes the V1.6.5 durable diagnostics and smoke-gate
-slice. It builds on the V1.6.1-V1.6.4 durable backend, EventBus, task/audit,
-artifact, and recovery evidence by adding a stable read-only diagnostics report,
-an `inspect.durable` CLI envelope, and CI/release smoke coverage for durable
-backend inspection.
+> Historical snapshot pinned to the immutable `v1.6.5-alpha` tag.
 
-## Highlights
+| Field | Recorded value |
+| --- | --- |
+| Date | 2026-07-07 |
+| Status | Alpha prerelease |
+| Tag | [`v1.6.5-alpha`](https://github.com/Yetmos/Eva-CLI/tree/v1.6.5-alpha) |
+| Commit | [`e63b6bc`](https://github.com/Yetmos/Eva-CLI/commit/e63b6bc71894) |
+| GitHub Release | [Published as prerelease](https://github.com/Yetmos/Eva-CLI/releases/tag/v1.6.5-alpha) |
+| Release workflow | [Run 28845812493](https://github.com/Yetmos/Eva-CLI/actions/runs/28845812493), successful |
 
-- Adds read-only opening paths for filesystem EventLog, dead-letter store, and
-  DurableEventBus so diagnostics can inspect empty durable stores without
-  creating `events/log` or `events/dead_letters` directories.
-- Adds `eva_runtime::inspect_durable_backend()` and `DurableDiagnosticsReport`.
-- Reports durable backend path, mode, schema version, layout version, migration
-  status, event log count, dead-letter count, and `pending_redrive_count`.
-- Counts pending redrive candidates only when the dead-letter is due and the
-  original event has not already been acknowledged.
-- Adds `eva inspect durable --durable-backend <path>` with text output and a
-  stable `inspect.durable` JSON envelope.
-- Adds release gate `REL-DURABLE-DIAGNOSTICS-001` and CI/release workflow smoke
-  commands that create a durable backend and inspect it.
-- Captures `inspect-durable.json` as release evidence.
+## Included In The Tag
 
-## Compatibility
+- Read-only EventLog, dead-letter, and EventBus opening paths.
+- `eva_runtime::inspect_durable_backend()` and
+  `DurableDiagnosticsReport` with schema, layout, migration, event,
+  dead-letter, and pending-redrive counts.
+- `eva inspect durable --durable-backend <path>` with text and
+  `inspect.durable` JSON output.
+- Compiled gate `REL-DURABLE-DIAGNOSTICS-001` and
+  `inspect-durable.json` workflow evidence.
 
-V1.6.5-alpha is additive. Existing public CLI commands, JSON envelope shape, and
-exit codes remain compatible. The new `inspect durable` command requires an
-explicit `--durable-backend <path>` and opens the backend read-only.
+## Not Included
 
-It remains an alpha checkpoint because full runtime audit wiring, scheduler
-backoff dispatch, provider process recovery, real apply gates, signed installers,
-OS packages, and provenance bundles remain future work.
+This tag did not wire a complete runtime audit path, scheduler backoff
+dispatcher, provider process recovery, destructive apply, production database,
+or signed distribution. The diagnostic command was read-only.
 
-## Verification
+## Reproduce The Release
 
-- `cargo fmt --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
-- `scripts/validate-i18n.ps1`
-- `scripts/validate-version-management.ps1 -Tag v1.6.5-alpha`
-- `cargo run -- --version`
-- `cargo run -- inspect durable --durable-backend .eva/local-durable-smoke --output json`
-- `cargo run -- release check --output json`
+```powershell
+git switch --detach v1.6.5-alpha
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+./scripts/validate-version-management.ps1 -Tag v1.6.5-alpha
+$durable = Join-Path $env:TEMP "eva-v1.6.5-smoke"
+cargo run -- run --example basic --task-id req-v165 --durable-backend $durable --output json
+cargo run -- inspect durable --durable-backend $durable --output json
+cargo run -- release check --output json
+```
 
 ## Artifacts
 
-- GitHub Release source archives.
-- Workflow `release-evidence-v1.6.5-alpha` artifact.
-- GHCR container package: `ghcr.io/yetmos/eva-cli:1.6.5-alpha` when the release
-  workflow publishes package evidence.
+- The GitHub Release has generated source archives and **0** uploaded assets.
+- Actions retained release/package evidence and unsigned Linux/Windows/macOS
+  native archives with evidence; they are retention-limited workflow artifacts.
+- GHCR contains `ghcr.io/yetmos/eva-cli:1.6.5-alpha`.
 
-Signed installers, OS package-manager packages, destructive apply paths,
-complete provider/runtime recovery, and provenance bundles remain future release
-scope.
+The diagnostics gate verified built-in fixture evidence; it did not execute
+production storage or recovery.
+
+## Current Documentation
+
+See the [user manual](../guide/user-manual.md), [current capability gaps](../planning/v1.x-incomplete-feature-inventory.md),
+and [implementation plan](../planning/v1.x-real-runtime-implementation-plan.md).

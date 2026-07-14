@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI release history and current boundary</title>
+  <desc id="desc">Published tags and GitHub Releases are separated from untagged milestones, the incomplete v1.11.5-alpha tag, and post-tag internal evidence identifiers.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="132%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" fill="#f6f8fb"/>
+  <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
+  <text x="60" y="76" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="700" fill="#172033">Release history and current boundary</text>
+  <text x="60" y="106" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" fill="#5f6f82">Repository facts as of 2026-07-14: tags, Release records, and internal evidence IDs are different signals.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="45" y="155" width="250" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="45" y="155" width="250" height="8" rx="4" fill="#64748b"/>
+    <text x="65" y="198" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">Legacy milestones</text>
+    <text x="65" y="242" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">V1.0 and V1.4 names</text>
+    <text x="65" y="270" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Documentation checkpoints</text>
+    <text x="65" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">No matching Git tags</text>
+    <text x="65" y="326" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">No GitHub Releases</text>
+    <rect x="65" y="397" width="210" height="34" rx="6" fill="#e2e8f0"/>
+    <text x="170" y="419" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#475569">Historical, not published</text>
+  </g>
+
+  <path d="M295 305 H315" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="325" y="155" width="250" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="325" y="155" width="250" height="8" rx="4" fill="#15803d"/>
+    <text x="345" y="198" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">Stable checkpoints</text>
+    <text x="345" y="242" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">v1.5.0 and v1.5.1</text>
+    <text x="345" y="270" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Immutable tags</text>
+    <text x="345" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">GitHub Release records</text>
+    <text x="345" y="326" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Attached assets: 0</text>
+    <rect x="345" y="397" width="210" height="34" rx="6" fill="#dcfce7"/>
+    <text x="450" y="419" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#166534">Published Release records</text>
+  </g>
+
+  <path d="M575 305 H595" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="605" y="155" width="250" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="605" y="155" width="250" height="8" rx="4" fill="#7c3aed"/>
+    <text x="625" y="198" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">Alpha Releases</text>
+    <text x="625" y="238" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">v1.6.1-alpha - v1.6.5-alpha</text>
+    <text x="625" y="266" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">v1.7.1-alpha - v1.7.4-alpha</text>
+    <text x="625" y="294" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">v1.11.4-alpha</text>
+    <text x="625" y="322" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Release records; assets: 0</text>
+    <rect x="625" y="397" width="210" height="34" rx="6" fill="#ede9fe"/>
+    <text x="730" y="419" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#6d28d9">Published prereleases</text>
+  </g>
+
+  <path d="M855 305 H875" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="885" y="155" width="270" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="885" y="155" width="270" height="8" rx="4" fill="#dc2626"/>
+    <text x="905" y="198" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">Latest tagged checkpoint</text>
+    <text x="905" y="242" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">v1.11.5-alpha tag exists</text>
+    <text x="905" y="270" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Ubuntu workspace tests failed</text>
+    <text x="905" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Publish jobs were skipped</text>
+    <text x="905" y="326" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">No GitHub Release record</text>
+    <rect x="905" y="397" width="230" height="34" rx="6" fill="#fee2e2"/>
+    <text x="1020" y="419" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#b91c1c">Tagged, release incomplete</text>
+  </g>
+
+  <rect x="45" y="500" width="1110" height="70" rx="8" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="69" y="526" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#1d4ed8">Current main</text>
+  <text x="69" y="550" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#1e3a8a">Cargo/CLI still report 1.11.5-alpha. Post-tag V1.12-V1.17 labels are internal evidence IDs, not released versions.</text>
+</svg>

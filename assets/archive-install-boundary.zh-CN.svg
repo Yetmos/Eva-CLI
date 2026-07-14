@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI archive 安装边界</title>
+  <desc id="desc">Archive 获取、校验、解压、替换和删除都是本地文件操作，不是 package manager 或 service upgrade。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="132%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" fill="#f6f8fb"/>
+  <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
+  <text x="60" y="76" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#172033">Archive 安装、替换与删除</text>
+  <text x="60" y="106" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" fill="#5f6f82">当前自动化只在 Actions 中验证解压 smoke；Eva-CLI 不提供下载器、安装器、PATH 编辑或卸载器。</text>
+
+  <g filter="url(#shadow)">
+    <rect x="45" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="45" y="165" width="205" height="8" rx="4" fill="#64748b"/>
+    <text x="65" y="207" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">1. 获取</text>
+    <text x="65" y="248" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">本地构建输出</text>
+    <text x="65" y="275" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">或保留期内 Actions artifact</text>
+    <text x="65" y="302" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">不是稳定 Release asset</text>
+    <rect x="65" y="406" width="165" height="34" rx="6" fill="#e2e8f0"/>
+    <text x="147" y="428" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#475569">Operator 提供文件</text>
+  </g>
+  <path d="M250 315 H270" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="280" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="280" y="165" width="205" height="8" rx="4" fill="#2563eb"/>
+    <text x="300" y="207" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">2. 校验</text>
+    <text x="300" y="248" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">检查预期文件名</text>
+    <text x="300" y="275" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">有证据时比对 SHA-256</text>
+    <text x="300" y="302" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">确认 archive 未签名</text>
+    <rect x="300" y="406" width="165" height="34" rx="6" fill="#dbeafe"/>
+    <text x="382" y="428" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#1d4ed8">证据存在时校验</text>
+  </g>
+  <path d="M485 315 H505" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="515" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="515" y="165" width="205" height="8" rx="4" fill="#0f766e"/>
+    <text x="535" y="207" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">3. 解压</text>
+    <text x="535" y="248" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">使用独立目录</text>
+    <text x="535" y="275" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">运行 eva --version</text>
+    <text x="535" y="302" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">不注册 PATH 或 service</text>
+    <rect x="535" y="406" width="165" height="34" rx="6" fill="#ccfbf1"/>
+    <text x="617" y="428" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#0f766e">本地文件安装</text>
+  </g>
+  <path d="M720 315 H740" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="750" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="750" y="165" width="205" height="8" rx="4" fill="#d97706"/>
+    <text x="770" y="207" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">4. 替换</text>
+    <text x="770" y="248" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">停止依赖进程</text>
+    <text x="770" y="275" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">替换解压目录</text>
+    <text x="770" y="302" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">运行新版 eva --version</text>
+    <rect x="770" y="406" width="165" height="34" rx="6" fill="#ffedd5"/>
+    <text x="852" y="428" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#c2410c">手工 archive 升级</text>
+  </g>
+  <path d="M955 315 H975" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="985" y="165" width="170" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="985" y="165" width="170" height="8" rx="4" fill="#be185d"/>
+    <text x="1005" y="207" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">5. 删除</text>
+    <text x="1005" y="248" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">删除安装目录</text>
+    <text x="1005" y="275" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">项目状态继续保留</text>
+    <text x="1005" y="302" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#172033">不执行系统清理</text>
+    <rect x="1005" y="406" width="130" height="34" rx="6" fill="#fce7f3"/>
+    <text x="1070" y="428" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#9d174d">文件删除</text>
+  </g>
+
+  <rect x="45" y="510" width="1110" height="60" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="69" y="536" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#9a3412">命令边界</text>
+  <text x="69" y="558" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#7c2d12">eva upgrade check 是 mutation_executed:false 的合成 generation preflight，不会校验 archive 替换。</text>
+</svg>

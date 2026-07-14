@@ -1,44 +1,41 @@
 # Eva-CLI V1.5.0 Release Notes
 
-Date: 2026-07-04
+Language: English | [简体中文](../../zh-CN/release/V1.5发布说明.md)
 
-Eva-CLI V1.5.0 is the release-hardening checkpoint for the implemented 1.x
-source surface. It adds executable release readiness checks while preserving
-the V1.0-V1.4 command contracts.
+> Historical snapshot. This page is pinned to the immutable `v1.5.0` tag.
 
-## Added
+![Release history boundary](../../../assets/release-history-boundary.svg)
 
-- New `eva-release` crate with release readiness, security review, performance
-  baseline, migration guide, and compatibility policy contracts.
-- New CLI commands:
-  - `eva release check`
-  - `eva release security`
-  - `eva release perf`
-  - `eva release migration`
-- CI smoke coverage for the new release command group on Windows, Linux, and
-  macOS.
-- V1.5 release-hardening docs, migration guide, compatibility policy, and
-  release notes.
+| Field | Recorded value |
+| --- | --- |
+| Date | 2026-07-04 |
+| Status | Stable release |
+| Tag | [`v1.5.0`](https://github.com/Yetmos/Eva-CLI/tree/v1.5.0) |
+| Commit | [`74d85e7`](https://github.com/Yetmos/Eva-CLI/commit/74d85e7da58ac40ef5d30b38e2844dee503a44c0) |
+| GitHub Release | [Published](https://github.com/Yetmos/Eva-CLI/releases/tag/v1.5.0) |
+| Release workflow | [Run 28698982685](https://github.com/Yetmos/Eva-CLI/actions/runs/28698982685), successful |
 
-## Stabilized
+## Included In The Tag
 
-- V1.0-V1.4 commands remain available and keep their JSON envelope shape.
-- `restore plan`, `upgrade check`, and `hardware bind` remain plan-first and
-  non-destructive.
-- Security findings are explicit, including tracked future risks for real
-  restore and process handoff.
+- Added the `eva-release` crate and `eva release check`, `security`, `perf`,
+  and `migration` commands.
+- Kept the V1.0-V1.4 command names, JSON envelope, and exit-code contracts.
+- Kept restore, upgrade, and hardware operations plan-first and non-destructive.
+- Added Windows, Linux, and macOS smoke coverage for the release command group.
 
-## Explicit Non-Goals
+`release check` evaluated declarations and built-in evidence for the tag. A
+`ready` result did not execute CI, external scanners, or production rollout.
 
-- No packaged installers or signed release artifacts.
-- No real Supervisor process management.
-- No destructive restore apply path.
-- No real MCP server startup or hardware raw I/O.
-- No production-grade benchmark harness.
+## Not Included
 
-## Verification
+This tag did not include packaged installers, signed artifacts, production
+benchmarks, real Supervisor process management, destructive restore apply, a
+real MCP server transport, or hardware raw I/O.
+
+## Reproduce The Release
 
 ```powershell
+git switch --detach v1.5.0
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -47,6 +44,19 @@ cargo run -- release check --output json
 cargo run -- release security --output json
 cargo run -- release perf --output json
 cargo run -- release migration --output json
-./scripts/build-site-i18n.ps1
 ./scripts/validate-i18n.ps1
 ```
+
+## Artifacts
+
+- The GitHub Release provides GitHub-generated source archives and has **0**
+  uploaded Release assets.
+- The successful workflow retained `release-evidence-v1.5.0` as an Actions
+  artifact; Actions artifacts are retention-limited and are not Release assets.
+- No `1.5.0` GHCR image was published.
+
+## Current Documentation
+
+For current behavior, use the [user manual](../guide/user-manual.md), the
+[current capability gaps](../planning/v1.x-incomplete-feature-inventory.md),
+and the [implementation plan](../planning/v1.x-real-runtime-implementation-plan.md).

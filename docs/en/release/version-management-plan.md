@@ -1,190 +1,164 @@
 # Eva-CLI Version Management Plan
 
-Date: 2026-07-06
-Scope: project version numbers, release status, and GitHub repository version management
+Date: 2026-07-14
+Scope: Cargo versions, CLI labels, Git tags, GitHub Releases, and GHCR tags
 
-This document defines how Eva-CLI names versions, increments version fields, and manages GitHub branches, tags, releases, milestones, issues, and pull requests. It complements the [project release plan](project-release-plan.md), which defines release gates and evidence.
+This document separates version facts enforced by repository code from operator
+policy. `scripts/validate-version-management.ps1` is a repository consistency
+check; it is not a GitHub governance or publication verifier.
 
-## Version Format
+![Eva-CLI release history and version boundary](../../../assets/release-history-boundary.svg)
 
-The human-facing project version uses this format:
+## Current Version State
 
-```text
-V<major>.<minor>.<patch>-<status>
-```
+| Surface | Current state |
+| --- | --- |
+| `main` Cargo/CLI line | `1.11.5-alpha` / `V1.11.5-alpha` |
+| Existing tag | `v1.11.5-alpha`, pointing to commit `9b86adf` |
+| Release for that tag | None. Its Ubuntu verification failed, so publication jobs were skipped. |
+| Latest successful GitHub Release | `v1.11.4-alpha` |
 
-Example:
+Current `main` contains changes made after the `v1.11.5-alpha` tag while retaining
+the same Cargo version. The next publication must first move to a new SemVer value;
+the existing tag must not be repointed to current `main`.
 
-```text
-V1.0.15-alpha
-```
+## Version Forms
 
-| Field | Example | Meaning | Increment rule |
-| --- | --- | --- | --- |
-| `major` | `1` | Major version | Increment after large refactors, architecture boundary changes, core runtime updates, incompatible public contract changes, or a new stability era across multiple modules. |
-| `minor` | `0` | Minor version | Increment after smaller feature additions, non-core feature removals, feature-set adjustments, or command-surface expansion that keeps the core architecture compatible. |
-| `patch` | `15` | Patch version | Increment for existing feature iteration, fixes, user experience improvements, documentation updates, diagnostics, compatibility patches, or internal optimization. |
-| `status` | `alpha` | Version status | One of `alpha`, `beta`, or `release`. |
-
-When a higher-order field increments, lower-order fields reset to zero. For example, `V1.4.9-release` becomes `V1.5.0-alpha` for the next minor line, and `V1.9.12-release` becomes `V2.0.0-alpha` for the next major line.
-
-## Status Rules
-
-| Status | Meaning | GitHub Release setting | Usage |
-| --- | --- | --- | --- |
-| `alpha` | Internal validation. Features may be incomplete, and commands, config, docs, or implementation boundaries may still change. | Mark as prerelease, not latest. | Design validation, developer trials, CI/DI validation. |
-| `beta` | External validation. Features are mostly frozen; only blockers, compatibility issues, documentation gaps, and release-gate fixes should land. | Mark as prerelease, not latest. | Candidate validation, migration rehearsals, platform matrix checks. |
-| `release` | Stable public release. Must pass release gates and provide auditable evidence. | Do not mark as prerelease; may be latest. | Stable user-facing version. |
-
-Alpha builds may still add or remove functionality. Beta builds should not introduce new features. Published release builds are repaired through later patch releases rather than by changing the original tag.
-
-## Git, Cargo, and Display Mapping
-
-Different systems need different version forms:
-
-| Context | Format | Example |
+| Context | Form | Example |
 | --- | --- | --- |
-| Docs, roadmap, milestone, release title | `V<major>.<minor>.<patch>-<status>` | `V1.0.15-alpha` |
-| Git tag, alpha/beta | `v<major>.<minor>.<patch>-<status>` or `v<major>.<minor>.<patch>-<status>.<n>` | `v1.0.15-alpha`, `v1.0.15-beta.1` |
-| Git tag, stable release | `v<major>.<minor>.<patch>` | `v1.0.15` |
-| Cargo package version, alpha/beta | `<major>.<minor>.<patch>-<status>` or `<major>.<minor>.<patch>-<status>.<n>` | `1.0.15-alpha` |
-| Cargo package version, stable release | `<major>.<minor>.<patch>` | `1.0.15` |
-| GitHub Packages container tag, prerelease | `<major>.<minor>.<patch>-<status>` and `sha-<short>` | `1.0.15-alpha`, `sha-abc1234` |
-| GitHub Packages container tag, stable release | `<major>.<minor>.<patch>`, `<major>.<minor>`, and `latest` | `1.0.15`, `1.0`, `latest` |
+| Cargo prerelease | `MAJOR.MINOR.PATCH-alpha[.N]` or `-beta[.N]` | `1.12.0-beta.1` |
+| Cargo stable | `MAJOR.MINOR.PATCH` | `1.12.0` |
+| Human prerelease label | `V` plus Cargo version | `V1.12.0-beta.1` |
+| Human stable label | `VMAJOR.MINOR.PATCH-release` | `V1.12.0-release` |
+| Git prerelease tag | `v` plus Cargo version | `v1.12.0-beta.1` |
+| Git stable tag | `vMAJOR.MINOR.PATCH` | `v1.12.0` |
+| GHCR prerelease tags | Exact version and `sha-<7-char-sha>` | `1.12.0-beta.1`, `sha-abc1234` |
+| GHCR stable tags | Exact version, `MAJOR.MINOR`, `latest`, and SHA | `1.12.0`, `1.12`, `latest` |
 
-Human-facing text may say `V1.0.15-release` to make the status explicit. Git tags and stable Cargo versions omit `-release` so the final version remains a normal stable SemVer version. Git tags use a lowercase `v` prefix, matching the existing release plan.
+The stable Cargo and Git forms omit `-release`; adding that suffix would turn the
+version into a SemVer prerelease. Only `alpha` and `beta` prerelease identifiers are
+accepted by the current validator.
 
-GitHub Packages package versions and tags must be derived from the same release
-tag. Stable packages may update `latest`; alpha and beta packages must not.
+## Source Of Truth
 
-## Automated Validation
+Before publication, the root `Cargo.toml` package and workspace versions drive the
+expected CLI label and tag. For a published version, the immutable Git tag and its
+commit SHA are the source identity.
 
-The repository uses `scripts/validate-version-management.ps1` to enforce this policy in CI and the GitHub Release workflow. The script checks that:
+Other surfaces are derived records:
 
-- root `Cargo.toml` package version and `[workspace.package].version` match;
-- Cargo versions are either stable SemVer or `alpha`/`beta` prerelease SemVer;
-- the current human-facing version, such as `V1.5.0-release`, appears in the root README files, docs README files, and CLI version output;
-- `docs/_i18n/manifest.json` registers the English entry and Chinese detailed source for this plan;
-- CI and release workflows run version-management validation;
-- the GHCR package channel has a Dockerfile, `.dockerignore`, workflow
-  permissions, and release evidence wiring;
-- when a release tag is provided, it exactly matches the Cargo version.
+- the CLI embeds `CARGO_PKG_VERSION` and also carries an explicit release status and
+  human label checked by the validator;
+- README and documentation labels must match the Cargo-derived human version;
+- a GitHub Release is a mutable record attached to the tag;
+- a GHCR tag is a registry reference that a workflow rerun can repush;
+- a GHCR digest identifies the image content;
+- workflow evidence is generated after the tag and binds itself back to
+  `source_tag` and `source_sha`. It is not stored in the tag commit.
 
-CI runs without a tag:
+## What Automated Validation Enforces
+
+Run the check without a tag in CI:
 
 ```powershell
 ./scripts/validate-version-management.ps1
 ```
 
-The GitHub Release workflow runs with the tag:
+The release workflow supplies the selected tag:
 
 ```powershell
 ./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
 ```
 
-## Increment Decisions
+The script currently verifies:
 
-Each PR that affects a release line must state its version impact.
+- the two root Cargo version declarations match;
+- the version is stable SemVer or an `alpha`/`beta` prerelease supported by the
+  repository regex;
+- a supplied tag exactly equals `v` plus the Cargo version;
+- the README and CLI files named in the script contain the expected human label;
+- the CLI release status constant matches the derived status;
+- the i18n manifest registers the version and package publishing documents at the
+  required paths;
+- CI, release workflow, Dockerfile, `.dockerignore`, and documentation contain the
+  expected static wiring strings for version validation and GHCR.
 
-Use a major version bump when the change refactors core architecture, changes runtime boundaries, changes module dependencies, changes persistence formats, removes or incompatibly changes stable CLI/config/JSON contracts, replaces key runtime models, or requires user migration steps that compatibility layers cannot hide.
+These are file-content assertions. The script does not verify that a tag is
+annotated, is new, descends from `main`, or exists on GitHub. It does not inspect
+branch protection, `Cargo.lock`, release notes, workflow results, GitHub Release
+settings, registry digests, milestones, labels, or pull-request metadata. Static
+workflow strings also do not prove that a job executed successfully.
 
-Use a minor version bump when the change adds a complete feature surface, removes an experimental alpha/beta capability without breaking stable contracts, changes feature composition while preserving compatibility, or completes a visible roadmap stage.
+## Tag Release And Package Rules
 
-Use a patch version bump when the change iterates existing features, fixes bugs, improves diagnostics/logging/docs, repairs platform compatibility, improves CI/DI gates, or optimizes internals without changing public commands, config, schemas, or user workflows.
+- Repository policy requires an annotated tag created from the reviewed release
+  commit. Automation currently validates only the tag text and Cargo version.
+- Once a tag has been pushed, do not force-push, move, delete-and-recreate, or reuse
+  it. Publish a new prerelease serial or patch instead.
+- The release workflow marks `alpha` and `beta` tags as GitHub prereleases. A stable
+  tag is not marked prerelease.
+- Manual dispatch checks out the selected existing tag. It cannot publish fixes that
+  exist only on `main`.
+- The workflow can update an existing GitHub Release body and can repush GHCR tags.
+  Consumers that require immutable package content must pin the digest.
+- Stable GHCR releases may update `MAJOR.MINOR` and `latest`; prereleases must not.
+- `ghcr.io/yetmos/eva-cli` is a container distribution channel, not a substitute for
+  crates.io and not the version source of truth.
 
-## GitHub Repository Management
+## Repository Governance Boundary
 
-| Branch | Purpose | Rule |
-| --- | --- | --- |
-| `main` | Default integration branch and release source. | Must stay green; release tags are created from `main` or a release commit already merged to `main`. |
-| `feature/<topic>` | Feature development. | Merge by PR; PR description states version impact. |
-| `fix/<topic>` | Bug fix. | Merge by PR; defaults to patch impact unless public contracts change. |
-| `docs/<topic>` | Documentation update. | Merge by PR; release docs must update manifest and indexes. |
-| `release/v<major>.<minor>` | Optional release preparation branch. | Use only when a minor line needs a freeze; accept only gate fixes, docs fixes, and version corrections. |
-| `hotfix/v<major>.<minor>.<patch>` | Optional emergency repair branch for a published version. | Branch from the release tag, merge the fix back to `main`, and publish a new patch tag. |
+As of this document date, GitHub exposes only the `main` branch, it is not protected,
+and the repository has no milestones or `version:*` / `status:*` labels. The
+repository also contains no pull-request template that enforces a version-impact
+declaration.
 
-Daily development should stay lightweight with `main` plus PRs. Create `release/*` or `hotfix/*` only when beta/release freeze or published-version maintenance requires it.
+Therefore the following remain operator policy rather than automated guarantees:
 
-## Tag and GitHub Release Rules
+- review and green CI before tagging;
+- annotated tags originating from the intended release commit;
+- release-note, migration, and compatibility review;
+- choosing major, minor, or patch impact;
+- preventing direct pushes or requiring pull-request approvals.
 
-Alpha/beta tags use forms such as `v1.0.15-alpha` or `v1.0.15-beta.1`. Stable release tags use `v1.0.15`.
+A major bump is appropriate for incompatible public contracts or persistence
+formats. A minor bump is appropriate for a new compatible feature surface. A patch
+or prerelease serial is appropriate for compatible fixes, diagnostics, and release
+process corrections. These decision rules are not inferred by the validator.
 
-Published tags must be annotated, must not be force-pushed, and must not be moved to a different commit. The tag commit must contain matching `Cargo.toml`, `Cargo.lock`, release notes, and release evidence.
+## Versioned Release Procedure
 
-GitHub Releases must bind to immutable tags:
+1. Choose a version that has no existing remote tag.
+2. Update the root Cargo package/workspace versions and regenerate `Cargo.lock`.
+3. Update the CLI status/label, README labels, release notes, and translated docs.
+4. Run tests, docs/i18n validation, and
+   `scripts/validate-version-management.ps1` without a tag.
+5. Push the commit and confirm the complete CI matrix is green.
+6. Create and push an annotated tag, then let the tag workflow validate it with
+   `-Tag $env:RELEASE_TAG`.
+7. Verify the workflow result, GitHub Release record, GHCR digest, and Actions
+   artifacts independently.
 
-- `alpha` and `beta`: mark prerelease and do not mark latest.
-- `release`: do not mark prerelease; only the newest stable release should be latest.
-- Release titles use the human-facing version, such as `Eva-CLI V1.0.15-alpha` or `Eva-CLI V1.0.15-release`.
-- Release bodies include change summary, compatibility notes, migration notes, verification evidence, known issues, and documentation links.
-
-## GitHub Packages Rules
-
-GitHub Packages is the GHCR container distribution channel layered after the
-GitHub Release gate. It is not the source of version truth; the Git tag and
-GitHub Release remain authoritative.
-
-Required package rules:
-
-- Use `GITHUB_TOKEN` with `packages: write` for packages linked to this
-  repository.
-- Use a least-privilege PAT only when cross-repository private package access
-  requires it.
-- Publish container images to `ghcr.io/yetmos/eva-cli` from release tags that
-  contain the Dockerfile and release workflow package support.
-- Publish ecosystem packages only for registries supported by GitHub Packages
-  and only after install smoke tests exist.
-- Record package digest, package URL, package version, and source tag in release
-  evidence.
-- Run a container smoke test before pushing the multi-platform image.
-- Never publish a package from a dirty tree or from a commit different from the
-  release tag.
-
-Current Rust crate publication is out of scope for GitHub Packages because
-GitHub Packages does not replace crates.io as a public Cargo crate registry.
-The existing `v1.5.0` tag predates this GHCR channel and is not republished
-retroactively.
-
-## Milestones, Issues, and PRs
-
-GitHub milestones use human-facing names such as `V1.0.15-alpha`, `V1.0.15-beta`, and `V1.0.15-release`.
-
-Use labels for version impact: `version:major`, `version:minor`, `version:patch`.
-
-Use labels for release state: `status:alpha`, `status:beta`, `status:release-blocker`.
-
-PR descriptions must state the version impact, whether CLI/config/JSON/docs/CI/website are affected, which verification commands ran, and whether migration or release notes are required. PRs marked `version:major` or `status:release-blocker` must include the needed release notes, migration guide, or compatibility policy updates before merge.
-
-## Release Flow
-
-1. Choose the target version, for example `V1.0.15-alpha`.
-2. Confirm release blockers in the milestone are closed or moved.
-3. Update versions, release notes, migration notes, compatibility notes, and docs.
-4. Run CI gates, release gates, docs build, and i18n validation.
-5. Merge the release commit to `main` and confirm the platform matrix is green.
-6. Create an annotated tag.
+For example:
 
 ```powershell
-git tag -a v1.0.15-alpha -m "Eva-CLI V1.0.15-alpha"
-git push origin v1.0.15-alpha
+git tag -a v1.12.0-alpha -m "Eva-CLI V1.12.0-alpha"
+git push origin v1.12.0-alpha
 ```
 
-Stable release:
+## Repair And Rollback
 
-```powershell
-git tag -a v1.0.15 -m "Eva-CLI V1.0.15-release"
-git push origin v1.0.15
-```
+- Before tag push: repair the release commit and rerun all checks.
+- After tag push: leave the tag immutable and create a new version. This applies even
+  when the release workflow failed before creating a GitHub Release.
+- If GHCR push succeeded before a later job failed, record and review the orphaned
+  digest; a new tag does not automatically remove it.
+- A workflow rerun against the old tag is useful only for transient infrastructure
+  failures. It cannot incorporate a code fix committed after the tag.
+- Record rollback reason, affected tag/digest, and replacement version outside the
+  mutable GitHub Release body as well as in release notes or an issue.
 
-7. Wait for the GitHub Release workflow to finish.
-8. Publish GitHub Packages only after release verification succeeds and record
-   package digest evidence for tags that contain package support.
-9. Check prerelease/latest settings, release body, source archives, package
-   metadata, and release evidence.
-10. Close the milestone and create the next milestone.
+## Related Documents
 
-## Repair and Rollback
-
-If a problem is found before tag creation, fix the release commit and tag afterward. If an alpha or beta has already been published, prefer a new `alpha.N`, `beta.N`, or patch version instead of rewriting the tag. If a stable release is public, never move the original tag; publish a new patch release such as `v1.0.16`.
-
-Any rollback must record the reason, impact, and replacement version. Do not rely only on GitHub UI state.
+- [Project release plan](project-release-plan.md)
+- [GitHub Packages publishing](github-packages-publishing.md)
+- [Install, upgrade, and uninstall](install-upgrade-uninstall.md)

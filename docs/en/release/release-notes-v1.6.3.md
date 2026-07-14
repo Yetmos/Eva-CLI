@@ -1,56 +1,56 @@
 # Eva-CLI V1.6.3 Alpha Release Notes
 
-Status: alpha prerelease
-Tag: `v1.6.3-alpha`
+Language: English | [简体中文](../../zh-CN/release/V1.6.3-alpha发布说明.md)
 
-Eva-CLI V1.6.3-alpha completes the V1.6.3 durable task/audit/artifact store
-slice. It builds on the V1.6.1 durable backend layout and V1.6.2 durable
-EventBus redrive baseline by making task snapshots restart-readable through
-the durable backend, adding durable audit records, and hardening filesystem
-artifact metadata.
+> Historical snapshot pinned to the immutable `v1.6.3-alpha` tag.
 
-## Highlights
+| Field | Recorded value |
+| --- | --- |
+| Date | 2026-07-07 |
+| Status | Alpha prerelease |
+| Tag | [`v1.6.3-alpha`](https://github.com/Yetmos/Eva-CLI/tree/v1.6.3-alpha) |
+| Commit | [`7685e11`](https://github.com/Yetmos/Eva-CLI/commit/7685e119d424) |
+| GitHub Release | [Published as prerelease](https://github.com/Yetmos/Eva-CLI/releases/tag/v1.6.3-alpha) |
+| Release workflow | [Run 28839282148](https://github.com/Yetmos/Eva-CLI/actions/runs/28839282148), successful |
 
-- Adds `FileSystemTaskStateStore::from_durable_layout` so `run --example basic`
-  and `task status/logs/cancel` can use the durable backend `tasks/` directory
-  through `--durable-backend <path>`.
-- Adds `FileSystemAuditSink` and `AuditRecord` under `eva-storage`, storing
-  durable audit records under `audit/` with action, outcome, trace entries,
-  message, fields, and millisecond timestamps.
-- Adds trace-id lookup for durable audit records across span, request, event,
+## Included In The Tag
+
+- `FileSystemTaskStateStore::from_durable_layout` and the additive
+  `--durable-backend` CLI path for basic run and task diagnostics.
+- `FileSystemAuditSink` with trace-id lookup across span, request, event,
   correlation, and causation identifiers.
-- Upgrades filesystem artifact metadata to v2 with key, digest, size, content
-  type, retention policy, and optional retain-until timestamp.
-- Keeps legacy artifact metadata readable while returning stable conflict
-  errors for corrupt content type or retention metadata.
-- Adds release gate `REL-DURABLE-STORES-001` to `release check`.
+- Artifact metadata v2 with digest, size, content type, and retention fields;
+  legacy metadata remained readable and corrupt metadata returned
+  `ErrorKind::Conflict`.
+- Compiled gate `REL-DURABLE-STORES-001`.
 
-## Compatibility
+## Not Included
 
-V1.6.3-alpha does not change public CLI command names, JSON envelope shape,
-exit codes, or existing V1.5/V1.6 release commands. The new durable backend
-flag is additive, and legacy artifact metadata remains readable.
+This tag did not include crash recovery, scheduler dispatch, runtime audit
+wiring, or durable diagnostics. It also did not make the gate an external
+durability or production release test.
 
-It remains an alpha checkpoint because runtime crash recovery, scheduler
-backoff dispatch, runtime audit wiring, durable smoke diagnostics, signed
-installers, and destructive apply gates are still planned follow-up work.
+## Reproduce The Release
 
-## Verification
-
-- `cargo fmt --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
-- `scripts/validate-i18n.ps1`
-- `scripts/validate-version-management.ps1 -Tag v1.6.3-alpha`
-- `cargo run -- --version`
-- `cargo run -- release check --output json`
+```powershell
+git switch --detach v1.6.3-alpha
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test -p eva-storage -p eva-release
+./scripts/validate-version-management.ps1 -Tag v1.6.3-alpha
+cargo run -- --version
+cargo run -- release check --output json
+```
 
 ## Artifacts
 
-- GitHub Release source archives.
-- Workflow `release-evidence-v1.6.3-alpha` artifact.
-- GHCR container package: `ghcr.io/yetmos/eva-cli:1.6.3-alpha` when the release
-  workflow publishes package evidence.
+- The GitHub Release has generated source archives and **0** uploaded assets.
+- Actions retained release/package evidence and unsigned Linux/Windows/macOS
+  native archives with evidence; they are retention-limited workflow artifacts.
+- GHCR contains `ghcr.io/yetmos/eva-cli:1.6.3-alpha`.
 
-Signed installers, OS package-manager packages, destructive apply paths, full
-runtime crash recovery, and provenance bundles remain future release scope.
+## Current Documentation
+
+See the [user manual](../guide/user-manual.md), [current capability gaps](../planning/v1.x-incomplete-feature-inventory.md),
+and [implementation plan](../planning/v1.x-real-runtime-implementation-plan.md).

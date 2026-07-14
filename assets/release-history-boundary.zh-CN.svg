@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI 发布历史与当前边界</title>
+  <desc id="desc">区分已发布 tag 与 GitHub Release、无 tag 的历史里程碑、未完成发布的 v1.11.5-alpha tag，以及 tag 后内部 evidence ID。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="132%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" fill="#f6f8fb"/>
+  <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
+  <text x="60" y="76" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#172033">发布历史与当前边界</text>
+  <text x="60" y="106" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" fill="#5f6f82">截至 2026-07-14：tag、GitHub Release 记录和内部 evidence ID 是三种不同信号。</text>
+
+  <g filter="url(#shadow)">
+    <rect x="45" y="155" width="250" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="45" y="155" width="250" height="8" rx="4" fill="#64748b"/>
+    <text x="65" y="198" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">早期里程碑</text>
+    <text x="65" y="242" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">V1.0 与 V1.4 名称</text>
+    <text x="65" y="270" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">文档与代码检查点</text>
+    <text x="65" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">没有对应 Git tag</text>
+    <text x="65" y="326" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">没有 GitHub Release</text>
+    <rect x="65" y="397" width="210" height="34" rx="6" fill="#e2e8f0"/>
+    <text x="170" y="419" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#475569">历史记录，未发布</text>
+  </g>
+
+  <path d="M295 305 H315" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="325" y="155" width="250" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="325" y="155" width="250" height="8" rx="4" fill="#15803d"/>
+    <text x="345" y="198" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">稳定版检查点</text>
+    <text x="345" y="242" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">v1.5.0 与 v1.5.1</text>
+    <text x="345" y="270" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">不可变 tag</text>
+    <text x="345" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">存在 GitHub Release</text>
+    <text x="345" y="326" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">附加 assets：0</text>
+    <rect x="345" y="397" width="210" height="34" rx="6" fill="#dcfce7"/>
+    <text x="450" y="419" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#166534">已发布 Release 记录</text>
+  </g>
+
+  <path d="M575 305 H595" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="605" y="155" width="250" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="605" y="155" width="250" height="8" rx="4" fill="#7c3aed"/>
+    <text x="625" y="198" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">Alpha Release</text>
+    <text x="625" y="238" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">v1.6.1-alpha - v1.6.5-alpha</text>
+    <text x="625" y="266" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">v1.7.1-alpha - v1.7.4-alpha</text>
+    <text x="625" y="294" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">v1.11.4-alpha</text>
+    <text x="625" y="322" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">存在 Release；assets 为 0</text>
+    <rect x="625" y="397" width="210" height="34" rx="6" fill="#ede9fe"/>
+    <text x="730" y="419" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#6d28d9">已发布预发布记录</text>
+  </g>
+
+  <path d="M855 305 H875" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="885" y="155" width="270" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="885" y="155" width="270" height="8" rx="4" fill="#dc2626"/>
+    <text x="905" y="198" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#172033">最新 tag 检查点</text>
+    <text x="905" y="242" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">v1.11.5-alpha tag 存在</text>
+    <text x="905" y="270" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Ubuntu workspace test 失败</text>
+    <text x="905" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Publish job 被跳过</text>
+    <text x="905" y="326" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">没有 GitHub Release 记录</text>
+    <rect x="905" y="397" width="230" height="34" rx="6" fill="#fee2e2"/>
+    <text x="1020" y="419" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#b91c1c">已打 tag，发布未完成</text>
+  </g>
+
+  <rect x="45" y="500" width="1110" height="70" rx="8" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="69" y="526" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#1d4ed8">当前 main</text>
+  <text x="69" y="550" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#1e3a8a">Cargo/CLI 仍报告 1.11.5-alpha；tag 后 V1.12-V1.17 标签是内部 evidence ID，不是已发布版本。</text>
+</svg>

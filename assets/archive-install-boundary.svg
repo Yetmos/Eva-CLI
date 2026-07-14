@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Eva-CLI archive install boundary</title>
+  <desc id="desc">Archive acquisition, verification, extraction, replacement, and removal are local file operations rather than a package manager or service upgrade.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="132%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" fill="#f6f8fb"/>
+  <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
+  <text x="60" y="76" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="700" fill="#172033">Archive install, replacement, and removal</text>
+  <text x="60" y="106" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" fill="#5f6f82">Current automation proves extraction smoke inside Actions; Eva-CLI does not provide a downloader, installer, PATH editor, or uninstaller.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="45" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="45" y="165" width="205" height="8" rx="4" fill="#64748b"/>
+    <text x="65" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">1. Obtain</text>
+    <text x="65" y="248" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Local build output</text>
+    <text x="65" y="275" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">or retained Actions artifact</text>
+    <text x="65" y="302" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Not a guaranteed Release asset</text>
+    <rect x="65" y="406" width="165" height="34" rx="6" fill="#e2e8f0"/>
+    <text x="147" y="428" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#475569">Operator-supplied file</text>
+  </g>
+  <path d="M250 315 H270" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="280" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="280" y="165" width="205" height="8" rx="4" fill="#2563eb"/>
+    <text x="300" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">2. Verify</text>
+    <text x="300" y="248" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Check expected filename</text>
+    <text x="300" y="275" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Compare SHA-256 if retained</text>
+    <text x="300" y="302" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Confirm archive is unsigned</text>
+    <rect x="300" y="406" width="165" height="34" rx="6" fill="#dbeafe"/>
+    <text x="382" y="428" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#1d4ed8">Evidence when available</text>
+  </g>
+  <path d="M485 315 H505" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="515" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="515" y="165" width="205" height="8" rx="4" fill="#0f766e"/>
+    <text x="535" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">3. Extract</text>
+    <text x="535" y="248" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Use a dedicated directory</text>
+    <text x="535" y="275" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Run eva --version</text>
+    <text x="535" y="302" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">No PATH or service registration</text>
+    <rect x="535" y="406" width="165" height="34" rx="6" fill="#ccfbf1"/>
+    <text x="617" y="428" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f766e">Local file install</text>
+  </g>
+  <path d="M720 315 H740" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="750" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="750" y="165" width="205" height="8" rx="4" fill="#d97706"/>
+    <text x="770" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">4. Replace</text>
+    <text x="770" y="248" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Stop dependent processes</text>
+    <text x="770" y="275" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Swap the extracted directory</text>
+    <text x="770" y="302" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Run new eva --version</text>
+    <rect x="770" y="406" width="165" height="34" rx="6" fill="#ffedd5"/>
+    <text x="852" y="428" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#c2410c">Manual archive upgrade</text>
+  </g>
+  <path d="M955 315 H975" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="985" y="165" width="170" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="985" y="165" width="170" height="8" rx="4" fill="#be185d"/>
+    <text x="1005" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">5. Remove</text>
+    <text x="1005" y="248" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Delete install directory</text>
+    <text x="1005" y="275" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Project state remains</text>
+    <text x="1005" y="302" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">No system cleanup</text>
+    <rect x="1005" y="406" width="130" height="34" rx="6" fill="#fce7f3"/>
+    <text x="1070" y="428" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#9d174d">File removal</text>
+  </g>
+
+  <rect x="45" y="510" width="1110" height="60" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="69" y="536" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#9a3412">Command boundary</text>
+  <text x="69" y="558" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#7c2d12">eva upgrade check is a synthetic generation preflight with mutation_executed:false; it does not validate an archive replacement.</text>
+</svg>
