@@ -325,12 +325,12 @@
       {
         "id": "v1.x-incomplete-feature-inventory",
         "title": "V1.x Incomplete Feature Inventory",
-        "description": "Tracks partially implemented V1.x capabilities and the remaining production gaps."
+        "description": "A code-backed snapshot of implemented boundaries, remaining production gaps, external blockers, and verification evidence."
       },
       {
         "id": "v1.x-real-runtime-implementation-plan",
         "title": "V1.x Real Runtime Implementation Plan",
-        "description": "Sequences the remaining work needed to replace diagnostic envelopes with real runtime paths."
+        "description": "Prioritizes the remaining runtime, provider, platform, observability, and distribution work with dependencies and exit criteria."
       },
       {
         "id": "project-release-plan",

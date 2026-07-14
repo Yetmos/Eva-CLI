@@ -325,12 +325,12 @@
       {
         "id": "v1.x-incomplete-feature-inventory",
         "title": "V1.x 未完整实现功能清单",
-        "description": "跟踪 V1.x 已部分实现能力及仍需补齐的生产缺口。"
+        "description": "基于当前代码汇总已落地边界、剩余生产缺口、外部阻塞与验证证据。"
       },
       {
         "id": "v1.x-real-runtime-implementation-plan",
         "title": "V1.x 真实运行时能力补齐实施计划",
-        "description": "安排把诊断 envelope 替换为真实 runtime 路径的剩余实施工作。"
+        "description": "按依赖和退出标准安排 runtime、provider、平台、观测与分发的剩余工作。"
       },
       {
         "id": "project-release-plan",

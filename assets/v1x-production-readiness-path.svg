@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">V1.x production readiness path</title>
+  <desc id="desc">Evidence integrity feeds distribution directly, while the runtime substrate branches into provider, state, platform, and data work before production closure.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="132%">
+      <feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" fill="#f6f8fb"/>
+  <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
+
+  <text x="60" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="700" fill="#172033">V1.x production readiness path</text>
+  <text x="60" y="108" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" fill="#5f6f82">Evidence feeds distribution directly; the runtime substrate feeds independent execution lanes before closure.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="45" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="45" y="165" width="205" height="8" rx="4" fill="#2563eb"/>
+    <text x="65" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">0. Evidence integrity</text>
+    <text x="65" y="248" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Assertions vs. execution</text>
+    <text x="65" y="275" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Commit and environment</text>
+    <text x="65" y="302" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Timestamp and executor</text>
+    <text x="65" y="329" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Artifact and config digest</text>
+    <text x="65" y="356" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Block missing proof</text>
+    <rect x="65" y="406" width="165" height="34" rx="6" fill="#dbeafe"/>
+    <text x="147" y="428" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#1d4ed8">W0</text>
+  </g>
+
+  <path d="M250 315 H290" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="300" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="300" y="165" width="205" height="8" rx="4" fill="#0f766e"/>
+    <text x="320" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">1. Runtime substrate</text>
+    <text x="320" y="248" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Background workers</text>
+    <text x="320" y="275" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Task and Agent handlers</text>
+    <text x="320" y="302" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Liveness and lock repair</text>
+    <text x="320" y="329" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">OS service Adapters</text>
+    <text x="320" y="356" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Boot and crash recovery</text>
+    <rect x="320" y="406" width="165" height="34" rx="6" fill="#ccfbf1"/>
+    <text x="402" y="428" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f766e">W1 + W2</text>
+  </g>
+
+  <path d="M505 260 H540 V199 H565" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M505 315 H565" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M147 465 V488 H545 V429 H565" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="575" y="154" width="320" height="90" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="575" y="154" width="320" height="7" rx="4" fill="#7c3aed"/>
+    <text x="595" y="186" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700" fill="#172033">W3-W4  Provider + MCP</text>
+    <text x="595" y="214" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">Real PID lifecycle, restart, isolation</text>
+    <text x="595" y="234" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">HTTPS/TLS, streaming, external servers</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="575" y="269" width="320" height="90" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="575" y="269" width="320" height="7" rx="4" fill="#d97706"/>
+    <text x="595" y="301" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700" fill="#172033">W5-W8  State, platform, and data</text>
+    <text x="595" y="329" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">Backup/handoff, config, hardware</text>
+    <text x="595" y="349" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">Memory scheduling, OTel, database</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="575" y="384" width="320" height="90" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="575" y="384" width="320" height="7" rx="4" fill="#be185d"/>
+    <text x="595" y="416" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700" fill="#172033">W9  Distribution</text>
+    <text x="595" y="444" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">Metadata dry-run before credentials</text>
+    <text x="595" y="464" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">Signing, attestation, upload, verify</text>
+  </g>
+
+  <path d="M895 199 H920 V260 H940" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M895 314 H940" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M895 429 H920 V370 H940" fill="none" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="950" y="165" width="205" height="300" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="950" y="165" width="205" height="8" rx="4" fill="#15803d"/>
+    <text x="970" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">Production closure</text>
+    <text x="970" y="248" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Scoped release target</text>
+    <text x="970" y="275" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Executed environment proof</text>
+    <text x="970" y="302" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Failure and recovery drills</text>
+    <text x="970" y="329" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Rollback evidence</text>
+    <text x="970" y="356" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#172033">Release decision</text>
+    <rect x="970" y="406" width="165" height="34" rx="6" fill="#dcfce7"/>
+    <text x="1052" y="428" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#166534">W10</text>
+  </g>
+
+  <rect x="45" y="520" width="1110" height="56" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="69" y="544" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#9a3412">Version rule</text>
+  <text x="69" y="565" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#7c2d12">No target release number is assigned here; legacy V1.12-V1.17 labels remain internal evidence IDs.</text>
+</svg>

@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">V1.x remaining capability map</title>
+  <desc id="desc">A map separating Eva-CLI controlled alpha boundaries, missing production implementation, and external prerequisites.</desc>
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#7c3aed"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="132%">
+      <feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" fill="#f6f8fb"/>
+  <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
+
+  <text x="60" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="700" fill="#172033">V1.x remaining capability map</text>
+  <text x="60" y="108" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" fill="#5f6f82">Current alpha evidence, missing implementation, and external proof are three different states.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="60" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="60" y="158" width="310" height="8" rx="4" fill="#2563eb"/>
+    <text x="84" y="203" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">Controlled alpha boundary</text>
+    <text x="84" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Foreground mailbox daemon</text>
+    <text x="84" y="271" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Controlled provider and MCP</text>
+    <text x="84" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Gated local restore mutation</text>
+    <text x="84" y="325" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Simulator hardware evidence</text>
+    <text x="84" y="352" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">JSONL and OTLP smoke</text>
+    <text x="84" y="379" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Unsigned packages and gates</text>
+    <rect x="84" y="414" width="262" height="34" rx="6" fill="#dbeafe"/>
+    <text x="101" y="436" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#1d4ed8">Callable + library + fixture evidence</text>
+  </g>
+
+  <path d="M370 314 H430" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow-blue)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="445" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="445" y="158" width="310" height="8" rx="4" fill="#dc2626"/>
+    <text x="469" y="203" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">Production code gaps</text>
+    <text x="469" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Background workers and services</text>
+    <text x="469" y="271" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Real PID supervision and restart</text>
+    <text x="469" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">MCP TLS and streaming</text>
+    <text x="469" y="325" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Real backup, KMS, and handoff</text>
+    <text x="469" y="352" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Drivers and OS hotplug</text>
+    <text x="469" y="379" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">DB, schedulers, and signing tools</text>
+    <rect x="469" y="414" width="262" height="34" rx="6" fill="#fee2e2"/>
+    <text x="521" y="436" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#b91c1c">Implementation required</text>
+  </g>
+
+  <path d="M830 314 H770" fill="none" stroke="#7c3aed" stroke-width="3" marker-end="url(#arrow-purple)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="830" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="830" y="158" width="310" height="8" rx="4" fill="#7c3aed"/>
+    <text x="854" y="203" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">External prerequisites</text>
+    <text x="854" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Platform service hosts</text>
+    <text x="854" y="271" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Hardware or virtual fixtures</text>
+    <text x="854" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">KMS, OIDC, and signing identity</text>
+    <text x="854" y="325" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Package repository access</text>
+    <text x="854" y="352" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Database and backend decision</text>
+    <text x="854" y="379" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Selected external MCP servers</text>
+    <rect x="854" y="414" width="262" height="34" rx="6" fill="#f3e8ff"/>
+    <text x="893" y="436" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#6d28d9">Environment evidence required</text>
+  </g>
+
+  <rect x="60" y="510" width="1080" height="58" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="84" y="545" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#9a3412">ready_with_external_blockers is an alpha checklist result, not production readiness.</text>
+</svg>

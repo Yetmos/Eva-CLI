@@ -309,6 +309,28 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "v1x-remaining-capability-map-diagram",
+      "title": "V1.x Remaining Capability Map",
+      "source": "assets/v1x-remaining-capability-map.svg",
+      "translations": {
+        "zh-CN": "assets/v1x-remaining-capability-map.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "v1x-production-readiness-path-diagram",
+      "title": "V1.x Production Readiness Path",
+      "source": "assets/v1x-production-readiness-path.svg",
+      "translations": {
+        "zh-CN": "assets/v1x-production-readiness-path.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -599,7 +621,7 @@
         "path": "docs/zh-CN/planning/V1.x未完整实现功能清单.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "summary-or-entry"
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "v1.x-real-runtime-implementation-plan",
@@ -616,7 +638,7 @@
         "path": "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "summary-or-entry"
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "user-manual",
