@@ -265,6 +265,50 @@
       "status": {
         "zh-CN": "current"
       }
+    },
+    {
+      "id": "project-configuration-load-flow-diagram",
+      "title": "Project Configuration Load Flow Diagram",
+      "source": "assets/project-configuration-load-flow.svg",
+      "translations": {
+        "zh-CN": "assets/project-configuration-load-flow.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "process-level-upgrade-boundary-diagram",
+      "title": "Process-Level Upgrade Boundary Diagram",
+      "source": "assets/process-level-upgrade-boundary.svg",
+      "translations": {
+        "zh-CN": "assets/process-level-upgrade-boundary.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "backup-release-snapshot-boundary-diagram",
+      "title": "Backup, Release Snapshot, and Restore Boundary Diagram",
+      "source": "assets/backup-release-snapshot-boundary.svg",
+      "translations": {
+        "zh-CN": "assets/backup-release-snapshot-boundary.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
+    },
+    {
+      "id": "website-docs-i18n-pipeline-diagram",
+      "title": "Website and Documentation i18n Pipeline Diagram",
+      "source": "assets/website-docs-i18n-pipeline.svg",
+      "translations": {
+        "zh-CN": "assets/website-docs-i18n-pipeline.zh-CN.svg"
+      },
+      "status": {
+        "zh-CN": "current"
+      }
     }
   ],
   "documents": [
@@ -470,7 +514,7 @@
         "path": "docs/zh-CN/operations/项目配置方案.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "summary-or-entry"
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "topic-routing-hybrid-sync",
@@ -508,7 +552,7 @@
     },
     {
       "id": "process-level-upgrade",
-      "title": "Process-Level Upgrade",
+      "title": "Process Upgrade and Recovery: Current Boundary",
       "source": "docs/en/operations/process-level-upgrade.md",
       "translations": {
         "zh-CN": "docs/zh-CN/operations/进程级停机升级架构方案.md"
@@ -521,11 +565,11 @@
         "path": "docs/zh-CN/operations/进程级停机升级架构方案.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "summary-or-entry"
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "backup-migration-release-snapshot",
-      "title": "Backup, Migration Package, and Release Snapshot",
+      "title": "Backup, Migration, Snapshot, and Restore: Current Boundary",
       "source": "docs/en/operations/backup-migration-release-snapshot.md",
       "translations": {
         "zh-CN": "docs/zh-CN/operations/备份迁移包与ReleaseSnapshot架构方案.md"
@@ -538,7 +582,7 @@
         "path": "docs/zh-CN/operations/备份迁移包与ReleaseSnapshot架构方案.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "summary-or-entry"
+      "sourceCoverage": "full-detail"
     },
     {
       "id": "v1.x-incomplete-feature-inventory",
@@ -1014,7 +1058,7 @@
         "path": "docs/zh-CN/operations/网站与文档多语言适配方案.md",
         "coverage": "full-detail"
       },
-      "sourceCoverage": "summary-or-entry"
+      "sourceCoverage": "full-detail"
     }
   ],
   "fallbacks": {

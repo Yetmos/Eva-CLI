@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Eva 项目配置加载流程</title>
+  <desc id="desc">Eva 从固定 YAML 入口解析拆分配置，经过 Schema 与跨文件校验后生成一份强类型项目配置。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-12%" width="120%" height="132%">
+      <feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" fill="#f6f8fb"/>
+  <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
+
+  <text x="60" y="78" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#172033">项目配置加载与校验</text>
+  <text x="60" y="108" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" fill="#5f6f82">固定 YAML 入口、显式拆分目录，运行前完成校验。</text>
+
+  <g filter="url(#shadow)">
+    <rect x="58" y="162" width="240" height="270" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="58" y="162" width="240" height="8" rx="4" fill="#2563eb"/>
+    <text x="82" y="207" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="19" font-weight="700" fill="#172033">1. 固定项目入口</text>
+    <text x="82" y="244" font-family="Consolas, monospace" font-size="14" font-weight="700" fill="#1d4ed8">config/eva.yaml</text>
+    <text x="82" y="278" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#526174">项目根目录来自：</text>
+    <text x="82" y="303" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">当前目录</text>
+    <text x="82" y="326" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">或 --project &lt;path&gt;</text>
+    <text x="82" y="374" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#8a4b08">无 profile 或用户级配置；</text>
+    <text x="82" y="396" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#8a4b08">无 JSON 配置入口或环境覆盖链</text>
+  </g>
+
+  <path d="M298 297 H337" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="342" y="162" width="240" height="270" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="342" y="162" width="240" height="8" rx="4" fill="#0f766e"/>
+    <text x="366" y="207" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="19" font-weight="700" fill="#172033">2. 解析与发现</text>
+    <text x="366" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Agent：精确匹配 agent.yaml</text>
+    <text x="366" y="269" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Adapter：YAML 目录</text>
+    <text x="366" y="294" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Capability：YAML 目录</text>
+    <text x="366" y="319" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Policy：YAML 目录</text>
+    <text x="366" y="344" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Route：一个配置文件</text>
+    <text x="366" y="383" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">所有 config.* 路径均相对</text>
+    <text x="366" y="405" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#0f766e">项目根目录解析</text>
+  </g>
+
+  <path d="M582 297 H621" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="626" y="162" width="240" height="270" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="626" y="162" width="240" height="8" rx="4" fill="#7c3aed"/>
+    <text x="650" y="207" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="19" font-weight="700" fill="#172033">3. 校验与解析</text>
+    <text x="650" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">六个固定 Schema 文件</text>
+    <text x="650" y="269" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">受支持的 Schema 子集</text>
+    <text x="650" y="294" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">稳定字段强类型解析</text>
+    <text x="650" y="319" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">扩展字段原样保留</text>
+    <text x="650" y="344" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">跨文件引用校验</text>
+    <rect x="650" y="372" width="188" height="34" rx="6" fill="#f3e8ff"/>
+    <text x="666" y="394" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#6d28d9">运行前返回错误</text>
+  </g>
+
+  <path d="M866 297 H905" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="910" y="162" width="232" height="270" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="910" y="162" width="232" height="8" rx="4" fill="#15803d"/>
+    <text x="934" y="207" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="19" font-weight="700" fill="#172033">4. 运维证据</text>
+    <text x="934" y="244" font-family="Consolas, monospace" font-size="13" fill="#172033">config validate</text>
+    <text x="934" y="271" font-family="Consolas, monospace" font-size="13" fill="#172033">inspect config</text>
+    <text x="934" y="311" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#526174">报告均基于同一份</text>
+    <text x="934" y="334" font-family="Consolas, monospace" font-size="14" font-weight="700" fill="#15803d">ProjectConfig</text>
+    <text x="934" y="374" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#8a4b08">没有文件 watcher 或</text>
+    <text x="934" y="396" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#8a4b08">自动热重载</text>
+  </g>
+
+  <rect x="58" y="475" width="1084" height="74" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="82" y="507" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" font-weight="700" fill="#9a3412">边界</text>
+  <text x="82" y="532" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#7c2d12">Schema 接受、Runtime 消费和 Policy 授权是三个独立检查。</text>
+</svg>

@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Eva project configuration load flow</title>
+  <desc id="desc">The fixed Eva YAML entry file resolves split configuration, then schema and cross-file validation produce one typed project configuration.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-12%" width="120%" height="132%">
+      <feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="620" fill="#f6f8fb"/>
+  <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
+
+  <text x="60" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="700" fill="#172033">Configuration load and validation</text>
+  <text x="60" y="108" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" fill="#5f6f82">One fixed YAML entry, explicit split roots, and validation before runtime use.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="58" y="162" width="240" height="270" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="58" y="162" width="240" height="8" rx="4" fill="#2563eb"/>
+    <text x="82" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="19" font-weight="700" fill="#172033">1. Fixed project entry</text>
+    <text x="82" y="244" font-family="Consolas, monospace" font-size="14" font-weight="700" fill="#1d4ed8">config/eva.yaml</text>
+    <text x="82" y="278" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#526174">Project root comes from:</text>
+    <text x="82" y="303" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">current directory</text>
+    <text x="82" y="326" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">or --project &lt;path&gt;</text>
+    <text x="82" y="374" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#8a4b08">No profile or user config;</text>
+    <text x="82" y="396" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#8a4b08">no JSON config or env merge</text>
+  </g>
+
+  <path d="M298 297 H337" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="342" y="162" width="240" height="270" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="342" y="162" width="240" height="8" rx="4" fill="#0f766e"/>
+    <text x="366" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="19" font-weight="700" fill="#172033">2. Resolve and discover</text>
+    <text x="366" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Agents: exact agent.yaml</text>
+    <text x="366" y="269" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Adapters: YAML directory</text>
+    <text x="366" y="294" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Capabilities: YAML directory</text>
+    <text x="366" y="319" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Policies: YAML directory</text>
+    <text x="366" y="344" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Routes: one configured file</text>
+    <text x="366" y="383" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">config.* paths resolve against</text>
+    <text x="366" y="405" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#0f766e">the project root</text>
+  </g>
+
+  <path d="M582 297 H621" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="626" y="162" width="240" height="270" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="626" y="162" width="240" height="8" rx="4" fill="#7c3aed"/>
+    <text x="650" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="19" font-weight="700" fill="#172033">3. Validate and parse</text>
+    <text x="650" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Six fixed schema files</text>
+    <text x="650" y="269" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Supported schema subset</text>
+    <text x="650" y="294" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Typed stable fields</text>
+    <text x="650" y="319" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Preserved extension maps</text>
+    <text x="650" y="344" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Cross-file references</text>
+    <rect x="650" y="372" width="188" height="34" rx="6" fill="#f3e8ff"/>
+    <text x="666" y="394" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#6d28d9">Fail before runtime use</text>
+  </g>
+
+  <path d="M866 297 H905" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="910" y="162" width="232" height="270" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
+    <rect x="910" y="162" width="232" height="8" rx="4" fill="#15803d"/>
+    <text x="934" y="207" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="19" font-weight="700" fill="#172033">4. Operator evidence</text>
+    <text x="934" y="244" font-family="Consolas, monospace" font-size="13" fill="#172033">config validate</text>
+    <text x="934" y="271" font-family="Consolas, monospace" font-size="13" fill="#172033">inspect config</text>
+    <text x="934" y="311" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#526174">Reports derive from one</text>
+    <text x="934" y="334" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#15803d">ProjectConfig</text>
+    <text x="934" y="374" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#8a4b08">No file watcher or</text>
+    <text x="934" y="396" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#8a4b08">automatic hot reload</text>
+  </g>
+
+  <rect x="58" y="475" width="1084" height="74" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="82" y="507" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#9a3412">Boundary</text>
+  <text x="82" y="532" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#7c2d12">Schema acceptance, runtime consumption, and policy authorization are separate checks.</text>
+</svg>

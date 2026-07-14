@@ -1,351 +1,155 @@
-# 备份、迁移包与 Release Snapshot 架构方案
+# 备份、迁移、快照与恢复：当前实现边界
 
 > Language: 简体中文
+>
 > English default entry: [English](../../en/operations/backup-migration-release-snapshot.md)
+>
 > Translation status: current
 
-更新日期：2026-06-17
+更新时间：2026-07-14
 
-## 1. 文档定位
+## 文档范围
 
-本文定义 Eva-CLI 中备份、迁移包和 release snapshot 应该由 Agent 实现，
-还是由 Runtime 实现。
+当前 backup/snapshot CLI 是基于合成条目的 contract/smoke 边界。`restore apply/rollback` 则在 evidence、policy、lock、health 和 confirmation 全部通过后，具备真实的本地 staged file mutation 能力。migration package 仍只有 library-level preflight 模型。
 
-核心结论是：**Runtime 负责可信执行层，Agent 只负责编排、解释、请求和
-结果总结**。
+本文只描述这些真实边界，不再把计划中的 artifact 管理能力写成生产备份实现。
 
-备份、迁移包和 release snapshot 都是高副作用能力。它们可能覆盖文件、
-改变持久化状态、移动 release pointer，或者影响回滚边界。因此它们必须
-具备确定性、可重复性、可审计性和可恢复性，不能把 LLM prompt 当作文件
-边界、覆盖策略、schema 兼容性或回滚逻辑的正确性来源。
+![Eva 备份、快照与恢复边界](../../../assets/backup-release-snapshot-boundary.zh-CN.svg)
 
-## 2. 范围
+## 能力矩阵
 
-本文覆盖三类相关操作：
-
-| 操作 | Runtime 职责 | Agent 职责 |
+| 能力面 | 当前行为 | 关键限制 |
 | --- | --- | --- |
-| 备份 | 创建、校验、列出、保留、恢复和审计可恢复 artifact。 | 建议范围、解释影响、请求备份、总结结果。 |
-| 迁移包 | 构建、导入、校验、checksum/signature、dry-run、apply、拒绝和审计版本化迁移 artifact。 | 生成说明、把用户意图转换成 Runtime 请求、解释兼容性警告、分析失败日志。 |
-| Release snapshot | 记录发布前后状态、比较 snapshot、关联健康检查证据、支撑回滚判断。 | 准备 release note、解释 snapshot diff、请求 Runtime 受控 snapshot 操作。 |
+| `backup create` | 构造、seal、存储并校验含 3 个合成条目的 artifact | 不读取或备份工作区 |
+| `snapshot create` | 创建合成 backup 和内存 snapshot 报告 | snapshot 记录不持久化、不可查询 |
+| `snapshot promote` | 再次创建合成 backup/snapshot，并返回 pointer plan | 永不移动 release pointer |
+| `restore plan` | 创建合成 backup/snapshot evidence 和展示报告 | 不生成 restore apply 读取的文件 |
+| `restore apply --dry-run` | 解析 operator-authored plan，校验两份 artifact/digest，生成 mutation preview | 不获取 restore lock，不修改目标 |
+| `restore apply` | 全部门禁通过后执行声明的 copy/replace/delete | 可修改 plan 指定的绝对 target root |
+| `restore rollback` | 根据 rollback-required transaction 逆序恢复已提交步骤 | 要求 transaction、hash 与 pre-restore evidence 全部匹配 |
+| `MigrationPackageService` | 在内存构造 manifest 并检查 source-version preflight | 没有 migration package CLI、持久化、签名或 apply engine |
 
-Runtime 负责 artifact 和状态转换。Agent 负责理解意图和面向人的解释。
+## 合成 Backup 行为
 
-## 3. 核心决策
-
-Eva-CLI 应该把备份、迁移包和 release snapshot 作为 Runtime service：
-
-```text
-Agent
-  -> 提出意图
-  -> 调用受控 Runtime API
-  -> 解释结果
-
-Runtime
-  -> 校验 policy 和 schema
-  -> 获取锁
-  -> 生成 manifest 和 checksum
-  -> 区分 dry-run 与 apply
-  -> 写入 audit 记录
-  -> 拥有 restore 与 rollback 语义
-```
-
-Agent 不应该通过复制任意路径、创建临时 archive、编辑 release pointer、
-或绕开 Runtime policy 恢复持久化状态来实现这些可信部分。
-
-## 4. 职责边界
-
-### 4.1 Runtime 负责
-
-Runtime 负责：
-
-- 解析备份范围。
-- 路径 canonicalization 和 workspace 边界检查。
-- 排除规则与脱敏规则。
-- 密钥处理和加密 hook。
-- 迁移包 schema 校验。
-- package 兼容性校验。
-- release snapshot 身份与来源。
-- 文件锁和 operation lease。
-- 原子写入或 staged 写入。
-- dry-run / apply 分离。
-- checksum、manifest 和可选 signature 校验。
-- restore 与 rollback 权限。
-- retention 与垃圾回收策略。
-- audit 记录和 trace ID。
-- 失败恢复与重试规则。
-
-这些是正确性和安全性问题，必须由可测试的 Runtime 代码承担，而不是由
-Agent 指令承担。
-
-### 4.2 Agent 负责
-
-Agent 可以：
-
-- 判断用户正在请求哪类 Runtime 操作。
-- 收集非破坏性的缺失上下文。
-- 在高风险操作前建议创建备份或 snapshot。
-- 生成 migration 描述和 release note。
-- 通过显式 operation request 调用 Runtime API。
-- 解释 preflight 警告和 policy 拒绝原因。
-- 总结创建的 artifact 和验证证据。
-- 在 Runtime 操作失败后分析日志。
-
-Agent 不应该成为隐式 policy engine。Runtime policy 拒绝操作时，Agent 可以
-解释原因，但不能绕过拒绝。
-
-## 5. Runtime 服务划分
-
-该能力应通过一组 Runtime-owned service 暴露。
-
-| Service | 职责 |
-| --- | --- |
-| `OperationCoordinator` | 串行化高副作用操作，管理 operation ID、lease、取消和状态转换。 |
-| `BackupService` | 创建、校验、恢复、列出和过期清理 backup artifact。 |
-| `MigrationPackageService` | 构建、导入、校验、dry-run、apply 和拒绝 migration package。 |
-| `ReleaseSnapshotService` | 在 release 激活前后捕获状态、比较 snapshot、记录 rollback 证据。 |
-| `ArtifactStore` | 存储 artifact、manifest、checksum、metadata、retention 标记和 quarantine 记录。 |
-| `ManifestVerifier` | 校验 artifact manifest、schema version、兼容性范围、checksum 和可选 signature。 |
-| `PolicyEngine` | 判断 actor 是否可以 create、restore、apply、compare、export 或 delete artifact。 |
-| `AuditLog` | 记录 actor、reason、scope、result、hash、warning、failure 和 recovery action。 |
-
-这些 service 可以位于 Rust Runtime 边界内，再通过窄 host API 暴露给 Lua 或
-外部 Agent。
-
-## 6. Artifact 模型
-
-每个 backup、migration package 和 release snapshot 都应该有 manifest。
-manifest 是记录捕获内容、创建原因、请求者和验证方式的持久化契约。
-
-必要字段：
-
-| 字段 | 含义 |
-| --- | --- |
-| `artifact_id` | artifact 的稳定 ID。 |
-| `artifact_type` | `backup`、`migration_package` 或 `release_snapshot`。 |
-| `created_at` | UTC 时间戳。 |
-| `created_by` | human、Agent、Supervisor 或 Runtime actor 身份。 |
-| `request_id` | Agent 或 CLI 调用传入的因果请求 ID。 |
-| `runtime_generation` | 创建或校验 artifact 的 Runtime generation。 |
-| `project_id` | 项目或 workspace 身份。 |
-| `scope` | Runtime 解析后的范围，不是用户输入的原始路径。 |
-| `schema_version` | manifest schema version。 |
-| `compatibility` | Runtime、config、state 和 package 兼容性约束。 |
-| `entries` | 被捕获的文件、状态分区、checksum、size 和 redaction 标记。 |
-| `policy` | policy 版本和决策记录。 |
-| `verification` | checksum、signature、dry-run、health 或 restore verification 结果。 |
-| `audit_id` | 指向 Runtime audit 记录。 |
-
-manifest 应由 Runtime 代码生成。Agent 可以提出 reason 这类元数据，但不能
-被信任来提供最终 checksum、解析后的路径或兼容性结果。
-
-## 7. 备份语义
-
-备份是 Runtime 识别的项目状态在某个时间点上的可恢复 artifact。它可以包含：
-
-- 配置和 manifest。
-- Lua Agent 与 capability 代码。
-- AdapterRegistry metadata。
-- 选定的 State Store 记录。
-- Durable Event Log watermark 或有界 segment。
-- policy 允许的 memory 与 knowledge metadata。
-- release pointer metadata。
-- restore safety 所需的 operation journal。
-
-备份不应该包含：
-
-- 原始 secret。
-- 未脱敏 credential。
-- 不受支持的临时 cache。
-- 未 ack 的纯内存事件。
-- 解析后 workspace 范围之外的任意用户文件。
-- 无法在本地恢复的外部 provider 状态。
-
-restore 应比 create 更严格。Runtime policy 应要求 validated manifest、兼容
-target、明确 actor 权限和 audit 记录，才能让恢复操作修改状态。
-
-## 8. 迁移包语义
-
-迁移包是版本化、可检查、可验证的 artifact，用来描述状态或布局转换。它
-应该携带足够 metadata，让 Runtime 能判断是否可以安全 apply。
-
-必要属性：
-
-- source 与 target schema version。
-- compatibility range。
-- package format version。
-- 受影响的 state section。
-- preflight requirement。
-- reversible / irreversible 标记。
-- idempotency key。
-- checksum manifest。
-- 可选 signature 或 trusted publisher identity。
-- 预期 post-apply invariant。
-
-migration package apply 必须由 Runtime 控制，因为它可能改变 state layout、
-config 兼容性、index、release pointer 或 event replay 语义。Agent 可以解释
-package 想做什么，但不应直接执行 migration logic。
-
-## 9. Release Snapshot 语义
-
-Release snapshot 不只是 backup。它是 release control record，用来关联
-artifact、Runtime generation、配置、健康状态和 rollback 证据。
-
-Runtime 至少应支持两种 snapshot 角色：
-
-| Snapshot role | 含义 |
-| --- | --- |
-| `pre_release` | 在 activation 或 upgrade 前捕获当前 known-good 状态。 |
-| `post_release` | 捕获激活后的状态，并附带 health 与兼容性证据。 |
-
-有价值的 snapshot 内容包括：
-
-- active release pointer。
-- Runtime generation ID。
-- binary 或 package digest。
-- config digest。
-- policy digest。
-- manifest registry digest。
-- Lua capability generation。
-- AdapterRegistry generation。
-- database 或 State Store schema version。
-- EventBus durable watermark。
-- health-check result。
-- release 期间 apply 的 migration package ID。
-- 与 release 关联的 backup artifact ID。
-- rollback eligibility 与限制。
-
-Supervisor 和 Runtime generation switching 模型应把 release snapshot 当作证据。
-回滚决策可以由 Agent 辅助，但 snapshot 捕获、比较、pointer 移动和 rollback
-操作必须由 Runtime 控制。
-
-## 10. Operation 状态模型
-
-高副作用操作需要显式状态，才能安全重试和恢复。状态模型归 Runtime 所有。
+CLI 当前不读取项目文件，而是构造三个固定条目：
 
 ```text
-requested
-  -> admitted
-  -> locked
-  -> preflighted
-  -> staged
-  -> verified
-  -> committed
-  -> audited
-
-failure paths:
-  -> rejected
-  -> quarantined
-  -> rolled_back
-  -> failed_with_recovery_required
+config/eva.yaml                         -> "runtime: in_memory_v1.0"
+config/adapters/hardware/scale-main.yaml -> "enabled: false"
+state/release-pointer                   -> project_id bytes（标记 redacted）
 ```
 
-具体实现可以演进，但架构不变量是：Runtime 必须能说明某个操作是从未开始、
-在修改前被拒绝、已经 staged 但未 committed、已经成功 committed，还是需要
-人工或自动 recovery。
+```powershell
+cargo run -q -- backup create --output json
+cargo run -q -- backup create --artifact-store .eva/artifacts --output json
+```
 
-## 11. Agent API 形态
+未传 `--artifact-store` 时，artifact 只存在于该命令的内存 store；传入 filesystem store 后，sealed bytes 与通用 artifact metadata 会写盘。重复使用 artifact ID 会覆盖 filesystem record，不存在不可变的 point-in-time catalog。
 
-Agent 应只拿到明确表达权限边界的窄 API。示例：
+当前 `BackupManifest` 只包含 artifact ID/type、request ID、generation、project ID、entry metadata、digest、archive metadata 和 audit 字符串。manifest 会出现在命令报告中，但不会作为可独立查询的 backup record 持久化。
+
+当前安全限制：
+
+- `--dry-run` 只标记 plan，仍会创建并存储 artifact。
+- 条目的 `redacted` 只是 metadata，entry bytes 仍写入 sealed archive。
+- 默认签名和 `--encrypt` 使用硬编码 local-development key。
+- encryption 是开发用途 XOR stream，不是生产密码学实现。
+- remote backup target 只存在于 library manifest metadata，不会上传。
+- `backup create`、`snapshot create` 和 `snapshot promote` 不调用 runtime policy gate；operator 指定的 artifact store 可以在没有 `backup.create` policy 批准的情况下被写入。
+- 没有 backup list、restore、delete、expiry、retention、GC 或 remote transfer CLI。
+
+不能用该命令证明真实项目状态、secret、database、event log 或 release pointer 已完成备份。
+
+## Migration Package 边界
+
+`MigrationPackageService` 当前只建模：
+
+- package/source/target version 字符串；
+- 受影响的 state section；
+- reversible/irreversible metadata；
+- 内存 source-version preflight 结果。
+
+它不会 build/import archive，不计算生产 checksum/signature，不持久化 package，不执行 migration，也没有 CLI。`release migration` 输出的是发布指导，不是 migration package apply 命令。
+
+## Snapshot 边界
+
+```powershell
+cargo run -q -- snapshot create --snapshot-id snapshot-doc --artifact-store .eva/artifacts --output json
+cargo run -q -- snapshot promote --snapshot-id snapshot-doc --confirm snapshot-doc --artifact-store .eva/artifacts --output json
+```
+
+两个命令都会在本次调用中重新创建合成 backup。snapshot 是带固定 healthy evidence 的内存报告，不会从 snapshot registry 加载，也不会保存到 registry。
+
+`snapshot promote` 在判断 `--confirm` 前就会写 `backup-for-<snapshot-id>`；确认值不匹配也可能写入或覆盖 artifact。确认成功仍返回 `apply_allowed:false`，release pointer 不变。
+
+当前 CLI 没有 snapshot list/get/compare/status，snapshot 也不会捕获真实 binary digest、配置 digest、runtime state、event watermark 或 provider state。
+
+## Restore Plan Contract
+
+`restore plan` 只输出合成诊断报告：
+
+```powershell
+cargo run -q -- restore plan --snapshot-id snapshot-doc --artifact-store .eva/artifacts --output json
+```
+
+它不会生成 `restore apply` 要求的严格 plan 文件。该文件必须来自受审计的 operator/release 流程，使用 `key=value`：
 
 ```text
-ctx.runtime.backup.request(...)
-ctx.runtime.backup.status(operation_id)
-ctx.runtime.backup.list(...)
-
-ctx.runtime.migration.verify(package_ref)
-ctx.runtime.migration.dry_run(package_ref, target)
-ctx.runtime.migration.apply(package_ref, target)
-
-ctx.runtime.release_snapshot.create(role, release_ref)
-ctx.runtime.release_snapshot.compare(left, right)
-ctx.runtime.release_snapshot.status(operation_id)
+plan_id=plan-restore-1
+backup_artifact_id=backup-for-restore
+backup_digest=sha256:<hex>
+pre_restore_backup_artifact_id=pre-restore-plan-restore-1
+pre_restore_backup_digest=sha256:<hex>
+restore_target_root=<target-root>
+mutation_step=copy|config/eva.yaml|backup/source-key|sha256:<new>|none|file
 ```
 
-API 应返回结构化值，包括 operation ID、artifact ID、policy decision、
-warning、verification result 和 audit ID。它不应该暴露原始文件系统修改能力。
+每个 `mutation_step` 固定包含六段：
 
-## 12. Policy 规则
+```text
+operation|relative_path|source_artifact_key|expected_digest|pre_restore_digest|target_kind
+```
 
-Runtime policy 至少应支持：
+operation 支持 copy、replace、delete。copy 要求 source artifact key 和 expected digest，但不能带 pre-restore digest；replace 三项都需要；delete 要求 pre-restore digest，但不能带 source artifact key 或 expected digest。可选空字段使用 `none`、`null`、`-` 或空段。
 
-- actor class：human、Agent、Supervisor、Runtime、CI。
-- operation type：create、verify、restore、apply、compare、delete、export。
-- workspace 或 project scope。
-- 允许的 path class。
-- secret redaction 与 encryption requirement。
-- retention class。
-- 最大 artifact size。
-- offline / online requirement。
-- release generation 约束。
-- package trust requirement。
-- destructive restore 或 irreversible migration 的 approval requirement。
+## Dry-Run、Apply 与 Rollback
 
-Agent 可以帮助用户理解这些规则，但必须由 Runtime 执行规则。
+先校验独立生成的 plan：
 
-## 13. 审计与可观测
+```powershell
+cargo run -q -- restore apply --dry-run --plan <plan-file> --confirm <plan-id> --artifact-store <artifact-dir> --lock-store <lock-dir> --output json
+```
 
-每个高副作用操作都应该产生持久化证据：
+dry-run 校验主 artifact 与 pre-restore artifact digest，要求 confirmation 匹配，拒绝非法 relative path 和在 plan 中声明为 `symlink` 的 target，并返回 affected paths、preflight hash 与 rollback manifest。因为不会执行 mutation，它不检查目标路径中已经存在的 symlink component，也不会校验独立持久化的 BackupManifest 或生产签名；apply 与 rollback 会在变更前拒绝这些 symlink component。
 
-- operation ID。
-- request ID 与 trace ID。
-- actor identity。
-- requested reason。
-- policy decision。
-- resolved scope。
-- artifact ID。
-- manifest hash。
-- warning。
-- start / finish timestamp。
-- failure category。
-- rollback 或 recovery action。
+非 dry-run apply 还要求：
 
-日志必须脱敏 secret，并且应足够结构化，让 Agent 可以解释失败原因，而不需要
-无限制读取文件系统。
+- `runtime_policy.allow_high_risk_actions` 包含 `restore.apply`；
+- health 输入为 healthy；
+- 成功创建新 filesystem lock；
+- 所有 source artifact 与 expected/current digest 一致；
+- plan 包含有效 mutation step，才会修改目标。
 
-## 14. 与现有架构的关系
+仓库默认 policy 不允许 `restore.apply`，因此 mutation 默认被拒绝。获得授权后，copy/replace 使用临时文件再 rename，delete 直接删除目标；engine 写普通文本 transaction log，部分失败会返回 `rollback_required`。
 
-该设计延续 Eva-CLI 现有边界：
+rollback 复用 `restore.apply` policy action。它只接受 rollback-required transaction，校验 plan/transaction 身份和 current digest drift，再根据 pre-restore evidence 逆序恢复已提交步骤。transaction/rollback log 是本地文本文件，不是 signed/tamper-proof journal。
 
-- Rust 继续负责 authority、recovery、audit、schema 和 process lifecycle。
-- Lua 与外部 Agent 继续只通过受控 host API 负责 orchestration 与 explanation。
-- 进程级升级应在 Runtime generation activation 前后调用
-  `ReleaseSnapshotService`。
-- 当 hot reload 可能改变持久化状态或 rollback eligibility 时，应使用 backup
-  或 snapshot artifact。
-- migration package 影响 State Store、EventBus replay、MemoryService、
-  KnowledgeService 或 AdapterRegistry layout 前，必须先通过 Runtime 校验。
-- artifact manifest 应纳入与其他 Runtime-managed capability 相同的 policy
-  和 audit 模型。
+## 路径与信任边界
 
-## 15. 安全不变量
+- Mutation path 必须是相对路径并拒绝 traversal。Plan parsing 会拒绝 `target_kind=symlink`；apply 与 rollback 还会拒绝目标路径中已存在的 symlink component。
+- `restore_target_root` 本身可以是绝对路径；当前代码不限制在 Eva workspace 内。
+- Confirmation 只证明输入字符串与 `plan_id` 一致，plan 文件没有签名。
+- Artifact digest 只证明 store record 字节一致，不证明 plan 或 artifact 的作者身份。
+- 加密 CLI backup 没有对应的 CLI 解密参数，不能直接作为 pre-restore plaintext archive 使用。
 
-- 原始 secret 不能写入 backup、package、snapshot 或 log。
-- Agent 不能通过直接编辑文件来 restore 或 apply artifact。
-- 导入的 package 在 verify 阶段不能执行代码。
-- artifact 跨 trust boundary 前必须通过 manifest verification。
-- release pointer 移动必须有 Runtime audit record。
-- rollback 不能在缺少 post-rollback verification evidence 时声称成功。
-- operation 不应依赖 manifest、policy 和 audit record 之外的隐藏全局状态。
+plan authoring、target-root 批准、artifact provenance 和 policy 审核都仍是外部 operator 职责。
 
-## 16. 待定设计问题
+## 尚未实现
 
-以下细节应在实现规格阶段补齐：
+当前代码不提供真实 workspace backup selection、database backup、secret/KMS 集成、生产签名/加密、不可变 artifact 历史、retention、远程上传下载、migration apply、持久化 snapshot comparison 或 snapshot-backed 自动 restore/upgrade orchestration。
 
-- artifact storage layout 与默认 retention。
-- 敏感备份分区的 encryption key management。
-- 第三方 migration package 的 signature 要求。
-- memory 与 knowledge data 的精确 restore policy。
-- event log segment 捕获与 replay 兼容规则。
-- CI release snapshot format。
-- destructive restore 与 irreversible migration 的人工确认 UX。
+## 相关资料
 
-这些是实现层细节，不改变“可信执行归 Runtime”的架构决策。
-
-## 17. 总结
-
-备份、迁移包和 release snapshot 不是 Agent 功能，而是 Runtime 安全能力。
-
-Agent 可以通过理解意图、生成说明、请求操作和解释结果让这些能力更好用。
-但 scope、policy、verification、mutation、rollback 和 audit 的事实来源必须
-始终是 Runtime。
+- [Eva-CLI 使用手册](../guide/Eva-CLI使用手册.md)
+- [进程升级与恢复边界](进程级停机升级架构方案.md)
+- [项目配置](项目配置方案.md)
