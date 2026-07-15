@@ -65,6 +65,17 @@ jobs:
         shell: pwsh
         run: ./scripts/test-release-platform-evidence.ps1
 
+      - name: Release evidence readback contract
+        shell: pwsh
+        run: |
+          cargo build --locked --bin eva
+          ./scripts/test-release-evidence-readback.ps1
+
+      - name: Release evidence readback contract (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-release-evidence-readback.ps1 -EvaExecutable target/debug/eva.exe
+
       - name: V1.6 release smoke
         shell: pwsh
         run: |
@@ -698,8 +709,8 @@ jobs:
           path: release-evidence/platform/
           if-no-files-found: error
 
-  publish:
-    name: Publish GitHub Release
+  release_evidence:
+    name: Assemble immutable release evidence
     needs:
       - verify
       - packages
@@ -708,7 +719,15 @@ jobs:
       - native-macos
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.seal_release_evidence.outputs.artifact_name }}
+      artifact_id: ${{ steps.upload_release_evidence.outputs['artifact-id'] }}
+      artifact_digest: ${{ steps.upload_release_evidence.outputs['artifact-digest'] }}
+      index_digest: ${{ steps.seal_release_evidence.outputs.index_digest }}
+      manifest_digest: ${{ steps.seal_release_evidence.outputs.manifest_digest }}
+      bundle_digest: ${{ steps.seal_release_evidence.outputs.bundle_digest }}
+      file_count: ${{ steps.seal_release_evidence.outputs.file_count }}
     steps:
       - name: Checkout tag
         uses: actions/checkout@v4
@@ -876,7 +895,7 @@ jobs:
           } else {
             "passed"
           }
-          $lines.Insert(7, "scan_status=$scanStatus")
+          $lines.Insert(6, "scan_status=$scanStatus")
           foreach ($line in $findingLines) {
             $lines.Add($line)
           }
@@ -1160,45 +1179,229 @@ jobs:
           $lines.Add("package.0.status=$dryRunStatus")
           $lines | Set-Content -LiteralPath release-evidence/release-distribution.evidence -Encoding utf8
 
-      - name: Verify release evidence gates
+      - name: Seal production evidence bundle
+        id: seal_release_evidence
         shell: pwsh
         run: |
-          function Capture-ReleaseGate([string]$captureId, [string]$stdoutName, [string[]]$commandArgs) {
-            $manifestPath = Join-Path "release-evidence" "$captureId.capture.json"
-            $stdoutPath = Join-Path "release-evidence" $stdoutName
-            $stderrPath = Join-Path "release-evidence" "$captureId.stderr"
-            $cargoArgs = @("run", "--") + $commandArgs
-            ./scripts/capture-release-evidence.ps1 `
-              -Executable "cargo" `
-              -ArgumentList $cargoArgs `
-              -ManifestPath $manifestPath `
-              -StdoutPath $stdoutPath `
-              -StderrPath $stderrPath `
-              -CaptureId $captureId `
-              -NoFail | Out-Null
-            $capture = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-            if ($capture.outcome -ne "success") {
-              Get-Content -Raw -LiteralPath $stderrPath -ErrorAction SilentlyContinue | Write-Host
-              throw "Release gate '$captureId' ended with outcome '$($capture.outcome)'."
+          function Read-EnvelopeTimestamp([string]$path) {
+            $timestampLines = @([System.IO.File]::ReadAllLines($path) | Where-Object { $_ -match '^timestamp=([1-9][0-9]*)$' })
+            if ($timestampLines.Count -ne 1) {
+              throw "Evidence envelope '$path' must contain exactly one canonical timestamp."
+            }
+            return [int64]$timestampLines[0].Substring("timestamp=".Length)
+          }
+
+          function Read-CaptureTimestamp([string]$path) {
+            $capture = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+            $finishedAt = [System.DateTimeOffset]::Parse(
+              [string]$capture.finished_at,
+              [System.Globalization.CultureInfo]::InvariantCulture,
+              [System.Globalization.DateTimeStyles]::RoundtripKind
+            )
+            return $finishedAt.ToUnixTimeMilliseconds()
+          }
+
+          $head = (& git rev-parse HEAD | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') {
+            throw "Cannot resolve the trusted release checkout commit."
+          }
+          $tagReference = "$($env:RELEASE_TAG)^{commit}"
+          $tagCommit = (& git rev-parse $tagReference | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $head) {
+            throw "Release tag '$env:RELEASE_TAG' does not resolve to checkout commit '$head'."
+          }
+
+          $nativeEvidence = Get-Content -Raw -LiteralPath release-evidence/native-artifacts.json | ConvertFrom-Json
+          $linuxArtifacts = @($nativeEvidence.artifacts | Where-Object { [string]$_.target -ceq "x86_64-unknown-linux-gnu" })
+          if ($linuxArtifacts.Count -ne 1) {
+            throw "Exactly one Linux x86_64 native artifact is required for the production subject."
+          }
+          $linuxArtifact = $linuxArtifacts[0]
+          $artifactPath = Join-Path "release-native" ([string]$linuxArtifact.archive)
+          if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+            throw "Production artifact '$artifactPath' was not downloaded."
+          }
+
+          $platformTimestamp = Read-EnvelopeTimestamp "release-evidence/platform-bundle.envelope"
+          $securityTimestamp = Read-CaptureTimestamp "release-evidence/cargo-audit.capture.json"
+          $scanStatusLines = @([System.IO.File]::ReadAllLines("release-evidence/release-security-scan.evidence") | Where-Object { $_ -match '^scan_status=[0-9A-Za-z_.-]+$' })
+          if ($scanStatusLines.Count -ne 1) {
+            throw "Security evidence must contain exactly one canonical scan_status."
+          }
+          $artifactScanStatus = $scanStatusLines[0].Substring("scan_status=".Length)
+          $benchmarkCaptures = @(Get-ChildItem -LiteralPath "release-evidence/benchmark-captures" -Filter "*.capture.json" -File)
+          if ($benchmarkCaptures.Count -eq 0) {
+            throw "No benchmark capture manifests were found."
+          }
+          [int64]$benchmarkTimestamp = 0
+          foreach ($capture in $benchmarkCaptures) {
+            $candidate = Read-CaptureTimestamp $capture.FullName
+            if ($candidate -gt $benchmarkTimestamp) {
+              $benchmarkTimestamp = $candidate
             }
           }
 
-          Capture-ReleaseGate "release.verify-check" "release-check-evidence.json" @("release", "check", "--distribution-evidence", "release-evidence/release-distribution.evidence", "--security-scan-evidence", "release-evidence/release-security-scan.evidence", "--benchmark-evidence", "release-evidence/release-benchmark.evidence", "--output", "json")
-          Capture-ReleaseGate "release.verify-perf" "release-perf-benchmark.json" @("release", "perf", "--benchmark-evidence", "release-evidence/release-benchmark.evidence", "--output", "json")
+          $artifactName = "release-evidence-$env:RELEASE_TAG-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $metadataPath = "release-evidence-upload-seal.json"
+          ./scripts/prepare-release-evidence-upload.ps1 `
+            -EvidenceRoot "release-evidence" `
+            -ArtifactPath $artifactPath `
+            -ArtifactTarget ([string]$linuxArtifact.target) `
+            -ArtifactFormat ([string]$linuxArtifact.format) `
+            -ArtifactBinary ([string]$linuxArtifact.binary) `
+            -ArtifactBuilder "github-actions:native-linux" `
+            -ArtifactBuildCommand "cargo build --release --locked --bin eva" `
+            -ArtifactSbom "unavailable:W9-L10" `
+            -ArtifactScanStatus $artifactScanStatus `
+            -ReleaseTag $env:RELEASE_TAG `
+            -SourceCommit $head `
+            -RunId $env:GITHUB_RUN_ID `
+            -RunAttempt $env:GITHUB_RUN_ATTEMPT `
+            -Job $env:GITHUB_JOB `
+            -ArtifactTimestampMilliseconds $platformTimestamp `
+            -DistributionTimestampMilliseconds $platformTimestamp `
+            -SecurityScanTimestampMilliseconds $securityTimestamp `
+            -BenchmarkTimestampMilliseconds $benchmarkTimestamp `
+            -UploadArtifactName $artifactName `
+            -MetadataPath $metadataPath | Out-Null
 
-      - name: Upload release evidence artifact
+          $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          foreach ($pair in ([ordered]@{
+              artifact_name = [string]$metadata.upload_artifact_name
+              index_digest = [string]$metadata.index_digest
+              manifest_digest = [string]$metadata.manifest_digest
+              bundle_digest = [string]$metadata.bundle_digest
+              file_count = [string]$metadata.file_count
+            }).GetEnumerator()) {
+            [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "$($pair.Key)=$($pair.Value)`n", $utf8NoBom)
+          }
+
+      - name: Upload immutable release evidence
+        id: upload_release_evidence
         uses: actions/upload-artifact@v4
         with:
-          name: release-evidence-${{ env.RELEASE_TAG }}
+          name: ${{ steps.seal_release_evidence.outputs.artifact_name }}
           path: release-evidence/
           if-no-files-found: error
+          include-hidden-files: true
+          overwrite: false
+
+  publish:
+    name: Revalidate evidence and publish GitHub Release
+    needs: release_evidence
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout trusted tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Validate version management
+        shell: pwsh
+        run: ./scripts/validate-version-management.ps1 -Tag $env:RELEASE_TAG
+
+      - name: Resolve trusted consumer identity
+        id: trusted_identity
+        shell: pwsh
+        env:
+          PRODUCER_ARTIFACT_NAME: ${{ needs.release_evidence.outputs.artifact_name }}
+        run: |
+          $head = (& git rev-parse HEAD | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') {
+            throw "Cannot resolve the trusted release checkout commit."
+          }
+          $tagReference = "$($env:RELEASE_TAG)^{commit}"
+          $tagCommit = (& git rev-parse $tagReference | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $head) {
+            throw "Release tag '$env:RELEASE_TAG' does not resolve to checkout commit '$head'."
+          }
+          $artifactName = "release-evidence-$env:RELEASE_TAG-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ($env:PRODUCER_ARTIFACT_NAME -cne $artifactName) {
+            throw "Producer artifact name does not match the trusted run identity."
+          }
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "source_commit=$head`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "artifact_name=$artifactName`n", $utf8NoBom)
+
+      - name: Build trusted evidence verifier
+        run: cargo build --locked --bin eva
+
+      - name: Download immutable release evidence by ID
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.release_evidence.outputs.artifact_id }}
+          path: downloaded-release-evidence
+
+      - name: Revalidate downloaded release evidence
+        id: verify_readback
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_COMMIT: ${{ steps.trusted_identity.outputs.source_commit }}
+          EXPECTED_ARTIFACT_NAME: ${{ steps.trusted_identity.outputs.artifact_name }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.release_evidence.outputs.artifact_id }}
+          EXPECTED_UPLOAD_DIGEST: ${{ needs.release_evidence.outputs.artifact_digest }}
+          EXPECTED_INDEX_DIGEST: ${{ needs.release_evidence.outputs.index_digest }}
+          EXPECTED_MANIFEST_DIGEST: ${{ needs.release_evidence.outputs.manifest_digest }}
+          EXPECTED_BUNDLE_DIGEST: ${{ needs.release_evidence.outputs.bundle_digest }}
+          EXPECTED_FILE_COUNT: ${{ needs.release_evidence.outputs.file_count }}
+        run: |
+          New-Item -ItemType Directory -Force -Path release-readback | Out-Null
+          $downloadRoot = [System.IO.Path]::GetFullPath("downloaded-release-evidence")
+          $downloadEntries = @(Get-ChildItem -LiteralPath $downloadRoot -Force)
+          if ($downloadEntries.Count -ne 1 -or -not $downloadEntries[0].PSIsContainer -or
+              [string]$downloadEntries[0].Name -cne $env:EXPECTED_ARTIFACT_NAME) {
+            throw "Artifact ID download did not produce exactly the trusted artifact directory."
+          }
+          $evidenceRoot = Join-Path $downloadRoot $env:EXPECTED_ARTIFACT_NAME
+          $result = @(./scripts/verify-release-evidence-readback.ps1 `
+              -EvidenceRoot $evidenceRoot `
+              -ExpectedReleaseTag $env:RELEASE_TAG `
+              -ExpectedSourceCommit $env:EXPECTED_SOURCE_COMMIT `
+              -ExpectedRunId $env:GITHUB_RUN_ID `
+              -ExpectedRunAttempt $env:GITHUB_RUN_ATTEMPT `
+              -ExpectedProducerJob "release_evidence" `
+              -ExpectedUploadArtifactName $env:EXPECTED_ARTIFACT_NAME `
+              -ExpectedUploadArtifactId $env:EXPECTED_ARTIFACT_ID `
+              -ExpectedUploadDigest $env:EXPECTED_UPLOAD_DIGEST `
+              -ExpectedIndexDigest $env:EXPECTED_INDEX_DIGEST `
+              -ExpectedManifestDigest $env:EXPECTED_MANIFEST_DIGEST `
+              -ExpectedBundleDigest $env:EXPECTED_BUNDLE_DIGEST `
+              -ExpectedFileCount $env:EXPECTED_FILE_COUNT `
+              -EvaExecutable "target/debug/eva" `
+              -ReceiptPath "release-readback/receipt.json")
+          if ($result.Count -ne 1) {
+            throw "Readback verifier returned an invalid result count."
+          }
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "receipt_digest=$($result[0].ReceiptDigest)`n", $utf8NoBom)
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "decision_digest=$($result[0].DecisionDigest)`n", $utf8NoBom)
+
+      - name: Upload readback receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-readback-${{ env.RELEASE_TAG }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-readback/
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: false
 
       - name: Create or update GitHub Release
         uses: actions/github-script@v7
         env:
           RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          EVIDENCE_ARTIFACT_NAME: ${{ steps.trusted_identity.outputs.artifact_name }}
+          EVIDENCE_ARTIFACT_ID: ${{ needs.release_evidence.outputs.artifact_id }}
+          EVIDENCE_UPLOAD_DIGEST: ${{ needs.release_evidence.outputs.artifact_digest }}
+          READBACK_RECEIPT_DIGEST: ${{ steps.verify_readback.outputs.receipt_digest }}
+          READBACK_DECISION_DIGEST: ${{ steps.verify_readback.outputs.decision_digest }}
         with:
           script: |
+            const crypto = require("crypto");
             const fs = require("fs");
             const tag = process.env.RELEASE_TAG;
             const version = tag.replace(/^v/, "");
@@ -1212,7 +1415,19 @@ jobs:
             const manualNotes = fs.existsSync(releaseNotesPath)
               ? fs.readFileSync(releaseNotesPath, "utf8")
               : `# Eva-CLI ${humanVersion}\n\nNo dedicated release notes file exists for ${humanVersion}.`;
-            const packageEvidencePath = "release-evidence/package-ghcr.json";
+            const packageEvidencePath = `downloaded-release-evidence/${process.env.EVIDENCE_ARTIFACT_NAME}/package-ghcr.json`;
+            const receiptBytes = fs.readFileSync("release-readback/receipt.json");
+            const receiptDigest = `sha256:${crypto.createHash("sha256").update(receiptBytes).digest("hex")}`;
+            const receipt = JSON.parse(receiptBytes.toString("utf8"));
+            if (receipt.status !== "verified" || receiptDigest !== process.env.READBACK_RECEIPT_DIGEST) {
+              throw new Error("Release evidence readback receipt is not verified or its digest changed.");
+            }
+            if (receipt.upload_artifact?.name !== process.env.EVIDENCE_ARTIFACT_NAME ||
+                String(receipt.upload_artifact?.id) !== process.env.EVIDENCE_ARTIFACT_ID ||
+                receipt.upload_artifact?.digest !== process.env.EVIDENCE_UPLOAD_DIGEST ||
+                receipt.decision?.digest !== process.env.READBACK_DECISION_DIGEST) {
+              throw new Error("Release evidence readback receipt identity does not match producer outputs.");
+            }
             const packageLines = [];
             if (fs.existsSync(packageEvidencePath)) {
               const packageEvidence = JSON.parse(fs.readFileSync(packageEvidencePath, "utf8"));
@@ -1252,8 +1467,11 @@ jobs:
               `- Tag: \`${tag}\``,
               `- Human version: \`${humanVersion}\``,
               `- Status: \`${status}\``,
+              `- Immutable evidence artifact: \`${process.env.EVIDENCE_ARTIFACT_NAME}\` (ID \`${process.env.EVIDENCE_ARTIFACT_ID}\`, Actions digest \`${process.env.EVIDENCE_UPLOAD_DIGEST}\`).`,
+              `- Readback receipt: \`${process.env.READBACK_RECEIPT_DIGEST}\`; production decision bytes: \`${process.env.READBACK_DECISION_DIGEST}\`.`,
+              "- The receipt proves independent upload/download integrity and production-scope evidence consumption. Current unsigned artifacts and later production-closure requirements remain explicit blockers.",
               "- Release workflow: validates Rust workspace, website/docs, version-management rules, release gates, native archive install smoke, distribution evidence, and GHCR package publication before publishing.",
-              "- Artifacts: GitHub source archives, native Windows/Linux/macOS archives, workflow release-evidence artifact, and GHCR container package when package evidence status is `published`. Current releases intentionally do not publish signed installers.",
+              "- Artifacts: GitHub source archives, native Windows/Linux/macOS archives, immutable workflow release evidence plus readback receipt, and a GHCR container package when package evidence status is `published`. Current releases intentionally do not publish signed installers.",
               "- Supply-chain evidence: GHCR packages include Buildx provenance and SBOM attestations when package evidence status is `published`; `release-distribution.evidence` records three-platform install smoke and package-manager dry-run status.",
               ...packageLines,
             ].filter(Boolean).join("\n\n");

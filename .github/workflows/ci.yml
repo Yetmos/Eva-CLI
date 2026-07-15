@@ -48,6 +48,17 @@ jobs:
         shell: pwsh
         run: ./scripts/test-release-platform-evidence.ps1
 
+      - name: Release evidence readback contract
+        shell: pwsh
+        run: |
+          cargo build --locked --bin eva
+          ./scripts/test-release-evidence-readback.ps1
+
+      - name: Release evidence readback contract (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-release-evidence-readback.ps1 -EvaExecutable target/debug/eva.exe
+
       - name: Daemon runtime smoke tests
         run: |
           cargo test -p eva-runtime daemon_control_status_and_shutdown_round_trip_has_trace_id
