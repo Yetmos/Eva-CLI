@@ -2,7 +2,8 @@
 //! Unified release evidence envelope and stable manifest contract.
 
 use eva_core::EvaError;
-use std::collections::BTreeMap;
+use eva_storage::ArtifactRecord;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// 本模块的架构职责：为所有发布证据提供统一的分类、来源、执行环境和主题身份。
@@ -11,6 +12,9 @@ pub const RESPONSIBILITY: &str = "uniform release evidence identity and provenan
 
 /// 当前支持的统一发布证据信封格式。
 pub const EVIDENCE_ENVELOPE_FORMAT: &str = "eva.release.evidence_envelope.v1";
+
+/// 仅用于复用 ArtifactRecord 的确定性 SHA-256 实现，不表示写入 artifact store。
+const EVIDENCE_SUBJECT_KEY: &str = "release/evidence/subject";
 
 /// v1 清单唯一允许的字段集合；新增字段必须升级格式或显式扩展本集合。
 const EVIDENCE_ENVELOPE_FIELDS: [&str; 8] = [
@@ -35,6 +39,50 @@ pub enum EvidenceKind {
     Operator,
     /// 由真实命令、系统或环境运行产生的机器测量。
     Measurement,
+}
+
+/// 证据完整性验证失败时使用的稳定机器码。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EvidenceIntegrityBlocker {
+    /// 信封格式已被改写或不受当前 verifier 支持。
+    EnvelopeFormatInvalid,
+    /// 来源、环境、执行者或时间戳不再满足必填身份约束。
+    EnvelopeIdentityInvalid,
+    /// 来源提交不是规范的小写 40 字符十六进制 SHA。
+    SourceCommitInvalid,
+    /// 来源提交与可信 checkout/build commit 不一致。
+    SourceCommitMismatch,
+    /// 主题摘要不是规范的小写 `sha256:<64 hex>`。
+    SubjectDigestInvalid,
+    /// 主题原始字节重算摘要后与声明不一致。
+    SubjectDigestMismatch,
+    /// 主题原始字节长度与声明不一致。
+    SubjectSizeMismatch,
+    /// 同一 bundle 中出现多个不同来源提交。
+    BundleMixedSourceCommit,
+}
+
+impl EvidenceIntegrityBlocker {
+    /// 返回供 gate、JSON 和日志复用的稳定 blocker code。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EnvelopeFormatInvalid => "evidence_envelope_format_invalid",
+            Self::EnvelopeIdentityInvalid => "evidence_envelope_identity_invalid",
+            Self::SourceCommitInvalid => "evidence_source_commit_invalid",
+            Self::SourceCommitMismatch => "evidence_source_commit_mismatch",
+            Self::SubjectDigestInvalid => "evidence_subject_digest_invalid",
+            Self::SubjectDigestMismatch => "evidence_subject_digest_mismatch",
+            Self::SubjectSizeMismatch => "evidence_subject_size_mismatch",
+            Self::BundleMixedSourceCommit => "evidence_bundle_mixed_source_commit",
+        }
+    }
+}
+
+impl fmt::Display for EvidenceIntegrityBlocker {
+    /// 以稳定机器码展示 blocker。
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 impl EvidenceKind {
@@ -99,6 +147,96 @@ pub struct EvidenceEnvelope {
     pub subject_digest: String,
 }
 
+/// 一个信封、主题原始字节及同一主题的额外完整性声明。
+#[derive(Debug, Clone)]
+pub struct EvidenceSubject<'a> {
+    /// 声明来源提交和主题摘要的信封。
+    pub envelope: &'a EvidenceEnvelope,
+    /// 从 artifact、命令输出或 canonical evidence 文档读取的原始字节。
+    pub subject_bytes: &'a [u8],
+    /// artifact/provenance 等嵌套结构中的额外来源提交声明。
+    source_commit_claims: Vec<(&'static str, &'a str)>,
+    /// 嵌套结构中必须指向同一主题字节的额外摘要声明。
+    subject_digest_claims: Vec<(&'static str, &'a str)>,
+    /// 嵌套结构中必须等于主题实际长度的额外 size 声明。
+    subject_size_claims: Vec<(&'static str, u64)>,
+}
+
+impl<'a> EvidenceSubject<'a> {
+    /// 将信封与独立读取的主题字节配对用于验证。
+    pub fn new(envelope: &'a EvidenceEnvelope, subject_bytes: &'a [u8]) -> Self {
+        Self {
+            envelope,
+            subject_bytes,
+            source_commit_claims: Vec::new(),
+            subject_digest_claims: Vec::new(),
+            subject_size_claims: Vec::new(),
+        }
+    }
+
+    /// 添加一个必须与可信 build commit 一致的嵌套提交声明。
+    pub(crate) fn with_source_commit_claim(
+        mut self,
+        label: &'static str,
+        source_commit: &'a str,
+    ) -> Self {
+        self.source_commit_claims.push((label, source_commit));
+        self
+    }
+
+    /// 添加一个必须与同一主题原始字节匹配的嵌套摘要声明。
+    pub(crate) fn with_subject_digest_claim(
+        mut self,
+        label: &'static str,
+        subject_digest: &'a str,
+    ) -> Self {
+        self.subject_digest_claims.push((label, subject_digest));
+        self
+    }
+
+    /// 添加一个必须与同一主题原始字节长度匹配的嵌套 size 声明。
+    pub(crate) fn with_subject_size_claim(
+        mut self,
+        label: &'static str,
+        subject_size_bytes: u64,
+    ) -> Self {
+        self.subject_size_claims.push((label, subject_size_bytes));
+        self
+    }
+}
+
+/// 单项或 bundle 的来源提交与主题摘要验证结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceVerificationReport {
+    /// `verified` 或 `blocked`。
+    pub status: String,
+    /// verifier 从可信 checkout 或 CI context 接收的构建提交。
+    pub expected_source_commit: String,
+    /// 本次输入的主题总数；空 bundle 的 coverage 由后续 policy 处理。
+    pub subject_count: usize,
+    /// 单项格式、提交和摘要全部通过的主题数。
+    pub verified_subject_count: usize,
+    /// 已去重且按首次发现顺序排列的稳定 blocker code。
+    pub blocked_reasons: Vec<EvidenceIntegrityBlocker>,
+    /// 不包含主题原始字节的验证审计记录。
+    pub audit: Vec<String>,
+}
+
+impl EvidenceVerificationReport {
+    /// 所有输入主题和 bundle 一致性都通过时返回 true。
+    pub fn is_verified(&self) -> bool {
+        self.status == "verified"
+    }
+
+    /// 添加去重 blocker 并把总体状态转为 blocked。
+    fn record_blocker(&mut self, blocker: EvidenceIntegrityBlocker) {
+        self.status = "blocked".to_owned();
+        if !self.blocked_reasons.contains(&blocker) {
+            self.blocked_reasons.push(blocker);
+        }
+    }
+}
+
 impl EvidenceEnvelope {
     /// 校验全部必填身份字段后创建版本化证据信封。
     pub fn new(
@@ -134,6 +272,55 @@ impl EvidenceEnvelope {
             timestamp,
             subject_digest,
         })
+    }
+
+    /// 从已有摘要声明创建生产者信封，并要求提交和摘要使用规范格式。
+    ///
+    /// 该入口适用于已经由 artifact store 或受控构建流程计算摘要的主题。消费方仍须
+    /// 调用 `verify_subject` 对独立读取的原始字节重新计算摘要。
+    pub fn from_subject_digest(
+        kind: EvidenceKind,
+        source: impl Into<String>,
+        source_commit: impl Into<String>,
+        environment: impl Into<String>,
+        executor: impl Into<String>,
+        timestamp: u128,
+        subject_digest: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        let source_commit = source_commit.into();
+        validate_canonical_source_commit(&source_commit)?;
+        let subject_digest = subject_digest.into();
+        validate_canonical_subject_digest(&subject_digest)?;
+        Self::new(
+            kind,
+            source,
+            source_commit,
+            environment,
+            executor,
+            timestamp,
+            subject_digest,
+        )
+    }
+
+    /// 从真实 artifact、命令输出或 canonical 文档字节重算摘要并创建信封。
+    pub fn from_subject_bytes(
+        kind: EvidenceKind,
+        source: impl Into<String>,
+        source_commit: impl Into<String>,
+        environment: impl Into<String>,
+        executor: impl Into<String>,
+        timestamp: u128,
+        subject_bytes: &[u8],
+    ) -> Result<Self, EvaError> {
+        Self::from_subject_digest(
+            kind,
+            source,
+            source_commit,
+            environment,
+            executor,
+            timestamp,
+            digest_subject(subject_bytes),
+        )
     }
 
     /// 从严格键值清单解析信封，并通过构造器重新执行全部字段约束。
@@ -173,6 +360,203 @@ impl EvidenceEnvelope {
             self.subject_digest,
         )
     }
+
+    /// 使用可信构建提交和独立读取的主题字节验证当前信封。
+    pub fn verify_subject(
+        &self,
+        expected_source_commit: &str,
+        subject_bytes: &[u8],
+    ) -> Result<EvidenceVerificationReport, EvaError> {
+        verify_evidence_bundle(
+            expected_source_commit,
+            &[EvidenceSubject::new(self, subject_bytes)],
+        )
+    }
+}
+
+/// 验证 bundle 中每个主题的格式、来源提交和重算摘要，并拒绝混合提交。
+///
+/// `expected_source_commit` 必须来自可信 checkout/build context，不能从 bundle 自身
+/// 推导。空 bundle 在本一致性层保持 verified；缺少必需 evidence 由 coverage policy
+/// 处理。
+pub fn verify_evidence_bundle(
+    expected_source_commit: &str,
+    subjects: &[EvidenceSubject<'_>],
+) -> Result<EvidenceVerificationReport, EvaError> {
+    validate_canonical_source_commit(expected_source_commit)?;
+    let mut report = EvidenceVerificationReport {
+        status: "verified".to_owned(),
+        expected_source_commit: expected_source_commit.to_owned(),
+        subject_count: subjects.len(),
+        verified_subject_count: 0,
+        blocked_reasons: Vec::new(),
+        audit: vec![format!(
+            "evidence.integrity.expected_source_commit:{expected_source_commit}"
+        )],
+    };
+    let mut source_commits = BTreeSet::new();
+
+    for (index, subject) in subjects.iter().enumerate() {
+        let envelope = subject.envelope;
+        let mut subject_verified = true;
+
+        if envelope.format != EVIDENCE_ENVELOPE_FORMAT {
+            report.record_blocker(EvidenceIntegrityBlocker::EnvelopeFormatInvalid);
+            subject_verified = false;
+        }
+
+        let mut invalid_identity_fields = Vec::new();
+        if !is_valid_manifest_text(&envelope.source) {
+            invalid_identity_fields.push("source");
+        }
+        if !is_valid_manifest_text(&envelope.environment) {
+            invalid_identity_fields.push("environment");
+        }
+        if !is_valid_manifest_text(&envelope.executor) {
+            invalid_identity_fields.push("executor");
+        }
+        if envelope.timestamp == 0 {
+            invalid_identity_fields.push("timestamp");
+        }
+        if !invalid_identity_fields.is_empty() {
+            report.record_blocker(EvidenceIntegrityBlocker::EnvelopeIdentityInvalid);
+            report.audit.push(format!(
+                "evidence.integrity.subject.{index}.invalid_identity_fields:{}",
+                invalid_identity_fields.join(",")
+            ));
+            subject_verified = false;
+        }
+
+        if is_canonical_source_commit(&envelope.source_commit) {
+            source_commits.insert(envelope.source_commit.clone());
+        }
+        if let Some(blocker) =
+            source_commit_blocker(expected_source_commit, &envelope.source_commit)
+        {
+            report.record_blocker(blocker);
+            subject_verified = false;
+        }
+        for (label, source_commit) in &subject.source_commit_claims {
+            if is_canonical_source_commit(source_commit) {
+                source_commits.insert((*source_commit).to_owned());
+            }
+            if let Some(blocker) = source_commit_blocker(expected_source_commit, source_commit) {
+                report.record_blocker(blocker);
+                subject_verified = false;
+            }
+            report.audit.push(format!(
+                "evidence.integrity.subject.{index}.{label}.source_commit_checked"
+            ));
+        }
+
+        let actual_digest = digest_subject(subject.subject_bytes);
+        if let Some(blocker) = subject_digest_blocker(&envelope.subject_digest, &actual_digest) {
+            report.record_blocker(blocker);
+            subject_verified = false;
+        }
+        for (label, subject_digest) in &subject.subject_digest_claims {
+            if let Some(blocker) = subject_digest_blocker(subject_digest, &actual_digest) {
+                report.record_blocker(blocker);
+                subject_verified = false;
+            }
+            report.audit.push(format!(
+                "evidence.integrity.subject.{index}.{label}.subject_digest_checked"
+            ));
+        }
+        for (label, subject_size_bytes) in &subject.subject_size_claims {
+            if u128::from(*subject_size_bytes) != subject.subject_bytes.len() as u128 {
+                report.record_blocker(EvidenceIntegrityBlocker::SubjectSizeMismatch);
+                subject_verified = false;
+            }
+            report.audit.push(format!(
+                "evidence.integrity.subject.{index}.{label}.subject_size_checked"
+            ));
+        }
+
+        if subject_verified {
+            report.verified_subject_count += 1;
+        }
+        report.audit.push(format!(
+            "evidence.integrity.subject.{index}.digest_recomputed:{actual_digest}"
+        ));
+    }
+
+    if source_commits.len() > 1 {
+        report.record_blocker(EvidenceIntegrityBlocker::BundleMixedSourceCommit);
+    }
+    Ok(report)
+}
+
+/// 计算主题原始字节的规范 SHA-256；不会持久化临时 ArtifactRecord。
+fn digest_subject(subject_bytes: &[u8]) -> String {
+    ArtifactRecord::new(EVIDENCE_SUBJECT_KEY, subject_bytes.to_vec()).digest
+}
+
+/// 返回来源提交声明对应的稳定 blocker；合法且匹配时返回 None。
+fn source_commit_blocker(
+    expected_source_commit: &str,
+    source_commit: &str,
+) -> Option<EvidenceIntegrityBlocker> {
+    if !is_canonical_source_commit(source_commit) {
+        Some(EvidenceIntegrityBlocker::SourceCommitInvalid)
+    } else if source_commit != expected_source_commit {
+        Some(EvidenceIntegrityBlocker::SourceCommitMismatch)
+    } else {
+        None
+    }
+}
+
+/// 返回摘要声明对应的稳定 blocker；格式合法且与重算值一致时返回 None。
+fn subject_digest_blocker(
+    subject_digest: &str,
+    actual_digest: &str,
+) -> Option<EvidenceIntegrityBlocker> {
+    if !is_canonical_subject_digest(subject_digest) {
+        Some(EvidenceIntegrityBlocker::SubjectDigestInvalid)
+    } else if subject_digest != actual_digest {
+        Some(EvidenceIntegrityBlocker::SubjectDigestMismatch)
+    } else {
+        None
+    }
+}
+
+/// 校验可信或生产者提交使用规范小写完整 SHA。
+fn validate_canonical_source_commit(value: &str) -> Result<(), EvaError> {
+    if !is_canonical_source_commit(value) {
+        return Err(EvaError::invalid_argument(
+            "release evidence source commit must be a canonical lowercase 40-character hex sha",
+        )
+        .with_context("source_commit", value));
+    }
+    Ok(())
+}
+
+/// 校验生产者摘要使用规范小写 SHA-256 格式。
+fn validate_canonical_subject_digest(value: &str) -> Result<(), EvaError> {
+    if !is_canonical_subject_digest(value) {
+        return Err(EvaError::invalid_argument(
+            "release evidence subject digest must be canonical lowercase sha256 hex",
+        )
+        .with_context("subject_digest", value));
+    }
+    Ok(())
+}
+
+/// 判断提交是否为规范小写 40 字符十六进制 SHA。
+fn is_canonical_source_commit(value: &str) -> bool {
+    value.len() == 40 && value.chars().all(is_lower_hex)
+}
+
+/// 判断摘要是否为规范小写 `sha256:<64 hex>`。
+fn is_canonical_subject_digest(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.chars().all(is_lower_hex))
+}
+
+/// 判断字符是否属于规范小写十六进制字母表。
+fn is_lower_hex(ch: char) -> bool {
+    ch.is_ascii_digit() || matches!(ch, 'a'..='f')
 }
 
 /// 解析允许 BOM、空行和注释的严格键值清单，并拒绝重复键。
@@ -257,12 +641,20 @@ fn validate_manifest_text(field: &str, value: String) -> Result<String, EvaError
     Ok(value)
 }
 
+/// 判断公开可变的信封文本是否仍满足单行、非空、已 trim 约束。
+fn is_valid_manifest_text(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.trim() == value
+        && !value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+}
+
 #[cfg(test)]
 /// 统一信封的分类、必填字段和稳定清单往返测试。
 mod tests {
     use super::*;
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+    const OTHER_COMMIT: &str = "abcdef0123456789abcdef0123456789abcdef01";
     const DIGEST: &str = "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df";
 
     /// 为指定种类构造一项完整的固定测试信封。
@@ -377,6 +769,206 @@ mod tests {
         assert_eq!(
             error.context().entries(),
             &[("field".to_owned(), "unexpected".to_owned())]
+        );
+    }
+
+    #[test]
+    /// 验证生产者从原始字节计算规范摘要，消费方独立重算后通过。
+    fn subject_bytes_are_hashed_and_verified() {
+        let envelope = EvidenceEnvelope::from_subject_bytes(
+            EvidenceKind::Measurement,
+            "cargo-test-output",
+            COMMIT,
+            "windows-x86_64-rust-stable",
+            "github-actions:run-123",
+            1_784_073_600_000,
+            b"ok",
+        )
+        .unwrap();
+
+        let report = envelope.verify_subject(COMMIT, b"ok").unwrap();
+
+        assert_eq!(envelope.subject_digest, DIGEST);
+        assert!(report.is_verified());
+        assert_eq!(report.subject_count, 1);
+        assert_eq!(report.verified_subject_count, 1);
+        assert!(report.blocked_reasons.is_empty());
+    }
+
+    #[test]
+    /// 验证主题字节或合法摘要声明任一被替换都会得到同一稳定 mismatch code。
+    fn tampered_subject_bytes_or_digest_are_blocked() {
+        let envelope = EvidenceEnvelope::from_subject_bytes(
+            EvidenceKind::Measurement,
+            "cargo-test-output",
+            COMMIT,
+            "linux-x86_64-rust-stable",
+            "github-actions:run-123",
+            1_784_073_600_000,
+            b"ok",
+        )
+        .unwrap();
+
+        let bytes_report = envelope.verify_subject(COMMIT, b"tampered").unwrap();
+        let mut digest_tampered = envelope.clone();
+        digest_tampered.subject_digest = digest_subject(b"other");
+        let digest_report = digest_tampered.verify_subject(COMMIT, b"ok").unwrap();
+
+        assert_eq!(
+            bytes_report.blocked_reasons,
+            vec![EvidenceIntegrityBlocker::SubjectDigestMismatch]
+        );
+        assert_eq!(
+            digest_report.blocked_reasons,
+            vec![EvidenceIntegrityBlocker::SubjectDigestMismatch]
+        );
+    }
+
+    #[test]
+    /// 验证 bundle 不能用自身 commit 代替可信构建提交。
+    fn wrong_build_commit_is_blocked() {
+        let envelope = EvidenceEnvelope::from_subject_bytes(
+            EvidenceKind::Fixture,
+            "fixture-output",
+            COMMIT,
+            "controlled-fixture",
+            "cargo-test",
+            1_784_073_600_000,
+            b"fixture",
+        )
+        .unwrap();
+
+        let report = envelope.verify_subject(OTHER_COMMIT, b"fixture").unwrap();
+
+        assert_eq!(
+            report.blocked_reasons,
+            vec![EvidenceIntegrityBlocker::SourceCommitMismatch]
+        );
+    }
+
+    #[test]
+    /// 验证每项摘要正确时，跨提交拼接 bundle 仍明确阻断。
+    fn mixed_commit_bundle_is_blocked() {
+        let first = EvidenceEnvelope::from_subject_bytes(
+            EvidenceKind::Measurement,
+            "first-command",
+            COMMIT,
+            "linux-x86_64",
+            "runner:first",
+            1_784_073_600_000,
+            b"first",
+        )
+        .unwrap();
+        let second = EvidenceEnvelope::from_subject_bytes(
+            EvidenceKind::Measurement,
+            "second-command",
+            OTHER_COMMIT,
+            "windows-x86_64",
+            "runner:second",
+            1_784_073_600_001,
+            b"second",
+        )
+        .unwrap();
+
+        let report = verify_evidence_bundle(
+            COMMIT,
+            &[
+                EvidenceSubject::new(&first, b"first"),
+                EvidenceSubject::new(&second, b"second"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.blocked_reasons,
+            vec![
+                EvidenceIntegrityBlocker::SourceCommitMismatch,
+                EvidenceIntegrityBlocker::BundleMixedSourceCommit,
+            ]
+        );
+    }
+
+    #[test]
+    /// 验证 pub 字段被绕过构造器篡改后，消费 verifier 仍失败关闭。
+    fn malformed_public_claims_are_blocked() {
+        let mut envelope = envelope(EvidenceKind::Operator);
+        envelope.format = "eva.release.evidence_envelope.v2".to_owned();
+        envelope.source_commit = COMMIT.to_ascii_uppercase();
+        envelope.subject_digest = "sha256:not-a-digest".to_owned();
+
+        let report = envelope.verify_subject(COMMIT, b"ok").unwrap();
+
+        assert_eq!(
+            report.blocked_reasons,
+            vec![
+                EvidenceIntegrityBlocker::EnvelopeFormatInvalid,
+                EvidenceIntegrityBlocker::SourceCommitInvalid,
+                EvidenceIntegrityBlocker::SubjectDigestInvalid,
+            ]
+        );
+    }
+
+    #[test]
+    /// 验证公开身份字段被清空、注入换行或置零后不能保持 verified。
+    fn malformed_public_identity_fields_are_blocked() {
+        let base = envelope(EvidenceKind::Operator);
+        let mut source = base.clone();
+        source.source = "operator\nsource=forged".to_owned();
+        let mut environment = base.clone();
+        environment.environment.clear();
+        let mut executor = base.clone();
+        executor.executor.clear();
+        let mut timestamp = base;
+        timestamp.timestamp = 0;
+
+        for malformed in [source, environment, executor, timestamp] {
+            let report = malformed.verify_subject(COMMIT, b"ok").unwrap();
+
+            assert_eq!(
+                report.blocked_reasons,
+                vec![EvidenceIntegrityBlocker::EnvelopeIdentityInvalid]
+            );
+        }
+    }
+
+    #[test]
+    /// 验证 verifier 的可信 expected commit 自身非法时返回调用方输入错误。
+    fn invalid_expected_build_commit_is_rejected() {
+        let error = envelope(EvidenceKind::Declaration)
+            .verify_subject("HEAD", b"ok")
+            .unwrap_err();
+
+        assert_eq!(
+            error.message(),
+            "release evidence source commit must be a canonical lowercase 40-character hex sha"
+        );
+    }
+
+    #[test]
+    /// 验证完整性 blocker 的机器码文本和顺序保持稳定。
+    fn integrity_blocker_codes_are_stable() {
+        assert_eq!(
+            [
+                EvidenceIntegrityBlocker::EnvelopeFormatInvalid,
+                EvidenceIntegrityBlocker::EnvelopeIdentityInvalid,
+                EvidenceIntegrityBlocker::SourceCommitInvalid,
+                EvidenceIntegrityBlocker::SourceCommitMismatch,
+                EvidenceIntegrityBlocker::SubjectDigestInvalid,
+                EvidenceIntegrityBlocker::SubjectDigestMismatch,
+                EvidenceIntegrityBlocker::SubjectSizeMismatch,
+                EvidenceIntegrityBlocker::BundleMixedSourceCommit,
+            ]
+            .map(EvidenceIntegrityBlocker::as_str),
+            [
+                "evidence_envelope_format_invalid",
+                "evidence_envelope_identity_invalid",
+                "evidence_source_commit_invalid",
+                "evidence_source_commit_mismatch",
+                "evidence_subject_digest_invalid",
+                "evidence_subject_digest_mismatch",
+                "evidence_subject_size_mismatch",
+                "evidence_bundle_mixed_source_commit",
+            ]
         );
     }
 }

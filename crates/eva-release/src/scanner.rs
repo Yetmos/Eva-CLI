@@ -1,6 +1,7 @@
 //! 外部安全扫描器证据的解析与验证契约。
 //! External security scanner evidence verification contracts.
 
+use crate::evidence::{EvidenceEnvelope, EvidenceKind};
 use crate::security::SecuritySeverity;
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
@@ -147,6 +148,36 @@ impl ReleaseSecurityScanEvidence {
             command,
             findings,
         })
+    }
+
+    /// 将规范化 scanner evidence 文档绑定到统一信封。
+    ///
+    /// 当前 subject 是 `to_manifest()` 的精确 UTF-8 字节；原始 scanner JSON 等命令
+    /// 输出应由采集器直接通过 `EvidenceEnvelope::from_subject_bytes` 单独绑定。
+    pub fn to_envelope(
+        &self,
+        kind: EvidenceKind,
+        source: impl Into<String>,
+        environment: impl Into<String>,
+        executor: impl Into<String>,
+        timestamp: u128,
+    ) -> Result<EvidenceEnvelope, EvaError> {
+        let subject = self.to_manifest();
+        let reparsed = Self::parse_manifest(&subject)?;
+        if &reparsed != self {
+            return Err(EvaError::invalid_argument(
+                "release security scan evidence manifest is not canonical",
+            ));
+        }
+        EvidenceEnvelope::from_subject_bytes(
+            kind,
+            source,
+            self.source_commit.clone(),
+            environment,
+            executor,
+            timestamp,
+            subject.as_bytes(),
+        )
     }
 
     /// 从严格 `key=value` 清单解析安全扫描证据。
@@ -405,6 +436,12 @@ fn validate_non_empty(field: &str, value: String) -> Result<String, EvaError> {
                 .with_context("value", value),
         );
     }
+    if value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
+        return Err(
+            EvaError::invalid_argument(format!("{field} must fit on one manifest line"))
+                .with_context("value", value),
+        );
+    }
     Ok(value)
 }
 
@@ -497,5 +534,62 @@ mod tests {
             .risks
             .iter()
             .any(|risk| risk == "security scanner status is skipped"));
+    }
+
+    #[test]
+    /// 验证 scanner canonical manifest 可由统一信封独立重算摘要。
+    fn scanner_manifest_binds_to_evidence_envelope() {
+        let evidence = evidence("passed", Vec::new());
+        let manifest = evidence.to_manifest();
+        let envelope = evidence
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "cargo-audit-run",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap();
+
+        let report = envelope
+            .verify_subject(COMMIT, manifest.as_bytes())
+            .unwrap();
+
+        assert!(report.is_verified());
+    }
+
+    #[test]
+    /// 验证 scanner finding 文本不能注入额外 finding 行。
+    fn scanner_manifest_rejects_line_injection() {
+        let error = ReleaseSecurityScanFinding::new(
+            "RUSTSEC-0000-0000",
+            "demo-crate",
+            "1.0.0",
+            "medium",
+            "summary\nfinding.1.id=forged",
+            "upgrade demo-crate",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.message(),
+            "security scan finding summary must fit on one manifest line"
+        );
+
+        let mut mutated = evidence("passed", vec![finding("medium")]);
+        mutated.findings[0].summary = "summary\nforged=value".to_owned();
+        let error = mutated
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "cargo-audit-run",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.message(),
+            "release security scan evidence manifest is not canonical"
+        );
     }
 }

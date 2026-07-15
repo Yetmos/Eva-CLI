@@ -2,6 +2,7 @@
 //! Production benchmark evidence verification contracts.
 
 use crate::checklist::ReleaseGateStatus;
+use crate::evidence::{EvidenceEnvelope, EvidenceKind};
 use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
@@ -153,6 +154,37 @@ impl ReleaseBenchmarkEvidence {
             benchmark_status,
             measurements,
         })
+    }
+
+    /// 将规范化 benchmark evidence 文档绑定到统一信封。
+    ///
+    /// 当前 subject 是 `to_manifest()` 的精确 UTF-8 字节；后续真实 stdout/stderr
+    /// capture 应直接使用 `EvidenceEnvelope::from_subject_bytes`，不能把 command 字符串
+    /// 当作执行输出。
+    pub fn to_envelope(
+        &self,
+        kind: EvidenceKind,
+        source: impl Into<String>,
+        environment: impl Into<String>,
+        executor: impl Into<String>,
+        timestamp: u128,
+    ) -> Result<EvidenceEnvelope, EvaError> {
+        let subject = self.to_manifest();
+        let reparsed = Self::parse_manifest(&subject)?;
+        if &reparsed != self {
+            return Err(EvaError::invalid_argument(
+                "release benchmark evidence manifest is not canonical",
+            ));
+        }
+        EvidenceEnvelope::from_subject_bytes(
+            kind,
+            source,
+            self.source_commit.clone(),
+            environment,
+            executor,
+            timestamp,
+            subject.as_bytes(),
+        )
     }
 
     /// 从严格键值清单解析测量，并通过构造器重新执行全部约束。
@@ -467,6 +499,12 @@ fn validate_non_empty(field: &str, value: String) -> Result<String, EvaError> {
                 .with_context("value", value),
         );
     }
+    if value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
+        return Err(
+            EvaError::invalid_argument(format!("{field} must fit on one manifest line"))
+                .with_context("value", value),
+        );
+    }
     Ok(value)
 }
 
@@ -551,5 +589,63 @@ mod tests {
         assert_eq!(report.status, "within_budget");
         assert_eq!(report.over_budget_count(), 0);
         assert_eq!(report.budgets[0].component, "release.check");
+    }
+
+    #[test]
+    /// 验证 benchmark canonical manifest 可由统一信封独立重算摘要。
+    fn benchmark_manifest_binds_to_evidence_envelope() {
+        let evidence = evidence("passed", 120);
+        let manifest = evidence.to_manifest();
+        let envelope = evidence
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "benchmark-run",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap();
+
+        let report = envelope
+            .verify_subject(COMMIT, manifest.as_bytes())
+            .unwrap();
+
+        assert!(report.is_verified());
+    }
+
+    #[test]
+    /// 验证 benchmark 文本字段不能注入额外 measurement 行。
+    fn benchmark_manifest_rejects_line_injection() {
+        let error = ReleaseBenchmarkMeasurement::new(
+            "release.check",
+            "wall time\nmeasurement.1.component=forged",
+            200,
+            120,
+            3,
+            "eva release check",
+            "github-actions-ubuntu-latest",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.message(),
+            "benchmark metric must fit on one manifest line"
+        );
+
+        let mut mutated = evidence("passed", 120);
+        mutated.measurements[0].metric = "wall time\nforged=value".to_owned();
+        let error = mutated
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "benchmark-run",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.message(),
+            "release benchmark evidence manifest is not canonical"
+        );
     }
 }

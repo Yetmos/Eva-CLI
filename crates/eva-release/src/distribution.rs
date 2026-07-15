@@ -1,6 +1,7 @@
 //! 发布分发证据与安装烟雾验证契约。
 //! Release distribution evidence and installer smoke verification contracts.
 
+use crate::evidence::{EvidenceEnvelope, EvidenceKind};
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -202,6 +203,36 @@ impl ReleaseDistributionEvidence {
             install_smokes,
             package_dry_runs,
         })
+    }
+
+    /// 将规范化 distribution evidence 文档绑定到统一信封。
+    ///
+    /// 当前 subject 是 `to_manifest()` 的精确 UTF-8 字节；其中的命令字段只是清单
+    /// 声明，真实安装输出必须另行通过 `EvidenceEnvelope::from_subject_bytes` 绑定。
+    pub fn to_envelope(
+        &self,
+        kind: EvidenceKind,
+        source: impl Into<String>,
+        environment: impl Into<String>,
+        executor: impl Into<String>,
+        timestamp: u128,
+    ) -> Result<EvidenceEnvelope, EvaError> {
+        let subject = self.to_manifest();
+        let reparsed = Self::parse_manifest(&subject)?;
+        if &reparsed != self {
+            return Err(EvaError::invalid_argument(
+                "release distribution evidence manifest is not canonical",
+            ));
+        }
+        EvidenceEnvelope::from_subject_bytes(
+            kind,
+            source,
+            self.source_commit.clone(),
+            environment,
+            executor,
+            timestamp,
+            subject.as_bytes(),
+        )
     }
 
     /// 从严格键值清单解析平台烟雾和包演练证据。
@@ -528,6 +559,12 @@ fn validate_non_empty(field: &str, value: String) -> Result<String, EvaError> {
                 .with_context("value", value),
         );
     }
+    if value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
+        return Err(
+            EvaError::invalid_argument(format!("{field} must fit on one manifest line"))
+                .with_context("value", value),
+        );
+    }
     Ok(value)
 }
 
@@ -677,5 +714,65 @@ mod tests {
         assert!(report.risks.iter().any(
             |risk| risk == "package manager dry-run for ghcr linux/amd64+linux/arm64 is failed"
         ));
+    }
+
+    #[test]
+    /// 验证 distribution canonical manifest 可由统一信封独立重算摘要。
+    fn distribution_manifest_binds_to_evidence_envelope() {
+        let evidence = distribution_evidence();
+        let manifest = evidence.to_manifest();
+        let envelope = evidence
+            .to_envelope(
+                EvidenceKind::Fixture,
+                "distribution-manifest",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap();
+
+        let report = envelope
+            .verify_subject(COMMIT, manifest.as_bytes())
+            .unwrap();
+
+        assert!(report.is_verified());
+    }
+
+    #[test]
+    /// 验证 distribution 命令字段不能注入额外 smoke 行。
+    fn distribution_manifest_rejects_line_injection() {
+        let error = ReleaseInstallSmokeEvidence::new(
+            "linux",
+            "x86_64-unknown-linux-gnu",
+            "eva.tar.gz",
+            "tar.gz",
+            "install eva\nsmoke.1.os=windows",
+            "eva --version",
+            "uninstall eva",
+            "upgrade eva",
+            "passed",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.message(),
+            "release install command must fit on one manifest line"
+        );
+
+        let mut mutated = distribution_evidence();
+        mutated.install_smokes[0].install_command = "install eva\nforged=value".to_owned();
+        let error = mutated
+            .to_envelope(
+                EvidenceKind::Fixture,
+                "distribution-manifest",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.message(),
+            "release distribution evidence manifest is not canonical"
+        );
     }
 }

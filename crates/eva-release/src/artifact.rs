@@ -1,6 +1,10 @@
 //! 发布工件证据与来源证明验证契约。
 //! Release artifact evidence and provenance verification contracts.
 
+use crate::evidence::{
+    verify_evidence_bundle, EvidenceEnvelope, EvidenceKind, EvidenceSubject,
+    EvidenceVerificationReport,
+};
 use eva_core::EvaError;
 use eva_storage::ArtifactRecord;
 use std::collections::BTreeMap;
@@ -257,6 +261,59 @@ impl ReleaseArtifactEvidence {
             provenance,
             signature,
         })
+    }
+
+    /// 将真实发布包摘要声明绑定到统一信封；kind 与运行身份必须由调用方明确提供。
+    ///
+    /// 本类型的 subject 是 `artifact.digest` 指向的发布包原始字节，不是 evidence
+    /// manifest 文本。消费方必须把下载或构建得到的真实包字节传给
+    /// `verify_artifact_bytes`。
+    pub fn to_envelope(
+        &self,
+        kind: EvidenceKind,
+        source: impl Into<String>,
+        environment: impl Into<String>,
+        executor: impl Into<String>,
+        timestamp: u128,
+    ) -> Result<EvidenceEnvelope, EvaError> {
+        EvidenceEnvelope::from_subject_digest(
+            kind,
+            source,
+            self.source_commit.clone(),
+            environment,
+            executor,
+            timestamp,
+            self.artifact.digest.clone(),
+        )
+    }
+
+    /// 构造可与其他 evidence 一起交给 bundle verifier 的完整 artifact subject。
+    pub fn verification_subject<'a>(
+        &'a self,
+        envelope: &'a EvidenceEnvelope,
+        artifact_bytes: &'a [u8],
+    ) -> EvidenceSubject<'a> {
+        EvidenceSubject::new(envelope, artifact_bytes)
+            .with_source_commit_claim("artifact_evidence", &self.source_commit)
+            .with_source_commit_claim("artifact_provenance", &self.provenance.source_commit)
+            .with_subject_digest_claim("artifact_evidence", &self.artifact.digest)
+            .with_subject_size_claim("artifact_evidence", self.artifact.size_bytes)
+    }
+
+    /// 独立重算真实发布包字节，并交叉校验信封、顶层证据和 provenance 提交。
+    ///
+    /// verified 仅表示 subject/commit 完整性；调用方仍须合并 `verify` 的签名、扫描和
+    /// provenance 状态门禁。
+    pub fn verify_artifact_bytes(
+        &self,
+        envelope: &EvidenceEnvelope,
+        expected_source_commit: &str,
+        artifact_bytes: &[u8],
+    ) -> Result<EvidenceVerificationReport, EvaError> {
+        verify_evidence_bundle(
+            expected_source_commit,
+            &[self.verification_subject(envelope, artifact_bytes)],
+        )
     }
 
     /// 从严格键值清单解析并重新校验全部嵌套证据。
@@ -536,6 +593,12 @@ fn validate_non_empty(field: &str, value: String) -> Result<String, EvaError> {
                 .with_context("value", value),
         );
     }
+    if value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
+        return Err(
+            EvaError::invalid_argument(format!("{field} must fit on one manifest line"))
+                .with_context("value", value),
+        );
+    }
     Ok(value)
 }
 
@@ -594,9 +657,11 @@ fn keyed_digest(payload: &str, signing_key: &ReleaseArtifactSigningKey) -> Strin
 /// 工件证据清单往返、签名和来源门禁测试。
 mod tests {
     use super::*;
+    use crate::evidence::EvidenceIntegrityBlocker;
 
     /// 测试证据使用的完整来源提交。
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+    const OTHER_COMMIT: &str = "abcdef0123456789abcdef0123456789abcdef01";
     /// 测试工件使用的合法 SHA-256 摘要。
     const DIGEST: &str = "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df";
 
@@ -609,7 +674,7 @@ mod tests {
             "tar.gz",
             "eva",
             DIGEST,
-            1024,
+            2,
             true,
         )
         .unwrap();
@@ -701,5 +766,150 @@ mod tests {
         assert_eq!(report.status, "blocked");
         assert!(report.signature_verified);
         assert!(!report.provenance_verified);
+    }
+
+    #[test]
+    /// 验证统一信封实际读取发布包字节并与顶层及 provenance commit 交叉校验。
+    fn artifact_bytes_are_bound_to_envelope_and_provenance() {
+        let evidence = signed_evidence();
+        let envelope = evidence
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "native-archive-build",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap();
+
+        let report = evidence
+            .verify_artifact_bytes(&envelope, COMMIT, b"ok")
+            .unwrap();
+
+        assert!(report.is_verified());
+        assert!(report.blocked_reasons.is_empty());
+    }
+
+    #[test]
+    /// 验证发布包篡改和 provenance 提交漂移都产生稳定完整性 blocker。
+    fn artifact_tamper_and_provenance_drift_are_blocked() {
+        let evidence = signed_evidence();
+        let envelope = evidence
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "native-archive-build",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap();
+        let tampered = evidence
+            .verify_artifact_bytes(&envelope, COMMIT, b"no")
+            .unwrap();
+
+        let mut wrong_provenance = evidence;
+        wrong_provenance.provenance.source_commit = OTHER_COMMIT.to_owned();
+        let provenance = wrong_provenance
+            .verify_artifact_bytes(&envelope, COMMIT, b"ok")
+            .unwrap();
+
+        assert_eq!(
+            tampered.blocked_reasons,
+            vec![EvidenceIntegrityBlocker::SubjectDigestMismatch]
+        );
+        assert_eq!(
+            provenance.blocked_reasons,
+            vec![
+                EvidenceIntegrityBlocker::SourceCommitMismatch,
+                EvidenceIntegrityBlocker::BundleMixedSourceCommit,
+            ]
+        );
+    }
+
+    #[test]
+    /// 验证摘要匹配时，错误的 artifact size 声明仍会阻塞。
+    fn artifact_size_mismatch_is_blocked() {
+        let mut evidence = signed_evidence();
+        let envelope = evidence
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "native-archive-build",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap();
+        evidence.artifact.size_bytes = 1024;
+
+        let report = evidence
+            .verify_artifact_bytes(&envelope, COMMIT, b"ok")
+            .unwrap();
+
+        assert_eq!(
+            report.blocked_reasons,
+            vec![EvidenceIntegrityBlocker::SubjectSizeMismatch]
+        );
+    }
+
+    #[test]
+    /// 验证 artifact manifest 文本字段不能注入新的键值行。
+    fn artifact_manifest_rejects_line_injection() {
+        let error = ReleaseProvenanceEvidence::new(
+            "github-actions",
+            COMMIT,
+            "cargo build\nsignature.value=forged",
+            "release",
+            "spdx:release-evidence/eva.spdx.json",
+            "passed",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.message(),
+            "release build command must fit on one manifest line"
+        );
+    }
+
+    #[test]
+    /// 验证 artifact 嵌套 provenance 提交会参与统一 bundle 的 mixed-commit 判定。
+    fn artifact_provenance_drift_blocks_composed_bundle() {
+        let mut artifact = signed_evidence();
+        let artifact_envelope = artifact
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "native-archive-build",
+                "github-actions-ubuntu-latest",
+                "github-actions:run-123",
+                1_784_073_600_000,
+            )
+            .unwrap();
+        artifact.provenance.source_commit = OTHER_COMMIT.to_owned();
+        let benchmark_envelope = EvidenceEnvelope::from_subject_bytes(
+            EvidenceKind::Measurement,
+            "benchmark-run",
+            COMMIT,
+            "github-actions-ubuntu-latest",
+            "github-actions:run-123",
+            1_784_073_600_001,
+            b"benchmark",
+        )
+        .unwrap();
+
+        let report = verify_evidence_bundle(
+            COMMIT,
+            &[
+                artifact.verification_subject(&artifact_envelope, b"ok"),
+                EvidenceSubject::new(&benchmark_envelope, b"benchmark"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.blocked_reasons,
+            vec![
+                EvidenceIntegrityBlocker::SourceCommitMismatch,
+                EvidenceIntegrityBlocker::BundleMixedSourceCommit,
+            ]
+        );
     }
 }

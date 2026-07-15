@@ -35,7 +35,10 @@ pub use distribution::{
     ReleaseDistributionEvidence, ReleaseDistributionVerificationReport,
     ReleaseInstallSmokeEvidence, ReleasePackageDryRunEvidence,
 };
-pub use evidence::{EvidenceEnvelope, EvidenceKind, EVIDENCE_ENVELOPE_FORMAT};
+pub use evidence::{
+    verify_evidence_bundle, EvidenceEnvelope, EvidenceIntegrityBlocker, EvidenceKind,
+    EvidenceSubject, EvidenceVerificationReport, EVIDENCE_ENVELOPE_FORMAT,
+};
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 pub use performance::{PerformanceBaselineReport, PerformanceBudget};
 pub use scanner::{
