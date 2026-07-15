@@ -43,7 +43,11 @@ pub use evidence::{
     EVIDENCE_ENVELOPE_FORMAT, RELEASE_EVIDENCE_MANIFEST_FORMAT,
 };
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
-pub use performance::{PerformanceBaselineReport, PerformanceBudget};
+pub use performance::{
+    release_benchmark_budget_ms, PerformanceBaselineReport, PerformanceBudget,
+    PerformanceObservation, PerformanceObservationKind, ReleaseBenchmarkBudgetPolicy,
+    RELEASE_BENCHMARK_BUDGET_POLICIES,
+};
 pub use scanner::{
     ReleaseSecurityScanEvidence, ReleaseSecurityScanFinding, ReleaseSecurityScanVerificationReport,
 };

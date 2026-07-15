@@ -1,9 +1,9 @@
 //! 发布就绪、Security、Performance 和 Migration 门禁子命令；可读取外部证据覆盖内置基线。
 
 use super::{
-    json_array, json_string, parse_common_options, required_option, success_envelope, trace_for,
-    write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_CONFIG, EXIT_OK,
-    EXIT_POLICY, EXIT_RUNTIME_UNAVAILABLE,
+    json_array, json_string, option_json, parse_common_options, required_option, success_envelope,
+    trace_for, write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_CONFIG,
+    EXIT_OK, EXIT_POLICY, EXIT_RUNTIME_UNAVAILABLE,
 };
 use eva_core::EvaError;
 use eva_observability::TraceFields;
@@ -508,14 +508,18 @@ where
             })();
             match report {
                 Ok(report) => {
-                    write_release_perf(stdout, options.common.output, &report, &trace)?;
-                    Ok(
-                        if report.status == "within_budget" && report.over_budget_count() == 0 {
-                            EXIT_OK
-                        } else {
-                            EXIT_RUNTIME_UNAVAILABLE
-                        },
-                    )
+                    // 无 evidence 的 alpha 诊断保持可执行，但只报告 unmeasured；真实失败仍非零。
+                    let exit_code = if (report.status == "within_budget"
+                        && report.over_budget_count() == 0
+                        && report.unmeasured_count() == 0)
+                        || (report.status == "unmeasured" && report.over_budget_count() == 0)
+                    {
+                        EXIT_OK
+                    } else {
+                        EXIT_RUNTIME_UNAVAILABLE
+                    };
+                    write_release_perf(stdout, options.common.output, exit_code, &report, &trace)?;
+                    Ok(exit_code)
                 }
                 Err(error) => write_command_error(
                     stderr,
@@ -1204,6 +1208,7 @@ fn write_release_security<W: Write>(
 fn write_release_perf<W: Write>(
     writer: &mut W,
     output: OutputFormat,
+    exit_code: i32,
     report: &PerformanceBaselineReport,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
@@ -1213,6 +1218,9 @@ fn write_release_perf<W: Write>(
             writeln!(writer, "version: {}", report.version).map_err(write_error_kind)?;
             writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
             writeln!(writer, "budgets: {}", report.budgets.len()).map_err(write_error_kind)?;
+            writeln!(writer, "measured: {}", report.measured_count()).map_err(write_error_kind)?;
+            writeln!(writer, "unmeasured: {}", report.unmeasured_count())
+                .map_err(write_error_kind)?;
             writeln!(writer, "over_budget: {}", report.over_budget_count())
                 .map_err(write_error_kind)
         }
@@ -1221,7 +1229,7 @@ fn write_release_perf<W: Write>(
             "{}",
             success_envelope(
                 "release.perf",
-                EXIT_OK,
+                exit_code,
                 &performance_baseline_json(report),
                 trace
             )
@@ -1404,9 +1412,11 @@ fn security_finding_json(finding: &SecurityFinding) -> String {
 /// 将性能基线状态与预算项编码为 JSON。
 fn performance_baseline_json(report: &PerformanceBaselineReport) -> String {
     format!(
-        "{{\"version\":{},\"status\":{},\"over_budget\":{},\"budgets\":{},\"audit\":{}}}",
+        "{{\"version\":{},\"status\":{},\"measured\":{},\"unmeasured\":{},\"over_budget\":{},\"budgets\":{},\"audit\":{}}}",
         json_string(&report.version),
         json_string(&report.status),
+        report.measured_count(),
+        report.unmeasured_count(),
         report.over_budget_count(),
         json_array(report.budgets.iter().map(performance_budget_json)),
         json_array(report.audit.iter().map(|entry| json_string(entry)))
@@ -1415,14 +1425,26 @@ fn performance_baseline_json(report: &PerformanceBaselineReport) -> String {
 
 /// 将单项性能预算的阈值、观测值和状态编码为 JSON。
 fn performance_budget_json(budget: &PerformanceBudget) -> String {
+    let observed_ms = budget
+        .observed_ms()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_owned());
+    let observation_evidence = option_json(
+        budget
+            .observation
+            .as_ref()
+            .map(|observation| observation.evidence.as_str()),
+    );
     format!(
-        "{{\"component\":{},\"metric\":{},\"budget_ms\":{},\"observed_ms\":{},\"status\":{},\"evidence\":{}}}",
+        "{{\"component\":{},\"metric\":{},\"budget_ms\":{},\"observed_ms\":{},\"observation_kind\":{},\"status\":{},\"evidence\":{},\"observation_evidence\":{}}}",
         json_string(&budget.component),
         json_string(&budget.metric),
         budget.budget_ms,
-        budget.observed_ms,
+        observed_ms,
+        json_string(budget.observation_kind()),
         json_string(budget.status.as_str()),
-        json_string(&budget.evidence)
+        json_string(&budget.evidence),
+        observation_evidence
     )
 }
 

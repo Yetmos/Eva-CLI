@@ -18,7 +18,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | Cross-platform readiness | `PlatformReadiness` | Records Windows/Linux/macOS CI expectations, shell model, path assumptions, and smoke commands. |
 | Stability readiness | `StabilityScenario` | Captures task diagnostics, cancellation, dead-letter replay, restore planning, and upgrade planning scenarios. |
 | Security review | `SecurityReviewReport`, `SecurityFinding`, `SecuritySeverity` | Covers policy, Lua sandbox, secret redaction, MCP allowlist, V1.15.1 hardware OS permission diagnostics/raw-handle boundaries, and lifecycle apply risk. |
-| Performance baseline | `PerformanceBaselineReport`, `PerformanceBudget` | Defines source-release smoke budgets for EventBus, Scheduler, Adapter probe, memory context, backup, and release check. |
+| Performance baseline | `PerformanceBaselineReport`, `PerformanceBudget`, `PerformanceObservation` | Defines source-release smoke budgets separately from observations; missing and synthetic observations remain `unmeasured`/Warn instead of passing. |
 | Migration and compatibility | `MigrationGuide`, `MigrationStep`, `CompatibilityPolicy` | Documents V1.4 -> V1.5 migration steps, compatibility guarantees, public CLI contracts, and deprecation policy. |
 | Backup archive readiness | `ReleaseGate` | Records V1.10.3 signed backup archive, optional sealing, remote target contract, and pre-restore evidence as release readiness evidence. |
 | Restore apply gate readiness | `ReleaseGate` | Records V1.10.4 confirmation, policy approval, filesystem lock and health gate, V1.14.2 staged file mutation evidence, V1.14.3 rollback apply evidence, and V1.14.4 operator confirmation output. |
@@ -27,7 +27,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | Release artifact evidence | `ReleaseArtifactEvidence`, `ReleaseArtifactVerificationReport` | Parses a V1.11.1 key/value evidence manifest, verifies a SHA-256 keyed signature, source commit provenance, SBOM marker, and scan status, then exposes a blocking release gate when evidence is supplied. |
 | Distribution evidence | `ReleaseDistributionEvidence`, `ReleaseDistributionVerificationReport` | Parses a V1.11.2 key/value evidence manifest for Windows/Linux/macOS install smoke, install/upgrade/uninstall docs, and package-manager dry-run status, then exposes a blocking release gate when evidence is supplied. |
 | Security scan evidence | `ReleaseSecurityScanEvidence`, `ReleaseSecurityScanVerificationReport` | Parses a V1.11.3 external scanner evidence manifest and blocks readiness when the scanner did not pass or any high/critical finding is present. |
-| Benchmark evidence | `ReleaseBenchmarkEvidence`, `ReleaseBenchmarkVerificationReport` | Parses V1.11.3 production benchmark measurements, converts them into the existing performance report shape, and blocks readiness when observed latency exceeds budget. |
+| Benchmark evidence | `ReleaseBenchmarkEvidence`, `ReleaseBenchmarkVerificationReport` | Parses V1.11.3 measurements, validates producer-claimed thresholds against the consumer-owned release workflow budget catalog, and blocks unknown, mismatched, failed, or over-budget evidence. |
 | MCP compatibility readiness | `ReleaseGate` | Records V1.13.7 stdio/HTTP transport, tool schema, stream lifecycle, dangling-session, and explicit server-surface fixture evidence as `REL-MCP-COMPAT-001`. |
 | Provider supervision readiness | `ReleaseGate` | Records V1.13.8 supervisor slot, process table, credential scope, admission, stream artifact, recovery, and MCP compatibility gate evidence as `REL-PROVIDER-SUPERVISION-001`. |
 | Hardware safety readiness | `ReleaseGate` | Records V1.15.5 simulator parity, permission denial, lease cleanup, and daemon hotplug smoke evidence as `REL-HARDWARE-SAFETY-001`, accepting simulator-only alpha evidence without claiming real device I/O. |
@@ -61,8 +61,10 @@ All commands use the standard CLI JSON envelope:
 
 `release check` returns exit code `0` when no required gate is blocked. A
 blocked required gate maps to configuration exit code `2`; blocked security
-findings map to policy exit code `3`; over-budget performance gates map to
-runtime-unavailable exit code `4`. V1.17.6 also returns additive
+findings map to policy exit code `3`; failed, policy-mismatched, or over-budget
+benchmark evidence maps to runtime-unavailable exit code `4`. A default alpha
+`release perf` remains executable with exit code `0`, but reports `unmeasured`
+and never emits a measured Pass without benchmark evidence. V1.17.6 also returns additive
 `data.closure`; its `ready_with_external_blockers` status records production
 blockers without changing the alpha readiness exit behavior when all required
 local gates pass.
@@ -121,7 +123,8 @@ cargo run -- release migration --output json
 
 The module tests assert that V1.5 readiness has no blocked required gates, the
 security review covers the required policy/sandbox/secret/MCP/hardware
-boundaries including OS permission remediation, all performance budgets are within threshold, and the V1.4 -> V1.5
+boundaries including OS permission remediation, static performance budgets stay
+unmeasured, measured benchmarks enforce consumer-owned thresholds, and the V1.4 -> V1.5
 migration has no breaking changes. V1.10.3 adds a required signed backup
 archive gate. V1.10.4 adds a required restore apply gate for confirmation,
 policy approval, lock, health, rollback-required output, and staged mutation

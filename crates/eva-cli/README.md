@@ -39,7 +39,7 @@ V1.15.8 的 CLI 变化是 runtime marker 公开 `memory_redaction_audit_v1.15.8`
 | `eva upgrade check/apply` | `check` 诊断 generation、migration、drain 和 rollback；`apply --state-store` 在 policy、lock、runtime-binary smoke 和 health gate 通过后提交本地 handoff state 与 release pointer，仍不执行平台 service-manager handoff。 |
 | `eva release check` | 聚合跨平台、稳定性、文档、安全、性能、迁移、daemon runtime、hardware safety、V1.16 observability policy、V1.17.4 public JSON contract diff 和 V1.17.6 V1.x closure readiness 门禁；可读取 V1.11 artifact、distribution、security scan 和 benchmark evidence，输出 release readiness 与 additive `closure` report。 |
 | `eva release security` | 输出 policy、sandbox、secret、MCP、hardware 和 lifecycle apply 风险的安全评审。 |
-| `eva release perf` | 输出 EventBus、Scheduler、Adapter、memory、backup 和 release check 的性能预算基线；可读取 benchmark evidence 使用真实测量输入。 |
+| `eva release perf` | 输出 EventBus、Scheduler、Adapter、memory、backup 和 release check 的性能预算基线；无 evidence 时明确为 `unmeasured`，可读取 benchmark evidence 展示观测，但 production 权威仍要求 verified envelope。 |
 | `eva release migration` | 输出 V1.4 -> V1.5 迁移步骤和兼容性策略。 |
 
 ## 输出契约
@@ -296,9 +296,9 @@ cargo run -- release migration --output json
 | `release check --artifact-evidence` | 读取 V1.11.1 key/value artifact evidence，校验 signed artifact、SHA-256 keyed signature、source commit provenance、SBOM 标记和 scan status；失败时 required gate blocked 并返回配置门禁 exit code `2`。 |
 | `release check --distribution-evidence` | 读取 V1.11.2 key/value distribution evidence，校验 Windows/Linux/macOS install smoke、安装/升级/卸载文档路径和 package-manager dry-run；失败时 required gate blocked 并返回配置门禁 exit code `2`。 |
 | `release check --security-scan-evidence` | 读取 V1.11.3 key/value external scanner evidence；scanner skipped/failed 或 high/critical finding 会阻断并返回配置门禁 exit code `2`。 |
-| `release check --benchmark-evidence` | 读取 V1.11.3 measured benchmark evidence；空样本、非 passed 状态或 observed latency 超预算会阻断并返回配置门禁 exit code `2`。 |
+| `release check --benchmark-evidence` | 读取 V1.11.3 legacy alpha benchmark evidence；空样本、非 passed 状态、未知/漂移的 claimed budget 或 observed latency 超过 consumer-owned policy 都会阻断并返回配置门禁 exit code `2`。 |
 | `release security` | 输出 `SecurityReviewReport`，覆盖 policy、Lua sandbox、secret redaction、MCP allowlist、hardware raw I/O 和 lifecycle apply risk。 |
-| `release perf` | 输出 `PerformanceBaselineReport`，用 release-smoke budget 记录当前 in-memory 实现的性能边界；传入 `--benchmark-evidence <path>` 时使用真实测量输入并保持输出 JSON shape 稳定。 |
+| `release perf` | 输出 `PerformanceBaselineReport`；默认预算没有伪造 observed 值，状态为 `unmeasured`。传入 `--benchmark-evidence <path>` 时展示测量并强制 consumer-owned budget policy，但该诊断路径本身不授予 production evidence 权威。 |
 | `release migration` | 输出 `MigrationGuide` 和 `CompatibilityPolicy`，声明 V1.4 到 V1.5 无破坏性变更。 |
 
 这些 release 命令不修改 `.eva/tasks`，不启动外部 provider，不执行真实 restore、supervisor handoff 或真实硬件 I/O；V1.10.5 的本地 handoff/pointer mutation 只存在于单独的 `upgrade apply --state-store` 路径。V1.15.5 的 hardware safety gate 接受 alpha simulator-only evidence，生产 release 仍必须补真实或虚拟硬件 fixture evidence。阻断门禁会映射到稳定 exit code：配置门禁 `2`、policy 门禁 `3`、性能门禁 `4`。

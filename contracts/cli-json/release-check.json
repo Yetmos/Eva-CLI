@@ -18,7 +18,7 @@
         "integrity_status": "not_applicable"
       },
       "blocking_gates": 0,
-      "warning_gates": 1,
+      "warning_gates": 7,
       "gates": [
         {
           "id": "REL-DOCS-001",

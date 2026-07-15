@@ -654,69 +654,58 @@ impl ReleaseHardeningService {
         }
     }
 
-    /// 返回用于静态发布烟雾的契约性能预算。
+    /// 返回用于静态发布烟雾的未测量契约性能预算。
     ///
-    /// 这些值是当前内存实现的发布阈值，不是运行中的微基准结果；真实基准证据应通过
+    /// 这些阈值不附带任何伪造 observed_ms；真实基准证据应通过
     /// `ReleaseBenchmarkEvidence` 作为独立 required 门禁传入。
     pub fn performance_baseline(&self) -> PerformanceBaselineReport {
         let budgets = vec![
-            PerformanceBudget::new(
+            PerformanceBudget::unmeasured(
                 "eventbus.publish",
                 "single in-memory publish latency",
                 5,
-                1,
-                "bounded append plus receipt allocation",
+                "contract threshold only; no eventbus publish measurement attached",
             ),
-            PerformanceBudget::new(
+            PerformanceBudget::unmeasured(
                 "scheduler.fanout",
                 "basic topic routing fanout latency",
                 10,
-                2,
-                "in-memory route match and mailbox delivery",
+                "contract threshold only; no scheduler fanout measurement attached",
             ),
-            PerformanceBudget::new(
+            PerformanceBudget::unmeasured(
                 "adapter.probe",
                 "side-effect-free adapter probe latency",
                 15,
-                2,
-                "manifest-derived handle probe without provider startup",
+                "contract threshold only; no adapter probe measurement attached",
             ),
-            PerformanceBudget::new(
+            PerformanceBudget::unmeasured(
                 "memory.context",
                 "request context assembly latency",
                 25,
-                3,
-                "bounded private/global memory and knowledge result merge",
+                "contract threshold only; no memory context measurement attached",
             ),
-            PerformanceBudget::new(
+            PerformanceBudget::unmeasured(
                 "backup.create",
                 "in-memory backup artifact creation latency",
                 50,
-                4,
-                "artifact serialization plus digest verification",
+                "contract threshold only; no backup creation measurement attached",
             ),
-            PerformanceBudget::new(
+            PerformanceBudget::unmeasured(
                 "release.check",
                 "release hardening report generation latency",
                 20,
-                2,
-                "static checklist aggregation with no filesystem mutation",
+                "contract threshold only; no release check measurement attached",
             ),
         ];
-        let status = if budgets.iter().all(PerformanceBudget::within_budget) {
-            "within_budget"
-        } else {
-            "over_budget"
-        }
-        .to_owned();
 
         PerformanceBaselineReport {
             version: CURRENT_RELEASE_VERSION.to_owned(),
-            status,
+            status: "unmeasured".to_owned(),
             budgets,
             audit: vec![
                 "performance:baseline:v1.5".to_owned(),
-                "budgets_are_contractual_smoke_thresholds_not_microbenchmarks".to_owned(),
+                "performance_observation:unmeasured".to_owned(),
+                "budgets_are_contractual_thresholds_without_runtime_observations".to_owned(),
             ],
         }
     }
@@ -1191,9 +1180,13 @@ fn release_benchmark_gate(report: &ReleaseBenchmarkVerificationReport) -> Releas
     ];
     evidence.extend(report.measurements.iter().map(|measurement| {
         format!(
-            "measurement:{}:{}ms/{}ms:{}samples",
+            "measurement:{}:{}ms/{}ms_policy:{}ms_claimed:{}samples",
             measurement.component,
             measurement.observed_ms,
+            measurement
+                .trusted_budget_ms()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
             measurement.budget_ms,
             measurement.sample_count
         )
@@ -1274,20 +1267,46 @@ fn security_gate(finding: &SecurityFinding) -> ReleaseGate {
 
 /// 将一个性能预算映射为 required 发布门禁。
 fn performance_gate(budget: &PerformanceBudget) -> ReleaseGate {
+    let summary = match budget.observation.as_ref() {
+        Some(observation) if budget.is_measured() => format!(
+            "{} measured {}ms against {}ms budget",
+            budget.component, observation.observed_ms, budget.budget_ms
+        ),
+        Some(observation) => format!(
+            "{} has synthetic {}ms estimate against {}ms budget and remains unmeasured",
+            budget.component, observation.observed_ms, budget.budget_ms
+        ),
+        None => format!(
+            "{} has a {}ms budget with no runtime measurement",
+            budget.component, budget.budget_ms
+        ),
+    };
+    let mut evidence = vec![
+        format!("performance.observation_kind:{}", budget.observation_kind()),
+        budget.evidence.clone(),
+    ];
+    if let Some(observation) = &budget.observation {
+        evidence.push(observation.evidence.clone());
+    }
+    let remediation = if !budget.is_measured() {
+        vec![
+            "capture and attach a trusted benchmark measurement before production release"
+                .to_owned(),
+        ]
+    } else if budget.status.is_blocking() {
+        vec!["investigate regression before widening public performance budget".to_owned()]
+    } else {
+        Vec::new()
+    };
     ReleaseGate {
         id: format!("PERF-{}", budget.component.replace('.', "-").to_uppercase()),
         domain: "performance".to_owned(),
         evidence_kind: EvidenceKind::Declaration,
         status: budget.status,
         required: true,
-        summary: format!(
-            "{} observed {}ms within {}ms budget",
-            budget.component, budget.observed_ms, budget.budget_ms
-        ),
-        evidence: vec![budget.evidence.clone()],
-        remediation: vec![
-            "investigate regression before widening public performance budget".to_owned(),
-        ],
+        summary,
+        evidence,
+        remediation,
     }
 }
 
@@ -2133,8 +2152,8 @@ mod tests {
     fn benchmark_measurement(observed_ms: u64) -> crate::benchmark::ReleaseBenchmarkMeasurement {
         crate::benchmark::ReleaseBenchmarkMeasurement::new(
             "release.check",
-            "cli release check wall time",
-            200,
+            "release check wall time",
+            5_000,
             observed_ms,
             3,
             "target/release/eva release check --output json",
@@ -2221,15 +2240,25 @@ mod tests {
                 .iter()
                 .find(|gate| gate.id == "REL-MCP-COMPAT-001")
                 .unwrap();
+            let performance_gate = report
+                .gates
+                .iter()
+                .find(|gate| gate.id == "PERF-RELEASE-CHECK")
+                .unwrap();
 
             assert_eq!(benchmark_gate.evidence_kind, EvidenceKind::Measurement);
             assert_eq!(benchmark_gate.status, ReleaseGateStatus::Pass);
             assert_eq!(mcp_gate.evidence_kind, EvidenceKind::Fixture);
+            assert!(performance_gate
+                .evidence
+                .iter()
+                .any(|item| item == "performance.observation_kind:unmeasured"));
 
             if scope == ReleaseEvidenceScope::Alpha {
                 assert_eq!(report.status, "ready");
                 assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Alpha);
                 assert_eq!(mcp_gate.status, ReleaseGateStatus::Pass);
+                assert_eq!(performance_gate.status, ReleaseGateStatus::Warn);
                 assert!(!mcp_gate
                     .remediation
                     .iter()
@@ -2238,6 +2267,10 @@ mod tests {
                 assert_eq!(report.status, "blocked");
                 assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Production);
                 assert_eq!(mcp_gate.status, ReleaseGateStatus::Blocked);
+                assert_eq!(performance_gate.status, ReleaseGateStatus::Blocked);
+                assert!(performance_gate.remediation.iter().any(|item| {
+                    item == "evidence_kind_not_measured:PERF-RELEASE-CHECK:declaration"
+                }));
                 assert!(mcp_gate.remediation.iter().any(|item| {
                     item == "evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"
                 }));
@@ -2253,6 +2286,46 @@ mod tests {
     }
 
     #[test]
+    /// 验证完整性通过的 measurement 仍不能用 producer 自报预算绕过 policy。
+    fn verified_measurement_bundle_rejects_claimed_budget_override() {
+        let mut evidence = benchmark_evidence("passed", 6_000);
+        evidence.measurements[0].budget_ms = 7_000;
+        let envelope = evidence
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "checklist:test-budget-override",
+                "test-runner",
+                "eva-release-tests",
+                1_784_073_600_000,
+            )
+            .unwrap();
+        let bundle = VerifiedReleaseEvidenceBundle::verify(
+            evidence_manifest(ReleaseEvidenceScope::Production),
+            ARTIFACT_COMMIT,
+            None,
+            None,
+            None,
+            Some(ReleaseDocumentEvidenceCandidate::new(evidence, envelope)),
+        )
+        .unwrap();
+
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_verified_release_evidence("all", &bundle)
+            .unwrap();
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.id == "REL-BENCHMARK-001")
+            .unwrap();
+
+        assert_eq!(gate.evidence_kind, EvidenceKind::Measurement);
+        assert_eq!(gate.status, ReleaseGateStatus::Blocked);
+        assert!(gate.remediation.iter().any(|item| {
+            item == "benchmark release.check claimed 7000ms budget but policy requires 5000ms"
+        }));
+    }
+
+    #[test]
     /// 验证默认内置 required 门禁没有阻塞项。
     fn readiness_has_no_blocking_required_gates() {
         let report = ReleaseHardeningService::v15().readiness("all").unwrap();
@@ -2260,6 +2333,20 @@ mod tests {
         assert_eq!(report.status, "ready");
         assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Alpha);
         assert_eq!(report.blocking_count(), 0);
+        assert_eq!(report.warning_count(), 7);
+        let performance_gates = report
+            .gates
+            .iter()
+            .filter(|gate| gate.domain == "performance")
+            .collect::<Vec<_>>();
+        assert_eq!(performance_gates.len(), 6);
+        assert!(performance_gates.iter().all(|gate| {
+            gate.status == ReleaseGateStatus::Warn
+                && gate
+                    .evidence
+                    .iter()
+                    .any(|item| item == "performance.observation_kind:unmeasured")
+        }));
         assert!(report.gates.iter().all(|gate| {
             gate.evidence_kind == EvidenceKind::Declaration
                 || (gate.id == "REL-MCP-COMPAT-001" && gate.evidence_kind == EvidenceKind::Fixture)
@@ -2801,7 +2888,7 @@ mod tests {
     #[test]
     /// 验证超预算生产测量会阻塞基准门禁。
     fn readiness_with_benchmark_regression_blocks_gate() {
-        let evidence = benchmark_evidence("passed", 250);
+        let evidence = benchmark_evidence("passed", 6_000);
         let report = ReleaseHardeningService::v15()
             .readiness_with_benchmark_evidence("all", &evidence)
             .unwrap();
@@ -2811,10 +2898,9 @@ mod tests {
         assert!(report.gates.iter().any(|gate| {
             gate.id == "REL-BENCHMARK-001"
                 && gate.status == ReleaseGateStatus::Blocked
-                && gate
-                    .remediation
-                    .iter()
-                    .any(|item| item == "benchmark release.check observed 250ms over 200ms budget")
+                && gate.remediation.iter().any(|item| {
+                    item == "benchmark release.check observed 6000ms over 5000ms budget"
+                })
         }));
         assert!(report
             .audit

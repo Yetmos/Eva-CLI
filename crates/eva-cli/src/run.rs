@@ -1245,8 +1245,8 @@ mod tests {
         let commit = "0123456789abcdef0123456789abcdef01234567";
         let measurement = eva_release::ReleaseBenchmarkMeasurement::new(
             "release.check",
-            "cli release check wall time",
-            200,
+            "release check wall time",
+            5_000,
             observed_ms,
             3,
             "target/release/eva release check --output json",
@@ -3071,7 +3071,7 @@ mod tests {
     fn release_check_with_benchmark_regression_blocks_gate() {
         let root = workspace_root();
         let (evidence_root, evidence_path) =
-            release_benchmark_evidence_fixture("release-benchmark-regression", "passed", 250);
+            release_benchmark_evidence_fixture("release-benchmark-regression", "passed", 6_000);
         let (exit_code, stdout, stderr) = run_cli(&[
             "release",
             "check",
@@ -3086,7 +3086,7 @@ mod tests {
         assert_eq!(exit_code, EXIT_CONFIG, "{stderr}");
         assert!(stdout.contains("\"id\":\"REL-BENCHMARK-001\""));
         assert!(stdout.contains("\"status\":\"blocked\""));
-        assert!(stdout.contains("benchmark release.check observed 250ms over 200ms budget"));
+        assert!(stdout.contains("benchmark release.check observed 6000ms over 5000ms budget"));
         assert!(stdout.contains("production_benchmark_blocked"));
 
         fs::remove_dir_all(evidence_root).unwrap();
@@ -3111,9 +3111,13 @@ mod tests {
 
         assert_eq!(exit_code, EXIT_OK, "{stderr}");
         assert!(stdout.contains("\"command\":\"release.perf\""));
+        assert!(stdout.contains("\"exit_code\":0"));
         assert!(stdout.contains("\"status\":\"within_budget\""));
+        assert!(stdout.contains("\"measured\":1"));
+        assert!(stdout.contains("\"unmeasured\":0"));
         assert!(stdout.contains("\"component\":\"release.check\""));
         assert!(stdout.contains("\"observed_ms\":120"));
+        assert!(stdout.contains("\"observation_kind\":\"measurement\""));
         assert!(stdout.contains("performance:benchmark_evidence:v1.11.3"));
 
         fs::remove_dir_all(evidence_root).unwrap();
@@ -3123,8 +3127,11 @@ mod tests {
     /// 验证超预算 benchmark 返回 runtime-unavailable 退出码。
     fn release_perf_with_benchmark_regression_returns_runtime_exit() {
         let root = workspace_root();
-        let (evidence_root, evidence_path) =
-            release_benchmark_evidence_fixture("release-perf-benchmark-regression", "passed", 250);
+        let (evidence_root, evidence_path) = release_benchmark_evidence_fixture(
+            "release-perf-benchmark-regression",
+            "passed",
+            6_000,
+        );
         let (exit_code, stdout, stderr) = run_cli(&[
             "release",
             "perf",
@@ -3138,9 +3145,42 @@ mod tests {
 
         assert_eq!(exit_code, EXIT_RUNTIME_UNAVAILABLE, "{stderr}");
         assert!(stdout.contains("\"command\":\"release.perf\""));
+        assert!(stdout.contains("\"exit_code\":4"));
         assert!(stdout.contains("\"status\":\"over_budget\""));
         assert!(stdout.contains("\"over_budget\":1"));
-        assert!(stdout.contains("\"observed_ms\":250"));
+        assert!(stdout.contains("\"observed_ms\":6000"));
+
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证 benchmark producer 不能通过抬高 claimed budget 绕过 consumer policy。
+    fn release_perf_rejects_claimed_budget_override() {
+        let root = workspace_root();
+        let (evidence_root, evidence_path) =
+            release_benchmark_evidence_fixture("release-perf-budget-override", "passed", 6_000);
+        let forged = fs::read_to_string(&evidence_path).unwrap().replace(
+            "measurement.0.budget_ms=5000",
+            "measurement.0.budget_ms=7000",
+        );
+        fs::write(&evidence_path, forged).unwrap();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "perf",
+            "--benchmark-evidence",
+            evidence_path.to_str().unwrap(),
+            "--project",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_RUNTIME_UNAVAILABLE, "{stderr}");
+        assert!(stdout.contains("\"exit_code\":4"));
+        assert!(stdout.contains("\"status\":\"blocked\""));
+        assert!(stdout.contains("\"budget_ms\":5000"));
+        assert!(stdout.contains("claimed_budget_ms=7000"));
+        assert!(stdout.contains("benchmark_budget_policy_matches:false"));
 
         fs::remove_dir_all(evidence_root).unwrap();
     }
@@ -3164,7 +3204,8 @@ mod tests {
 
         assert_eq!(exit_code, EXIT_RUNTIME_UNAVAILABLE, "{stderr}");
         assert!(stdout.contains("\"command\":\"release.perf\""));
-        assert!(stdout.contains("\"status\":\"over_budget\""));
+        assert!(stdout.contains("\"exit_code\":4"));
+        assert!(stdout.contains("\"status\":\"blocked\""));
         assert!(stdout.contains("benchmark_status:failed"));
 
         fs::remove_dir_all(evidence_root).unwrap();
@@ -5041,7 +5082,11 @@ mod tests {
 
         let (_exit_code, perf_stdout, _stderr) =
             run_cli(&["release", "perf", "--project", root, "--output", "json"]);
-        assert!(perf_stdout.contains("\"status\":\"within_budget\""));
+        assert!(perf_stdout.contains("\"status\":\"unmeasured\""));
+        assert!(perf_stdout.contains("\"measured\":0"));
+        assert!(perf_stdout.contains("\"unmeasured\":6"));
+        assert!(perf_stdout.contains("\"observed_ms\":null"));
+        assert!(perf_stdout.contains("\"observation_kind\":\"unmeasured\""));
         assert!(perf_stdout.contains("\"component\":\"eventbus.publish\""));
 
         let (_exit_code, migration_stdout, _stderr) = run_cli(&[

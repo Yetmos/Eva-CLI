@@ -3,7 +3,9 @@
 
 use crate::checklist::ReleaseGateStatus;
 use crate::evidence::{EvidenceEnvelope, EvidenceKind};
-use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
+use crate::performance::{
+    release_benchmark_budget_ms, PerformanceBaselineReport, PerformanceBudget,
+};
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,7 +69,7 @@ pub struct ReleaseBenchmarkVerificationReport {
     pub measurements: Vec<ReleaseBenchmarkMeasurement>,
     /// 观测值超过预算的测量。
     pub regressions: Vec<ReleaseBenchmarkMeasurement>,
-    /// 缺失、失败或回归带来的具体风险。
+    /// 缺失、失败、预算策略漂移或回归带来的具体风险。
     pub risks: Vec<String>,
     /// 来源、总体状态和逐测量审计记录。
     pub audit: Vec<String>,
@@ -109,27 +111,59 @@ impl ReleaseBenchmarkMeasurement {
         })
     }
 
-    /// 根据观测值是否超过预算计算发布门禁状态。
+    /// 按 consumer policy、claimed budget 一致性和观测值计算门禁状态。
     pub fn status(&self) -> ReleaseGateStatus {
-        if self.observed_ms <= self.budget_ms {
-            ReleaseGateStatus::Pass
-        } else {
-            ReleaseGateStatus::Blocked
+        match self.trusted_budget_ms() {
+            Some(expected_budget_ms)
+                if self.budget_ms == expected_budget_ms
+                    && self.observed_ms <= expected_budget_ms =>
+            {
+                ReleaseGateStatus::Pass
+            }
+            _ => ReleaseGateStatus::Blocked,
         }
+    }
+
+    /// 返回 consumer-owned 权威预算；未知组件或指标不接受 producer 自报阈值。
+    pub fn trusted_budget_ms(&self) -> Option<u64> {
+        release_benchmark_budget_ms(&self.component, &self.metric)
+    }
+
+    /// 判断 evidence 中的 claimed budget 是否与 consumer policy 完全一致。
+    pub fn budget_policy_matches(&self) -> bool {
+        self.trusted_budget_ms() == Some(self.budget_ms)
+    }
+
+    /// 判断观测是否超过 consumer-owned 权威预算。
+    pub fn exceeds_trusted_budget(&self) -> bool {
+        self.trusted_budget_ms()
+            .map(|budget_ms| self.observed_ms > budget_ms)
+            .unwrap_or(false)
     }
 
     /// 转换为通用性能预算，同时保留命令、样本数和环境证据。
     pub fn to_budget(&self) -> PerformanceBudget {
-        PerformanceBudget::new(
+        let trusted_budget_ms = self.trusted_budget_ms();
+        let mut budget = PerformanceBudget::measured(
             self.component.clone(),
             self.metric.clone(),
-            self.budget_ms,
+            trusted_budget_ms.unwrap_or(self.budget_ms),
             self.observed_ms,
             format!(
-                "{}; samples={}; environment={}",
-                self.command, self.sample_count, self.environment
+                "{}; samples={}; environment={}; claimed_budget_ms={}; policy_budget_ms={}",
+                self.command,
+                self.sample_count,
+                self.environment,
+                self.budget_ms,
+                trusted_budget_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned())
             ),
-        )
+        );
+        if !self.budget_policy_matches() {
+            budget.status = ReleaseGateStatus::Blocked;
+        }
+        budget
     }
 }
 
@@ -241,8 +275,8 @@ impl ReleaseBenchmarkEvidence {
 
     /// 验证任务状态、非空测量集合以及每项预算。
     ///
-    /// 只有任务状态明确为 passed、至少有一个测量且没有超预算项时才通过。空证据
-    /// 或 skipped 状态不会因为“没有回归”而被误判为成功。
+    /// 只有任务状态明确为 passed、至少有一个测量、claimed budget 匹配 consumer policy
+    /// 且没有超预算项时才通过。空证据或 skipped 状态不会因为“没有回归”而被误判为成功。
     pub fn verify(&self) -> ReleaseBenchmarkVerificationReport {
         let mut risks = Vec::new();
         if self.benchmark_status != "passed" {
@@ -255,17 +289,35 @@ impl ReleaseBenchmarkEvidence {
             risks.push("benchmark evidence has no measurements".to_owned());
         }
 
+        for measurement in &self.measurements {
+            match measurement.trusted_budget_ms() {
+                None => risks.push(format!(
+                    "benchmark budget policy is missing for {}:{}",
+                    measurement.component, measurement.metric
+                )),
+                Some(expected_budget_ms) if measurement.budget_ms != expected_budget_ms => {
+                    risks.push(format!(
+                        "benchmark {} claimed {}ms budget but policy requires {}ms",
+                        measurement.component, measurement.budget_ms, expected_budget_ms
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+
         let regressions = self
             .measurements
             .iter()
-            .filter(|measurement| measurement.status().is_blocking())
+            .filter(|measurement| measurement.exceeds_trusted_budget())
             .cloned()
             .collect::<Vec<_>>();
         for measurement in &regressions {
-            risks.push(format!(
-                "benchmark {} observed {}ms over {}ms budget",
-                measurement.component, measurement.observed_ms, measurement.budget_ms
-            ));
+            if let Some(expected_budget_ms) = measurement.trusted_budget_ms() {
+                risks.push(format!(
+                    "benchmark {} observed {}ms over {}ms budget",
+                    measurement.component, measurement.observed_ms, expected_budget_ms
+                ));
+            }
         }
 
         let status = if risks.is_empty() {
@@ -281,10 +333,14 @@ impl ReleaseBenchmarkEvidence {
         ];
         audit.extend(self.measurements.iter().map(|measurement| {
             format!(
-                "release.benchmark.measurement:{}:{}ms/{}ms:{}samples",
+                "release.benchmark.measurement:{}:{}ms/{}ms_claimed/{}ms_policy:{}samples",
                 measurement.component,
                 measurement.observed_ms,
                 measurement.budget_ms,
+                measurement
+                    .trusted_budget_ms()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned()),
                 measurement.sample_count
             )
         }));
@@ -304,22 +360,26 @@ impl ReleaseBenchmarkEvidence {
 
     /// 将基准测量转换为发布性能基线报告。
     ///
-    /// 转换沿用相同的 passed、非空和全部预算内条件，保证两个报告表面结论一致。
+    /// 转换沿用相同的 passed、非空、预算策略和全部预算内条件，保证两个报告表面结论一致。
     pub fn to_performance_report(&self) -> PerformanceBaselineReport {
         let budgets = self
             .measurements
             .iter()
             .map(ReleaseBenchmarkMeasurement::to_budget)
             .collect::<Vec<_>>();
-        let status = if self.benchmark_status == "passed"
-            && !budgets.is_empty()
-            && budgets.iter().all(PerformanceBudget::within_budget)
-        {
-            "within_budget"
-        } else {
-            "over_budget"
-        }
-        .to_owned();
+        let policy_matches = self
+            .measurements
+            .iter()
+            .all(ReleaseBenchmarkMeasurement::budget_policy_matches);
+        let status =
+            if self.benchmark_status != "passed" || budgets.is_empty() || !policy_matches {
+                "blocked"
+            } else if budgets.iter().all(PerformanceBudget::within_budget) {
+                "within_budget"
+            } else {
+                "over_budget"
+            }
+            .to_owned();
         PerformanceBaselineReport {
             version: self.version.clone(),
             status,
@@ -328,6 +388,7 @@ impl ReleaseBenchmarkEvidence {
                 "performance:benchmark_evidence:v1.11.3".to_owned(),
                 format!("source_commit:{}", self.source_commit),
                 format!("benchmark_status:{}", self.benchmark_status),
+                format!("benchmark_budget_policy_matches:{policy_matches}"),
             ],
         }
     }
@@ -532,8 +593,8 @@ mod tests {
     fn measurement(observed_ms: u64) -> ReleaseBenchmarkMeasurement {
         ReleaseBenchmarkMeasurement::new(
             "release.check",
-            "cli release check wall time",
-            200,
+            "release check wall time",
+            5_000,
             observed_ms,
             3,
             "target/release/eva release check --output json",
@@ -571,14 +632,77 @@ mod tests {
     #[test]
     /// 验证超预算测量被列为回归并阻塞发布。
     fn benchmark_regression_blocks_verification() {
-        let report = evidence("passed", 250).verify();
+        let report = evidence("passed", 6_000).verify();
 
         assert_eq!(report.status, "blocked");
         assert_eq!(report.regressions.len(), 1);
         assert!(report
             .risks
             .iter()
-            .any(|risk| risk == "benchmark release.check observed 250ms over 200ms budget"));
+            .any(|risk| risk == "benchmark release.check observed 6000ms over 5000ms budget"));
+    }
+
+    #[test]
+    /// 验证 producer 不能通过抬高 claimed budget 掩盖真实回归。
+    fn claimed_budget_cannot_override_consumer_policy() {
+        let mut over_budget_evidence = evidence("passed", 6_000);
+        over_budget_evidence.measurements[0].budget_ms = 7_000;
+
+        let verification = over_budget_evidence.verify();
+        let performance = over_budget_evidence.to_performance_report();
+
+        assert_eq!(verification.status, "blocked");
+        assert_eq!(verification.regressions.len(), 1);
+        assert!(verification.risks.iter().any(|risk| {
+            risk == "benchmark release.check claimed 7000ms budget but policy requires 5000ms"
+        }));
+        assert_eq!(performance.status, "blocked");
+        assert_eq!(performance.budgets[0].budget_ms, 5_000);
+        assert_eq!(performance.budgets[0].observed_ms(), Some(6_000));
+
+        let mut within_override = evidence("passed", 120);
+        within_override.measurements[0].budget_ms = 7_000;
+        let within_performance = within_override.to_performance_report();
+        assert_eq!(within_performance.status, "blocked");
+        assert_eq!(
+            within_performance.budgets[0].status,
+            ReleaseGateStatus::Blocked
+        );
+        assert_eq!(within_performance.over_budget_count(), 0);
+    }
+
+    #[test]
+    /// 验证未知 benchmark 组件没有 consumer policy 时失败关闭。
+    fn unknown_benchmark_budget_policy_is_blocked() {
+        let measurement = ReleaseBenchmarkMeasurement::new(
+            "custom.command",
+            "custom wall time",
+            10_000,
+            1,
+            1,
+            "custom command",
+            "test-runner",
+        )
+        .unwrap();
+        let evidence = ReleaseBenchmarkEvidence::new(
+            "1.11.5-alpha",
+            "v1.11.5-alpha",
+            COMMIT,
+            "passed",
+            vec![measurement],
+        )
+        .unwrap();
+
+        let verification = evidence.verify();
+
+        assert_eq!(verification.status, "blocked");
+        assert!(verification.risks.iter().any(|risk| {
+            risk == "benchmark budget policy is missing for custom.command:custom wall time"
+        }));
+        let performance = evidence.to_performance_report();
+        assert_eq!(performance.status, "blocked");
+        assert_eq!(performance.budgets[0].status, ReleaseGateStatus::Blocked);
+        assert_eq!(performance.over_budget_count(), 0);
     }
 
     #[test]
@@ -588,7 +712,10 @@ mod tests {
 
         assert_eq!(report.status, "within_budget");
         assert_eq!(report.over_budget_count(), 0);
+        assert_eq!(report.unmeasured_count(), 0);
+        assert_eq!(report.measured_count(), 1);
         assert_eq!(report.budgets[0].component, "release.check");
+        assert_eq!(report.budgets[0].observation_kind(), "measurement");
     }
 
     #[test]
@@ -619,7 +746,7 @@ mod tests {
         let error = ReleaseBenchmarkMeasurement::new(
             "release.check",
             "wall time\nmeasurement.1.component=forged",
-            200,
+            5_000,
             120,
             3,
             "eva release check",
