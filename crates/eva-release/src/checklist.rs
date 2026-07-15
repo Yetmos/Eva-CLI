@@ -6,6 +6,10 @@ use crate::artifact::{
 };
 use crate::benchmark::{ReleaseBenchmarkEvidence, ReleaseBenchmarkVerificationReport};
 use crate::distribution::{ReleaseDistributionEvidence, ReleaseDistributionVerificationReport};
+use crate::evidence::{
+    verify_evidence_bundle, EvidenceEnvelope, EvidenceSubject, EvidenceVerificationReport,
+    ReleaseEvidenceManifest, ReleaseEvidenceScope, ReleaseEvidenceType,
+};
 use crate::migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::scanner::{ReleaseSecurityScanEvidence, ReleaseSecurityScanVerificationReport};
@@ -129,6 +133,8 @@ pub struct ReleaseReadinessReport {
     pub version: String,
     /// `ready` 或 `blocked` 总体状态。
     pub status: String,
+    /// 报告明确绑定的 alpha 或 production evidence scope。
+    pub evidence_scope: ReleaseEvidenceScope,
     /// `all` 或单个操作系统目标。
     pub target: String,
     /// 目标范围内的平台就绪度。
@@ -141,6 +147,184 @@ pub struct ReleaseReadinessReport {
     pub closure: V1xClosureReport,
     /// 聚合过程和可选外部证据审计记录。
     pub audit: Vec<String>,
+}
+
+/// 待 verifier 绑定到真实 artifact bytes 的 artifact evidence 输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseArtifactEvidenceCandidate {
+    evidence: ReleaseArtifactEvidence,
+    envelope: EvidenceEnvelope,
+    subject_bytes: Vec<u8>,
+}
+
+impl ReleaseArtifactEvidenceCandidate {
+    /// 创建尚未获得 production 信任的 artifact 候选；只能交给 bundle verifier。
+    pub fn new(
+        evidence: ReleaseArtifactEvidence,
+        envelope: EvidenceEnvelope,
+        subject_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            evidence,
+            envelope,
+            subject_bytes,
+        }
+    }
+}
+
+/// 待 verifier 将 canonical typed manifest 绑定到 envelope 的文档 evidence 输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseDocumentEvidenceCandidate<T> {
+    evidence: T,
+    envelope: EvidenceEnvelope,
+}
+
+impl<T> ReleaseDocumentEvidenceCandidate<T> {
+    /// 创建尚未验证的 typed evidence/envelope 对。
+    pub fn new(evidence: T, envelope: EvidenceEnvelope) -> Self {
+        Self { evidence, envelope }
+    }
+}
+
+/// 只能由完整性 verifier 构造、可安全进入 scoped checklist 的 evidence bundle。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedReleaseEvidenceBundle {
+    manifest: ReleaseEvidenceManifest,
+    artifact: Option<ReleaseArtifactEvidence>,
+    distribution: Option<ReleaseDistributionEvidence>,
+    security_scan: Option<ReleaseSecurityScanEvidence>,
+    benchmark: Option<ReleaseBenchmarkEvidence>,
+    verification: EvidenceVerificationReport,
+}
+
+impl VerifiedReleaseEvidenceBundle {
+    /// 校验 manifest coverage、外部可信提交、全部 typed commit 与 subject digest。
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify(
+        manifest: ReleaseEvidenceManifest,
+        expected_source_commit: &str,
+        artifact: Option<ReleaseArtifactEvidenceCandidate>,
+        distribution: Option<ReleaseDocumentEvidenceCandidate<ReleaseDistributionEvidence>>,
+        security_scan: Option<ReleaseDocumentEvidenceCandidate<ReleaseSecurityScanEvidence>>,
+        benchmark: Option<ReleaseDocumentEvidenceCandidate<ReleaseBenchmarkEvidence>>,
+    ) -> Result<Self, EvaError> {
+        if manifest.source_commit != expected_source_commit {
+            return Err(EvaError::conflict(
+                "release evidence manifest source commit does not match trusted commit",
+            )
+            .with_context("blocked_reasons", "evidence_source_commit_mismatch"));
+        }
+
+        let candidate_present = |evidence_type| match evidence_type {
+            ReleaseEvidenceType::Artifact => artifact.is_some(),
+            ReleaseEvidenceType::Distribution => distribution.is_some(),
+            ReleaseEvidenceType::SecurityScan => security_scan.is_some(),
+            ReleaseEvidenceType::Benchmark => benchmark.is_some(),
+        };
+        for evidence_type in ReleaseEvidenceType::ALL {
+            let manifest_present = manifest
+                .entries
+                .iter()
+                .any(|entry| entry.evidence_type == evidence_type);
+            if manifest_present != candidate_present(evidence_type) {
+                return Err(EvaError::invalid_argument(
+                    "release evidence manifest entries do not match loaded evidence",
+                )
+                .with_context("entry_type", evidence_type.as_str())
+                .with_context("manifest_present", manifest_present.to_string())
+                .with_context(
+                    "loaded_evidence_present",
+                    candidate_present(evidence_type).to_string(),
+                ));
+            }
+        }
+
+        let distribution_subject = distribution
+            .as_ref()
+            .map(|candidate| candidate.evidence.to_manifest().into_bytes());
+        let security_scan_subject = security_scan
+            .as_ref()
+            .map(|candidate| candidate.evidence.to_manifest().into_bytes());
+        let benchmark_subject = benchmark
+            .as_ref()
+            .map(|candidate| candidate.evidence.to_manifest().into_bytes());
+        let mut subjects = Vec::with_capacity(manifest.entries.len());
+        if let Some(candidate) = &artifact {
+            subjects.push(
+                candidate
+                    .evidence
+                    .verification_subject(&candidate.envelope, &candidate.subject_bytes),
+            );
+        }
+        if let (Some(candidate), Some(subject_bytes)) = (&distribution, &distribution_subject) {
+            subjects.push(
+                EvidenceSubject::new(&candidate.envelope, subject_bytes).with_source_commit_claim(
+                    "distribution_evidence",
+                    &candidate.evidence.source_commit,
+                ),
+            );
+        }
+        if let (Some(candidate), Some(subject_bytes)) = (&security_scan, &security_scan_subject) {
+            subjects.push(
+                EvidenceSubject::new(&candidate.envelope, subject_bytes).with_source_commit_claim(
+                    "security_scan_evidence",
+                    &candidate.evidence.source_commit,
+                ),
+            );
+        }
+        if let (Some(candidate), Some(subject_bytes)) = (&benchmark, &benchmark_subject) {
+            subjects.push(
+                EvidenceSubject::new(&candidate.envelope, subject_bytes).with_source_commit_claim(
+                    "benchmark_evidence",
+                    &candidate.evidence.source_commit,
+                ),
+            );
+        }
+        let verification = verify_evidence_bundle(expected_source_commit, &subjects)?;
+        if !verification.is_verified() {
+            return Err(EvaError::conflict(
+                "release evidence manifest integrity verification was blocked",
+            )
+            .with_context(
+                "blocked_reasons",
+                verification
+                    .blocked_reasons
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .with_context("subject_count", verification.subject_count.to_string())
+            .with_context(
+                "verified_subject_count",
+                verification.verified_subject_count.to_string(),
+            ));
+        }
+
+        Ok(Self {
+            manifest,
+            artifact: artifact.map(|candidate| candidate.evidence),
+            distribution: distribution.map(|candidate| candidate.evidence),
+            security_scan: security_scan.map(|candidate| candidate.evidence),
+            benchmark: benchmark.map(|candidate| candidate.evidence),
+            verification,
+        })
+    }
+
+    /// 返回已验证 manifest 的 scope。
+    pub fn scope(&self) -> ReleaseEvidenceScope {
+        self.manifest.scope
+    }
+
+    /// 返回已验证 manifest 的条目数，不暴露本地文件路径。
+    pub fn entry_count(&self) -> usize {
+        self.manifest.entries.len()
+    }
+
+    /// 返回完整性验证报告供审计摘要使用。
+    pub fn verification(&self) -> &EvidenceVerificationReport {
+        &self.verification
+    }
 }
 
 /// 构建当前发布加固报告和兼容性基线的无状态服务。
@@ -158,7 +342,7 @@ impl ReleaseHardeningService {
         self.readiness_inner(target.into(), None, None, None, None)
     }
 
-    /// 在内置基线中加入签名工件和来源证明门禁。
+    /// 在 alpha 兼容基线中加入签名工件和来源证明门禁。
     pub fn readiness_with_artifact_evidence(
         &self,
         target: impl Into<String>,
@@ -167,7 +351,7 @@ impl ReleaseHardeningService {
         self.readiness_inner(target.into(), Some(evidence), None, None, None)
     }
 
-    /// 在内置基线中加入多平台分发门禁。
+    /// 在 alpha 兼容基线中加入多平台分发门禁。
     pub fn readiness_with_distribution_evidence(
         &self,
         target: impl Into<String>,
@@ -176,7 +360,7 @@ impl ReleaseHardeningService {
         self.readiness_inner(target.into(), None, Some(evidence), None, None)
     }
 
-    /// 在内置基线中加入外部安全扫描门禁。
+    /// 在 alpha 兼容基线中加入外部安全扫描门禁。
     pub fn readiness_with_security_scan_evidence(
         &self,
         target: impl Into<String>,
@@ -185,7 +369,7 @@ impl ReleaseHardeningService {
         self.readiness_inner(target.into(), None, None, Some(evidence), None)
     }
 
-    /// 在内置基线中加入生产基准测试门禁。
+    /// 在 alpha 兼容基线中加入 benchmark typed evidence 门禁。
     pub fn readiness_with_benchmark_evidence(
         &self,
         target: impl Into<String>,
@@ -194,7 +378,7 @@ impl ReleaseHardeningService {
         self.readiness_inner(target.into(), None, None, None, Some(evidence))
     }
 
-    /// 一次性聚合任意组合的生产发布证据。
+    /// 一次性聚合任意组合的旧 typed evidence，报告 scope 始终为 alpha。
     pub fn readiness_with_release_evidence(
         &self,
         target: impl Into<String>,
@@ -210,6 +394,51 @@ impl ReleaseHardeningService {
             security_scan_evidence,
             benchmark_evidence,
         )
+    }
+
+    /// 只接受 verifier 构造的 bundle，并按其不可变 scope 聚合发布证据。
+    pub fn readiness_with_verified_release_evidence(
+        &self,
+        target: impl Into<String>,
+        bundle: &VerifiedReleaseEvidenceBundle,
+    ) -> Result<ReleaseReadinessReport, EvaError> {
+        let mut report = self.readiness_inner(
+            target.into(),
+            bundle.artifact.as_ref(),
+            bundle.distribution.as_ref(),
+            bundle.security_scan.as_ref(),
+            bundle.benchmark.as_ref(),
+        )?;
+        if bundle.scope() == ReleaseEvidenceScope::Production {
+            report.gates.push(ReleaseGate {
+                id: "REL-PRODUCTION-EVIDENCE-POLICY-001".to_owned(),
+                domain: "production_evidence_policy".to_owned(),
+                status: ReleaseGateStatus::Blocked,
+                required: true,
+                summary: "production remains fail-closed until evidence kind and coverage policy are complete"
+                    .to_owned(),
+                evidence: vec![
+                    format!("manifest.format:{}", bundle.manifest.format),
+                    format!("manifest.scope:{}", bundle.scope()),
+                    format!("manifest.entry_count:{}", bundle.entry_count()),
+                    format!(
+                        "manifest.verified_subject_count:{}",
+                        bundle.verification.verified_subject_count
+                    ),
+                ],
+                remediation: vec![
+                    "complete W0-L04 through W0-L08 before production can report ready"
+                        .to_owned(),
+                    "production_policy_incomplete".to_owned(),
+                ],
+            });
+            report.status = "blocked".to_owned();
+            report
+                .audit
+                .push("production_evidence_policy_fail_closed".to_owned());
+        }
+        report.evidence_scope = bundle.scope();
+        Ok(report)
     }
 
     /// 校验目标、构建全部内置门禁、验证可选证据并计算最终状态。
@@ -306,6 +535,7 @@ impl ReleaseHardeningService {
         Ok(ReleaseReadinessReport {
             version: CURRENT_RELEASE_VERSION.to_owned(),
             status,
+            evidence_scope: ReleaseEvidenceScope::Alpha,
             target,
             platforms,
             stability,
@@ -1636,6 +1866,22 @@ mod tests {
     const ARTIFACT_DIGEST: &str =
         "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df";
 
+    /// 构造供 scoped checklist 边界验证 scope 的最小统一清单。
+    fn evidence_manifest(scope: ReleaseEvidenceScope) -> ReleaseEvidenceManifest {
+        ReleaseEvidenceManifest::new(
+            scope,
+            ARTIFACT_COMMIT,
+            vec![crate::evidence::ReleaseEvidenceManifestEntry::new(
+                crate::evidence::ReleaseEvidenceType::Benchmark,
+                "benchmark.evidence",
+                "benchmark.envelope",
+                None,
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
     /// 构造可选择 signed 标志的发布工件证据。
     fn artifact_evidence(signed: bool) -> ReleaseArtifactEvidence {
         let key = ReleaseArtifactSigningKey::local_development();
@@ -1811,11 +2057,88 @@ mod tests {
     }
 
     #[test]
+    /// 验证 manifest entry 与实际加载 evidence 不一致时无法构造 trusted bundle。
+    fn verified_bundle_rejects_missing_manifest_candidate() {
+        let error = VerifiedReleaseEvidenceBundle::verify(
+            evidence_manifest(ReleaseEvidenceScope::Production),
+            ARTIFACT_COMMIT,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.message(),
+            "release evidence manifest entries do not match loaded evidence"
+        );
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "entry_type" && value == "benchmark"));
+    }
+
+    #[test]
+    /// 验证相同 verified evidence 在 alpha 可聚合，而 production 在策略完成前失败关闭。
+    fn verified_bundle_keeps_production_fail_closed() {
+        for scope in [
+            ReleaseEvidenceScope::Alpha,
+            ReleaseEvidenceScope::Production,
+        ] {
+            let evidence = benchmark_evidence("passed", 120);
+            let envelope = evidence
+                .to_envelope(
+                    crate::evidence::EvidenceKind::Measurement,
+                    "checklist:test-benchmark",
+                    "test-runner",
+                    "eva-release-tests",
+                    1_784_073_600_000,
+                )
+                .unwrap();
+            let bundle = VerifiedReleaseEvidenceBundle::verify(
+                evidence_manifest(scope),
+                ARTIFACT_COMMIT,
+                None,
+                None,
+                None,
+                Some(ReleaseDocumentEvidenceCandidate::new(evidence, envelope)),
+            )
+            .unwrap();
+            let report = ReleaseHardeningService::v15()
+                .readiness_with_verified_release_evidence("all", &bundle)
+                .unwrap();
+
+            if scope == ReleaseEvidenceScope::Alpha {
+                assert_eq!(report.status, "ready");
+                assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Alpha);
+                assert!(!report
+                    .gates
+                    .iter()
+                    .any(|gate| gate.id == "REL-PRODUCTION-EVIDENCE-POLICY-001"));
+            } else {
+                assert_eq!(report.status, "blocked");
+                assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Production);
+                assert!(report.gates.iter().any(|gate| {
+                    gate.id == "REL-PRODUCTION-EVIDENCE-POLICY-001"
+                        && gate.status == ReleaseGateStatus::Blocked
+                        && gate
+                            .remediation
+                            .iter()
+                            .any(|item| item == "production_policy_incomplete")
+                }));
+            }
+        }
+    }
+
+    #[test]
     /// 验证默认内置 required 门禁没有阻塞项。
     fn readiness_has_no_blocking_required_gates() {
         let report = ReleaseHardeningService::v15().readiness("all").unwrap();
 
         assert_eq!(report.status, "ready");
+        assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Alpha);
         assert_eq!(report.blocking_count(), 0);
         assert!(report
             .gates

@@ -8,13 +8,29 @@ use super::{
 use eva_core::EvaError;
 use eva_observability::TraceFields;
 use eva_release::{
-    CompatibilityPolicy, MigrationGuide, MigrationStep, PerformanceBaselineReport,
-    PerformanceBudget, PlatformReadiness, ReleaseArtifactEvidence, ReleaseBenchmarkEvidence,
-    ReleaseDistributionEvidence, ReleaseGate, ReleaseHardeningService, ReleaseReadinessReport,
-    ReleaseSecurityScanEvidence, SecurityFinding, SecurityReviewReport, StabilityScenario,
+    verify_evidence_bundle, CompatibilityPolicy, EvidenceEnvelope, EvidenceKind, EvidenceSubject,
+    MigrationGuide, MigrationStep, PerformanceBaselineReport, PerformanceBudget, PlatformReadiness,
+    ReleaseArtifactEvidence, ReleaseArtifactEvidenceCandidate, ReleaseBenchmarkEvidence,
+    ReleaseDistributionEvidence, ReleaseDocumentEvidenceCandidate, ReleaseEvidenceManifest,
+    ReleaseEvidenceScope, ReleaseEvidenceType, ReleaseGate, ReleaseHardeningService,
+    ReleaseReadinessReport, ReleaseSecurityScanEvidence, SecurityFinding, SecurityReviewReport,
+    StabilityScenario, VerifiedReleaseEvidenceBundle,
 };
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_os = "macos"))
+))]
+use std::os::unix::fs::MetadataExt as UnixMetadataExt;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStringExt;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +65,12 @@ pub(super) struct ReleaseCheckOptions {
     common: CommonOptions,
     /// all、windows、linux 或 macos 等目标平台。
     target: String,
+    /// alpha 兼容范围或 production 强证据范围。
+    scope: ReleaseEvidenceScope,
+    /// 可选统一 evidence 索引清单。
+    evidence_manifest: Option<PathBuf>,
+    /// 由 CI checkout 等外部可信上下文提供的完整提交。
+    expected_source_commit: Option<String>,
     /// 可选签名产物证据。
     artifact_evidence: Option<PathBuf>,
     /// 可选安装/分发烟测证据。
@@ -79,6 +101,129 @@ pub(super) struct ReleaseMigrationOptions {
     to_version: String,
 }
 
+/// 不暴露本地路径或 subject 内容的 evidence 输入摘要。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleaseEvidenceSummary {
+    source: &'static str,
+    entry_count: usize,
+    normalized_envelope_count: usize,
+    integrity_status: &'static str,
+    expected_commit_source: &'static str,
+}
+
+impl ReleaseEvidenceSummary {
+    fn none() -> Self {
+        Self {
+            source: "none",
+            entry_count: 0,
+            normalized_envelope_count: 0,
+            integrity_status: "not_applicable",
+            expected_commit_source: "none",
+        }
+    }
+}
+
+/// artifact gate evidence、统一信封与真实工件字节。
+struct LoadedArtifactEvidence {
+    evidence: ReleaseArtifactEvidence,
+    envelope: EvidenceEnvelope,
+    subject_bytes: Vec<u8>,
+}
+
+/// 以 canonical typed manifest 作为统一信封主题的 evidence。
+struct LoadedDocumentEvidence<T> {
+    evidence: T,
+    envelope: EvidenceEnvelope,
+    subject_bytes: Vec<u8>,
+}
+
+/// release check 一次调用中已解析、归一化且完成完整性校验的 evidence 集合。
+struct LoadedReleaseEvidence {
+    verified_bundle: Option<VerifiedReleaseEvidenceBundle>,
+    artifact: Option<LoadedArtifactEvidence>,
+    distribution: Option<LoadedDocumentEvidence<ReleaseDistributionEvidence>>,
+    security_scan: Option<LoadedDocumentEvidence<ReleaseSecurityScanEvidence>>,
+    benchmark: Option<LoadedDocumentEvidence<ReleaseBenchmarkEvidence>>,
+    summary: ReleaseEvidenceSummary,
+}
+
+impl LoadedReleaseEvidence {
+    fn empty() -> Self {
+        Self {
+            verified_bundle: None,
+            artifact: None,
+            distribution: None,
+            security_scan: None,
+            benchmark: None,
+            summary: ReleaseEvidenceSummary::none(),
+        }
+    }
+
+    /// 复验全部 envelope、canonical subject 和 typed evidence 的来源提交。
+    fn verify_integrity(&self, expected_source_commit: &str) -> Result<(), EvaError> {
+        let mut subjects = Vec::new();
+        if let Some(artifact) = &self.artifact {
+            subjects.push(
+                EvidenceSubject::new(&artifact.envelope, &artifact.subject_bytes)
+                    .with_source_commit_claim(
+                        "legacy_artifact_evidence",
+                        &artifact.evidence.source_commit,
+                    ),
+            );
+        }
+        if let Some(distribution) = &self.distribution {
+            subjects.push(
+                EvidenceSubject::new(&distribution.envelope, &distribution.subject_bytes)
+                    .with_source_commit_claim(
+                        "distribution_evidence",
+                        &distribution.evidence.source_commit,
+                    ),
+            );
+        }
+        if let Some(security_scan) = &self.security_scan {
+            subjects.push(
+                EvidenceSubject::new(&security_scan.envelope, &security_scan.subject_bytes)
+                    .with_source_commit_claim(
+                        "security_scan_evidence",
+                        &security_scan.evidence.source_commit,
+                    ),
+            );
+        }
+        if let Some(benchmark) = &self.benchmark {
+            subjects.push(
+                EvidenceSubject::new(&benchmark.envelope, &benchmark.subject_bytes)
+                    .with_source_commit_claim(
+                        "benchmark_evidence",
+                        &benchmark.evidence.source_commit,
+                    ),
+            );
+        }
+
+        let report = verify_evidence_bundle(expected_source_commit, &subjects)?;
+        if report.is_verified() {
+            Ok(())
+        } else {
+            Err(
+                EvaError::conflict("release evidence manifest integrity verification was blocked")
+                    .with_context(
+                        "blocked_reasons",
+                        report
+                            .blocked_reasons
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    )
+                    .with_context("subject_count", report.subject_count.to_string())
+                    .with_context(
+                        "verified_subject_count",
+                        report.verified_subject_count.to_string(),
+                    ),
+            )
+        }
+    }
+}
+
 /// 解析 `release check|security|perf|migration` 子命令。
 pub(super) fn parse_release_command(args: &[String]) -> Result<ReleaseCommand, EvaError> {
     let (subcommand, rest) = args
@@ -102,6 +247,12 @@ pub(super) fn parse_release_command(args: &[String]) -> Result<ReleaseCommand, E
 fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, EvaError> {
     let mut passthrough = Vec::new();
     let mut target = "all".to_owned();
+    let mut scope = ReleaseEvidenceScope::Alpha;
+    let mut evidence_manifest = None;
+    let mut expected_source_commit = None;
+    let mut scope_seen = false;
+    let mut evidence_manifest_seen = false;
+    let mut expected_source_commit_seen = false;
     let mut artifact_evidence = None;
     let mut distribution_evidence = None;
     let mut security_scan_evidence = None;
@@ -112,6 +263,45 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
             "--target" | "--platform" => {
                 index += 1;
                 target = required_option(args, index, "release target option")?.clone();
+            }
+            "--scope" => {
+                if scope_seen {
+                    return Err(EvaError::invalid_argument(
+                        "release evidence scope option is duplicated",
+                    ));
+                }
+                scope_seen = true;
+                index += 1;
+                scope = ReleaseEvidenceScope::parse(required_option(
+                    args,
+                    index,
+                    "release evidence scope option",
+                )?)?;
+            }
+            "--evidence-manifest" => {
+                if evidence_manifest_seen {
+                    return Err(EvaError::invalid_argument(
+                        "release evidence manifest option is duplicated",
+                    ));
+                }
+                evidence_manifest_seen = true;
+                index += 1;
+                evidence_manifest = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "release evidence manifest option",
+                )?));
+            }
+            "--expected-source-commit" => {
+                if expected_source_commit_seen {
+                    return Err(EvaError::invalid_argument(
+                        "expected source commit option is duplicated",
+                    ));
+                }
+                expected_source_commit_seen = true;
+                index += 1;
+                expected_source_commit =
+                    Some(required_option(args, index, "expected source commit option")?.clone());
             }
             "--artifact-evidence" | "--artifact-evidence-file" => {
                 index += 1;
@@ -155,6 +345,9 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
     Ok(ReleaseCheckOptions {
         common: parse_common_options(&passthrough)?,
         target,
+        scope,
+        evidence_manifest,
+        expected_source_commit,
         artifact_evidence,
         distribution_evidence,
         security_scan_evidence,
@@ -237,42 +430,47 @@ where
         ReleaseCommand::Check(options) => {
             let trace = trace_for("cli.release.check");
             let report = (|| {
-                let artifact_evidence = options
-                    .artifact_evidence
-                    .as_ref()
-                    .map(|path| read_release_artifact_evidence(path))
-                    .transpose()?;
-                let distribution_evidence = options
-                    .distribution_evidence
-                    .as_ref()
-                    .map(|path| read_release_distribution_evidence(path))
-                    .transpose()?;
-                let security_scan_evidence = options
-                    .security_scan_evidence
-                    .as_ref()
-                    .map(|path| read_release_security_scan_evidence(path))
-                    .transpose()?;
-                let benchmark_evidence = options
-                    .benchmark_evidence
-                    .as_ref()
-                    .map(|path| read_release_benchmark_evidence(path))
-                    .transpose()?;
-                service.readiness_with_release_evidence(
-                    &options.target,
-                    artifact_evidence.as_ref(),
-                    distribution_evidence.as_ref(),
-                    security_scan_evidence.as_ref(),
-                    benchmark_evidence.as_ref(),
-                )
+                let evidence = load_release_check_evidence(&options)?;
+                let report = if let Some(bundle) = evidence.verified_bundle.as_ref() {
+                    service.readiness_with_verified_release_evidence(&options.target, bundle)?
+                } else {
+                    if options.scope == ReleaseEvidenceScope::Production {
+                        return Err(EvaError::invalid_argument(
+                            "production release check requires an evidence manifest",
+                        ));
+                    }
+                    service.readiness_with_release_evidence(
+                        &options.target,
+                        evidence.artifact.as_ref().map(|loaded| &loaded.evidence),
+                        evidence
+                            .distribution
+                            .as_ref()
+                            .map(|loaded| &loaded.evidence),
+                        evidence
+                            .security_scan
+                            .as_ref()
+                            .map(|loaded| &loaded.evidence),
+                        evidence.benchmark.as_ref().map(|loaded| &loaded.evidence),
+                    )?
+                };
+                Ok::<_, EvaError>((report, evidence.summary))
             })();
             match report {
-                Ok(report) => {
-                    write_release_check(stdout, options.common.output, &report, &trace)?;
-                    Ok(if report.blocking_count() == 0 {
+                Ok((report, summary)) => {
+                    let exit_code = if report.blocking_count() == 0 {
                         EXIT_OK
                     } else {
                         EXIT_CONFIG
-                    })
+                    };
+                    write_release_check(
+                        stdout,
+                        options.common.output,
+                        exit_code,
+                        &summary,
+                        &report,
+                        &trace,
+                    )?;
+                    Ok(exit_code)
                 }
                 Err(error) => write_command_error(
                     stderr,
@@ -344,6 +542,517 @@ where
                 ),
             }
         }
+    }
+}
+
+/// 根据 scope 选择统一 manifest 或 alpha 兼容参数，并在聚合前完成 envelope 校验。
+fn load_release_check_evidence(
+    options: &ReleaseCheckOptions,
+) -> Result<LoadedReleaseEvidence, EvaError> {
+    let legacy_count = [
+        options.artifact_evidence.is_some(),
+        options.distribution_evidence.is_some(),
+        options.security_scan_evidence.is_some(),
+        options.benchmark_evidence.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+
+    if options.evidence_manifest.is_some() && legacy_count > 0 {
+        return Err(EvaError::invalid_argument(
+            "release evidence manifest cannot be combined with legacy evidence options",
+        ));
+    }
+    if options.scope == ReleaseEvidenceScope::Production && legacy_count > 0 {
+        return Err(EvaError::invalid_argument(
+            "production release check does not accept legacy evidence options",
+        ));
+    }
+
+    if let Some(manifest_path) = &options.evidence_manifest {
+        load_manifest_release_evidence(options, manifest_path)
+    } else if legacy_count > 0 {
+        load_legacy_release_evidence(options)
+    } else {
+        Ok(LoadedReleaseEvidence::empty())
+    }
+}
+
+/// 读取统一 manifest 的全部引用；production 的 expected commit 必须来自外部参数。
+fn load_manifest_release_evidence(
+    options: &ReleaseCheckOptions,
+    manifest_path: &Path,
+) -> Result<LoadedReleaseEvidence, EvaError> {
+    let canonical_manifest_path = canonical_file(manifest_path, "evidence_manifest")?;
+    let data = fs::read_to_string(&canonical_manifest_path).map_err(|error| {
+        EvaError::not_found("failed to read release evidence manifest")
+            .with_context("evidence_manifest", manifest_path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    let manifest = ReleaseEvidenceManifest::parse_manifest(&data).map_err(|error| {
+        error.with_context("evidence_manifest", manifest_path.display().to_string())
+    })?;
+    if manifest.scope != options.scope {
+        return Err(EvaError::invalid_argument(
+            "release evidence manifest scope does not match CLI scope",
+        )
+        .with_context("cli_scope", options.scope.as_str())
+        .with_context("manifest_scope", manifest.scope.as_str()));
+    }
+    if options.scope == ReleaseEvidenceScope::Production && options.expected_source_commit.is_none()
+    {
+        return Err(EvaError::invalid_argument(
+            "production release check requires --expected-source-commit",
+        ));
+    }
+    let expected_source_commit = options
+        .expected_source_commit
+        .clone()
+        .unwrap_or_else(|| manifest.source_commit.clone());
+    if manifest.source_commit != expected_source_commit {
+        return Err(EvaError::conflict(
+            "release evidence manifest source commit does not match trusted commit",
+        )
+        .with_context("blocked_reasons", "evidence_source_commit_mismatch"));
+    }
+
+    let base = canonical_manifest_path.parent().ok_or_else(|| {
+        EvaError::invalid_argument("release evidence manifest must have a parent directory")
+    })?;
+    let mut loaded = LoadedReleaseEvidence::empty();
+    for entry in &manifest.entries {
+        let evidence_bytes = read_manifest_reference(base, &entry.evidence_path, "evidence")?;
+        let evidence_data = manifest_utf8(&evidence_bytes, "evidence")?;
+        let envelope_bytes = read_manifest_reference(base, &entry.envelope_path, "envelope")?;
+        let envelope_data = manifest_utf8(&envelope_bytes, "envelope")?;
+        let envelope = EvidenceEnvelope::parse_manifest(&envelope_data)?;
+
+        match entry.evidence_type {
+            ReleaseEvidenceType::Artifact => {
+                let evidence = ReleaseArtifactEvidence::parse_manifest(&evidence_data)?;
+                let subject_bytes = read_manifest_reference(
+                    base,
+                    entry
+                        .subject_path
+                        .as_deref()
+                        .expect("artifact entries are validated with subject paths"),
+                    "subject",
+                )?;
+                loaded.artifact = Some(LoadedArtifactEvidence {
+                    evidence,
+                    envelope,
+                    subject_bytes,
+                });
+            }
+            ReleaseEvidenceType::Distribution => {
+                let evidence = ReleaseDistributionEvidence::parse_manifest(&evidence_data)?;
+                let subject_bytes = evidence.to_manifest().into_bytes();
+                loaded.distribution = Some(LoadedDocumentEvidence {
+                    evidence,
+                    envelope,
+                    subject_bytes,
+                });
+            }
+            ReleaseEvidenceType::SecurityScan => {
+                let evidence = ReleaseSecurityScanEvidence::parse_manifest(&evidence_data)?;
+                let subject_bytes = evidence.to_manifest().into_bytes();
+                loaded.security_scan = Some(LoadedDocumentEvidence {
+                    evidence,
+                    envelope,
+                    subject_bytes,
+                });
+            }
+            ReleaseEvidenceType::Benchmark => {
+                let evidence = ReleaseBenchmarkEvidence::parse_manifest(&evidence_data)?;
+                let subject_bytes = evidence.to_manifest().into_bytes();
+                loaded.benchmark = Some(LoadedDocumentEvidence {
+                    evidence,
+                    envelope,
+                    subject_bytes,
+                });
+            }
+        }
+    }
+    let entry_count = manifest.entries.len();
+    let verified_bundle = VerifiedReleaseEvidenceBundle::verify(
+        manifest,
+        &expected_source_commit,
+        loaded.artifact.take().map(|candidate| {
+            ReleaseArtifactEvidenceCandidate::new(
+                candidate.evidence,
+                candidate.envelope,
+                candidate.subject_bytes,
+            )
+        }),
+        loaded.distribution.take().map(|candidate| {
+            ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
+        }),
+        loaded.security_scan.take().map(|candidate| {
+            ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
+        }),
+        loaded.benchmark.take().map(|candidate| {
+            ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
+        }),
+    )?;
+    loaded.summary = ReleaseEvidenceSummary {
+        source: "manifest",
+        entry_count,
+        normalized_envelope_count: entry_count,
+        integrity_status: "verified",
+        expected_commit_source: if options.expected_source_commit.is_some() {
+            "external_option"
+        } else {
+            "manifest_claim_alpha_only"
+        },
+    };
+    loaded.verified_bundle = Some(verified_bundle);
+    Ok(loaded)
+}
+
+/// 将旧四参数归一化为 declaration envelope，但不补造运行身份或 artifact 字节。
+fn load_legacy_release_evidence(
+    options: &ReleaseCheckOptions,
+) -> Result<LoadedReleaseEvidence, EvaError> {
+    let mut loaded = LoadedReleaseEvidence::empty();
+    if let Some(path) = &options.artifact_evidence {
+        let evidence = read_release_artifact_evidence(path)?;
+        let subject_bytes = evidence.to_manifest().into_bytes();
+        let envelope = legacy_manifest_envelope(
+            "legacy:artifact-evidence-manifest",
+            &evidence.source_commit,
+            &subject_bytes,
+        )?;
+        loaded.artifact = Some(LoadedArtifactEvidence {
+            evidence,
+            envelope,
+            subject_bytes,
+        });
+    }
+    if let Some(path) = &options.distribution_evidence {
+        let evidence = read_release_distribution_evidence(path)?;
+        let subject_bytes = evidence.to_manifest().into_bytes();
+        let envelope = legacy_manifest_envelope(
+            "legacy:distribution-evidence-manifest",
+            &evidence.source_commit,
+            &subject_bytes,
+        )?;
+        loaded.distribution = Some(LoadedDocumentEvidence {
+            evidence,
+            envelope,
+            subject_bytes,
+        });
+    }
+    if let Some(path) = &options.security_scan_evidence {
+        let evidence = read_release_security_scan_evidence(path)?;
+        let subject_bytes = evidence.to_manifest().into_bytes();
+        let envelope = legacy_manifest_envelope(
+            "legacy:security-scan-evidence-manifest",
+            &evidence.source_commit,
+            &subject_bytes,
+        )?;
+        loaded.security_scan = Some(LoadedDocumentEvidence {
+            evidence,
+            envelope,
+            subject_bytes,
+        });
+    }
+    if let Some(path) = &options.benchmark_evidence {
+        let evidence = read_release_benchmark_evidence(path)?;
+        let subject_bytes = evidence.to_manifest().into_bytes();
+        let envelope = legacy_manifest_envelope(
+            "legacy:benchmark-evidence-manifest",
+            &evidence.source_commit,
+            &subject_bytes,
+        )?;
+        loaded.benchmark = Some(LoadedDocumentEvidence {
+            evidence,
+            envelope,
+            subject_bytes,
+        });
+    }
+
+    let expected_source_commit = options
+        .expected_source_commit
+        .as_deref()
+        .or_else(|| {
+            loaded
+                .artifact
+                .as_ref()
+                .map(|item| item.evidence.source_commit.as_str())
+        })
+        .or_else(|| {
+            loaded
+                .distribution
+                .as_ref()
+                .map(|item| item.evidence.source_commit.as_str())
+        })
+        .or_else(|| {
+            loaded
+                .security_scan
+                .as_ref()
+                .map(|item| item.evidence.source_commit.as_str())
+        })
+        .or_else(|| {
+            loaded
+                .benchmark
+                .as_ref()
+                .map(|item| item.evidence.source_commit.as_str())
+        })
+        .expect("legacy loader is called only when at least one option is present")
+        .to_owned();
+    loaded.verify_integrity(&expected_source_commit)?;
+    let entry_count = [
+        loaded.artifact.is_some(),
+        loaded.distribution.is_some(),
+        loaded.security_scan.is_some(),
+        loaded.benchmark.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    loaded.summary = ReleaseEvidenceSummary {
+        source: "legacy_alpha",
+        entry_count,
+        normalized_envelope_count: entry_count,
+        integrity_status: "verified",
+        expected_commit_source: if options.expected_source_commit.is_some() {
+            "external_option"
+        } else {
+            "legacy_evidence_claim_alpha_only"
+        },
+    };
+    Ok(loaded)
+}
+
+/// 旧参数缺少采集身份，使用固定弱分类与 sentinel 元数据，避免补造 production 测量。
+fn legacy_manifest_envelope(
+    source: &str,
+    source_commit: &str,
+    subject_bytes: &[u8],
+) -> Result<EvidenceEnvelope, EvaError> {
+    EvidenceEnvelope::from_subject_bytes(
+        EvidenceKind::Declaration,
+        source,
+        source_commit,
+        "legacy-unbound",
+        "legacy-cli-input",
+        1,
+        subject_bytes,
+    )
+}
+
+/// 将 manifest 自身解析为真实文件并拒绝目录。
+fn canonical_file(path: &Path, context: &str) -> Result<PathBuf, EvaError> {
+    let canonical = fs::canonicalize(path).map_err(|error| {
+        EvaError::not_found("release evidence file is missing")
+            .with_context(context, path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    if !canonical.is_file() {
+        return Err(
+            EvaError::invalid_argument("release evidence path must reference a file")
+                .with_context(context, path.display().to_string()),
+        );
+    }
+    Ok(canonical)
+}
+
+/// 从受限相对引用打开同一 handle，并在读取前后复验 canonical target 未漂移。
+fn read_manifest_reference(
+    base: &Path,
+    reference: &str,
+    context: &str,
+) -> Result<Vec<u8>, EvaError> {
+    let joined = base.join(reference);
+    let canonical_before = canonical_file(&joined, context)?;
+    if !canonical_before.starts_with(base) {
+        return Err(EvaError::invalid_argument(
+            "release evidence manifest reference escapes its directory",
+        )
+        .with_context("reference_kind", context));
+    }
+    let mut file = fs::File::open(&canonical_before).map_err(|error| {
+        EvaError::not_found("failed to open release evidence manifest reference")
+            .with_context("reference_kind", context)
+            .with_context("io_error", error.to_string())
+    })?;
+    let opened_metadata = file.metadata().map_err(|error| {
+        EvaError::not_found("failed to inspect release evidence manifest reference")
+            .with_context("reference_kind", context)
+            .with_context("io_error", error.to_string())
+    })?;
+    if !opened_metadata.is_file() {
+        return Err(EvaError::invalid_argument(
+            "release evidence manifest reference must be a regular file",
+        )
+        .with_context("reference_kind", context));
+    }
+    let canonical_open = canonical_file(&joined, context)?;
+    if canonical_open != canonical_before || !canonical_open.starts_with(base) {
+        return Err(EvaError::conflict(
+            "release evidence manifest reference changed while opening",
+        )
+        .with_context("reference_kind", context));
+    }
+    if !opened_file_matches_checked_path(&canonical_open, &file)? {
+        return Err(EvaError::conflict(
+            "release evidence manifest reference identity changed before opening",
+        )
+        .with_context("reference_kind", context));
+    }
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).map_err(|error| {
+        EvaError::not_found("failed to read release evidence manifest reference")
+            .with_context("reference_kind", context)
+            .with_context("io_error", error.to_string())
+    })?;
+    let canonical_after = canonical_file(&joined, context)?;
+    if canonical_after != canonical_before || !canonical_after.starts_with(base) {
+        return Err(EvaError::conflict(
+            "release evidence manifest reference changed while reading",
+        )
+        .with_context("reference_kind", context));
+    }
+    Ok(data)
+}
+
+/// 将 manifest 文本从 UTF-8 bytes 解码，拒绝平台默认编码和有损替换。
+fn manifest_utf8(data: &[u8], context: &str) -> Result<String, EvaError> {
+    String::from_utf8(data.to_vec()).map_err(|error| {
+        EvaError::invalid_argument("release evidence manifest reference must be UTF-8")
+            .with_context("reference_kind", context)
+            .with_context("utf8_error", error.to_string())
+    })
+}
+
+/// Linux/Android 通过 procfs 查询首个已打开 handle 的最终路径。
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn opened_file_matches_checked_path(
+    checked_path: &Path,
+    opened: &fs::File,
+) -> Result<bool, EvaError> {
+    let final_path =
+        fs::read_link(format!("/proc/self/fd/{}", opened.as_raw_fd())).map_err(|error| {
+            EvaError::not_found("failed to resolve opened release evidence handle")
+                .with_context("io_error", error.to_string())
+        })?;
+    Ok(final_path == checked_path)
+}
+
+/// macOS 通过 F_GETPATH 查询首个已打开 handle 的最终路径。
+#[cfg(target_os = "macos")]
+fn opened_file_matches_checked_path(
+    checked_path: &Path,
+    opened: &fs::File,
+) -> Result<bool, EvaError> {
+    const F_GETPATH: i32 = 50;
+    let mut buffer = [0_u8; 4096];
+    // SAFETY: the file descriptor remains open and buffer is writable for its full length.
+    let result = unsafe { fcntl_get_path(opened.as_raw_fd(), F_GETPATH, buffer.as_mut_ptr()) };
+    if result == -1 {
+        return Err(
+            EvaError::not_found("failed to resolve opened release evidence handle")
+                .with_context("io_error", std::io::Error::last_os_error().to_string()),
+        );
+    }
+    let length = buffer.iter().position(|byte| *byte == 0).ok_or_else(|| {
+        EvaError::invalid_argument("opened release evidence path exceeds platform limit")
+    })?;
+    Ok(Path::new(std::ffi::OsStr::from_bytes(&buffer[..length])) == checked_path)
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    #[link_name = "fcntl"]
+    fn fcntl_get_path(file_descriptor: i32, command: i32, buffer: *mut u8) -> i32;
+}
+
+/// 其他 Unix 平台回退为路径和 handle 的设备/inode 身份比较。
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_os = "macos"))
+))]
+fn opened_file_matches_checked_path(
+    checked_path: &Path,
+    opened: &fs::File,
+) -> Result<bool, EvaError> {
+    let expected = fs::metadata(checked_path).map_err(|error| {
+        EvaError::not_found("failed to inspect checked release evidence path")
+            .with_context("io_error", error.to_string())
+    })?;
+    let opened = opened.metadata().map_err(|error| {
+        EvaError::not_found("failed to inspect opened release evidence handle")
+            .with_context("io_error", error.to_string())
+    })?;
+    Ok(expected.dev() == opened.dev() && expected.ino() == opened.ino())
+}
+
+/// Windows 直接查询首个已打开 handle 的 normalized DOS final path。
+#[cfg(windows)]
+fn opened_file_matches_checked_path(
+    checked_path: &Path,
+    opened: &fs::File,
+) -> Result<bool, EvaError> {
+    let final_path = windows_final_path(opened)?;
+    Ok(normalize_windows_path(&final_path) == normalize_windows_path(checked_path))
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    #[link_name = "GetFinalPathNameByHandleW"]
+    fn get_final_path_name_by_handle(
+        file: *mut std::ffi::c_void,
+        path: *mut u16,
+        path_length: u32,
+        flags: u32,
+    ) -> u32;
+}
+
+/// 从已打开 Windows handle 读取 normalized DOS final path。
+#[cfg(windows)]
+fn windows_final_path(file: &fs::File) -> Result<PathBuf, EvaError> {
+    let mut buffer = vec![0_u16; 512];
+    loop {
+        // SAFETY: `file` remains open and buffer exposes writable UTF-16 storage of the
+        // declared length. Flags 0 request normalized DOS paths.
+        let length = unsafe {
+            get_final_path_name_by_handle(
+                file.as_raw_handle().cast(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                0,
+            )
+        };
+        if length == 0 {
+            return Err(
+                EvaError::not_found("failed to resolve opened release evidence handle")
+                    .with_context("io_error", std::io::Error::last_os_error().to_string()),
+            );
+        }
+        if (length as usize) < buffer.len() {
+            let path = std::ffi::OsString::from_wide(&buffer[..length as usize]);
+            return Ok(PathBuf::from(path));
+        }
+        buffer.resize(length as usize + 1, 0);
+    }
+}
+
+/// Windows path identity comparison is separator- and ASCII-case-insensitive.
+#[cfg(windows)]
+fn normalize_windows_path(path: &Path) -> String {
+    let normalized = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    if let Some(path) = normalized.strip_prefix("\\\\?\\unc\\") {
+        format!("\\\\{path}")
+    } else {
+        normalized
+            .strip_prefix("\\\\?\\")
+            .unwrap_or(&normalized)
+            .to_owned()
     }
 }
 
@@ -419,6 +1128,8 @@ fn read_release_benchmark_evidence(path: &Path) -> Result<ReleaseBenchmarkEviden
 fn write_release_check<W: Write>(
     writer: &mut W,
     output: OutputFormat,
+    exit_code: i32,
+    evidence_summary: &ReleaseEvidenceSummary,
     report: &ReleaseReadinessReport,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
@@ -427,6 +1138,10 @@ fn write_release_check<W: Write>(
             writeln!(writer, "Release readiness").map_err(write_error_kind)?;
             writeln!(writer, "version: {}", report.version).map_err(write_error_kind)?;
             writeln!(writer, "target: {}", report.target).map_err(write_error_kind)?;
+            writeln!(writer, "evidence_scope: {}", report.evidence_scope)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "evidence_source: {}", evidence_summary.source)
+                .map_err(write_error_kind)?;
             writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
             writeln!(writer, "blocking_gates: {}", report.blocking_count())
                 .map_err(write_error_kind)?;
@@ -444,7 +1159,12 @@ fn write_release_check<W: Write>(
         OutputFormat::Json => writeln!(
             writer,
             "{}",
-            success_envelope("release.check", EXIT_OK, &release_check_json(report), trace)
+            success_envelope(
+                "release.check",
+                exit_code,
+                &release_check_json(evidence_summary, report),
+                trace
+            )
         )
         .map_err(write_error_kind),
     }
@@ -541,12 +1261,17 @@ fn write_release_migration<W: Write>(
 }
 
 /// 将完整发布 readiness 报告编码为稳定 JSON。
-fn release_check_json(report: &ReleaseReadinessReport) -> String {
+fn release_check_json(
+    evidence_summary: &ReleaseEvidenceSummary,
+    report: &ReleaseReadinessReport,
+) -> String {
     format!(
-        "{{\"version\":{},\"status\":{},\"target\":{},\"blocking_gates\":{},\"warning_gates\":{},\"platforms\":{},\"stability\":{},\"gates\":{},\"closure\":{},\"audit\":{}}}",
+        "{{\"version\":{},\"status\":{},\"target\":{},\"evidence_scope\":{},\"evidence_manifest\":{},\"blocking_gates\":{},\"warning_gates\":{},\"platforms\":{},\"stability\":{},\"gates\":{},\"closure\":{},\"audit\":{}}}",
         json_string(&report.version),
         json_string(&report.status),
         json_string(&report.target),
+        json_string(report.evidence_scope.as_str()),
+        release_evidence_summary_json(evidence_summary),
         report.blocking_count(),
         report.warning_count(),
         json_array(report.platforms.iter().map(platform_readiness_json)),
@@ -554,6 +1279,18 @@ fn release_check_json(report: &ReleaseReadinessReport) -> String {
         json_array(report.gates.iter().map(release_gate_json)),
         v1x_closure_json(report),
         json_array(report.audit.iter().map(|entry| json_string(entry)))
+    )
+}
+
+/// 将路径脱敏后的 manifest/legacy normalization 摘要编码为 JSON。
+fn release_evidence_summary_json(summary: &ReleaseEvidenceSummary) -> String {
+    format!(
+        "{{\"source\":{},\"entry_count\":{},\"normalized_envelope_count\":{},\"integrity_status\":{},\"expected_commit_source\":{}}}",
+        json_string(summary.source),
+        summary.entry_count,
+        summary.normalized_envelope_count,
+        json_string(summary.integrity_status),
+        json_string(summary.expected_commit_source),
     )
 }
 
@@ -724,4 +1461,81 @@ fn compatibility_policy_json(policy: &CompatibilityPolicy) -> String {
         json_string(&policy.deprecation_window),
         json_array(policy.public_contracts.iter().map(|contract| json_string(contract)))
     )
+}
+
+#[cfg(test)]
+mod evidence_path_tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 创建独立目录，避免并行 identity 测试共享同一文件对象。
+    fn identity_fixture() -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "eva-release-evidence-identity-{}-{suffix}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    /// 验证检查路径与同一已打开 handle 的平台文件身份一致。
+    fn opened_handle_matches_checked_file_identity() {
+        let root = identity_fixture();
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("subject.bin");
+        fs::write(&path, b"subject").unwrap();
+        let opened = fs::File::open(&path).unwrap();
+
+        assert!(opened_file_matches_checked_path(&path, &opened).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    /// 验证另一个文件不能替代已完成路径检查的 handle。
+    fn opened_handle_rejects_different_file_identity() {
+        let root = identity_fixture();
+        fs::create_dir_all(&root).unwrap();
+        let checked_path = root.join("checked.bin");
+        let opened_path = root.join("opened.bin");
+        fs::write(&checked_path, b"same-size").unwrap();
+        fs::write(&opened_path, b"same-size").unwrap();
+        let opened = fs::File::open(&opened_path).unwrap();
+
+        assert!(!opened_file_matches_checked_path(&checked_path, &opened).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    /// 验证目录内 symlink 不能把 manifest reference 指向 bundle 外部。
+    fn manifest_reference_rejects_symlink_escape() {
+        let root = identity_fixture();
+        let bundle = root.join("bundle");
+        fs::create_dir_all(&bundle).unwrap();
+        let outside = root.join("outside.bin");
+        fs::write(&outside, b"outside").unwrap();
+        let link = bundle.join("subject.bin");
+        #[cfg(unix)]
+        symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        if let Err(error) = symlink_file(&outside, &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                fs::remove_dir_all(root).unwrap();
+                return;
+            }
+            panic!("failed to create test symlink: {error}");
+        }
+
+        let canonical_bundle = fs::canonicalize(&bundle).unwrap();
+        let error =
+            read_manifest_reference(&canonical_bundle, "subject.bin", "subject").unwrap_err();
+        assert!(error.message().contains("escapes its directory"));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

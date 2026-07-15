@@ -11,6 +11,12 @@
       "version": "1.11.5-alpha",
       "status": "ready",
       "target": "all",
+      "evidence_scope": "alpha",
+      "evidence_manifest": {
+        "source": "none",
+        "entry_count": 0,
+        "integrity_status": "not_applicable"
+      },
       "blocking_gates": 0,
       "warning_gates": 1,
       "gates": [

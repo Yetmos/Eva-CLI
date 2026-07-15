@@ -898,7 +898,7 @@ fn help_text() -> &'static str {
         "  eva restore rollback --plan <path> --confirm <plan_id> --artifact-store <path> --lock-store <path> [--transaction-log <path>] [--owner <id>] [--health healthy|failed] [--project <path>] [--output text|json]\n",
         "  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n",
         "  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--state-store <path>] [--runtime-binary <path>] [--health healthy|failed|unavailable] [--owner <id>] [--project <path>] [--output text|json]\n",
-        "  eva release check [--target all|windows|linux|macos] [--artifact-evidence <path>] [--distribution-evidence <path>] [--security-scan-evidence <path>] [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
+        "  eva release check [--target all|windows|linux|macos] [--scope alpha|production] [--evidence-manifest <path>] [--expected-source-commit <sha>] [--artifact-evidence <path>] [--distribution-evidence <path>] [--security-scan-evidence <path>] [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
         "  eva release security [--project <path>] [--output text|json]\n",
         "  eva release perf [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
         "  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\n",
@@ -938,7 +938,7 @@ fn help_text() -> &'static str {
 /// 跨子命令的 CLI 输出、退出码、持久化与高风险门禁集成回归测试。
 mod tests {
     use super::*;
-    use eva_storage::{ArtifactStore, FileSystemArtifactStore};
+    use eva_storage::{ArtifactRecord, ArtifactStore, FileSystemArtifactStore};
     use std::fs;
     use std::net::TcpListener;
     #[cfg(unix)]
@@ -1263,6 +1263,125 @@ mod tests {
         .unwrap();
         fs::write(&evidence_path, evidence.to_manifest()).unwrap();
         (root, evidence_path)
+    }
+
+    /// 创建统一 benchmark manifest、canonical evidence 和匹配 envelope。
+    fn release_benchmark_manifest_fixture(
+        name: &str,
+        scope: eva_release::ReleaseEvidenceScope,
+    ) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let (root, evidence_path) = release_benchmark_evidence_fixture(name, "passed", 120);
+        let evidence_data = fs::read_to_string(&evidence_path).unwrap();
+        let evidence =
+            eva_release::ReleaseBenchmarkEvidence::parse_manifest(&evidence_data).unwrap();
+        let envelope = evidence
+            .to_envelope(
+                eva_release::EvidenceKind::Measurement,
+                "test:release-benchmark",
+                "test-runner",
+                "eva-cli-tests",
+                1_784_073_600_000,
+            )
+            .unwrap();
+        let envelope_path = root.join("release-benchmark.envelope");
+        fs::write(&envelope_path, envelope.to_manifest()).unwrap();
+        let manifest = eva_release::ReleaseEvidenceManifest::new(
+            scope,
+            &evidence.source_commit,
+            vec![eva_release::ReleaseEvidenceManifestEntry::new(
+                eva_release::ReleaseEvidenceType::Benchmark,
+                "release-benchmark.evidence",
+                "release-benchmark.envelope",
+                None,
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let manifest_path = root.join("release-evidence.manifest");
+        fs::write(&manifest_path, manifest.to_manifest()).unwrap();
+        (root, manifest_path, evidence_path, envelope_path)
+    }
+
+    /// 创建使用真实 subject bytes 和一致 artifact digest/size 的统一 manifest。
+    fn release_artifact_manifest_fixture(
+        name: &str,
+        scope: eva_release::ReleaseEvidenceScope,
+    ) -> (PathBuf, PathBuf, PathBuf) {
+        let root = test_temp_dir(name);
+        fs::create_dir_all(&root).unwrap();
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let subject_bytes = b"real release artifact bytes".to_vec();
+        let record = ArtifactRecord::new("release/test-artifact", subject_bytes.clone());
+        let subject_path = root.join("eva-test.tar.gz");
+        fs::write(&subject_path, &subject_bytes).unwrap();
+
+        let key = eva_release::ReleaseArtifactSigningKey::local_development();
+        let artifact = eva_release::ReleaseArtifactSubject::new(
+            "eva-test.tar.gz",
+            "x86_64-unknown-linux-gnu",
+            "tar.gz",
+            "eva",
+            &record.digest,
+            subject_bytes.len() as u64,
+            true,
+        )
+        .unwrap();
+        let provenance = eva_release::ReleaseProvenanceEvidence::new(
+            "github-actions",
+            commit,
+            "cargo build --release --locked",
+            "release",
+            "spdx:eva-test.spdx.json",
+            "passed",
+        )
+        .unwrap();
+        let signature = eva_release::ReleaseArtifactSignature::new(
+            key.key_id(),
+            eva_release::artifact::RELEASE_SIGNATURE_ALGORITHM,
+            "pending",
+        )
+        .unwrap();
+        let mut evidence = eva_release::ReleaseArtifactEvidence::new(
+            "1.11.5-alpha",
+            "v1.11.5-alpha",
+            commit,
+            artifact,
+            provenance,
+            signature,
+        )
+        .unwrap();
+        evidence.signature = evidence.sign(&key);
+        let evidence_path = root.join("release-artifact.evidence");
+        fs::write(&evidence_path, evidence.to_manifest()).unwrap();
+        let envelope = evidence
+            .to_envelope(
+                eva_release::EvidenceKind::Measurement,
+                "test:release-artifact",
+                "test-runner",
+                "eva-cli-tests",
+                1_784_073_600_000,
+            )
+            .unwrap();
+        fs::write(
+            root.join("release-artifact.envelope"),
+            envelope.to_manifest(),
+        )
+        .unwrap();
+        let manifest = eva_release::ReleaseEvidenceManifest::new(
+            scope,
+            commit,
+            vec![eva_release::ReleaseEvidenceManifestEntry::new(
+                eva_release::ReleaseEvidenceType::Artifact,
+                "release-artifact.evidence",
+                "release-artifact.envelope",
+                Some("eva-test.tar.gz".to_owned()),
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let manifest_path = root.join("release-evidence.manifest");
+        fs::write(&manifest_path, manifest.to_manifest()).unwrap();
+        (root, manifest_path, subject_path)
     }
 
     #[cfg(unix)]
@@ -2511,6 +2630,241 @@ mod tests {
         assert!(stdout.contains("closure.required_gate:REL-JSON-CONTRACT-001"));
         assert!(stdout.contains("production_signing_attestation_credentials"));
         assert!(stdout.contains("v1x_closure_report_ready"));
+        assert!(stdout.contains("\"evidence_scope\":\"alpha\""));
+        assert!(stdout.contains("\"source\":\"none\""));
+        assert!(stdout.contains("\"integrity_status\":\"not_applicable\""));
+    }
+
+    #[test]
+    /// 验证 production 缺统一 manifest 时走 release.check JSON 错误信封并非零退出。
+    fn production_release_check_requires_evidence_manifest() {
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--scope",
+            "production",
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"ok\":false"));
+        assert!(stderr.contains("\"command\":\"release.check\""));
+        assert!(stderr.contains("production release check requires an evidence manifest"));
+    }
+
+    #[test]
+    /// 验证 alpha 与 production manifest 均不能被另一 CLI scope 冒充消费。
+    fn release_check_rejects_bidirectional_scope_mismatch() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        for (name, manifest_scope, cli_scope) in [
+            (
+                "release-manifest-production-as-alpha",
+                eva_release::ReleaseEvidenceScope::Production,
+                "alpha",
+            ),
+            (
+                "release-manifest-alpha-as-production",
+                eva_release::ReleaseEvidenceScope::Alpha,
+                "production",
+            ),
+        ] {
+            let (evidence_root, manifest_path, _, _) =
+                release_benchmark_manifest_fixture(name, manifest_scope);
+            let (exit_code, stdout, stderr) = run_cli(&[
+                "release",
+                "check",
+                "--scope",
+                cli_scope,
+                "--evidence-manifest",
+                manifest_path.to_str().unwrap(),
+                "--expected-source-commit",
+                commit,
+                "--output",
+                "json",
+            ]);
+
+            assert_eq!(exit_code, EXIT_CONFIG);
+            assert!(stdout.is_empty());
+            assert!(stderr.contains("manifest scope does not match CLI scope"));
+            fs::remove_dir_all(evidence_root).unwrap();
+        }
+    }
+
+    #[test]
+    /// 验证 production manifest 不能用自身 source_commit 代替外部可信提交。
+    fn production_release_check_requires_external_expected_commit() {
+        let (evidence_root, manifest_path, _, _) = release_benchmark_manifest_fixture(
+            "release-manifest-missing-expected-commit",
+            eva_release::ReleaseEvidenceScope::Production,
+        );
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--scope",
+            "production",
+            "--evidence-manifest",
+            manifest_path.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("requires --expected-source-commit"));
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证统一 production benchmark manifest 通过 scope、提交和 digest 校验后进入 gate。
+    fn production_release_check_consumes_verified_manifest() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let (evidence_root, manifest_path, _, _) = release_benchmark_manifest_fixture(
+            "release-manifest-production-verified",
+            eva_release::ReleaseEvidenceScope::Production,
+        );
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--scope",
+            "production",
+            "--evidence-manifest",
+            manifest_path.to_str().unwrap(),
+            "--expected-source-commit",
+            commit,
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG, "{stderr}");
+        assert!(stdout.contains("\"evidence_scope\":\"production\""));
+        assert!(stdout.contains("\"source\":\"manifest\""));
+        assert!(stdout.contains("\"integrity_status\":\"verified\""));
+        assert!(stdout.contains("\"expected_commit_source\":\"external_option\""));
+        assert!(stdout.contains("\"id\":\"REL-BENCHMARK-001\""));
+        assert!(stdout.contains("\"exit_code\":2"));
+        assert!(stdout.contains("\"status\":\"blocked\""));
+        assert!(stdout.contains("\"id\":\"REL-PRODUCTION-EVIDENCE-POLICY-001\""));
+        assert!(stdout.contains("production_policy_incomplete"));
+        assert!(!stdout.contains(manifest_path.to_str().unwrap()));
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证外部可信提交错误时使用稳定 provenance blocker 拒绝 manifest。
+    fn production_release_check_rejects_wrong_expected_commit() {
+        let (evidence_root, manifest_path, _, _) = release_benchmark_manifest_fixture(
+            "release-manifest-wrong-expected-commit",
+            eva_release::ReleaseEvidenceScope::Production,
+        );
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--scope",
+            "production",
+            "--evidence-manifest",
+            manifest_path.to_str().unwrap(),
+            "--expected-source-commit",
+            "abcdef0123456789abcdef0123456789abcdef01",
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("evidence_source_commit_mismatch"));
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证 canonical typed evidence 被改写后 envelope 摘要不再通过。
+    fn release_check_rejects_tampered_manifest_evidence_subject() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let (evidence_root, manifest_path, evidence_path, _) = release_benchmark_manifest_fixture(
+            "release-manifest-tampered-benchmark",
+            eva_release::ReleaseEvidenceScope::Production,
+        );
+        let tampered = fs::read_to_string(&evidence_path).unwrap().replace(
+            "measurement.0.observed_ms=120",
+            "measurement.0.observed_ms=121",
+        );
+        fs::write(&evidence_path, tampered).unwrap();
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--scope",
+            "production",
+            "--evidence-manifest",
+            manifest_path.to_str().unwrap(),
+            "--expected-source-commit",
+            commit,
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("evidence_subject_digest_mismatch"));
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证 artifact manifest 校验真实包字节，篡改后不会只凭 evidence 文本通过。
+    fn release_check_verifies_real_artifact_subject_bytes() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let (evidence_root, manifest_path, subject_path) = release_artifact_manifest_fixture(
+            "release-manifest-real-artifact",
+            eva_release::ReleaseEvidenceScope::Production,
+        );
+        let args = [
+            "release",
+            "check",
+            "--scope",
+            "production",
+            "--evidence-manifest",
+            manifest_path.to_str().unwrap(),
+            "--expected-source-commit",
+            commit,
+            "--output",
+            "json",
+        ];
+        let (exit_code, stdout, stderr) = run_cli(&args);
+        assert_eq!(exit_code, EXIT_CONFIG, "{stderr}");
+        assert!(stdout.contains("\"id\":\"REL-ARTIFACT-PROVENANCE-001\""));
+        assert!(stdout.contains("\"id\":\"REL-PRODUCTION-EVIDENCE-POLICY-001\""));
+
+        fs::write(&subject_path, b"tampered release artifact bytes").unwrap();
+        let (tampered_exit, tampered_stdout, tampered_stderr) = run_cli(&args);
+        assert_eq!(tampered_exit, EXIT_CONFIG);
+        assert!(tampered_stdout.is_empty());
+        assert!(tampered_stderr.contains("evidence_subject_digest_mismatch"));
+        assert!(tampered_stderr.contains("evidence_subject_size_mismatch"));
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证统一 manifest 与旧 evidence 参数不存在隐式优先级。
+    fn release_check_rejects_manifest_and_legacy_evidence_mix() {
+        let (evidence_root, manifest_path, evidence_path, _) = release_benchmark_manifest_fixture(
+            "release-manifest-legacy-mix",
+            eva_release::ReleaseEvidenceScope::Alpha,
+        );
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--evidence-manifest",
+            manifest_path.to_str().unwrap(),
+            "--benchmark-evidence",
+            evidence_path.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("cannot be combined with legacy evidence options"));
+        fs::remove_dir_all(evidence_root).unwrap();
     }
 
     #[test]
@@ -2535,6 +2889,9 @@ mod tests {
         assert!(stdout.contains("\"domain\":\"release_artifact_provenance\""));
         assert!(stdout.contains("\"status\":\"pass\""));
         assert!(stdout.contains("signed_artifact_provenance_verified"));
+        assert!(stdout.contains("\"evidence_scope\":\"alpha\""));
+        assert!(stdout.contains("\"source\":\"legacy_alpha\""));
+        assert!(stdout.contains("\"normalized_envelope_count\":1"));
 
         fs::remove_dir_all(evidence_root).unwrap();
     }

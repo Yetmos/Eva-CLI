@@ -28,8 +28,9 @@ pub use benchmark::{
     ReleaseBenchmarkEvidence, ReleaseBenchmarkMeasurement, ReleaseBenchmarkVerificationReport,
 };
 pub use checklist::{
-    PlatformReadiness, ReleaseGate, ReleaseGateStatus, ReleaseHardeningService,
-    ReleaseReadinessReport, StabilityScenario,
+    PlatformReadiness, ReleaseArtifactEvidenceCandidate, ReleaseDocumentEvidenceCandidate,
+    ReleaseGate, ReleaseGateStatus, ReleaseHardeningService, ReleaseReadinessReport,
+    StabilityScenario, VerifiedReleaseEvidenceBundle,
 };
 pub use distribution::{
     ReleaseDistributionEvidence, ReleaseDistributionVerificationReport,
@@ -37,7 +38,9 @@ pub use distribution::{
 };
 pub use evidence::{
     verify_evidence_bundle, EvidenceEnvelope, EvidenceIntegrityBlocker, EvidenceKind,
-    EvidenceSubject, EvidenceVerificationReport, EVIDENCE_ENVELOPE_FORMAT,
+    EvidenceSubject, EvidenceVerificationReport, ReleaseEvidenceManifest,
+    ReleaseEvidenceManifestEntry, ReleaseEvidenceScope, ReleaseEvidenceType,
+    EVIDENCE_ENVELOPE_FORMAT, RELEASE_EVIDENCE_MANIFEST_FORMAT,
 };
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 pub use performance::{PerformanceBaselineReport, PerformanceBudget};

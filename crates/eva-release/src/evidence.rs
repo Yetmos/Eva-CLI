@@ -5,6 +5,7 @@ use eva_core::EvaError;
 use eva_storage::ArtifactRecord;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::{Component, Path};
 
 /// 本模块的架构职责：为所有发布证据提供统一的分类、来源、执行环境和主题身份。
 /// Architectural responsibility for this module.
@@ -12,6 +13,9 @@ pub const RESPONSIBILITY: &str = "uniform release evidence identity and provenan
 
 /// 当前支持的统一发布证据信封格式。
 pub const EVIDENCE_ENVELOPE_FORMAT: &str = "eva.release.evidence_envelope.v1";
+
+/// 当前支持的统一发布证据索引清单格式。
+pub const RELEASE_EVIDENCE_MANIFEST_FORMAT: &str = "eva.release.evidence_manifest.v1";
 
 /// 仅用于复用 ArtifactRecord 的确定性 SHA-256 实现，不表示写入 artifact store。
 const EVIDENCE_SUBJECT_KEY: &str = "release/evidence/subject";
@@ -39,6 +43,284 @@ pub enum EvidenceKind {
     Operator,
     /// 由真实命令、系统或环境运行产生的机器测量。
     Measurement,
+}
+
+/// 发布检查所处的证据强度范围。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReleaseEvidenceScope {
+    /// 保持现有 V1.x alpha 门禁与旧 evidence 参数兼容。
+    Alpha,
+    /// 只允许由统一 manifest 提供且受外部提交约束的证据。
+    Production,
+}
+
+impl ReleaseEvidenceScope {
+    /// 返回 CLI 和 manifest 共用的稳定小写标识。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Alpha => "alpha",
+            Self::Production => "production",
+        }
+    }
+
+    /// 解析 alpha 或 production，未知范围失败关闭。
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "alpha" => Ok(Self::Alpha),
+            "production" => Ok(Self::Production),
+            _ => Err(EvaError::invalid_argument(
+                "release evidence scope must be alpha or production",
+            )
+            .with_context("scope", value)),
+        }
+    }
+}
+
+impl fmt::Display for ReleaseEvidenceScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// 统一 manifest 中可供当前 release checklist 消费的 evidence 类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReleaseEvidenceType {
+    /// 签名发布工件、真实工件字节及 provenance。
+    Artifact,
+    /// 多平台安装与包分发演练。
+    Distribution,
+    /// 外部安全扫描结果。
+    SecurityScan,
+    /// 生产基准测量。
+    Benchmark,
+}
+
+impl ReleaseEvidenceType {
+    /// 当前统一 manifest 支持的全部 evidence 类型，顺序也是 canonical 排序顺序。
+    pub const ALL: [Self; 4] = [
+        Self::Artifact,
+        Self::Distribution,
+        Self::SecurityScan,
+        Self::Benchmark,
+    ];
+
+    /// 返回 manifest 使用的稳定类型标识。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Artifact => "artifact",
+            Self::Distribution => "distribution",
+            Self::SecurityScan => "security_scan",
+            Self::Benchmark => "benchmark",
+        }
+    }
+
+    /// 解析当前 checklist 支持的 evidence 类型。
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "artifact" => Ok(Self::Artifact),
+            "distribution" => Ok(Self::Distribution),
+            "security_scan" => Ok(Self::SecurityScan),
+            "benchmark" => Ok(Self::Benchmark),
+            _ => Err(EvaError::invalid_argument(
+                "unsupported release evidence manifest entry type",
+            )
+            .with_context("entry_type", value)),
+        }
+    }
+}
+
+impl fmt::Display for ReleaseEvidenceType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// 统一 manifest 中一类 gate evidence、信封和可选真实主题的相对引用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseEvidenceManifestEntry {
+    /// 当前 checklist 消费的 evidence 类型。
+    pub evidence_type: ReleaseEvidenceType,
+    /// 相对统一 manifest 目录的 typed evidence 文档路径。
+    pub evidence_path: String,
+    /// 相对统一 manifest 目录的 EvidenceEnvelope 路径。
+    pub envelope_path: String,
+    /// artifact 的真实归档/二进制路径；其他类型的主题固定为 canonical evidence 文档。
+    pub subject_path: Option<String>,
+}
+
+impl ReleaseEvidenceManifestEntry {
+    /// 创建路径受限且 subject 语义与 evidence 类型一致的 manifest 项。
+    pub fn new(
+        evidence_type: ReleaseEvidenceType,
+        evidence_path: impl Into<String>,
+        envelope_path: impl Into<String>,
+        subject_path: Option<String>,
+    ) -> Result<Self, EvaError> {
+        let evidence_path = validate_manifest_relative_path(
+            "release evidence manifest evidence path",
+            evidence_path.into(),
+        )?;
+        let envelope_path = validate_manifest_relative_path(
+            "release evidence manifest envelope path",
+            envelope_path.into(),
+        )?;
+        let subject_path = subject_path
+            .map(|path| {
+                validate_manifest_relative_path("release evidence manifest subject path", path)
+            })
+            .transpose()?;
+
+        match (evidence_type, subject_path.is_some()) {
+            (ReleaseEvidenceType::Artifact, false) => {
+                return Err(EvaError::invalid_argument(
+                    "artifact evidence manifest entry requires a subject path",
+                ));
+            }
+            (ReleaseEvidenceType::Artifact, true) | (_, false) => {}
+            (_, true) => {
+                return Err(EvaError::invalid_argument(
+                    "only artifact evidence manifest entries may declare a subject path",
+                )
+                .with_context("entry_type", evidence_type.as_str()));
+            }
+        }
+
+        Ok(Self {
+            evidence_type,
+            evidence_path,
+            envelope_path,
+            subject_path,
+        })
+    }
+}
+
+/// 将一组 typed evidence 和信封绑定到同一 scope 与来源提交的索引清单。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseEvidenceManifest {
+    /// manifest 格式版本。
+    pub format: String,
+    /// alpha 或 production 证据范围。
+    pub scope: ReleaseEvidenceScope,
+    /// 由调用方外部信任上下文复验的来源提交声明。
+    pub source_commit: String,
+    /// 类型唯一且顺序稳定的 evidence 引用。
+    pub entries: Vec<ReleaseEvidenceManifestEntry>,
+}
+
+impl ReleaseEvidenceManifest {
+    /// 创建非空、同类型唯一且提交格式规范的统一 evidence manifest。
+    pub fn new(
+        scope: ReleaseEvidenceScope,
+        source_commit: impl Into<String>,
+        mut entries: Vec<ReleaseEvidenceManifestEntry>,
+    ) -> Result<Self, EvaError> {
+        let source_commit = source_commit.into();
+        validate_canonical_source_commit(&source_commit)?;
+        if entries.is_empty() {
+            return Err(EvaError::invalid_argument(
+                "release evidence manifest must contain at least one entry",
+            ));
+        }
+        let mut evidence_types = BTreeSet::new();
+        for entry in &entries {
+            if !evidence_types.insert(entry.evidence_type) {
+                return Err(EvaError::invalid_argument(
+                    "release evidence manifest entry type is duplicated",
+                )
+                .with_context("entry_type", entry.evidence_type.as_str()));
+            }
+        }
+        entries.sort_by_key(|entry| entry.evidence_type);
+        Ok(Self {
+            format: RELEASE_EVIDENCE_MANIFEST_FORMAT.to_owned(),
+            scope,
+            source_commit,
+            entries,
+        })
+    }
+
+    /// 从严格索引键值清单解析 scope、提交和 evidence 引用。
+    pub fn parse_manifest(data: &str) -> Result<Self, EvaError> {
+        let fields = parse_key_value_manifest(data)?;
+        let format = required_manifest_field(&fields, "format")?;
+        if format != RELEASE_EVIDENCE_MANIFEST_FORMAT {
+            return Err(
+                EvaError::invalid_argument("unsupported release evidence manifest format")
+                    .with_context("format", format),
+            );
+        }
+        let scope = ReleaseEvidenceScope::parse(&required_manifest_field(&fields, "scope")?)?;
+        let source_commit = required_manifest_field(&fields, "source_commit")?;
+
+        let mut indexes = BTreeSet::new();
+        for field in fields.keys() {
+            if matches!(field.as_str(), "format" | "scope" | "source_commit") {
+                continue;
+            }
+            let parts = field.split('.').collect::<Vec<_>>();
+            if parts.len() != 3
+                || parts[0] != "entry"
+                || !matches!(parts[2], "type" | "evidence" | "envelope" | "subject")
+            {
+                return Err(EvaError::invalid_argument(
+                    "release evidence manifest contains an unknown field",
+                )
+                .with_context("field", field));
+            }
+            let index = parts[1].parse::<usize>().map_err(|error| {
+                EvaError::invalid_argument(
+                    "release evidence manifest entry index must be a non-negative integer",
+                )
+                .with_context("field", field)
+                .with_context("parse_error", error.to_string())
+            })?;
+            indexes.insert(index);
+        }
+        for (expected, actual) in indexes.iter().copied().enumerate() {
+            if expected != actual {
+                return Err(EvaError::invalid_argument(
+                    "release evidence manifest entry indexes must be contiguous from zero",
+                )
+                .with_context("expected_index", expected.to_string())
+                .with_context("actual_index", actual.to_string()));
+            }
+        }
+
+        let entries = indexes
+            .into_iter()
+            .map(|index| {
+                let prefix = format!("entry.{index}");
+                ReleaseEvidenceManifestEntry::new(
+                    ReleaseEvidenceType::parse(&required_manifest_field(
+                        &fields,
+                        &format!("{prefix}.type"),
+                    )?)?,
+                    required_manifest_field(&fields, &format!("{prefix}.evidence"))?,
+                    required_manifest_field(&fields, &format!("{prefix}.envelope"))?,
+                    fields.get(&format!("{prefix}.subject")).cloned(),
+                )
+            })
+            .collect::<Result<Vec<_>, EvaError>>()?;
+        Self::new(scope, source_commit, entries)
+    }
+
+    /// 以固定顶层和索引字段顺序输出 canonical manifest。
+    pub fn to_manifest(&self) -> String {
+        let mut output = format!(
+            "format={}\nscope={}\nsource_commit={}\n",
+            self.format, self.scope, self.source_commit
+        );
+        for (index, entry) in self.entries.iter().enumerate() {
+            output.push_str(&format!(
+                "entry.{index}.type={}\nentry.{index}.evidence={}\nentry.{index}.envelope={}\n",
+                entry.evidence_type, entry.evidence_path, entry.envelope_path
+            ));
+            if let Some(subject_path) = &entry.subject_path {
+                output.push_str(&format!("entry.{index}.subject={subject_path}\n"));
+            }
+        }
+        output
+    }
 }
 
 /// 证据完整性验证失败时使用的稳定机器码。
@@ -175,17 +457,13 @@ impl<'a> EvidenceSubject<'a> {
     }
 
     /// 添加一个必须与可信 build commit 一致的嵌套提交声明。
-    pub(crate) fn with_source_commit_claim(
-        mut self,
-        label: &'static str,
-        source_commit: &'a str,
-    ) -> Self {
+    pub fn with_source_commit_claim(mut self, label: &'static str, source_commit: &'a str) -> Self {
         self.source_commit_claims.push((label, source_commit));
         self
     }
 
     /// 添加一个必须与同一主题原始字节匹配的嵌套摘要声明。
-    pub(crate) fn with_subject_digest_claim(
+    pub fn with_subject_digest_claim(
         mut self,
         label: &'static str,
         subject_digest: &'a str,
@@ -195,11 +473,7 @@ impl<'a> EvidenceSubject<'a> {
     }
 
     /// 添加一个必须与同一主题原始字节长度匹配的嵌套 size 声明。
-    pub(crate) fn with_subject_size_claim(
-        mut self,
-        label: &'static str,
-        subject_size_bytes: u64,
-    ) -> Self {
+    pub fn with_subject_size_claim(mut self, label: &'static str, subject_size_bytes: u64) -> Self {
         self.subject_size_claims.push((label, subject_size_bytes));
         self
     }
@@ -600,6 +874,17 @@ fn required(fields: &BTreeMap<String, String>, key: &str) -> Result<String, EvaE
     })
 }
 
+/// 读取统一 evidence manifest 的必填字段并保留 manifest 语义错误。
+fn required_manifest_field(
+    fields: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<String, EvaError> {
+    fields.get(key).cloned().ok_or_else(|| {
+        EvaError::invalid_argument("release evidence manifest is missing required field")
+            .with_context("required_field", key)
+    })
+}
+
 /// 拒绝当前格式未声明的字段，防止解析后静默丢失调用方认为已绑定的证据。
 fn reject_unknown_fields(fields: &BTreeMap<String, String>) -> Result<(), EvaError> {
     for field in fields.keys() {
@@ -641,6 +926,34 @@ fn validate_manifest_text(field: &str, value: String) -> Result<String, EvaError
     Ok(value)
 }
 
+/// 限制统一 manifest 引用为跨平台稳定的目录内相对路径。
+fn validate_manifest_relative_path(field: &str, value: String) -> Result<String, EvaError> {
+    let value = validate_manifest_text(field, value)?;
+    if value.contains('\\')
+        || value.contains(':')
+        || value
+            .split('/')
+            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
+    {
+        return Err(EvaError::invalid_argument(format!(
+            "{field} must use a portable relative path"
+        ))
+        .with_context("path", value));
+    }
+    let path = Path::new(&value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(EvaError::invalid_argument(format!(
+            "{field} must stay within the evidence manifest directory"
+        ))
+        .with_context("path", value));
+    }
+    Ok(value)
+}
+
 /// 判断公开可变的信封文本是否仍满足单行、非空、已 trim 约束。
 fn is_valid_manifest_text(value: &str) -> bool {
     !value.trim().is_empty()
@@ -671,6 +984,31 @@ mod tests {
         .unwrap()
     }
 
+    /// 构造同时覆盖 artifact 特殊 subject 与 canonical 文档主题的统一清单。
+    fn release_manifest(scope: ReleaseEvidenceScope) -> ReleaseEvidenceManifest {
+        ReleaseEvidenceManifest::new(
+            scope,
+            COMMIT,
+            vec![
+                ReleaseEvidenceManifestEntry::new(
+                    ReleaseEvidenceType::Artifact,
+                    "artifact/release.evidence",
+                    "artifact/release.envelope",
+                    Some("artifact/eva.tar.gz".to_owned()),
+                )
+                .unwrap(),
+                ReleaseEvidenceManifestEntry::new(
+                    ReleaseEvidenceType::Benchmark,
+                    "benchmark/release.evidence",
+                    "benchmark/release.envelope",
+                    None,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap()
+    }
+
     #[test]
     /// 验证四类证据都使用相同字段完整往返，且 kind 保持稳定。
     fn all_evidence_kinds_round_trip() {
@@ -680,6 +1018,118 @@ mod tests {
 
             assert_eq!(parsed, expected);
             assert_eq!(parsed.kind.as_str(), kind.as_str());
+        }
+    }
+
+    #[test]
+    /// 验证 alpha/production scope、索引顺序及 artifact subject 完整往返。
+    fn release_evidence_manifest_round_trips_both_scopes() {
+        for scope in [
+            ReleaseEvidenceScope::Alpha,
+            ReleaseEvidenceScope::Production,
+        ] {
+            let expected = release_manifest(scope);
+            let canonical = expected.to_manifest();
+            let parsed = ReleaseEvidenceManifest::parse_manifest(&canonical).unwrap();
+
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.to_manifest(), canonical);
+            assert_eq!(
+                parsed.entries[0].subject_path.as_deref(),
+                Some("artifact/eva.tar.gz")
+            );
+            assert_eq!(parsed.entries[1].subject_path, None);
+        }
+
+        let mut reversed = release_manifest(ReleaseEvidenceScope::Alpha).entries;
+        reversed.reverse();
+        let normalized =
+            ReleaseEvidenceManifest::new(ReleaseEvidenceScope::Alpha, COMMIT, reversed).unwrap();
+        assert_eq!(
+            normalized.entries[0].evidence_type,
+            ReleaseEvidenceType::Artifact
+        );
+        assert_eq!(
+            normalized.entries[1].evidence_type,
+            ReleaseEvidenceType::Benchmark
+        );
+    }
+
+    #[test]
+    /// 验证未知字段、索引缺口和重复类型都不能被静默忽略。
+    fn release_evidence_manifest_rejects_ambiguous_structure() {
+        let canonical = release_manifest(ReleaseEvidenceScope::Production).to_manifest();
+
+        let unknown = format!("{canonical}entry.0.unbound=value\n");
+        assert!(ReleaseEvidenceManifest::parse_manifest(&unknown)
+            .unwrap_err()
+            .message()
+            .contains("unknown field"));
+
+        let gap = canonical.replace("entry.1.", "entry.2.");
+        assert!(ReleaseEvidenceManifest::parse_manifest(&gap)
+            .unwrap_err()
+            .message()
+            .contains("contiguous"));
+
+        let duplicate_type = format!(
+            "{}entry.1.subject=artifact/duplicate.tar.gz\n",
+            canonical.replace("entry.1.type=benchmark", "entry.1.type=artifact")
+        );
+        assert!(ReleaseEvidenceManifest::parse_manifest(&duplicate_type)
+            .unwrap_err()
+            .message()
+            .contains("duplicated"));
+    }
+
+    #[test]
+    /// 验证 artifact 必须引用真实 subject，其他类型不得伪装成独立 subject。
+    fn release_evidence_manifest_enforces_subject_semantics() {
+        let missing_artifact_subject = ReleaseEvidenceManifestEntry::new(
+            ReleaseEvidenceType::Artifact,
+            "artifact.evidence",
+            "artifact.envelope",
+            None,
+        )
+        .unwrap_err();
+        assert!(missing_artifact_subject
+            .message()
+            .contains("requires a subject"));
+
+        let benchmark_subject = ReleaseEvidenceManifestEntry::new(
+            ReleaseEvidenceType::Benchmark,
+            "benchmark.evidence",
+            "benchmark.envelope",
+            Some("stdout.log".to_owned()),
+        )
+        .unwrap_err();
+        assert!(benchmark_subject.message().contains("only artifact"));
+    }
+
+    #[test]
+    /// 验证绝对路径、父目录、Windows 分隔符和 drive-relative 路径都被拒绝。
+    fn release_evidence_manifest_rejects_path_escape_forms() {
+        for path in [
+            "../outside.evidence",
+            "nested/../outside.evidence",
+            "nested/./outside.evidence",
+            "nested//outside.evidence",
+            "nested\\outside.evidence",
+            "C:outside.evidence",
+            "/outside.evidence",
+        ] {
+            let error = ReleaseEvidenceManifestEntry::new(
+                ReleaseEvidenceType::Benchmark,
+                path,
+                "benchmark.envelope",
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                error.message().contains("relative path")
+                    || error.message().contains("manifest directory"),
+                "path={path} error={error:?}"
+            );
         }
     }
 
