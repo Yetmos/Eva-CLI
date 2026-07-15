@@ -330,7 +330,7 @@
       {
         "id": "v1.x-real-runtime-implementation-plan",
         "title": "V1.x Real Runtime Implementation Plan",
-        "description": "Prioritizes the remaining runtime, provider, platform, observability, and distribution work with dependencies and exit criteria."
+        "description": "Breaks W0-W10 into logic-level changes with stable IDs, prerequisites, progress states, owning boundaries, and testable evidence."
       },
       {
         "id": "project-release-plan",

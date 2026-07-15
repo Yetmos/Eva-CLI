@@ -330,7 +330,7 @@
       {
         "id": "v1.x-real-runtime-implementation-plan",
         "title": "V1.x 真实运行时能力补齐实施计划",
-        "description": "按依赖和退出标准安排 runtime、provider、平台、观测与分发的剩余工作。"
+        "description": "将 W0-W10 拆成带稳定 ID、前置项、进度状态、owning 边界和可测试 evidence 的逐项逻辑修改。"
       },
       {
         "id": "project-release-plan",
