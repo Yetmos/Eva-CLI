@@ -38,9 +38,12 @@ pub use distribution::{
 };
 pub use evidence::{
     verify_evidence_bundle, EvidenceEnvelope, EvidenceIntegrityBlocker, EvidenceKind,
-    EvidenceSubject, EvidenceVerificationReport, ReleaseEvidenceManifest,
+    EvidenceSubject, EvidenceVerificationReport, ReleaseCaptureEvidence, ReleaseEvidenceManifest,
     ReleaseEvidenceManifestEntry, ReleaseEvidenceScope, ReleaseEvidenceType,
-    EVIDENCE_ENVELOPE_FORMAT, RELEASE_EVIDENCE_MANIFEST_FORMAT,
+    ReleasePlatformEvidence, ReleasePlatformEvidenceBundle, ReleasePlatformEvidenceInput,
+    ReleasePlatformVerificationReport, EVIDENCE_ENVELOPE_FORMAT, RELEASE_COMMAND_CAPTURE_FORMAT,
+    RELEASE_EVIDENCE_MANIFEST_FORMAT, RELEASE_PLATFORM_BUNDLE_FORMAT,
+    RELEASE_PLATFORM_EVIDENCE_FORMAT, RELEASE_PLATFORM_INDEX_FORMAT,
 };
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 pub use performance::{

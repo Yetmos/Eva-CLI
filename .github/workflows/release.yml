@@ -61,6 +61,10 @@ jobs:
         shell: pwsh
         run: ./scripts/test-capture-release-evidence.ps1
 
+      - name: Release platform evidence contract
+        shell: pwsh
+        run: ./scripts/test-release-platform-evidence.ps1
+
       - name: V1.6 release smoke
         shell: pwsh
         run: |
@@ -390,32 +394,45 @@ jobs:
           & (Join-Path $installRoot "eva.exe") --version
           Remove-Item -LiteralPath $installRoot -Recurse -Force
 
-      - name: Capture Windows native artifact evidence
+      - name: Capture Windows platform evidence
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
-          $archive = "dist\${{ steps.native_vars.outputs.archive }}"
-          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
-          $sourceSha = git rev-parse HEAD
-          $evidence = [ordered]@{
-            status = "published"
-            version = "${{ steps.native_vars.outputs.version }}"
-            source_tag = $env:RELEASE_TAG
-            source_sha = $sourceSha
-            artifact = [ordered]@{
-              target = "x86_64-pc-windows-msvc"
-              archive = "${{ steps.native_vars.outputs.archive }}"
-              format = "zip"
-              binary = "eva.exe"
-              checksum = "sha256:$hash"
-              signed = $false
-              smoke_test = "passed"
-              install_command = "Expand-Archive ${{ steps.native_vars.outputs.archive }} and run eva.exe --version"
-              uninstall_command = "Remove the extracted Eva-CLI archive directory"
-              upgrade_command = "Replace the archive contents and run eva upgrade check --output json"
-            }
+          $evidenceRoot = Join-Path (Get-Location) "release-evidence/platform"
+          $installRoot = Join-Path (Get-Location) "dist/install-evidence-windows"
+          New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
+          $evidenceArchive = Join-Path $evidenceRoot "${{ steps.native_vars.outputs.archive }}"
+          Copy-Item -LiteralPath "dist\${{ steps.native_vars.outputs.archive }}" -Destination $evidenceArchive
+          Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+          try {
+            Expand-Archive -LiteralPath $evidenceArchive -DestinationPath $installRoot -Force
+            $smokeManifest = Join-Path $evidenceRoot "smoke.capture.json"
+            $toolchainManifest = Join-Path $evidenceRoot "toolchain.capture.json"
+            ./scripts/capture-release-evidence.ps1 `
+              -Executable (Join-Path $installRoot "eva.exe") `
+              -ArgumentList @("--version") `
+              -ManifestPath $smokeManifest `
+              -CaptureId "native.windows.smoke" | Out-Null
+            ./scripts/capture-release-evidence.ps1 `
+              -Executable "rustc" `
+              -ArgumentList @("--version") `
+              -ManifestPath $toolchainManifest `
+              -CaptureId "native.windows.toolchain" | Out-Null
+            $sourceSha = (& git rev-parse HEAD).Trim()
+            ./scripts/write-release-platform-evidence.ps1 `
+              -SmokeCapturePath $smokeManifest `
+              -ToolchainCapturePath $toolchainManifest `
+              -ArchivePath $evidenceArchive `
+              -ManifestPath (Join-Path $evidenceRoot "platform.json") `
+              -ExpectedOs "Windows" `
+              -ExpectedArchitecture "X64" `
+              -ExpectedReleaseTag $env:RELEASE_TAG `
+              -ExpectedSourceCommit $sourceSha `
+              -ExpectedRunId $env:GITHUB_RUN_ID `
+              -ExpectedRunAttempt $env:GITHUB_RUN_ATTEMPT | Out-Null
+          } finally {
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
           }
-          $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath release-evidence/native-windows.json -Encoding utf8
 
       - name: Upload Windows release archive
         uses: actions/upload-artifact@v4
@@ -428,7 +445,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-evidence-windows-${{ env.RELEASE_TAG }}
-          path: release-evidence/native-windows.json
+          path: release-evidence/platform/
           if-no-files-found: error
 
   native-linux:
@@ -493,34 +510,48 @@ jobs:
           "${install_root}/eva" --version
           rm -rf "${install_root}"
 
-      - name: Capture Linux native artifact evidence
-        shell: bash
+      - name: Capture Linux platform evidence
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p release-evidence
-          archive="dist/${{ steps.native_vars.outputs.archive }}"
-          hash="$(sha256sum "${archive}" | awk '{print $1}')"
-          source_sha="$(git rev-parse HEAD)"
-          cat > release-evidence/native-linux.json <<EOF
-          {
-            "status": "published",
-            "version": "${{ steps.native_vars.outputs.version }}",
-            "source_tag": "${RELEASE_TAG}",
-            "source_sha": "${source_sha}",
-            "artifact": {
-              "target": "x86_64-unknown-linux-gnu",
-              "archive": "${{ steps.native_vars.outputs.archive }}",
-              "format": "tar.gz",
-              "binary": "eva",
-              "checksum": "sha256:${hash}",
-              "signed": false,
-              "smoke_test": "passed",
-              "install_command": "tar -xzf ${{ steps.native_vars.outputs.archive }} && ./eva --version",
-              "uninstall_command": "remove the extracted Eva-CLI archive directory",
-              "upgrade_command": "replace the archive contents and run eva upgrade check --output json"
+          $evidenceRoot = Join-Path (Get-Location) "release-evidence/platform"
+          $installRoot = Join-Path (Get-Location) "dist/install-evidence-linux"
+          New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
+          $evidenceArchive = Join-Path $evidenceRoot "${{ steps.native_vars.outputs.archive }}"
+          Copy-Item -LiteralPath "dist/${{ steps.native_vars.outputs.archive }}" -Destination $evidenceArchive
+          Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+          try {
+            & tar -C $installRoot -xzf $evidenceArchive
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to extract Linux release archive for evidence capture."
             }
+            $smokeManifest = Join-Path $evidenceRoot "smoke.capture.json"
+            $toolchainManifest = Join-Path $evidenceRoot "toolchain.capture.json"
+            ./scripts/capture-release-evidence.ps1 `
+              -Executable (Join-Path $installRoot "eva") `
+              -ArgumentList @("--version") `
+              -ManifestPath $smokeManifest `
+              -CaptureId "native.linux.smoke" | Out-Null
+            ./scripts/capture-release-evidence.ps1 `
+              -Executable "rustc" `
+              -ArgumentList @("--version") `
+              -ManifestPath $toolchainManifest `
+              -CaptureId "native.linux.toolchain" | Out-Null
+            $sourceSha = (& git rev-parse HEAD).Trim()
+            ./scripts/write-release-platform-evidence.ps1 `
+              -SmokeCapturePath $smokeManifest `
+              -ToolchainCapturePath $toolchainManifest `
+              -ArchivePath $evidenceArchive `
+              -ManifestPath (Join-Path $evidenceRoot "platform.json") `
+              -ExpectedOs "Linux" `
+              -ExpectedArchitecture "X64" `
+              -ExpectedReleaseTag $env:RELEASE_TAG `
+              -ExpectedSourceCommit $sourceSha `
+              -ExpectedRunId $env:GITHUB_RUN_ID `
+              -ExpectedRunAttempt $env:GITHUB_RUN_ATTEMPT | Out-Null
+          } finally {
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
           }
-          EOF
 
       - name: Upload Linux release archive
         uses: actions/upload-artifact@v4
@@ -533,7 +564,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-evidence-linux-${{ env.RELEASE_TAG }}
-          path: release-evidence/native-linux.json
+          path: release-evidence/platform/
           if-no-files-found: error
 
   native-macos:
@@ -609,36 +640,49 @@ jobs:
           "${install_root}/eva" --version
           rm -rf "${install_root}"
 
-      - name: Capture macOS native artifact evidence
-        shell: bash
+      - name: Capture macOS platform evidence
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p release-evidence
-          archive="dist/${{ steps.native_vars.outputs.archive }}"
-          hash="$(shasum -a 256 "${archive}" | awk '{print $1}')"
-          source_sha="$(git rev-parse HEAD)"
-          smoke_status="passed"
-          cat > "release-evidence/native-macos-${{ matrix.target }}.json" <<EOF
-          {
-            "status": "published",
-            "version": "${{ steps.native_vars.outputs.version }}",
-            "source_tag": "${RELEASE_TAG}",
-            "source_sha": "${source_sha}",
-            "artifact": {
-              "target": "${{ matrix.target }}",
-              "archive": "${{ steps.native_vars.outputs.archive }}",
-              "format": "tar.gz",
-              "binary": "eva",
-              "checksum": "sha256:${hash}",
-              "signed": false,
-              "notarized": false,
-              "smoke_test": "${smoke_status}",
-              "install_command": "tar -xzf ${{ steps.native_vars.outputs.archive }} && ./eva --version",
-              "uninstall_command": "remove the extracted Eva-CLI archive directory",
-              "upgrade_command": "replace the archive contents and run eva upgrade check --output json"
+          $evidenceRoot = Join-Path (Get-Location) "release-evidence/platform"
+          $installRoot = Join-Path (Get-Location) "dist/install-evidence-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
+          $evidenceArchive = Join-Path $evidenceRoot "${{ steps.native_vars.outputs.archive }}"
+          Copy-Item -LiteralPath "dist/${{ steps.native_vars.outputs.archive }}" -Destination $evidenceArchive
+          Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+          try {
+            & tar -C $installRoot -xzf $evidenceArchive
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to extract macOS release archive for evidence capture."
             }
+            $smokeManifest = Join-Path $evidenceRoot "smoke.capture.json"
+            $toolchainManifest = Join-Path $evidenceRoot "toolchain.capture.json"
+            ./scripts/capture-release-evidence.ps1 `
+              -Executable (Join-Path $installRoot "eva") `
+              -ArgumentList @("--version") `
+              -ManifestPath $smokeManifest `
+              -CaptureId "native.macos.${{ matrix.target }}.smoke" | Out-Null
+            ./scripts/capture-release-evidence.ps1 `
+              -Executable "rustc" `
+              -ArgumentList @("--version") `
+              -ManifestPath $toolchainManifest `
+              -CaptureId "native.macos.${{ matrix.target }}.toolchain" | Out-Null
+            $sourceSha = (& git rev-parse HEAD).Trim()
+            $architecture = if ("${{ matrix.target }}" -like "aarch64-*") { "ARM64" } else { "X64" }
+            ./scripts/write-release-platform-evidence.ps1 `
+              -SmokeCapturePath $smokeManifest `
+              -ToolchainCapturePath $toolchainManifest `
+              -ArchivePath $evidenceArchive `
+              -ManifestPath (Join-Path $evidenceRoot "platform.json") `
+              -ExpectedOs "macOS" `
+              -ExpectedArchitecture $architecture `
+              -ExpectedReleaseTag $env:RELEASE_TAG `
+              -ExpectedSourceCommit $sourceSha `
+              -ExpectedRunId $env:GITHUB_RUN_ID `
+              -ExpectedRunAttempt $env:GITHUB_RUN_ATTEMPT | Out-Null
+          } finally {
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
           }
-          EOF
 
       - name: Upload macOS release archive
         uses: actions/upload-artifact@v4
@@ -651,7 +695,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-evidence-macos-${{ matrix.target }}-${{ env.RELEASE_TAG }}
-          path: release-evidence/native-macos-${{ matrix.target }}.json
+          path: release-evidence/platform/
           if-no-files-found: error
 
   publish:
@@ -914,72 +958,6 @@ jobs:
           }
           $lines | Set-Content -LiteralPath release-evidence/release-benchmark.evidence -Encoding utf8
 
-      - name: Capture native artifact plan evidence
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
-          $version = $env:RELEASE_TAG.TrimStart("v")
-          $sourceSha = git rev-parse HEAD
-          $targets = @(
-            [ordered]@{
-              target = "x86_64-pc-windows-msvc"
-              archive = "eva-cli-$version-x86_64-pc-windows-msvc.zip"
-              format = "zip"
-              binary = "eva.exe"
-              checksum = $null
-              signed = $false
-              smoke_test = "planned"
-              install_command = "Expand-Archive eva-cli-$version-x86_64-pc-windows-msvc.zip and run eva.exe --version"
-              uninstall_command = "Remove the extracted Eva-CLI archive directory"
-              upgrade_command = "Replace the archive contents and run eva upgrade check --output json"
-            },
-            [ordered]@{
-              target = "x86_64-unknown-linux-gnu"
-              archive = "eva-cli-$version-x86_64-unknown-linux-gnu.tar.gz"
-              format = "tar.gz"
-              binary = "eva"
-              checksum = $null
-              signed = $false
-              smoke_test = "planned"
-              install_command = "tar -xzf eva-cli-$version-x86_64-unknown-linux-gnu.tar.gz && ./eva --version"
-              uninstall_command = "remove the extracted Eva-CLI archive directory"
-              upgrade_command = "replace the archive contents and run eva upgrade check --output json"
-            },
-            [ordered]@{
-              target = "x86_64-apple-darwin"
-              archive = "eva-cli-$version-x86_64-apple-darwin.tar.gz"
-              format = "tar.gz"
-              binary = "eva"
-              checksum = $null
-              signed = $false
-              smoke_test = "planned"
-              install_command = "tar -xzf eva-cli-$version-x86_64-apple-darwin.tar.gz && ./eva --version"
-              uninstall_command = "remove the extracted Eva-CLI archive directory"
-              upgrade_command = "replace the archive contents and run eva upgrade check --output json"
-            },
-            [ordered]@{
-              target = "aarch64-apple-darwin"
-              archive = "eva-cli-$version-aarch64-apple-darwin.tar.gz"
-              format = "tar.gz"
-              binary = "eva"
-              checksum = $null
-              signed = $false
-              smoke_test = "planned"
-              install_command = "tar -xzf eva-cli-$version-aarch64-apple-darwin.tar.gz && ./eva --version"
-              uninstall_command = "remove the extracted Eva-CLI archive directory"
-              upgrade_command = "replace the archive contents and run eva upgrade check --output json"
-            }
-          )
-          $evidence = [ordered]@{
-            status = "planned"
-            version = $version
-            source_tag = $env:RELEASE_TAG
-            source_sha = $sourceSha
-            artifacts = @($targets)
-            reason = "Native archive build jobs are planned but not yet implemented."
-          }
-          $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath release-evidence/native-artifacts.json -Encoding utf8
-
       - name: Download package evidence artifact
         uses: actions/download-artifact@v4
         with:
@@ -990,25 +968,25 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: native-evidence-windows-${{ env.RELEASE_TAG }}
-          path: release-evidence/native
+          path: release-evidence/native/windows
 
       - name: Download Linux native evidence artifact
         uses: actions/download-artifact@v4
         with:
           name: native-evidence-linux-${{ env.RELEASE_TAG }}
-          path: release-evidence/native
+          path: release-evidence/native/linux
 
       - name: Download macOS x86_64 native evidence artifact
         uses: actions/download-artifact@v4
         with:
           name: native-evidence-macos-x86_64-apple-darwin-${{ env.RELEASE_TAG }}
-          path: release-evidence/native
+          path: release-evidence/native/macos-x86_64
 
       - name: Download macOS aarch64 native evidence artifact
         uses: actions/download-artifact@v4
         with:
           name: native-evidence-macos-aarch64-apple-darwin-${{ env.RELEASE_TAG }}
-          path: release-evidence/native
+          path: release-evidence/native/macos-aarch64
 
       - name: Download Windows release archive
         uses: actions/download-artifact@v4
@@ -1034,36 +1012,32 @@ jobs:
           name: native-macos-aarch64-apple-darwin-${{ env.RELEASE_TAG }}
           path: release-native
 
-      - name: Merge native artifact evidence
+      - name: Aggregate verified platform evidence
         shell: pwsh
         run: |
-          $nativePlanPath = "release-evidence/native-artifacts.json"
-          $nativePlan = Get-Content -Raw -LiteralPath $nativePlanPath | ConvertFrom-Json
-          $published = @()
-          $published += Get-ChildItem -LiteralPath release-evidence/native -Filter "native-*.json" |
-            ForEach-Object {
-              (Get-Content -Raw -LiteralPath $_.FullName | ConvertFrom-Json).artifact
-            }
-          $remaining = @($nativePlan.artifacts | Where-Object {
-            $target = $_.target
-            -not (@($published) | Where-Object { $_.target -eq $target })
-          })
-          $status = if ($published.Count -gt 0 -and $remaining.Count -gt 0) {
-            "partial"
-          } elseif ($published.Count -gt 0) {
-            "published"
-          } else {
-            $nativePlan.status
+          $head = (& git rev-parse HEAD | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') {
+            throw "Cannot resolve the trusted release checkout commit."
           }
-          $merged = [ordered]@{
-            status = $status
-            version = $nativePlan.version
-            source_tag = $nativePlan.source_tag
-            source_sha = $nativePlan.source_sha
-            artifacts = @($published + $remaining)
-            reason = if ($remaining.Count -gt 0) { "Some native archive build jobs are still planned but not yet implemented." } else { $null }
+          $tagReference = "$($env:RELEASE_TAG)^{commit}"
+          $tagCommit = (& git rev-parse $tagReference | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $head) {
+            throw "Release tag '$env:RELEASE_TAG' does not resolve to checkout commit '$head'."
           }
-          $merged | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $nativePlanPath -Encoding utf8
+          $platformManifests = @(
+            "release-evidence/native/windows/platform.json",
+            "release-evidence/native/linux/platform.json",
+            "release-evidence/native/macos-x86_64/platform.json",
+            "release-evidence/native/macos-aarch64/platform.json"
+          )
+          ./scripts/aggregate-release-platform-evidence.ps1 `
+            -PlatformManifestPath $platformManifests `
+            -BundleManifestPath "release-evidence/platform-bundle.json" `
+            -NativeArtifactsPath "release-evidence/native-artifacts.json" `
+            -ExpectedReleaseTag $env:RELEASE_TAG `
+            -ExpectedSourceCommit $head `
+            -ExpectedRunId $env:GITHUB_RUN_ID `
+            -ExpectedRunAttempt $env:GITHUB_RUN_ATTEMPT | Out-Null
 
       - name: Generate native archive checksums
         shell: pwsh
@@ -1102,6 +1076,7 @@ jobs:
         shell: pwsh
         run: |
           $nativeEvidence = Get-Content -Raw -LiteralPath release-evidence/native-artifacts.json | ConvertFrom-Json
+          $platformEvidence = Get-Content -Raw -LiteralPath release-evidence/platform-bundle.json | ConvertFrom-Json
           $packageEvidence = Get-Content -Raw -LiteralPath release-evidence/package-ghcr.json | ConvertFrom-Json
           $checksums = Get-Content -LiteralPath release-evidence/SHA256SUMS
           $signatureStatus = if ([string]::IsNullOrWhiteSpace($env:RELEASE_SIGNING_KEY)) {
@@ -1120,6 +1095,7 @@ jobs:
             source_tag = $env:RELEASE_TAG
             source_sha = git rev-parse HEAD
             generated_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platform_evidence = $platformEvidence
             native_artifacts = $nativeEvidence
             package = $packageEvidence
             checksums = @($checksums)

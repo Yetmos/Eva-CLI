@@ -1,6 +1,6 @@
 # Eva-CLI Project Release Plan
 
-Date: 2026-07-14
+Date: 2026-07-15
 Scope: CI, tag-driven release automation, evidence, GHCR, and native archive boundaries
 
 This document describes what the repository currently executes. It does not treat a
@@ -42,7 +42,7 @@ The destinations are different:
 | Destination | What the workflow writes | Durability and access |
 | --- | --- | --- |
 | GitHub Release | Release title/body and GitHub-managed source archives | Public release record bound to the tag |
-| GitHub Actions artifacts | Native archives, per-target metadata, `SHA256SUMS`, scan/benchmark/distribution evidence, and the provenance bundle | Workflow artifacts with repository retention; not Release assets |
+| GitHub Actions artifacts | Native archives, per-target raw capture streams and platform subjects/envelopes, the platform bundle, `SHA256SUMS`, scan/benchmark/distribution evidence, and the provenance bundle | Workflow artifacts with repository retention; not Release assets |
 | GHCR | Multi-platform OCI image and digest | Registry package; version tags can be repushed by a workflow rerun, so the digest is the content identity |
 
 The GHCR image is pushed before the final `publish` evidence gate. A later native or
@@ -72,15 +72,30 @@ may remain `ready_with_external_blockers`.
 
 ### Workflow-executed evidence
 
-The final publish job additionally:
+The native jobs and final publish job additionally:
 
 - runs `cargo audit --json` and converts the result to security scan evidence;
 - builds a release binary and measures `eva --version` and `eva release check` three
   times against workflow budgets;
-- merges four native install-smoke reports and the GHCR digest inspection into
-  distribution evidence;
+- each native job extracts the final archive, captures structured-argv executions of
+  its `eva --version` and `rustc --version`, and saves the capture JSON, raw
+  stdout/stderr, and an archive copy;
+- the platform producer rehashes those raw bytes and binds canonical target/archive,
+  OS/arch, toolchain, tag/commit, GitHub run ID/attempt/job, runner identity, and
+  completion time into a `measurement` subject and envelope;
+- publish downloads the four platform evidence artifacts into isolated directories,
+  obtains trusted inputs from the tag-resolved checkout HEAD and current run context,
+  rereads and verifies capture streams, archives, subjects/envelopes, paths, and
+  digests, then emits a target-sorted platform bundle;
+- publish compares the four separately downloaded release archives with the verified
+  bundle before combining them with the GHCR digest inspection as distribution evidence;
 - reruns `release check` with distribution, scanner, and benchmark evidence;
 - reruns `release perf` with measured benchmark evidence.
+
+The three-platform local producer/aggregator contract and Rust verifier pass. The
+updated GitHub-hosted release workflow has not yet run on a new tag. The current
+bundle proves input consistency only; platform coverage, freshness, and
+trusted-executor policy remain production-gate follow-up work.
 
 The public JSON contract script exists, but neither CI nor the release workflow
 currently invokes `scripts/validate-cli-json-contracts.ps1`. A compiled
@@ -91,10 +106,10 @@ currently invokes `scripts/validate-cli-json-contracts.ps1`. A compiled
 | Purpose | Runner or target | Executed check or output |
 | --- | --- | --- |
 | Verification | `ubuntu-latest`, `windows-latest`, `macos-latest` | Format, clippy, workspace tests, version validation, and CLI smoke |
-| Windows archive | `x86_64-pc-windows-msvc` on `windows-latest` | Unsigned `.zip`, extracted `eva.exe --version` smoke |
-| Linux archive | `x86_64-unknown-linux-gnu` on `ubuntu-latest` | Unsigned glibc `.tar.gz`, extracted `eva --version` smoke |
-| macOS Intel archive | `x86_64-apple-darwin` on `macos-26-intel` | Unsigned and unnotarized `.tar.gz`, extracted smoke |
-| macOS Apple Silicon archive | `aarch64-apple-darwin` on `macos-26` | Unsigned and unnotarized `.tar.gz`, extracted smoke |
+| Windows archive | `x86_64-pc-windows-msvc` on `windows-latest` | Unsigned `.zip`; captures extracted `eva.exe --version` and the toolchain, then emits platform evidence |
+| Linux archive | `x86_64-unknown-linux-gnu` on `ubuntu-latest` | Unsigned glibc `.tar.gz`; captures extracted `eva --version` and the toolchain, then emits platform evidence |
+| macOS Intel archive | `x86_64-apple-darwin` on `macos-26-intel` | Unsigned and unnotarized `.tar.gz`; captures smoke/toolchain and emits platform evidence |
+| macOS Apple Silicon archive | `aarch64-apple-darwin` on `macos-26` | Unsigned and unnotarized `.tar.gz`; captures smoke/toolchain and emits platform evidence |
 | Container | `linux/amd64`, `linux/arm64` | Buildx push with provenance/SBOM settings; local image version smoke and pushed-digest metadata inspection |
 
 The workflow does not publish a Windows installer, macOS application bundle,
@@ -146,7 +161,7 @@ A release is complete only when evidence shows all of the following:
 
 - the release commit passed the full CI matrix;
 - the tag matches the Cargo version and every release job passed;
-- the evidence-backed security, benchmark, and distribution checks passed;
+- the evidence-backed security, benchmark, and distribution checks passed, and the platform bundle matches the separately downloaded native archive digests;
 - the GitHub Release record exists for the immutable tag;
 - expected Actions artifacts exist and their retention limit is understood;
 - the GHCR digest and tags match `package-ghcr.json` when package publication ran;
