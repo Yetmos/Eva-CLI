@@ -29,6 +29,12 @@ pub const RELEASE_PLATFORM_BUNDLE_FORMAT: &str = "eva.release.platform_bundle.v1
 /// Capture manifest format written by `capture-release-evidence.ps1`.
 pub const RELEASE_COMMAND_CAPTURE_FORMAT: &str = "eva.release.command_capture.v1";
 
+/// Production evidence is accepted for at most 24 hours after capture.
+pub const PRODUCTION_EVIDENCE_MAX_AGE_MS: u128 = 24 * 60 * 60 * 1_000;
+
+/// Production evidence may lead the consumer clock by at most five minutes.
+pub const PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW_MS: u128 = 5 * 60 * 1_000;
+
 /// 仅用于复用 ArtifactRecord 的确定性 SHA-256 实现，不表示写入 artifact store。
 const EVIDENCE_SUBJECT_KEY: &str = "release/evidence/subject";
 
@@ -147,6 +153,359 @@ impl fmt::Display for ReleaseEvidenceType {
     }
 }
 
+/// A consumer-owned executor allow-list rule for one production evidence type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionEvidenceExecutorRule {
+    evidence_type: ReleaseEvidenceType,
+    executor_prefix: String,
+}
+
+impl ProductionEvidenceExecutorRule {
+    /// Trust executors whose identity starts with a delimiter-terminated namespace.
+    pub fn prefix(
+        evidence_type: ReleaseEvidenceType,
+        executor_prefix: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        let executor_prefix = validate_manifest_text(
+            "production evidence executor prefix",
+            executor_prefix.into(),
+        )?;
+        if !executor_prefix.ends_with([':', '/']) {
+            return Err(EvaError::invalid_argument(
+                "production evidence executor prefix must end with ':' or '/'",
+            )
+            .with_context("entry_type", evidence_type.as_str()));
+        }
+        Ok(Self {
+            evidence_type,
+            executor_prefix,
+        })
+    }
+
+    /// Return the evidence type governed by this rule.
+    pub const fn evidence_type(&self) -> ReleaseEvidenceType {
+        self.evidence_type
+    }
+
+    /// Match a canonical namespace/run/attempt/job identity against external run context.
+    pub fn matches(
+        &self,
+        executor: &str,
+        expected_run_id: &str,
+        expected_run_attempt: &str,
+    ) -> bool {
+        let Some(identity) = executor.strip_prefix(&self.executor_prefix) else {
+            return false;
+        };
+        let mut parts = identity.split('/');
+        let (Some(run_id), Some(run_attempt), Some(job), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        run_id == expected_run_id
+            && run_attempt == expected_run_attempt
+            && !job.is_empty()
+            && job
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    }
+}
+
+/// External facts supplied by the production consumer rather than an evidence producer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionEvidenceContext {
+    trusted_now_ms: u128,
+    expected_version: String,
+    expected_source_tag: String,
+    expected_run_id: String,
+    expected_run_attempt: String,
+    expected_manifest_digest: String,
+}
+
+impl ProductionEvidenceContext {
+    /// Validate the consumer clock, release identity, and GitHub Actions run identity.
+    pub fn new(
+        trusted_now_ms: u128,
+        expected_version: impl Into<String>,
+        expected_source_tag: impl Into<String>,
+        expected_run_id: impl Into<String>,
+        expected_run_attempt: impl Into<String>,
+        expected_manifest_digest: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        if trusted_now_ms == 0 {
+            return Err(EvaError::invalid_argument(
+                "production evidence trusted time must be greater than zero",
+            ));
+        }
+        let expected_version = validate_manifest_text(
+            "production evidence expected version",
+            expected_version.into(),
+        )?;
+        let expected_source_tag = validate_manifest_text(
+            "production evidence expected source tag",
+            expected_source_tag.into(),
+        )?;
+        if expected_source_tag != format!("v{expected_version}") {
+            return Err(EvaError::invalid_argument(
+                "production evidence expected source tag must be v<expected_version>",
+            ));
+        }
+        let expected_run_id = validate_canonical_positive_decimal(
+            "production evidence expected run id",
+            expected_run_id.into(),
+        )
+        .map_err(|error| {
+            error.with_context(
+                "blocked_reasons",
+                ProductionEvidenceBlocker::TrustedRunRequired.as_str(),
+            )
+        })?;
+        let expected_run_attempt = validate_canonical_positive_decimal(
+            "production evidence expected run attempt",
+            expected_run_attempt.into(),
+        )
+        .map_err(|error| {
+            error.with_context(
+                "blocked_reasons",
+                ProductionEvidenceBlocker::TrustedRunRequired.as_str(),
+            )
+        })?;
+        let expected_manifest_digest = expected_manifest_digest.into();
+        validate_canonical_subject_digest(&expected_manifest_digest).map_err(|error| {
+            error.with_context(
+                "blocked_reasons",
+                ProductionEvidenceBlocker::ManifestDigestInvalid.as_str(),
+            )
+        })?;
+        Ok(Self {
+            trusted_now_ms,
+            expected_version,
+            expected_source_tag,
+            expected_run_id,
+            expected_run_attempt,
+            expected_manifest_digest,
+        })
+    }
+}
+
+/// Consumer-owned production coverage, freshness, and executor trust policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionEvidencePolicy {
+    context: ProductionEvidenceContext,
+    max_age_ms: u128,
+    max_future_skew_ms: u128,
+    executor_rules: Vec<ProductionEvidenceExecutorRule>,
+}
+
+impl ProductionEvidencePolicy {
+    /// Build a policy that requires rules for every currently supported evidence type.
+    pub fn new(
+        context: ProductionEvidenceContext,
+        max_age_ms: u128,
+        max_future_skew_ms: u128,
+        executor_rules: Vec<ProductionEvidenceExecutorRule>,
+    ) -> Result<Self, EvaError> {
+        if max_age_ms == 0 {
+            return Err(EvaError::invalid_argument(
+                "production evidence maximum age must be greater than zero",
+            ));
+        }
+
+        let mut rules = BTreeSet::new();
+        let mut covered_types = BTreeSet::new();
+        for rule in &executor_rules {
+            if !rules.insert((rule.evidence_type, rule.executor_prefix.as_str())) {
+                return Err(EvaError::invalid_argument(
+                    "production evidence executor rule is duplicated",
+                )
+                .with_context("entry_type", rule.evidence_type.as_str()));
+            }
+            covered_types.insert(rule.evidence_type);
+        }
+        let missing_types = ReleaseEvidenceType::ALL
+            .into_iter()
+            .filter(|evidence_type| !covered_types.contains(evidence_type))
+            .map(ReleaseEvidenceType::as_str)
+            .collect::<Vec<_>>();
+        if !missing_types.is_empty() {
+            return Err(EvaError::invalid_argument(
+                "production evidence policy must define executors for every evidence type",
+            )
+            .with_context("missing_entry_types", missing_types.join(",")));
+        }
+
+        Ok(Self {
+            context,
+            max_age_ms,
+            max_future_skew_ms,
+            executor_rules,
+        })
+    }
+
+    /// Build the repository's GitHub Actions production policy at a caller-trusted time.
+    pub fn github_actions(
+        trusted_now_ms: u128,
+        expected_run_id: impl Into<String>,
+        expected_run_attempt: impl Into<String>,
+        expected_manifest_digest: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        let expected_version = env!("CARGO_PKG_VERSION");
+        let context = ProductionEvidenceContext::new(
+            trusted_now_ms,
+            expected_version,
+            format!("v{expected_version}"),
+            expected_run_id,
+            expected_run_attempt,
+            expected_manifest_digest,
+        )?;
+        Self::new(
+            context,
+            PRODUCTION_EVIDENCE_MAX_AGE_MS,
+            PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW_MS,
+            vec![
+                ProductionEvidenceExecutorRule::prefix(
+                    ReleaseEvidenceType::Artifact,
+                    "github-actions:release-artifact/",
+                )?,
+                ProductionEvidenceExecutorRule::prefix(
+                    ReleaseEvidenceType::Distribution,
+                    "github-actions:release-distribution/",
+                )?,
+                ProductionEvidenceExecutorRule::prefix(
+                    ReleaseEvidenceType::SecurityScan,
+                    "github-actions:release-security-scan/",
+                )?,
+                ProductionEvidenceExecutorRule::prefix(
+                    ReleaseEvidenceType::Benchmark,
+                    "github-actions:release-benchmark/",
+                )?,
+            ],
+        )
+    }
+
+    /// Return the externally supplied current epoch used for freshness checks.
+    pub const fn trusted_now_ms(&self) -> u128 {
+        self.context.trusted_now_ms
+    }
+
+    /// Return the maximum accepted evidence age.
+    pub const fn max_age_ms(&self) -> u128 {
+        self.max_age_ms
+    }
+
+    /// Return the maximum accepted clock lead.
+    pub const fn max_future_skew_ms(&self) -> u128 {
+        self.max_future_skew_ms
+    }
+
+    /// Return the release version the consumer is evaluating.
+    pub fn expected_version(&self) -> &str {
+        &self.context.expected_version
+    }
+
+    /// Return the release tag the consumer is evaluating.
+    pub fn expected_source_tag(&self) -> &str {
+        &self.context.expected_source_tag
+    }
+
+    /// Return the externally trusted GitHub Actions run identifier.
+    pub fn expected_run_id(&self) -> &str {
+        &self.context.expected_run_id
+    }
+
+    /// Return the externally trusted GitHub Actions run attempt.
+    pub fn expected_run_attempt(&self) -> &str {
+        &self.context.expected_run_attempt
+    }
+
+    /// Return the externally trusted digest of the canonical release manifest.
+    pub fn expected_manifest_digest(&self) -> &str {
+        &self.context.expected_manifest_digest
+    }
+
+    /// Test an executor against rules selected by the evidence type.
+    pub fn trusts_executor(&self, evidence_type: ReleaseEvidenceType, executor: &str) -> bool {
+        self.executor_rules
+            .iter()
+            .filter(|rule| rule.evidence_type == evidence_type)
+            .any(|rule| {
+                rule.matches(
+                    executor,
+                    &self.context.expected_run_id,
+                    &self.context.expected_run_attempt,
+                )
+            })
+    }
+}
+
+/// Stable machine blockers emitted by production evidence policy verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProductionEvidenceBlocker {
+    /// A required evidence type is absent from the production manifest.
+    CoverageMissing,
+    /// A production envelope is not a machine measurement.
+    KindNotMeasurement,
+    /// An envelope predates the consumer-owned freshness window.
+    Stale,
+    /// An envelope is too far ahead of the consumer-owned clock.
+    FutureTimestamp,
+    /// An executor is outside the consumer-owned allow-list.
+    ExecutorUntrusted,
+    /// The consumer did not provide an external run ID and attempt.
+    TrustedRunRequired,
+    /// The consumer did not provide a trusted canonical manifest digest.
+    ManifestDigestRequired,
+    /// A manifest or entry digest is not canonical SHA-256.
+    ManifestDigestInvalid,
+    /// Canonical manifest bytes do not match the external digest.
+    ManifestDigestMismatch,
+    /// A production manifest entry omits its envelope digest.
+    EnvelopeDigestMissing,
+    /// A declared envelope digest is not canonical SHA-256.
+    EnvelopeDigestInvalid,
+    /// Canonical envelope bytes do not match their trusted manifest entry.
+    EnvelopeDigestMismatch,
+    /// Two evidence types claim the same subject digest.
+    SubjectDuplicate,
+    /// Two subjects reuse the same capture identity.
+    IdentityConflict,
+    /// Typed evidence disagrees on release version or source tag.
+    ReleaseIdentityConflict,
+    /// Production verification was attempted without a consumer policy.
+    PolicyRequired,
+}
+
+impl ProductionEvidenceBlocker {
+    /// Return the stable CLI/error-context code for this blocker.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CoverageMissing => "production_evidence_coverage_missing",
+            Self::KindNotMeasurement => "production_evidence_kind_not_measurement",
+            Self::Stale => "production_evidence_stale",
+            Self::FutureTimestamp => "production_evidence_future_timestamp",
+            Self::ExecutorUntrusted => "production_evidence_executor_untrusted",
+            Self::TrustedRunRequired => "production_evidence_trusted_run_required",
+            Self::ManifestDigestRequired => "production_evidence_manifest_digest_required",
+            Self::ManifestDigestInvalid => "production_evidence_manifest_digest_invalid",
+            Self::ManifestDigestMismatch => "production_evidence_manifest_digest_mismatch",
+            Self::EnvelopeDigestMissing => "production_evidence_envelope_digest_missing",
+            Self::EnvelopeDigestInvalid => "production_evidence_envelope_digest_invalid",
+            Self::EnvelopeDigestMismatch => "production_evidence_envelope_digest_mismatch",
+            Self::SubjectDuplicate => "production_evidence_subject_duplicate",
+            Self::IdentityConflict => "production_evidence_identity_conflict",
+            Self::ReleaseIdentityConflict => "production_evidence_release_identity_conflict",
+            Self::PolicyRequired => "production_evidence_policy_required",
+        }
+    }
+}
+
+impl fmt::Display for ProductionEvidenceBlocker {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// 统一 manifest 中一类 gate evidence、信封和可选真实主题的相对引用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseEvidenceManifestEntry {
@@ -156,6 +515,8 @@ pub struct ReleaseEvidenceManifestEntry {
     pub evidence_path: String,
     /// 相对统一 manifest 目录的 EvidenceEnvelope 路径。
     pub envelope_path: String,
+    /// Canonical envelope bytes digest; production policy requires it.
+    pub envelope_digest: Option<String>,
     /// artifact 的真实归档/二进制路径；其他类型的主题固定为 canonical evidence 文档。
     pub subject_path: Option<String>,
 }
@@ -201,8 +562,25 @@ impl ReleaseEvidenceManifestEntry {
             evidence_type,
             evidence_path,
             envelope_path,
+            envelope_digest: None,
             subject_path,
         })
+    }
+
+    /// Bind this entry to the canonical envelope bytes without changing alpha defaults.
+    pub fn with_envelope_digest(
+        mut self,
+        envelope_digest: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        let envelope_digest = envelope_digest.into();
+        validate_canonical_subject_digest(&envelope_digest).map_err(|error| {
+            error.with_context(
+                "blocked_reasons",
+                ProductionEvidenceBlocker::EnvelopeDigestInvalid.as_str(),
+            )
+        })?;
+        self.envelope_digest = Some(envelope_digest);
+        Ok(self)
     }
 }
 
@@ -272,7 +650,10 @@ impl ReleaseEvidenceManifest {
             let parts = field.split('.').collect::<Vec<_>>();
             if parts.len() != 3
                 || parts[0] != "entry"
-                || !matches!(parts[2], "type" | "evidence" | "envelope" | "subject")
+                || !matches!(
+                    parts[2],
+                    "type" | "evidence" | "envelope" | "envelope_digest" | "subject"
+                )
             {
                 return Err(EvaError::invalid_argument(
                     "release evidence manifest contains an unknown field",
@@ -302,7 +683,7 @@ impl ReleaseEvidenceManifest {
             .into_iter()
             .map(|index| {
                 let prefix = format!("entry.{index}");
-                ReleaseEvidenceManifestEntry::new(
+                let entry = ReleaseEvidenceManifestEntry::new(
                     ReleaseEvidenceType::parse(&required_manifest_field(
                         &fields,
                         &format!("{prefix}.type"),
@@ -310,7 +691,12 @@ impl ReleaseEvidenceManifest {
                     required_manifest_field(&fields, &format!("{prefix}.evidence"))?,
                     required_manifest_field(&fields, &format!("{prefix}.envelope"))?,
                     fields.get(&format!("{prefix}.subject")).cloned(),
-                )
+                )?;
+                if let Some(digest) = fields.get(&format!("{prefix}.envelope_digest")) {
+                    entry.with_envelope_digest(digest)
+                } else {
+                    Ok(entry)
+                }
             })
             .collect::<Result<Vec<_>, EvaError>>()?;
         Self::new(scope, source_commit, entries)
@@ -327,11 +713,21 @@ impl ReleaseEvidenceManifest {
                 "entry.{index}.type={}\nentry.{index}.evidence={}\nentry.{index}.envelope={}\n",
                 entry.evidence_type, entry.evidence_path, entry.envelope_path
             ));
+            if let Some(envelope_digest) = &entry.envelope_digest {
+                output.push_str(&format!(
+                    "entry.{index}.envelope_digest={envelope_digest}\n"
+                ));
+            }
             if let Some(subject_path) = &entry.subject_path {
                 output.push_str(&format!("entry.{index}.subject={subject_path}\n"));
             }
         }
         output
+    }
+
+    /// Hash canonical manifest bytes for binding to an external consumer context.
+    pub fn canonical_digest(&self) -> String {
+        digest_subject(self.to_manifest().as_bytes())
     }
 }
 
@@ -1540,6 +1936,11 @@ impl EvidenceEnvelope {
         )
     }
 
+    /// Hash all canonical envelope fields so a trusted manifest can detect rewrites.
+    pub fn canonical_digest(&self) -> String {
+        digest_subject(self.to_manifest().as_bytes())
+    }
+
     /// 使用可信构建提交和独立读取的主题字节验证当前信封。
     pub fn verify_subject(
         &self,
@@ -1709,7 +2110,7 @@ fn is_valid_release_tag(value: &str) -> bool {
     })
 }
 
-fn validate_positive_decimal(field: &str, value: String) -> Result<String, EvaError> {
+fn validate_canonical_positive_decimal(field: &str, value: String) -> Result<String, EvaError> {
     let value = validate_manifest_text(field, value)?;
     if !is_positive_decimal(&value) {
         return Err(EvaError::invalid_argument(format!(
@@ -2591,6 +2992,21 @@ fn validate_manifest_text(field: &str, value: String) -> Result<String, EvaError
     Ok(value)
 }
 
+/// Require a canonical positive decimal so string comparisons have one representation.
+fn validate_positive_decimal(field: &str, value: String) -> Result<String, EvaError> {
+    let value = validate_manifest_text(field, value)?;
+    let parsed = value.parse::<u128>().map_err(|error| {
+        EvaError::invalid_argument(format!("{field} must be a positive decimal integer"))
+            .with_context("parse_error", error.to_string())
+    })?;
+    if parsed == 0 || parsed.to_string() != value {
+        return Err(EvaError::invalid_argument(format!(
+            "{field} must be a canonical positive decimal integer"
+        )));
+    }
+    Ok(value)
+}
+
 /// 限制统一 manifest 引用为跨平台稳定的目录内相对路径。
 fn validate_manifest_relative_path(field: &str, value: String) -> Result<String, EvaError> {
     let value = validate_manifest_text(field, value)?;
@@ -2718,6 +3134,95 @@ mod tests {
             normalized.entries[1].evidence_type,
             ReleaseEvidenceType::Benchmark
         );
+
+        let mut bound = release_manifest(ReleaseEvidenceScope::Production);
+        bound.entries[0].envelope_digest = Some(
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+        );
+        let parsed = ReleaseEvidenceManifest::parse_manifest(&bound.to_manifest()).unwrap();
+        assert_eq!(parsed, bound);
+        assert_eq!(parsed.canonical_digest(), bound.canonical_digest());
+    }
+
+    #[test]
+    /// 验证 consumer policy 要求逐类型规则并按命名空间边界匹配执行器。
+    fn production_policy_requires_complete_executor_rules_and_namespace_members() {
+        let policy = ProductionEvidencePolicy::github_actions(
+            1_784_073_600_000,
+            "123",
+            "1",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        assert!(policy.trusts_executor(
+            ReleaseEvidenceType::Benchmark,
+            "github-actions:release-benchmark/123/1/benchmark"
+        ));
+        assert!(!policy.trusts_executor(
+            ReleaseEvidenceType::Benchmark,
+            "github-actions:release-benchmark/"
+        ));
+        assert!(!policy.trusts_executor(
+            ReleaseEvidenceType::Artifact,
+            "github-actions:release-benchmark/123/1/benchmark"
+        ));
+        assert!(!policy.trusts_executor(
+            ReleaseEvidenceType::Benchmark,
+            "github-actions:release-benchmark/124/1/benchmark"
+        ));
+        assert!(!policy.trusts_executor(
+            ReleaseEvidenceType::Benchmark,
+            "github-actions:release-benchmark/123/2/benchmark"
+        ));
+        assert!(!policy.trusts_executor(
+            ReleaseEvidenceType::Benchmark,
+            "github-actions:release-benchmark/123/1/benchmark/extra"
+        ));
+
+        let context = ProductionEvidenceContext::new(
+            1_784_073_600_000,
+            env!("CARGO_PKG_VERSION"),
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            "123",
+            "1",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        let incomplete = ProductionEvidencePolicy::new(
+            context,
+            PRODUCTION_EVIDENCE_MAX_AGE_MS,
+            PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW_MS,
+            vec![ProductionEvidenceExecutorRule::prefix(
+                ReleaseEvidenceType::Artifact,
+                "trusted:artifact/",
+            )
+            .unwrap()],
+        )
+        .unwrap_err();
+        assert!(incomplete
+            .message()
+            .contains("must define executors for every evidence type"));
+        assert!(incomplete.context().entries().iter().any(|(key, value)| {
+            key == "missing_entry_types" && value == "distribution,security_scan,benchmark"
+        }));
+
+        let invalid_prefix =
+            ProductionEvidenceExecutorRule::prefix(ReleaseEvidenceType::Artifact, "trusted")
+                .unwrap_err();
+        assert!(invalid_prefix.message().contains("must end with"));
+
+        let invalid_run = ProductionEvidencePolicy::github_actions(
+            1_784_073_600_000,
+            "run-123",
+            "1",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+        assert!(invalid_run.message().contains("positive decimal"));
+        assert!(invalid_run.context().entries().iter().any(|(key, value)| {
+            key == "blocked_reasons"
+                && value == ProductionEvidenceBlocker::TrustedRunRequired.as_str()
+        }));
     }
 
     #[test]

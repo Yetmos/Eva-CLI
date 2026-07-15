@@ -8,7 +8,8 @@ use crate::benchmark::{ReleaseBenchmarkEvidence, ReleaseBenchmarkVerificationRep
 use crate::distribution::{ReleaseDistributionEvidence, ReleaseDistributionVerificationReport};
 use crate::evidence::{
     verify_evidence_bundle, EvidenceEnvelope, EvidenceKind, EvidenceSubject,
-    EvidenceVerificationReport, ReleaseEvidenceManifest, ReleaseEvidenceScope, ReleaseEvidenceType,
+    EvidenceVerificationReport, ProductionEvidenceBlocker, ProductionEvidencePolicy,
+    ReleaseEvidenceManifest, ReleaseEvidenceScope, ReleaseEvidenceType,
 };
 use crate::migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
@@ -204,7 +205,9 @@ pub struct VerifiedReleaseEvidenceBundle {
 }
 
 impl VerifiedReleaseEvidenceBundle {
-    /// 校验 manifest coverage、外部可信提交、全部 typed commit 与 subject digest。
+    /// 校验 alpha manifest、外部可信提交、全部 typed commit 与 subject digest。
+    ///
+    /// Production scope 必须改用 verify_production，防止调用方遗漏 consumer-owned policy。
     #[allow(clippy::too_many_arguments)]
     pub fn verify(
         manifest: ReleaseEvidenceManifest,
@@ -213,6 +216,64 @@ impl VerifiedReleaseEvidenceBundle {
         distribution: Option<ReleaseDocumentEvidenceCandidate<ReleaseDistributionEvidence>>,
         security_scan: Option<ReleaseDocumentEvidenceCandidate<ReleaseSecurityScanEvidence>>,
         benchmark: Option<ReleaseDocumentEvidenceCandidate<ReleaseBenchmarkEvidence>>,
+    ) -> Result<Self, EvaError> {
+        if manifest.scope == ReleaseEvidenceScope::Production {
+            return Err(EvaError::conflict(
+                "production release evidence requires a consumer policy",
+            )
+            .with_context(
+                "blocked_reasons",
+                ProductionEvidenceBlocker::PolicyRequired.as_str(),
+            ));
+        }
+        Self::verify_inner(
+            manifest,
+            expected_source_commit,
+            artifact,
+            distribution,
+            security_scan,
+            benchmark,
+            None,
+        )
+    }
+
+    /// 校验 production 完整覆盖、可信时间窗、执行器及全部完整性声明。
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_production(
+        manifest: ReleaseEvidenceManifest,
+        expected_source_commit: &str,
+        artifact: Option<ReleaseArtifactEvidenceCandidate>,
+        distribution: Option<ReleaseDocumentEvidenceCandidate<ReleaseDistributionEvidence>>,
+        security_scan: Option<ReleaseDocumentEvidenceCandidate<ReleaseSecurityScanEvidence>>,
+        benchmark: Option<ReleaseDocumentEvidenceCandidate<ReleaseBenchmarkEvidence>>,
+        policy: &ProductionEvidencePolicy,
+    ) -> Result<Self, EvaError> {
+        if manifest.scope != ReleaseEvidenceScope::Production {
+            return Err(EvaError::invalid_argument(
+                "production release evidence verifier requires production scope",
+            )
+            .with_context("manifest_scope", manifest.scope.as_str()));
+        }
+        Self::verify_inner(
+            manifest,
+            expected_source_commit,
+            artifact,
+            distribution,
+            security_scan,
+            benchmark,
+            Some(policy),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify_inner(
+        manifest: ReleaseEvidenceManifest,
+        expected_source_commit: &str,
+        artifact: Option<ReleaseArtifactEvidenceCandidate>,
+        distribution: Option<ReleaseDocumentEvidenceCandidate<ReleaseDistributionEvidence>>,
+        security_scan: Option<ReleaseDocumentEvidenceCandidate<ReleaseSecurityScanEvidence>>,
+        benchmark: Option<ReleaseDocumentEvidenceCandidate<ReleaseBenchmarkEvidence>>,
+        production_policy: Option<&ProductionEvidencePolicy>,
     ) -> Result<Self, EvaError> {
         if manifest.source_commit != expected_source_commit {
             return Err(EvaError::conflict(
@@ -286,7 +347,7 @@ impl VerifiedReleaseEvidenceBundle {
                 ),
             );
         }
-        let verification = verify_evidence_bundle(expected_source_commit, &subjects)?;
+        let mut verification = verify_evidence_bundle(expected_source_commit, &subjects)?;
         if !verification.is_verified() {
             return Err(EvaError::conflict(
                 "release evidence manifest integrity verification was blocked",
@@ -305,6 +366,63 @@ impl VerifiedReleaseEvidenceBundle {
                 "verified_subject_count",
                 verification.verified_subject_count.to_string(),
             ));
+        }
+
+        if let Some(policy) = production_policy {
+            let envelope_entries = [
+                (
+                    ReleaseEvidenceType::Artifact,
+                    artifact.as_ref().map(|candidate| &candidate.envelope),
+                ),
+                (
+                    ReleaseEvidenceType::Distribution,
+                    distribution.as_ref().map(|candidate| &candidate.envelope),
+                ),
+                (
+                    ReleaseEvidenceType::SecurityScan,
+                    security_scan.as_ref().map(|candidate| &candidate.envelope),
+                ),
+                (
+                    ReleaseEvidenceType::Benchmark,
+                    benchmark.as_ref().map(|candidate| &candidate.envelope),
+                ),
+            ];
+            let release_identities = [
+                artifact.as_ref().map(|candidate| {
+                    (
+                        ReleaseEvidenceType::Artifact,
+                        candidate.evidence.version.as_str(),
+                        candidate.evidence.source_tag.as_str(),
+                    )
+                }),
+                distribution.as_ref().map(|candidate| {
+                    (
+                        ReleaseEvidenceType::Distribution,
+                        candidate.evidence.version.as_str(),
+                        candidate.evidence.source_tag.as_str(),
+                    )
+                }),
+                security_scan.as_ref().map(|candidate| {
+                    (
+                        ReleaseEvidenceType::SecurityScan,
+                        candidate.evidence.version.as_str(),
+                        candidate.evidence.source_tag.as_str(),
+                    )
+                }),
+                benchmark.as_ref().map(|candidate| {
+                    (
+                        ReleaseEvidenceType::Benchmark,
+                        candidate.evidence.version.as_str(),
+                        candidate.evidence.source_tag.as_str(),
+                    )
+                }),
+            ];
+            verification.audit.extend(verify_production_policy(
+                &manifest,
+                policy,
+                &envelope_entries,
+                &release_identities,
+            )?);
         }
 
         let artifact_kind = artifact.as_ref().map(|candidate| candidate.envelope.kind);
@@ -344,6 +462,272 @@ impl VerifiedReleaseEvidenceBundle {
     pub fn verification(&self) -> &EvidenceVerificationReport {
         &self.verification
     }
+}
+
+type ProductionEnvelopeEntry<'a> = (ReleaseEvidenceType, Option<&'a EvidenceEnvelope>);
+type ProductionReleaseIdentity<'a> = (ReleaseEvidenceType, &'a str, &'a str);
+type ProductionCaptureIdentity<'a> = (&'a str, &'a str, &'a str, u128);
+
+/// Apply policy owned by the production consumer after subject integrity has been proven.
+fn verify_production_policy(
+    manifest: &ReleaseEvidenceManifest,
+    policy: &ProductionEvidencePolicy,
+    envelope_entries: &[ProductionEnvelopeEntry<'_>],
+    release_identities: &[Option<ProductionReleaseIdentity<'_>>],
+) -> Result<Vec<String>, EvaError> {
+    let mut blockers = Vec::new();
+    let mut failures = Vec::new();
+    let mut seen_subjects: Vec<(&str, ReleaseEvidenceType)> = Vec::new();
+    let mut seen_identities: Vec<(ProductionCaptureIdentity<'_>, ReleaseEvidenceType)> = Vec::new();
+    let mut seen_paths: Vec<(&str, ReleaseEvidenceType, &str)> = Vec::new();
+
+    let mut record = |blocker: ProductionEvidenceBlocker, detail: String| {
+        if !blockers.contains(&blocker) {
+            blockers.push(blocker);
+        }
+        failures.push(detail);
+    };
+
+    if manifest.canonical_digest() != policy.expected_manifest_digest() {
+        record(
+            ProductionEvidenceBlocker::ManifestDigestMismatch,
+            ProductionEvidenceBlocker::ManifestDigestMismatch
+                .as_str()
+                .to_owned(),
+        );
+    }
+
+    for evidence_type in ReleaseEvidenceType::ALL {
+        if !manifest
+            .entries
+            .iter()
+            .any(|entry| entry.evidence_type == evidence_type)
+        {
+            record(
+                ProductionEvidenceBlocker::CoverageMissing,
+                format!(
+                    "{}:{}",
+                    ProductionEvidenceBlocker::CoverageMissing,
+                    evidence_type
+                ),
+            );
+        }
+    }
+
+    for entry in &manifest.entries {
+        let paths = [
+            Some((entry.evidence_path.as_str(), "evidence")),
+            Some((entry.envelope_path.as_str(), "envelope")),
+            entry.subject_path.as_deref().map(|path| (path, "subject")),
+        ];
+        for (path, label) in paths.into_iter().flatten() {
+            if let Some((_, previous_type, previous_label)) =
+                seen_paths.iter().find(|(seen, _, _)| *seen == path)
+            {
+                record(
+                    ProductionEvidenceBlocker::IdentityConflict,
+                    format!(
+                        "{}:{}:{}:{}:{}",
+                        ProductionEvidenceBlocker::IdentityConflict,
+                        previous_type,
+                        previous_label,
+                        entry.evidence_type,
+                        label
+                    ),
+                );
+            } else {
+                seen_paths.push((path, entry.evidence_type, label));
+            }
+        }
+    }
+
+    let maximum_timestamp = policy
+        .trusted_now_ms()
+        .saturating_add(policy.max_future_skew_ms());
+    for (evidence_type, envelope) in envelope_entries {
+        let Some(envelope) = envelope else {
+            continue;
+        };
+        let manifest_entry = manifest
+            .entries
+            .iter()
+            .find(|entry| entry.evidence_type == *evidence_type);
+        match manifest_entry.and_then(|entry| entry.envelope_digest.as_deref()) {
+            None => record(
+                ProductionEvidenceBlocker::EnvelopeDigestMissing,
+                format!(
+                    "{}:{}",
+                    ProductionEvidenceBlocker::EnvelopeDigestMissing,
+                    evidence_type
+                ),
+            ),
+            Some(expected_digest) if expected_digest != envelope.canonical_digest() => record(
+                ProductionEvidenceBlocker::EnvelopeDigestMismatch,
+                format!(
+                    "{}:{}",
+                    ProductionEvidenceBlocker::EnvelopeDigestMismatch,
+                    evidence_type
+                ),
+            ),
+            Some(_) => {}
+        }
+        if envelope.kind != EvidenceKind::Measurement {
+            record(
+                ProductionEvidenceBlocker::KindNotMeasurement,
+                format!(
+                    "{}:{}:{}",
+                    ProductionEvidenceBlocker::KindNotMeasurement,
+                    evidence_type,
+                    envelope.kind
+                ),
+            );
+        }
+        if envelope.timestamp > maximum_timestamp {
+            record(
+                ProductionEvidenceBlocker::FutureTimestamp,
+                format!(
+                    "{}:{}",
+                    ProductionEvidenceBlocker::FutureTimestamp,
+                    evidence_type
+                ),
+            );
+        } else if policy.trusted_now_ms().saturating_sub(envelope.timestamp) > policy.max_age_ms() {
+            record(
+                ProductionEvidenceBlocker::Stale,
+                format!("{}:{}", ProductionEvidenceBlocker::Stale, evidence_type),
+            );
+        }
+        if !policy.trusts_executor(*evidence_type, &envelope.executor) {
+            record(
+                ProductionEvidenceBlocker::ExecutorUntrusted,
+                format!(
+                    "{}:{}",
+                    ProductionEvidenceBlocker::ExecutorUntrusted,
+                    evidence_type
+                ),
+            );
+        }
+
+        if let Some((_, previous_type)) = seen_subjects
+            .iter()
+            .find(|(digest, _)| *digest == envelope.subject_digest)
+        {
+            record(
+                ProductionEvidenceBlocker::SubjectDuplicate,
+                format!(
+                    "{}:{}:{}",
+                    ProductionEvidenceBlocker::SubjectDuplicate,
+                    previous_type,
+                    evidence_type
+                ),
+            );
+        } else {
+            seen_subjects.push((&envelope.subject_digest, *evidence_type));
+        }
+
+        let identity = (
+            envelope.source.as_str(),
+            envelope.environment.as_str(),
+            envelope.executor.as_str(),
+            envelope.timestamp,
+        );
+        if let Some((_, previous_type)) = seen_identities.iter().find(|(seen, _)| *seen == identity)
+        {
+            record(
+                ProductionEvidenceBlocker::IdentityConflict,
+                format!(
+                    "{}:{}:{}",
+                    ProductionEvidenceBlocker::IdentityConflict,
+                    previous_type,
+                    evidence_type
+                ),
+            );
+        } else {
+            seen_identities.push((identity, *evidence_type));
+        }
+    }
+
+    let mut expected_release_identity: Option<(&str, &str, ReleaseEvidenceType)> = None;
+    for (evidence_type, version, source_tag) in release_identities.iter().flatten() {
+        if *version != policy.expected_version() || *source_tag != policy.expected_source_tag() {
+            record(
+                ProductionEvidenceBlocker::ReleaseIdentityConflict,
+                format!(
+                    "{}:{}:expected_release",
+                    ProductionEvidenceBlocker::ReleaseIdentityConflict,
+                    evidence_type
+                ),
+            );
+        }
+        if let Some((expected_version, expected_tag, expected_type)) = expected_release_identity {
+            if *version != expected_version || *source_tag != expected_tag {
+                record(
+                    ProductionEvidenceBlocker::ReleaseIdentityConflict,
+                    format!(
+                        "{}:{}:{}",
+                        ProductionEvidenceBlocker::ReleaseIdentityConflict,
+                        expected_type,
+                        evidence_type
+                    ),
+                );
+            }
+        } else {
+            expected_release_identity = Some((version, source_tag, *evidence_type));
+        }
+    }
+
+    if !blockers.is_empty() {
+        return Err(EvaError::conflict(
+            "production release evidence policy verification was blocked",
+        )
+        .with_context(
+            "blocked_reasons",
+            blockers
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+        .with_context("policy_failures", failures.join(",")));
+    }
+
+    Ok(vec![
+        "production_evidence.coverage:complete".to_owned(),
+        format!(
+            "production_evidence.trusted_now_ms:{}",
+            policy.trusted_now_ms()
+        ),
+        format!("production_evidence.max_age_ms:{}", policy.max_age_ms()),
+        format!(
+            "production_evidence.max_future_skew_ms:{}",
+            policy.max_future_skew_ms()
+        ),
+        format!(
+            "production_evidence.expected_version:{}",
+            policy.expected_version()
+        ),
+        format!(
+            "production_evidence.expected_source_tag:{}",
+            policy.expected_source_tag()
+        ),
+        format!(
+            "production_evidence.expected_run_id:{}",
+            policy.expected_run_id()
+        ),
+        format!(
+            "production_evidence.expected_run_attempt:{}",
+            policy.expected_run_attempt()
+        ),
+        format!(
+            "production_evidence.expected_manifest_digest:{}",
+            policy.expected_manifest_digest()
+        ),
+        "production_evidence.envelope_digests:verified".to_owned(),
+        "production_evidence.kind:measurement".to_owned(),
+        "production_evidence.executor_policy:verified".to_owned(),
+        "production_evidence.uniqueness:verified".to_owned(),
+        "production_evidence.release_identity:consistent".to_owned(),
+    ])
 }
 
 /// 构建当前发布加固报告和兼容性基线的无状态服务。
@@ -2177,11 +2561,198 @@ mod tests {
         .unwrap()
     }
 
+    const PRODUCTION_TRUSTED_NOW_MS: u128 = 1_784_073_600_000;
+
+    struct ProductionBundleFixture {
+        manifest: ReleaseEvidenceManifest,
+        artifact: Option<ReleaseArtifactEvidenceCandidate>,
+        distribution: Option<ReleaseDocumentEvidenceCandidate<ReleaseDistributionEvidence>>,
+        security_scan: Option<ReleaseDocumentEvidenceCandidate<ReleaseSecurityScanEvidence>>,
+        benchmark: Option<ReleaseDocumentEvidenceCandidate<ReleaseBenchmarkEvidence>>,
+    }
+
+    impl ProductionBundleFixture {
+        fn bind_envelope_digests(&mut self) {
+            let digests = [
+                (
+                    ReleaseEvidenceType::Artifact,
+                    self.artifact
+                        .as_ref()
+                        .map(|candidate| candidate.envelope.canonical_digest()),
+                ),
+                (
+                    ReleaseEvidenceType::Distribution,
+                    self.distribution
+                        .as_ref()
+                        .map(|candidate| candidate.envelope.canonical_digest()),
+                ),
+                (
+                    ReleaseEvidenceType::SecurityScan,
+                    self.security_scan
+                        .as_ref()
+                        .map(|candidate| candidate.envelope.canonical_digest()),
+                ),
+                (
+                    ReleaseEvidenceType::Benchmark,
+                    self.benchmark
+                        .as_ref()
+                        .map(|candidate| candidate.envelope.canonical_digest()),
+                ),
+            ];
+            for entry in &mut self.manifest.entries {
+                entry.envelope_digest = digests
+                    .iter()
+                    .find(|(evidence_type, _)| *evidence_type == entry.evidence_type)
+                    .and_then(|(_, digest)| digest.clone());
+            }
+        }
+
+        fn verify(
+            self,
+            policy: &ProductionEvidencePolicy,
+        ) -> Result<VerifiedReleaseEvidenceBundle, EvaError> {
+            VerifiedReleaseEvidenceBundle::verify_production(
+                self.manifest,
+                ARTIFACT_COMMIT,
+                self.artifact,
+                self.distribution,
+                self.security_scan,
+                self.benchmark,
+                policy,
+            )
+        }
+    }
+
+    fn production_manifest() -> ReleaseEvidenceManifest {
+        ReleaseEvidenceManifest::new(
+            ReleaseEvidenceScope::Production,
+            ARTIFACT_COMMIT,
+            vec![
+                crate::evidence::ReleaseEvidenceManifestEntry::new(
+                    ReleaseEvidenceType::Artifact,
+                    "artifact.evidence",
+                    "artifact.envelope",
+                    Some("artifact.tar.gz".to_owned()),
+                )
+                .unwrap(),
+                crate::evidence::ReleaseEvidenceManifestEntry::new(
+                    ReleaseEvidenceType::Distribution,
+                    "distribution.evidence",
+                    "distribution.envelope",
+                    None,
+                )
+                .unwrap(),
+                crate::evidence::ReleaseEvidenceManifestEntry::new(
+                    ReleaseEvidenceType::SecurityScan,
+                    "security-scan.evidence",
+                    "security-scan.envelope",
+                    None,
+                )
+                .unwrap(),
+                crate::evidence::ReleaseEvidenceManifestEntry::new(
+                    ReleaseEvidenceType::Benchmark,
+                    "benchmark.evidence",
+                    "benchmark.envelope",
+                    None,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn production_bundle_fixture() -> ProductionBundleFixture {
+        let timestamp = PRODUCTION_TRUSTED_NOW_MS - 1_000;
+        let mut artifact = artifact_evidence(true);
+        artifact.artifact.size_bytes = 2;
+        artifact.signature = artifact.sign(&ReleaseArtifactSigningKey::local_development());
+        let artifact_envelope = artifact
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "checklist:artifact",
+                "ubuntu-x86_64",
+                "github-actions:release-artifact/123/1/artifact",
+                timestamp,
+            )
+            .unwrap();
+        let distribution = distribution_evidence("passed");
+        let distribution_envelope = distribution
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "checklist:distribution",
+                "release-matrix",
+                "github-actions:release-distribution/123/1/distribution",
+                timestamp,
+            )
+            .unwrap();
+        let security_scan = security_scan_evidence("passed", Vec::new());
+        let security_scan_envelope = security_scan
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "checklist:security-scan",
+                "ubuntu-x86_64",
+                "github-actions:release-security-scan/123/1/security",
+                timestamp,
+            )
+            .unwrap();
+        let benchmark = benchmark_evidence("passed", 120);
+        let benchmark_envelope = benchmark
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "checklist:benchmark",
+                "ubuntu-x86_64",
+                "github-actions:release-benchmark/123/1/benchmark",
+                timestamp,
+            )
+            .unwrap();
+
+        let mut fixture = ProductionBundleFixture {
+            manifest: production_manifest(),
+            artifact: Some(ReleaseArtifactEvidenceCandidate::new(
+                artifact,
+                artifact_envelope,
+                b"ok".to_vec(),
+            )),
+            distribution: Some(ReleaseDocumentEvidenceCandidate::new(
+                distribution,
+                distribution_envelope,
+            )),
+            security_scan: Some(ReleaseDocumentEvidenceCandidate::new(
+                security_scan,
+                security_scan_envelope,
+            )),
+            benchmark: Some(ReleaseDocumentEvidenceCandidate::new(
+                benchmark,
+                benchmark_envelope,
+            )),
+        };
+        fixture.bind_envelope_digests();
+        fixture
+    }
+
+    fn production_policy(fixture: &ProductionBundleFixture) -> ProductionEvidencePolicy {
+        ProductionEvidencePolicy::github_actions(
+            PRODUCTION_TRUSTED_NOW_MS,
+            "123",
+            "1",
+            fixture.manifest.canonical_digest(),
+        )
+        .unwrap()
+    }
+
+    fn context_contains(error: &EvaError, key: &str, value: &str) -> bool {
+        error
+            .context()
+            .entries()
+            .iter()
+            .any(|(actual_key, actual_value)| actual_key == key && actual_value.contains(value))
+    }
+
     #[test]
     /// 验证 manifest entry 与实际加载 evidence 不一致时无法构造 trusted bundle。
     fn verified_bundle_rejects_missing_manifest_candidate() {
         let error = VerifiedReleaseEvidenceBundle::verify(
-            evidence_manifest(ReleaseEvidenceScope::Production),
+            evidence_manifest(ReleaseEvidenceScope::Alpha),
             ARTIFACT_COMMIT,
             None,
             None,
@@ -2202,105 +2773,20 @@ mod tests {
     }
 
     #[test]
-    /// 验证 alpha 保留弱证据，而 production 仅接受 required measurement gate。
-    fn verified_bundle_enforces_production_measurement_kind() {
-        for scope in [
-            ReleaseEvidenceScope::Alpha,
-            ReleaseEvidenceScope::Production,
-        ] {
-            let evidence = benchmark_evidence("passed", 120);
-            let envelope = evidence
-                .to_envelope(
-                    crate::evidence::EvidenceKind::Measurement,
-                    "checklist:test-benchmark",
-                    "test-runner",
-                    "eva-release-tests",
-                    1_784_073_600_000,
-                )
-                .unwrap();
-            let bundle = VerifiedReleaseEvidenceBundle::verify(
-                evidence_manifest(scope),
-                ARTIFACT_COMMIT,
-                None,
-                None,
-                None,
-                Some(ReleaseDocumentEvidenceCandidate::new(evidence, envelope)),
-            )
-            .unwrap();
-            let report = ReleaseHardeningService::v15()
-                .readiness_with_verified_release_evidence("all", &bundle)
-                .unwrap();
-            let benchmark_gate = report
-                .gates
-                .iter()
-                .find(|gate| gate.id == "REL-BENCHMARK-001")
-                .unwrap();
-            let mcp_gate = report
-                .gates
-                .iter()
-                .find(|gate| gate.id == "REL-MCP-COMPAT-001")
-                .unwrap();
-            let performance_gate = report
-                .gates
-                .iter()
-                .find(|gate| gate.id == "PERF-RELEASE-CHECK")
-                .unwrap();
-
-            assert_eq!(benchmark_gate.evidence_kind, EvidenceKind::Measurement);
-            assert_eq!(benchmark_gate.status, ReleaseGateStatus::Pass);
-            assert_eq!(mcp_gate.evidence_kind, EvidenceKind::Fixture);
-            assert!(performance_gate
-                .evidence
-                .iter()
-                .any(|item| item == "performance.observation_kind:unmeasured"));
-
-            if scope == ReleaseEvidenceScope::Alpha {
-                assert_eq!(report.status, "ready");
-                assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Alpha);
-                assert_eq!(mcp_gate.status, ReleaseGateStatus::Pass);
-                assert_eq!(performance_gate.status, ReleaseGateStatus::Warn);
-                assert!(!mcp_gate
-                    .remediation
-                    .iter()
-                    .any(|item| item.starts_with("evidence_kind_not_measured:")));
-            } else {
-                assert_eq!(report.status, "blocked");
-                assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Production);
-                assert_eq!(mcp_gate.status, ReleaseGateStatus::Blocked);
-                assert_eq!(performance_gate.status, ReleaseGateStatus::Blocked);
-                assert!(performance_gate.remediation.iter().any(|item| {
-                    item == "evidence_kind_not_measured:PERF-RELEASE-CHECK:declaration"
-                }));
-                assert!(mcp_gate.remediation.iter().any(|item| {
-                    item == "evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"
-                }));
-                assert!(report.audit.iter().any(|item| {
-                    item == "evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"
-                }));
-                assert!(!report
-                    .gates
-                    .iter()
-                    .any(|gate| gate.id == "REL-PRODUCTION-EVIDENCE-POLICY-001"));
-            }
-        }
-    }
-
-    #[test]
-    /// 验证完整性通过的 measurement 仍不能用 producer 自报预算绕过 policy。
-    fn verified_measurement_bundle_rejects_claimed_budget_override() {
-        let mut evidence = benchmark_evidence("passed", 6_000);
-        evidence.measurements[0].budget_ms = 7_000;
+    /// 验证 alpha manifest 保持可选择 coverage 和弱内置证据的兼容行为。
+    fn verified_bundle_preserves_alpha_compatibility() {
+        let evidence = benchmark_evidence("passed", 120);
         let envelope = evidence
             .to_envelope(
                 EvidenceKind::Measurement,
-                "checklist:test-budget-override",
+                "checklist:test-benchmark",
                 "test-runner",
                 "eva-release-tests",
-                1_784_073_600_000,
+                PRODUCTION_TRUSTED_NOW_MS,
             )
             .unwrap();
         let bundle = VerifiedReleaseEvidenceBundle::verify(
-            evidence_manifest(ReleaseEvidenceScope::Production),
+            evidence_manifest(ReleaseEvidenceScope::Alpha),
             ARTIFACT_COMMIT,
             None,
             None,
@@ -2308,6 +2794,445 @@ mod tests {
             Some(ReleaseDocumentEvidenceCandidate::new(evidence, envelope)),
         )
         .unwrap();
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_verified_release_evidence("all", &bundle)
+            .unwrap();
+        let benchmark_gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.id == "REL-BENCHMARK-001")
+            .unwrap();
+        let mcp_gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.id == "REL-MCP-COMPAT-001")
+            .unwrap();
+        let performance_gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.id == "PERF-RELEASE-CHECK")
+            .unwrap();
+
+        assert_eq!(report.status, "ready");
+        assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Alpha);
+        assert_eq!(benchmark_gate.evidence_kind, EvidenceKind::Measurement);
+        assert_eq!(benchmark_gate.status, ReleaseGateStatus::Pass);
+        assert_eq!(mcp_gate.evidence_kind, EvidenceKind::Fixture);
+        assert_eq!(mcp_gate.status, ReleaseGateStatus::Pass);
+        assert_eq!(performance_gate.status, ReleaseGateStatus::Warn);
+        assert!(!mcp_gate
+            .remediation
+            .iter()
+            .any(|item| item.starts_with("evidence_kind_not_measured:")));
+    }
+
+    #[test]
+    /// 验证 production 不能绕过 consumer-owned policy 调用 alpha verifier。
+    fn production_bundle_requires_explicit_consumer_policy() {
+        let fixture = production_bundle_fixture();
+        let error = VerifiedReleaseEvidenceBundle::verify(
+            fixture.manifest,
+            ARTIFACT_COMMIT,
+            fixture.artifact,
+            fixture.distribution,
+            fixture.security_scan,
+            fixture.benchmark,
+        )
+        .unwrap_err();
+
+        assert!(context_contains(
+            &error,
+            "blocked_reasons",
+            ProductionEvidenceBlocker::PolicyRequired.as_str()
+        ));
+    }
+
+    #[test]
+    /// 表驱动验证 production coverage、freshness、kind、trust、冲突和完整成功路径。
+    fn production_policy_rejects_invalid_bundles_and_accepts_complete_manifest() {
+        enum Case {
+            Complete,
+            OldestAccepted,
+            FurthestFutureAccepted,
+            Missing,
+            Stale,
+            Future,
+            NonMeasurement,
+            Untrusted,
+            Conflicting,
+        }
+
+        let cases = [
+            ("complete", Case::Complete, None),
+            ("oldest_accepted", Case::OldestAccepted, None),
+            (
+                "furthest_future_accepted",
+                Case::FurthestFutureAccepted,
+                None,
+            ),
+            (
+                "missing",
+                Case::Missing,
+                Some(ProductionEvidenceBlocker::CoverageMissing),
+            ),
+            ("stale", Case::Stale, Some(ProductionEvidenceBlocker::Stale)),
+            (
+                "future",
+                Case::Future,
+                Some(ProductionEvidenceBlocker::FutureTimestamp),
+            ),
+            (
+                "non_measurement",
+                Case::NonMeasurement,
+                Some(ProductionEvidenceBlocker::KindNotMeasurement),
+            ),
+            (
+                "untrusted",
+                Case::Untrusted,
+                Some(ProductionEvidenceBlocker::ExecutorUntrusted),
+            ),
+            (
+                "conflicting",
+                Case::Conflicting,
+                Some(ProductionEvidenceBlocker::ReleaseIdentityConflict),
+            ),
+        ];
+
+        for (name, case, expected_blocker) in cases {
+            let mut fixture = production_bundle_fixture();
+            match case {
+                Case::Complete => {}
+                Case::OldestAccepted => {
+                    fixture.benchmark.as_mut().unwrap().envelope.timestamp =
+                        PRODUCTION_TRUSTED_NOW_MS - crate::evidence::PRODUCTION_EVIDENCE_MAX_AGE_MS;
+                }
+                Case::FurthestFutureAccepted => {
+                    fixture.benchmark.as_mut().unwrap().envelope.timestamp =
+                        PRODUCTION_TRUSTED_NOW_MS
+                            + crate::evidence::PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW_MS;
+                }
+                Case::Missing => {
+                    fixture
+                        .manifest
+                        .entries
+                        .retain(|entry| entry.evidence_type != ReleaseEvidenceType::Benchmark);
+                    fixture.benchmark = None;
+                }
+                Case::Stale => {
+                    fixture.benchmark.as_mut().unwrap().envelope.timestamp =
+                        PRODUCTION_TRUSTED_NOW_MS
+                            - crate::evidence::PRODUCTION_EVIDENCE_MAX_AGE_MS
+                            - 1;
+                }
+                Case::Future => {
+                    fixture.benchmark.as_mut().unwrap().envelope.timestamp =
+                        PRODUCTION_TRUSTED_NOW_MS
+                            + crate::evidence::PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW_MS
+                            + 1;
+                }
+                Case::NonMeasurement => {
+                    fixture.benchmark.as_mut().unwrap().envelope.kind = EvidenceKind::Declaration;
+                }
+                Case::Untrusted => {
+                    fixture.benchmark.as_mut().unwrap().envelope.executor =
+                        "local:release-benchmark/run-123".to_owned();
+                }
+                Case::Conflicting => {
+                    let benchmark = fixture.benchmark.as_mut().unwrap();
+                    benchmark.evidence.source_tag = "v1.11.6-alpha".to_owned();
+                    benchmark.envelope = benchmark
+                        .evidence
+                        .to_envelope(
+                            EvidenceKind::Measurement,
+                            "checklist:benchmark",
+                            "ubuntu-x86_64",
+                            "github-actions:release-benchmark/123/1/benchmark",
+                            PRODUCTION_TRUSTED_NOW_MS - 1_000,
+                        )
+                        .unwrap();
+                }
+            }
+            fixture.bind_envelope_digests();
+            let policy = production_policy(&fixture);
+
+            match expected_blocker {
+                None => {
+                    let bundle = fixture
+                        .verify(&policy)
+                        .unwrap_or_else(|error| panic!("{name}: {error}"));
+                    assert_eq!(bundle.scope(), ReleaseEvidenceScope::Production);
+                    assert_eq!(bundle.entry_count(), ReleaseEvidenceType::ALL.len());
+                    assert!(bundle
+                        .verification()
+                        .audit
+                        .iter()
+                        .any(|item| item == "production_evidence.coverage:complete"));
+                }
+                Some(blocker) => {
+                    let error = fixture.verify(&policy).unwrap_err();
+                    assert!(
+                        context_contains(&error, "blocked_reasons", blocker.as_str()),
+                        "{name}: {error:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    /// 验证重复 subject 与重复 capture identity 都被唯一性 policy 阻断。
+    fn production_policy_rejects_duplicate_subject_and_capture_identity() {
+        let policy_fixture = production_bundle_fixture();
+        let policy = production_policy(&policy_fixture);
+        let artifact = EvidenceEnvelope::from_subject_digest(
+            EvidenceKind::Measurement,
+            "checklist:artifact",
+            ARTIFACT_COMMIT,
+            "ubuntu-x86_64",
+            "github-actions:release-artifact/123/1/artifact",
+            PRODUCTION_TRUSTED_NOW_MS,
+            ARTIFACT_DIGEST,
+        )
+        .unwrap();
+        let benchmark = EvidenceEnvelope::from_subject_digest(
+            EvidenceKind::Measurement,
+            "checklist:benchmark",
+            ARTIFACT_COMMIT,
+            "ubuntu-x86_64",
+            "github-actions:release-benchmark/123/1/benchmark",
+            PRODUCTION_TRUSTED_NOW_MS,
+            ARTIFACT_DIGEST,
+        )
+        .unwrap();
+        let duplicate_subject = verify_production_policy(
+            &production_manifest(),
+            &policy,
+            &[
+                (ReleaseEvidenceType::Artifact, Some(&artifact)),
+                (ReleaseEvidenceType::Benchmark, Some(&benchmark)),
+            ],
+            &[],
+        )
+        .unwrap_err();
+        assert!(context_contains(
+            &duplicate_subject,
+            "blocked_reasons",
+            ProductionEvidenceBlocker::SubjectDuplicate.as_str()
+        ));
+
+        let common_rules = ReleaseEvidenceType::ALL
+            .into_iter()
+            .map(|evidence_type| {
+                crate::evidence::ProductionEvidenceExecutorRule::prefix(
+                    evidence_type,
+                    "trusted:release/",
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let common_context = crate::evidence::ProductionEvidenceContext::new(
+            PRODUCTION_TRUSTED_NOW_MS,
+            CURRENT_RELEASE_VERSION,
+            format!("v{CURRENT_RELEASE_VERSION}"),
+            "123",
+            "1",
+            production_manifest().canonical_digest(),
+        )
+        .unwrap();
+        let common_policy = ProductionEvidencePolicy::new(
+            common_context,
+            crate::evidence::PRODUCTION_EVIDENCE_MAX_AGE_MS,
+            crate::evidence::PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW_MS,
+            common_rules,
+        )
+        .unwrap();
+        let first = EvidenceEnvelope::from_subject_digest(
+            EvidenceKind::Measurement,
+            "checklist:shared-capture",
+            ARTIFACT_COMMIT,
+            "ubuntu-x86_64",
+            "trusted:release/123/1/shared",
+            PRODUCTION_TRUSTED_NOW_MS,
+            ARTIFACT_DIGEST,
+        )
+        .unwrap();
+        let second = EvidenceEnvelope::from_subject_digest(
+            EvidenceKind::Measurement,
+            "checklist:shared-capture",
+            ARTIFACT_COMMIT,
+            "ubuntu-x86_64",
+            "trusted:release/123/1/shared",
+            PRODUCTION_TRUSTED_NOW_MS,
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        let duplicate_identity = verify_production_policy(
+            &production_manifest(),
+            &common_policy,
+            &[
+                (ReleaseEvidenceType::Artifact, Some(&first)),
+                (ReleaseEvidenceType::Benchmark, Some(&second)),
+            ],
+            &[],
+        )
+        .unwrap_err();
+        assert!(context_contains(
+            &duplicate_identity,
+            "blocked_reasons",
+            ProductionEvidenceBlocker::IdentityConflict.as_str()
+        ));
+    }
+
+    #[test]
+    /// 验证整包一致但不属于当前 release 的 version/tag 不能重放。
+    fn production_policy_rejects_consistent_wrong_release_identity() {
+        let fixture = production_bundle_fixture();
+        let envelopes = [
+            (
+                ReleaseEvidenceType::Artifact,
+                fixture
+                    .artifact
+                    .as_ref()
+                    .map(|candidate| &candidate.envelope),
+            ),
+            (
+                ReleaseEvidenceType::Distribution,
+                fixture
+                    .distribution
+                    .as_ref()
+                    .map(|candidate| &candidate.envelope),
+            ),
+            (
+                ReleaseEvidenceType::SecurityScan,
+                fixture
+                    .security_scan
+                    .as_ref()
+                    .map(|candidate| &candidate.envelope),
+            ),
+            (
+                ReleaseEvidenceType::Benchmark,
+                fixture
+                    .benchmark
+                    .as_ref()
+                    .map(|candidate| &candidate.envelope),
+            ),
+        ];
+        let wrong_release = [
+            Some((ReleaseEvidenceType::Artifact, "1.11.4", "v1.11.4")),
+            Some((ReleaseEvidenceType::Distribution, "1.11.4", "v1.11.4")),
+            Some((ReleaseEvidenceType::SecurityScan, "1.11.4", "v1.11.4")),
+            Some((ReleaseEvidenceType::Benchmark, "1.11.4", "v1.11.4")),
+        ];
+
+        let error = verify_production_policy(
+            &fixture.manifest,
+            &production_policy(&fixture),
+            &envelopes,
+            &wrong_release,
+        )
+        .unwrap_err();
+        assert!(context_contains(
+            &error,
+            "blocked_reasons",
+            ProductionEvidenceBlocker::ReleaseIdentityConflict.as_str()
+        ));
+    }
+
+    #[test]
+    /// 验证通过 policy 的 production bundle 仍会阻断弱内置 required gate。
+    fn complete_production_bundle_reaches_measurement_gate_enforcement() {
+        let fixture = production_bundle_fixture();
+        let policy = production_policy(&fixture);
+        let bundle = fixture.verify(&policy).unwrap();
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_verified_release_evidence("all", &bundle)
+            .unwrap();
+        let benchmark_gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.id == "REL-BENCHMARK-001")
+            .unwrap();
+        let mcp_gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.id == "REL-MCP-COMPAT-001")
+            .unwrap();
+
+        assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Production);
+        assert_eq!(report.status, "blocked");
+        assert_eq!(benchmark_gate.evidence_kind, EvidenceKind::Measurement);
+        assert_eq!(benchmark_gate.status, ReleaseGateStatus::Pass);
+        assert_eq!(mcp_gate.evidence_kind, EvidenceKind::Fixture);
+        assert_eq!(mcp_gate.status, ReleaseGateStatus::Blocked);
+        assert!(mcp_gate
+            .remediation
+            .iter()
+            .any(|item| { item == "evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture" }));
+    }
+
+    #[test]
+    /// 锁定 production policy blocker 的机器可读名称。
+    fn production_policy_blocker_codes_are_stable() {
+        assert_eq!(
+            [
+                ProductionEvidenceBlocker::CoverageMissing.as_str(),
+                ProductionEvidenceBlocker::KindNotMeasurement.as_str(),
+                ProductionEvidenceBlocker::Stale.as_str(),
+                ProductionEvidenceBlocker::FutureTimestamp.as_str(),
+                ProductionEvidenceBlocker::ExecutorUntrusted.as_str(),
+                ProductionEvidenceBlocker::TrustedRunRequired.as_str(),
+                ProductionEvidenceBlocker::ManifestDigestRequired.as_str(),
+                ProductionEvidenceBlocker::ManifestDigestInvalid.as_str(),
+                ProductionEvidenceBlocker::ManifestDigestMismatch.as_str(),
+                ProductionEvidenceBlocker::EnvelopeDigestMissing.as_str(),
+                ProductionEvidenceBlocker::EnvelopeDigestInvalid.as_str(),
+                ProductionEvidenceBlocker::EnvelopeDigestMismatch.as_str(),
+                ProductionEvidenceBlocker::SubjectDuplicate.as_str(),
+                ProductionEvidenceBlocker::IdentityConflict.as_str(),
+                ProductionEvidenceBlocker::ReleaseIdentityConflict.as_str(),
+                ProductionEvidenceBlocker::PolicyRequired.as_str(),
+            ],
+            [
+                "production_evidence_coverage_missing",
+                "production_evidence_kind_not_measurement",
+                "production_evidence_stale",
+                "production_evidence_future_timestamp",
+                "production_evidence_executor_untrusted",
+                "production_evidence_trusted_run_required",
+                "production_evidence_manifest_digest_required",
+                "production_evidence_manifest_digest_invalid",
+                "production_evidence_manifest_digest_mismatch",
+                "production_evidence_envelope_digest_missing",
+                "production_evidence_envelope_digest_invalid",
+                "production_evidence_envelope_digest_mismatch",
+                "production_evidence_subject_duplicate",
+                "production_evidence_identity_conflict",
+                "production_evidence_release_identity_conflict",
+                "production_evidence_policy_required",
+            ]
+        );
+    }
+
+    #[test]
+    /// 验证完整性通过的 measurement 仍不能用 producer 自报预算绕过 policy。
+    fn verified_measurement_bundle_rejects_claimed_budget_override() {
+        let mut fixture = production_bundle_fixture();
+        let benchmark = fixture.benchmark.as_mut().unwrap();
+        benchmark.evidence.measurements[0].observed_ms = 6_000;
+        benchmark.evidence.measurements[0].budget_ms = 7_000;
+        benchmark.envelope = benchmark
+            .evidence
+            .to_envelope(
+                EvidenceKind::Measurement,
+                "checklist:test-budget-override",
+                "ubuntu-x86_64",
+                "github-actions:release-benchmark/123/1/benchmark",
+                PRODUCTION_TRUSTED_NOW_MS - 1_000,
+            )
+            .unwrap();
+        fixture.bind_envelope_digests();
+        let policy = production_policy(&fixture);
+        let bundle = fixture.verify(&policy).unwrap();
 
         let report = ReleaseHardeningService::v15()
             .readiness_with_verified_release_evidence("all", &bundle)

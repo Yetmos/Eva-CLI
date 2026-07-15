@@ -10,11 +10,12 @@ use eva_observability::TraceFields;
 use eva_release::{
     verify_evidence_bundle, CompatibilityPolicy, EvidenceEnvelope, EvidenceKind, EvidenceSubject,
     MigrationGuide, MigrationStep, PerformanceBaselineReport, PerformanceBudget, PlatformReadiness,
-    ReleaseArtifactEvidence, ReleaseArtifactEvidenceCandidate, ReleaseBenchmarkEvidence,
-    ReleaseDistributionEvidence, ReleaseDocumentEvidenceCandidate, ReleaseEvidenceManifest,
-    ReleaseEvidenceScope, ReleaseEvidenceType, ReleaseGate, ReleaseHardeningService,
-    ReleaseReadinessReport, ReleaseSecurityScanEvidence, SecurityFinding, SecurityReviewReport,
-    StabilityScenario, VerifiedReleaseEvidenceBundle,
+    ProductionEvidenceBlocker, ProductionEvidencePolicy, ReleaseArtifactEvidence,
+    ReleaseArtifactEvidenceCandidate, ReleaseBenchmarkEvidence, ReleaseDistributionEvidence,
+    ReleaseDocumentEvidenceCandidate, ReleaseEvidenceManifest, ReleaseEvidenceScope,
+    ReleaseEvidenceType, ReleaseGate, ReleaseHardeningService, ReleaseReadinessReport,
+    ReleaseSecurityScanEvidence, SecurityFinding, SecurityReviewReport, StabilityScenario,
+    VerifiedReleaseEvidenceBundle,
 };
 use std::fs;
 use std::io::{Read, Write};
@@ -32,6 +33,7 @@ use std::os::windows::ffi::OsStringExt;
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Release 子命令及其已解析选项。
@@ -59,6 +61,14 @@ pub(super) enum ReleaseCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// External GitHub Actions run tuple supplied by the release consumer.
+struct ReleaseExpectedRun {
+    id: String,
+    attempt: String,
+    manifest_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// 发布就绪检查选项及可选外部证据文件。
 pub(super) struct ReleaseCheckOptions {
     /// 项目根和输出格式。
@@ -71,6 +81,8 @@ pub(super) struct ReleaseCheckOptions {
     evidence_manifest: Option<PathBuf>,
     /// 由 CI checkout 等外部可信上下文提供的完整提交。
     expected_source_commit: Option<String>,
+    /// 由 CI invocation context 提供、不能从 evidence 推导的 run ID。
+    expected_run: Option<Box<ReleaseExpectedRun>>,
     /// 可选签名产物证据。
     artifact_evidence: Option<PathBuf>,
     /// 可选安装/分发烟测证据。
@@ -250,9 +262,15 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
     let mut scope = ReleaseEvidenceScope::Alpha;
     let mut evidence_manifest = None;
     let mut expected_source_commit = None;
+    let mut expected_run_id = None;
+    let mut expected_run_attempt = None;
+    let mut expected_manifest_digest = None;
     let mut scope_seen = false;
     let mut evidence_manifest_seen = false;
     let mut expected_source_commit_seen = false;
+    let mut expected_run_id_seen = false;
+    let mut expected_run_attempt_seen = false;
+    let mut expected_manifest_digest_seen = false;
     let mut artifact_evidence = None;
     let mut distribution_evidence = None;
     let mut security_scan_evidence = None;
@@ -303,6 +321,39 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
                 expected_source_commit =
                     Some(required_option(args, index, "expected source commit option")?.clone());
             }
+            "--expected-run-id" => {
+                if expected_run_id_seen {
+                    return Err(EvaError::invalid_argument(
+                        "expected run id option is duplicated",
+                    ));
+                }
+                expected_run_id_seen = true;
+                index += 1;
+                expected_run_id =
+                    Some(required_option(args, index, "expected run id option")?.clone());
+            }
+            "--expected-run-attempt" => {
+                if expected_run_attempt_seen {
+                    return Err(EvaError::invalid_argument(
+                        "expected run attempt option is duplicated",
+                    ));
+                }
+                expected_run_attempt_seen = true;
+                index += 1;
+                expected_run_attempt =
+                    Some(required_option(args, index, "expected run attempt option")?.clone());
+            }
+            "--expected-manifest-digest" => {
+                if expected_manifest_digest_seen {
+                    return Err(EvaError::invalid_argument(
+                        "expected manifest digest option is duplicated",
+                    ));
+                }
+                expected_manifest_digest_seen = true;
+                index += 1;
+                expected_manifest_digest =
+                    Some(required_option(args, index, "expected manifest digest option")?.clone());
+            }
             "--artifact-evidence" | "--artifact-evidence-file" => {
                 index += 1;
                 artifact_evidence = Some(PathBuf::from(required_option(
@@ -342,12 +393,26 @@ fn parse_release_check_options(args: &[String]) -> Result<ReleaseCheckOptions, E
     if target.trim().is_empty() {
         return Err(EvaError::invalid_argument("release target cannot be empty"));
     }
+    let expected_run = match (expected_run_id, expected_run_attempt) {
+        (Some(id), Some(attempt)) => Some(Box::new(ReleaseExpectedRun {
+            id,
+            attempt,
+            manifest_digest: expected_manifest_digest,
+        })),
+        (None, None) => None,
+        _ => {
+            return Err(EvaError::invalid_argument(
+                "expected run id and attempt options must be provided together",
+            ))
+        }
+    };
     Ok(ReleaseCheckOptions {
         common: parse_common_options(&passthrough)?,
         target,
         scope,
         evidence_manifest,
         expected_source_commit,
+        expected_run,
         artifact_evidence,
         distribution_evidence,
         security_scan_evidence,
@@ -679,26 +744,67 @@ fn load_manifest_release_evidence(
         }
     }
     let entry_count = manifest.entries.len();
-    let verified_bundle = VerifiedReleaseEvidenceBundle::verify(
-        manifest,
-        &expected_source_commit,
-        loaded.artifact.take().map(|candidate| {
-            ReleaseArtifactEvidenceCandidate::new(
-                candidate.evidence,
-                candidate.envelope,
-                candidate.subject_bytes,
+    let artifact = loaded.artifact.take().map(|candidate| {
+        ReleaseArtifactEvidenceCandidate::new(
+            candidate.evidence,
+            candidate.envelope,
+            candidate.subject_bytes,
+        )
+    });
+    let distribution = loaded.distribution.take().map(|candidate| {
+        ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
+    });
+    let security_scan = loaded.security_scan.take().map(|candidate| {
+        ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
+    });
+    let benchmark = loaded.benchmark.take().map(|candidate| {
+        ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
+    });
+    let verified_bundle = if options.scope == ReleaseEvidenceScope::Production {
+        let expected_run = options.expected_run.as_deref().ok_or_else(|| {
+            EvaError::invalid_argument(
+                "production release check requires --expected-run-id and --expected-run-attempt",
             )
-        }),
-        loaded.distribution.take().map(|candidate| {
-            ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
-        }),
-        loaded.security_scan.take().map(|candidate| {
-            ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
-        }),
-        loaded.benchmark.take().map(|candidate| {
-            ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
-        }),
-    )?;
+            .with_context(
+                "blocked_reasons",
+                ProductionEvidenceBlocker::TrustedRunRequired.as_str(),
+            )
+        })?;
+        let expected_manifest_digest =
+            expected_run.manifest_digest.as_deref().ok_or_else(|| {
+                EvaError::invalid_argument(
+                    "production release check requires --expected-manifest-digest",
+                )
+                .with_context(
+                    "blocked_reasons",
+                    ProductionEvidenceBlocker::ManifestDigestRequired.as_str(),
+                )
+            })?;
+        let policy = ProductionEvidencePolicy::github_actions(
+            trusted_current_epoch_ms()?,
+            &expected_run.id,
+            &expected_run.attempt,
+            expected_manifest_digest,
+        )?;
+        VerifiedReleaseEvidenceBundle::verify_production(
+            manifest,
+            &expected_source_commit,
+            artifact,
+            distribution,
+            security_scan,
+            benchmark,
+            &policy,
+        )?
+    } else {
+        VerifiedReleaseEvidenceBundle::verify(
+            manifest,
+            &expected_source_commit,
+            artifact,
+            distribution,
+            security_scan,
+            benchmark,
+        )?
+    };
     loaded.summary = ReleaseEvidenceSummary {
         source: "manifest",
         entry_count,
@@ -712,6 +818,17 @@ fn load_manifest_release_evidence(
     };
     loaded.verified_bundle = Some(verified_bundle);
     Ok(loaded)
+}
+
+/// Read the consumer clock independently of any producer-owned timestamp.
+fn trusted_current_epoch_ms() -> Result<u128, EvaError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .map_err(|error| {
+            EvaError::internal("system clock is before the Unix epoch")
+                .with_context("clock_error", error.to_string())
+        })
 }
 
 /// 将旧四参数归一化为 declaration envelope，但不补造运行身份或 artifact 字节。

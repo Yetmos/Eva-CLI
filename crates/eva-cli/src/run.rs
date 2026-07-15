@@ -898,7 +898,7 @@ fn help_text() -> &'static str {
         "  eva restore rollback --plan <path> --confirm <plan_id> --artifact-store <path> --lock-store <path> [--transaction-log <path>] [--owner <id>] [--health healthy|failed] [--project <path>] [--output text|json]\n",
         "  eva upgrade check [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--project <path>] [--output text|json]\n",
         "  eva upgrade apply --plan <path> --confirm <plan_id> --lock-store <path> [--state-store <path>] [--runtime-binary <path>] [--health healthy|failed|unavailable] [--owner <id>] [--project <path>] [--output text|json]\n",
-        "  eva release check [--target all|windows|linux|macos] [--scope alpha|production] [--evidence-manifest <path>] [--expected-source-commit <sha>] [--artifact-evidence <path>] [--distribution-evidence <path>] [--security-scan-evidence <path>] [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
+        "  eva release check [--target all|windows|linux|macos] [--scope alpha|production] [--evidence-manifest <path>] [--expected-source-commit <sha>] [--expected-run-id <id>] [--expected-run-attempt <n>] [--expected-manifest-digest <sha256>] [--artifact-evidence <path>] [--distribution-evidence <path>] [--security-scan-evidence <path>] [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
         "  eva release security [--project <path>] [--output text|json]\n",
         "  eva release perf [--benchmark-evidence <path>] [--project <path>] [--output text|json]\n",
         "  eva release migration [--from-version <semver>] [--to-version <semver>] [--project <path>] [--output text|json]\n\n",
@@ -1382,6 +1382,169 @@ mod tests {
         let manifest_path = root.join("release-evidence.manifest");
         fs::write(&manifest_path, manifest.to_manifest()).unwrap();
         (root, manifest_path, subject_path)
+    }
+
+    /// 创建四类 evidence、逐类型可信执行器和新鲜时间戳的完整 production manifest。
+    fn release_complete_production_manifest_fixture(
+        name: &str,
+    ) -> (PathBuf, PathBuf, PathBuf, PathBuf, String) {
+        let (root, manifest_path, subject_path) = release_artifact_manifest_fixture(
+            &format!("{name}-artifact"),
+            eva_release::ReleaseEvidenceScope::Production,
+        );
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_millis()
+            .saturating_sub(1_000);
+
+        let artifact_path = root.join("release-artifact.evidence");
+        let artifact = eva_release::ReleaseArtifactEvidence::parse_manifest(
+            &fs::read_to_string(&artifact_path).unwrap(),
+        )
+        .unwrap();
+        let artifact_envelope = artifact
+            .to_envelope(
+                eva_release::EvidenceKind::Measurement,
+                "cli-test:release-artifact",
+                "ubuntu-x86_64",
+                "github-actions:release-artifact/123/1/artifact",
+                timestamp,
+            )
+            .unwrap();
+        let artifact_envelope_path = root.join("release-artifact.envelope");
+        fs::write(&artifact_envelope_path, artifact_envelope.to_manifest()).unwrap();
+
+        let (distribution_root, distribution_source) =
+            release_distribution_evidence_fixture(&format!("{name}-distribution"), "passed");
+        let distribution_path = root.join("release-distribution.evidence");
+        fs::copy(&distribution_source, &distribution_path).unwrap();
+        let distribution = eva_release::ReleaseDistributionEvidence::parse_manifest(
+            &fs::read_to_string(&distribution_path).unwrap(),
+        )
+        .unwrap();
+        let distribution_envelope = distribution
+            .to_envelope(
+                eva_release::EvidenceKind::Measurement,
+                "cli-test:release-distribution",
+                "release-matrix",
+                "github-actions:release-distribution/123/1/distribution",
+                timestamp,
+            )
+            .unwrap();
+        let distribution_envelope_path = root.join("release-distribution.envelope");
+        fs::write(
+            &distribution_envelope_path,
+            distribution_envelope.to_manifest(),
+        )
+        .unwrap();
+
+        let (security_root, security_source) =
+            release_security_scan_evidence_fixture(&format!("{name}-security"), "passed", None);
+        let security_path = root.join("release-security-scan.evidence");
+        fs::copy(&security_source, &security_path).unwrap();
+        let security = eva_release::ReleaseSecurityScanEvidence::parse_manifest(
+            &fs::read_to_string(&security_path).unwrap(),
+        )
+        .unwrap();
+        let security_envelope = security
+            .to_envelope(
+                eva_release::EvidenceKind::Measurement,
+                "cli-test:release-security-scan",
+                "ubuntu-x86_64",
+                "github-actions:release-security-scan/123/1/security",
+                timestamp,
+            )
+            .unwrap();
+        let security_envelope_path = root.join("release-security-scan.envelope");
+        fs::write(&security_envelope_path, security_envelope.to_manifest()).unwrap();
+
+        let (benchmark_root, benchmark_source) =
+            release_benchmark_evidence_fixture(&format!("{name}-benchmark"), "passed", 120);
+        let benchmark_path = root.join("release-benchmark.evidence");
+        fs::copy(&benchmark_source, &benchmark_path).unwrap();
+        let benchmark = eva_release::ReleaseBenchmarkEvidence::parse_manifest(
+            &fs::read_to_string(&benchmark_path).unwrap(),
+        )
+        .unwrap();
+        let benchmark_envelope = benchmark
+            .to_envelope(
+                eva_release::EvidenceKind::Measurement,
+                "cli-test:release-benchmark",
+                "ubuntu-x86_64",
+                "github-actions:release-benchmark/123/1/benchmark",
+                timestamp,
+            )
+            .unwrap();
+        let benchmark_envelope_path = root.join("release-benchmark.envelope");
+        fs::write(&benchmark_envelope_path, benchmark_envelope.to_manifest()).unwrap();
+
+        let manifest = eva_release::ReleaseEvidenceManifest::new(
+            eva_release::ReleaseEvidenceScope::Production,
+            commit,
+            vec![
+                eva_release::ReleaseEvidenceManifestEntry::new(
+                    eva_release::ReleaseEvidenceType::Artifact,
+                    "release-artifact.evidence",
+                    "release-artifact.envelope",
+                    Some("eva-test.tar.gz".to_owned()),
+                )
+                .unwrap(),
+                eva_release::ReleaseEvidenceManifestEntry::new(
+                    eva_release::ReleaseEvidenceType::Distribution,
+                    "release-distribution.evidence",
+                    "release-distribution.envelope",
+                    None,
+                )
+                .unwrap(),
+                eva_release::ReleaseEvidenceManifestEntry::new(
+                    eva_release::ReleaseEvidenceType::SecurityScan,
+                    "release-security-scan.evidence",
+                    "release-security-scan.envelope",
+                    None,
+                )
+                .unwrap(),
+                eva_release::ReleaseEvidenceManifestEntry::new(
+                    eva_release::ReleaseEvidenceType::Benchmark,
+                    "release-benchmark.evidence",
+                    "release-benchmark.envelope",
+                    None,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        fs::write(&manifest_path, manifest.to_manifest()).unwrap();
+        let manifest_digest = bind_release_manifest_envelopes(&root, &manifest_path);
+
+        fs::remove_dir_all(distribution_root).unwrap();
+        fs::remove_dir_all(security_root).unwrap();
+        fs::remove_dir_all(benchmark_root).unwrap();
+        (
+            root,
+            manifest_path,
+            subject_path,
+            benchmark_envelope_path,
+            manifest_digest,
+        )
+    }
+
+    /// Bind canonical envelope bytes into the manifest and return its canonical digest.
+    fn bind_release_manifest_envelopes(root: &Path, manifest_path: &Path) -> String {
+        let mut manifest = eva_release::ReleaseEvidenceManifest::parse_manifest(
+            &fs::read_to_string(manifest_path).unwrap(),
+        )
+        .unwrap();
+        for entry in &mut manifest.entries {
+            let envelope = eva_release::EvidenceEnvelope::parse_manifest(
+                &fs::read_to_string(root.join(&entry.envelope_path)).unwrap(),
+            )
+            .unwrap();
+            entry.envelope_digest = Some(envelope.canonical_digest());
+        }
+        fs::write(manifest_path, manifest.to_manifest()).unwrap();
+        manifest.canonical_digest()
     }
 
     #[cfg(unix)]
@@ -2720,10 +2883,8 @@ mod tests {
     /// 验证统一 production benchmark manifest 通过 scope、提交和 digest 校验后进入 gate。
     fn production_release_check_consumes_verified_manifest() {
         let commit = "0123456789abcdef0123456789abcdef01234567";
-        let (evidence_root, manifest_path, _, _) = release_benchmark_manifest_fixture(
-            "release-manifest-production-verified",
-            eva_release::ReleaseEvidenceScope::Production,
-        );
+        let (evidence_root, manifest_path, _, _, manifest_digest) =
+            release_complete_production_manifest_fixture("release-manifest-production-verified");
         let (exit_code, stdout, stderr) = run_cli(&[
             "release",
             "check",
@@ -2733,6 +2894,12 @@ mod tests {
             manifest_path.to_str().unwrap(),
             "--expected-source-commit",
             commit,
+            "--expected-run-id",
+            "123",
+            "--expected-run-attempt",
+            "1",
+            "--expected-manifest-digest",
+            manifest_digest.as_str(),
             "--output",
             "json",
         ]);
@@ -2751,6 +2918,392 @@ mod tests {
         assert!(!stdout.contains("REL-PRODUCTION-EVIDENCE-POLICY-001"));
         assert!(!stdout.contains(manifest_path.to_str().unwrap()));
         fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证 production 不从 envelope 自报 executor 推导可信 run identity。
+    fn production_release_check_requires_external_run_identity() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let (evidence_root, manifest_path, _, _, _) =
+            release_complete_production_manifest_fixture("release-manifest-missing-trusted-run");
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--scope",
+            "production",
+            "--evidence-manifest",
+            manifest_path.to_str().unwrap(),
+            "--expected-source-commit",
+            commit,
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("production_evidence_trusted_run_required"));
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证缺失、非法或不匹配的外部 manifest/run trust context 使用稳定 blocker。
+    fn production_release_check_rejects_invalid_external_trust_context() {
+        enum DigestInput {
+            Missing,
+            Invalid,
+            Mismatch,
+            Valid,
+        }
+        let cases = [
+            (
+                "missing-manifest-digest",
+                "123",
+                DigestInput::Missing,
+                "production_evidence_manifest_digest_required",
+            ),
+            (
+                "invalid-manifest-digest",
+                "123",
+                DigestInput::Invalid,
+                "production_evidence_manifest_digest_invalid",
+            ),
+            (
+                "mismatched-manifest-digest",
+                "123",
+                DigestInput::Mismatch,
+                "production_evidence_manifest_digest_mismatch",
+            ),
+            (
+                "invalid-run-id",
+                "run-123",
+                DigestInput::Valid,
+                "production_evidence_trusted_run_required",
+            ),
+        ];
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+
+        for (name, run_id, digest_input, expected_blocker) in cases {
+            let (evidence_root, manifest_path, _, _, manifest_digest) =
+                release_complete_production_manifest_fixture(&format!(
+                    "release-external-trust-{name}"
+                ));
+            let digest = match digest_input {
+                DigestInput::Missing => None,
+                DigestInput::Invalid => Some("sha256:bad"),
+                DigestInput::Mismatch => {
+                    Some("sha256:0000000000000000000000000000000000000000000000000000000000000000")
+                }
+                DigestInput::Valid => Some(manifest_digest.as_str()),
+            };
+            let mut args = vec![
+                "release",
+                "check",
+                "--scope",
+                "production",
+                "--evidence-manifest",
+                manifest_path.to_str().unwrap(),
+                "--expected-source-commit",
+                commit,
+                "--expected-run-id",
+                run_id,
+                "--expected-run-attempt",
+                "1",
+            ];
+            if let Some(digest) = digest {
+                args.extend(["--expected-manifest-digest", digest]);
+            }
+            args.extend(["--output", "json"]);
+            let (exit_code, stdout, stderr) = run_cli(&args);
+
+            assert_eq!(exit_code, EXIT_CONFIG, "{name}: {stderr}");
+            assert!(stdout.is_empty(), "{name}: {stdout}");
+            assert!(
+                stderr.contains(expected_blocker),
+                "{name}: missing {expected_blocker}: {stderr}"
+            );
+            fs::remove_dir_all(evidence_root).unwrap();
+        }
+    }
+
+    #[test]
+    /// 验证 production manifest 必须覆盖当前 consumer 要求的全部 evidence 类型。
+    fn production_release_check_rejects_incomplete_manifest() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let (evidence_root, manifest_path, _, _, _) =
+            release_complete_production_manifest_fixture("release-manifest-production-incomplete");
+        let mut manifest = eva_release::ReleaseEvidenceManifest::parse_manifest(
+            &fs::read_to_string(&manifest_path).unwrap(),
+        )
+        .unwrap();
+        manifest
+            .entries
+            .retain(|entry| entry.evidence_type != eva_release::ReleaseEvidenceType::Benchmark);
+        fs::write(&manifest_path, manifest.to_manifest()).unwrap();
+        let manifest_digest = bind_release_manifest_envelopes(&evidence_root, &manifest_path);
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--scope",
+            "production",
+            "--evidence-manifest",
+            manifest_path.to_str().unwrap(),
+            "--expected-source-commit",
+            commit,
+            "--expected-run-id",
+            "123",
+            "--expected-run-attempt",
+            "1",
+            "--expected-manifest-digest",
+            manifest_digest.as_str(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("production_evidence_coverage_missing"));
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证 CLI production loader 使用可信系统时间、measurement 和执行器 policy。
+    fn production_release_check_enforces_freshness_kind_and_executor_policy() {
+        enum Mutation {
+            Stale,
+            Future,
+            NonMeasurement,
+            Untrusted,
+            WrongRun,
+            WrongAttempt,
+        }
+        let cases = [
+            ("stale", Mutation::Stale, "production_evidence_stale"),
+            (
+                "future",
+                Mutation::Future,
+                "production_evidence_future_timestamp",
+            ),
+            (
+                "non-measurement",
+                Mutation::NonMeasurement,
+                "production_evidence_kind_not_measurement",
+            ),
+            (
+                "untrusted",
+                Mutation::Untrusted,
+                "production_evidence_executor_untrusted",
+            ),
+            (
+                "wrong-run",
+                Mutation::WrongRun,
+                "production_evidence_executor_untrusted",
+            ),
+            (
+                "wrong-attempt",
+                Mutation::WrongAttempt,
+                "production_evidence_executor_untrusted",
+            ),
+        ];
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+
+        for (name, mutation, expected_blocker) in cases {
+            let (evidence_root, manifest_path, _, benchmark_envelope_path, _) =
+                release_complete_production_manifest_fixture(&format!(
+                    "release-production-policy-{name}"
+                ));
+            let mut envelope = eva_release::EvidenceEnvelope::parse_manifest(
+                &fs::read_to_string(&benchmark_envelope_path).unwrap(),
+            )
+            .unwrap();
+            match mutation {
+                Mutation::Stale => envelope.timestamp = 1,
+                Mutation::Future => {
+                    envelope.timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                        + eva_release::PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW_MS
+                        + 60_000;
+                }
+                Mutation::NonMeasurement => {
+                    envelope.kind = eva_release::EvidenceKind::Fixture;
+                }
+                Mutation::Untrusted => {
+                    envelope.executor = "local:release-benchmark/run-123".to_owned();
+                }
+                Mutation::WrongRun => {
+                    envelope.executor =
+                        "github-actions:release-benchmark/124/1/benchmark".to_owned();
+                }
+                Mutation::WrongAttempt => {
+                    envelope.executor =
+                        "github-actions:release-benchmark/123/2/benchmark".to_owned();
+                }
+            }
+            fs::write(&benchmark_envelope_path, envelope.to_manifest()).unwrap();
+            let manifest_digest = bind_release_manifest_envelopes(&evidence_root, &manifest_path);
+
+            let (exit_code, stdout, stderr) = run_cli(&[
+                "release",
+                "check",
+                "--scope",
+                "production",
+                "--evidence-manifest",
+                manifest_path.to_str().unwrap(),
+                "--expected-source-commit",
+                commit,
+                "--expected-run-id",
+                "123",
+                "--expected-run-attempt",
+                "1",
+                "--expected-manifest-digest",
+                manifest_digest.as_str(),
+                "--output",
+                "json",
+            ]);
+
+            assert_eq!(exit_code, EXIT_CONFIG, "{name}: {stderr}");
+            assert!(stdout.is_empty(), "{name}: {stdout}");
+            assert!(
+                stderr.contains(expected_blocker),
+                "{name}: missing {expected_blocker}: {stderr}"
+            );
+            fs::remove_dir_all(evidence_root).unwrap();
+        }
+    }
+
+    #[test]
+    /// 验证把已绑定的 invalid envelope 改写成合规字段仍会撞上 envelope digest。
+    fn production_release_check_rejects_invalid_to_valid_envelope_rewrite() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let (evidence_root, manifest_path, _, benchmark_envelope_path, _) =
+            release_complete_production_manifest_fixture("release-envelope-rewrite");
+        let mut envelope = eva_release::EvidenceEnvelope::parse_manifest(
+            &fs::read_to_string(&benchmark_envelope_path).unwrap(),
+        )
+        .unwrap();
+        envelope.kind = eva_release::EvidenceKind::Fixture;
+        envelope.timestamp = 1;
+        envelope.executor = "local:release-benchmark".to_owned();
+        fs::write(&benchmark_envelope_path, envelope.to_manifest()).unwrap();
+        let trusted_manifest_digest =
+            bind_release_manifest_envelopes(&evidence_root, &manifest_path);
+
+        envelope.kind = eva_release::EvidenceKind::Measurement;
+        envelope.timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .saturating_sub(1_000);
+        envelope.executor = "github-actions:release-benchmark/123/1/benchmark".to_owned();
+        fs::write(&benchmark_envelope_path, envelope.to_manifest()).unwrap();
+
+        let (exit_code, stdout, stderr) = run_cli(&[
+            "release",
+            "check",
+            "--scope",
+            "production",
+            "--evidence-manifest",
+            manifest_path.to_str().unwrap(),
+            "--expected-source-commit",
+            commit,
+            "--expected-run-id",
+            "123",
+            "--expected-run-attempt",
+            "1",
+            "--expected-manifest-digest",
+            trusted_manifest_digest.as_str(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit_code, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("production_evidence_envelope_digest_mismatch"));
+        fs::remove_dir_all(evidence_root).unwrap();
+    }
+
+    #[test]
+    /// 验证 entry envelope digest 的缺失、非法格式和内容不匹配均稳定失败。
+    fn production_release_check_rejects_invalid_entry_envelope_digest() {
+        enum Mutation {
+            Missing,
+            Invalid,
+            Mismatch,
+        }
+        let cases = [
+            (
+                "missing",
+                Mutation::Missing,
+                "production_evidence_envelope_digest_missing",
+            ),
+            (
+                "invalid",
+                Mutation::Invalid,
+                "production_evidence_envelope_digest_invalid",
+            ),
+            (
+                "mismatch",
+                Mutation::Mismatch,
+                "production_evidence_envelope_digest_mismatch",
+            ),
+        ];
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+
+        for (name, mutation, expected_blocker) in cases {
+            let (evidence_root, manifest_path, _, _, _) =
+                release_complete_production_manifest_fixture(&format!(
+                    "release-envelope-digest-{name}"
+                ));
+            let mut manifest = eva_release::ReleaseEvidenceManifest::parse_manifest(
+                &fs::read_to_string(&manifest_path).unwrap(),
+            )
+            .unwrap();
+            let entry = manifest
+                .entries
+                .iter_mut()
+                .find(|entry| entry.evidence_type == eva_release::ReleaseEvidenceType::Benchmark)
+                .unwrap();
+            match mutation {
+                Mutation::Missing => entry.envelope_digest = None,
+                Mutation::Invalid => entry.envelope_digest = Some("sha256:bad".to_owned()),
+                Mutation::Mismatch => {
+                    entry.envelope_digest = Some(
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                            .to_owned(),
+                    );
+                }
+            }
+            let trusted_manifest_digest = manifest.canonical_digest();
+            fs::write(&manifest_path, manifest.to_manifest()).unwrap();
+
+            let (exit_code, stdout, stderr) = run_cli(&[
+                "release",
+                "check",
+                "--scope",
+                "production",
+                "--evidence-manifest",
+                manifest_path.to_str().unwrap(),
+                "--expected-source-commit",
+                commit,
+                "--expected-run-id",
+                "123",
+                "--expected-run-attempt",
+                "1",
+                "--expected-manifest-digest",
+                trusted_manifest_digest.as_str(),
+                "--output",
+                "json",
+            ]);
+
+            assert_eq!(exit_code, EXIT_CONFIG, "{name}: {stderr}");
+            assert!(stdout.is_empty(), "{name}: {stdout}");
+            assert!(
+                stderr.contains(expected_blocker),
+                "{name}: missing {expected_blocker}: {stderr}"
+            );
+            fs::remove_dir_all(evidence_root).unwrap();
+        }
     }
 
     #[test]
@@ -2783,10 +3336,9 @@ mod tests {
     /// 验证 canonical typed evidence 被改写后 envelope 摘要不再通过。
     fn release_check_rejects_tampered_manifest_evidence_subject() {
         let commit = "0123456789abcdef0123456789abcdef01234567";
-        let (evidence_root, manifest_path, evidence_path, _) = release_benchmark_manifest_fixture(
-            "release-manifest-tampered-benchmark",
-            eva_release::ReleaseEvidenceScope::Production,
-        );
+        let (evidence_root, manifest_path, _, _, manifest_digest) =
+            release_complete_production_manifest_fixture("release-manifest-tampered-benchmark");
+        let evidence_path = evidence_root.join("release-benchmark.evidence");
         let tampered = fs::read_to_string(&evidence_path).unwrap().replace(
             "measurement.0.observed_ms=120",
             "measurement.0.observed_ms=121",
@@ -2801,6 +3353,12 @@ mod tests {
             manifest_path.to_str().unwrap(),
             "--expected-source-commit",
             commit,
+            "--expected-run-id",
+            "123",
+            "--expected-run-attempt",
+            "1",
+            "--expected-manifest-digest",
+            manifest_digest.as_str(),
             "--output",
             "json",
         ]);
@@ -2815,10 +3373,8 @@ mod tests {
     /// 验证 artifact manifest 校验真实包字节，篡改后不会只凭 evidence 文本通过。
     fn release_check_verifies_real_artifact_subject_bytes() {
         let commit = "0123456789abcdef0123456789abcdef01234567";
-        let (evidence_root, manifest_path, subject_path) = release_artifact_manifest_fixture(
-            "release-manifest-real-artifact",
-            eva_release::ReleaseEvidenceScope::Production,
-        );
+        let (evidence_root, manifest_path, subject_path, _, manifest_digest) =
+            release_complete_production_manifest_fixture("release-manifest-real-artifact");
         let args = [
             "release",
             "check",
@@ -2828,6 +3384,12 @@ mod tests {
             manifest_path.to_str().unwrap(),
             "--expected-source-commit",
             commit,
+            "--expected-run-id",
+            "123",
+            "--expected-run-attempt",
+            "1",
+            "--expected-manifest-digest",
+            manifest_digest.as_str(),
             "--output",
             "json",
         ];
