@@ -23,12 +23,14 @@
         {
           "id": "REL-DOCS-001",
           "domain": "docs",
+          "evidence_kind": "declaration",
           "status": "pass",
           "required": true
         },
         {
           "id": "REL-JSON-CONTRACT-001",
           "domain": "cli_json_contract",
+          "evidence_kind": "declaration",
           "status": "pass",
           "required": true,
           "evidence": [
@@ -40,6 +42,7 @@
         {
           "id": "REL-OBSERVABILITY-POLICY-001",
           "domain": "observability_policy",
+          "evidence_kind": "declaration",
           "status": "pass",
           "required": true,
           "evidence": [
@@ -51,6 +54,7 @@
         {
           "id": "REL-V1X-CLOSURE-001",
           "domain": "v1x_closure",
+          "evidence_kind": "declaration",
           "status": "pass",
           "required": true,
           "evidence": [
@@ -62,6 +66,7 @@
         {
           "id": "REL-HARDWARE-SAFETY-001",
           "domain": "hardware_safety",
+          "evidence_kind": "declaration",
           "status": "pass",
           "required": true
         }

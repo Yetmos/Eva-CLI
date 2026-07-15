@@ -1363,9 +1363,10 @@ fn stability_scenario_json(scenario: &StabilityScenario) -> String {
 /// 将单个发布 gate 及 blocker/risk 编码为 JSON。
 fn release_gate_json(gate: &ReleaseGate) -> String {
     format!(
-        "{{\"id\":{},\"domain\":{},\"status\":{},\"required\":{},\"summary\":{},\"evidence\":{},\"remediation\":{}}}",
+        "{{\"id\":{},\"domain\":{},\"evidence_kind\":{},\"status\":{},\"required\":{},\"summary\":{},\"evidence\":{},\"remediation\":{}}}",
         json_string(&gate.id),
         json_string(&gate.domain),
+        json_string(gate.evidence_kind.as_str()),
         json_string(gate.status.as_str()),
         gate.required,
         json_string(&gate.summary),

@@ -2743,10 +2743,12 @@ mod tests {
         assert!(stdout.contains("\"integrity_status\":\"verified\""));
         assert!(stdout.contains("\"expected_commit_source\":\"external_option\""));
         assert!(stdout.contains("\"id\":\"REL-BENCHMARK-001\""));
+        assert!(stdout
+            .contains("\"domain\":\"production_benchmark\",\"evidence_kind\":\"measurement\""));
         assert!(stdout.contains("\"exit_code\":2"));
         assert!(stdout.contains("\"status\":\"blocked\""));
-        assert!(stdout.contains("\"id\":\"REL-PRODUCTION-EVIDENCE-POLICY-001\""));
-        assert!(stdout.contains("production_policy_incomplete"));
+        assert!(stdout.contains("evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"));
+        assert!(!stdout.contains("REL-PRODUCTION-EVIDENCE-POLICY-001"));
         assert!(!stdout.contains(manifest_path.to_str().unwrap()));
         fs::remove_dir_all(evidence_root).unwrap();
     }
@@ -2832,7 +2834,11 @@ mod tests {
         let (exit_code, stdout, stderr) = run_cli(&args);
         assert_eq!(exit_code, EXIT_CONFIG, "{stderr}");
         assert!(stdout.contains("\"id\":\"REL-ARTIFACT-PROVENANCE-001\""));
-        assert!(stdout.contains("\"id\":\"REL-PRODUCTION-EVIDENCE-POLICY-001\""));
+        assert!(stdout.contains(
+            "\"domain\":\"release_artifact_provenance\",\"evidence_kind\":\"measurement\""
+        ));
+        assert!(stdout.contains("evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"));
+        assert!(!stdout.contains("REL-PRODUCTION-EVIDENCE-POLICY-001"));
 
         fs::write(&subject_path, b"tampered release artifact bytes").unwrap();
         let (tampered_exit, tampered_stdout, tampered_stderr) = run_cli(&args);
@@ -2887,6 +2893,9 @@ mod tests {
         assert_eq!(exit_code, EXIT_OK, "{stderr}");
         assert!(stdout.contains("\"id\":\"REL-ARTIFACT-PROVENANCE-001\""));
         assert!(stdout.contains("\"domain\":\"release_artifact_provenance\""));
+        assert!(stdout.contains(
+            "\"domain\":\"release_artifact_provenance\",\"evidence_kind\":\"declaration\""
+        ));
         assert!(stdout.contains("\"status\":\"pass\""));
         assert!(stdout.contains("signed_artifact_provenance_verified"));
         assert!(stdout.contains("\"evidence_scope\":\"alpha\""));

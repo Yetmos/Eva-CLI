@@ -7,15 +7,15 @@ use crate::artifact::{
 use crate::benchmark::{ReleaseBenchmarkEvidence, ReleaseBenchmarkVerificationReport};
 use crate::distribution::{ReleaseDistributionEvidence, ReleaseDistributionVerificationReport};
 use crate::evidence::{
-    verify_evidence_bundle, EvidenceEnvelope, EvidenceSubject, EvidenceVerificationReport,
-    ReleaseEvidenceManifest, ReleaseEvidenceScope, ReleaseEvidenceType,
+    verify_evidence_bundle, EvidenceEnvelope, EvidenceKind, EvidenceSubject,
+    EvidenceVerificationReport, ReleaseEvidenceManifest, ReleaseEvidenceScope, ReleaseEvidenceType,
 };
 use crate::migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::scanner::{ReleaseSecurityScanEvidence, ReleaseSecurityScanVerificationReport};
 use crate::security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
 use eva_core::EvaError;
-use eva_mcp::{McpCompatibilityMatrix, McpCompatibilityReport};
+use eva_mcp::{McpCompatibilityEvidenceKind, McpCompatibilityMatrix, McpCompatibilityReport};
 
 /// 当前就绪度基线对应的语义版本。
 const CURRENT_RELEASE_VERSION: &str = "1.11.5-alpha";
@@ -61,6 +61,8 @@ pub struct ReleaseGate {
     pub id: String,
     /// 门禁所属能力或风险域。
     pub domain: String,
+    /// 支撑该门禁结论的最强证据来源分类。
+    pub evidence_kind: EvidenceKind,
     /// 当前证据得出的门禁状态。
     pub status: ReleaseGateStatus,
     /// 该门禁是否参与总体 ready/blocked 判定。
@@ -190,6 +192,10 @@ impl<T> ReleaseDocumentEvidenceCandidate<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedReleaseEvidenceBundle {
     manifest: ReleaseEvidenceManifest,
+    artifact_kind: Option<EvidenceKind>,
+    distribution_kind: Option<EvidenceKind>,
+    security_scan_kind: Option<EvidenceKind>,
+    benchmark_kind: Option<EvidenceKind>,
     artifact: Option<ReleaseArtifactEvidence>,
     distribution: Option<ReleaseDistributionEvidence>,
     security_scan: Option<ReleaseSecurityScanEvidence>,
@@ -301,8 +307,21 @@ impl VerifiedReleaseEvidenceBundle {
             ));
         }
 
+        let artifact_kind = artifact.as_ref().map(|candidate| candidate.envelope.kind);
+        let distribution_kind = distribution
+            .as_ref()
+            .map(|candidate| candidate.envelope.kind);
+        let security_scan_kind = security_scan
+            .as_ref()
+            .map(|candidate| candidate.envelope.kind);
+        let benchmark_kind = benchmark.as_ref().map(|candidate| candidate.envelope.kind);
+
         Ok(Self {
             manifest,
+            artifact_kind,
+            distribution_kind,
+            security_scan_kind,
+            benchmark_kind,
             artifact: artifact.map(|candidate| candidate.evidence),
             distribution: distribution.map(|candidate| candidate.evidence),
             security_scan: security_scan.map(|candidate| candidate.evidence),
@@ -409,33 +428,28 @@ impl ReleaseHardeningService {
             bundle.security_scan.as_ref(),
             bundle.benchmark.as_ref(),
         )?;
+        set_gate_evidence_kind(
+            &mut report.gates,
+            "REL-ARTIFACT-PROVENANCE-001",
+            bundle.artifact_kind,
+        )?;
+        set_gate_evidence_kind(
+            &mut report.gates,
+            "REL-DISTRIBUTION-001",
+            bundle.distribution_kind,
+        )?;
+        set_gate_evidence_kind(
+            &mut report.gates,
+            "REL-SECURITY-SCAN-001",
+            bundle.security_scan_kind,
+        )?;
+        set_gate_evidence_kind(
+            &mut report.gates,
+            "REL-BENCHMARK-001",
+            bundle.benchmark_kind,
+        )?;
         if bundle.scope() == ReleaseEvidenceScope::Production {
-            report.gates.push(ReleaseGate {
-                id: "REL-PRODUCTION-EVIDENCE-POLICY-001".to_owned(),
-                domain: "production_evidence_policy".to_owned(),
-                status: ReleaseGateStatus::Blocked,
-                required: true,
-                summary: "production remains fail-closed until evidence kind and coverage policy are complete"
-                    .to_owned(),
-                evidence: vec![
-                    format!("manifest.format:{}", bundle.manifest.format),
-                    format!("manifest.scope:{}", bundle.scope()),
-                    format!("manifest.entry_count:{}", bundle.entry_count()),
-                    format!(
-                        "manifest.verified_subject_count:{}",
-                        bundle.verification.verified_subject_count
-                    ),
-                ],
-                remediation: vec![
-                    "complete W0-L04 through W0-L08 before production can report ready"
-                        .to_owned(),
-                    "production_policy_incomplete".to_owned(),
-                ],
-            });
-            report.status = "blocked".to_owned();
-            report
-                .audit
-                .push("production_evidence_policy_fail_closed".to_owned());
+            enforce_production_measurement_gates(&mut report);
         }
         report.evidence_scope = bundle.scope();
         Ok(report)
@@ -878,6 +892,7 @@ impl ReleaseHardeningService {
             ReleaseGate {
                 id: "REL-PLATFORM-001".to_owned(),
                 domain: "cross_platform".to_owned(),
+                evidence_kind: EvidenceKind::Declaration,
                 status: platform_status,
                 required: true,
                 summary: "Windows, Linux, and macOS CI matrix smoke commands are release gates"
@@ -891,6 +906,7 @@ impl ReleaseHardeningService {
             ReleaseGate {
                 id: "REL-STABILITY-001".to_owned(),
                 domain: "stability".to_owned(),
+                evidence_kind: EvidenceKind::Declaration,
                 status: stability_status,
                 required: true,
                 summary: "task, cancellation, dead-letter, restore, and upgrade recovery paths are auditable"
@@ -904,6 +920,7 @@ impl ReleaseHardeningService {
             ReleaseGate {
                 id: "REL-DOCS-001".to_owned(),
                 domain: "docs".to_owned(),
+                evidence_kind: EvidenceKind::Declaration,
                 status: ReleaseGateStatus::Pass,
                 required: true,
                 summary: format!("{CURRENT_RELEASE_LABEL} README, version management, GitHub Packages, install/upgrade/uninstall docs, migration, compatibility, and release notes are part of the release surface"),
@@ -919,6 +936,63 @@ impl ReleaseHardeningService {
                 remediation: vec!["update docs and i18n validation before tagging release".to_owned()],
             },
         ]
+    }
+}
+
+/// 将 verified envelope 的真实分类绑定回对应的外部 evidence gate。
+fn set_gate_evidence_kind(
+    gates: &mut [ReleaseGate],
+    gate_id: &str,
+    evidence_kind: Option<EvidenceKind>,
+) -> Result<(), EvaError> {
+    let Some(evidence_kind) = evidence_kind else {
+        return Ok(());
+    };
+    let gate = gates
+        .iter_mut()
+        .find(|gate| gate.id == gate_id)
+        .ok_or_else(|| {
+            EvaError::internal("verified release evidence gate was not generated")
+                .with_context("gate_id", gate_id)
+        })?;
+    gate.evidence_kind = evidence_kind;
+    Ok(())
+}
+
+/// production scope 只允许 required gate 由机器 measurement 支撑。
+fn enforce_production_measurement_gates(report: &mut ReleaseReadinessReport) {
+    let mut blocked_reasons = Vec::new();
+    for gate in &mut report.gates {
+        if gate.required && gate.evidence_kind != EvidenceKind::Measurement {
+            gate.status = ReleaseGateStatus::Blocked;
+            let reason = format!(
+                "evidence_kind_not_measured:{}:{}",
+                gate.id, gate.evidence_kind
+            );
+            if !gate.remediation.contains(&reason) {
+                gate.remediation.push(reason.clone());
+            }
+            blocked_reasons.push(reason);
+        }
+    }
+    report.audit.extend(blocked_reasons);
+    report.status = if report
+        .gates
+        .iter()
+        .any(|gate| gate.required && gate.status.is_blocking())
+    {
+        "blocked"
+    } else {
+        "ready"
+    }
+    .to_owned();
+}
+
+/// 将 MCP crate 的非循环依赖分类映射为统一 release evidence kind。
+const fn mcp_evidence_kind(kind: McpCompatibilityEvidenceKind) -> EvidenceKind {
+    match kind {
+        McpCompatibilityEvidenceKind::Fixture => EvidenceKind::Fixture,
+        McpCompatibilityEvidenceKind::Measurement => EvidenceKind::Measurement,
     }
 }
 
@@ -1006,6 +1080,7 @@ fn release_artifact_provenance_gate(report: &ReleaseArtifactVerificationReport) 
     ReleaseGate {
         id: "REL-ARTIFACT-PROVENANCE-001".to_owned(),
         domain: "release_artifact_provenance".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: if report.status == "verified" {
             ReleaseGateStatus::Pass
         } else {
@@ -1049,6 +1124,7 @@ fn release_distribution_gate(report: &ReleaseDistributionVerificationReport) -> 
     ReleaseGate {
         id: "REL-DISTRIBUTION-001".to_owned(),
         domain: "release_distribution".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: if report.status == "verified" {
             ReleaseGateStatus::Pass
         } else {
@@ -1087,6 +1163,7 @@ fn release_security_scan_gate(report: &ReleaseSecurityScanVerificationReport) ->
     ReleaseGate {
         id: "REL-SECURITY-SCAN-001".to_owned(),
         domain: "external_security_scan".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: if report.status == "verified" {
             ReleaseGateStatus::Pass
         } else {
@@ -1125,6 +1202,7 @@ fn release_benchmark_gate(report: &ReleaseBenchmarkVerificationReport) -> Releas
     ReleaseGate {
         id: "REL-BENCHMARK-001".to_owned(),
         domain: "production_benchmark".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: if report.status == "verified" {
             ReleaseGateStatus::Pass
         } else {
@@ -1185,6 +1263,7 @@ fn security_gate(finding: &SecurityFinding) -> ReleaseGate {
     ReleaseGate {
         id: finding.id.clone(),
         domain: format!("security:{}", finding.boundary),
+        evidence_kind: EvidenceKind::Declaration,
         status: finding.status,
         required: finding.severity.is_required_gate(),
         summary: finding.summary.clone(),
@@ -1198,6 +1277,7 @@ fn performance_gate(budget: &PerformanceBudget) -> ReleaseGate {
     ReleaseGate {
         id: format!("PERF-{}", budget.component.replace('.', "-").to_uppercase()),
         domain: "performance".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: budget.status,
         required: true,
         summary: format!(
@@ -1216,6 +1296,7 @@ fn migration_gate(guide: &MigrationGuide) -> ReleaseGate {
     ReleaseGate {
         id: "REL-MIGRATION-001".to_owned(),
         domain: "migration".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: if guide.breaking_changes.is_empty() {
             ReleaseGateStatus::Pass
         } else {
@@ -1242,6 +1323,7 @@ fn durable_backend_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-BACKEND-001".to_owned(),
         domain: "durable_backend".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.6.1 durable backend schema, layout, read-only verification, and migration lock baseline are implemented".to_owned(),
@@ -1262,6 +1344,7 @@ fn durable_eventbus_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-EVENTBUS-001".to_owned(),
         domain: "durable_eventbus".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.6.2 durable EventBus publish/ack/fail, queryable dead-letter store, and redrive baseline are implemented".to_owned(),
@@ -1284,6 +1367,7 @@ fn durable_task_audit_artifact_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-STORES-001".to_owned(),
         domain: "durable_task_audit_artifact".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.6.3 durable task store adapter, audit sink, and artifact metadata hardening are implemented".to_owned(),
@@ -1308,6 +1392,7 @@ fn durable_runtime_recovery_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-RECOVERY-001".to_owned(),
         domain: "durable_runtime_recovery".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.6.4 runtime recovery scanner, event redrive checkpoint, and durable recovery audit smoke are implemented".to_owned(),
@@ -1331,6 +1416,7 @@ fn durable_diagnostics_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DURABLE-DIAGNOSTICS-001".to_owned(),
         domain: "durable_diagnostics".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.6.5 durable backend diagnostics report schema, migration, and pending redrive counts through inspect.durable".to_owned(),
@@ -1353,6 +1439,7 @@ fn lua_vm_execution_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-LUA-VM-EXECUTION-001".to_owned(),
         domain: "lua_vm_execution".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.7.1 Lua VM adapter, restricted standard library, real on_event execution, and stable error mapping are implemented".to_owned(),
@@ -1376,6 +1463,7 @@ fn lua_host_bindings_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-LUA-HOST-BINDINGS-001".to_owned(),
         domain: "lua_host_bindings".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.7.2 read-only Lua ctx, host log/audit, and ctx.tools.call capability binding are implemented".to_owned(),
@@ -1400,6 +1488,7 @@ fn lua_resource_limits_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-LUA-RESOURCE-LIMITS-001".to_owned(),
         domain: "lua_resource_limits".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.7.3 Lua wall-clock timeout, instruction budget, cancellation token, and memory budget limits are implemented".to_owned(),
@@ -1424,6 +1513,7 @@ fn lua_hot_reload_lifecycle_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-LUA-HOT-RELOAD-001".to_owned(),
         domain: "lua_hot_reload_lifecycle".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.7.4 Lua shadow load, generation route gating, drain evidence, and rollback audit boundaries remain implemented".to_owned(),
@@ -1449,6 +1539,7 @@ fn signed_backup_archive_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-BACKUP-ARCHIVE-001".to_owned(),
         domain: "backup_archive".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.10.3 signed backup archive, optional archive sealing, remote target contract, and pre-restore evidence checks are implemented".to_owned(),
@@ -1470,6 +1561,7 @@ fn restore_apply_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-RESTORE-APPLY-GATE-001".to_owned(),
         domain: "restore_apply_gate".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.10.4/V1.14.4 restore apply confirmation, policy approval, filesystem lock, health gate, staged file mutation, rollback-required transaction evidence, rollback apply, and operator confirmation are implemented".to_owned(),
@@ -1493,6 +1585,7 @@ fn supervisor_handoff_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-SUPERVISOR-HANDOFF-001".to_owned(),
         domain: "supervisor_handoff".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.10.5 supervisor blue-green handoff, release pointer mutation, persisted state, and rollback-on-health-failure baseline are implemented".to_owned(),
@@ -1516,6 +1609,7 @@ fn service_manager_abstraction_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-SERVICE-MANAGER-ABSTRACTION-001".to_owned(),
         domain: "service_manager_abstraction".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.14.5 OS service-manager adapter trait, typed config, fake handoff, and rollback evidence are implemented".to_owned(),
@@ -1538,6 +1632,7 @@ fn daemon_runtime_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-DAEMON-RUNTIME-001".to_owned(),
         domain: "daemon_runtime".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.12 daemon process boundary, filesystem mailbox control, durable task lifecycle, scheduler retry tick, and daemon-backed agent drain/reload mutation readiness are implemented".to_owned(),
@@ -1583,6 +1678,7 @@ fn mcp_compatibility_matrix_gate(report: Option<&McpCompatibilityReport>) -> Rel
             ReleaseGate {
                 id: "REL-MCP-COMPAT-001".to_owned(),
                 domain: "mcp_compatibility".to_owned(),
+                evidence_kind: mcp_evidence_kind(report.evidence_kind()),
                 status,
                 required: true,
                 summary: "MCP transport, schema, stream lifecycle, and server-surface compatibility matrix is present".to_owned(),
@@ -1600,6 +1696,7 @@ fn mcp_compatibility_matrix_gate(report: Option<&McpCompatibilityReport>) -> Rel
         None => ReleaseGate {
             id: "REL-MCP-COMPAT-001".to_owned(),
             domain: "mcp_compatibility".to_owned(),
+            evidence_kind: EvidenceKind::Declaration,
             status: ReleaseGateStatus::Blocked,
             required: true,
             summary: "MCP compatibility matrix is required before release".to_owned(),
@@ -1617,6 +1714,7 @@ fn provider_supervision_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-PROVIDER-SUPERVISION-001".to_owned(),
         domain: "provider_supervision".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "Provider stdio/http/MCP/Skill supervision, credential scope, admission limits, stream artifacts, recovery, and MCP compatibility gates are present".to_owned(),
@@ -1643,6 +1741,7 @@ fn hardware_safety_release_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-HARDWARE-SAFETY-001".to_owned(),
         domain: "hardware_safety".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "V1.15.5 hardware safety release gate records simulator parity, permission denial, lease cleanup, and hotplug smoke evidence for alpha".to_owned(),
@@ -1671,6 +1770,7 @@ fn public_json_contract_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-JSON-CONTRACT-001".to_owned(),
         domain: "cli_json_contract".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "Public CLI JSON envelope and command data contracts are protected by additive-compatible golden subset diffs".to_owned(),
@@ -1698,6 +1798,7 @@ fn observability_policy_gate() -> ReleaseGate {
     ReleaseGate {
         id: "REL-OBSERVABILITY-POLICY-001".to_owned(),
         domain: "observability_policy".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: ReleaseGateStatus::Pass,
         required: true,
         summary: "Runtime observability audit wiring, tracing bridge, OTLP exporter smoke, and retention policy are recorded for V1.x closure".to_owned(),
@@ -1826,6 +1927,7 @@ fn v1x_closure_gate(closure: &V1xClosureReport) -> ReleaseGate {
     ReleaseGate {
         id: "REL-V1X-CLOSURE-001".to_owned(),
         domain: "v1x_closure".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
         status: if closure.status == "blocked" {
             ReleaseGateStatus::Blocked
         } else {
@@ -2081,8 +2183,8 @@ mod tests {
     }
 
     #[test]
-    /// 验证相同 verified evidence 在 alpha 可聚合，而 production 在策略完成前失败关闭。
-    fn verified_bundle_keeps_production_fail_closed() {
+    /// 验证 alpha 保留弱证据，而 production 仅接受 required measurement gate。
+    fn verified_bundle_enforces_production_measurement_kind() {
         for scope in [
             ReleaseEvidenceScope::Alpha,
             ReleaseEvidenceScope::Production,
@@ -2109,25 +2211,43 @@ mod tests {
             let report = ReleaseHardeningService::v15()
                 .readiness_with_verified_release_evidence("all", &bundle)
                 .unwrap();
+            let benchmark_gate = report
+                .gates
+                .iter()
+                .find(|gate| gate.id == "REL-BENCHMARK-001")
+                .unwrap();
+            let mcp_gate = report
+                .gates
+                .iter()
+                .find(|gate| gate.id == "REL-MCP-COMPAT-001")
+                .unwrap();
+
+            assert_eq!(benchmark_gate.evidence_kind, EvidenceKind::Measurement);
+            assert_eq!(benchmark_gate.status, ReleaseGateStatus::Pass);
+            assert_eq!(mcp_gate.evidence_kind, EvidenceKind::Fixture);
 
             if scope == ReleaseEvidenceScope::Alpha {
                 assert_eq!(report.status, "ready");
                 assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Alpha);
+                assert_eq!(mcp_gate.status, ReleaseGateStatus::Pass);
+                assert!(!mcp_gate
+                    .remediation
+                    .iter()
+                    .any(|item| item.starts_with("evidence_kind_not_measured:")));
+            } else {
+                assert_eq!(report.status, "blocked");
+                assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Production);
+                assert_eq!(mcp_gate.status, ReleaseGateStatus::Blocked);
+                assert!(mcp_gate.remediation.iter().any(|item| {
+                    item == "evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"
+                }));
+                assert!(report.audit.iter().any(|item| {
+                    item == "evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"
+                }));
                 assert!(!report
                     .gates
                     .iter()
                     .any(|gate| gate.id == "REL-PRODUCTION-EVIDENCE-POLICY-001"));
-            } else {
-                assert_eq!(report.status, "blocked");
-                assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Production);
-                assert!(report.gates.iter().any(|gate| {
-                    gate.id == "REL-PRODUCTION-EVIDENCE-POLICY-001"
-                        && gate.status == ReleaseGateStatus::Blocked
-                        && gate
-                            .remediation
-                            .iter()
-                            .any(|item| item == "production_policy_incomplete")
-                }));
             }
         }
     }
@@ -2140,6 +2260,10 @@ mod tests {
         assert_eq!(report.status, "ready");
         assert_eq!(report.evidence_scope, ReleaseEvidenceScope::Alpha);
         assert_eq!(report.blocking_count(), 0);
+        assert!(report.gates.iter().all(|gate| {
+            gate.evidence_kind == EvidenceKind::Declaration
+                || (gate.id == "REL-MCP-COMPAT-001" && gate.evidence_kind == EvidenceKind::Fixture)
+        }));
         assert!(report
             .gates
             .iter()
@@ -2664,7 +2788,9 @@ mod tests {
         assert_eq!(report.status, "ready");
         assert_eq!(report.blocking_count(), 0);
         assert!(report.gates.iter().any(|gate| {
-            gate.id == "REL-BENCHMARK-001" && gate.status == ReleaseGateStatus::Pass
+            gate.id == "REL-BENCHMARK-001"
+                && gate.status == ReleaseGateStatus::Pass
+                && gate.evidence_kind == EvidenceKind::Declaration
         }));
         assert!(report
             .audit

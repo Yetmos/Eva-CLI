@@ -22,8 +22,9 @@ pub mod tool_mapping;
 
 pub use client::{InMemoryMcpClient, McpCallReport, McpProbeReport};
 pub use compatibility::{
-    McpCompatibilityMatrix, McpCompatibilityReport, McpServerSurfaceCompatibility,
-    McpStreamLifecycleCompatibility, McpToolSchemaCompatibility, McpTransportCompatibility,
+    McpCompatibilityEvidenceKind, McpCompatibilityMatrix, McpCompatibilityReport,
+    McpServerSurfaceCompatibility, McpStreamLifecycleCompatibility, McpToolSchemaCompatibility,
+    McpTransportCompatibility,
 };
 pub use json_rpc::{
     McpHttpJsonRpcTransport, McpJsonRpcCallReport, McpJsonRpcClient, McpJsonRpcClientConfig,

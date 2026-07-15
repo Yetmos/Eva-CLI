@@ -8,9 +8,30 @@ use eva_core::EvaError;
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "MCP transport, schema, and stream lifecycle compatibility matrix";
 
+/// MCP compatibility 数据来自受控 fixture 还是真实 server run。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpCompatibilityEvidenceKind {
+    /// 静态构造的兼容矩阵，只能支持 alpha 展示。
+    Fixture,
+    /// 由命名 MCP server 实际运行生成的兼容结果。
+    Measurement,
+}
+
+impl McpCompatibilityEvidenceKind {
+    /// 返回跨 crate 映射使用的稳定小写标识。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixture => "fixture",
+            Self::Measurement => "measurement",
+        }
+    }
+}
+
 /// 表示 `McpCompatibilityMatrix` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpCompatibilityMatrix {
+    /// compatibility 数据的来源强度。
+    evidence_kind: McpCompatibilityEvidenceKind,
     /// 记录 `protocol_version` 字段对应的值。
     pub protocol_version: String,
     /// 记录 `transports` 字段对应的值。
@@ -76,6 +97,8 @@ pub struct McpServerSurfaceCompatibility {
 /// 表示 `McpCompatibilityReport` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpCompatibilityReport {
+    /// verifier 保留的 fixture 或 measurement 来源分类。
+    evidence_kind: McpCompatibilityEvidenceKind,
     /// 记录 `protocol_version` 字段对应的值。
     pub protocol_version: String,
     /// 记录 `status` 字段对应的值。
@@ -90,10 +113,23 @@ pub struct McpCompatibilityReport {
     pub audit: Vec<String>,
 }
 
+impl McpCompatibilityReport {
+    /// 返回 verifier 从受控 matrix 保留的 evidence 来源分类。
+    pub const fn evidence_kind(&self) -> McpCompatibilityEvidenceKind {
+        self.evidence_kind
+    }
+}
+
 impl McpCompatibilityMatrix {
+    /// 返回由受控构造路径固定的 evidence 来源分类。
+    pub const fn evidence_kind(&self) -> McpCompatibilityEvidenceKind {
+        self.evidence_kind
+    }
+
     /// 执行 `v1137_fixture` 对应的处理逻辑。
     pub fn v1137_fixture() -> Self {
         Self {
+            evidence_kind: McpCompatibilityEvidenceKind::Fixture,
             protocol_version: "2025-11-25".to_owned(),
             transports: vec![
                 McpTransportCompatibility {
@@ -215,6 +251,7 @@ impl McpCompatibilityMatrix {
         }
         .to_owned();
         Ok(McpCompatibilityReport {
+            evidence_kind: self.evidence_kind,
             protocol_version: self.protocol_version.clone(),
             status,
             transport_count: self.transports.len(),
@@ -263,8 +300,17 @@ mod tests {
     /// 验证 `v1137_fixture_verifies_mcp_compatibility_matrix` 场景下的预期行为。
     #[test]
     fn v1137_fixture_verifies_mcp_compatibility_matrix() {
-        let report = McpCompatibilityMatrix::v1137_fixture().verify().unwrap();
+        let matrix = McpCompatibilityMatrix::v1137_fixture();
+        assert_eq!(
+            matrix.evidence_kind(),
+            McpCompatibilityEvidenceKind::Fixture
+        );
+        let report = matrix.verify().unwrap();
 
+        assert_eq!(
+            report.evidence_kind(),
+            McpCompatibilityEvidenceKind::Fixture
+        );
         assert_eq!(report.status, "compatible");
         assert_eq!(report.transport_count, 2);
         assert_eq!(report.tool_schema_count, 1);
