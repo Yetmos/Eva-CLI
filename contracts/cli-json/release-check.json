@@ -15,7 +15,9 @@
       "evidence_manifest": {
         "source": "none",
         "entry_count": 0,
-        "integrity_status": "not_applicable"
+        "integrity_status": "not_applicable",
+        "manifest_digest": null,
+        "manifest_digest_source": "none"
       },
       "blocking_gates": 0,
       "warning_gates": 7,
@@ -24,8 +26,21 @@
           "id": "REL-DOCS-001",
           "domain": "docs",
           "evidence_kind": "declaration",
+          "provenance": {
+            "evidence_type": null,
+            "source": null,
+            "source_commit": null,
+            "environment": null,
+            "executor": null,
+            "timestamp_ms": null,
+            "subject_digest": null,
+            "envelope_digest": null
+          },
           "status": "pass",
-          "required": true
+          "required": true,
+          "remediation": [
+            "update docs and i18n validation before tagging release"
+          ]
         },
         {
           "id": "REL-JSON-CONTRACT-001",

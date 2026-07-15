@@ -442,6 +442,10 @@ impl ProductionEvidencePolicy {
 /// Stable machine blockers emitted by production evidence policy verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProductionEvidenceBlocker {
+    /// The production command was invoked without a unified evidence manifest.
+    ManifestRequired,
+    /// The consumer did not provide an external trusted source commit.
+    TrustedCommitRequired,
     /// A required evidence type is absent from the production manifest.
     CoverageMissing,
     /// A production envelope is not a machine measurement.
@@ -480,6 +484,8 @@ impl ProductionEvidenceBlocker {
     /// Return the stable CLI/error-context code for this blocker.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::ManifestRequired => "production_evidence_manifest_required",
+            Self::TrustedCommitRequired => "production_evidence_trusted_commit_required",
             Self::CoverageMissing => "production_evidence_coverage_missing",
             Self::KindNotMeasurement => "production_evidence_kind_not_measurement",
             Self::Stale => "production_evidence_stale",

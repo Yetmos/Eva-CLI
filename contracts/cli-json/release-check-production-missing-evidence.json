@@ -1,0 +1,26 @@
+{
+  "id": "release-check-production-missing-evidence",
+  "description": "Production release checks fail closed with a stable policy exit code when the evidence manifest is absent.",
+  "command": ["release", "check", "--scope", "production", "--output", "json"],
+  "process_exit_code": 3,
+  "json_stream": "stderr",
+  "expected": {
+    "ok": false,
+    "command": "release.check",
+    "exit_code": 3,
+    "error": {
+      "kind": "invalid_argument",
+      "message": "production release check requires an evidence manifest",
+      "retryable": false,
+      "context": [
+        {
+          "key": "blocked_reasons",
+          "value": "production_evidence_manifest_required"
+        }
+      ]
+    },
+    "trace": {
+      "span_id": "cli.release.check"
+    }
+  }
+}

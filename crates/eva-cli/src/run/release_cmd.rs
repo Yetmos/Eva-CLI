@@ -2,10 +2,11 @@
 
 use super::{
     json_array, json_string, option_json, parse_common_options, required_option, success_envelope,
-    trace_for, write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_CONFIG,
-    EXIT_OK, EXIT_POLICY, EXIT_RUNTIME_UNAVAILABLE,
+    trace_for, write_command_error, write_command_error_with_exit_code, write_error_kind,
+    CommonOptions, OutputFormat, EXIT_CONFIG, EXIT_OK, EXIT_POLICY, EXIT_PRODUCTION_BLOCKED,
+    EXIT_RUNTIME_UNAVAILABLE,
 };
-use eva_core::EvaError;
+use eva_core::{ErrorKind, EvaError};
 use eva_observability::TraceFields;
 use eva_release::{
     verify_evidence_bundle, CompatibilityPolicy, EvidenceEnvelope, EvidenceKind, EvidenceSubject,
@@ -121,6 +122,9 @@ struct ReleaseEvidenceSummary {
     normalized_envelope_count: usize,
     integrity_status: &'static str,
     expected_commit_source: &'static str,
+    manifest_digest: Option<String>,
+    manifest_digest_source: &'static str,
+    gate_provenance: Vec<ReleaseGateProvenance>,
 }
 
 impl ReleaseEvidenceSummary {
@@ -131,6 +135,37 @@ impl ReleaseEvidenceSummary {
             normalized_envelope_count: 0,
             integrity_status: "not_applicable",
             expected_commit_source: "none",
+            manifest_digest: None,
+            manifest_digest_source: "none",
+            gate_provenance: Vec::new(),
+        }
+    }
+}
+
+/// Public, path-free projection of one verified envelope for a release gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleaseGateProvenance {
+    evidence_type: ReleaseEvidenceType,
+    source: String,
+    source_commit: String,
+    environment: String,
+    executor: String,
+    timestamp_ms: u128,
+    subject_digest: String,
+    envelope_digest: String,
+}
+
+impl ReleaseGateProvenance {
+    fn from_envelope(evidence_type: ReleaseEvidenceType, envelope: &EvidenceEnvelope) -> Self {
+        Self {
+            evidence_type,
+            source: envelope.source.clone(),
+            source_commit: envelope.source_commit.clone(),
+            environment: envelope.environment.clone(),
+            executor: envelope.executor.clone(),
+            timestamp_ms: envelope.timestamp,
+            subject_digest: envelope.subject_digest.clone(),
+            envelope_digest: envelope.canonical_digest(),
         }
     }
 }
@@ -169,6 +204,33 @@ impl LoadedReleaseEvidence {
             benchmark: None,
             summary: ReleaseEvidenceSummary::none(),
         }
+    }
+
+    /// Snapshot verified envelope identity before candidates move into the release verifier.
+    fn gate_provenance(&self) -> Vec<ReleaseGateProvenance> {
+        [
+            (
+                ReleaseEvidenceType::Artifact,
+                self.artifact.as_ref().map(|item| &item.envelope),
+            ),
+            (
+                ReleaseEvidenceType::Distribution,
+                self.distribution.as_ref().map(|item| &item.envelope),
+            ),
+            (
+                ReleaseEvidenceType::SecurityScan,
+                self.security_scan.as_ref().map(|item| &item.envelope),
+            ),
+            (
+                ReleaseEvidenceType::Benchmark,
+                self.benchmark.as_ref().map(|item| &item.envelope),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(evidence_type, envelope)| {
+            envelope.map(|envelope| ReleaseGateProvenance::from_envelope(evidence_type, envelope))
+        })
+        .collect()
     }
 
     /// 复验全部 envelope、canonical subject 和 typed evidence 的来源提交。
@@ -479,8 +541,8 @@ fn parse_release_migration_options(args: &[String]) -> Result<ReleaseMigrationOp
 
 /// 执行发布门禁并按失败性质选择退出码。
 ///
-/// Readiness blocker 归为配置/证据问题，安全 blocker 归为策略拒绝，性能回归归为运行时
-/// 不可发布；证据文件的 I/O 或解析错误则通过统一错误分类映射。
+/// Alpha readiness blocker 保持配置类退出码，production evidence/policy blocker 使用独立
+/// 策略退出码；运行时、不可用和内部错误继续通过统一错误分类映射。
 pub(super) fn execute_release<W, E>(
     command: ReleaseCommand,
     stdout: &mut W,
@@ -502,6 +564,10 @@ where
                     if options.scope == ReleaseEvidenceScope::Production {
                         return Err(EvaError::invalid_argument(
                             "production release check requires an evidence manifest",
+                        )
+                        .with_context(
+                            "blocked_reasons",
+                            ProductionEvidenceBlocker::ManifestRequired.as_str(),
                         ));
                     }
                     service.readiness_with_release_evidence(
@@ -524,6 +590,8 @@ where
                 Ok((report, summary)) => {
                     let exit_code = if report.blocking_count() == 0 {
                         EXIT_OK
+                    } else if report.evidence_scope == ReleaseEvidenceScope::Production {
+                        EXIT_PRODUCTION_BLOCKED
                     } else {
                         EXIT_CONFIG
                     };
@@ -537,13 +605,28 @@ where
                     )?;
                     Ok(exit_code)
                 }
-                Err(error) => write_command_error(
-                    stderr,
-                    options.common.output,
-                    "release.check",
-                    &error,
-                    &trace,
-                ),
+                Err(error) => {
+                    if options.scope == ReleaseEvidenceScope::Production
+                        && is_production_blocking_error(&error)
+                    {
+                        write_command_error_with_exit_code(
+                            stderr,
+                            options.common.output,
+                            "release.check",
+                            EXIT_PRODUCTION_BLOCKED,
+                            &error,
+                            &trace,
+                        )
+                    } else {
+                        write_command_error(
+                            stderr,
+                            options.common.output,
+                            "release.check",
+                            &error,
+                            &trace,
+                        )
+                    }
+                }
             }
         }
         ReleaseCommand::Security(options) => {
@@ -614,6 +697,18 @@ where
     }
 }
 
+/// Production input and policy rejections are one public release-decision class.
+/// Runtime/unavailable/internal failures retain the global CLI error mapping.
+fn is_production_blocking_error(error: &EvaError) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::InvalidArgument
+            | ErrorKind::NotFound
+            | ErrorKind::Conflict
+            | ErrorKind::PermissionDenied
+    )
+}
+
 /// 根据 scope 选择统一 manifest 或 alpha 兼容参数，并在聚合前完成 envelope 校验。
 fn load_release_check_evidence(
     options: &ReleaseCheckOptions,
@@ -673,6 +768,10 @@ fn load_manifest_release_evidence(
     {
         return Err(EvaError::invalid_argument(
             "production release check requires --expected-source-commit",
+        )
+        .with_context(
+            "blocked_reasons",
+            ProductionEvidenceBlocker::TrustedCommitRequired.as_str(),
         ));
     }
     let expected_source_commit = options
@@ -744,6 +843,8 @@ fn load_manifest_release_evidence(
         }
     }
     let entry_count = manifest.entries.len();
+    let manifest_digest = manifest.canonical_digest();
+    let gate_provenance = loaded.gate_provenance();
     let artifact = loaded.artifact.take().map(|candidate| {
         ReleaseArtifactEvidenceCandidate::new(
             candidate.evidence,
@@ -815,6 +916,13 @@ fn load_manifest_release_evidence(
         } else {
             "manifest_claim_alpha_only"
         },
+        manifest_digest: Some(manifest_digest),
+        manifest_digest_source: if options.scope == ReleaseEvidenceScope::Production {
+            "external_option"
+        } else {
+            "computed_manifest_alpha_only"
+        },
+        gate_provenance,
     };
     loaded.verified_bundle = Some(verified_bundle);
     Ok(loaded)
@@ -932,6 +1040,7 @@ fn load_legacy_release_evidence(
     .into_iter()
     .filter(|present| *present)
     .count();
+    let gate_provenance = loaded.gate_provenance();
     loaded.summary = ReleaseEvidenceSummary {
         source: "legacy_alpha",
         entry_count,
@@ -942,6 +1051,9 @@ fn load_legacy_release_evidence(
         } else {
             "legacy_evidence_claim_alpha_only"
         },
+        manifest_digest: None,
+        manifest_digest_source: "none",
+        gate_provenance,
     };
     Ok(loaded)
 }
@@ -1401,7 +1513,12 @@ fn release_check_json(
         report.warning_count(),
         json_array(report.platforms.iter().map(platform_readiness_json)),
         json_array(report.stability.iter().map(stability_scenario_json)),
-        json_array(report.gates.iter().map(release_gate_json)),
+        json_array(
+            report
+                .gates
+                .iter()
+                .map(|gate| release_gate_json(gate, evidence_summary))
+        ),
         v1x_closure_json(report),
         json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
@@ -1410,12 +1527,14 @@ fn release_check_json(
 /// 将路径脱敏后的 manifest/legacy normalization 摘要编码为 JSON。
 fn release_evidence_summary_json(summary: &ReleaseEvidenceSummary) -> String {
     format!(
-        "{{\"source\":{},\"entry_count\":{},\"normalized_envelope_count\":{},\"integrity_status\":{},\"expected_commit_source\":{}}}",
+        "{{\"source\":{},\"entry_count\":{},\"normalized_envelope_count\":{},\"integrity_status\":{},\"expected_commit_source\":{},\"manifest_digest\":{},\"manifest_digest_source\":{}}}",
         json_string(summary.source),
         summary.entry_count,
         summary.normalized_envelope_count,
         json_string(summary.integrity_status),
         json_string(summary.expected_commit_source),
+        option_json(summary.manifest_digest.as_deref()),
+        json_string(summary.manifest_digest_source),
     )
 }
 
@@ -1485,18 +1604,51 @@ fn stability_scenario_json(scenario: &StabilityScenario) -> String {
     )
 }
 
-/// 将单个发布 gate 及 blocker/risk 编码为 JSON。
-fn release_gate_json(gate: &ReleaseGate) -> String {
+/// 将单个发布 gate、其 path-free provenance 及 blocker/risk 编码为 JSON。
+fn release_gate_json(gate: &ReleaseGate, summary: &ReleaseEvidenceSummary) -> String {
     format!(
-        "{{\"id\":{},\"domain\":{},\"evidence_kind\":{},\"status\":{},\"required\":{},\"summary\":{},\"evidence\":{},\"remediation\":{}}}",
+        "{{\"id\":{},\"domain\":{},\"evidence_kind\":{},\"provenance\":{},\"status\":{},\"required\":{},\"summary\":{},\"evidence\":{},\"remediation\":{}}}",
         json_string(&gate.id),
         json_string(&gate.domain),
         json_string(gate.evidence_kind.as_str()),
+        release_gate_provenance_json(&gate.id, summary),
         json_string(gate.status.as_str()),
         gate.required,
         json_string(&gate.summary),
         json_array(gate.evidence.iter().map(|entry| json_string(entry))),
         json_array(gate.remediation.iter().map(|entry| json_string(entry)))
+    )
+}
+
+/// Project a verified envelope onto its stable external gate; built-ins stay explicitly null.
+fn release_gate_provenance_json(gate_id: &str, summary: &ReleaseEvidenceSummary) -> String {
+    let evidence_type = match gate_id {
+        "REL-ARTIFACT-PROVENANCE-001" => Some(ReleaseEvidenceType::Artifact),
+        "REL-DISTRIBUTION-001" => Some(ReleaseEvidenceType::Distribution),
+        "REL-SECURITY-SCAN-001" => Some(ReleaseEvidenceType::SecurityScan),
+        "REL-BENCHMARK-001" => Some(ReleaseEvidenceType::Benchmark),
+        _ => None,
+    };
+    let provenance = evidence_type.and_then(|evidence_type| {
+        summary
+            .gate_provenance
+            .iter()
+            .find(|item| item.evidence_type == evidence_type)
+    });
+    let timestamp = provenance
+        .map(|item| item.timestamp_ms.to_string())
+        .unwrap_or_else(|| "null".to_owned());
+
+    format!(
+        "{{\"evidence_type\":{},\"source\":{},\"source_commit\":{},\"environment\":{},\"executor\":{},\"timestamp_ms\":{},\"subject_digest\":{},\"envelope_digest\":{}}}",
+        option_json(evidence_type.map(ReleaseEvidenceType::as_str)),
+        option_json(provenance.map(|item| item.source.as_str())),
+        option_json(provenance.map(|item| item.source_commit.as_str())),
+        option_json(provenance.map(|item| item.environment.as_str())),
+        option_json(provenance.map(|item| item.executor.as_str())),
+        timestamp,
+        option_json(provenance.map(|item| item.subject_digest.as_str())),
+        option_json(provenance.map(|item| item.envelope_digest.as_str())),
     )
 }
 
@@ -1622,6 +1774,27 @@ mod evidence_path_tests {
             "eva-release-evidence-identity-{}-{suffix}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    /// 锁定 production policy 拒绝与运行时/内部故障的退出码分类边界。
+    fn production_blocking_error_classifier_preserves_runtime_failures() {
+        for error in [
+            EvaError::invalid_argument("invalid evidence"),
+            EvaError::not_found("missing evidence"),
+            EvaError::conflict("conflicting evidence"),
+            EvaError::permission_denied("evidence denied"),
+        ] {
+            assert!(is_production_blocking_error(&error), "{error:?}");
+        }
+        for error in [
+            EvaError::timeout("verification timed out"),
+            EvaError::unavailable("verifier unavailable"),
+            EvaError::unsupported("verifier unsupported"),
+            EvaError::internal("verification failed internally"),
+        ] {
+            assert!(!is_production_blocking_error(&error), "{error:?}");
+        }
     }
 
     #[test]

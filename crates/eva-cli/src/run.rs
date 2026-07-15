@@ -86,6 +86,8 @@ const EXIT_INTERNAL: i32 = 1;
 const EXIT_CONFIG: i32 = 2;
 /// 策略拒绝操作的稳定退出码。
 const EXIT_POLICY: i32 = 3;
+/// Production release evidence was evaluated or rejected by the consumer policy.
+const EXIT_PRODUCTION_BLOCKED: i32 = EXIT_POLICY;
 /// 当前运行时版本不支持所请求能力的稳定退出码。
 const EXIT_RUNTIME_UNAVAILABLE: i32 = 4;
 /// 外部 provider 超时或不可用的稳定退出码。
@@ -533,6 +535,18 @@ fn write_command_error<W: Write>(
     trace: &TraceFields,
 ) -> Result<i32, EvaError> {
     let exit_code = exit_code_for_error(error);
+    write_command_error_with_exit_code(stderr, output, command, exit_code, error, trace)
+}
+
+/// Write a command error with an explicitly selected public exit-code contract.
+fn write_command_error_with_exit_code<W: Write>(
+    stderr: &mut W,
+    output: OutputFormat,
+    command: &str,
+    exit_code: i32,
+    error: &EvaError,
+    trace: &TraceFields,
+) -> Result<i32, EvaError> {
     write_error(stderr, output, command, exit_code, error, trace)?;
     Ok(exit_code)
 }
@@ -2796,6 +2810,12 @@ mod tests {
         assert!(stdout.contains("\"evidence_scope\":\"alpha\""));
         assert!(stdout.contains("\"source\":\"none\""));
         assert!(stdout.contains("\"integrity_status\":\"not_applicable\""));
+        assert!(stdout.contains("\"manifest_digest\":null"));
+        assert!(stdout.contains("\"manifest_digest_source\":\"none\""));
+        assert!(stdout.contains(
+            "\"provenance\":{\"evidence_type\":null,\"source\":null,\"source_commit\":null,\"environment\":null,\"executor\":null,\"timestamp_ms\":null,\"subject_digest\":null,\"envelope_digest\":null}"
+        ));
+        assert!(stdout.contains("\"remediation\":["));
     }
 
     #[test]
@@ -2810,11 +2830,13 @@ mod tests {
             "json",
         ]);
 
-        assert_eq!(exit_code, EXIT_CONFIG);
+        assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED);
         assert!(stdout.is_empty());
         assert!(stderr.contains("\"ok\":false"));
         assert!(stderr.contains("\"command\":\"release.check\""));
+        assert!(stderr.contains("\"exit_code\":3"));
         assert!(stderr.contains("production release check requires an evidence manifest"));
+        assert!(stderr.contains("production_evidence_manifest_required"));
     }
 
     #[test]
@@ -2848,7 +2870,12 @@ mod tests {
                 "json",
             ]);
 
-            assert_eq!(exit_code, EXIT_CONFIG);
+            let expected_exit = if cli_scope == "production" {
+                EXIT_PRODUCTION_BLOCKED
+            } else {
+                EXIT_CONFIG
+            };
+            assert_eq!(exit_code, expected_exit);
             assert!(stdout.is_empty());
             assert!(stderr.contains("manifest scope does not match CLI scope"));
             fs::remove_dir_all(evidence_root).unwrap();
@@ -2873,9 +2900,10 @@ mod tests {
             "json",
         ]);
 
-        assert_eq!(exit_code, EXIT_CONFIG);
+        assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED);
         assert!(stdout.is_empty());
         assert!(stderr.contains("requires --expected-source-commit"));
+        assert!(stderr.contains("production_evidence_trusted_commit_required"));
         fs::remove_dir_all(evidence_root).unwrap();
     }
 
@@ -2904,16 +2932,45 @@ mod tests {
             "json",
         ]);
 
-        assert_eq!(exit_code, EXIT_CONFIG, "{stderr}");
+        assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED, "{stderr}");
         assert!(stdout.contains("\"evidence_scope\":\"production\""));
         assert!(stdout.contains("\"source\":\"manifest\""));
         assert!(stdout.contains("\"integrity_status\":\"verified\""));
         assert!(stdout.contains("\"expected_commit_source\":\"external_option\""));
+        assert!(stdout.contains(&format!("\"manifest_digest\":\"{manifest_digest}\"")));
+        assert!(stdout.contains("\"manifest_digest_source\":\"external_option\""));
         assert!(stdout.contains("\"id\":\"REL-BENCHMARK-001\""));
         assert!(stdout
             .contains("\"domain\":\"production_benchmark\",\"evidence_kind\":\"measurement\""));
-        assert!(stdout.contains("\"exit_code\":2"));
+        assert!(stdout.contains("\"exit_code\":3"));
         assert!(stdout.contains("\"status\":\"blocked\""));
+        for (evidence_type, source, executor) in [
+            (
+                "artifact",
+                "cli-test:release-artifact",
+                "github-actions:release-artifact/123/1/artifact",
+            ),
+            (
+                "distribution",
+                "cli-test:release-distribution",
+                "github-actions:release-distribution/123/1/distribution",
+            ),
+            (
+                "security_scan",
+                "cli-test:release-security-scan",
+                "github-actions:release-security-scan/123/1/security",
+            ),
+            (
+                "benchmark",
+                "cli-test:release-benchmark",
+                "github-actions:release-benchmark/123/1/benchmark",
+            ),
+        ] {
+            assert!(stdout.contains(&format!(
+                "\"provenance\":{{\"evidence_type\":\"{evidence_type}\",\"source\":\"{source}\",\"source_commit\":\"{commit}\""
+            )));
+            assert!(stdout.contains(&format!("\"executor\":\"{executor}\"")));
+        }
         assert!(stdout.contains("evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"));
         assert!(!stdout.contains("REL-PRODUCTION-EVIDENCE-POLICY-001"));
         assert!(!stdout.contains(manifest_path.to_str().unwrap()));
@@ -2939,7 +2996,7 @@ mod tests {
             "json",
         ]);
 
-        assert_eq!(exit_code, EXIT_CONFIG);
+        assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED);
         assert!(stdout.is_empty());
         assert!(stderr.contains("production_evidence_trusted_run_required"));
         fs::remove_dir_all(evidence_root).unwrap();
@@ -3015,7 +3072,7 @@ mod tests {
             args.extend(["--output", "json"]);
             let (exit_code, stdout, stderr) = run_cli(&args);
 
-            assert_eq!(exit_code, EXIT_CONFIG, "{name}: {stderr}");
+            assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED, "{name}: {stderr}");
             assert!(stdout.is_empty(), "{name}: {stdout}");
             assert!(
                 stderr.contains(expected_blocker),
@@ -3059,7 +3116,7 @@ mod tests {
             "json",
         ]);
 
-        assert_eq!(exit_code, EXIT_CONFIG);
+        assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED);
         assert!(stdout.is_empty());
         assert!(stderr.contains("production_evidence_coverage_missing"));
         fs::remove_dir_all(evidence_root).unwrap();
@@ -3162,7 +3219,7 @@ mod tests {
                 "json",
             ]);
 
-            assert_eq!(exit_code, EXIT_CONFIG, "{name}: {stderr}");
+            assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED, "{name}: {stderr}");
             assert!(stdout.is_empty(), "{name}: {stdout}");
             assert!(
                 stderr.contains(expected_blocker),
@@ -3217,7 +3274,7 @@ mod tests {
             "json",
         ]);
 
-        assert_eq!(exit_code, EXIT_CONFIG);
+        assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED);
         assert!(stdout.is_empty());
         assert!(stderr.contains("production_evidence_envelope_digest_mismatch"));
         fs::remove_dir_all(evidence_root).unwrap();
@@ -3296,7 +3353,7 @@ mod tests {
                 "json",
             ]);
 
-            assert_eq!(exit_code, EXIT_CONFIG, "{name}: {stderr}");
+            assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED, "{name}: {stderr}");
             assert!(stdout.is_empty(), "{name}: {stdout}");
             assert!(
                 stderr.contains(expected_blocker),
@@ -3326,7 +3383,7 @@ mod tests {
             "json",
         ]);
 
-        assert_eq!(exit_code, EXIT_CONFIG);
+        assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED);
         assert!(stdout.is_empty());
         assert!(stderr.contains("evidence_source_commit_mismatch"));
         fs::remove_dir_all(evidence_root).unwrap();
@@ -3363,7 +3420,7 @@ mod tests {
             "json",
         ]);
 
-        assert_eq!(exit_code, EXIT_CONFIG);
+        assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED);
         assert!(stdout.is_empty());
         assert!(stderr.contains("evidence_subject_digest_mismatch"));
         fs::remove_dir_all(evidence_root).unwrap();
@@ -3394,7 +3451,7 @@ mod tests {
             "json",
         ];
         let (exit_code, stdout, stderr) = run_cli(&args);
-        assert_eq!(exit_code, EXIT_CONFIG, "{stderr}");
+        assert_eq!(exit_code, EXIT_PRODUCTION_BLOCKED, "{stderr}");
         assert!(stdout.contains("\"id\":\"REL-ARTIFACT-PROVENANCE-001\""));
         assert!(stdout.contains(
             "\"domain\":\"release_artifact_provenance\",\"evidence_kind\":\"measurement\""
@@ -3404,7 +3461,7 @@ mod tests {
 
         fs::write(&subject_path, b"tampered release artifact bytes").unwrap();
         let (tampered_exit, tampered_stdout, tampered_stderr) = run_cli(&args);
-        assert_eq!(tampered_exit, EXIT_CONFIG);
+        assert_eq!(tampered_exit, EXIT_PRODUCTION_BLOCKED);
         assert!(tampered_stdout.is_empty());
         assert!(tampered_stderr.contains("evidence_subject_digest_mismatch"));
         assert!(tampered_stderr.contains("evidence_subject_size_mismatch"));
@@ -3463,6 +3520,12 @@ mod tests {
         assert!(stdout.contains("\"evidence_scope\":\"alpha\""));
         assert!(stdout.contains("\"source\":\"legacy_alpha\""));
         assert!(stdout.contains("\"normalized_envelope_count\":1"));
+        assert!(stdout.contains(
+            "\"provenance\":{\"evidence_type\":\"artifact\",\"source\":\"legacy:artifact-evidence-manifest\""
+        ));
+        assert!(stdout.contains("\"environment\":\"legacy-unbound\""));
+        assert!(stdout.contains("\"executor\":\"legacy-cli-input\",\"timestamp_ms\":1"));
+        assert!(!stdout.contains(evidence_path.to_str().unwrap()));
 
         fs::remove_dir_all(evidence_root).unwrap();
     }

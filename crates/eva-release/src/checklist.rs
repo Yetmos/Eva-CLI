@@ -3175,6 +3175,8 @@ mod tests {
     fn production_policy_blocker_codes_are_stable() {
         assert_eq!(
             [
+                ProductionEvidenceBlocker::ManifestRequired.as_str(),
+                ProductionEvidenceBlocker::TrustedCommitRequired.as_str(),
                 ProductionEvidenceBlocker::CoverageMissing.as_str(),
                 ProductionEvidenceBlocker::KindNotMeasurement.as_str(),
                 ProductionEvidenceBlocker::Stale.as_str(),
@@ -3193,6 +3195,8 @@ mod tests {
                 ProductionEvidenceBlocker::PolicyRequired.as_str(),
             ],
             [
+                "production_evidence_manifest_required",
+                "production_evidence_trusted_commit_required",
                 "production_evidence_coverage_missing",
                 "production_evidence_kind_not_measurement",
                 "production_evidence_stale",

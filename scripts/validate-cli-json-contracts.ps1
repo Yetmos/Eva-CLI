@@ -1,5 +1,5 @@
 [CmdletBinding()]
-# 用 contracts/cli-json 中的 fixture 对 Eva CLI 的进程退出码和 JSON stdout 做递归子集校验。
+# 用 contracts/cli-json 中的 fixture 对 Eva CLI 的进程退出码和指定 JSON stream 做递归子集校验。
 # 校验器允许实际响应增加字段，但不允许删除或改变 fixture 声明的契约；任一失败通过 throw
 # 产生非零脚本退出，适合 CI 门禁。脚本只读取 fixture 并执行 CLI，不改写契约文件。
 param(
@@ -31,21 +31,92 @@ function Convert-CommandArg {
   $Value.Replace("<repo>", $Root)
 }
 
-# 以原始参数数组运行 Eva 并捕获进程退出码和 stdout 文本。
-# Eva 为空时使用 cargo run；stderr 由进程按正常 PowerShell 语义保留。返回对象不解析 JSON，
-# 使调用方可以先独立验证进程退出码，再给出包含原始 stdout 的解析错误。
+# PowerShell 5.1 的 ProcessStartInfo 没有 ArgumentList；此 fallback 保留独立 argv 边界。
+function ConvertTo-NativeArgument {
+  param([AllowEmptyString()][string]$Value)
+
+  if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+    return $Value
+  }
+
+  $builder = New-Object System.Text.StringBuilder
+  [void]$builder.Append('"')
+  $backslashes = 0
+  foreach ($character in $Value.ToCharArray()) {
+    if ($character -eq '\') {
+      $backslashes += 1
+      continue
+    }
+    if ($character -eq '"') {
+      if ($backslashes -gt 0) {
+        [void]$builder.Append((('\' * ($backslashes * 2)) -join ''))
+      }
+      [void]$builder.Append('\"')
+      $backslashes = 0
+      continue
+    }
+    if ($backslashes -gt 0) {
+      [void]$builder.Append((('\' * $backslashes) -join ''))
+      $backslashes = 0
+    }
+    [void]$builder.Append($character)
+  }
+  if ($backslashes -gt 0) {
+    [void]$builder.Append((('\' * ($backslashes * 2)) -join ''))
+  }
+  [void]$builder.Append('"')
+  $builder.ToString()
+}
+
+# 以原始参数数组运行 Eva，并绕过 Windows PowerShell 对 native stderr 的 ErrorRecord 包装。
+# 返回对象不解析 JSON，使调用方先独立验证进程退出码，再选择 stdout 或 stderr 做契约比较。
 function Invoke-EvaJson {
   param([string[]]$CommandArgs)
+
   if ([string]::IsNullOrWhiteSpace($Eva)) {
-    $output = & cargo run --quiet -- @CommandArgs
+    $executable = "cargo"
+    $arguments = @("run", "--quiet", "--") + @($CommandArgs)
   } else {
-    $output = & $Eva @CommandArgs
+    $executable = $Eva
+    $arguments = @($CommandArgs)
   }
-  $exitCode = $LASTEXITCODE
-  # 这是 fixture 执行层与契约比较层之间的最小成员数据，避免混入进程实现细节。
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $executable
+  $startInfo.WorkingDirectory = $Root
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.StandardOutputEncoding = $utf8NoBom
+  $startInfo.StandardErrorEncoding = $utf8NoBom
+  if ($null -ne $startInfo.PSObject.Properties["ArgumentList"]) {
+    foreach ($argument in $arguments) {
+      [void]$startInfo.ArgumentList.Add($argument)
+    }
+  } else {
+    $startInfo.Arguments = @($arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join " "
+  }
+
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $startInfo
+  try {
+    [void]$process.Start()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $exitCode = [int]$process.ExitCode
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+  } finally {
+    $process.Dispose()
+  }
+
   [pscustomobject]@{
     ExitCode = $exitCode
-    Stdout = ($output -join "`n")
+    Stdout = $stdout
+    Stderr = $stderr
   }
 }
 
@@ -164,7 +235,7 @@ if ($contractFiles.Count -eq 0) {
 }
 
 $validated = 0
-# 每个 fixture 依次验证元数据、退出码、stdout JSON 和递归 expected 子集；任一阶段失败立即终止。
+# 每个 fixture 依次验证元数据、退出码、指定 stream JSON 和递归 expected 子集；任一阶段失败立即终止。
 foreach ($file in $contractFiles) {
   $fixture = Get-Content -LiteralPath $file.FullName -Raw -Encoding utf8 | ConvertFrom-Json
   if ([string]::IsNullOrWhiteSpace($fixture.id)) {
@@ -174,16 +245,31 @@ foreach ($file in $contractFiles) {
     Fail "$($file.Name) must declare command as an array."
   }
   $args = @($fixture.command | ForEach-Object { Convert-CommandArg ([string]$_) })
+  $jsonStream = if ([string]::IsNullOrWhiteSpace($fixture.json_stream)) {
+    "stdout"
+  } else {
+    ([string]$fixture.json_stream).ToLowerInvariant()
+  }
+  if ($jsonStream -notin @("stdout", "stderr")) {
+    Fail "$($fixture.id) json_stream must be stdout or stderr."
+  }
   # 未声明进程退出码的契约默认要求成功；显式失败 fixture 可覆盖为对应稳定退出码。
   $expectedExitCode = if ($null -eq $fixture.process_exit_code) { 0 } else { [int]$fixture.process_exit_code }
   $result = Invoke-EvaJson -CommandArgs $args
   if ($result.ExitCode -ne $expectedExitCode) {
     Fail "$($fixture.id) process exit code was $($result.ExitCode), expected $expectedExitCode."
   }
+  switch ($jsonStream) {
+    "stdout" { $jsonText = $result.Stdout }
+    "stderr" { $jsonText = $result.Stderr }
+  }
   try {
-    $actualJson = $result.Stdout | ConvertFrom-Json
+    $actualJson = $jsonText | ConvertFrom-Json
   } catch {
-    Fail "$($fixture.id) did not emit valid JSON stdout: $($result.Stdout)"
+    Fail "$($fixture.id) did not emit valid JSON on ${jsonStream}: $jsonText"
+  }
+  if ($null -ne $actualJson.PSObject.Properties["exit_code"] -and [int]$actualJson.exit_code -ne $result.ExitCode) {
+    Fail "$($fixture.id) JSON exit_code was $($actualJson.exit_code), process exit code was $($result.ExitCode)."
   }
   Assert-ContractSubset -Actual $actualJson -Expected $fixture.expected -Path "$($fixture.id)"
   $validated += 1
