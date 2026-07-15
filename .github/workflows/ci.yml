@@ -40,6 +40,10 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace
 
+      - name: Release evidence capture contract
+        shell: pwsh
+        run: ./scripts/test-capture-release-evidence.ps1
+
       - name: Daemon runtime smoke tests
         run: |
           cargo test -p eva-runtime daemon_control_status_and_shutdown_round_trip_has_trace_id

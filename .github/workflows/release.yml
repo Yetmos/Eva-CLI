@@ -57,6 +57,10 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace
 
+      - name: Release evidence capture contract
+        shell: pwsh
+        run: ./scripts/test-capture-release-evidence.ps1
+
       - name: V1.6 release smoke
         shell: pwsh
         run: |
@@ -686,12 +690,33 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
           $durable = Join-Path (Get-Location) ".eva/release-evidence-durable"
           Remove-Item -LiteralPath $durable -Recurse -Force -ErrorAction SilentlyContinue
-          cargo run -- run --example basic --task-id req-release-evidence-durable --durable-backend $durable --output json | Tee-Object -FilePath release-evidence/inspect-durable-run.json
-          cargo run -- inspect durable --durable-backend $durable --output json | Tee-Object -FilePath release-evidence/inspect-durable.json
-          cargo run -- release check --output json | Tee-Object -FilePath release-evidence/release-check.json
-          cargo run -- release security --output json | Tee-Object -FilePath release-evidence/release-security.json
-          cargo run -- release perf --output json | Tee-Object -FilePath release-evidence/release-perf.json
-          cargo run -- release migration --output json | Tee-Object -FilePath release-evidence/release-migration.json
+
+          function Capture-CargoEvidence([string]$captureId, [string]$stdoutName, [string[]]$commandArgs) {
+            $manifestPath = Join-Path "release-evidence" "$captureId.capture.json"
+            $stdoutPath = Join-Path "release-evidence" $stdoutName
+            $stderrPath = Join-Path "release-evidence" "$captureId.stderr"
+            $cargoArgs = @("run", "--") + $commandArgs
+            ./scripts/capture-release-evidence.ps1 `
+              -Executable "cargo" `
+              -ArgumentList $cargoArgs `
+              -ManifestPath $manifestPath `
+              -StdoutPath $stdoutPath `
+              -StderrPath $stderrPath `
+              -CaptureId $captureId `
+              -NoFail | Out-Null
+            $capture = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+            if ($capture.outcome -ne "success") {
+              Get-Content -Raw -LiteralPath $stderrPath -ErrorAction SilentlyContinue | Write-Host
+              throw "Release evidence command '$captureId' ended with outcome '$($capture.outcome)'."
+            }
+          }
+
+          Capture-CargoEvidence "release.inspect-durable-run" "inspect-durable-run.json" @("run", "--example", "basic", "--task-id", "req-release-evidence-durable", "--durable-backend", $durable, "--output", "json")
+          Capture-CargoEvidence "release.inspect-durable" "inspect-durable.json" @("inspect", "durable", "--durable-backend", $durable, "--output", "json")
+          Capture-CargoEvidence "release.check" "release-check.json" @("release", "check", "--output", "json")
+          Capture-CargoEvidence "release.security" "release-security.json" @("release", "security", "--output", "json")
+          Capture-CargoEvidence "release.perf" "release-perf.json" @("release", "perf", "--output", "json")
+          Capture-CargoEvidence "release.migration" "release-migration.json" @("release", "migration", "--output", "json")
 
       - name: Install external security scanner
         run: cargo install cargo-audit --locked
@@ -699,11 +724,20 @@ jobs:
       - name: Generate security scan evidence
         shell: pwsh
         run: |
-          $PSNativeCommandUseErrorActionPreference = $false
           New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
           $auditJsonPath = "release-evidence/cargo-audit.json"
-          cargo audit --json > $auditJsonPath
-          $auditExit = $LASTEXITCODE
+          $auditCapturePath = "release-evidence/cargo-audit.capture.json"
+          ./scripts/capture-release-evidence.ps1 `
+            -Executable "cargo" `
+            -ArgumentList @("audit", "--json") `
+            -ManifestPath $auditCapturePath `
+            -StdoutPath $auditJsonPath `
+            -StderrPath "release-evidence/cargo-audit.stderr" `
+            -TimeoutMilliseconds 300000 `
+            -CaptureId "release.security.cargo-audit" `
+            -NoFail | Out-Null
+          $auditCapture = Get-Content -Raw -LiteralPath $auditCapturePath | ConvertFrom-Json
+          $auditExit = $auditCapture.exit_code
           $auditText = Get-Content -Raw -LiteralPath $auditJsonPath -ErrorAction SilentlyContinue
           $audit = $null
           if (-not [string]::IsNullOrWhiteSpace($auditText)) {
@@ -791,7 +825,7 @@ jobs:
             }
           }
 
-          $scanStatus = if ($null -eq $audit) {
+          $scanStatus = if ($auditCapture.outcome -eq "timeout" -or $null -eq $audit) {
             "blocked"
           } elseif ($blockingFindings -gt 0) {
             "failed"
@@ -811,22 +845,37 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release-evidence | Out-Null
+          New-Item -ItemType Directory -Force -Path release-evidence/benchmark-captures | Out-Null
           cargo build --release --locked --bin eva
           $eva = Join-Path (Get-Location) "target/release/eva"
           $version = $env:RELEASE_TAG.TrimStart("v")
           $sourceSha = git rev-parse HEAD
-          $environment = "github-actions-ubuntu-latest"
 
           function Measure-EvaCommand([string]$component, [string]$metric, [int64]$budgetMs, [string[]]$commandArgs) {
             $samples = @()
+            $environment = $null
             for ($i = 0; $i -lt 3; $i += 1) {
-              $elapsed = Measure-Command {
-                & $eva @commandArgs | Out-Null
-                if ($LASTEXITCODE -ne 0) {
-                  throw "benchmark command failed: $component"
-                }
+              $captureId = "benchmark.$component.sample.$i"
+              $manifestPath = "release-evidence/benchmark-captures/$component.sample-$i.capture.json"
+              ./scripts/capture-release-evidence.ps1 `
+                -Executable $eva `
+                -ArgumentList $commandArgs `
+                -ManifestPath $manifestPath `
+                -TimeoutMilliseconds ([int][Math]::Max($budgetMs * 4, 10000)) `
+                -CaptureId $captureId `
+                -NoFail | Out-Null
+              $capture = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+              if ($capture.outcome -ne "success") {
+                $stderrPath = Join-Path (Split-Path -Parent $manifestPath) ([string]$capture.stderr.path)
+                Get-Content -Raw -LiteralPath $stderrPath -ErrorAction SilentlyContinue | Write-Host
+                throw "Benchmark capture '$captureId' ended with outcome '$($capture.outcome)'."
               }
-              $samples += [int64][Math]::Ceiling($elapsed.TotalMilliseconds)
+              $samples += [int64]$capture.duration_ms
+              if ($null -eq $environment) {
+                $environment = [string]$capture.runner.identity
+              } elseif ($environment -ne [string]$capture.runner.identity) {
+                throw "Benchmark samples for '$component' used different runner identities."
+              }
             }
             $observed = [int64]($samples | Measure-Object -Maximum).Maximum
             [ordered]@{
@@ -835,7 +884,7 @@ jobs:
               budget_ms = $budgetMs
               observed_ms = $observed
               sample_count = $samples.Count
-              command = "$eva $($commandArgs -join ' ')"
+              command = "capture-manifest:benchmark-captures/$component.sample-*.capture.json"
               environment = $environment
             }
           }
@@ -1138,8 +1187,28 @@ jobs:
       - name: Verify release evidence gates
         shell: pwsh
         run: |
-          cargo run -- release check --distribution-evidence release-evidence/release-distribution.evidence --security-scan-evidence release-evidence/release-security-scan.evidence --benchmark-evidence release-evidence/release-benchmark.evidence --output json | Tee-Object -FilePath release-evidence/release-check-evidence.json
-          cargo run -- release perf --benchmark-evidence release-evidence/release-benchmark.evidence --output json | Tee-Object -FilePath release-evidence/release-perf-benchmark.json
+          function Capture-ReleaseGate([string]$captureId, [string]$stdoutName, [string[]]$commandArgs) {
+            $manifestPath = Join-Path "release-evidence" "$captureId.capture.json"
+            $stdoutPath = Join-Path "release-evidence" $stdoutName
+            $stderrPath = Join-Path "release-evidence" "$captureId.stderr"
+            $cargoArgs = @("run", "--") + $commandArgs
+            ./scripts/capture-release-evidence.ps1 `
+              -Executable "cargo" `
+              -ArgumentList $cargoArgs `
+              -ManifestPath $manifestPath `
+              -StdoutPath $stdoutPath `
+              -StderrPath $stderrPath `
+              -CaptureId $captureId `
+              -NoFail | Out-Null
+            $capture = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+            if ($capture.outcome -ne "success") {
+              Get-Content -Raw -LiteralPath $stderrPath -ErrorAction SilentlyContinue | Write-Host
+              throw "Release gate '$captureId' ended with outcome '$($capture.outcome)'."
+            }
+          }
+
+          Capture-ReleaseGate "release.verify-check" "release-check-evidence.json" @("release", "check", "--distribution-evidence", "release-evidence/release-distribution.evidence", "--security-scan-evidence", "release-evidence/release-security-scan.evidence", "--benchmark-evidence", "release-evidence/release-benchmark.evidence", "--output", "json")
+          Capture-ReleaseGate "release.verify-perf" "release-perf-benchmark.json" @("release", "perf", "--benchmark-evidence", "release-evidence/release-benchmark.evidence", "--output", "json")
 
       - name: Upload release evidence artifact
         uses: actions/upload-artifact@v4
