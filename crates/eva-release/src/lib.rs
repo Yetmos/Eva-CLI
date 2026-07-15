@@ -9,6 +9,8 @@ pub mod benchmark;
 pub mod checklist;
 /// 多平台安装烟雾与打包演练证据。
 pub mod distribution;
+/// 统一发布证据分类、来源和主题身份信封。
+pub mod evidence;
 /// 迁移指南和兼容性政策。
 pub mod migration;
 /// 性能预算与基线报告。
@@ -33,6 +35,7 @@ pub use distribution::{
     ReleaseDistributionEvidence, ReleaseDistributionVerificationReport,
     ReleaseInstallSmokeEvidence, ReleasePackageDryRunEvidence,
 };
+pub use evidence::{EvidenceEnvelope, EvidenceKind, EVIDENCE_ENVELOPE_FORMAT};
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 pub use performance::{PerformanceBaselineReport, PerformanceBudget};
 pub use scanner::{
