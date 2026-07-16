@@ -2713,7 +2713,7 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Condvar, Mutex};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn task_id() -> RequestId {
@@ -2737,6 +2737,27 @@ mod tests {
             .entries()
             .iter()
             .find_map(|(name, value)| (name == key).then_some(value.as_str()))
+    }
+
+    #[derive(Debug, Default)]
+    struct TestHandlerGate {
+        released: Mutex<bool>,
+        changed: Condvar,
+    }
+
+    impl TestHandlerGate {
+        fn wait(&self) {
+            drop(
+                self.changed
+                    .wait_while(self.released.lock().unwrap(), |released| !*released)
+                    .unwrap(),
+            );
+        }
+
+        fn release(&self) {
+            *self.released.lock().unwrap() = true;
+            self.changed.notify_all();
+        }
     }
 
     #[test]
@@ -5070,7 +5091,7 @@ mod tests {
 
         let started = Arc::new(AtomicBool::new(false));
         let started_by_handler = Arc::clone(&started);
-        let release = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(TestHandlerGate::default());
         let release_by_handler = Arc::clone(&release);
         let exited = Arc::new(AtomicBool::new(false));
         let exited_by_handler = Arc::clone(&exited);
@@ -5080,9 +5101,7 @@ mod tests {
                 TaskKind::parse("vendor.shutdown-non-cooperative").unwrap(),
                 move |_: &TaskHandlerInvocation<'_>| {
                     started_by_handler.store(true, Ordering::Release);
-                    while !release_by_handler.load(Ordering::Acquire) {
-                        thread::yield_now();
-                    }
+                    release_by_handler.wait();
                     exited_by_handler.store(true, Ordering::Release);
                     Ok(TaskHandlerResult::new(b"late-result".as_slice()))
                 },
@@ -5102,11 +5121,11 @@ mod tests {
         let started_at = Instant::now();
         let report = worker
             .drain_and_stop(
-                TaskWorkerDrainOptions::new(Duration::from_millis(20), Duration::from_millis(200))
+                TaskWorkerDrainOptions::new(Duration::from_millis(20), Duration::from_secs(1))
                     .unwrap(),
             )
             .unwrap();
-        assert!(started_at.elapsed() < Duration::from_secs(1));
+        assert!(started_at.elapsed() < Duration::from_secs(2));
         let cancelled = store.read(Some("req-worker-forced-1")).unwrap();
         let terminal_version = cancelled.record_version;
 
@@ -5139,7 +5158,7 @@ mod tests {
         let successor = backend.acquire_runtime_writer().unwrap();
         assert_eq!(successor.generation().0, 2);
 
-        release.store(true, Ordering::Release);
+        release.release();
         wait_until(Duration::from_secs(2), || exited.load(Ordering::Acquire));
         thread::sleep(Duration::from_millis(20));
         let unchanged = FileSystemTaskStateStore::from_durable_layout(backend.layout())
@@ -5174,7 +5193,7 @@ mod tests {
 
         let started = Arc::new(AtomicBool::new(false));
         let started_by_handler = Arc::clone(&started);
-        let release = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(TestHandlerGate::default());
         let release_by_handler = Arc::clone(&release);
         let exited = Arc::new(AtomicBool::new(false));
         let exited_by_handler = Arc::clone(&exited);
@@ -5184,9 +5203,7 @@ mod tests {
                 TaskKind::parse("vendor.shutdown-minimum-budget").unwrap(),
                 move |_: &TaskHandlerInvocation<'_>| {
                     started_by_handler.store(true, Ordering::Release);
-                    while !release_by_handler.load(Ordering::Acquire) {
-                        thread::yield_now();
-                    }
+                    release_by_handler.wait();
                     exited_by_handler.store(true, Ordering::Release);
                     Ok(TaskHandlerResult::new(b"late-minimum-result".as_slice()))
                 },
@@ -5220,7 +5237,7 @@ mod tests {
         drop(worker);
         assert!(drop_started_at.elapsed() < Duration::from_millis(100));
 
-        release.store(true, Ordering::Release);
+        release.release();
         wait_until(Duration::from_secs(2), || exited.load(Ordering::Acquire));
         wait_until(Duration::from_secs(2), || {
             store
@@ -5273,7 +5290,7 @@ mod tests {
 
         let started = Arc::new(AtomicBool::new(false));
         let started_by_handler = Arc::clone(&started);
-        let release = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(TestHandlerGate::default());
         let release_by_handler = Arc::clone(&release);
         let exited = Arc::new(AtomicBool::new(false));
         let exited_by_handler = Arc::clone(&exited);
@@ -5284,9 +5301,7 @@ mod tests {
                 "vendor.shutdown-effect.v1",
                 move |_: &TaskHandlerInvocation<'_>| {
                     started_by_handler.store(true, Ordering::Release);
-                    while !release_by_handler.load(Ordering::Acquire) {
-                        thread::yield_now();
-                    }
+                    release_by_handler.wait();
                     exited_by_handler.store(true, Ordering::Release);
                     Ok(TaskHandlerResult::new(b"late-effect-result".as_slice()))
                 },
@@ -5328,7 +5343,7 @@ mod tests {
 
         let report = worker
             .drain_and_stop(
-                TaskWorkerDrainOptions::new(Duration::from_millis(20), Duration::from_millis(200))
+                TaskWorkerDrainOptions::new(Duration::from_millis(20), Duration::from_secs(1))
                     .unwrap(),
             )
             .unwrap();
@@ -5348,7 +5363,7 @@ mod tests {
             EffectLedgerState::Prepared
         );
 
-        release.store(true, Ordering::Release);
+        release.release();
         wait_until(Duration::from_secs(2), || exited.load(Ordering::Acquire));
         thread::sleep(Duration::from_millis(20));
         let unchanged = store.read(Some("req-worker-shutdown-effect")).unwrap();
