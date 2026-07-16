@@ -79,7 +79,17 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Workspace tests
-        run: cargo test --workspace
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP "eva-workspace-tests.log"
+          & cargo test --workspace 2>&1 | Tee-Object -FilePath $log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            $tail = (Get-Content -LiteralPath $log -Tail 80) -join "`n"
+            $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Output "::error title=Workspace tests failed::$annotation"
+            exit $exitCode
+          }
 
       - name: Release evidence capture contract
         shell: pwsh

@@ -20,14 +20,9 @@ use eva_release::{
 };
 use std::fs;
 use std::io::{Read, Write};
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use std::os::fd::AsRawFd;
-#[cfg(target_os = "macos")]
-use std::os::unix::ffi::OsStrExt;
-#[cfg(all(
-    unix,
-    not(any(target_os = "linux", target_os = "android", target_os = "macos"))
-))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 use std::os::unix::fs::MetadataExt as UnixMetadataExt;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt;
@@ -1173,46 +1168,8 @@ fn opened_file_matches_checked_path(
     Ok(final_path == checked_path)
 }
 
-/// macOS 通过 F_GETPATH 查询首个已打开 handle 的最终路径。
-#[cfg(target_os = "macos")]
-fn opened_file_matches_checked_path(
-    checked_path: &Path,
-    opened: &fs::File,
-) -> Result<bool, EvaError> {
-    const F_GETPATH: i32 = 50;
-    let mut buffer = [0_u8; 4096];
-    // SAFETY: the file descriptor remains open and the variadic third argument points to writable
-    // storage for MAXPATHLEN bytes, as required by macOS F_GETPATH.
-    let result = unsafe {
-        fcntl_get_path(
-            opened.as_raw_fd(),
-            F_GETPATH,
-            buffer.as_mut_ptr().cast::<std::ffi::c_void>(),
-        )
-    };
-    if result == -1 {
-        return Err(
-            EvaError::not_found("failed to resolve opened release evidence handle")
-                .with_context("io_error", std::io::Error::last_os_error().to_string()),
-        );
-    }
-    let length = buffer.iter().position(|byte| *byte == 0).ok_or_else(|| {
-        EvaError::invalid_argument("opened release evidence path exceeds platform limit")
-    })?;
-    Ok(Path::new(std::ffi::OsStr::from_bytes(&buffer[..length])) == checked_path)
-}
-
-#[cfg(target_os = "macos")]
-extern "C" {
-    #[link_name = "fcntl"]
-    fn fcntl_get_path(file_descriptor: i32, command: i32, ...) -> i32;
-}
-
-/// 其他 Unix 平台回退为路径和 handle 的设备/inode 身份比较。
-#[cfg(all(
-    unix,
-    not(any(target_os = "linux", target_os = "android", target_os = "macos"))
-))]
+/// macOS 及其他 Unix 平台比较路径和已打开 handle 的设备/inode 身份。
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 fn opened_file_matches_checked_path(
     checked_path: &Path,
     opened: &fs::File,

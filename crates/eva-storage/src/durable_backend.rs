@@ -1866,19 +1866,57 @@ fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
-    // SAFETY: both buffers are NUL-terminated UTF-16 and remain alive for the call.
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
+    replace_windows_file_with_retry(
+        || {
+            // SAFETY: both buffers are NUL-terminated UTF-16 and remain alive for the call.
+            let result = unsafe {
+                MoveFileExW(
+                    source.as_ptr(),
+                    target.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            if result == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        },
+        std::thread::sleep,
+    )
+}
+
+#[cfg(windows)]
+const WINDOWS_REPLACE_MAX_ATTEMPTS: usize = 8;
+
+#[cfg(windows)]
+/// Retry only errors that can be caused by a short-lived non-delete-share handle from a scanner.
+fn replace_windows_file_with_retry(
+    mut replace: impl FnMut() -> io::Result<()>,
+    mut wait: impl FnMut(std::time::Duration),
+) -> io::Result<()> {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+
+    let mut delay_ms = 1_u64;
+    for attempt in 0..WINDOWS_REPLACE_MAX_ATTEMPTS {
+        match replace() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if attempt + 1 < WINDOWS_REPLACE_MAX_ATTEMPTS
+                    && matches!(
+                        error.raw_os_error(),
+                        Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+                    ) =>
+            {
+                wait(std::time::Duration::from_millis(delay_ms));
+                delay_ms = delay_ms.saturating_mul(2);
+            }
+            Err(error) => return Err(error),
+        }
     }
+    unreachable!("bounded Windows replace retry loop must return")
 }
 
 #[cfg(unix)]
@@ -2164,6 +2202,61 @@ mod tests {
                 .to_string_lossy()
                 .contains(".tmp-")
         }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_replace_retries_only_transient_interference() {
+        let errors = [5, 32, 33];
+        let mut attempts = 0_usize;
+        let mut delays = Vec::new();
+
+        replace_windows_file_with_retry(
+            || {
+                let result = errors
+                    .get(attempts)
+                    .copied()
+                    .map(io::Error::from_raw_os_error)
+                    .map_or(Ok(()), Err);
+                attempts += 1;
+                result
+            },
+            |delay| delays.push(delay),
+        )
+        .unwrap();
+
+        assert_eq!(attempts, 4);
+        assert_eq!(
+            delays,
+            [
+                Duration::from_millis(1),
+                Duration::from_millis(2),
+                Duration::from_millis(4),
+            ]
+        );
+        let mut permanent_attempts = 0_usize;
+        let error = replace_windows_file_with_retry(
+            || {
+                permanent_attempts += 1;
+                Err(io::Error::from_raw_os_error(5))
+            },
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(permanent_attempts, WINDOWS_REPLACE_MAX_ATTEMPTS);
+        assert_eq!(error.raw_os_error(), Some(5));
+
+        let mut non_transient_attempts = 0_usize;
+        let error = replace_windows_file_with_retry(
+            || {
+                non_transient_attempts += 1;
+                Err(io::Error::from_raw_os_error(3))
+            },
+            |_| panic!("non-transient errors must not wait"),
+        )
+        .unwrap_err();
+        assert_eq!(non_transient_attempts, 1);
+        assert_eq!(error.raw_os_error(), Some(3));
     }
 
     #[test]

@@ -4652,6 +4652,8 @@ mod tests {
         let started_by_handler = Arc::clone(&handler_started);
         let release_handler = Arc::new(AtomicBool::new(false));
         let release_by_handler = Arc::clone(&release_handler);
+        let unexpected_cancellation = Arc::new(AtomicBool::new(false));
+        let cancellation_by_handler = Arc::clone(&unexpected_cancellation);
         let mut registry = TaskHandlerRegistry::with_runtime_defaults().unwrap();
         registry
             .register(
@@ -4660,8 +4662,11 @@ mod tests {
                     calls_by_handler.fetch_add(1, Ordering::SeqCst);
                     started_by_handler.store(true, Ordering::Release);
                     while !release_by_handler.load(Ordering::Acquire) {
-                        assert!(!invocation.cancellation().is_requested());
-                        thread::yield_now();
+                        if invocation.cancellation().is_requested() {
+                            cancellation_by_handler.store(true, Ordering::Release);
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(1));
                     }
                     Ok(TaskHandlerResult::new(invocation.payload()))
                 },
@@ -4688,13 +4693,26 @@ mod tests {
             .unwrap()
             .heartbeat_at_ms
             .unwrap();
-        wait_until(Duration::from_secs(2), || {
-            store
-                .read(Some("req-worker-heartbeat"))
-                .unwrap()
+        let renewal_started_at = Instant::now();
+        loop {
+            owner.check_health().unwrap();
+            let snapshot = store.read(Some("req-worker-heartbeat")).unwrap();
+            assert_eq!(
+                snapshot.status, "running",
+                "heartbeat attempt left running state before renewal: {snapshot:?}"
+            );
+            if snapshot
                 .heartbeat_at_ms
                 .is_some_and(|heartbeat| heartbeat > initial_heartbeat)
-        });
+            {
+                break;
+            }
+            assert!(
+                renewal_started_at.elapsed() < Duration::from_secs(2),
+                "heartbeat did not advance from {initial_heartbeat}: {snapshot:?}"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
 
         let mut competitor = TaskWorkerRuntime::start_paused_with_timing(
             store.clone(),
@@ -4726,11 +4744,31 @@ mod tests {
         );
 
         release_handler.store(true, Ordering::Release);
-        let completed = wait_for_task_status(&store, "req-worker-heartbeat", "completed");
+        let completed = {
+            let started_at = Instant::now();
+            loop {
+                owner.check_health().unwrap();
+                let snapshot = store.read(Some("req-worker-heartbeat")).unwrap();
+                if snapshot.status == "completed" {
+                    break snapshot;
+                }
+                assert_eq!(
+                    snapshot.status, "running",
+                    "heartbeat attempt reached an unexpected terminal state: {snapshot:?}"
+                );
+                assert!(
+                    started_at.elapsed() < Duration::from_secs(10),
+                    "heartbeat owner stayed healthy but task remained in {}",
+                    snapshot.status
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        };
         owner.stop_and_join().unwrap();
         competitor.stop_and_join().unwrap();
         assert_eq!(completed.attempts, 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!unexpected_cancellation.load(Ordering::Acquire));
     }
 
     #[test]
