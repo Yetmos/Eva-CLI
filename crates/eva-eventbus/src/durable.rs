@@ -681,6 +681,11 @@ fn dead_letter_to_storage(record: &DeadLetterRecord) -> String {
             &format!("replay_handler_{index}_agent_id"),
             binding.agent_id().as_str(),
         );
+        push_optional_string(
+            &mut data,
+            &format!("replay_handler_{index}_idempotency_key"),
+            binding.idempotency_key().map(RequestId::as_str),
+        );
     }
     data
 }
@@ -721,7 +726,17 @@ fn dead_letter_from_storage(data: &str) -> Result<DeadLetterRecord, EvaError> {
                 &fields,
                 &format!("replay_handler_{index}_agent_id"),
             )?)?;
-            ReplayHandlerBinding::new(handler_kind, agent_id)
+            let idempotency_key = optional_decoded_string(
+                &fields,
+                &format!("replay_handler_{index}_idempotency_key"),
+            )?
+            .map(|value| RequestId::parse(&value))
+            .transpose()?;
+            Ok(match idempotency_key {
+                Some(idempotency_key) => ReplayHandlerBinding::new(handler_kind, agent_id)?
+                    .with_idempotency_key(idempotency_key),
+                None => ReplayHandlerBinding::new(handler_kind, agent_id)?,
+            })
         })
         .collect::<Result<Vec<_>, EvaError>>()?;
 
@@ -907,8 +922,8 @@ fn error_kind_from_storage(value: &str) -> Result<ErrorKind, EvaError> {
 
 /// 解析行式字段映射。
 ///
-/// 每行必须包含 `=` 且键已裁剪；当前实现后出现的重复键会覆盖前值，这是 v1 解析
-/// 语义，写入器始终生成唯一键。所有自由文本值在更高层按十六进制解码。
+/// 每行必须包含 `=` 且键已裁剪；重复键一律失败关闭。所有自由文本值在更高层按
+/// 十六进制解码。
 fn parse_fields(data: &str) -> Result<BTreeMap<String, String>, EvaError> {
     let mut fields = BTreeMap::new();
     for line in data.lines().filter(|line| !line.trim().is_empty()) {
@@ -921,7 +936,10 @@ fn parse_fields(data: &str) -> Result<BTreeMap<String, String>, EvaError> {
                     .with_context("field", key),
             );
         }
-        fields.insert(key.to_owned(), value.to_owned());
+        if fields.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(EvaError::conflict("dead-letter record field is duplicated")
+                .with_context("field", key));
+        }
     }
     Ok(fields)
 }
@@ -1290,7 +1308,8 @@ mod tests {
                 EvaError::timeout("handler timeout"),
                 vec![
                     ReplayHandlerBinding::new("runtime.echo", AgentId::parse("agent-a").unwrap())
-                        .unwrap(),
+                        .unwrap()
+                        .with_idempotency_key(RequestId::parse("idem-bound-effect").unwrap()),
                 ],
             )
             .unwrap();
@@ -1307,6 +1326,12 @@ mod tests {
         assert_eq!(
             bus.dead_letters()[0].replay_handlers[0].agent_id().as_str(),
             "agent-a"
+        );
+        assert_eq!(
+            bus.dead_letters()[0].replay_handlers[0]
+                .idempotency_key()
+                .map(RequestId::as_str),
+            Some("idem-bound-effect")
         );
 
         let receipt = bus

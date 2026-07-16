@@ -8,9 +8,11 @@ use eva_eventbus::{
     DeadLetterRecord, DurableEventBus, EventBus, RedrivePolicy, ReplayHandlerBinding,
 };
 use eva_storage::{
-    artifact_store::sha256_digest, ArtifactRecord, ArtifactStore, FileSystemArtifactStore,
-    FileSystemTaskStateStore, InMemoryArtifactStore, TaskAttemptFence, TaskAttemptOutcome,
-    TaskExecutionClaim, TaskStateDeadLetterSnapshot, TaskStateSnapshot, TaskStateStore,
+    artifact_store::sha256_digest, ArtifactRecord, ArtifactStore, EffectLedgerIntent,
+    EffectLedgerRecord, EffectLedgerState, EffectOperationIdentity, EffectPrepareOutcome,
+    FileSystemArtifactStore, FileSystemEffectLedger, FileSystemTaskStateStore,
+    InMemoryArtifactStore, TaskAttemptFence, TaskAttemptOutcome, TaskExecutionClaim,
+    TaskStateDeadLetterSnapshot, TaskStateSnapshot, TaskStateStore,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -339,7 +341,12 @@ impl fmt::Debug for TaskHandlerResult {
 /// Deterministic task-kind registry shared by daemon-owned workers.
 #[derive(Default)]
 pub struct TaskHandlerRegistry {
-    handlers: BTreeMap<TaskKind, Arc<dyn TaskHandler>>,
+    handlers: BTreeMap<TaskKind, TaskHandlerRegistration>,
+}
+
+struct TaskHandlerRegistration {
+    handler: Arc<dyn TaskHandler>,
+    effect_scope: Option<String>,
 }
 
 impl TaskHandlerRegistry {
@@ -360,13 +367,51 @@ impl TaskHandlerRegistry {
     where
         H: TaskHandler + 'static,
     {
+        self.register_with_effect_scope(kind, None, handler)
+    }
+
+    /// Registers a non-idempotent handler under one stable effect contract/slot identity.
+    ///
+    /// Such a handler can run only through a worker configured with a durable effect ledger.
+    pub fn register_non_idempotent<H>(
+        &mut self,
+        kind: TaskKind,
+        effect_scope: impl Into<String>,
+        handler: H,
+    ) -> Result<(), EvaError>
+    where
+        H: TaskHandler + 'static,
+    {
+        let effect_scope = effect_scope.into();
+        RequestId::parse(&effect_scope).map_err(|error| {
+            EvaError::invalid_argument("task handler effect scope is invalid")
+                .with_context("cause", error.message())
+        })?;
+        self.register_with_effect_scope(kind, Some(effect_scope), handler)
+    }
+
+    fn register_with_effect_scope<H>(
+        &mut self,
+        kind: TaskKind,
+        effect_scope: Option<String>,
+        handler: H,
+    ) -> Result<(), EvaError>
+    where
+        H: TaskHandler + 'static,
+    {
         if self.handlers.contains_key(&kind) {
             return Err(
                 EvaError::conflict("task handler kind is already registered")
                     .with_context("task_kind", kind.as_str()),
             );
         }
-        self.handlers.insert(kind, Arc::new(handler));
+        self.handlers.insert(
+            kind,
+            TaskHandlerRegistration {
+                handler: Arc::new(handler),
+                effect_scope,
+            },
+        );
         Ok(())
     }
 
@@ -415,12 +460,21 @@ impl TaskHandlerRegistry {
         deadline_at_ms: Option<u128>,
         cancellation: &TaskCancellationView,
     ) -> Result<TaskHandlerResult, EvaError> {
-        let handler = self.handlers.get(envelope.kind()).ok_or_else(|| {
+        let registration = self.handlers.get(envelope.kind()).ok_or_else(|| {
             EvaError::not_found(TASK_HANDLER_NOT_REGISTERED_MESSAGE)
                 .with_context("task_id", task_id.as_str())
                 .with_context("task_kind", envelope.kind().as_str())
                 .with_context("agent_id", envelope.agent_id().as_str())
         })?;
+        if registration.effect_scope.is_some() {
+            return Err(EvaError::unavailable(
+                "non-idempotent task handler requires a durable effect ledger",
+            )
+            .with_retryable(false)
+            .with_context("task_id", task_id.as_str())
+            .with_context("task_kind", envelope.kind().as_str())
+            .with_context("agent_id", envelope.agent_id().as_str()));
+        }
         let (payload, payload_digest) =
             resolve_task_payload(envelope, artifacts).map_err(|error| {
                 error
@@ -436,7 +490,7 @@ impl TaskHandlerRegistry {
             deadline_at_ms,
             cancellation,
         };
-        handler.handle(&invocation).map_err(|error| {
+        registration.handler.handle(&invocation).map_err(|error| {
             error
                 .with_context("task_id", task_id.as_str())
                 .with_context("task_kind", envelope.kind().as_str())
@@ -629,13 +683,34 @@ impl TaskWorkerRuntime {
         execution_owner: impl Into<String>,
         failure_bus: DurableEventBus,
     ) -> Result<Self, EvaError> {
-        Self::start_paused_with_timing_and_failure_bus(
+        Self::start_paused_with_timing_and_services(
             store,
             registry,
             artifacts,
             execution_owner,
             TaskWorkerTiming::default(),
             Some(failure_bus),
+            None,
+        )
+    }
+
+    /// Creates a paused production worker with failure replay and non-idempotent effect state.
+    pub fn start_paused_with_durable_services(
+        store: FileSystemTaskStateStore,
+        registry: Arc<TaskHandlerRegistry>,
+        artifacts: Arc<dyn TaskArtifactResolver>,
+        execution_owner: impl Into<String>,
+        failure_bus: DurableEventBus,
+        effect_ledger: FileSystemEffectLedger,
+    ) -> Result<Self, EvaError> {
+        Self::start_paused_with_timing_and_services(
+            store,
+            registry,
+            artifacts,
+            execution_owner,
+            TaskWorkerTiming::default(),
+            Some(failure_bus),
+            Some(effect_ledger),
         )
     }
 
@@ -647,23 +722,25 @@ impl TaskWorkerRuntime {
         execution_owner: impl Into<String>,
         timing: TaskWorkerTiming,
     ) -> Result<Self, EvaError> {
-        Self::start_paused_with_timing_and_failure_bus(
+        Self::start_paused_with_timing_and_services(
             store,
             registry,
             artifacts,
             execution_owner,
             timing,
             None,
+            None,
         )
     }
 
-    fn start_paused_with_timing_and_failure_bus(
+    fn start_paused_with_timing_and_services(
         store: FileSystemTaskStateStore,
         registry: Arc<TaskHandlerRegistry>,
         artifacts: Arc<dyn TaskArtifactResolver>,
         execution_owner: impl Into<String>,
         timing: TaskWorkerTiming,
         failure_bus: Option<DurableEventBus>,
+        effect_ledger: Option<FileSystemEffectLedger>,
     ) -> Result<Self, EvaError> {
         let timing = timing.validate()?;
         let execution_owner = execution_owner.into();
@@ -693,6 +770,7 @@ impl TaskWorkerRuntime {
                         thread_execution_owner,
                         timing,
                         failure_bus,
+                        effect_ledger,
                         Arc::clone(&thread_shared),
                     )
                 }));
@@ -784,11 +862,13 @@ impl OwnedReplayHandler for TaskWorkerRuntime {
             );
         }
         let task_id = replay_delivery_task_id(event, binding, delivery_index)?;
+        let idempotency_key =
+            replay_delivery_idempotency_key(&self.store, binding, event, &task_id)?;
         let envelope = TaskEnvelope::new(
             TaskKind::parse(binding.handler_kind())?,
             binding.agent_id().clone(),
             TaskInput::inline(event_payload_bytes(event.payload()))?,
-            IdempotencyKey::parse(task_id.as_str())?,
+            idempotency_key,
             TaskAttemptPolicy::new(u32::MAX, retry_backoff_ms, None)?,
         )?;
         let expected_envelope = envelope.to_snapshot();
@@ -814,7 +894,11 @@ impl OwnedReplayHandler for TaskWorkerRuntime {
                 }
                 Err(error) => return Err(error),
             };
-            if snapshot.envelope.as_ref() != Some(&expected_envelope) {
+            let envelope_matches = snapshot.envelope.as_ref() == Some(&expected_envelope)
+                || snapshot.envelope.as_ref().is_some_and(|actual| {
+                    legacy_replay_envelope_matches(binding, &task_id, actual, &expected_envelope)
+                });
+            if !envelope_matches {
                 return Err(EvaError::conflict(
                     "replay delivery task envelope does not match its durable binding",
                 )
@@ -950,6 +1034,82 @@ fn replay_delivery_task_id(
     ))
 }
 
+fn replay_delivery_idempotency_key(
+    store: &FileSystemTaskStateStore,
+    binding: &ReplayHandlerBinding,
+    event: &Event,
+    replay_task_id: &RequestId,
+) -> Result<IdempotencyKey, EvaError> {
+    if let Some(idempotency_key) = binding.idempotency_key() {
+        return IdempotencyKey::parse(idempotency_key.as_str());
+    }
+    if event.topic().as_str() != "/runtime/task/failure" {
+        return IdempotencyKey::parse(replay_task_id.as_str());
+    }
+    let Some(original_task_id) = event.metadata().request_id() else {
+        return IdempotencyKey::parse(replay_task_id.as_str());
+    };
+    let original = match store.read(Some(original_task_id.as_str())) {
+        Ok(snapshot) => snapshot,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return IdempotencyKey::parse(replay_task_id.as_str());
+        }
+        Err(error) => return Err(error),
+    };
+    let envelope = original.envelope.as_ref().ok_or_else(|| {
+        EvaError::conflict("legacy task failure binding points to a task without an envelope")
+            .with_context("task_id", &original.task_id)
+    })?;
+    let failure_event_id = task_failure_event_id(&original.task_id, original.attempts)?;
+    let source_event_matches = event.event_id() == &failure_event_id
+        || event.metadata().trace().causation_id() == Some(&failure_event_id);
+    let dead_letter_matches = original.dead_letters.iter().any(|record| {
+        record.event_id == failure_event_id.as_str()
+            && record.topic == "/runtime/task/failure"
+            && original.error_kind.as_deref() == Some(record.reason_kind.as_str())
+            && original.error_message.as_deref() == Some(record.reason.as_str())
+    });
+    let target_matches = matches!(
+        event.target(),
+        EventTarget::Agent(agent_id) if agent_id.as_str() == envelope.agent_id
+    );
+    let payload_matches =
+        sha256_digest(&event_payload_bytes(event.payload())) == envelope.input.digest();
+    if original.replay_delivery.is_some()
+        || !matches!(original.status.as_str(), "failed" | "timed_out")
+        || original.error_retryable.is_none()
+        || binding.handler_kind() != envelope.kind
+        || binding.agent_id().as_str() != envelope.agent_id
+        || !source_event_matches
+        || !dead_letter_matches
+        || !target_matches
+        || !payload_matches
+    {
+        return Err(EvaError::conflict(
+            "legacy task failure binding does not match its original task evidence",
+        )
+        .with_context("task_id", &original.task_id)
+        .with_context("replay_event_id", event.event_id().as_str()));
+    }
+    IdempotencyKey::parse(&envelope.idempotency_key)
+}
+
+fn legacy_replay_envelope_matches(
+    binding: &ReplayHandlerBinding,
+    replay_task_id: &RequestId,
+    actual: &eva_storage::TaskEnvelopeSnapshot,
+    expected: &eva_storage::TaskEnvelopeSnapshot,
+) -> bool {
+    if binding.idempotency_key().is_some() || actual.idempotency_key != replay_task_id.as_str() {
+        return false;
+    }
+    let mut upgraded = actual.clone();
+    upgraded
+        .idempotency_key
+        .clone_from(&expected.idempotency_key);
+    &upgraded == expected
+}
+
 fn event_payload_bytes(payload: &EventPayload) -> Vec<u8> {
     match payload {
         EventPayload::Empty => Vec::new(),
@@ -1017,6 +1177,7 @@ impl Drop for TaskWorkerRuntime {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_task_worker_loop(
     mut store: FileSystemTaskStateStore,
     registry: Arc<TaskHandlerRegistry>,
@@ -1024,6 +1185,7 @@ fn run_task_worker_loop(
     execution_owner: String,
     timing: TaskWorkerTiming,
     mut failure_bus: Option<DurableEventBus>,
+    mut effect_ledger: Option<FileSystemEffectLedger>,
     shared: Arc<TaskWorkerShared>,
 ) -> Result<(), EvaError> {
     loop {
@@ -1073,6 +1235,7 @@ fn run_task_worker_loop(
                 claim,
                 timing.heartbeat_interval,
                 failure_bus.as_mut(),
+                effect_ledger.as_mut(),
             )?;
         }
         if !claimed_any {
@@ -1181,6 +1344,7 @@ impl Drop for TaskHeartbeatLoop {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_task_claim(
     store: &mut FileSystemTaskStateStore,
     registry: &TaskHandlerRegistry,
@@ -1189,6 +1353,7 @@ fn execute_task_claim(
     claim: TaskExecutionClaim,
     heartbeat_interval: Duration,
     mut failure_bus: Option<&mut DurableEventBus>,
+    mut effect_ledger: Option<&mut FileSystemEffectLedger>,
 ) -> Result<(), EvaError> {
     let task_id = RequestId::parse(&claim.snapshot().task_id)?;
     let cancel_token = claim.fence().cancel_token().to_owned();
@@ -1230,36 +1395,66 @@ fn execute_task_claim(
             cancellation.request();
         }
         let observed_before_dispatch = worker_now_ms()?;
-        let outcome = if cancel_precedes_dispatch {
-            TaskAttemptOutcome::Failed {
-                error_kind: ErrorKind::Conflict.as_str().to_owned(),
-                error_message: "task cancellation preceded handler dispatch".to_owned(),
-                retryable: false,
+        let decision = if cancel_precedes_dispatch {
+            TaskDispatchDecision {
+                outcome: TaskAttemptOutcome::Failed {
+                    error_kind: ErrorKind::Conflict.as_str().to_owned(),
+                    error_message: "task cancellation preceded handler dispatch".to_owned(),
+                    retryable: false,
+                },
+                non_idempotent: false,
+                effect_committed: false,
             }
         } else if claim.snapshot().deadline_expired(observed_before_dispatch) {
-            TaskAttemptOutcome::TimedOut {
-                observed_at_ms: observed_before_dispatch,
-                retryable: true,
+            TaskDispatchDecision {
+                outcome: TaskAttemptOutcome::TimedOut {
+                    observed_at_ms: observed_before_dispatch,
+                    retryable: true,
+                },
+                non_idempotent: false,
+                effect_committed: false,
             }
         } else {
             dispatch_claimed_attempt(
+                store,
                 registry,
                 artifacts,
                 &task_id,
                 claim.snapshot(),
+                claim.fence(),
                 &cancellation,
+                effect_ledger.as_deref_mut(),
             )?
         };
         let heartbeat_error = heartbeat.stop_and_join();
+        let effect_committed = decision.effect_committed;
         let outcome = match heartbeat_error {
-            Some(error) => TaskAttemptOutcome::Failed {
+            Some(error) if !decision.non_idempotent => TaskAttemptOutcome::Failed {
                 error_kind: error.kind().as_str().to_owned(),
                 error_message: "task heartbeat persistence failed".to_owned(),
                 retryable: error.is_retryable(),
             },
-            None => outcome,
+            _ => decision.outcome,
         };
-        let finished = store.finish_execution(claim.fence(), &outcome)?;
+        let finished = if effect_committed {
+            match &outcome {
+                TaskAttemptOutcome::Completed {
+                    result_digest,
+                    result_size_bytes,
+                } => store.finish_committed_effect_execution(
+                    claim.fence(),
+                    result_digest,
+                    *result_size_bytes,
+                )?,
+                _ => {
+                    return Err(EvaError::internal(
+                        "committed effect dispatch did not produce a completed outcome",
+                    ))
+                }
+            }
+        } else {
+            store.finish_execution(claim.fence(), &outcome)?
+        };
         if !latest.cancel_requested {
             if let Some(bus) = failure_bus.as_deref_mut() {
                 materialize_task_failure_evidence(store, bus, artifacts, &finished)?;
@@ -1349,10 +1544,10 @@ fn record_task_failure_dead_letter(
         next_attempt_after_ms: now_ms.saturating_add(envelope.attempt_policy().retry_backoff_ms),
     };
     let expected_bindings = if payload.is_some() {
-        vec![ReplayHandlerBinding::new(
-            envelope.kind().as_str(),
-            envelope.agent_id().clone(),
-        )?]
+        vec![
+            ReplayHandlerBinding::new(envelope.kind().as_str(), envelope.agent_id().clone())?
+                .with_idempotency_key(RequestId::parse(envelope.idempotency_key().as_str())?),
+        ]
     } else {
         Vec::new()
     };
@@ -1455,7 +1650,10 @@ fn validate_task_failure_dead_letter(
     expected_retry_delay_ms: u64,
 ) -> Result<(), EvaError> {
     if validate_task_failure_event_identity(&existing.event, expected_event).is_ok()
-        && existing.replay_handlers.as_slice() == expected_bindings
+        && replay_handler_bindings_match_with_legacy_keys(
+            &existing.replay_handlers,
+            expected_bindings,
+        )
         && existing.reason.kind() == expected_reason.kind()
         && existing.reason.message() == expected_reason.message()
         && existing.reason.is_retryable() == expected_reason.is_retryable()
@@ -1467,6 +1665,20 @@ fn validate_task_failure_dead_letter(
         EvaError::conflict("task failure dead-letter identity collides with another record")
             .with_context("event_id", expected_event.event_id().as_str()),
     )
+}
+
+fn replay_handler_bindings_match_with_legacy_keys(
+    existing: &[ReplayHandlerBinding],
+    expected: &[ReplayHandlerBinding],
+) -> bool {
+    existing.len() == expected.len()
+        && existing.iter().zip(expected).all(|(existing, expected)| {
+            existing.handler_kind() == expected.handler_kind()
+                && existing.agent_id() == expected.agent_id()
+                && (existing.idempotency_key() == expected.idempotency_key()
+                    || (existing.idempotency_key().is_none()
+                        && expected.idempotency_key().is_some()))
+        })
 }
 
 fn checkpoint_task_failure_evidence(
@@ -1530,20 +1742,40 @@ fn task_failure_event_id(task_id: &str, attempt: usize) -> Result<EventId, EvaEr
     EventId::parse(&format!("task-failure-{}", &hex[..32]))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_claimed_attempt(
+    task_store: &FileSystemTaskStateStore,
     registry: &TaskHandlerRegistry,
     artifacts: &dyn TaskArtifactResolver,
     task_id: &RequestId,
     snapshot: &eva_storage::TaskStateSnapshot,
+    fence: &TaskAttemptFence,
     cancellation: &TaskCancellationView,
-) -> Result<TaskAttemptOutcome, EvaError> {
+    effect_ledger: Option<&mut FileSystemEffectLedger>,
+) -> Result<TaskDispatchDecision, EvaError> {
     let envelope = snapshot
         .envelope
         .clone()
         .ok_or_else(|| EvaError::internal("claimed task is missing its envelope"))
-        .and_then(TaskEnvelope::try_from);
-    let dispatched = envelope.and_then(|envelope| {
-        catch_unwind(AssertUnwindSafe(|| {
+        .and_then(TaskEnvelope::try_from)?;
+    let registration = registry.handlers.get(envelope.kind());
+    let non_idempotent = registration.is_some_and(|entry| entry.effect_scope.is_some());
+    let dispatched = match registration {
+        Some(registration) if registration.effect_scope.is_some() => {
+            dispatch_non_idempotent_attempt(
+                task_store,
+                registration,
+                registration.effect_scope.as_deref().unwrap_or_default(),
+                artifacts,
+                task_id,
+                &envelope,
+                snapshot,
+                fence,
+                cancellation,
+                effect_ledger,
+            )
+        }
+        Some(_) => catch_unwind(AssertUnwindSafe(|| {
             registry.dispatch_attempt(
                 task_id,
                 &envelope,
@@ -1554,29 +1786,221 @@ fn dispatch_claimed_attempt(
             )
         }))
         .unwrap_or_else(|_| Err(EvaError::internal(TASK_HANDLER_PANIC_MESSAGE)))
-    });
+        .map(ClaimedDispatchResult::Executed),
+        None => Err(EvaError::not_found(TASK_HANDLER_NOT_REGISTERED_MESSAGE)
+            .with_context("task_id", task_id.as_str())
+            .with_context("task_kind", envelope.kind().as_str())
+            .with_context("agent_id", envelope.agent_id().as_str())),
+    };
     let observed_at_ms = worker_now_ms()?;
-    if snapshot.deadline_expired(observed_at_ms) {
-        return Ok(TaskAttemptOutcome::TimedOut {
-            observed_at_ms,
-            retryable: true,
+    if !non_idempotent && snapshot.deadline_expired(observed_at_ms) {
+        return Ok(TaskDispatchDecision {
+            outcome: TaskAttemptOutcome::TimedOut {
+                observed_at_ms,
+                retryable: true,
+            },
+            non_idempotent,
+            effect_committed: false,
         });
     }
-    Ok(match dispatched {
-        Ok(result) => TaskAttemptOutcome::Completed {
-            result_digest: result.digest().to_owned(),
-            result_size_bytes: result.size_bytes(),
-        },
-        Err(error) if error.kind() == ErrorKind::Timeout => TaskAttemptOutcome::TimedOut {
-            observed_at_ms,
-            retryable: error.is_retryable(),
-        },
-        Err(error) => TaskAttemptOutcome::Failed {
-            error_kind: error.kind().as_str().to_owned(),
-            error_message: error.message().to_owned(),
-            retryable: error.is_retryable(),
-        },
+    let (outcome, effect_committed) = match dispatched {
+        Ok(ClaimedDispatchResult::Executed(result)) => (
+            TaskAttemptOutcome::Completed {
+                result_digest: result.digest().to_owned(),
+                result_size_bytes: result.size_bytes(),
+            },
+            false,
+        ),
+        Ok(ClaimedDispatchResult::EffectCommitted {
+            result_digest,
+            result_size_bytes,
+        }) => (
+            TaskAttemptOutcome::Completed {
+                result_digest,
+                result_size_bytes,
+            },
+            true,
+        ),
+        Err(error) if error.kind() == ErrorKind::Timeout => (
+            TaskAttemptOutcome::TimedOut {
+                observed_at_ms,
+                retryable: error.is_retryable(),
+            },
+            false,
+        ),
+        Err(error) => (
+            TaskAttemptOutcome::Failed {
+                error_kind: error.kind().as_str().to_owned(),
+                error_message: error.message().to_owned(),
+                retryable: error.is_retryable(),
+            },
+            false,
+        ),
+    };
+    Ok(TaskDispatchDecision {
+        outcome,
+        non_idempotent,
+        effect_committed,
     })
+}
+
+struct TaskDispatchDecision {
+    outcome: TaskAttemptOutcome,
+    non_idempotent: bool,
+    effect_committed: bool,
+}
+
+enum ClaimedDispatchResult {
+    Executed(TaskHandlerResult),
+    EffectCommitted {
+        result_digest: String,
+        result_size_bytes: usize,
+    },
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_non_idempotent_attempt(
+    task_store: &FileSystemTaskStateStore,
+    registration: &TaskHandlerRegistration,
+    effect_scope: &str,
+    artifacts: &dyn TaskArtifactResolver,
+    task_id: &RequestId,
+    envelope: &TaskEnvelope,
+    snapshot: &TaskStateSnapshot,
+    fence: &TaskAttemptFence,
+    cancellation: &TaskCancellationView,
+    effect_ledger: Option<&mut FileSystemEffectLedger>,
+) -> Result<ClaimedDispatchResult, EvaError> {
+    let effect_ledger = effect_ledger.ok_or_else(|| {
+        EvaError::unavailable("non-idempotent task handler requires a durable effect ledger")
+            .with_retryable(false)
+            .with_context("task_id", task_id.as_str())
+            .with_context("task_kind", envelope.kind().as_str())
+            .with_context("agent_id", envelope.agent_id().as_str())
+    })?;
+    if snapshot.replay_delivery.is_some() && envelope.idempotency_key().as_str() == task_id.as_str()
+    {
+        return Err(EvaError::conflict(
+            "non-idempotent replay delivery is missing its original idempotency key",
+        )
+        .with_retryable(false)
+        .with_context("task_id", task_id.as_str())
+        .with_context("task_kind", envelope.kind().as_str()));
+    }
+    let operation = EffectOperationIdentity::new(
+        envelope.idempotency_key().as_str(),
+        envelope.kind().as_str(),
+        envelope.agent_id().as_str(),
+        effect_scope,
+        envelope.input().digest(),
+    )?;
+    let inspection_intent = effect_intent(operation.clone(), fence, worker_now_ms()?)?;
+    if let Some(record) = effect_ledger.inspect_for_claim(task_store, &inspection_intent)? {
+        return dispatch_from_effect_record(record);
+    }
+
+    // Payload validation remains before prepare so a missing/corrupt artifact cannot strand a
+    // record that definitely never reached the handler. Committed replays bypass this I/O above.
+    let (payload, payload_digest) = resolve_task_payload(envelope, artifacts).map_err(|error| {
+        error
+            .with_context("task_id", task_id.as_str())
+            .with_context("agent_id", envelope.agent_id().as_str())
+    })?;
+    let intent = effect_intent(operation, fence, worker_now_ms()?)?;
+    match effect_ledger.prepare_for_claim(task_store, &intent)? {
+        EffectPrepareOutcome::Created(_) => {}
+        EffectPrepareOutcome::Prepared(record) => {
+            return Err(unresolved_effect_error(&record));
+        }
+        EffectPrepareOutcome::Committed(record) => {
+            return dispatch_from_effect_record(record);
+        }
+    }
+
+    if cancellation.is_requested() {
+        return Err(prepared_effect_error(
+            EvaError::conflict("task cancellation followed the effect prepare boundary")
+                .with_retryable(false),
+            intent.operation(),
+        ));
+    }
+
+    let invocation = TaskHandlerInvocation {
+        task_id,
+        envelope,
+        payload: &payload,
+        payload_digest: &payload_digest,
+        attempt: snapshot.attempts,
+        deadline_at_ms: snapshot.deadline_at_ms,
+        cancellation,
+    };
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        registration.handler.handle(&invocation)
+    }))
+    .unwrap_or_else(|_| Err(EvaError::internal(TASK_HANDLER_PANIC_MESSAGE)))
+    .map_err(|error| prepared_effect_error(error, intent.operation()))?;
+    effect_ledger
+        .commit(
+            &intent,
+            result.digest(),
+            result.size_bytes(),
+            worker_now_ms()?,
+        )
+        .map_err(|error| prepared_effect_error(error, intent.operation()))?;
+    Ok(ClaimedDispatchResult::EffectCommitted {
+        result_digest: result.digest().to_owned(),
+        result_size_bytes: result.size_bytes(),
+    })
+}
+
+fn effect_intent(
+    operation: EffectOperationIdentity,
+    fence: &TaskAttemptFence,
+    prepared_at_ms: u128,
+) -> Result<EffectLedgerIntent, EvaError> {
+    EffectLedgerIntent::new(
+        operation,
+        fence.task_id(),
+        fence.owner_generation(),
+        fence.execution_owner(),
+        fence.attempt(),
+        fence.cancel_token(),
+        prepared_at_ms,
+    )
+}
+
+fn dispatch_from_effect_record(
+    record: EffectLedgerRecord,
+) -> Result<ClaimedDispatchResult, EvaError> {
+    if record.state() == EffectLedgerState::Prepared {
+        return Err(unresolved_effect_error(&record));
+    }
+    let result_digest = record.result_digest().ok_or_else(|| {
+        EvaError::conflict("committed effect is missing its result digest")
+            .with_context("operation_digest", record.operation().operation_digest())
+    })?;
+    let result_size_bytes = record.result_size_bytes().ok_or_else(|| {
+        EvaError::conflict("committed effect is missing its result size")
+            .with_context("operation_digest", record.operation().operation_digest())
+    })?;
+    Ok(ClaimedDispatchResult::EffectCommitted {
+        result_digest: result_digest.to_owned(),
+        result_size_bytes,
+    })
+}
+
+fn unresolved_effect_error(record: &EffectLedgerRecord) -> EvaError {
+    EvaError::conflict("non-idempotent effect outcome is unresolved")
+        .with_retryable(false)
+        .with_context("effect_state", record.state().as_str())
+        .with_context("operation_digest", record.operation().operation_digest())
+}
+
+fn prepared_effect_error(error: EvaError, operation: &EffectOperationIdentity) -> EvaError {
+    error
+        .with_retryable(false)
+        .with_context("effect_state", EffectLedgerState::Prepared.as_str())
+        .with_context("operation_digest", operation.operation_digest())
 }
 
 fn next_cancel_token(execution_owner: &str, task_id: &str) -> Result<String, EvaError> {
@@ -1681,6 +2105,7 @@ mod tests {
     use crate::{IdempotencyKey, TaskAttemptPolicy};
     use eva_core::{AgentId, ErrorKind, EventId, EventPayload, Topic};
     use std::fs;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -2068,6 +2493,770 @@ mod tests {
     }
 
     #[test]
+    fn non_idempotent_handler_requires_durable_ledger_before_invocation() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register_non_idempotent(
+                TaskKind::parse("vendor.side-effect").unwrap(),
+                "vendor.side-effect.v1",
+                move |_: &TaskHandlerInvocation<'_>| {
+                    handler_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(TaskHandlerResult::new(b"effect-result".as_slice()))
+                },
+            )
+            .unwrap();
+        let task = TaskEnvelope::new(
+            TaskKind::parse("vendor.side-effect").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"effect-input".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-effect-direct").unwrap(),
+            TaskAttemptPolicy::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+
+        let error = registry
+            .dispatch(&task_id(), &task, &InMemoryArtifactStore::new())
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Unavailable);
+        assert!(!error.is_retryable());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn committed_effect_is_reused_after_writer_restart_without_reinvoking_handler() {
+        let root = test_root("effect-commit-restart");
+        let effect_sink = root.path().join("effect-sink.log");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let handler_sink = effect_sink.clone();
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register_non_idempotent(
+                TaskKind::parse("vendor.side-effect").unwrap(),
+                "vendor.side-effect.v1",
+                move |_: &TaskHandlerInvocation<'_>| {
+                    handler_calls.fetch_add(1, Ordering::SeqCst);
+                    let mut sink = fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&handler_sink)
+                        .unwrap();
+                    writeln!(sink, "applied").unwrap();
+                    sink.sync_all().unwrap();
+                    Ok(TaskHandlerResult::new(b"effect-result".as_slice()))
+                },
+            )
+            .unwrap();
+        let registry = Arc::new(registry);
+        let envelope = TaskEnvelope::new(
+            TaskKind::parse("vendor.side-effect").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"effect-input".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-effect-restart").unwrap(),
+            TaskAttemptPolicy::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        let expected_digest = sha256_digest(b"effect-result");
+
+        // Commit the ledger result but deliberately leave the first task running, matching a crash
+        // after the external effect and ledger commit but before TaskState finish.
+        {
+            let backend = eva_storage::FileSystemDurableBackend::open(
+                eva_storage::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let writer = backend.acquire_runtime_writer().unwrap();
+            let mut store =
+                FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                    .unwrap();
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope(
+                        "req-effect-before-crash",
+                        envelope.to_snapshot(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let claim = store
+                .try_claim_queued(
+                    "req-effect-before-crash",
+                    "daemon:effect:g1",
+                    "cancel:effect:g1",
+                    100,
+                )
+                .unwrap()
+                .unwrap();
+            let mut ledger =
+                FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+            let outcome = dispatch_claimed_attempt(
+                &store,
+                registry.as_ref(),
+                &InMemoryArtifactStore::new(),
+                &RequestId::parse("req-effect-before-crash").unwrap(),
+                claim.snapshot(),
+                claim.fence(),
+                &TaskCancellationView::default(),
+                Some(&mut ledger),
+            )
+            .unwrap();
+            assert_eq!(
+                outcome.outcome,
+                TaskAttemptOutcome::Completed {
+                    result_digest: expected_digest.clone(),
+                    result_size_bytes: b"effect-result".len(),
+                }
+            );
+            assert!(outcome.non_idempotent);
+            assert!(outcome.effect_committed);
+            assert_eq!(
+                ledger
+                    .inspect(
+                        &EffectOperationIdentity::new(
+                            "idem-effect-restart",
+                            "vendor.side-effect",
+                            "root-agent",
+                            "vendor.side-effect.v1",
+                            envelope.input().digest(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .state(),
+                EffectLedgerState::Committed
+            );
+            assert_eq!(
+                store.read(Some("req-effect-before-crash")).unwrap().status,
+                "running"
+            );
+        }
+        assert_eq!(fs::read_to_string(&effect_sink).unwrap().lines().count(), 1);
+
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-effect-after-restart",
+                    envelope.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut worker = TaskWorkerRuntime::start_paused_with_timing_and_services(
+            store.clone(),
+            registry,
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:effect:g2",
+            TaskWorkerTiming::default(),
+            None,
+            Some(ledger),
+        )
+        .unwrap();
+        worker.activate();
+        let completed = wait_for_task_status(&store, "req-effect-after-restart", "completed");
+        worker.stop_and_join().unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fs::read_to_string(&effect_sink).unwrap().lines().count(), 1);
+        assert_eq!(
+            completed.result_digest.as_deref(),
+            Some(expected_digest.as_str())
+        );
+        assert_eq!(completed.result_size_bytes, Some(b"effect-result".len()));
+        assert_eq!(completed.owner_generation, writer.generation());
+        assert_eq!(
+            store.read(Some("req-effect-before-crash")).unwrap().status,
+            "running"
+        );
+    }
+
+    #[test]
+    fn two_workers_with_one_business_key_invoke_effect_handler_once() {
+        let root = test_root("effect-two-workers-one-key");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let envelope = TaskEnvelope::new(
+            TaskKind::parse("vendor.concurrent-effect").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"shared-effect-input".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-concurrent-effect").unwrap(),
+            TaskAttemptPolicy::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        for task_id in ["req-concurrent-effect-a", "req-concurrent-effect-b"] {
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope(task_id, envelope.to_snapshot())
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_started = Arc::new(AtomicBool::new(false));
+        let handler_release = Arc::new(AtomicBool::new(false));
+        let calls_by_handler = Arc::clone(&calls);
+        let started_by_handler = Arc::clone(&handler_started);
+        let release_by_handler = Arc::clone(&handler_release);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register_non_idempotent(
+                TaskKind::parse("vendor.concurrent-effect").unwrap(),
+                "vendor.concurrent-effect.v1",
+                move |_: &TaskHandlerInvocation<'_>| {
+                    calls_by_handler.fetch_add(1, Ordering::SeqCst);
+                    started_by_handler.store(true, Ordering::Release);
+                    let started_at = Instant::now();
+                    while !release_by_handler.load(Ordering::Acquire) {
+                        assert!(started_at.elapsed() < Duration::from_secs(5));
+                        thread::yield_now();
+                    }
+                    Ok(TaskHandlerResult::new(b"shared-effect-result".as_slice()))
+                },
+            )
+            .unwrap();
+        let registry = Arc::new(registry);
+        let timing =
+            TaskWorkerTiming::new(Duration::from_millis(5), Duration::from_millis(10)).unwrap();
+        let first_ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let second_ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut first = TaskWorkerRuntime::start_paused_with_timing_and_services(
+            store.clone(),
+            Arc::clone(&registry),
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:effect:concurrent:first",
+            timing,
+            None,
+            Some(first_ledger),
+        )
+        .unwrap();
+        let mut second = TaskWorkerRuntime::start_paused_with_timing_and_services(
+            store.clone(),
+            registry,
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:effect:concurrent:second",
+            timing,
+            None,
+            Some(second_ledger),
+        )
+        .unwrap();
+        first.activate();
+        second.activate();
+        wait_until(Duration::from_secs(2), || {
+            handler_started.load(Ordering::Acquire)
+        });
+
+        let wait_started = Instant::now();
+        loop {
+            let statuses = [
+                store.read(Some("req-concurrent-effect-a")).unwrap().status,
+                store.read(Some("req-concurrent-effect-b")).unwrap().status,
+            ];
+            if statuses.iter().any(|status| status == "failed") {
+                break;
+            }
+            if wait_started.elapsed() >= Duration::from_secs(2) {
+                handler_release.store(true, Ordering::Release);
+                let _ = first.stop_and_join();
+                let _ = second.stop_and_join();
+                panic!("competing effect task did not observe the prepared boundary");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        handler_release.store(true, Ordering::Release);
+
+        let wait_started = Instant::now();
+        let final_records = loop {
+            let records = [
+                store.read(Some("req-concurrent-effect-a")).unwrap(),
+                store.read(Some("req-concurrent-effect-b")).unwrap(),
+            ];
+            if records.iter().any(|record| record.status == "completed") {
+                break records;
+            }
+            assert!(wait_started.elapsed() < Duration::from_secs(2));
+            thread::sleep(Duration::from_millis(5));
+        };
+        first.stop_and_join().unwrap();
+        second.stop_and_join().unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            final_records
+                .iter()
+                .filter(|record| record.status == "completed")
+                .count(),
+            1
+        );
+        let failed = final_records
+            .iter()
+            .find(|record| record.status == "failed")
+            .unwrap();
+        assert_eq!(failed.error_retryable, Some(false));
+        assert_eq!(failed.error_kind.as_deref(), Some("conflict"));
+        let mut reopened = FileSystemEffectLedger::open_read_only(backend.layout()).unwrap();
+        let operation = EffectOperationIdentity::new(
+            "idem-concurrent-effect",
+            "vendor.concurrent-effect",
+            "root-agent",
+            "vendor.concurrent-effect.v1",
+            envelope.input().digest(),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.inspect(&operation).unwrap().unwrap().state(),
+            EffectLedgerState::Committed
+        );
+    }
+
+    #[test]
+    fn prepared_effect_blocks_automatic_reexecution_and_stays_non_retryable() {
+        let root = test_root("effect-prepared-block");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let envelope = TaskEnvelope::new(
+            TaskKind::parse("vendor.uncertain-effect").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"uncertain-input".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-effect-uncertain").unwrap(),
+            TaskAttemptPolicy::new(3, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-effect-uncertain-first",
+                    envelope.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register_non_idempotent(
+                TaskKind::parse("vendor.uncertain-effect").unwrap(),
+                "vendor.uncertain-effect.v1",
+                move |_: &TaskHandlerInvocation<'_>| {
+                    handler_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(EvaError::unavailable("effect response was lost"))
+                },
+            )
+            .unwrap();
+        let ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut worker = TaskWorkerRuntime::start_paused_with_timing_and_services(
+            store.clone(),
+            Arc::new(registry),
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:effect:uncertain",
+            TaskWorkerTiming::default(),
+            None,
+            Some(ledger),
+        )
+        .unwrap();
+        worker.activate();
+        let first = wait_for_task_status(&store, "req-effect-uncertain-first", "failed");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(first.error_retryable, Some(false));
+        assert_eq!(
+            store
+                .requeue_retryable("req-effect-uncertain-first", worker_now_ms().unwrap())
+                .unwrap()
+                .status,
+            "failed"
+        );
+
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-effect-uncertain-second",
+                    envelope.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        worker.notify_new_work();
+        let second = wait_for_task_status(&store, "req-effect-uncertain-second", "failed");
+        worker.stop_and_join().unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second.error_kind.as_deref(), Some("conflict"));
+        assert_eq!(
+            second.error_message.as_deref(),
+            Some("non-idempotent effect outcome is unresolved")
+        );
+        assert_eq!(second.error_retryable, Some(false));
+        let mut reopened = FileSystemEffectLedger::open_read_only(backend.layout()).unwrap();
+        let operation = EffectOperationIdentity::new(
+            "idem-effect-uncertain",
+            "vendor.uncertain-effect",
+            "root-agent",
+            "vendor.uncertain-effect.v1",
+            envelope.input().digest(),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.inspect(&operation).unwrap().unwrap().state(),
+            EffectLedgerState::Prepared
+        );
+    }
+
+    #[test]
+    fn cancellation_before_prepare_never_invokes_non_idempotent_handler() {
+        let root = test_root("effect-cancel-before-prepare");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let payload = b"cancel-before-prepare".to_vec();
+        let digest = sha256_digest(&payload);
+        let artifact_ref =
+            TaskArtifactRef::new("tasks/cancel-before-prepare", digest.clone()).unwrap();
+        let envelope = TaskEnvelope::new(
+            TaskKind::parse("vendor.cancel-before-prepare").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::artifact(artifact_ref.clone()),
+            IdempotencyKey::parse("idem-cancel-before-prepare").unwrap(),
+            TaskAttemptPolicy::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-cancel-before-prepare",
+                    envelope.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let calls_by_handler = Arc::clone(&handler_calls);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register_non_idempotent(
+                TaskKind::parse("vendor.cancel-before-prepare").unwrap(),
+                "vendor.cancel-before-prepare.v1",
+                move |_: &TaskHandlerInvocation<'_>| {
+                    calls_by_handler.fetch_add(1, Ordering::SeqCst);
+                    Ok(TaskHandlerResult::new(b"unexpected".as_slice()))
+                },
+            )
+            .unwrap();
+        let resolver_started = Arc::new(AtomicBool::new(false));
+        let resolver_release = Arc::new(AtomicBool::new(false));
+        let resolver: Arc<dyn TaskArtifactResolver> = Arc::new(BlockingResolver {
+            record: ArtifactRecord {
+                key: artifact_ref.key().to_owned(),
+                bytes: payload.clone(),
+                digest,
+                size_bytes: payload.len(),
+                content_type: "application/octet-stream".to_owned(),
+                retention_policy: "retain".to_owned(),
+                retain_until_ms: None,
+            },
+            started: Arc::clone(&resolver_started),
+            release: Arc::clone(&resolver_release),
+        });
+        let ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut worker = TaskWorkerRuntime::start_paused_with_timing_and_services(
+            store.clone(),
+            Arc::new(registry),
+            resolver,
+            "daemon:effect:cancel-before-prepare",
+            TaskWorkerTiming::new(Duration::from_millis(5), Duration::from_millis(10)).unwrap(),
+            None,
+            Some(ledger),
+        )
+        .unwrap();
+        worker.activate();
+        wait_until(Duration::from_secs(2), || {
+            resolver_started.load(Ordering::Acquire)
+        });
+        let cancelling = store
+            .request_cancellation("req-cancel-before-prepare", "operator cancellation")
+            .unwrap();
+        assert!(worker.signal_cancellation(
+            "req-cancel-before-prepare",
+            cancelling.cancel_token.as_deref()
+        ));
+        resolver_release.store(true, Ordering::Release);
+
+        let cancelled = wait_for_task_status(&store, "req-cancel-before-prepare", "cancelled");
+        worker.stop_and_join().unwrap();
+        assert!(cancelled.cancel_accepted);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+        assert!(FileSystemEffectLedger::open_read_only(backend.layout())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn committed_effect_outweighs_late_cancellation_and_deadline() {
+        let root = test_root("effect-commit-race");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let envelope = TaskEnvelope::new(
+            TaskKind::parse("vendor.commit-race").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"commit-race-input".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-effect-commit-race").unwrap(),
+            TaskAttemptPolicy::new(1, 0, Some(500)).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-effect-commit-race",
+                    envelope.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_started = Arc::new(AtomicBool::new(false));
+        let handler_release = Arc::new(AtomicBool::new(false));
+        let calls_by_handler = Arc::clone(&calls);
+        let started_by_handler = Arc::clone(&handler_started);
+        let release_by_handler = Arc::clone(&handler_release);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register_non_idempotent(
+                TaskKind::parse("vendor.commit-race").unwrap(),
+                "vendor.commit-race.v1",
+                move |_: &TaskHandlerInvocation<'_>| {
+                    calls_by_handler.fetch_add(1, Ordering::SeqCst);
+                    started_by_handler.store(true, Ordering::Release);
+                    let started_at = Instant::now();
+                    while !release_by_handler.load(Ordering::Acquire) {
+                        assert!(started_at.elapsed() < Duration::from_secs(2));
+                        thread::yield_now();
+                    }
+                    Ok(TaskHandlerResult::new(b"committed-result".as_slice()))
+                },
+            )
+            .unwrap();
+        let ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut worker = TaskWorkerRuntime::start_paused_with_timing_and_services(
+            store.clone(),
+            Arc::new(registry),
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:effect:commit-race",
+            TaskWorkerTiming::new(Duration::from_millis(5), Duration::from_millis(10)).unwrap(),
+            None,
+            Some(ledger),
+        )
+        .unwrap();
+        worker.activate();
+        wait_until(Duration::from_secs(2), || {
+            handler_started.load(Ordering::Acquire)
+        });
+        let cancelling = store
+            .request_cancellation("req-effect-commit-race", "late operator cancellation")
+            .unwrap();
+        assert!(worker
+            .signal_cancellation("req-effect-commit-race", cancelling.cancel_token.as_deref()));
+        thread::sleep(Duration::from_millis(550));
+        handler_release.store(true, Ordering::Release);
+
+        let completed = wait_for_task_status(&store, "req-effect-commit-race", "completed");
+        worker.stop_and_join().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(completed.cancel_requested);
+        assert!(!completed.cancel_accepted);
+        assert!(completed.deadline_at_ms.unwrap() <= worker_now_ms().unwrap());
+        assert_eq!(
+            completed.result_digest.as_deref(),
+            Some(sha256_digest(b"committed-result").as_str())
+        );
+        let mut reopened = FileSystemEffectLedger::open_read_only(backend.layout()).unwrap();
+        let operation = EffectOperationIdentity::new(
+            "idem-effect-commit-race",
+            "vendor.commit-race",
+            "root-agent",
+            "vendor.commit-race.v1",
+            envelope.input().digest(),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.inspect(&operation).unwrap().unwrap().state(),
+            EffectLedgerState::Committed
+        );
+    }
+
+    #[test]
+    fn legacy_failure_binding_recovers_business_key_and_accepts_existing_envelope() {
+        let root = test_root("legacy-failure-binding");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer).unwrap();
+        let original_task_id = "req-legacy-failure";
+        let original_envelope = TaskEnvelope::new(
+            TaskKind::parse("runtime.echo").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"legacy-replay-payload".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-legacy-business-key").unwrap(),
+            TaskAttemptPolicy::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    original_task_id,
+                    original_envelope.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let claim = store
+            .try_claim_queued(
+                original_task_id,
+                "daemon:legacy:failure",
+                "cancel:legacy:failure",
+                100,
+            )
+            .unwrap()
+            .unwrap();
+        let failed = store
+            .finish_execution(
+                claim.fence(),
+                &TaskAttemptOutcome::Failed {
+                    error_kind: ErrorKind::Unavailable.as_str().to_owned(),
+                    error_message: "legacy failure".to_owned(),
+                    retryable: true,
+                },
+            )
+            .unwrap();
+        let failure_event_id = task_failure_event_id(original_task_id, failed.attempts).unwrap();
+        let mut checkpointed = failed;
+        checkpointed.dead_letters.push(TaskStateDeadLetterSnapshot {
+            event_id: failure_event_id.as_str().to_owned(),
+            topic: "/runtime/task/failure".to_owned(),
+            reason_kind: ErrorKind::Unavailable.as_str().to_owned(),
+            reason: "legacy failure".to_owned(),
+            replay_count: 0,
+        });
+        store.compare_and_set(&checkpointed).unwrap();
+
+        let failure_event = Event::new(
+            failure_event_id.clone(),
+            Topic::parse("/runtime/task/failure").unwrap(),
+            EventPayload::bytes(b"legacy-replay-payload".to_vec()),
+        )
+        .with_target(EventTarget::Agent(AgentId::parse("root-agent").unwrap()))
+        .with_request_id(RequestId::parse(original_task_id).unwrap());
+        let replay = failure_event
+            .child_event(
+                EventId::parse(&format!("{}:replay-1", failure_event_id.as_str())).unwrap(),
+                failure_event.topic().clone(),
+                failure_event.payload().clone(),
+            )
+            .with_target(failure_event.target().clone())
+            .with_request_id(RequestId::parse(original_task_id).unwrap());
+        let legacy_binding =
+            ReplayHandlerBinding::new("runtime.echo", AgentId::parse("root-agent").unwrap())
+                .unwrap();
+
+        let legacy_task_id = replay_delivery_task_id(&replay, &legacy_binding, 0).unwrap();
+        let legacy_envelope = TaskEnvelope::new(
+            TaskKind::parse("runtime.echo").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"legacy-replay-payload".as_slice()).unwrap(),
+            IdempotencyKey::parse(legacy_task_id.as_str()).unwrap(),
+            TaskAttemptPolicy::new(u32::MAX, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_replay_delivery(
+                    legacy_task_id.as_str(),
+                    legacy_envelope.to_snapshot(),
+                    replay.event_id().as_str(),
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let mut worker = TaskWorkerRuntime::start(
+            store.clone(),
+            Arc::new(TaskHandlerRegistry::with_runtime_defaults().unwrap()),
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:legacy:replay",
+        )
+        .unwrap();
+        worker
+            .reconcile_replay_delivery(&legacy_binding, &replay, 0, 0, 0)
+            .unwrap();
+        wait_for_task_status(&store, legacy_task_id.as_str(), "completed");
+
+        let pending = worker
+            .reconcile_replay_delivery(&legacy_binding, &replay, 1, 0, 0)
+            .unwrap();
+        let recovered_task_id = match pending {
+            OwnedReplayDeliveryStatus::Pending { task_id, .. } => task_id,
+            status => panic!("expected pending recovered replay, got {status:?}"),
+        };
+        assert_eq!(
+            store
+                .read(Some(&recovered_task_id))
+                .unwrap()
+                .envelope
+                .unwrap()
+                .idempotency_key,
+            "idem-legacy-business-key"
+        );
+        wait_for_task_status(&store, &recovered_task_id, "completed");
+        worker.stop_and_join().unwrap();
+    }
+
+    #[test]
     fn daemon_owned_worker_executes_bound_replay_with_exact_binary_payload() {
         let root = test_root("owned-replay");
         let backend = eva_storage::FileSystemDurableBackend::open(
@@ -2089,7 +3278,8 @@ mod tests {
         .with_request_id(RequestId::parse("req-owned-replay").unwrap());
         let binding =
             ReplayHandlerBinding::new("runtime.echo", AgentId::parse("root-agent").unwrap())
-                .unwrap();
+                .unwrap()
+                .with_idempotency_key(RequestId::parse("idem-owned-replay").unwrap());
 
         let pending = worker
             .reconcile_replay_delivery(&binding, &replay, 0, 0, 0)
@@ -2098,6 +3288,15 @@ mod tests {
             OwnedReplayDeliveryStatus::Pending { task_id, .. } => task_id,
             status => panic!("expected pending replay delivery, got {status:?}"),
         };
+        assert_eq!(
+            observer
+                .read(Some(&task_id))
+                .unwrap()
+                .envelope
+                .unwrap()
+                .idempotency_key,
+            "idem-owned-replay"
+        );
         wait_for_task_status(&observer, &task_id, "completed");
         let completed = worker
             .reconcile_replay_delivery(&binding, &replay, 0, 0, 0)
@@ -2366,6 +3565,12 @@ mod tests {
             "root-agent"
         );
         assert_eq!(
+            dead_letter.replay_handlers[0]
+                .idempotency_key()
+                .map(RequestId::as_str),
+            Some("idem-production-failure")
+        );
+        assert_eq!(
             dead_letter
                 .event
                 .metadata()
@@ -2507,6 +3712,110 @@ mod tests {
             "vendor.failure-recovery"
         );
         assert_eq!(dead_letter.redrive.retry_delay_ms, 250);
+    }
+
+    #[test]
+    fn worker_checkpoints_existing_legacy_dead_letter_without_business_key() {
+        let root = test_root("legacy-dead-letter-checkpoint");
+        let task_id = "req-legacy-dead-letter-checkpoint";
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let envelope = TaskEnvelope::new(
+            TaskKind::parse("vendor.legacy-dead-letter").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"legacy-dead-letter-payload".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-legacy-dead-letter").unwrap(),
+            TaskAttemptPolicy::new(2, 250, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(task_id, envelope.to_snapshot()).unwrap(),
+            )
+            .unwrap();
+        let claim = store
+            .try_claim_queued(
+                task_id,
+                "daemon:legacy:dead-letter",
+                "cancel:legacy:dead-letter",
+                100,
+            )
+            .unwrap()
+            .unwrap();
+        let failed = store
+            .finish_execution(
+                claim.fence(),
+                &TaskAttemptOutcome::Failed {
+                    error_kind: ErrorKind::Unavailable.as_str().to_owned(),
+                    error_message: "legacy crash window".to_owned(),
+                    retryable: true,
+                },
+            )
+            .unwrap();
+        assert!(failed.dead_letters.is_empty());
+        let event_id = task_failure_event_id(task_id, failed.attempts).unwrap();
+        let event = Event::new(
+            event_id.clone(),
+            Topic::parse("/runtime/task/failure").unwrap(),
+            EventPayload::bytes(b"legacy-dead-letter-payload".to_vec()),
+        )
+        .with_target(EventTarget::Agent(AgentId::parse("root-agent").unwrap()))
+        .with_request_id(RequestId::parse(task_id).unwrap());
+        let mut failure_bus =
+            DurableEventBus::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        failure_bus.publish(event.clone()).unwrap();
+        failure_bus
+            .dead_letter_for_handlers_with_redrive(
+                event,
+                EvaError::unavailable("legacy crash window"),
+                vec![ReplayHandlerBinding::new(
+                    "vendor.legacy-dead-letter",
+                    AgentId::parse("root-agent").unwrap(),
+                )
+                .unwrap()],
+                RedrivePolicy {
+                    retry_delay_ms: 250,
+                    next_attempt_after_ms: 1,
+                },
+            )
+            .unwrap();
+
+        let mut worker = TaskWorkerRuntime::start_paused_with_failure_bus(
+            store.clone(),
+            Arc::new(TaskHandlerRegistry::with_runtime_defaults().unwrap()),
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:legacy:checkpoint",
+            failure_bus,
+        )
+        .unwrap();
+        worker.activate();
+        let started = Instant::now();
+        let checkpointed = loop {
+            let snapshot = store.read(Some(task_id)).unwrap();
+            if snapshot.dead_letters.len() == 1 {
+                break snapshot;
+            }
+            worker.check_health().unwrap();
+            assert!(started.elapsed() < Duration::from_secs(2));
+            thread::sleep(Duration::from_millis(5));
+        };
+        worker.stop_and_join().unwrap();
+
+        assert_eq!(checkpointed.dead_letters[0].event_id, event_id.as_str());
+        let bus = DurableEventBus::open_read_only(backend.layout()).unwrap();
+        let record = bus
+            .dead_letters()
+            .iter()
+            .find(|record| record.event_id() == &event_id)
+            .unwrap();
+        assert_eq!(record.replay_handlers.len(), 1);
+        assert!(record.replay_handlers[0].idempotency_key().is_none());
     }
 
     #[test]
@@ -3091,6 +4400,30 @@ mod tests {
             _reference: &TaskArtifactRef,
         ) -> Result<Option<ArtifactRecord>, EvaError> {
             Ok(self.0.clone())
+        }
+    }
+
+    struct BlockingResolver {
+        record: ArtifactRecord,
+        started: Arc<AtomicBool>,
+        release: Arc<AtomicBool>,
+    }
+
+    impl TaskArtifactResolver for BlockingResolver {
+        fn resolve_task_artifact(
+            &self,
+            _reference: &TaskArtifactRef,
+        ) -> Result<Option<ArtifactRecord>, EvaError> {
+            self.started.store(true, Ordering::Release);
+            let started_at = Instant::now();
+            while !self.release.load(Ordering::Acquire) {
+                assert!(
+                    started_at.elapsed() < Duration::from_secs(2),
+                    "artifact resolver was not released"
+                );
+                thread::yield_now();
+            }
+            Ok(Some(self.record.clone()))
         }
     }
 

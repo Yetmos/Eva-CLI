@@ -1,16 +1,18 @@
 //! 中文：无法正常投递事件的死信记录、重驱策略和内存队列。
 //! Dead-letter records for events that cannot be delivered.
 
-use eva_core::{AgentId, EvaError, Event, EventId};
+use eva_core::{AgentId, EvaError, Event, EventId, RequestId};
+use std::fmt;
 
 const MAX_REPLAY_HANDLER_KIND_BYTES: usize = 128;
 pub(crate) const MAX_REPLAY_HANDLERS: usize = 32;
 
 /// A durable binding from one replay delivery owner to its registered handler kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReplayHandlerBinding {
     handler_kind: String,
     agent_id: AgentId,
+    idempotency_key: Option<RequestId>,
 }
 
 /// 中文：本模块负责保留失败事件、结构化原因和可重放状态。
@@ -108,7 +110,14 @@ impl ReplayHandlerBinding {
         Ok(Self {
             handler_kind,
             agent_id,
+            idempotency_key: None,
         })
+    }
+
+    /// Binds a replay to the original business idempotency identity.
+    pub fn with_idempotency_key(mut self, idempotency_key: RequestId) -> Self {
+        self.idempotency_key = Some(idempotency_key);
+        self
     }
 
     /// Returns the stable dotted registry key.
@@ -119,6 +128,25 @@ impl ReplayHandlerBinding {
     /// Returns the Agent that owns this exact replay delivery.
     pub fn agent_id(&self) -> &AgentId {
         &self.agent_id
+    }
+
+    /// Original business idempotency key, absent for legacy or generic events.
+    pub fn idempotency_key(&self) -> Option<&RequestId> {
+        self.idempotency_key.as_ref()
+    }
+}
+
+impl fmt::Debug for ReplayHandlerBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReplayHandlerBinding")
+            .field("handler_kind", &self.handler_kind)
+            .field("agent_id", &self.agent_id)
+            .field(
+                "idempotency_key",
+                &self.idempotency_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
     }
 }
 

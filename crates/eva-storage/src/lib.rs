@@ -4,6 +4,7 @@
 pub mod artifact_store;
 pub mod audit_store;
 pub mod durable_backend;
+pub mod effect_ledger;
 pub mod event_log;
 pub mod provider_process;
 pub mod sqlite;
@@ -21,6 +22,10 @@ pub use durable_backend::{
     DurableRuntimeLeaseProbe, DurableRuntimeLeaseRecord, DurableRuntimeLeaseState,
     DurableWriterGuard, FileSystemDurableBackend, InMemoryDurableBackend, WriterGeneration,
     CURRENT_DURABLE_SCHEMA_VERSION, DEFAULT_RUNTIME_LEASE_TTL_MS, DURABLE_LAYOUT_VERSION,
+};
+pub use effect_ledger::{
+    EffectLedgerIntent, EffectLedgerRecord, EffectLedgerState, EffectOperationIdentity,
+    EffectPrepareOutcome, FileSystemEffectLedger,
 };
 pub use event_log::{
     EventLog, EventLogRecord, EventLogStatus, FileSystemEventLog, InMemoryEventLog,

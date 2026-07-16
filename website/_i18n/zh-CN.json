@@ -330,7 +330,7 @@
       {
         "id": "v1.x-real-runtime-implementation-plan",
         "title": "V1.x 真实运行时能力补齐实施计划",
-        "description": "以稳定 ID、前置项、owning 边界和可测试 evidence 跟踪 W0-W10 的 123 个逻辑修改；当前为 18 个已完成、1 个可开始、104 个已阻塞。"
+        "description": "以稳定 ID、前置项、owning 边界和可测试 evidence 跟踪 W0-W10 的 123 个逻辑修改；当前为 19 个已完成、1 个可开始、103 个已阻塞。"
       },
       {
         "id": "project-release-plan",

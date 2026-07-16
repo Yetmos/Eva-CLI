@@ -36,7 +36,7 @@ use eva_storage::{
     artifact_store::sha256_digest, atomic_write as atomic_storage_write, probe_runtime_lease,
     DurableBackend, DurableBackendLayout, DurableBackendOptions, DurableBackendReport,
     DurableRuntimeLeaseGuard, DurableRuntimeLeaseIdentity, DurableRuntimeLeaseRecord,
-    DurableRuntimeLeaseState, DurableWriterGuard, FileSystemDurableBackend,
+    DurableRuntimeLeaseState, DurableWriterGuard, FileSystemDurableBackend, FileSystemEffectLedger,
     FileSystemProviderProcessTable, FileSystemTaskStateStore, TaskInputSnapshot, TaskStateSnapshot,
     TaskStateStore, WriterGeneration, DEFAULT_RUNTIME_LEASE_TTL_MS,
 };
@@ -2403,12 +2403,15 @@ fn start_daemon_inner(
         )?;
         let task_failure_bus =
             DurableEventBus::open_with_writer(durable_backend.layout(), lease.writer())?;
-        Some(TaskWorkerRuntime::start_paused_with_failure_bus(
+        let effect_ledger =
+            FileSystemEffectLedger::open_with_writer(durable_backend.layout(), lease.writer())?;
+        Some(TaskWorkerRuntime::start_paused_with_durable_services(
             task_store,
             Arc::clone(&task_handlers),
             task_artifacts.clone(),
             task_worker_execution_owner(lease.record()),
             task_failure_bus,
+            effect_ledger,
         )?)
     };
     if let Some(worker) = task_worker.as_ref() {
@@ -2575,6 +2578,7 @@ fn daemon_start_audit(
     if task_worker_enabled {
         audit.push("daemon:w1-l06:task_worker_claim_gate_ready".to_owned());
         audit.push("daemon:w1-l08:owned_replay_delivery_ready".to_owned());
+        audit.push("daemon:w1-l09:durable_effect_ledger_ready".to_owned());
     }
     audit
 }

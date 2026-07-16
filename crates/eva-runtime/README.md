@@ -119,6 +119,17 @@ replay 的持久身份、调度与执行分别由三个边界负责：
 
 生产 task 的 failure evidence 使用 event → 原子 dead-letter(binding + backoff) → task summary CAS 的顺序。任一中间崩溃都可从 terminal intent 补齐；竞争 worker 对重复提交刷新权威视图并核对身份，不会提前 retry、重复 dead letter 或把合法竞争当成 fatal health failure。
 
+## W1-L09 Durable Effect Ledger
+
+注册为 non-idempotent 的 handler 只能经 daemon 持有的 `FileSystemEffectLedger` 执行。业务 idempotency key 会绑定 task kind、Agent、稳定 effect scope 和 input digest；worker 在同一 durable writer 临界区重验 TaskState fence、取消与 deadline 后写入 Prepared，handler 成功后先写 Committed 的 result digest/size，再提交 task 终态。
+
+- 已有 Committed 会跨 writer 重开直接复用结果摘要，不再次调用 handler；迟到 deadline、heartbeat 错误或取消不能否认已提交的业务事实。
+- 已有 Prepared 表示外部结果未知，禁止自动重做并保存 non-retryable 失败；外部系统缺少按 key 幂等或查询协议时，必须由 W1-L10 转人工阻断。
+- 取消先于 prepare 时不调用 handler；两个 worker/两个 task 竞争同一业务 key 时只有一个能建立执行许可。
+- failure replay 持久保留原业务 key；旧 `.dead` 缺字段时仅在原 TaskState、failure event、dead-letter summary、kind、Agent 与 payload digest 全部匹配后兼容恢复。
+
+W1-L09 不负责 daemon 崩溃后把原 running task 从 Committed ledger 补成 completed，也不负责 Prepared/Unknown 的 operator workflow；这两项仍属于 W1-L10。
+
 ## V1.13.5 Provider Execution Recovery
 
 `RuntimeRecoveryCoordinator::recover_task_store_with_provider_processes()` 同时读取
@@ -134,7 +145,7 @@ replay 的持久身份、调度与执行分别由三个边界负责：
 
 - 当前 daemon 路径提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload state、provider execution-state recovery、manifest snapshot hotplug subscriber、一次性 memory/knowledge maintenance 和 best-effort observability wiring；不提供生产后台 service-manager 集成、远程网络监听、OS provider process supervisor、真实 OS hotplug watcher、长驻 memory scheduler、生产级 OTel/数据库 sink 或完整 scheduler apply。
 - recovery checkpoint 已恢复 task/event/audit evidence 和 durable provider process snapshots，但不会重启或杀死真实 OS provider 进程；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
-- W1-L08 已保证绑定 replay 的 handler-success-only ACK、失败续跑和 replay delivery 跨 generation 重排；一般生产 task 的副作用去重、基于 effect ledger 的 crash 决策与有 deadline 的 shutdown drain 仍分别由 W1-L09 至 W1-L11 承接。
+- W1-L08 已保证绑定 replay 的 handler-success-only ACK、失败续跑和 replay delivery 跨 generation 重排；W1-L09 已为显式注册的非幂等 handler 提供 Prepared/Committed 去重边界。基于 ledger 的 crash 分类/终态修复与有 deadline 的 shutdown drain 仍分别由 W1-L10、W1-L11 承接。
 - Lua 执行已使用受限真实 VM，并具备 host binding、资源限制和 generation lifecycle；当前 daemon reload 记录 generation route/drain 状态，但不等同于生产级进程内 VM 热替换。
 - Adapter、MCP、Discovery、Memory、Hardware、Backup 和 Lifecycle 已有受控 1.x 实现并由 CLI/runtime 按场景组合；真实 OS provider supervision、raw hardware I/O 和生产 service-manager handoff 仍在边界之外。
 

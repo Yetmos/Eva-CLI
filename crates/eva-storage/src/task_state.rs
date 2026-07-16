@@ -697,8 +697,7 @@ impl TaskStateSnapshot {
             let envelope = self.envelope.as_ref().ok_or_else(|| {
                 EvaError::invalid_argument("replay delivery marker requires a task envelope")
             })?;
-            if envelope.idempotency_key != self.task_id
-                || envelope.attempt_policy.max_attempts != u32::MAX
+            if envelope.attempt_policy.max_attempts != u32::MAX
                 || envelope.attempt_policy.attempt_timeout_ms.is_some()
             {
                 return Err(EvaError::invalid_argument(
@@ -1452,6 +1451,47 @@ impl TaskStateSnapshot {
         self.validate()
     }
 
+    /// Completes an effectful attempt after its external result is already durably committed.
+    ///
+    /// A cancellation that arrives after the effect prepare boundary cannot revoke the committed
+    /// business fact. The cancellation request remains visible for audit, but is no longer marked
+    /// accepted once the task result is reconciled.
+    fn complete_committed_effect_execution(
+        &mut self,
+        execution_owner: &str,
+        attempt: usize,
+        cancel_token: &str,
+        result_digest: impl Into<String>,
+        result_size_bytes: usize,
+    ) -> Result<(), EvaError> {
+        self.verify_execution_claim(execution_owner, attempt, cancel_token)?;
+        if !matches!(self.status.as_str(), "running" | "cancelling") {
+            return Err(
+                EvaError::conflict("committed effect task is no longer active")
+                    .with_context("task_id", &self.task_id)
+                    .with_context("status", &self.status),
+            );
+        }
+        let result_digest = result_digest.into();
+        validate_canonical_sha256(&result_digest, "task result digest")?;
+        if self.status == "cancelling" {
+            self.cancel_accepted = false;
+            self.push_log(
+                "warning",
+                "task cancellation was superseded by a committed effect",
+            );
+        }
+        self.status = "completed".to_owned();
+        self.result_digest = Some(result_digest);
+        self.result_size_bytes = Some(result_size_bytes);
+        self.error_kind = None;
+        self.error_message = None;
+        self.error_retryable = None;
+        self.retry_ready_at_ms = None;
+        self.push_log("info", "task completed from committed effect");
+        self.validate()
+    }
+
     /// 只有仍为 running 的匹配 attempt 才能提交稳定失败分类和消息。
     pub fn fail_execution(
         &mut self,
@@ -1797,6 +1837,11 @@ impl FileSystemTaskStateStore {
         &self.project_root
     }
 
+    /// Runtime writer generation used by storage-internal cross-record transactions.
+    pub(crate) fn runtime_writer_generation(&self) -> Option<WriterGeneration> {
+        self.writer.as_ref().map(DurableWriterGuard::generation)
+    }
+
     /// 克隆返回任务目录，供调用方检查或传递路径所有权。
     pub fn task_dir(&self) -> PathBuf {
         self.task_dir.clone()
@@ -2060,6 +2105,58 @@ impl FileSystemTaskStateStore {
         }
         Err(
             EvaError::conflict("task attempt finish exceeded the CAS retry limit")
+                .with_context("task_id", fence.task_id()),
+        )
+    }
+
+    /// Finishes an active task from a result already committed in the effect ledger.
+    ///
+    /// Unlike ordinary handler completion, this narrow path lets a committed effect outrank a
+    /// cancellation that raced after prepare. It still requires the exact live attempt fence and
+    /// never rewrites an existing terminal outcome.
+    pub fn finish_committed_effect_execution(
+        &mut self,
+        fence: &TaskAttemptFence,
+        result_digest: &str,
+        result_size_bytes: usize,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        let outcome = TaskAttemptOutcome::Completed {
+            result_digest: result_digest.to_owned(),
+            result_size_bytes,
+        };
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let mut current = self.read(Some(fence.task_id()))?;
+            verify_task_attempt_fence(&current, fence)?;
+            if task_attempt_outcome_is_committed(&current, &outcome) {
+                return self.refresh_latest(fence.task_id());
+            }
+            if !matches!(current.status.as_str(), "running" | "cancelling") {
+                return Err(
+                    EvaError::conflict("committed effect task outcome was superseded")
+                        .with_context("task_id", fence.task_id())
+                        .with_context("status", &current.status),
+                );
+            }
+            current.complete_committed_effect_execution(
+                fence.execution_owner(),
+                fence.attempt(),
+                fence.cancel_token(),
+                result_digest,
+                result_size_bytes,
+            )?;
+            let expected_version = current.record_version;
+            match self.compare_and_set_attempt_outcome(&current) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(fence.task_id()))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("committed effect task finish exceeded the CAS retry limit")
                 .with_context("task_id", fence.task_id()),
         )
     }
@@ -2773,7 +2870,7 @@ fn validate_task_state_transition(
         ),
         "cancelling" => matches!(
             proposed.status.as_str(),
-            "cancelling" | "cancelled" | "interrupted" | "recovering"
+            "cancelling" | "completed" | "cancelled" | "interrupted" | "recovering"
         ),
         "recovering" => matches!(
             proposed.status.as_str(),
