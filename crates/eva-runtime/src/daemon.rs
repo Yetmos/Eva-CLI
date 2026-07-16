@@ -7009,7 +7009,7 @@ mod tests {
         assert!(!request_path.exists());
         assert_eq!(fs::read(&target).unwrap(), target_payload);
         let quarantine_text = read_tree_text(&control_request_dir(&options));
-        assert!(!quarantine_text.contains(&String::from_utf8_lossy(target_payload)));
+        assert!(!quarantine_text.contains(String::from_utf8_lossy(target_payload).as_ref()));
         assert!(!quarantine_text.contains(&encode_bytes(target_payload)));
         assert!(quarantine_text.contains("entry_kind=symlink"));
         assert!(quarantine_text.contains("request_sha256=\n"));
