@@ -86,6 +86,9 @@ jobs:
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
             $tail = (Get-Content -LiteralPath $log -Tail 80) -join "`n"
+            if ($tail.Length -gt 3000) {
+              $tail = $tail.Substring($tail.Length - 3000)
+            }
             $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
             Write-Output "::error title=Workspace tests failed::$annotation"
             exit $exitCode
