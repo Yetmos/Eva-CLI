@@ -180,6 +180,19 @@ impl AdapterRuntime {
         }
     }
 
+    #[cfg(test)]
+    /// Builds a runtime around an explicitly prepared supervisor for admission tests.
+    pub(crate) fn from_registry_with_supervisor_for_test(
+        registry: AdapterRegistry,
+        supervisor: InMemoryProviderSupervisor,
+    ) -> Self {
+        Self::from_registry_with_policy_and_supervisor(
+            registry,
+            RuntimePolicyGate::new(PolicyDomainSet::default()),
+            supervisor,
+        )
+    }
+
     /// 根据输入构造当前类型，作为 `from_project` 的标准入口。
     pub fn from_project(project: &ProjectConfig) -> Result<Self, EvaError> {
         let registry = AdapterRegistry::from_project(project)?;

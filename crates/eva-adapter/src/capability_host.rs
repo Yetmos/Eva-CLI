@@ -210,6 +210,10 @@ mod tests {
     use super::*;
     use crate::manifest::{AdapterHandle, AdapterRateLimit};
     use crate::registry::AdapterRegistry;
+    use crate::supervisor::{
+        InMemoryProviderSupervisor, ProviderExecutionOutcome, ProviderExecutionRequest,
+        ProviderSupervisor,
+    };
     use eva_capability::{CapabilityDescriptor, CapabilityProviderSelection, CapabilityRegistry};
     use eva_config::AdapterTransport;
     use eva_core::{CapabilityId, CapabilityName, InvokeInput, InvokeStatus, RequestId};
@@ -455,12 +459,33 @@ mod tests {
     /// 验证 `adapter_backed_host_falls_back_after_retryable_rate_limit_gate` 场景下的预期行为。
     #[test]
     fn adapter_backed_host_falls_back_after_retryable_rate_limit_gate() {
-        let mut rate_limited = stdio_handle("stdio-rate", Some(test_command()), success_args());
+        let mut rate_limited = stdio_handle(
+            "stdio-rate",
+            Some("command-must-not-start-after-rate-gate"),
+            Vec::new(),
+        );
         rate_limited.rate_limit = Some(AdapterRateLimit {
             max_requests: 1,
             window_ms: 60_000,
         });
-        let host = host_with_provider_selection_and_handles(
+        let prime_invocation = AdapterInvocation::new(
+            RequestId::parse("req-capability-rate-prime").unwrap(),
+            capability("repo.summary"),
+        );
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        let prime_slot = supervisor
+            .acquire(ProviderExecutionRequest::from_handle(
+                &rate_limited,
+                &prime_invocation,
+            ))
+            .unwrap();
+        supervisor
+            .complete(
+                &prime_slot,
+                ProviderExecutionOutcome::completed("completed"),
+            )
+            .unwrap();
+        let host = host_with_provider_selection_handles_and_supervisor(
             PermissionSet::deny_all()
                 .allow_capability(capability("repo.summary"))
                 .allow_adapter(adapter("stdio-rate"))
@@ -472,35 +497,32 @@ mod tests {
                 Vec::new(),
             ),
             vec![rate_limited, builtin_handle(true)],
+            supervisor,
         );
-        let first = InvokeRequest::new(
-            RequestId::parse("req-capability-rate-first").unwrap(),
-            InvokeTarget::Capability(capability("repo.summary")),
-            InvokeInput::text("repo"),
-        );
-        let second = InvokeRequest::new(
-            RequestId::parse("req-capability-rate-second").unwrap(),
+        let request = InvokeRequest::new(
+            RequestId::parse("req-capability-rate-gated").unwrap(),
             InvokeTarget::Capability(capability("repo.summary")),
             InvokeInput::text("repo"),
         );
 
-        let first_response = host.invoke(first).unwrap();
-        let second_response = host.invoke(second).unwrap();
+        let response = host.invoke(request).unwrap();
 
-        assert_eq!(first_response.status(), InvokeStatus::Completed);
-        assert!(first_response
-            .output()
-            .unwrap()
-            .as_text()
-            .unwrap()
-            .contains("stdio-ok"));
-        assert_eq!(second_response.status(), InvokeStatus::Completed);
-        assert!(second_response
-            .output()
-            .unwrap()
-            .as_text()
-            .unwrap()
-            .contains("builtin-test"));
+        assert_eq!(response.status(), InvokeStatus::Completed, "{response:?}");
+        assert!(
+            response
+                .output()
+                .unwrap()
+                .as_text()
+                .unwrap()
+                .contains("builtin-test"),
+            "{response:?}"
+        );
+        let processes = host.runtime().provider_processes().unwrap();
+        assert_eq!(processes.len(), 1, "{processes:#?}");
+        assert_eq!(
+            processes[0].request_id.as_str(),
+            "req-capability-rate-prime"
+        );
     }
 
     /// 执行 `host_with_builtin_adapter` 对应的处理逻辑。
@@ -542,6 +564,21 @@ mod tests {
         provider_selection: CapabilityProviderSelection,
         handles: Vec<AdapterHandle>,
     ) -> AdapterBackedCapabilityHost {
+        host_with_provider_selection_handles_and_supervisor(
+            permissions,
+            provider_selection,
+            handles,
+            InMemoryProviderSupervisor::new(),
+        )
+    }
+
+    /// Builds a host around a preconfigured supervisor for deterministic admission tests.
+    fn host_with_provider_selection_handles_and_supervisor(
+        permissions: PermissionSet,
+        provider_selection: CapabilityProviderSelection,
+        handles: Vec<AdapterHandle>,
+        supervisor: InMemoryProviderSupervisor,
+    ) -> AdapterBackedCapabilityHost {
         let mut capability_registry = CapabilityRegistry::new();
         capability_registry
             .register(CapabilityDescriptor {
@@ -556,7 +593,8 @@ mod tests {
         for handle in handles {
             adapter_registry.register(handle).unwrap();
         }
-        let runtime = AdapterRuntime::from_registry(adapter_registry);
+        let runtime =
+            AdapterRuntime::from_registry_with_supervisor_for_test(adapter_registry, supervisor);
         AdapterBackedCapabilityHost::new(
             CapabilityRouter::new(capability_registry),
             runtime,
@@ -644,22 +682,6 @@ mod tests {
     #[cfg(not(windows))]
     fn fail_args() -> Vec<String> {
         vec!["-c".to_owned(), "exit 7".to_owned()]
-    }
-
-    /// 执行 `success_args` 对应的处理逻辑。
-    #[cfg(windows)]
-    fn success_args() -> Vec<String> {
-        vec![
-            "-NoProfile".to_owned(),
-            "-Command".to_owned(),
-            "[Console]::Out.Write('stdio-ok')".to_owned(),
-        ]
-    }
-
-    /// 执行 `success_args` 对应的处理逻辑。
-    #[cfg(not(windows))]
-    fn success_args() -> Vec<String> {
-        vec!["-c".to_owned(), "printf stdio-ok".to_owned()]
     }
 
     /// 执行 `report` 对应的处理逻辑。

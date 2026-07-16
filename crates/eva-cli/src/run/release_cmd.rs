@@ -25,8 +25,6 @@ use std::os::fd::AsRawFd;
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 use std::os::unix::fs::MetadataExt as UnixMetadataExt;
 #[cfg(windows)]
-use std::os::windows::ffi::OsStringExt;
-#[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1185,72 +1183,71 @@ fn opened_file_matches_checked_path(
     Ok(expected.dev() == opened.dev() && expected.ino() == opened.ino())
 }
 
-/// Windows 直接查询首个已打开 handle 的 normalized DOS final path。
+/// Windows compares the checked path and opened handle by stable volume/file identity.
 #[cfg(windows)]
 fn opened_file_matches_checked_path(
     checked_path: &Path,
     opened: &fs::File,
 ) -> Result<bool, EvaError> {
-    let final_path = windows_final_path(opened)?;
-    Ok(normalize_windows_path(&final_path) == normalize_windows_path(checked_path))
+    let checked = fs::File::open(checked_path).map_err(|error| {
+        EvaError::not_found("failed to open checked release evidence path")
+            .with_context("io_error", error.to_string())
+    })?;
+    Ok(windows_file_identity(&checked, "checked_path")?
+        == windows_file_identity(opened, "opened_handle")?)
 }
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+struct WindowsFileIdentity {
+    volume_serial_number: u64,
+    file_id: [u8; 16],
+}
+
+#[cfg(windows)]
+const WINDOWS_FILE_ID_INFO_CLASS: i32 = 18;
 
 #[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
-    #[link_name = "GetFinalPathNameByHandleW"]
-    fn get_final_path_name_by_handle(
+    #[link_name = "GetFileInformationByHandleEx"]
+    fn get_file_information_by_handle_ex(
         file: *mut std::ffi::c_void,
-        path: *mut u16,
-        path_length: u32,
-        flags: u32,
-    ) -> u32;
+        file_information_class: i32,
+        file_information: *mut std::ffi::c_void,
+        buffer_size: u32,
+    ) -> i32;
 }
 
-/// 从已打开 Windows handle 读取 normalized DOS final path。
+/// Reads the Win32 `FILE_ID_INFO` tuple for one already-open handle.
 #[cfg(windows)]
-fn windows_final_path(file: &fs::File) -> Result<PathBuf, EvaError> {
-    let mut buffer = vec![0_u16; 512];
-    loop {
-        // SAFETY: `file` remains open and buffer exposes writable UTF-16 storage of the
-        // declared length. Flags 0 request normalized DOS paths.
-        let length = unsafe {
-            get_final_path_name_by_handle(
-                file.as_raw_handle().cast(),
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                0,
-            )
-        };
-        if length == 0 {
-            return Err(
-                EvaError::not_found("failed to resolve opened release evidence handle")
-                    .with_context("io_error", std::io::Error::last_os_error().to_string()),
-            );
-        }
-        if (length as usize) < buffer.len() {
-            let path = std::ffi::OsString::from_wide(&buffer[..length as usize]);
-            return Ok(PathBuf::from(path));
-        }
-        buffer.resize(length as usize + 1, 0);
+fn windows_file_identity(
+    file: &fs::File,
+    identity_subject: &str,
+) -> Result<WindowsFileIdentity, EvaError> {
+    let mut identity = WindowsFileIdentity {
+        volume_serial_number: 0,
+        file_id: [0; 16],
+    };
+    // SAFETY: `file` stays open for the call and `identity` is a correctly sized,
+    // writable FILE_ID_INFO buffer for FileIdInfo (class 18).
+    let succeeded = unsafe {
+        get_file_information_by_handle_ex(
+            file.as_raw_handle().cast(),
+            WINDOWS_FILE_ID_INFO_CLASS,
+            (&mut identity as *mut WindowsFileIdentity).cast(),
+            std::mem::size_of::<WindowsFileIdentity>() as u32,
+        )
+    };
+    if succeeded == 0 {
+        return Err(
+            EvaError::not_found("failed to read release evidence file identity")
+                .with_context("identity_subject", identity_subject)
+                .with_context("io_error", std::io::Error::last_os_error().to_string()),
+        );
     }
-}
-
-/// Windows path identity comparison is separator- and ASCII-case-insensitive.
-#[cfg(windows)]
-fn normalize_windows_path(path: &Path) -> String {
-    let normalized = path
-        .to_string_lossy()
-        .replace('/', "\\")
-        .to_ascii_lowercase();
-    if let Some(path) = normalized.strip_prefix("\\\\?\\unc\\") {
-        format!("\\\\{path}")
-    } else {
-        normalized
-            .strip_prefix("\\\\?\\")
-            .unwrap_or(&normalized)
-            .to_owned()
-    }
+    Ok(identity)
 }
 
 /// 读取签名产物证据 manifest，并在 I/O/解析失败上附加文件路径。
@@ -1789,6 +1786,22 @@ mod evidence_path_tests {
         let opened = fs::File::open(&opened_path).unwrap();
 
         assert!(!opened_file_matches_checked_path(&checked_path, &opened).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    /// A Windows hard-link alias must compare by file identity rather than path spelling.
+    fn opened_handle_accepts_windows_hard_link_identity() {
+        let root = identity_fixture();
+        fs::create_dir_all(&root).unwrap();
+        let opened_path = root.join("opened.bin");
+        let checked_path = root.join("checked.bin");
+        fs::write(&opened_path, b"same-file").unwrap();
+        fs::hard_link(&opened_path, &checked_path).unwrap();
+        let opened = fs::File::open(&opened_path).unwrap();
+
+        assert!(opened_file_matches_checked_path(&checked_path, &opened).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 
