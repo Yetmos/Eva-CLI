@@ -1,6 +1,6 @@
 # eva-storage / 持久化存储边界
 
-更新时间：2026-07-09
+更新时间：2026-07-16
 
 ![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
 
@@ -12,9 +12,9 @@
 | --- | --- | --- |
 | EventLog | `EventLog`、`InMemoryEventLog`、`FileSystemEventLog` | 支持 append、ack、fail、watermark、按 sequence replay。重复 event id 返回 `Conflict`。filesystem backend 将记录保存到 durable backend 的 `events/log`。 |
 | EventLogRecord | `EventLogRecord`、`EventLogStatus` | 记录 sequence、原始 `Event`、消费 Agent、失败原因。 |
-| StateStore | `StateStore`、`InMemoryStateStore` | 支持 get、put、compare-and-set；版本从 1 单调递增。 |
-| StateRecord | `StateRecord`、`StateVersion` | 保存 key、value 和 CAS version。 |
-| TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 默认保存 `.eva/tasks` task snapshot，也可通过 `DurableBackendLayout` 使用 durable backend 的 `tasks/` 目录；支持按 task id、latest 或 snapshot 列表跨进程读取，并支持 task lifecycle 更新和日志追加。 |
+| StateStore | `StateStore`、`InMemoryStateStore`、`FileSystemStateStore` | 内存实现支持 get/put/CAS；文件实现要求 runtime writer ownership，在 OS lock 内持久化单调版本并原子替换。 |
+| StateRecord | `StateRecord`、`StateVersion`、`WriterGeneration` | 保存 key、value、CAS version 和提交该版本的 writer generation。 |
+| TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 默认保存 `.eva/tasks` task snapshot，也可使用 durable backend 的 `tasks/` 目录；权威 ID 文件携带 record version/generation，既有任务必须 CAS，latest 是原子刷新但不与 ID 文件组成跨文件事务的派生别名。 |
 | AuditSink | `FileSystemAuditSink`、`AuditRecord` | 将 `AuditEvent` 写入 durable backend `audit/` 目录，保存 action/outcome/trace/message/fields，并支持按 trace id 查询。 |
 | ArtifactStore | `ArtifactStore`、`ArtifactRecord`、`InMemoryArtifactStore`、`FileSystemArtifactStore` | 保存 bytes，并生成可重复 SHA-256 digest；filesystem backend 会落盘 bytes 和 v2 metadata，记录 size、content type、retention policy 和 retain-until timestamp，并在读取时重新校验 key、size 和 digest。 |
 | ProviderProcessTable | `ProviderProcessTable`、`ProviderProcessSnapshot`、`InMemoryProviderProcessTable`、`FileSystemProviderProcessTable` | 记录 provider session/process id、manifest digest、start command、health、last error、restart policy、retry backoff hint 和 audit；filesystem backend 写入 durable `state/provider-processes/`，供 daemon restart recovery 扫描。 |
@@ -30,13 +30,13 @@
 
 ```rust
 use eva_storage::{
-    EventLog, FileSystemEventLog, FileSystemTaskStateStore, InMemoryEventLog,
-    FileSystemProviderProcessTable, InMemoryProviderProcessTable, InMemoryStateStore,
-    ProviderProcessTable, StateStore,
+    DurableWriterGuard, EventLog, FileSystemEventLog, FileSystemStateStore,
+    FileSystemTaskStateStore, InMemoryEventLog, FileSystemProviderProcessTable,
+    InMemoryProviderProcessTable, InMemoryStateStore, ProviderProcessTable, StateStore,
 };
 ```
 
-主要 re-export 位于 `src/lib.rs`，下游 crate 不需要直接引用子模块路径。需要 durable event log 时使用 `FileSystemEventLog::open(backend.layout())`；需要兼容本地 task state 时使用 `FileSystemTaskStateStore::new(project_root)`；需要 durable backend task state 时使用 `FileSystemTaskStateStore::from_durable_layout(backend.layout())`；需要 durable artifact evidence 时使用 `FileSystemArtifactStore::new(path)`；需要 provider supervisor process table 时使用 `InMemoryProviderProcessTable::new()`；需要 daemon restart recovery 可扫描的 provider process table 时使用 `FileSystemProviderProcessTable::from_durable_layout(backend.layout())`。
+主要 re-export 位于 `src/lib.rs`，下游 crate 不需要直接引用子模块路径。需要 durable event log 时使用 `FileSystemEventLog::open(backend.layout())`；需要兼容本地 task state 时使用 `FileSystemTaskStateStore::new(project_root)`；durable task/state 的只读视图使用 `from_durable_layout`，写入使用 `from_writable_backend(&backend)`，或先调用 `backend.acquire_runtime_writer()` 并把同一 guard clone 传给多个 store；需要 durable artifact evidence 时使用 `FileSystemArtifactStore::new(path)`；需要 provider supervisor process table 时使用 `InMemoryProviderProcessTable::new()`；需要 daemon restart recovery 可扫描的 provider process table 时使用 `FileSystemProviderProcessTable::from_durable_layout(backend.layout())`。
 
 ## 验证
 
@@ -46,7 +46,7 @@ use eva_storage::{
 cargo test -p eva-storage
 ```
 
-已覆盖：事件 append/watermark、ack consumer、fail structured error、replay cursor、filesystem EventLog 跨 reopen、StateStore 版本冲突、TaskStateStore 跨 store 读写、snapshot 列表扫描、长任务 lifecycle 状态迁移、ArtifactStore digest round trip、filesystem artifact missing/tamper checks、legacy metadata 兼容、corrupt metadata 稳定错误，以及 ProviderProcessTable in-memory/filesystem upsert/list/release/restart interrupt。
+已覆盖：事件 append/watermark、ack consumer、fail structured error、replay cursor、filesystem EventLog 跨 reopen、真实双进程 runtime writer 竞争、generation 重开/损坏/耗尽、filesystem StateStore/TaskStateStore stale CAS、legacy task version 升级、latest 修复、原子替换故障保旧值、snapshot 列表与 lifecycle、ArtifactStore digest/missing/tamper/legacy/corrupt checks，以及 ProviderProcessTable in-memory/filesystem upsert/list/release/restart interrupt。
 
 ## V1.6.1 Durable Backend Baseline
 
@@ -54,7 +54,7 @@ cargo test -p eva-storage
 
 - `backend.manifest` records `schema_version=1` and layout version `eva.durable.v1`.
 - `events/`, `state/`, `tasks/`, `audit/`, and `artifacts/` are created and verified as stable directories.
-- `migration.lock` is acquired with `create_new` for read-write opens and released on drop.
+- `migration.lock` is a stable OS-lock anchor held only while a read-write open initializes or repairs the layout; a successful backend handle does not retain it.
 - read-only open verifies an existing backend without creating files or taking a lock.
 - `InMemoryDurableBackend` remains available as the test backend.
 
@@ -67,14 +67,30 @@ replay records by sequence and keeps the next sequence watermark monotonic.
 
 ## V1.6.3 Durable Task Store Adapter
 
-`FileSystemTaskStateStore` now has two entry points:
+`FileSystemTaskStateStore` now has three entry points:
 
 - `new(project_root)` keeps the compatible `.eva/tasks` diagnostic path.
 - `from_durable_layout(layout)` uses the V1.6 durable backend `tasks/`
-  directory for restart-readable task snapshots.
+  directory as a read-only restart view.
+- `from_writable_backend(backend)` acquires fenced runtime writer ownership for
+  versioned create/CAS mutations; `from_runtime_writer` shares one guard across stores.
 
 The CLI exposes this through `--durable-backend <path>` on `run --example basic`
 and `task status/logs/cancel`.
+
+## W1-L01 Durable Writer Ownership and CAS
+
+`FileSystemDurableBackend::acquire_runtime_writer()` locks the stable
+`runtime.writer.lock` anchor with an OS advisory lock, then atomically advances
+`runtime.writer.generation`. Guard clones share one process mutex, and the last
+clone releases the OS lock automatically. `FileSystemStateStore` and durable
+task mutations verify this generation before reading the current record version
+and replacing the record.
+
+Manifest, generation, state, task ID, and latest writes use a same-directory
+create-new temp file, `write_all`, `flush`, `sync_all`, and atomic replace. Unix
+also syncs the parent directory; Windows uses `MoveFileExW` with replace and
+write-through flags and never removes the destination before replacement.
 
 `FileSystemAuditSink::open(layout)` writes audit records under the same backend
 `audit/` directory. `query_by_trace_id` can retrieve records by span, request,

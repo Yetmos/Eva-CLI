@@ -137,9 +137,19 @@ pub(super) fn write_task_snapshot(
     durable_backend: Option<&Path>,
     report: &BasicRunReport,
 ) -> Result<(), EvaError> {
-    let snapshot = TaskStateSnapshot::from(&report.task);
+    let mut snapshot = TaskStateSnapshot::from(&report.task);
     let mut store = open_task_state_store(project_root, durable_backend, TaskStoreAccess::Write)?;
-    store.write(&snapshot)
+    match store.read(Some(&snapshot.task_id)) {
+        Ok(current) => {
+            snapshot.record_version = current.record_version;
+            snapshot.owner_generation = current.owner_generation;
+            store.compare_and_set(&snapshot).map(|_| ())
+        }
+        Err(error) if error.kind() == eva_core::ErrorKind::NotFound => {
+            store.create(&snapshot).map(|_| ())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// 将基础运行报告的任务部分转换为与 task 命令相同的 JSON 契约。
@@ -211,24 +221,24 @@ fn cancel_task_snapshot(
     task_id: Option<&str>,
     reason: &str,
 ) -> Result<TaskStateSnapshot, EvaError> {
-    let mut snapshot = read_task_snapshot(project_root, durable_backend, task_id)?;
-    snapshot.cancel_requested = true;
-    snapshot.cancel_reason = Some(reason.to_owned());
-    if snapshot.is_terminal() {
-        snapshot.cancel_accepted = false;
-        snapshot.push_log(
-            "warning",
-            "cancel requested after task reached a terminal state",
-        );
-    } else {
-        snapshot.cancel_accepted = true;
-        snapshot.status = "cancelled".to_owned();
-        snapshot.push_log("warning", format!("cancel accepted: {reason}"));
-    }
-
     let mut store = open_task_state_store(project_root, durable_backend, TaskStoreAccess::Write)?;
-    store.write(&snapshot)?;
-    Ok(snapshot)
+    let selected = store.read(task_id)?;
+    store.update_snapshot(&selected.task_id, |snapshot| {
+        snapshot.cancel_requested = true;
+        snapshot.cancel_reason = Some(reason.to_owned());
+        if snapshot.is_terminal() {
+            snapshot.cancel_accepted = false;
+            snapshot.push_log(
+                "warning",
+                "cancel requested after task reached a terminal state",
+            );
+        } else {
+            snapshot.cancel_accepted = true;
+            snapshot.status = "cancelled".to_owned();
+            snapshot.push_log("warning", format!("cancel accepted: {reason}"));
+        }
+        Ok(())
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,9 +265,12 @@ fn open_task_state_store(
         TaskStoreAccess::Write => DurableBackendOptions::read_write(root),
     };
     let backend = FileSystemDurableBackend::open(options)?;
-    Ok(FileSystemTaskStateStore::from_durable_layout(
-        backend.layout(),
-    ))
+    match access {
+        TaskStoreAccess::Read => Ok(FileSystemTaskStateStore::from_durable_layout(
+            backend.layout(),
+        )),
+        TaskStoreAccess::Write => FileSystemTaskStateStore::from_writable_backend(&backend),
+    }
 }
 
 /// 将任务错误映射为退出码并写出统一错误信封。

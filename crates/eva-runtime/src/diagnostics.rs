@@ -4,7 +4,8 @@
 use eva_core::EvaError;
 use eva_eventbus::DurableEventBus;
 use eva_storage::{
-    DurableBackend, DurableBackendOptions, EventLogStatus, FileSystemDurableBackend,
+    migration_lock_is_held, DurableBackend, DurableBackendOptions, EventLogStatus,
+    FileSystemDurableBackend,
 };
 use std::path::Path;
 
@@ -53,7 +54,7 @@ pub fn inspect_durable_backend(
     let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(root.as_ref()))?;
     let backend_report = backend.verify()?;
     let bus = DurableEventBus::open_read_only(backend.layout())?;
-    let migration_locked = backend.layout().migration_lock_path.exists();
+    let migration_locked = migration_lock_is_held(backend.layout())?;
     let pending_redrive_count = bus
         .dead_letters()
         .iter()

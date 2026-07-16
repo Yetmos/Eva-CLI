@@ -11,7 +11,7 @@ use eva_observability::{AuditAction, AuditEvent, AuditOutcome, AuditSink, TraceF
 use eva_scheduler::{decide_retry_backoff, RetryBackoffPolicy};
 use eva_storage::{
     EventLogStatus, FileSystemTaskStateStore, ProviderProcessSnapshot, ProviderProcessTable,
-    TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
+    TaskStateReplaySnapshot, TaskStateSnapshot,
 };
 
 /// 说明本模块承担的架构职责。
@@ -299,8 +299,8 @@ fn persist_recovered_snapshots(
     store: &mut FileSystemTaskStateStore,
     report: &mut RuntimeRecoveryReport,
 ) -> Result<(), EvaError> {
-    for snapshot in &report.recovered_snapshots {
-        store.write(snapshot)?;
+    for snapshot in &mut report.recovered_snapshots {
+        *snapshot = store.compare_and_set(snapshot)?;
     }
     report.audit.push(format!(
         "runtime.recovery:persisted:{}",
@@ -647,8 +647,8 @@ mod tests {
     use eva_observability::{SpanId, TraceFields};
     use eva_storage::{
         DurableBackendOptions, FileSystemAuditSink, FileSystemDurableBackend,
-        FileSystemProviderProcessTable, ProviderProcessTable, TaskStateDeadLetterSnapshot,
-        TaskStateLogSnapshot,
+        FileSystemProviderProcessTable, ProviderProcessTable, StateVersion,
+        TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateStore, WriterGeneration,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -741,7 +741,7 @@ mod tests {
         let root = test_root("audit-clean-start");
         let backend =
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
-        let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
         let mut audit = FileSystemAuditSink::open(backend.layout()).unwrap();
         let trace = TraceFields::default()
             .with_span_id(SpanId::parse("span-recovery-clean-start").unwrap());
@@ -774,7 +774,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
             let event = event("evt-recovery-redrive-1");
 
@@ -792,7 +792,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
 
             let report = RuntimeRecoveryCoordinator
@@ -833,7 +833,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
             let event = event("evt-recovery-audit-1");
 
@@ -851,7 +851,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
             let mut audit = FileSystemAuditSink::open(backend.layout()).unwrap();
             let trace = TraceFields::default()
@@ -890,7 +890,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
             let event = event("evt-recovery-acked-1");
 
@@ -910,7 +910,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
 
             let report = RuntimeRecoveryCoordinator
@@ -938,7 +938,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
             let event = event("evt-recovery-policy-1");
 
@@ -964,7 +964,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
 
             let report = RuntimeRecoveryCoordinator
@@ -993,7 +993,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
             let event = event("evt-recovery-already-redriven");
 
@@ -1017,7 +1017,7 @@ mod tests {
             let backend =
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
-            let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
 
             let report = RuntimeRecoveryCoordinator
@@ -1049,7 +1049,7 @@ mod tests {
             "task_id=req-corrupt\nstatus=running\nattempts=not-a-number\n",
         )
         .unwrap();
-        let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
 
         let error = RuntimeRecoveryCoordinator
             .recover_task_store(&mut store)
@@ -1064,7 +1064,7 @@ mod tests {
         let root = test_root("provider-interrupted");
         let backend =
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
-        let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
         let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
         let mut task = snapshot("req-provider-recovery-interrupted", "running");
         task.retry_max_attempts = 3;
@@ -1116,7 +1116,7 @@ mod tests {
         let root = test_root("provider-backoff");
         let backend =
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
-        let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
         let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
         let mut task = snapshot("req-provider-recovery-backoff", "running");
         task.attempts = 1;
@@ -1160,6 +1160,8 @@ mod tests {
     /// 返回 `snapshot` 对应的数据视图。
     fn snapshot(task_id: &str, status: &str) -> TaskStateSnapshot {
         TaskStateSnapshot {
+            record_version: StateVersion::ZERO,
+            owner_generation: WriterGeneration::ZERO,
             task_id: task_id.to_owned(),
             status: status.to_owned(),
             attempts: 1,

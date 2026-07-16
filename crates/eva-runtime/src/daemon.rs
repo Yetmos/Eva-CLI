@@ -1232,12 +1232,13 @@ pub fn start_daemon(
         &options.durable_backend,
     ))?;
     let durable_report = durable_backend.verify()?;
-    let mut task_store = FileSystemTaskStateStore::from_durable_layout(durable_backend.layout());
+    let mut task_store = FileSystemTaskStateStore::from_writable_backend(&durable_backend)?;
     let mut provider_process_table =
         FileSystemProviderProcessTable::from_durable_layout(durable_backend.layout());
     // 先消除崩溃遗留的运行中任务/提供者快照，再允许新控制请求观察到 running。
     let recovery = RuntimeRecoveryCoordinator
         .recover_task_store_with_provider_processes(&mut task_store, &mut provider_process_table)?;
+    drop(task_store);
     drop(durable_backend);
     record_daemon_recovery_observability(&options, trace, &recovery);
     let policy = verify_policy(project)?;
@@ -2097,9 +2098,7 @@ fn open_durable_task_store(
     let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
         &options.durable_backend,
     ))?;
-    Ok(FileSystemTaskStateStore::from_durable_layout(
-        backend.layout(),
-    ))
+    FileSystemTaskStateStore::from_writable_backend(&backend)
 }
 
 /// 为相关类型实现其约定的行为与方法。
@@ -2760,7 +2759,7 @@ mod tests {
                 &options.durable_backend,
             ))
             .unwrap();
-            let mut task_store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+            let mut task_store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
             let mut process_table =
                 FileSystemProviderProcessTable::from_durable_layout(backend.layout());
             let mut task = TaskStateSnapshot::queued("req-daemon-provider-recovery").unwrap();

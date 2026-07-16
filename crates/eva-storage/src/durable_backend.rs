@@ -1,24 +1,40 @@
-//! Durable backend 的 schema、目录布局、兼容校验与单写者 migration lock 基线。
-//! Durable backend schema, layout, and migration lock baseline.
+//! Durable backend 的 schema、目录布局、迁移互斥与长期 writer ownership。
+//! Durable backend schema, layout, migration exclusion, and writer ownership.
 
 use eva_core::EvaError;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 本模块的架构职责：定义持久化根布局，并在读写打开期间用文件系统 CAS 锁保护迁移。
+/// 本模块的架构职责：定义持久化根布局，短暂保护迁移，并提供长期 fenced writer ownership。
 /// Architectural responsibility for this module.
-pub const RESPONSIBILITY: &str = "durable backend schema, layout, and migration locks";
+pub const RESPONSIBILITY: &str =
+    "durable backend schema, layout, migration locks, and fenced writer ownership";
 
 /// 当前可读写的 manifest schema 版本；不匹配时拒绝打开，避免无迁移器的隐式升级。
 pub const CURRENT_DURABLE_SCHEMA_VERSION: u32 = 1;
 /// 当前目录布局协议标识，与数值 schema 分开校验。
 pub const DURABLE_LAYOUT_VERSION: &str = "eva.durable.v1";
+/// Writer generation 文件的磁盘格式。
+const WRITER_GENERATION_FORMAT: &str = "eva.writer-generation.v1";
+/// Runtime owner 文件的磁盘格式。
+const RUNTIME_OWNER_FORMAT: &str = "eva.runtime-owner.v1";
+/// 同一进程内临时文件和 owner token 的冲突消除计数器。
+static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// 长期 writer ownership 的单调 fencing generation；零表示没有 durable owner。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct WriterGeneration(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Durable backend 打开模式，决定是否创建目录和持有 migration lock。
+/// Durable backend 打开模式，决定是否允许布局初始化和获取 runtime writer ownership。
 pub enum DurableBackendMode {
-    /// 可创建/修改布局，并在句柄生命周期内独占 migration lock。
+    /// 可创建/迁移布局，并允许调用方显式获取 runtime writer ownership。
     ReadWrite,
     /// 只验证既有布局，不创建根目录或锁文件。
     ReadOnly,
@@ -61,8 +77,14 @@ pub struct DurableBackendLayout {
     pub root: PathBuf,
     /// Manifest 文件路径。
     pub manifest_path: PathBuf,
-    /// 读写打开期间的 migration lock 路径。
+    /// 布局初始化/迁移期间使用的固定 OS lock anchor 路径。
     pub migration_lock_path: PathBuf,
+    /// 长期 runtime writer ownership 的锁文件路径。
+    pub runtime_owner_path: PathBuf,
+    /// 最近一次成功取得 ownership 的诊断记录路径；活性仍以 OS lock 为准。
+    pub runtime_owner_record_path: PathBuf,
+    /// 跨 writer 生命周期持久化的单调 generation 路径。
+    pub writer_generation_path: PathBuf,
     /// Event 子树路径。
     pub event_dir: PathBuf,
     /// Runtime state 子树路径。
@@ -84,7 +106,7 @@ pub struct DurableBackendReport {
     pub layout_version: String,
     /// `read_write`、`read_only` 或 `in_memory`。
     pub mode: String,
-    /// 当前句柄是否持有 migration lock。
+    /// 报告生成时当前句柄是否仍持有 migration lock；成功打开后固定为 false。
     pub migration_locked: bool,
     /// Backend 根路径文本。
     pub root: String,
@@ -116,7 +138,7 @@ pub struct InMemoryDurableBackend {
 }
 
 #[derive(Debug)]
-/// 文件系统 backend 句柄；读写模式下通过 guard 持有 migration lock。
+/// 文件系统 backend 句柄；migration lock 只在 `open` 内部短暂持有。
 pub struct FileSystemDurableBackend {
     /// 从实际 manifest 解析的目录布局。
     layout: DurableBackendLayout,
@@ -124,15 +146,45 @@ pub struct FileSystemDurableBackend {
     manifest: DurableBackendManifest,
     /// 打开模式。
     mode: DurableBackendMode,
-    /// 读写模式的可选锁 guard；Drop 释放锁文件。
-    migration_lock: Option<MigrationLockGuard>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-/// migration lock 的 RAII 所有者，确保成功或失败退出作用域时都尝试释放。
+/// 可克隆的长期 writer ownership；最后一个 clone Drop 时释放 OS lock，固定锚点保留。
+#[derive(Debug, Clone)]
+pub struct DurableWriterGuard {
+    inner: Arc<DurableWriterGuardInner>,
+}
+
+#[derive(Debug)]
+struct DurableWriterGuardInner {
+    root: PathBuf,
+    owner_path: PathBuf,
+    owner_record_path: PathBuf,
+    generation_path: PathBuf,
+    owner_token: String,
+    generation: WriterGeneration,
+    _lock_file: File,
+    process_lock: Mutex<()>,
+}
+
+#[derive(Debug)]
+/// migration lock 的 RAII 所有者，File Drop 时由 OS 自动释放。
 struct MigrationLockGuard {
-    /// 已通过 `create_new` 独占创建的锁文件路径。
+    /// 固定锁锚点；文件句柄 Drop 时由 OS 自动释放 advisory lock。
+    _lock_file: File,
+    /// 锁文件路径，仅用于诊断。
+    _path: PathBuf,
+}
+
+/// 持有稳定 lock anchor 的进程级记录写锁。
+#[derive(Debug)]
+pub(crate) struct RecordWriteLock {
+    _lock_file: File,
+}
+
+#[derive(Debug)]
+struct PendingFileCleanup {
     path: PathBuf,
+    armed: bool,
 }
 
 impl DurableBackendMode {
@@ -147,6 +199,19 @@ impl DurableBackendMode {
     /// 判断模式是否禁止初始化、建目录和获取 migration lock。
     pub const fn is_read_only(self) -> bool {
         matches!(self, Self::ReadOnly)
+    }
+}
+
+impl WriterGeneration {
+    /// 没有 durable writer 的兼容/内存路径使用零 generation。
+    pub const ZERO: Self = Self(0);
+
+    /// 返回下一 generation；溢出时拒绝重新使用旧 fencing 值。
+    fn checked_next(self) -> Result<Self, EvaError> {
+        self.0
+            .checked_add(1)
+            .map(Self)
+            .ok_or_else(|| EvaError::conflict("durable writer generation exhausted"))
     }
 }
 
@@ -295,6 +360,9 @@ impl DurableBackendLayout {
         Self {
             manifest_path: root.join("backend.manifest"),
             migration_lock_path: root.join("migration.lock"),
+            runtime_owner_path: root.join("runtime.writer.lock"),
+            runtime_owner_record_path: root.join("runtime.writer.owner"),
+            writer_generation_path: root.join("runtime.writer.generation"),
             event_dir: root.join(&manifest.event_dir),
             state_dir: root.join(&manifest.state_dir),
             task_dir: root.join(&manifest.task_dir),
@@ -353,10 +421,9 @@ impl DurableBackend for InMemoryDurableBackend {
 impl FileSystemDurableBackend {
     /// 打开或初始化文件系统 backend。
     ///
-    /// 只读模式从不创建 root/manifest/目录或锁。读写模式先用 `create_new` 获取 migration lock
-    /// （文件系统级 compare-and-create），随后才初始化/读取 manifest 和目录；guard 在任何后续
-    /// 错误返回时自动 Drop。Manifest 当前直接写最终路径，不具备临时文件 rename 的崩溃原子性，
-    /// 因此重开会严格拒绝半写/损坏文件，而不会猜测修复。
+    /// 只读模式从不创建 root/manifest/目录或锁。读写模式只在布局初始化/修复期间持有
+    /// migration lock，manifest 通过已同步的同目录临时文件原子替换；成功返回的 backend
+    /// 不再持有 migration lock。业务写入必须另行获取长期 runtime writer ownership。
     pub fn open(options: DurableBackendOptions) -> Result<Self, EvaError> {
         let current_manifest = DurableBackendManifest::current();
         let current_layout = DurableBackendLayout::from_manifest(&options.root, &current_manifest);
@@ -382,14 +449,22 @@ impl FileSystemDurableBackend {
         };
 
         if !current_layout.manifest_path.exists() {
+            if options.mode.is_read_only() || !options.create_if_missing {
+                return Err(
+                    EvaError::not_found("durable backend manifest does not exist")
+                        .with_context("path", current_layout.manifest_path.display().to_string()),
+                );
+            }
             create_layout_dirs(&current_layout)?;
-            fs::write(&current_layout.manifest_path, current_manifest.to_storage()).map_err(
-                |error| {
-                    EvaError::internal("failed to write durable backend manifest")
-                        .with_context("path", current_layout.manifest_path.display().to_string())
-                        .with_context("io_error", error.to_string())
-                },
-            )?;
+            atomic_write(
+                &current_layout.manifest_path,
+                current_manifest.to_storage().as_bytes(),
+            )
+            .map_err(|error| {
+                EvaError::internal("failed to write durable backend manifest")
+                    .with_context("path", current_layout.manifest_path.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
         }
 
         let manifest = read_manifest(&current_layout.manifest_path)?;
@@ -401,9 +476,9 @@ impl FileSystemDurableBackend {
             layout,
             manifest,
             mode: options.mode,
-            migration_lock,
         };
         backend.verify()?;
+        drop(migration_lock);
         Ok(backend)
     }
 
@@ -416,7 +491,198 @@ impl FileSystemDurableBackend {
     pub fn mode(&self) -> DurableBackendMode {
         self.mode
     }
+
+    /// 显式获取长期 runtime writer ownership，并原子分配新的 fencing generation。
+    ///
+    /// `open(ReadWrite)` 本身不会获取该 ownership，避免同一 daemon 的只读/迁移打开与业务
+    /// writer 自冲突。返回的 guard 可克隆并传给多个 store；最后一个 clone Drop 时 OS 锁释放。
+    pub fn acquire_runtime_writer(&self) -> Result<DurableWriterGuard, EvaError> {
+        if self.mode.is_read_only() {
+            return Err(EvaError::conflict(
+                "read-only durable backend cannot acquire runtime writer ownership",
+            )
+            .with_context("root", self.layout.root.display().to_string()));
+        }
+        DurableWriterGuard::acquire(&self.layout)
+    }
 }
+
+impl DurableWriterGuard {
+    fn acquire(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&layout.runtime_owner_path)
+            .map_err(|error| {
+                EvaError::internal("failed to open durable runtime writer lock")
+                    .with_context("path", layout.runtime_owner_path.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+        lock_file.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => {
+                EvaError::conflict("durable runtime writer is already owned")
+                    .with_context("path", layout.runtime_owner_path.display().to_string())
+            }
+            TryLockError::Error(error) => {
+                EvaError::internal("failed to acquire durable runtime writer lock")
+                    .with_context("path", layout.runtime_owner_path.display().to_string())
+                    .with_context("io_error", error.to_string())
+            }
+        })?;
+        lock_file.sync_all().map_err(|error| {
+            writer_owner_io_error(
+                &layout.runtime_owner_path,
+                "failed to sync runtime writer lock anchor",
+                error,
+            )
+        })?;
+        sync_parent_directory(&layout.root).map_err(|error| {
+            writer_owner_io_error(
+                &layout.root,
+                "failed to sync runtime writer lock directory",
+                error,
+            )
+        })?;
+
+        let current_generation = read_writer_generation(&layout.writer_generation_path)?;
+        if current_generation == WriterGeneration::ZERO && layout.runtime_owner_record_path.exists()
+        {
+            return Err(EvaError::conflict(
+                "durable writer generation is missing after ownership was initialized",
+            )
+            .with_context(
+                "generation_path",
+                layout.writer_generation_path.display().to_string(),
+            )
+            .with_context(
+                "owner_path",
+                layout.runtime_owner_record_path.display().to_string(),
+            ));
+        }
+        let generation = current_generation.checked_next()?;
+        atomic_write(
+            &layout.writer_generation_path,
+            format!(
+                "format={WRITER_GENERATION_FORMAT}\ngeneration={}\n",
+                generation.0
+            )
+            .as_bytes(),
+        )
+        .map_err(|error| {
+            EvaError::internal("failed to persist durable writer generation")
+                .with_context("path", layout.writer_generation_path.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+
+        let owner_token = unique_token("writer", generation.0);
+        atomic_write(
+            &layout.runtime_owner_record_path,
+            format!(
+                "format={RUNTIME_OWNER_FORMAT}\nowner_token={owner_token}\ngeneration={}\npid={}\n",
+                generation.0,
+                std::process::id()
+            )
+            .as_bytes(),
+        )
+        .map_err(|error| {
+            writer_owner_io_error(
+                &layout.runtime_owner_record_path,
+                "failed to persist runtime writer metadata",
+                error,
+            )
+        })?;
+
+        Ok(Self {
+            inner: Arc::new(DurableWriterGuardInner {
+                root: layout.root.clone(),
+                owner_path: layout.runtime_owner_path.clone(),
+                owner_record_path: layout.runtime_owner_record_path.clone(),
+                generation_path: layout.writer_generation_path.clone(),
+                owner_token,
+                generation,
+                _lock_file: lock_file,
+                process_lock: Mutex::new(()),
+            }),
+        })
+    }
+
+    /// 返回该 owner 获得的单调 fencing generation。
+    pub fn generation(&self) -> WriterGeneration {
+        self.inner.generation
+    }
+
+    /// 返回 ownership 所属 durable backend 根。
+    pub fn root(&self) -> &Path {
+        &self.inner.root
+    }
+
+    /// 返回用于诊断同一 generation owner 的唯一 token。
+    pub fn owner_token(&self) -> &str {
+        &self.inner.owner_token
+    }
+
+    /// 重新读取持久 generation，拒绝已被后继 owner fence 的旧 guard。
+    pub fn verify_current(&self) -> Result<(), EvaError> {
+        let current = read_writer_generation(&self.inner.generation_path)?;
+        if current != self.inner.generation {
+            return Err(
+                EvaError::conflict("durable runtime writer generation is stale")
+                    .with_context("path", self.inner.owner_path.display().to_string())
+                    .with_context("expected", self.inner.generation.0.to_string())
+                    .with_context("actual", current.0.to_string()),
+            );
+        }
+        let fields = read_metadata_file(
+            &self.inner.owner_record_path,
+            "durable runtime writer owner",
+        )?;
+        let owner_generation = fields
+            .get("generation")
+            .and_then(|value| value.parse::<u64>().ok());
+        let owner_pid = fields
+            .get("pid")
+            .and_then(|value| value.parse::<u32>().ok());
+        if fields.len() != 4
+            || fields.get("format").map(String::as_str) != Some(RUNTIME_OWNER_FORMAT)
+            || fields.get("owner_token").map(String::as_str)
+                != Some(self.inner.owner_token.as_str())
+            || owner_generation != Some(self.inner.generation.0)
+            || owner_pid.is_none()
+        {
+            return Err(EvaError::conflict(
+                "durable runtime writer owner record is stale or invalid",
+            )
+            .with_context("path", self.inner.owner_record_path.display().to_string())
+            .with_context("expected_generation", self.inner.generation.0.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 串行化同一 owner 的 store 写入，并在进入提交区前执行 generation fencing。
+    pub(crate) fn with_write_lock<T>(
+        &self,
+        operation: impl FnOnce(WriterGeneration) -> Result<T, EvaError>,
+    ) -> Result<T, EvaError> {
+        let _guard = self.inner.process_lock.lock().map_err(|_| {
+            EvaError::internal("durable runtime writer process lock is poisoned")
+                .with_context("path", self.inner.owner_path.display().to_string())
+        })?;
+        self.verify_current()?;
+        operation(self.inner.generation)
+    }
+}
+
+impl PartialEq for DurableWriterGuard {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.root == other.inner.root
+            && self.inner.generation == other.inner.generation
+            && self.inner.owner_token == other.inner.owner_token
+    }
+}
+
+impl Eq for DurableWriterGuard {}
 
 impl DurableBackend for FileSystemDurableBackend {
     /// 返回已验证 manifest。
@@ -447,7 +713,7 @@ impl DurableBackend for FileSystemDurableBackend {
             schema_version: self.manifest.schema_version,
             layout_version: self.manifest.layout_version.clone(),
             mode: self.mode.as_str().to_owned(),
-            migration_locked: self.migration_lock.is_some(),
+            migration_locked: false,
             root: self.layout.root.display().to_string(),
             event_dir: self.layout.event_dir.display().to_string(),
             state_dir: self.layout.state_dir.display().to_string(),
@@ -476,45 +742,303 @@ fn create_layout_dirs(layout: &DurableBackendLayout) -> Result<(), EvaError> {
     Ok(())
 }
 
-/// 通过 `OpenOptions::create_new(true)` 原子争用单写者 migration lock。
-/// AlreadyExists 映射为 Conflict；锁内容记录预期 schema/layout 供人工诊断。锁文件创建后若
-/// 内容写入失败，局部 guard 尚未构造，当前实现可能留下锁文件，需要操作者确认后清理。
+/// 在固定锚点上争用 OS advisory lock；进程崩溃时由内核释放，不依赖删除锁文件。
 fn acquire_migration_lock(layout: &DurableBackendLayout) -> Result<MigrationLockGuard, EvaError> {
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
+        .read(true)
         .write(true)
-        .create_new(true)
+        .create(true)
+        .truncate(false)
         .open(&layout.migration_lock_path)
         .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                EvaError::conflict("durable backend migration lock already exists")
-                    .with_context("path", layout.migration_lock_path.display().to_string())
-            } else {
-                EvaError::internal("failed to create durable backend migration lock")
-                    .with_context("path", layout.migration_lock_path.display().to_string())
-                    .with_context("io_error", error.to_string())
-            }
+            EvaError::internal("failed to open durable backend migration lock")
+                .with_context("path", layout.migration_lock_path.display().to_string())
+                .with_context("io_error", error.to_string())
         })?;
-    file.write_all(
-        format!(
-            "schema_version={}\nlayout_version={}\n",
-            CURRENT_DURABLE_SCHEMA_VERSION, DURABLE_LAYOUT_VERSION
-        )
-        .as_bytes(),
-    )
-    .map_err(|error| {
-        EvaError::internal("failed to write durable backend migration lock")
+    file.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => {
+            EvaError::conflict("durable backend migration is already in progress")
+                .with_context("path", layout.migration_lock_path.display().to_string())
+        }
+        TryLockError::Error(error) => {
+            EvaError::internal("failed to acquire durable backend migration lock")
+                .with_context("path", layout.migration_lock_path.display().to_string())
+                .with_context("io_error", error.to_string())
+        }
+    })?;
+    file.sync_all().map_err(|error| {
+        EvaError::internal("failed to sync durable backend migration lock")
             .with_context("path", layout.migration_lock_path.display().to_string())
             .with_context("io_error", error.to_string())
     })?;
+    sync_parent_directory(&layout.root).map_err(|error| {
+        EvaError::internal("failed to sync durable backend migration lock directory")
+            .with_context("path", layout.root.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
     Ok(MigrationLockGuard {
-        path: layout.migration_lock_path.clone(),
+        _lock_file: file,
+        _path: layout.migration_lock_path.clone(),
     })
 }
 
-impl Drop for MigrationLockGuard {
-    /// 句柄释放或 open 后续失败展开栈时尽力删除锁；清理错误不会在 Drop 中 panic。
+/// 探测 migration lock 是否正被另一个进程持有；固定 lock 文件存在本身不表示 busy。
+pub fn migration_lock_is_held(layout: &DurableBackendLayout) -> Result<bool, EvaError> {
+    if !layout.migration_lock_path.exists() {
+        return Ok(false);
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&layout.migration_lock_path)
+        .map_err(|error| {
+            EvaError::internal("failed to inspect durable backend migration lock")
+                .with_context("path", layout.migration_lock_path.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+    match file.try_lock() {
+        Ok(()) => Ok(false),
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(error)) => Err(EvaError::internal(
+            "failed to inspect durable backend migration lock",
+        )
+        .with_context("path", layout.migration_lock_path.display().to_string())
+        .with_context("io_error", error.to_string())),
+    }
+}
+
+/// 在固定文件上获取自动随进程/句柄释放的 OS advisory lock。
+pub(crate) fn acquire_record_write_lock(path: &Path) -> Result<RecordWriteLock, EvaError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            EvaError::internal("failed to create durable record lock directory")
+                .with_context("path", parent.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|error| {
+            EvaError::internal("failed to open durable record lock")
+                .with_context("path", path.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+    file.lock().map_err(|error| {
+        EvaError::internal("failed to acquire durable record lock")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    Ok(RecordWriteLock { _lock_file: file })
+}
+
+fn read_writer_generation(path: &Path) -> Result<WriterGeneration, EvaError> {
+    let data = match fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(WriterGeneration::ZERO),
+        Err(error) => {
+            return Err(
+                EvaError::internal("failed to read durable writer generation")
+                    .with_context("path", path.display().to_string())
+                    .with_context("io_error", error.to_string()),
+            )
+        }
+    };
+    let fields = parse_metadata(&data, "durable writer generation")
+        .map_err(|error| error.with_context("path", path.display().to_string()))?;
+    if fields.len() != 2 {
+        return Err(
+            EvaError::conflict("durable writer generation has unexpected fields")
+                .with_context("path", path.display().to_string()),
+        );
+    }
+    if fields.get("format").map(String::as_str) != Some(WRITER_GENERATION_FORMAT) {
+        return Err(
+            EvaError::conflict("durable writer generation format is unsupported")
+                .with_context("path", path.display().to_string()),
+        );
+    }
+    let generation = fields
+        .get("generation")
+        .ok_or_else(|| EvaError::conflict("durable writer generation is incomplete"))?
+        .parse::<u64>()
+        .map_err(|_| {
+            EvaError::conflict("durable writer generation is invalid")
+                .with_context("path", path.display().to_string())
+        })?;
+    if generation == 0 {
+        return Err(
+            EvaError::conflict("persisted durable writer generation must be positive")
+                .with_context("path", path.display().to_string()),
+        );
+    }
+    Ok(WriterGeneration(generation))
+}
+
+fn parse_metadata(data: &str, label: &'static str) -> Result<BTreeMap<String, String>, EvaError> {
+    let mut fields = BTreeMap::new();
+    for line in data.lines().filter(|line| !line.is_empty()) {
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(EvaError::conflict(format!("{label} metadata is invalid")));
+        };
+        if key.is_empty() || fields.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(EvaError::conflict(format!(
+                "{label} metadata contains a duplicate or empty field"
+            ))
+            .with_context("field", key));
+        }
+    }
+    Ok(fields)
+}
+
+fn read_metadata_file(
+    path: &Path,
+    label: &'static str,
+) -> Result<BTreeMap<String, String>, EvaError> {
+    let data = fs::read_to_string(path).map_err(|error| {
+        EvaError::conflict(format!("{label} metadata cannot be read"))
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    parse_metadata(&data, label)
+        .map_err(|error| error.with_context("path", path.display().to_string()))
+}
+
+fn writer_owner_io_error(path: &Path, message: &'static str, error: io::Error) -> EvaError {
+    EvaError::internal(message)
+        .with_context("path", path.display().to_string())
+        .with_context("io_error", error.to_string())
+}
+
+fn unique_token(prefix: &str, generation: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let counter = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{prefix}-{}-{generation}-{now}-{counter}",
+        std::process::id()
+    )
+}
+
+/// 同目录 create-new temp -> write/flush/sync -> 原子替换 -> 目录同步。
+pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
+    atomic_write_with_replace(path, data, replace_file_atomically)
+}
+
+fn atomic_write_with_replace(
+    path: &Path,
+    data: &[u8],
+    replace: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    let (temp_path, mut file) = loop {
+        let mut temp_name = OsString::from(".");
+        temp_name.push(file_name);
+        temp_name.push(format!(
+            ".tmp-{}-{}",
+            std::process::id(),
+            UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let candidate = parent.join(temp_name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (candidate, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let mut cleanup = PendingFileCleanup {
+        path: temp_path.clone(),
+        armed: true,
+    };
+    file.write_all(data)?;
+    file.flush()?;
+    file.sync_all()?;
+    drop(file);
+    replace(&temp_path, path)?;
+    cleanup.armed = false;
+    sync_parent_directory(parent)
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both buffers are NUL-terminated UTF-16 and remain alive for the call.
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
+    fs::rename(source, target)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
+    fs::rename(source, target)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> io::Result<()> {
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+impl Drop for PendingFileCleanup {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -552,10 +1076,12 @@ fn validate_layout_segment(field: &'static str, value: &str) -> Result<String, E
 /// Backend 初始化、只读语义、版本兼容和 migration lock 生命周期回归测试。
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::process::{Child, Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
-    /// 验证首次读写打开创建 manifest、所有目录并持有锁。
+    /// 验证首次读写打开原子创建布局，并在返回前释放 migration lock。
     fn filesystem_backend_creates_layout_and_manifest() {
         let root = test_root("create-layout");
         let backend =
@@ -564,8 +1090,10 @@ mod tests {
 
         assert_eq!(report.schema_version, CURRENT_DURABLE_SCHEMA_VERSION);
         assert_eq!(report.mode, "read_write");
-        assert!(report.migration_locked);
+        assert!(!report.migration_locked);
+        assert!(!migration_lock_is_held(backend.layout()).unwrap());
         assert!(backend.layout().manifest_path.exists());
+        assert!(backend.layout().migration_lock_path.exists());
         assert!(backend.layout().event_dir.is_dir());
         assert!(backend.layout().artifact_dir.is_dir());
     }
@@ -585,7 +1113,8 @@ mod tests {
         assert_eq!(backend.mode(), DurableBackendMode::ReadOnly);
         assert_eq!(report.mode, "read_only");
         assert!(!report.migration_locked);
-        assert!(!backend.layout().migration_lock_path.exists());
+        assert!(backend.layout().migration_lock_path.exists());
+        assert!(!migration_lock_is_held(backend.layout()).unwrap());
     }
 
     #[test]
@@ -641,22 +1170,224 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
-        assert!(!root.path().join("migration.lock").exists());
+        let layout = DurableBackendLayout::current(root.path());
+        assert!(!migration_lock_is_held(&layout).unwrap());
     }
 
     #[test]
-    /// 验证 create_new 锁阻止第二写者，并在首句柄 Drop 后允许重试。
-    fn migration_lock_blocks_second_writer_until_drop() {
-        let root = test_root("migration-lock");
-        let first =
+    /// 验证两个 backend 可先后完成短 migration 阶段，但只有一个长期 runtime writer。
+    fn runtime_writer_is_distinct_from_migration_lock() {
+        let root = test_root("runtime-writer-lock");
+        let first_backend =
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let second_backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        assert!(!migration_lock_is_held(first_backend.layout()).unwrap());
 
-        let error = FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
-            .unwrap_err();
+        let first = first_backend.acquire_runtime_writer().unwrap();
+        assert_eq!(first.generation(), WriterGeneration(1));
+        let clone = first.clone();
+        let error = second_backend.acquire_runtime_writer().unwrap_err();
         assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
 
         drop(first);
-        FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        assert_eq!(
+            second_backend.acquire_runtime_writer().unwrap_err().kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        drop(clone);
+
+        let second = second_backend.acquire_runtime_writer().unwrap();
+        assert_eq!(second.generation(), WriterGeneration(2));
+        assert!(second_backend.layout().runtime_owner_path.exists());
+        assert!(second_backend.layout().runtime_owner_record_path.exists());
+        assert!(second_backend.layout().writer_generation_path.exists());
+    }
+
+    #[test]
+    /// 验证固定 migration anchor 的 OS lock 活性探测不依赖文件是否存在。
+    fn migration_lock_probe_observes_guard_lifetime() {
+        let root = test_root("migration-probe");
+        fs::create_dir_all(root.path()).unwrap();
+        let layout = DurableBackendLayout::current(root.path());
+        let guard = acquire_migration_lock(&layout).unwrap();
+
+        assert!(migration_lock_is_held(&layout).unwrap());
+        drop(guard);
+        assert!(!migration_lock_is_held(&layout).unwrap());
+    }
+
+    #[test]
+    /// 验证 generation 损坏和耗尽均 fail closed，且不会重置既有字节。
+    fn runtime_writer_rejects_corrupt_or_exhausted_generation() {
+        let root = test_root("generation-corrupt");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        fs::write(
+            &backend.layout().writer_generation_path,
+            "generation=broken\n",
+        )
+        .unwrap();
+        let corrupt = fs::read(&backend.layout().writer_generation_path).unwrap();
+
+        assert_eq!(
+            backend.acquire_runtime_writer().unwrap_err().kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        assert_eq!(
+            fs::read(&backend.layout().writer_generation_path).unwrap(),
+            corrupt
+        );
+
+        fs::write(
+            &backend.layout().writer_generation_path,
+            format!(
+                "format={WRITER_GENERATION_FORMAT}\ngeneration={}\n",
+                u64::MAX
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            backend.acquire_runtime_writer().unwrap_err().kind(),
+            eva_core::ErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    /// 已发布 owner 记录存在时，generation 丢失必须 fail closed，不能从 1 重新开始。
+    fn runtime_writer_does_not_reuse_deleted_generation() {
+        let root = test_root("generation-deleted");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        assert_eq!(writer.generation(), WriterGeneration(1));
+        drop(writer);
+        let owner_bytes = fs::read(&backend.layout().runtime_owner_record_path).unwrap();
+        fs::remove_file(&backend.layout().writer_generation_path).unwrap();
+
+        let error = backend.acquire_runtime_writer().unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert!(!backend.layout().writer_generation_path.exists());
+        assert_eq!(
+            fs::read(&backend.layout().runtime_owner_record_path).unwrap(),
+            owner_bytes
+        );
+    }
+
+    #[test]
+    /// 验证 replacement 返回失败时保留完整旧值并清除已同步的同目录临时文件。
+    fn atomic_write_failure_preserves_previous_record() {
+        let root = test_root("atomic-write-failure");
+        fs::create_dir_all(root.path()).unwrap();
+        let target = root.path().join("record.state");
+        atomic_write(&target, b"old-record\n").unwrap();
+
+        let error = atomic_write_with_replace(&target, b"new-record\n", |_, _| {
+            Err(io::Error::other("injected replace failure"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(fs::read(&target).unwrap(), b"old-record\n");
+        assert!(!fs::read_dir(root.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")
+        }));
+    }
+
+    #[test]
+    /// 验证两个真实测试进程同时竞争时恰好一个 writer，失败者不递增 generation。
+    fn two_processes_compete_for_one_runtime_writer() {
+        let root = test_root("two-process-writers");
+        drop(
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap(),
+        );
+        let start = root.path().join("start");
+        let release = root.path().join("release");
+        let outcome_a = root.path().join("outcome-a");
+        let outcome_b = root.path().join("outcome-b");
+        let mut child_a = spawn_writer_child(root.path(), &start, &release, &outcome_a);
+        let mut child_b = spawn_writer_child(root.path(), &start, &release, &outcome_b);
+        fs::write(&start, b"go").unwrap();
+
+        wait_for_path(&outcome_a, Duration::from_secs(10));
+        wait_for_path(&outcome_b, Duration::from_secs(10));
+        let outcomes = [
+            fs::read_to_string(&outcome_a).unwrap(),
+            fs::read_to_string(&outcome_b).unwrap(),
+        ];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|value| value.as_str() == "acquired")
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|value| value.as_str() == "conflict")
+                .count(),
+            1
+        );
+        let layout = DurableBackendLayout::current(root.path());
+        assert_eq!(
+            read_writer_generation(&layout.writer_generation_path).unwrap(),
+            WriterGeneration(1)
+        );
+
+        fs::write(&release, b"release").unwrap();
+        assert!(child_a.wait().unwrap().success());
+        assert!(child_b.wait().unwrap().success());
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        assert_eq!(
+            backend.acquire_runtime_writer().unwrap().generation(),
+            WriterGeneration(2)
+        );
+    }
+
+    #[test]
+    fn runtime_writer_process_child() {
+        let Ok(root) = std::env::var("EVA_STORAGE_WRITER_CHILD_ROOT") else {
+            return;
+        };
+        let start = PathBuf::from(std::env::var("EVA_STORAGE_WRITER_CHILD_START").unwrap());
+        let release = PathBuf::from(std::env::var("EVA_STORAGE_WRITER_CHILD_RELEASE").unwrap());
+        let outcome = PathBuf::from(std::env::var("EVA_STORAGE_WRITER_CHILD_OUTCOME").unwrap());
+        wait_for_path(&start, Duration::from_secs(10));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let backend = loop {
+            match FileSystemDurableBackend::open(DurableBackendOptions::read_write(&root)) {
+                Ok(backend) => break backend,
+                Err(error)
+                    if error.kind() == eva_core::ErrorKind::Conflict
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    fs::write(&outcome, format!("open-error:{}", error.kind().as_str())).unwrap();
+                    return;
+                }
+            }
+        };
+        match backend.acquire_runtime_writer() {
+            Ok(_writer) => {
+                fs::write(&outcome, b"acquired").unwrap();
+                wait_for_path(&release, Duration::from_secs(10));
+            }
+            Err(error) if error.kind() == eva_core::ErrorKind::Conflict => {
+                fs::write(&outcome, b"conflict").unwrap();
+            }
+            Err(error) => {
+                fs::write(&outcome, format!("writer-error:{}", error.kind().as_str())).unwrap();
+            }
+        }
     }
 
     #[test]
@@ -671,6 +1402,37 @@ mod tests {
         );
         assert_eq!(report.mode, "in_memory");
         assert!(!report.migration_locked);
+    }
+
+    fn spawn_writer_child(root: &Path, start: &Path, release: &Path, outcome: &Path) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "durable_backend::tests::runtime_writer_process_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("EVA_STORAGE_WRITER_CHILD_ROOT", root)
+            .env("EVA_STORAGE_WRITER_CHILD_START", start)
+            .env("EVA_STORAGE_WRITER_CHILD_RELEASE", release)
+            .env("EVA_STORAGE_WRITER_CHILD_OUTCOME", outcome)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    fn wait_for_path(path: &Path, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while !path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {}",
+                path.display()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// 测试临时根目录所有者。

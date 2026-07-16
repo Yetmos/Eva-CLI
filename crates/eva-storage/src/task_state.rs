@@ -1,8 +1,14 @@
 //! 跨进程任务快照、生命周期状态、日志/dead-letter/replay 与文件系统存储实现。
 //! Durable task state contracts and filesystem implementation.
 
+use crate::durable_backend::{
+    acquire_record_write_lock, atomic_write, DurableWriterGuard, FileSystemDurableBackend,
+    WriterGeneration,
+};
+use crate::state_store::StateVersion;
 use crate::DurableBackendLayout;
 use eva_core::{EvaError, RequestId};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +20,10 @@ pub const RESPONSIBILITY: &str = "durable task state interfaces and process-boun
 /// Stored task summary used by CLI task commands across process boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskStateSnapshot {
+    /// 权威 task ID 文件的持久 CAS 版本；零表示尚未创建/legacy 无版本记录。
+    pub record_version: StateVersion,
+    /// 提交该版本的 runtime writer generation；传统 `.eva/tasks` 路径使用零。
+    pub owner_generation: WriterGeneration,
     /// 同时作为 RequestId 和文件名主键的任务 ID。
     pub task_id: String,
     /// queued/running/cancelling/终态等稳定状态文本。
@@ -91,7 +101,7 @@ pub struct TaskStateReplaySnapshot {
 /// CLI/runtime 边界所需的 durable task state 行为。
 /// Durable task state behavior required by CLI/runtime boundaries.
 pub trait TaskStateStore {
-    /// 写入指定任务快照并更新 latest 别名；实现不承诺跨文件原子性。
+    /// 创建指定任务快照并更新 latest 别名；既有 ID 必须走显式 CAS。
     fn write(&mut self, snapshot: &TaskStateSnapshot) -> Result<(), EvaError>;
     /// 按 task ID 读取，None 表示读取 latest 别名。
     fn read(&self, task_id: Option<&str>) -> Result<TaskStateSnapshot, EvaError>;
@@ -105,6 +115,10 @@ pub struct FileSystemTaskStateStore {
     project_root: PathBuf,
     /// 实际 `.task` 文件目录。
     task_dir: PathBuf,
+    /// Durable backend 路径是否要求显式 writer ownership 才能 mutation。
+    durable_writer_required: bool,
+    /// 可写 durable store 持有的长期 ownership；clone 共享同一进程 mutex 和 OS lock。
+    writer: Option<DurableWriterGuard>,
 }
 
 impl TaskStateSnapshot {
@@ -113,6 +127,8 @@ impl TaskStateSnapshot {
         let task_id = task_id.into();
         RequestId::parse(&task_id)?;
         Ok(Self {
+            record_version: StateVersion::ZERO,
+            owner_generation: WriterGeneration::ZERO,
             task_id,
             status: "queued".to_owned(),
             attempts: 0,
@@ -134,9 +150,13 @@ impl TaskStateSnapshot {
 
     /// 序列化为逐行任务格式。
     /// 标量字段唯一；log/dead_letter/replay 以重复复合行保存顺序。特殊字符做百分号编码，
-    /// 可选值用空串表示 None。格式当前无显式 version，新增字段需保持旧解析器可忽略。
+    /// 可选值用空串表示 None。新记录带 format、record version 与 owner generation；旧记录
+    /// 缺少这些字段时按 version/generation 零读取，并只能通过一次成功 CAS 升级。
     pub fn to_storage(&self) -> String {
         let mut lines = vec![
+            "format=eva.task-state.v2".to_owned(),
+            format!("record_version={}", self.record_version.0),
+            format!("owner_generation={}", self.owner_generation.0),
             format!("task_id={}", encode_field(&self.task_id)),
             format!("status={}", encode_field(&self.status)),
             format!("attempts={}", self.attempts),
@@ -227,6 +247,8 @@ impl TaskStateSnapshot {
     /// 支持前向兼容。缺核心字段或损坏已知字段返回 InvalidArgument，不返回部分快照。
     pub fn from_storage(data: &str) -> Result<Self, EvaError> {
         let mut snapshot = Self {
+            record_version: StateVersion::ZERO,
+            owner_generation: WriterGeneration::ZERO,
             task_id: String::new(),
             status: String::new(),
             attempts: 0,
@@ -244,9 +266,26 @@ impl TaskStateSnapshot {
             dead_letters: Vec::new(),
             replayed_events: Vec::new(),
         };
+        let mut format = None;
+        let mut seen_scalars = BTreeSet::new();
 
         for line in data.lines().filter(|line| !line.trim().is_empty()) {
-            if let Some(value) = line.strip_prefix("task_id=") {
+            if let Some((key, _)) = line.split_once('=') {
+                if is_single_task_field(key) && !seen_scalars.insert(key.to_owned()) {
+                    return Err(EvaError::invalid_argument(
+                        "task state contains a duplicate scalar field",
+                    )
+                    .with_context("field", key));
+                }
+            }
+            if let Some(value) = line.strip_prefix("format=") {
+                format = Some(value.to_owned());
+            } else if let Some(value) = line.strip_prefix("record_version=") {
+                snapshot.record_version = StateVersion(parse_stored_u64("record_version", value)?);
+            } else if let Some(value) = line.strip_prefix("owner_generation=") {
+                snapshot.owner_generation =
+                    WriterGeneration(parse_stored_u64("owner_generation", value)?);
+            } else if let Some(value) = line.strip_prefix("task_id=") {
                 snapshot.task_id = decode_field(value);
             } else if let Some(value) = line.strip_prefix("status=") {
                 snapshot.status = decode_field(value);
@@ -300,6 +339,29 @@ impl TaskStateSnapshot {
 
         if snapshot.task_id.is_empty() || snapshot.status.is_empty() {
             return Err(EvaError::invalid_argument("task state file is incomplete"));
+        }
+        match format.as_deref() {
+            None if snapshot.record_version == StateVersion::ZERO
+                && snapshot.owner_generation == WriterGeneration::ZERO => {}
+            Some("eva.task-state.v2")
+                if snapshot.record_version != StateVersion::ZERO
+                    || snapshot.owner_generation == WriterGeneration::ZERO => {}
+            Some("eva.task-state.v2") => {
+                return Err(EvaError::invalid_argument(
+                    "uncommitted task state cannot have a durable owner generation",
+                ))
+            }
+            None => {
+                return Err(EvaError::invalid_argument(
+                    "legacy task state cannot contain version metadata",
+                ))
+            }
+            Some(value) => {
+                return Err(
+                    EvaError::invalid_argument("task state format is unsupported")
+                        .with_context("format", value),
+                )
+            }
         }
         Ok(snapshot)
     }
@@ -433,6 +495,8 @@ impl FileSystemTaskStateStore {
         Self {
             project_root,
             task_dir,
+            durable_writer_required: false,
+            writer: None,
         }
     }
 
@@ -441,7 +505,35 @@ impl FileSystemTaskStateStore {
         Self {
             project_root: layout.root.clone(),
             task_dir: layout.task_dir.clone(),
+            durable_writer_required: true,
+            writer: None,
         }
+    }
+
+    /// 使用与 layout 同根的 runtime writer ownership 创建可写 durable task store。
+    pub fn from_runtime_writer(
+        layout: &DurableBackendLayout,
+        writer: DurableWriterGuard,
+    ) -> Result<Self, EvaError> {
+        if writer.root() != layout.root {
+            return Err(EvaError::conflict(
+                "durable task writer belongs to a different backend root",
+            )
+            .with_context("layout_root", layout.root.display().to_string())
+            .with_context("writer_root", writer.root().display().to_string()));
+        }
+        writer.verify_current()?;
+        Ok(Self {
+            project_root: layout.root.clone(),
+            task_dir: layout.task_dir.clone(),
+            durable_writer_required: true,
+            writer: Some(writer),
+        })
+    }
+
+    /// 从读写 backend 获取新的 runtime ownership 并构造可写 task store。
+    pub fn from_writable_backend(backend: &FileSystemDurableBackend) -> Result<Self, EvaError> {
+        Self::from_runtime_writer(backend.layout(), backend.acquire_runtime_writer()?)
     }
 
     /// 返回 store 所属项目/backend 根。
@@ -457,6 +549,11 @@ impl FileSystemTaskStateStore {
     /// 按文件名排序加载所有 ID 快照，显式排除 `latest-basic.task` 别名避免重复。
     /// 目录缺失返回空集合；任一 `.task` 文件损坏使列表整体失败，避免恢复漏掉任务。
     pub fn list_snapshots(&self) -> Result<Vec<TaskStateSnapshot>, EvaError> {
+        self.list_records()
+    }
+
+    /// 按文件名排序加载所有带 record version/owner generation 的权威 ID 记录。
+    pub fn list_records(&self) -> Result<Vec<TaskStateSnapshot>, EvaError> {
         let dir = self.task_dir();
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -493,15 +590,29 @@ impl FileSystemTaskStateStore {
                         .with_context("path", path.display().to_string())
                         .with_context("io_error", error.to_string())
                 })?;
-                TaskStateSnapshot::from_storage(&data)
-                    .map_err(|error| error.with_context("path", path.display().to_string()))
+                let snapshot = TaskStateSnapshot::from_storage(&data)
+                    .map_err(|error| error.with_context("path", path.display().to_string()))?;
+                let expected_task_id = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| {
+                        EvaError::conflict("task state file name is not valid UTF-8")
+                            .with_context("path", path.display().to_string())
+                    })?;
+                if snapshot.task_id != expected_task_id {
+                    return Err(
+                        EvaError::conflict("task state file key does not match record")
+                            .with_context("path", path.display().to_string())
+                            .with_context("expected_task_id", expected_task_id)
+                            .with_context("actual_task_id", &snapshot.task_id),
+                    );
+                }
+                Ok(snapshot)
             })
             .collect()
     }
 
-    /// 对指定任务执行读-改-写并返回已提交快照。
-    /// 该操作没有 generation/CAS 或锁，多写者可能丢失更新；只适用于上层已串行化的任务 owner。
-    /// Closure 失败时不写盘；write 失败时返回错误而不声称更新成功。
+    /// 对指定任务执行带版本的读-改-CAS，并返回由 store stamp 的已提交快照。
     pub fn update_snapshot<F>(
         &mut self,
         task_id: &str,
@@ -511,9 +622,138 @@ impl FileSystemTaskStateStore {
         F: FnOnce(&mut TaskStateSnapshot) -> Result<(), EvaError>,
     {
         let mut snapshot = self.read(Some(task_id))?;
+        let expected_version = snapshot.record_version;
+        let expected_generation = snapshot.owner_generation;
         update(&mut snapshot)?;
-        self.write(&snapshot)?;
-        Ok(snapshot)
+        if snapshot.record_version != expected_version
+            || snapshot.owner_generation != expected_generation
+        {
+            return Err(EvaError::invalid_argument(
+                "task update cannot modify record version or owner generation",
+            ));
+        }
+        self.compare_and_set(&snapshot)
+    }
+
+    /// 只在权威 ID 文件不存在时创建 version 1 记录。
+    pub fn create(&mut self, snapshot: &TaskStateSnapshot) -> Result<TaskStateSnapshot, EvaError> {
+        if snapshot.record_version != StateVersion::ZERO {
+            return Err(EvaError::invalid_argument(
+                "new task state must start at record version zero",
+            )
+            .with_context("task_id", &snapshot.task_id)
+            .with_context("actual", snapshot.record_version.0.to_string()));
+        }
+        self.commit_snapshot(snapshot, StateVersion::ZERO, true)
+    }
+
+    /// 使用 snapshot 携带的 record version 作为 expected 值执行持久 CAS。
+    pub fn compare_and_set(
+        &mut self,
+        snapshot: &TaskStateSnapshot,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        self.commit_snapshot(snapshot, snapshot.record_version, false)
+    }
+
+    /// 从权威 ID 记录原子重建 latest 派生别名，不改变 record version。
+    pub fn refresh_latest(&mut self, task_id: &str) -> Result<TaskStateSnapshot, EvaError> {
+        RequestId::parse(task_id)?;
+        self.with_writer_transaction(|writer, _generation| {
+            let _record_lock = acquire_record_write_lock(&self.task_store_lock_path())?;
+            if let Some(writer) = writer {
+                writer.verify_current()?;
+            }
+            let snapshot = self.read(Some(task_id))?;
+            atomic_write(&self.latest_task_path(), snapshot.to_storage().as_bytes()).map_err(
+                |error| {
+                    EvaError::internal("failed to atomically refresh latest task state")
+                        .with_context("task_id", task_id)
+                        .with_context("io_error", error.to_string())
+                },
+            )?;
+            Ok(snapshot.clone())
+        })
+    }
+
+    fn commit_snapshot(
+        &self,
+        snapshot: &TaskStateSnapshot,
+        expected: StateVersion,
+        create_only: bool,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        RequestId::parse(&snapshot.task_id)?;
+        let dir = self.task_dir();
+        fs::create_dir_all(&dir).map_err(|error| {
+            EvaError::internal("failed to create task state directory")
+                .with_context("path", dir.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        self.with_writer_transaction(|writer, generation| {
+            let _record_lock = acquire_record_write_lock(&self.task_store_lock_path())?;
+            if let Some(writer) = writer {
+                writer.verify_current()?;
+            }
+            let canonical_path = self.task_path(&snapshot.task_id)?;
+            let current = read_optional_task_snapshot(&canonical_path)?;
+            if let Some(current) = &current {
+                if current.task_id != snapshot.task_id {
+                    return Err(
+                        EvaError::conflict("task state file key does not match record")
+                            .with_context("path", canonical_path.display().to_string())
+                            .with_context("expected_task_id", &snapshot.task_id)
+                            .with_context("actual_task_id", &current.task_id),
+                    );
+                }
+            }
+            if create_only && current.is_some() {
+                return Err(EvaError::conflict("task state already exists")
+                    .with_context("task_id", &snapshot.task_id));
+            }
+            let actual = current
+                .as_ref()
+                .map(|record| record.record_version)
+                .unwrap_or(StateVersion::ZERO);
+            if actual != expected {
+                return Err(EvaError::conflict("task state version conflict")
+                    .with_context("task_id", &snapshot.task_id)
+                    .with_context("expected", expected.0.to_string())
+                    .with_context("actual", actual.0.to_string()));
+            }
+            let mut committed = snapshot.clone();
+            committed.record_version = actual.checked_next()?;
+            committed.owner_generation = generation;
+            let data = committed.to_storage();
+            atomic_write(&canonical_path, data.as_bytes()).map_err(|error| {
+                EvaError::internal("failed to atomically write task state")
+                    .with_context("task_id", &snapshot.task_id)
+                    .with_context("path", canonical_path.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+            atomic_write(&self.latest_task_path(), data.as_bytes()).map_err(|error| {
+                EvaError::internal("failed to atomically write latest task state")
+                    .with_context("task_id", &snapshot.task_id)
+                    .with_context("canonical_committed", "true")
+                    .with_context("current_version", committed.record_version.0.to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+            Ok(committed)
+        })
+    }
+
+    fn with_writer_transaction<T>(
+        &self,
+        operation: impl FnOnce(Option<&DurableWriterGuard>, WriterGeneration) -> Result<T, EvaError>,
+    ) -> Result<T, EvaError> {
+        match self.writer.clone() {
+            Some(writer) => {
+                writer.with_write_lock(|generation| operation(Some(&writer), generation))
+            }
+            None if self.durable_writer_required => Err(EvaError::conflict(
+                "durable task mutation requires runtime writer ownership",
+            )
+            .with_context("root", self.project_root.display().to_string())),
+            None => operation(None, WriterGeneration::ZERO),
+        }
     }
 
     /// 返回兼容 CLI “最近任务”查询的固定别名路径。
@@ -526,49 +766,80 @@ impl FileSystemTaskStateStore {
         RequestId::parse(task_id)?;
         Ok(self.task_dir().join(format!("{task_id}.task")))
     }
+
+    fn task_store_lock_path(&self) -> PathBuf {
+        self.task_dir().join("task-state.cas.lock")
+    }
 }
 
 impl TaskStateStore for FileSystemTaskStateStore {
-    /// 先写任务 ID 文件，再覆盖 latest 别名。
-    ///
-    /// 两次 `fs::write` 都直接写最终路径，没有临时文件 rename，也不是跨文件原子事务；第二步
-    /// 失败时 ID 快照可能已更新而 latest 仍旧。调用方收到错误后应按 ID 核实，不能假定回滚。
+    /// 兼容入口只允许创建，禁止以无版本 blind upsert 覆盖既有任务。
     fn write(&mut self, snapshot: &TaskStateSnapshot) -> Result<(), EvaError> {
-        RequestId::parse(&snapshot.task_id)?;
-        let dir = self.task_dir();
-        fs::create_dir_all(&dir).map_err(|error| {
-            EvaError::internal("failed to create task state directory")
-                .with_context("path", dir.display().to_string())
-                .with_context("io_error", error.to_string())
-        })?;
-        let data = snapshot.to_storage();
-        fs::write(self.task_path(&snapshot.task_id)?, data.as_bytes()).map_err(|error| {
-            EvaError::internal("failed to write task state")
-                .with_context("task_id", snapshot.task_id.as_str())
-                .with_context("io_error", error.to_string())
-        })?;
-        fs::write(self.latest_task_path(), data.as_bytes()).map_err(|error| {
-            EvaError::internal("failed to write latest task state")
-                .with_context("task_id", snapshot.task_id.as_str())
-                .with_context("io_error", error.to_string())
-        })
+        self.create(snapshot).map(|_| ())
     }
 
     /// 读取 ID 快照或 latest 别名并严格解析。
-    /// 所有 I/O 失败当前映射为 NotFound 并附带建议；解析错误保持 InvalidArgument。
+    /// 缺失映射为 NotFound；其他 I/O 与解析错误保持原分类并携带路径。
     fn read(&self, task_id: Option<&str>) -> Result<TaskStateSnapshot, EvaError> {
         let path = match task_id {
             Some(task_id) => self.task_path(task_id)?,
             None => self.latest_task_path(),
         };
-        let data = fs::read_to_string(&path).map_err(|error| {
-            EvaError::not_found("task state does not exist")
-                .with_context("path", path.display().to_string())
-                .with_context("io_error", error.to_string())
-                .with_context("suggestion", "run `eva run --example basic` first")
-        })?;
-        TaskStateSnapshot::from_storage(&data)
+        let snapshot = read_task_snapshot(&path)?;
+        if let Some(expected_task_id) = task_id {
+            if snapshot.task_id != expected_task_id {
+                return Err(
+                    EvaError::conflict("task state file key does not match record")
+                        .with_context("path", path.display().to_string())
+                        .with_context("expected_task_id", expected_task_id)
+                        .with_context("actual_task_id", &snapshot.task_id),
+                );
+            }
+        }
+        Ok(snapshot)
     }
+}
+
+fn read_optional_task_snapshot(path: &Path) -> Result<Option<TaskStateSnapshot>, EvaError> {
+    match fs::read_to_string(path) {
+        Ok(data) => TaskStateSnapshot::from_storage(&data)
+            .map(Some)
+            .map_err(|error| error.with_context("path", path.display().to_string())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(EvaError::internal("failed to read task state")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())),
+    }
+}
+
+fn read_task_snapshot(path: &Path) -> Result<TaskStateSnapshot, EvaError> {
+    read_optional_task_snapshot(path)?.ok_or_else(|| {
+        EvaError::not_found("task state does not exist")
+            .with_context("path", path.display().to_string())
+            .with_context("suggestion", "run `eva run --example basic` first")
+    })
+}
+
+fn is_single_task_field(field: &str) -> bool {
+    matches!(
+        field,
+        "format"
+            | "record_version"
+            | "owner_generation"
+            | "task_id"
+            | "status"
+            | "attempts"
+            | "retry_max_attempts"
+            | "cancel_requested"
+            | "cancel_accepted"
+            | "cancel_reason"
+            | "heartbeat_at_ms"
+            | "deadline_at_ms"
+            | "cancel_token"
+            | "interrupted_reason"
+            | "error_kind"
+            | "error_message"
+    )
 }
 
 /// 按 `|` 拆分复合磁盘字段，并要求精确 arity。
@@ -664,13 +935,14 @@ mod tests {
         let mut writer = FileSystemTaskStateStore::new(root.path());
         let snapshot = sample_snapshot("req-task-state-1");
 
-        writer.write(&snapshot).unwrap();
+        let committed = writer.create(&snapshot).unwrap();
         let reader = FileSystemTaskStateStore::new(root.path());
         let by_id = reader.read(Some("req-task-state-1")).unwrap();
         let latest = reader.read(None).unwrap();
 
-        assert_eq!(by_id, snapshot);
-        assert_eq!(latest, snapshot);
+        assert_eq!(by_id, committed);
+        assert_eq!(latest, committed);
+        assert_eq!(committed.record_version, StateVersion(1));
         assert_eq!(reader.project_root(), root.path());
     }
 
@@ -680,7 +952,7 @@ mod tests {
         let root = test_root("cancel");
         let mut writer = FileSystemTaskStateStore::new(root.path());
         let mut snapshot = sample_snapshot("req-task-state-2");
-        writer.write(&snapshot).unwrap();
+        writer.create(&snapshot).unwrap();
 
         let reader = FileSystemTaskStateStore::new(root.path());
         snapshot = reader.read(Some("req-task-state-2")).unwrap();
@@ -688,13 +960,14 @@ mod tests {
         snapshot.cancel_accepted = false;
         snapshot.cancel_reason = Some("too late".to_owned());
         snapshot.push_log("warning", "cancel requested after terminal state");
-        writer.write(&snapshot).unwrap();
+        let committed = writer.compare_and_set(&snapshot).unwrap();
 
         let updated = reader.read(None).unwrap();
 
         assert!(updated.cancel_requested);
         assert_eq!(updated.cancel_reason.as_deref(), Some("too late"));
         assert_eq!(updated.logs.last().unwrap().level, "warning");
+        assert_eq!(committed.record_version, StateVersion(2));
     }
 
     #[test]
@@ -705,20 +978,132 @@ mod tests {
             crate::DurableBackendOptions::read_write(root.path()),
         )
         .unwrap();
-        let mut writer = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let mut writer = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
         let snapshot = sample_snapshot("req-task-state-durable-1");
 
-        writer.write(&snapshot).unwrap();
+        let committed = writer.create(&snapshot).unwrap();
         let reader = FileSystemTaskStateStore::from_durable_layout(backend.layout());
         let by_id = reader.read(Some("req-task-state-durable-1")).unwrap();
 
-        assert_eq!(by_id, snapshot);
+        assert_eq!(by_id, committed);
+        assert_eq!(by_id.record_version, StateVersion(1));
+        assert_eq!(
+            by_id.owner_generation,
+            writer.writer.as_ref().unwrap().generation()
+        );
         assert_eq!(reader.task_dir(), backend.layout().task_dir);
         assert!(backend
             .layout()
             .task_dir
             .join("req-task-state-durable-1.task")
             .is_file());
+    }
+
+    #[test]
+    /// 验证两份同版本快照中只有首个 CAS 成功，迟到版本不能覆盖权威 ID 或 latest。
+    fn durable_task_state_rejects_stale_record_version() {
+        let root = test_root("stale-cas");
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut first_store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let mut second_store = first_store.clone();
+        let created = first_store
+            .create(&sample_snapshot("req-task-state-stale"))
+            .unwrap();
+        let mut fresh = created.clone();
+        let mut stale = created;
+        fresh.status = "completed-fresh".to_owned();
+        stale.status = "completed-stale".to_owned();
+
+        let committed = first_store.compare_and_set(&fresh).unwrap();
+        let error = second_store.compare_and_set(&stale).unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(committed.record_version, StateVersion(2));
+        assert_eq!(
+            first_store.read(Some("req-task-state-stale")).unwrap(),
+            committed
+        );
+        assert_eq!(first_store.read(None).unwrap(), committed);
+    }
+
+    #[test]
+    /// 旧无版本记录只允许一次 version 0 -> 1 迁移，旧快照随后不能覆盖新状态。
+    fn legacy_task_state_is_migrated_once_by_cas() {
+        let root = test_root("legacy-version");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        fs::create_dir_all(store.task_dir()).unwrap();
+        let legacy = sample_snapshot("req-task-state-legacy")
+            .to_storage()
+            .lines()
+            .skip(3)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(store.task_path("req-task-state-legacy").unwrap(), &legacy).unwrap();
+        fs::write(store.latest_task_path(), legacy).unwrap();
+        let stale = store.read(Some("req-task-state-legacy")).unwrap();
+
+        let committed = store
+            .update_snapshot("req-task-state-legacy", |snapshot| {
+                snapshot.status = "migrated".to_owned();
+                Ok(())
+            })
+            .unwrap();
+        let error = store.compare_and_set(&stale).unwrap_err();
+
+        assert_eq!(stale.record_version, StateVersion::ZERO);
+        assert_eq!(committed.record_version, StateVersion(1));
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            store.read(Some("req-task-state-legacy")).unwrap(),
+            committed
+        );
+    }
+
+    #[test]
+    /// latest 替换失败时权威 ID 已提交且可通过显式 refresh 修复派生别名。
+    fn latest_failure_reports_canonical_commit_and_can_be_repaired() {
+        let root = test_root("latest-repair");
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        fs::create_dir_all(store.latest_task_path()).unwrap();
+        let task_id = "req-task-latest-repair";
+
+        let error = store.create(&sample_snapshot(task_id)).unwrap_err();
+
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "canonical_committed" && value == "true"));
+        let canonical = store.read(Some(task_id)).unwrap();
+        assert_eq!(canonical.record_version, StateVersion(1));
+        fs::remove_dir(store.latest_task_path()).unwrap();
+        assert_eq!(store.refresh_latest(task_id).unwrap(), canonical);
+        assert_eq!(store.read(None).unwrap(), canonical);
+    }
+
+    #[test]
+    /// 验证 durable layout 的只读构造不能绕过 runtime writer ownership 执行 mutation。
+    fn durable_task_state_layout_only_store_is_read_only() {
+        let root = test_root("layout-read-only");
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+
+        let error = store
+            .create(&sample_snapshot("req-task-layout-read-only"))
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
     }
 
     #[test]
@@ -833,6 +1218,8 @@ mod tests {
     /// 创建包含日志和 replay 的 completed 快照 fixture。
     fn sample_snapshot(task_id: &str) -> TaskStateSnapshot {
         TaskStateSnapshot {
+            record_version: StateVersion::ZERO,
+            owner_generation: WriterGeneration::ZERO,
             task_id: task_id.to_owned(),
             status: "completed".to_owned(),
             attempts: 1,

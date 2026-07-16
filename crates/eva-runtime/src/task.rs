@@ -3,7 +3,8 @@
 
 use eva_core::{EvaError, RequestId};
 use eva_storage::{
-    TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot,
+    StateVersion, TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateReplaySnapshot,
+    TaskStateSnapshot, WriterGeneration,
 };
 
 /// 中文：本模块统一任务执行报告与持久化快照之间的稳定映射。
@@ -263,6 +264,8 @@ impl From<&TaskReport> for TaskStateSnapshot {
     /// 中文：把内存任务报告完整映射为持久化快照，同时保留日志和死信诊断信息。
     fn from(report: &TaskReport) -> Self {
         Self {
+            record_version: StateVersion::ZERO,
+            owner_generation: WriterGeneration::ZERO,
             task_id: report.task_id.as_str().to_owned(),
             status: report.status.as_str().to_owned(),
             attempts: report.attempts,

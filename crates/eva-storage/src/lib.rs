@@ -15,8 +15,9 @@ pub use artifact_store::{
 };
 pub use audit_store::{AuditRecord, FileSystemAuditSink};
 pub use durable_backend::{
-    DurableBackend, DurableBackendLayout, DurableBackendManifest, DurableBackendMode,
-    DurableBackendOptions, DurableBackendReport, FileSystemDurableBackend, InMemoryDurableBackend,
+    migration_lock_is_held, DurableBackend, DurableBackendLayout, DurableBackendManifest,
+    DurableBackendMode, DurableBackendOptions, DurableBackendReport, DurableWriterGuard,
+    FileSystemDurableBackend, InMemoryDurableBackend, WriterGeneration,
     CURRENT_DURABLE_SCHEMA_VERSION, DURABLE_LAYOUT_VERSION,
 };
 pub use event_log::{
@@ -26,7 +27,9 @@ pub use provider_process::{
     FileSystemProviderProcessTable, InMemoryProviderProcessTable, ProviderProcessSnapshot,
     ProviderProcessTable,
 };
-pub use state_store::{InMemoryStateStore, StateRecord, StateStore, StateVersion};
+pub use state_store::{
+    FileSystemStateStore, InMemoryStateStore, StateRecord, StateStore, StateVersion,
+};
 pub use task_state::{
     FileSystemTaskStateStore, TaskStateDeadLetterSnapshot, TaskStateLogSnapshot,
     TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
