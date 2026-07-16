@@ -458,6 +458,7 @@ mod tests {
     use eva_core::RequestId;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -471,6 +472,30 @@ mod tests {
         authorization: Option<String>,
         /// 记录 `body_len` 字段对应的值。
         body_len: usize,
+    }
+
+    struct FakeCollector {
+        endpoint: String,
+        records: Arc<Mutex<Vec<FakeCollectorRecord>>>,
+        stop: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl FakeCollector {
+        fn stop_and_join(mut self) -> Arc<Mutex<Vec<FakeCollectorRecord>>> {
+            self.stop.store(true, Ordering::Release);
+            self.handle.take().unwrap().join().unwrap();
+            Arc::clone(&self.records)
+        }
+    }
+
+    impl Drop for FakeCollector {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
     }
 
     /// 执行 `sample_trace` 对应的处理逻辑。
@@ -513,61 +538,87 @@ mod tests {
     }
 
     /// 执行 `start_fake_collector` 对应的处理逻辑。
-    fn start_fake_collector(
-        expected_requests: usize,
-    ) -> (
-        String,
-        Arc<Mutex<Vec<FakeCollectorRecord>>>,
-        thread::JoinHandle<()>,
-    ) {
+    fn start_fake_collector() -> FakeCollector {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let records = Arc::new(Mutex::new(Vec::new()));
         let thread_records = Arc::clone(&records);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
         let handle = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(10);
-            while Instant::now() < deadline {
-                if thread_records.lock().unwrap().len() >= expected_requests {
-                    break;
-                }
+            let mut connection_handles = Vec::new();
+            while !thread_stop.load(Ordering::Acquire) && Instant::now() < deadline {
                 match listener.accept() {
-                    Ok((stream, _)) => handle_connection(stream, &thread_records),
+                    Ok((stream, _)) => {
+                        let connection_records = Arc::clone(&thread_records);
+                        let connection_stop = Arc::clone(&thread_stop);
+                        connection_handles.push(thread::spawn(move || {
+                            handle_connection(stream, &connection_records, &connection_stop);
+                        }));
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
                     }
                     Err(_) => break,
                 }
             }
+            for connection_handle in connection_handles {
+                connection_handle.join().unwrap();
+            }
         });
 
-        (endpoint, records, handle)
+        FakeCollector {
+            endpoint,
+            records,
+            stop,
+            handle: Some(handle),
+        }
     }
 
     /// 执行 `handle_connection` 对应的受控流程。
-    fn handle_connection(mut stream: TcpStream, records: &Arc<Mutex<Vec<FakeCollectorRecord>>>) {
+    fn handle_connection(
+        mut stream: TcpStream,
+        records: &Arc<Mutex<Vec<FakeCollectorRecord>>>,
+        stop: &Arc<AtomicBool>,
+    ) {
         stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(Duration::from_millis(50)))
             .unwrap();
         let mut data = Vec::new();
         let mut buffer = [0_u8; 1024];
-        loop {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
             match stream.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => {
                     data.extend_from_slice(&buffer[..read]);
-                    if request_complete(&data) {
-                        break;
+                    while let Some(request_len) = request_len(&data) {
+                        let request = data.drain(..request_len).collect::<Vec<_>>();
+                        record_request(&request, records);
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n",
+                            )
+                            .unwrap();
+                        stream.flush().unwrap();
                     }
                 }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
                 Err(_) => break,
             }
         }
+    }
 
-        let header_end = data
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .unwrap_or(data.len());
+    fn record_request(data: &[u8], records: &Arc<Mutex<Vec<FakeCollectorRecord>>>) {
+        let Some(header_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
+            return;
+        };
         let headers = String::from_utf8_lossy(&data[..header_end]);
         let path = headers
             .lines()
@@ -575,6 +626,9 @@ mod tests {
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or("")
             .to_owned();
+        if path.is_empty() {
+            return;
+        }
         let authorization = headers.lines().find_map(|line| {
             line.strip_prefix("authorization:")
                 .or_else(|| line.strip_prefix("Authorization:"))
@@ -585,45 +639,40 @@ mod tests {
             authorization,
             body_len: data.len().saturating_sub(header_end + 4),
         });
-
-        let _ =
-            stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
     }
 
-    /// 执行 `request_complete` 对应的处理逻辑。
-    fn request_complete(data: &[u8]) -> bool {
-        let Some(header_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
-            return false;
-        };
+    /// 执行 `request_len` 对应的处理逻辑。
+    fn request_len(data: &[u8]) -> Option<usize> {
+        let header_end = data.windows(4).position(|window| window == b"\r\n\r\n")?;
         let headers = String::from_utf8_lossy(&data[..header_end]);
         let content_length = headers
             .lines()
-            .find_map(|line| line.strip_prefix("content-length:"))
-            .or_else(|| {
-                headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("Content-Length:"))
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length").then_some(value)
             })
             .and_then(|value| value.trim().parse::<usize>().ok())
             .unwrap_or(0);
-        data.len() >= header_end + 4 + content_length
+        let request_len = header_end + 4 + content_length;
+        (data.len() >= request_len).then_some(request_len)
     }
 
     /// 验证 `opentelemetry_exporter_smoke_reaches_fake_collector` 场景下的预期行为。
     #[test]
     fn opentelemetry_exporter_smoke_reaches_fake_collector() {
-        let (endpoint, records, handle) = start_fake_collector(3);
+        let collector = start_fake_collector();
         let report = run_opentelemetry_exporter_smoke(
-            OpenTelemetryExporterConfig::new(endpoint).with_auth_header("Bearer test-token"),
+            OpenTelemetryExporterConfig::new(collector.endpoint.clone())
+                .with_auth_header("Bearer test-token"),
             &sample_trace(),
             &sample_metrics()[..2],
-        )
-        .unwrap();
+        );
 
-        handle.join().unwrap();
+        let records = collector.stop_and_join();
+        let report = report.unwrap();
         let records = records.lock().unwrap();
 
-        assert!(!report.degraded, "{report:?}");
+        assert!(!report.degraded, "{report:?}; records={records:?}");
         assert_eq!(report.spans_exported, 1);
         assert_eq!(report.metric_points_exported, 2);
         assert!(

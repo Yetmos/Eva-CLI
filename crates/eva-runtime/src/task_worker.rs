@@ -16,6 +16,8 @@ use eva_storage::{
 };
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(debug_assertions)]
+use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -2490,10 +2492,70 @@ fn dispatch_non_idempotent_attempt(
             worker_now_ms()?,
         )
         .map_err(|error| prepared_effect_error(error, intent.operation()))?;
+    pause_after_committed_effect_for_process_harness(envelope.kind().as_str(), task_id.as_str())?;
     Ok(ClaimedDispatchResult::EffectCommitted {
         result_digest: result.digest().to_owned(),
         result_size_bytes: result.size_bytes(),
     })
+}
+
+#[cfg(debug_assertions)]
+fn pause_after_committed_effect_for_process_harness(
+    task_kind: &str,
+    task_id: &str,
+) -> Result<(), EvaError> {
+    if task_kind != "runtime.process-effect" {
+        return Ok(());
+    }
+    let Some(root) = std::env::var_os("EVA_DAEMON_TEST_PROCESS_HARNESS_DIR") else {
+        return Ok(());
+    };
+    let root = std::path::PathBuf::from(root);
+    if !root
+        .join(format!("effect.pause-after-commit.{task_id}"))
+        .is_file()
+    {
+        return Ok(());
+    }
+    let committed = root.join(format!("effect.committed.{task_id}"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&committed)
+        .map_err(|error| {
+            EvaError::internal("failed to create committed-effect process harness marker")
+                .with_context("path", committed.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+    file.write_all(b"state=committed\n")
+        .and_then(|()| file.sync_all())
+        .map_err(|error| {
+            EvaError::internal("failed to sync committed-effect process harness marker")
+                .with_context("path", committed.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+
+    let release = root.join(format!("effect.commit-release.{task_id}"));
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !release.is_file() {
+        if Instant::now() >= deadline {
+            return Err(
+                EvaError::timeout("committed-effect process harness release timed out")
+                    .with_retryable(false),
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn pause_after_committed_effect_for_process_harness(
+    _task_kind: &str,
+    _task_id: &str,
+) -> Result<(), EvaError> {
+    Ok(())
 }
 
 fn effect_intent(

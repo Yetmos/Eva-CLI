@@ -18,10 +18,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
+        include:
+          - os: ubuntu-latest
+            evidence_os: linux
+          - os: windows-latest
+            evidence_os: windows
+          - os: macos-latest
+            evidence_os: macos
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,6 +33,44 @@ jobs:
         run: |
           rustc --version
           cargo --version
+
+      - name: Capture W1 runtime process evidence
+        shell: pwsh
+        env:
+          EVA_W1_SOURCE_COMMIT: ${{ github.sha }}
+          EVA_W1_RUN_ID: ${{ github.run_id }}
+          EVA_W1_RUN_ATTEMPT: ${{ github.run_attempt }}
+          EVA_W1_JOB: ${{ github.job }}
+          EVA_W1_OS: ${{ matrix.evidence_os }}
+        run: |
+          $evidence = Join-Path (Get-Location) ".eva/w1-runtime-evidence"
+          Remove-Item -LiteralPath $evidence -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $env:EVA_W1_EVIDENCE_DIR = $evidence
+          $env:EVA_W1_ARCH = $env:RUNNER_ARCH.ToLowerInvariant()
+          $env:EVA_W1_EXECUTOR = "github-actions:$env:EVA_W1_RUN_ID`:$env:EVA_W1_RUN_ATTEMPT`:$env:EVA_W1_JOB`:$env:EVA_W1_OS`:$env:EVA_W1_ARCH"
+          ./scripts/capture-release-evidence.ps1 `
+            -Executable cargo `
+            -ArgumentList @("test", "--test", "background_runtime", "w1_real_process_evidence_covers_required_scenarios", "--", "--ignored", "--exact", "--test-threads=1") `
+            -ManifestPath (Join-Path $evidence "suite.capture.json") `
+            -StdoutPath (Join-Path $evidence "suite.stdout") `
+            -StderrPath (Join-Path $evidence "suite.stderr") `
+            -TimeoutMilliseconds 300000 `
+            -CaptureId runtime-process
+          ./scripts/validate-runtime-process-evidence.ps1 `
+            -EvidencePath $evidence `
+            -ExpectedSourceCommit $env:EVA_W1_SOURCE_COMMIT `
+            -ExpectedRunId $env:EVA_W1_RUN_ID `
+            -ExpectedRunAttempt $env:EVA_W1_RUN_ATTEMPT
+
+      - name: Upload W1 runtime process evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w1-runtime-process-${{ matrix.evidence_os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .eva/w1-runtime-evidence
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Format check
         run: cargo fmt --check
@@ -58,6 +99,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./scripts/test-release-evidence-readback.ps1 -EvaExecutable target/debug/eva.exe
+
+      - name: Runtime process evidence contract
+        shell: pwsh
+        run: ./scripts/test-runtime-process-evidence.ps1
 
       - name: Daemon runtime smoke tests
         run: |
@@ -108,6 +153,39 @@ jobs:
           cargo run -- release security --output json
           cargo run -- release perf --output json
           cargo run -- release migration --output json
+
+  runtime-process-evidence:
+    name: W1 runtime process evidence aggregate
+    needs: rust
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download W1 platform evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: w1-runtime-process-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .eva/w1-runtime-evidence
+          merge-multiple: false
+
+      - name: Reverify exact three-platform W1 evidence
+        shell: pwsh
+        run: |
+          ./scripts/validate-runtime-process-evidence.ps1 `
+            -EvidencePath .eva/w1-runtime-evidence `
+            -ExpectedSourceCommit '${{ github.sha }}' `
+            -ExpectedRunId '${{ github.run_id }}' `
+            -ExpectedRunAttempt '${{ github.run_attempt }}'
+
+      - name: Upload verified W1 three-platform bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: w1-runtime-process-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .eva/w1-runtime-evidence
+          if-no-files-found: error
+          retention-days: 30
 
   website:
     name: Website and docs

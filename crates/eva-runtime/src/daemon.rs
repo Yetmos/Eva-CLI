@@ -2512,6 +2512,7 @@ fn start_daemon_inner(
     ))?;
     let durable_report = durable_backend.verify()?;
     // 固定 anchor 必须先于 durable writer 取得；guard 同时持有两层 ownership 到 daemon 退出。
+    let lease_ttl_ms = daemon_runtime_lease_ttl_ms(&options)?;
     let mut lease = if let Some(handshake) = startup_hooks.as_deref().map(|hooks| hooks.handshake) {
         DurableRuntimeLeaseGuard::acquire_with_process_start_token(
             &durable_backend,
@@ -2519,7 +2520,7 @@ fn start_daemon_inner(
             lease_file(&options),
             handshake.child_start_token(),
             now_ms(),
-            DEFAULT_RUNTIME_LEASE_TTL_MS,
+            lease_ttl_ms,
         )?
     } else {
         DurableRuntimeLeaseGuard::acquire(
@@ -2527,7 +2528,7 @@ fn start_daemon_inner(
             lock_file(&options),
             lease_file(&options),
             now_ms(),
-            DEFAULT_RUNTIME_LEASE_TTL_MS,
+            lease_ttl_ms,
         )?
     };
     delay_after_startup_lease_for_test()?;
@@ -2542,7 +2543,9 @@ fn start_daemon_inner(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
-    let task_handlers = Arc::new(TaskHandlerRegistry::with_runtime_defaults()?);
+    let mut task_handlers = TaskHandlerRegistry::with_runtime_defaults()?;
+    register_daemon_process_harness_handlers(&options, &mut task_handlers)?;
+    let task_handlers = Arc::new(task_handlers);
     let mut task_store =
         FileSystemTaskStateStore::from_runtime_writer(durable_backend.layout(), lease.writer())?;
     let mut effect_ledger =
@@ -3187,7 +3190,7 @@ fn run_control_loop(
     lease: &mut DurableRuntimeLeaseGuard,
     task_worker: &mut TaskWorkerRuntime,
 ) -> Result<DaemonControlLoopReport, EvaError> {
-    let heartbeat_interval = Duration::from_millis(DAEMON_LEASE_HEARTBEAT_INTERVAL_MS);
+    let heartbeat_interval = daemon_runtime_heartbeat_interval(options)?;
     let mut next_heartbeat = Instant::now() + heartbeat_interval;
     loop {
         task_worker.check_health()?;
@@ -4998,6 +5001,210 @@ fn is_canonical_sha256(value: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
     })
+}
+
+#[cfg(debug_assertions)]
+fn daemon_runtime_lease_ttl_ms(options: &DaemonStartOptions) -> Result<u128, EvaError> {
+    let Some(value) = std::env::var_os("EVA_DAEMON_TEST_LEASE_TTL_MS") else {
+        return Ok(DEFAULT_RUNTIME_LEASE_TTL_MS);
+    };
+    if !options.dev_mode {
+        return Err(EvaError::invalid_argument(
+            "daemon test lease ttl requires explicit dev mode",
+        ));
+    }
+    let ttl_ms = value
+        .to_str()
+        .ok_or_else(|| EvaError::invalid_argument("daemon test lease ttl is not utf-8"))?
+        .parse::<u128>()
+        .map_err(|_| EvaError::invalid_argument("daemon test lease ttl is invalid"))?;
+    if !(1_000..=DEFAULT_RUNTIME_LEASE_TTL_MS).contains(&ttl_ms) {
+        return Err(EvaError::invalid_argument(
+            "daemon test lease ttl is outside the supported range",
+        )
+        .with_context("minimum_ms", "1000")
+        .with_context("maximum_ms", DEFAULT_RUNTIME_LEASE_TTL_MS.to_string()));
+    }
+    Ok(ttl_ms)
+}
+
+#[cfg(debug_assertions)]
+fn daemon_runtime_heartbeat_interval(options: &DaemonStartOptions) -> Result<Duration, EvaError> {
+    let ttl_ms = daemon_runtime_lease_ttl_ms(options)?;
+    let interval_ms = if ttl_ms == DEFAULT_RUNTIME_LEASE_TTL_MS {
+        DAEMON_LEASE_HEARTBEAT_INTERVAL_MS
+    } else {
+        u64::try_from((ttl_ms / 3).max(1))
+            .map_err(|_| EvaError::internal("daemon test heartbeat interval overflowed"))?
+    };
+    Ok(Duration::from_millis(interval_ms))
+}
+
+#[cfg(not(debug_assertions))]
+fn daemon_runtime_lease_ttl_ms(_options: &DaemonStartOptions) -> Result<u128, EvaError> {
+    Ok(DEFAULT_RUNTIME_LEASE_TTL_MS)
+}
+
+#[cfg(not(debug_assertions))]
+fn daemon_runtime_heartbeat_interval(_options: &DaemonStartOptions) -> Result<Duration, EvaError> {
+    Ok(Duration::from_millis(DAEMON_LEASE_HEARTBEAT_INTERVAL_MS))
+}
+
+#[cfg(debug_assertions)]
+fn register_daemon_process_harness_handlers(
+    options: &DaemonStartOptions,
+    registry: &mut TaskHandlerRegistry,
+) -> Result<(), EvaError> {
+    let Some(root) = std::env::var_os("EVA_DAEMON_TEST_PROCESS_HARNESS_DIR") else {
+        return Ok(());
+    };
+    if !options.dev_mode {
+        return Err(EvaError::invalid_argument(
+            "daemon process harness handlers require explicit dev mode",
+        ));
+    }
+    let root = PathBuf::from(root);
+    let metadata = fs::symlink_metadata(&root).map_err(|error| {
+        EvaError::invalid_argument("daemon process harness directory is unavailable")
+            .with_context("path", root.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(EvaError::invalid_argument(
+            "daemon process harness path must be a real directory",
+        )
+        .with_context("path", root.display().to_string()));
+    }
+    let root = fs::canonicalize(&root).map_err(|error| {
+        EvaError::invalid_argument("daemon process harness directory cannot be canonicalized")
+            .with_context("path", root.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+
+    let restart_root = root.clone();
+    registry.register(
+        TaskKind::parse("runtime.process-restart")?,
+        move |invocation: &crate::TaskHandlerInvocation<'_>| {
+            let started = restart_root.join(format!("restart.started.{}", invocation.attempt()));
+            write_process_harness_marker(
+                &started,
+                format!(
+                    "task_id={}\nattempt={}\n",
+                    invocation.task_id().as_str(),
+                    invocation.attempt()
+                )
+                .as_bytes(),
+                false,
+            )?;
+            wait_for_process_harness_release(&restart_root.join("restart.release"), invocation)?;
+            Ok(crate::TaskHandlerResult::new(invocation.payload()))
+        },
+    )?;
+
+    let effect_root = root;
+    registry.register_non_idempotent(
+        TaskKind::parse("runtime.process-effect")?,
+        "runtime-process-effect-v1",
+        move |invocation: &crate::TaskHandlerInvocation<'_>| {
+            let task_id = invocation.task_id().as_str();
+            let applied = effect_root.join(format!("effect.applied.{task_id}"));
+            if let Err(error) = write_process_harness_marker(
+                &applied,
+                format!(
+                    "task_id={}\nattempt={}\n",
+                    invocation.task_id().as_str(),
+                    invocation.attempt()
+                )
+                .as_bytes(),
+                true,
+            ) {
+                write_process_harness_marker(
+                    &effect_root.join(format!("effect.duplicate.{task_id}")),
+                    error.to_string().as_bytes(),
+                    false,
+                )?;
+                return Err(EvaError::conflict(
+                    "daemon process harness effect was invoked more than once",
+                )
+                .with_retryable(false));
+            }
+            write_process_harness_marker(
+                &effect_root.join(format!("effect.started.{task_id}")),
+                format!("task_id={}\n", invocation.task_id().as_str()).as_bytes(),
+                false,
+            )?;
+            wait_for_process_harness_release(
+                &effect_root.join(format!("effect.release.{task_id}")),
+                invocation,
+            )?;
+            Ok(crate::TaskHandlerResult::new(invocation.payload()))
+        },
+    )?;
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn write_process_harness_marker(
+    path: &Path,
+    bytes: &[u8],
+    create_new: bool,
+) -> Result<(), EvaError> {
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if create_new {
+        options.create_new(true);
+    } else {
+        options.create(true).truncate(true);
+    }
+    let mut file = options.open(path).map_err(|error| {
+        EvaError::internal("failed to create daemon process harness marker")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    file.write_all(bytes).map_err(|error| {
+        EvaError::internal("failed to write daemon process harness marker")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    file.sync_all().map_err(|error| {
+        EvaError::internal("failed to sync daemon process harness marker")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })
+}
+
+#[cfg(debug_assertions)]
+fn wait_for_process_harness_release(
+    release: &Path,
+    invocation: &crate::TaskHandlerInvocation<'_>,
+) -> Result<(), EvaError> {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if release.is_file() {
+            return Ok(());
+        }
+        if invocation.cancellation().is_requested() {
+            return Err(
+                EvaError::unavailable("daemon process harness handler was cancelled")
+                    .with_retryable(false),
+            );
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                EvaError::timeout("daemon process harness handler release timed out")
+                    .with_retryable(false),
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn register_daemon_process_harness_handlers(
+    _options: &DaemonStartOptions,
+    _registry: &mut TaskHandlerRegistry,
+) -> Result<(), EvaError> {
+    Ok(())
 }
 
 #[cfg(debug_assertions)]

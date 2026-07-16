@@ -163,6 +163,7 @@ name = "eva"
 version = "1.11.5-alpha"
 dependencies = [
  "eva-cli",
+ "eva-release",
 ]
 
 [[package]]
