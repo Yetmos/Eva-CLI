@@ -2334,13 +2334,21 @@ fn start_daemon_inner(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
+    let task_handlers = Arc::new(TaskHandlerRegistry::with_runtime_defaults()?);
     let mut task_store =
         FileSystemTaskStateStore::from_runtime_writer(durable_backend.layout(), lease.writer())?;
+    let mut effect_ledger =
+        FileSystemEffectLedger::open_with_writer(durable_backend.layout(), lease.writer())?;
     let mut provider_process_table =
         FileSystemProviderProcessTable::from_durable_layout(durable_backend.layout());
-    // 先消除崩溃遗留的运行中任务/提供者快照，再允许新控制请求观察到 running。
+    // Handler/effect facts must classify abandoned tasks before provider recovery or worker startup.
     let recovery = RuntimeRecoveryCoordinator
-        .recover_task_store_with_provider_processes(&mut task_store, &mut provider_process_table)?;
+        .recover_task_store_with_effects_and_provider_processes(
+            &mut task_store,
+            task_handlers.as_ref(),
+            &mut effect_ledger,
+            &mut provider_process_table,
+        )?;
     drop(task_store);
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
@@ -2390,7 +2398,6 @@ fn start_daemon_inner(
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
     let mut runtime = RuntimeBuilder::new().build(project)?;
-    let task_handlers = Arc::new(TaskHandlerRegistry::with_runtime_defaults()?);
     let task_artifacts = Arc::new(FileSystemTaskArtifactResolver::with_default_limit(
         &durable_backend.layout().artifact_dir,
     ));
@@ -2403,8 +2410,6 @@ fn start_daemon_inner(
         )?;
         let task_failure_bus =
             DurableEventBus::open_with_writer(durable_backend.layout(), lease.writer())?;
-        let effect_ledger =
-            FileSystemEffectLedger::open_with_writer(durable_backend.layout(), lease.writer())?;
         Some(TaskWorkerRuntime::start_paused_with_durable_services(
             task_store,
             Arc::clone(&task_handlers),
@@ -2566,6 +2571,7 @@ fn daemon_start_audit(
         "daemon:v1.13.5:provider_recovery_scanned".to_owned(),
         "daemon:v1.15.4:hardware_hotplug_subscriber_ready".to_owned(),
         "daemon:v1.15.6:memory_maintenance_ready".to_owned(),
+        "daemon:w1-l10:effect_aware_recovery_ready".to_owned(),
         format!(
             "daemon:w1-l05:task_handler_registry_ready:{}",
             task_handlers.registered_kinds().join(",")
@@ -5885,8 +5891,11 @@ mod tests {
         let report = daemon.join().unwrap().unwrap();
         let report_debug = format!("{report:?}");
         assert!(!report_debug.contains(&leaked_recovery_bytes));
-        assert!(report_debug.contains("bytes: \"<redacted>\""));
-        assert!(report_debug.contains("size_bytes: 26"));
+        assert!(report
+            .recovery
+            .unchanged_tasks
+            .iter()
+            .any(|task_id| task_id == "req-daemon-debug-recovery"));
 
         let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
             &options.durable_backend,
@@ -5895,9 +5904,13 @@ mod tests {
         let reopened = FileSystemTaskStateStore::from_durable_layout(backend.layout())
             .read(Some("req-daemon-envelope-persisted"))
             .unwrap();
+        let queued_recovery = FileSystemTaskStateStore::from_durable_layout(backend.layout())
+            .read(Some("req-daemon-debug-recovery"))
+            .unwrap();
         assert_eq!(reopened.envelope, Some(expected));
         assert_eq!(reopened.retry_max_attempts, 3);
         assert_eq!(reopened.owner_generation.0, report.lease.generation);
+        assert_eq!(queued_recovery.status, "completed");
 
         fs::remove_dir_all(root).ok();
     }
@@ -5993,6 +6006,100 @@ mod tests {
             released.record().map(DurableRuntimeLeaseRecord::state),
             Some(DurableRuntimeLeaseState::Released)
         );
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_restart_requeues_abandoned_echo_before_ready_and_completes_it() {
+        let _daemon_test_guard = daemon_test_guard();
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("restart-abandoned-echo");
+        let options = daemon_options(&root, false);
+        let task_id = "req-daemon-restart-abandoned-echo";
+        let payload = b"restart-abandoned-echo".to_vec();
+        {
+            let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+                &options.durable_backend,
+            ))
+            .unwrap();
+            let writer = backend.acquire_runtime_writer().unwrap();
+            let mut store =
+                FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer).unwrap();
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope(
+                        task_id,
+                        sample_task_envelope(payload.clone()).to_snapshot(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            store
+                .try_claim_queued(
+                    task_id,
+                    "daemon.crashed.worker",
+                    "cancel.crashed.worker",
+                    now_ms(),
+                )
+                .unwrap()
+                .unwrap();
+        }
+
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default().with_request_id(
+                    RequestId::parse("req-daemon-restart-abandoned-loop").unwrap(),
+                ),
+            )
+        });
+        wait_for_daemon_available(&options);
+
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let started_at = Instant::now();
+        let completed = loop {
+            let snapshot = store.read(Some(task_id)).unwrap();
+            if snapshot.status == "completed" {
+                break snapshot;
+            }
+            assert!(
+                started_at.elapsed() < Duration::from_secs(3),
+                "recovered daemon task remained in status {}",
+                snapshot.status
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(completed.attempts, 2);
+        assert_eq!(completed.result_size_bytes, Some(payload.len()));
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-restart-abandoned-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-restart-abandoned-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        let report = daemon.join().unwrap().unwrap();
+        assert!(report.recovery.recovered_tasks.iter().any(|task| {
+            task.task_id == task_id && task.previous_status == "running" && task.status == "queued"
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "daemon:w1-l10:effect_aware_recovery_ready"));
 
         fs::remove_dir_all(root).ok();
     }

@@ -128,11 +128,22 @@ replay 的持久身份、调度与执行分别由三个边界负责：
 - 取消先于 prepare 时不调用 handler；两个 worker/两个 task 竞争同一业务 key 时只有一个能建立执行许可。
 - failure replay 持久保留原业务 key；旧 `.dead` 缺字段时仅在原 TaskState、failure event、dead-letter summary、kind、Agent 与 payload digest 全部匹配后兼容恢复。
 
-W1-L09 不负责 daemon 崩溃后把原 running task 从 Committed ledger 补成 completed，也不负责 Prepared/Unknown 的 operator workflow；这两项仍属于 W1-L10。
+W1-L09 的 handler-time 去重边界由 W1-L10 的 restart-time 分类补全。
+
+## W1-L10 Effect-Aware Crash Recovery
+
+daemon 在 ready 和 worker claim 之前冻结 handler registry、打开同一 writer 下的 effect ledger，并按持久事实分类每个旧 generation task：
+
+- 已注册 pure/idempotent handler 与非幂等 handler 的 ledger Absent 分支，在 attempt 预算仍存在且无取消/死信时清除旧 fence 并重排；普通 queued 保持 queued，unknown handler 保守中断。
+- Prepared 表示外部结果未知，转为携带 operation digest 的稳定 `interrupted` 人工核对状态；普通/replay 恢复和后续 generation 均不能自动重排。
+- Committed 的 result digest/size 是最高优先级业务事实，可把旧 running、failed、timed_out、cancelled 等矛盾状态补成 completed，且不调用 handler。
+- effect identity collision、损坏 ledger、当前 writer generation 抢占均失败关闭；provider recovery 不覆盖 queued、Committed completed 或 Prepared operator block。
+
+任务恢复决定先于 provider inactive record 持久化，后一步失败时下次启动仍可幂等重做。完成分类后，同一个 `FileSystemEffectLedger` 被移交 paused worker；`daemon:w1-l10:effect_aware_recovery_ready` 记录该 ready 前边界。
 
 ## V1.13.5 Provider Execution Recovery
 
-`RuntimeRecoveryCoordinator::recover_task_store_with_provider_processes()` 同时读取
+`RuntimeRecoveryCoordinator::recover_task_store_with_effects_and_provider_processes()` 同时读取
 `FileSystemTaskStateStore` 和 `ProviderProcessTable`。恢复语义保持保守：
 
 - active provider session 会被标记为 inactive + `health=interrupted`，并追加 recovery audit；
@@ -145,7 +156,7 @@ W1-L09 不负责 daemon 崩溃后把原 running task 从 Committed ledger 补成
 
 - 当前 daemon 路径提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload state、provider execution-state recovery、manifest snapshot hotplug subscriber、一次性 memory/knowledge maintenance 和 best-effort observability wiring；不提供生产后台 service-manager 集成、远程网络监听、OS provider process supervisor、真实 OS hotplug watcher、长驻 memory scheduler、生产级 OTel/数据库 sink 或完整 scheduler apply。
 - recovery checkpoint 已恢复 task/event/audit evidence 和 durable provider process snapshots，但不会重启或杀死真实 OS provider 进程；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
-- W1-L08 已保证绑定 replay 的 handler-success-only ACK、失败续跑和 replay delivery 跨 generation 重排；W1-L09 已为显式注册的非幂等 handler 提供 Prepared/Committed 去重边界。基于 ledger 的 crash 分类/终态修复与有 deadline 的 shutdown drain 仍分别由 W1-L10、W1-L11 承接。
+- W1-L08 已保证绑定 replay 的 handler-success-only ACK、失败续跑和 replay delivery 跨 generation 重排；W1-L09/W1-L10 已完成非幂等 effect ledger 与基于该 ledger 的 crash 分类/终态修复。有 deadline 的 shutdown drain 仍由 W1-L11 承接。
 - Lua 执行已使用受限真实 VM，并具备 host binding、资源限制和 generation lifecycle；当前 daemon reload 记录 generation route/drain 状态，但不等同于生产级进程内 VM 热替换。
 - Adapter、MCP、Discovery、Memory、Hardware、Backup 和 Lifecycle 已有受控 1.x 实现并由 CLI/runtime 按场景组合；真实 OS provider supervision、raw hardware I/O 和生产 service-manager handoff 仍在边界之外。
 
@@ -159,4 +170,4 @@ cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```
 
-已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit、corrupt-store smoke、V1.13.5 provider interrupted/backoff recovery、daemon start provider recovery smoke、V1.15.4 hotplug subscriber state 重启一致性、V1.15.6 memory/knowledge maintenance smoke、V1.16.1 daemon control/task/scheduler retry observability smoke，以及 W1-L02 mailbox v1/v2、TaskEnvelope 停机重开、poison request 隔离、W1-L06 双 worker claim/ready gate/panic/timeout/cancel 终态/shutdown claim gate/真实 daemon echo 执行、W1-L07 heartbeat 与 cancel/finish CAS 竞争、活 worker 续租、竞争 worker 不抢占、freshness 阈值和 CLI live/stale/not-applicable 输出，以及 W1-L08 无 binding 不 ACK、handler 失败重开续跑、Appended replay 恢复、fan-out 只重试失败项、持久 backoff、跨 generation delivery 恢复和并发 failure-intent 补偿。
+已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit、corrupt-store smoke、V1.13.5 provider interrupted/backoff recovery、daemon start provider recovery smoke、V1.15.4 hotplug subscriber state 重启一致性、V1.15.6 memory/knowledge maintenance smoke、V1.16.1 daemon control/task/scheduler retry observability smoke，以及 W1-L02 mailbox v1/v2、TaskEnvelope 停机重开、poison request 隔离、W1-L06 双 worker claim/ready gate/panic/timeout/cancel 终态/shutdown claim gate/真实 daemon echo 执行、W1-L07 heartbeat 与 cancel/finish CAS 竞争、活 worker 续租、竞争 worker 不抢占、freshness 阈值和 CLI live/stale/not-applicable 输出，W1-L08 无 binding 不 ACK、handler 失败重开续跑、Appended replay 恢复、fan-out 只重试失败项、持久 backoff、跨 generation delivery 恢复和并发 failure-intent 补偿，W1-L09 effect prepare/commit/复用，以及 W1-L10 Absent 重排、Prepared 人工阻断、Committed 补终态、provider 优先级、重复恢复、identity collision/current-generation 门禁和真实 daemon abandoned task 重启完成。

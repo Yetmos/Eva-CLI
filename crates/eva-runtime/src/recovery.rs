@@ -5,13 +5,15 @@
 //! 时间和最新 replay 记录，以事件日志作为跨重启幂等边界。
 //! V1.6.4 runtime crash recovery coordinator.
 
+use crate::{TaskHandlerRegistry, TaskKind};
 use eva_core::{EvaError, EventId};
 use eva_eventbus::DurableEventBus;
 use eva_observability::{AuditAction, AuditEvent, AuditOutcome, AuditSink, TraceFields};
 use eva_scheduler::{decide_retry_backoff, RetryBackoffPolicy};
 use eva_storage::{
-    EventLogStatus, FileSystemTaskStateStore, ProviderProcessSnapshot, ProviderProcessTable,
-    TaskStateReplaySnapshot, TaskStateSnapshot,
+    EffectLedgerState, EffectOperationIdentity, EventLogStatus, FileSystemEffectLedger,
+    FileSystemTaskStateStore, ProviderProcessSnapshot, ProviderProcessTable,
+    TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
 };
 
 /// 说明本模块承担的架构职责。
@@ -226,8 +228,25 @@ impl RuntimeRecoveryCoordinator {
         process_table: &mut impl ProviderProcessTable,
     ) -> Result<RuntimeRecoveryReport, EvaError> {
         let mut report = self.recover_snapshots(store.list_snapshots()?);
-        recover_provider_processes(&mut report, process_table)?;
+        recover_provider_processes(&mut report, process_table, Some(store))?;
         persist_recovered_snapshots(store, &mut report)?;
+        Ok(report)
+    }
+
+    /// Recovers tasks from handler and effect-ledger facts before reconciling provider sessions.
+    ///
+    /// A registered safe handler may reclaim an abandoned attempt. Non-idempotent handlers may do
+    /// so only while their operation is absent from the ledger; prepared operations become stable
+    /// operator blocks and committed operations repair the task result without invoking a handler.
+    pub fn recover_task_store_with_effects_and_provider_processes(
+        &self,
+        store: &mut FileSystemTaskStateStore,
+        handlers: &TaskHandlerRegistry,
+        effect_ledger: &mut FileSystemEffectLedger,
+        process_table: &mut impl ProviderProcessTable,
+    ) -> Result<RuntimeRecoveryReport, EvaError> {
+        let mut report = recover_effect_aware_tasks(store, handlers, effect_ledger)?;
+        recover_provider_processes(&mut report, process_table, Some(store))?;
         Ok(report)
     }
 
@@ -290,8 +309,276 @@ impl RuntimeRecoveryCoordinator {
     }
 }
 
+fn recover_effect_aware_tasks(
+    store: &mut FileSystemTaskStateStore,
+    handlers: &TaskHandlerRegistry,
+    effect_ledger: &mut FileSystemEffectLedger,
+) -> Result<RuntimeRecoveryReport, EvaError> {
+    let snapshots = store.list_snapshots()?;
+    let mut report = empty_recovery_report(snapshots.len());
+
+    for snapshot in snapshots {
+        let previous = snapshot.clone();
+        let (recovered, decision) =
+            recover_effect_aware_task(store, handlers, effect_ledger, snapshot)?;
+        report.audit.push(format!(
+            "runtime.recovery:task:{}:{decision}",
+            previous.task_id
+        ));
+        if recovered == previous {
+            report.unchanged_tasks.push(previous.task_id);
+            continue;
+        }
+        report.recovered_tasks.push(RecoveredTask {
+            task_id: recovered.task_id.clone(),
+            previous_status: previous.status,
+            status: recovered.status.clone(),
+            redrive_candidate: recovered.status == "recovering",
+        });
+        report.recovered_snapshots.push(recovered);
+    }
+
+    report
+        .audit
+        .push(format!("runtime.recovery:scanned:{}", report.scanned_tasks));
+    report.audit.push(format!(
+        "runtime.recovery:recovered:{}",
+        report.recovered_tasks.len()
+    ));
+    report.audit.push(format!(
+        "runtime.recovery:unchanged:{}",
+        report.unchanged_tasks.len()
+    ));
+    report
+        .audit
+        .push("runtime.recovery:effect_aware:true".to_owned());
+    Ok(report)
+}
+
+fn recover_effect_aware_task(
+    store: &mut FileSystemTaskStateStore,
+    handlers: &TaskHandlerRegistry,
+    effect_ledger: &mut FileSystemEffectLedger,
+    snapshot: TaskStateSnapshot,
+) -> Result<(TaskStateSnapshot, &'static str), EvaError> {
+    reject_current_generation_live_recovery(store, &snapshot)?;
+    let Some(envelope) = snapshot.envelope.as_ref() else {
+        return Ok((
+            recover_baseline_snapshot(store, &snapshot)?,
+            "legacy_conservative",
+        ));
+    };
+    let kind = TaskKind::parse(&envelope.kind)
+        .map_err(|error| error.with_context("task_id", &snapshot.task_id))?;
+    if !handlers.contains(&kind) {
+        return Ok((
+            interrupt_unknown_handler_after_restart(store, &snapshot)?,
+            "unknown_handler_interrupted",
+        ));
+    }
+
+    let Some(effect_scope) = handlers.non_idempotent_effect_scope(&kind) else {
+        return Ok((
+            recover_registered_safe_task(store, &snapshot)?,
+            "safe_handler",
+        ));
+    };
+    let operation = EffectOperationIdentity::new(
+        &envelope.idempotency_key,
+        &envelope.kind,
+        &envelope.agent_id,
+        effect_scope,
+        envelope.input.digest(),
+    )
+    .map_err(|error| error.with_context("task_id", &snapshot.task_id))?;
+    let Some(record) = effect_ledger
+        .inspect(&operation)
+        .map_err(|error| error.with_context("task_id", &snapshot.task_id))?
+    else {
+        return Ok((
+            recover_registered_safe_task(store, &snapshot)?,
+            "effect_absent_safe_retry",
+        ));
+    };
+
+    match record.state() {
+        EffectLedgerState::Prepared => Ok((
+            store.block_task_for_unknown_effect(
+                &snapshot.task_id,
+                record.operation().operation_digest(),
+            )?,
+            "effect_prepared_operator_block",
+        )),
+        EffectLedgerState::Committed => {
+            let result_digest = record.result_digest().ok_or_else(|| {
+                EvaError::conflict("committed effect record is missing its result digest")
+                    .with_context("task_id", &snapshot.task_id)
+                    .with_context("operation_digest", record.operation().operation_digest())
+            })?;
+            let result_size_bytes = record.result_size_bytes().ok_or_else(|| {
+                EvaError::conflict("committed effect record is missing its result size")
+                    .with_context("task_id", &snapshot.task_id)
+                    .with_context("operation_digest", record.operation().operation_digest())
+            })?;
+            Ok((
+                store.recover_task_from_committed_effect(
+                    &snapshot.task_id,
+                    record.operation().operation_digest(),
+                    result_digest,
+                    result_size_bytes,
+                )?,
+                "effect_committed_completed",
+            ))
+        }
+    }
+}
+
+fn reject_current_generation_live_recovery(
+    store: &FileSystemTaskStateStore,
+    snapshot: &TaskStateSnapshot,
+) -> Result<(), EvaError> {
+    if store.runtime_writer_generation() == Some(snapshot.owner_generation)
+        && matches!(snapshot.status.as_str(), "running" | "cancelling")
+    {
+        return Err(EvaError::conflict(
+            "restart recovery cannot interrupt a live task from the current writer generation",
+        )
+        .with_context("task_id", &snapshot.task_id)
+        .with_context("status", &snapshot.status)
+        .with_context("writer_generation", snapshot.owner_generation.0.to_string()));
+    }
+    Ok(())
+}
+
+fn recover_registered_safe_task(
+    store: &mut FileSystemTaskStateStore,
+    snapshot: &TaskStateSnapshot,
+) -> Result<TaskStateSnapshot, EvaError> {
+    if matches!(
+        snapshot.status.as_str(),
+        "running" | "interrupted" | "recovering"
+    ) {
+        let recovered = if snapshot.replay_delivery.is_some() {
+            store.recover_abandoned_replay_delivery(&snapshot.task_id)?
+        } else {
+            store.recover_abandoned_task_for_retry(&snapshot.task_id)?
+        };
+        if recovered != *snapshot || snapshot.status == "interrupted" {
+            return Ok(recovered);
+        }
+        if snapshot.replay_delivery.is_some() && snapshot.dead_letters.is_empty() {
+            return interrupt_task_after_restart(
+                store,
+                snapshot,
+                "abandoned replay delivery is not eligible for another attempt",
+            );
+        }
+    }
+    recover_baseline_snapshot(store, snapshot)
+}
+
+fn interrupt_unknown_handler_after_restart(
+    store: &mut FileSystemTaskStateStore,
+    snapshot: &TaskStateSnapshot,
+) -> Result<TaskStateSnapshot, EvaError> {
+    if matches!(
+        snapshot.status.as_str(),
+        "running" | "cancelling" | "recovering"
+    ) {
+        return interrupt_task_after_restart(
+            store,
+            snapshot,
+            "registered task handler is unavailable during restart recovery",
+        );
+    }
+    Ok(snapshot.clone())
+}
+
+fn interrupt_task_after_restart(
+    store: &mut FileSystemTaskStateStore,
+    snapshot: &TaskStateSnapshot,
+    reason: &str,
+) -> Result<TaskStateSnapshot, EvaError> {
+    let mut candidate = snapshot.clone();
+    candidate.mark_interrupted(reason);
+    store.compare_and_set(&candidate)
+}
+
+fn recover_baseline_snapshot(
+    store: &mut FileSystemTaskStateStore,
+    snapshot: &TaskStateSnapshot,
+) -> Result<TaskStateSnapshot, EvaError> {
+    let Some(status) = recovery_status(snapshot) else {
+        return Ok(snapshot.clone());
+    };
+    if status == "queued" && snapshot.replay_delivery.is_some() {
+        return store.recover_abandoned_replay_delivery(&snapshot.task_id);
+    }
+    let mut candidate = snapshot.clone();
+    let previous_status = candidate.status.clone();
+    candidate.status = status.to_owned();
+    candidate.push_log(
+        "warning",
+        format!("runtime recovery marked {previous_status} task as {status} after restart"),
+    );
+    store.compare_and_set(&candidate)
+}
+
+fn persist_provider_task_recovery(
+    store: &mut FileSystemTaskStateStore,
+    report: &mut RuntimeRecoveryReport,
+    task_id: &str,
+) -> Result<bool, EvaError> {
+    let Some(snapshot) = report
+        .recovered_snapshots
+        .iter_mut()
+        .find(|snapshot| snapshot.task_id == task_id)
+    else {
+        return Ok(false);
+    };
+    let current = store.read(Some(task_id))?;
+    if current == *snapshot {
+        return Ok(false);
+    }
+    if current.record_version != snapshot.record_version {
+        return Err(
+            EvaError::conflict("provider task recovery lost its task-state CAS authority")
+                .with_context("task_id", task_id)
+                .with_context("expected", snapshot.record_version.0.to_string())
+                .with_context("actual", current.record_version.0.to_string()),
+        );
+    }
+    *snapshot = store.compare_and_set(snapshot)?;
+    Ok(true)
+}
+
+fn empty_recovery_report(scanned_tasks: usize) -> RuntimeRecoveryReport {
+    RuntimeRecoveryReport {
+        scanned_tasks,
+        recovered_tasks: Vec::new(),
+        unchanged_tasks: Vec::new(),
+        recovered_snapshots: Vec::new(),
+        redriven_events: Vec::new(),
+        skipped_redrive_events: Vec::new(),
+        scanned_provider_processes: 0,
+        recovered_provider_processes: Vec::new(),
+        unchanged_provider_processes: Vec::new(),
+        provider_backoff_tasks: Vec::new(),
+        skipped_provider_tasks: Vec::new(),
+        audit: Vec::new(),
+    }
+}
+
 /// 只转换崩溃时可能仍在推进的状态；完成、失败等终态返回 `None` 并保持原样。
 fn recovery_status(snapshot: &TaskStateSnapshot) -> Option<&'static str> {
+    if !snapshot.dead_letters.is_empty()
+        && matches!(
+            snapshot.status.as_str(),
+            "queued" | "running" | "cancelling"
+        )
+    {
+        return Some("recovering");
+    }
     if snapshot.replay_delivery.is_some() && !snapshot.cancel_requested && !snapshot.cancel_accepted
     {
         return match snapshot.status.as_str() {
@@ -301,10 +588,8 @@ fn recovery_status(snapshot: &TaskStateSnapshot) -> Option<&'static str> {
         };
     }
     match snapshot.status.as_str() {
-        "queued" | "running" | "cancelling" if !snapshot.dead_letters.is_empty() => {
-            Some("recovering")
-        }
-        "queued" | "running" | "cancelling" => Some("interrupted"),
+        "queued" => None,
+        "running" | "cancelling" => Some("interrupted"),
         _ => None,
     }
 }
@@ -314,17 +599,21 @@ fn persist_recovered_snapshots(
     store: &mut FileSystemTaskStateStore,
     report: &mut RuntimeRecoveryReport,
 ) -> Result<(), EvaError> {
+    let mut persisted = 0usize;
     for snapshot in &mut report.recovered_snapshots {
+        if store.read(Some(&snapshot.task_id))? == *snapshot {
+            continue;
+        }
         *snapshot = if snapshot.replay_delivery.is_some() && snapshot.status == "queued" {
             store.recover_abandoned_replay_delivery(&snapshot.task_id)?
         } else {
             store.compare_and_set(snapshot)?
         };
+        persisted += 1;
     }
-    report.audit.push(format!(
-        "runtime.recovery:persisted:{}",
-        report.recovered_snapshots.len()
-    ));
+    report
+        .audit
+        .push(format!("runtime.recovery:persisted:{persisted}"));
     Ok(())
 }
 
@@ -501,6 +790,7 @@ fn recovery_audit_event(trace: TraceFields, report: &RuntimeRecoveryReport) -> A
 fn recover_provider_processes(
     report: &mut RuntimeRecoveryReport,
     process_table: &mut impl ProviderProcessTable,
+    mut task_store: Option<&mut FileSystemTaskStateStore>,
 ) -> Result<(), EvaError> {
     let processes = process_table.list()?;
     report.scanned_provider_processes = processes.len();
@@ -522,6 +812,14 @@ fn recover_provider_processes(
                 .provider_backoff_tasks
                 .iter()
                 .any(|entry| entry.session_id == process.session_id);
+        if let Some(store) = task_store.as_deref_mut() {
+            let persisted = persist_provider_task_recovery(store, report, &task_id)?;
+            if persisted {
+                report.audit.push(format!(
+                    "runtime.recovery:provider_task_persisted:{task_id}"
+                ));
+            }
+        }
         process
             .mark_interrupted_after_restart("daemon restart interrupted active provider session");
         process_table.upsert(process.clone())?;
@@ -570,6 +868,10 @@ fn recover_provider_task(
     process: &ProviderProcessSnapshot,
 ) -> Option<String> {
     let task_id = process.request_id.as_str();
+    let effect_aware = report
+        .audit
+        .iter()
+        .any(|entry| entry == "runtime.recovery:effect_aware:true");
     let Some(snapshot) = report
         .recovered_snapshots
         .iter_mut()
@@ -587,6 +889,28 @@ fn recover_provider_task(
         });
         return None;
     };
+
+    let protected_reason = if !effect_aware {
+        None
+    } else if snapshot.status == "completed" {
+        Some("task_completed_by_effect_recovery")
+    } else if snapshot.status == "queued" {
+        Some("task_requeued_by_restart_recovery")
+    } else if snapshot.requires_operator_reconciliation() {
+        Some("effect_outcome_requires_operator_reconciliation")
+    } else if snapshot.status == "interrupted" {
+        Some("task_already_interrupted_by_restart_recovery")
+    } else {
+        None
+    };
+    if let Some(reason) = protected_reason {
+        report.skipped_provider_tasks.push(SkippedProviderTask {
+            task_id: task_id.to_owned(),
+            session_id: process.session_id.clone(),
+            reason: reason.to_owned(),
+        });
+        return Some(snapshot.status.clone());
+    }
 
     let backoff = provider_backoff_decision(process, snapshot);
     if let Some(backoff) = backoff {
@@ -661,18 +985,23 @@ fn provider_restart_policy_allows_backoff(policy: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{TaskHandlerInvocation, TaskHandlerResult, TaskWorkerRuntime};
     use eva_core::{AgentId, EvaError, Event, EventId, EventPayload, Topic};
     use eva_eventbus::{DurableEventBus, EventBus, RedrivePolicy};
     use eva_observability::{SpanId, TraceFields};
     use eva_storage::{
-        DurableBackendOptions, FileSystemAuditSink, FileSystemDurableBackend,
-        FileSystemProviderProcessTable, ProviderProcessTable, StateVersion,
-        TaskAttemptPolicySnapshot, TaskEnvelopeSnapshot, TaskStateDeadLetterSnapshot,
-        TaskStateLogSnapshot, TaskStateStore, WriterGeneration,
+        DurableBackendOptions, EffectLedgerIntent, FileSystemAuditSink, FileSystemDurableBackend,
+        FileSystemProviderProcessTable, InMemoryArtifactStore, ProviderProcessTable, StateVersion,
+        TaskAttemptOutcome, TaskAttemptPolicySnapshot, TaskEnvelopeSnapshot,
+        TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateStore, WriterGeneration,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     /// 验证 `recovery_marks_incomplete_tasks_without_touching_terminal_tasks` 场景下的预期行为。
     #[test]
@@ -706,6 +1035,16 @@ mod tests {
         assert_eq!(report.recovered_tasks[0].task_id, "req-recovery-cancelling");
         assert_eq!(report.recovered_tasks[0].status, "interrupted");
         assert_eq!(report.recovered_snapshots[0].status, "interrupted");
+    }
+
+    #[test]
+    fn recovery_leaves_ordinary_queued_tasks_ready_for_worker_claim() {
+        let queued = snapshot("req-recovery-queued", "queued");
+        let report = RuntimeRecoveryCoordinator.recover_snapshots(vec![queued]);
+
+        assert!(report.recovered_tasks.is_empty());
+        assert!(report.recovered_snapshots.is_empty());
+        assert_eq!(report.unchanged_tasks, vec!["req-recovery-queued"]);
     }
 
     #[test]
@@ -776,6 +1115,452 @@ mod tests {
             .unwrap();
         assert_eq!(resumed.snapshot().attempts, 2);
         assert_eq!(resumed.fence().owner_generation(), second_generation);
+    }
+
+    #[test]
+    fn effect_aware_recovery_resolves_all_crash_boundaries_before_worker_start() {
+        let root = test_root("effect-aware-crash-boundaries");
+        let pure_task_id = "req-recovery-pure-abandoned";
+        let absent_task_id = "req-recovery-effect-absent";
+        let prepared_task_id = "req-recovery-effect-prepared";
+        let committed_task_id = "req-recovery-effect-committed";
+        let pure_envelope =
+            recovery_envelope("runtime.echo", "idem-recovery-pure-abandoned", b"pure", 2);
+        let absent_envelope = recovery_envelope(
+            "runtime.effect.absent",
+            "idem-recovery-effect-absent",
+            b"absent",
+            2,
+        );
+        let prepared_envelope = recovery_envelope(
+            "runtime.effect.prepared",
+            "idem-recovery-effect-prepared",
+            b"prepared",
+            2,
+        );
+        let committed_envelope = recovery_envelope(
+            "runtime.effect.committed",
+            "idem-recovery-effect-committed",
+            b"committed",
+            2,
+        );
+        let committed_result = TaskHandlerResult::new(b"already-committed".to_vec());
+
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let writer = backend.acquire_runtime_writer().unwrap();
+            let mut store =
+                FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                    .unwrap();
+            let mut ledger =
+                FileSystemEffectLedger::open_with_writer(backend.layout(), writer).unwrap();
+
+            create_and_claim_recovery_task(&mut store, pure_task_id, &pure_envelope);
+            create_and_claim_recovery_task(&mut store, absent_task_id, &absent_envelope);
+            let prepared_claim =
+                create_and_claim_recovery_task(&mut store, prepared_task_id, &prepared_envelope);
+            let prepared_intent = recovery_effect_intent(
+                &prepared_envelope,
+                "effect-scope-recovery-prepared",
+                &prepared_claim,
+            );
+            assert!(matches!(
+                ledger.prepare_for_claim(&store, &prepared_intent).unwrap(),
+                eva_storage::EffectPrepareOutcome::Created(_)
+            ));
+
+            let committed_claim =
+                create_and_claim_recovery_task(&mut store, committed_task_id, &committed_envelope);
+            let committed_intent = recovery_effect_intent(
+                &committed_envelope,
+                "effect-scope-recovery-committed",
+                &committed_claim,
+            );
+            assert!(matches!(
+                ledger.prepare_for_claim(&store, &committed_intent).unwrap(),
+                eva_storage::EffectPrepareOutcome::Created(_)
+            ));
+            ledger
+                .commit(
+                    &committed_intent,
+                    committed_result.digest(),
+                    committed_result.size_bytes(),
+                    epoch_millis(),
+                )
+                .unwrap();
+            store
+                .finish_execution(
+                    committed_claim.fence(),
+                    &TaskAttemptOutcome::Failed {
+                        error_kind: "unavailable".to_owned(),
+                        error_message: "task checkpoint contradicted committed effect".to_owned(),
+                        retryable: false,
+                    },
+                )
+                .unwrap();
+
+            let mut processes =
+                FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+            processes
+                .upsert(provider_process(
+                    "session-effect-committed",
+                    committed_task_id,
+                    "scheduler_backoff",
+                    Some(25),
+                ))
+                .unwrap();
+        }
+
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let mut ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let effect_calls = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(recovery_handler_registry(Arc::clone(&effect_calls)));
+
+        let report = RuntimeRecoveryCoordinator
+            .recover_task_store_with_effects_and_provider_processes(
+                &mut store,
+                registry.as_ref(),
+                &mut ledger,
+                &mut processes,
+            )
+            .unwrap();
+        let pure = store.read(Some(pure_task_id)).unwrap();
+        let absent = store.read(Some(absent_task_id)).unwrap();
+        let prepared = store.read(Some(prepared_task_id)).unwrap();
+        let committed = store.read(Some(committed_task_id)).unwrap();
+        assert_eq!(pure.status, "queued");
+        assert_eq!(pure.attempts, 1);
+        assert_eq!(absent.status, "queued");
+        assert_eq!(absent.attempts, 1);
+        assert_eq!(prepared.status, "interrupted");
+        assert!(prepared.requires_operator_reconciliation());
+        assert_eq!(committed.status, "completed");
+        assert_eq!(
+            committed.result_digest.as_deref(),
+            Some(committed_result.digest())
+        );
+        assert_eq!(
+            committed.result_size_bytes,
+            Some(committed_result.size_bytes())
+        );
+        assert_eq!(effect_calls.load(Ordering::SeqCst), 0);
+        assert!(report.skipped_provider_tasks.iter().any(|entry| {
+            entry.task_id == committed_task_id
+                && entry.reason == "task_completed_by_effect_recovery"
+        }));
+        assert!(!processes.read("session-effect-committed").unwrap().active);
+
+        let snapshots_before_repeat = [
+            pure.clone(),
+            absent.clone(),
+            prepared.clone(),
+            committed.clone(),
+        ];
+        let repeated = RuntimeRecoveryCoordinator
+            .recover_task_store_with_effects_and_provider_processes(
+                &mut store,
+                registry.as_ref(),
+                &mut ledger,
+                &mut processes,
+            )
+            .unwrap();
+        assert!(repeated.recovered_tasks.is_empty());
+        for expected in snapshots_before_repeat {
+            assert_eq!(store.read(Some(&expected.task_id)).unwrap(), expected);
+        }
+
+        let failure_bus =
+            DurableEventBus::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut worker = TaskWorkerRuntime::start_paused_with_durable_services(
+            store.clone(),
+            registry,
+            Arc::new(InMemoryArtifactStore::default()),
+            "daemon.recovery.worker",
+            failure_bus,
+            ledger,
+        )
+        .unwrap();
+        worker.activate();
+        wait_for_recovery_status(&store, pure_task_id, "completed");
+        wait_for_recovery_status(&store, absent_task_id, "completed");
+        assert_eq!(effect_calls.load(Ordering::SeqCst), 1);
+        assert!(store
+            .read(Some(prepared_task_id))
+            .unwrap()
+            .requires_operator_reconciliation());
+        assert_eq!(store.read(Some(committed_task_id)).unwrap(), committed);
+        worker.stop_and_join().unwrap();
+    }
+
+    #[test]
+    fn effect_aware_recovery_rejects_current_generation_running_task() {
+        let root = test_root("effect-aware-current-generation");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let mut ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer).unwrap();
+        let task_id = "req-recovery-current-generation";
+        create_and_claim_recovery_task(
+            &mut store,
+            task_id,
+            &recovery_envelope(
+                "runtime.echo",
+                "idem-recovery-current-generation",
+                b"live",
+                2,
+            ),
+        );
+        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let registry = TaskHandlerRegistry::with_runtime_defaults().unwrap();
+
+        let error = RuntimeRecoveryCoordinator
+            .recover_task_store_with_effects_and_provider_processes(
+                &mut store,
+                &registry,
+                &mut ledger,
+                &mut processes,
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(store.read(Some(task_id)).unwrap().status, "running");
+
+        let unknown_task_id = "req-recovery-current-unknown";
+        create_and_claim_recovery_task(
+            &mut store,
+            unknown_task_id,
+            &recovery_envelope(
+                "runtime.unknown",
+                "idem-recovery-current-unknown",
+                b"unknown",
+                2,
+            ),
+        );
+        let cancelling_task_id = "req-recovery-current-cancelling";
+        create_and_claim_recovery_task(
+            &mut store,
+            cancelling_task_id,
+            &recovery_envelope(
+                "runtime.echo",
+                "idem-recovery-current-cancelling",
+                b"cancelling",
+                2,
+            ),
+        );
+        store
+            .request_cancellation(cancelling_task_id, "current cancellation")
+            .unwrap();
+        let legacy_task_id = "req-recovery-current-legacy";
+        let mut legacy = TaskStateSnapshot::queued(legacy_task_id).unwrap();
+        legacy.mark_running(epoch_millis(), None, "cancel.current.legacy");
+        store.create(&legacy).unwrap();
+
+        for task_id in [unknown_task_id, cancelling_task_id, legacy_task_id] {
+            let snapshot = store.read(Some(task_id)).unwrap();
+            let error =
+                recover_effect_aware_task(&mut store, &registry, &mut ledger, snapshot.clone())
+                    .unwrap_err();
+            assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+            assert_eq!(store.read(Some(task_id)).unwrap(), snapshot);
+        }
+    }
+
+    #[test]
+    fn effect_aware_recovery_fails_closed_on_effect_identity_collision() {
+        let root = test_root("effect-aware-identity-collision");
+        let source_task_id = "req-z-recovery-effect-source";
+        let collision_task_id = "req-a-recovery-effect-collision";
+        let source = recovery_envelope(
+            "runtime.effect.prepared",
+            "idem-recovery-effect-collision",
+            b"source",
+            2,
+        );
+        let collision = recovery_envelope(
+            "runtime.effect.prepared",
+            "idem-recovery-effect-collision",
+            b"collision",
+            2,
+        );
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let writer = backend.acquire_runtime_writer().unwrap();
+            let mut store =
+                FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                    .unwrap();
+            let mut ledger =
+                FileSystemEffectLedger::open_with_writer(backend.layout(), writer).unwrap();
+            let source_claim = create_and_claim_recovery_task(&mut store, source_task_id, &source);
+            create_and_claim_recovery_task(&mut store, collision_task_id, &collision);
+            let source_intent =
+                recovery_effect_intent(&source, "effect-scope-recovery-prepared", &source_claim);
+            ledger.prepare_for_claim(&store, &source_intent).unwrap();
+        }
+
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let mut ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer).unwrap();
+        let registry = recovery_handler_registry(Arc::new(AtomicUsize::new(0)));
+        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+
+        let error = RuntimeRecoveryCoordinator
+            .recover_task_store_with_effects_and_provider_processes(
+                &mut store,
+                &registry,
+                &mut ledger,
+                &mut processes,
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            store.read(Some(collision_task_id)).unwrap().status,
+            "running"
+        );
+        assert_eq!(store.read(Some(source_task_id)).unwrap().status, "running");
+    }
+
+    #[test]
+    fn effect_aware_recovery_never_requeues_exhausted_cancelled_dead_letter_or_unknown_tasks() {
+        let root = test_root("effect-aware-requeue-gates");
+        let exhausted_task_id = "req-recovery-exhausted";
+        let cancelled_task_id = "req-recovery-cancelled";
+        let dead_letter_task_id = "req-recovery-dead-letter";
+        let unknown_task_id = "req-recovery-unknown-handler";
+        let queued_task_id = "req-recovery-already-queued";
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let writer = backend.acquire_runtime_writer().unwrap();
+            let mut store =
+                FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer).unwrap();
+            create_and_claim_recovery_task(
+                &mut store,
+                exhausted_task_id,
+                &recovery_envelope("runtime.echo", "idem-recovery-exhausted", b"exhausted", 1),
+            );
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope(
+                        cancelled_task_id,
+                        recovery_envelope(
+                            "runtime.echo",
+                            "idem-recovery-cancelled",
+                            b"cancelled",
+                            2,
+                        ),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            store
+                .request_cancellation(cancelled_task_id, "operator cancelled before restart")
+                .unwrap();
+            create_and_claim_recovery_task(
+                &mut store,
+                dead_letter_task_id,
+                &recovery_envelope(
+                    "runtime.echo",
+                    "idem-recovery-dead-letter",
+                    b"dead-letter",
+                    2,
+                ),
+            );
+            store
+                .update_snapshot(dead_letter_task_id, |snapshot| {
+                    snapshot.dead_letters.push(dead_letter("evt-recovery-gate"));
+                    Ok(())
+                })
+                .unwrap();
+            create_and_claim_recovery_task(
+                &mut store,
+                unknown_task_id,
+                &recovery_envelope(
+                    "runtime.unknown",
+                    "idem-recovery-unknown-handler",
+                    b"unknown",
+                    2,
+                ),
+            );
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope(
+                        queued_task_id,
+                        recovery_envelope(
+                            "runtime.echo",
+                            "idem-recovery-already-queued",
+                            b"queued",
+                            2,
+                        ),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let mut ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer).unwrap();
+        let registry = TaskHandlerRegistry::with_runtime_defaults().unwrap();
+        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+
+        RuntimeRecoveryCoordinator
+            .recover_task_store_with_effects_and_provider_processes(
+                &mut store,
+                &registry,
+                &mut ledger,
+                &mut processes,
+            )
+            .unwrap();
+        let expected = [
+            store.read(Some(exhausted_task_id)).unwrap(),
+            store.read(Some(cancelled_task_id)).unwrap(),
+            store.read(Some(dead_letter_task_id)).unwrap(),
+            store.read(Some(unknown_task_id)).unwrap(),
+            store.read(Some(queued_task_id)).unwrap(),
+        ];
+        assert_eq!(expected[0].status, "interrupted");
+        assert_eq!(expected[1].status, "cancelled");
+        assert_eq!(expected[2].status, "recovering");
+        assert_eq!(expected[3].status, "interrupted");
+        assert_eq!(expected[4].status, "queued");
+
+        let repeated = RuntimeRecoveryCoordinator
+            .recover_task_store_with_effects_and_provider_processes(
+                &mut store,
+                &registry,
+                &mut ledger,
+                &mut processes,
+            )
+            .unwrap();
+        assert!(repeated.recovered_tasks.is_empty());
+        for snapshot in expected {
+            assert_eq!(store.read(Some(&snapshot.task_id)).unwrap(), snapshot);
+        }
     }
 
     /// 验证 `recovery_marks_dead_letter_tasks_as_recovering` 场景下的预期行为。
@@ -1303,6 +2088,118 @@ mod tests {
     }
 
     /// 执行 `provider_process` 对应的处理逻辑。
+    fn recovery_envelope(
+        kind: &str,
+        idempotency_key: &str,
+        payload: &[u8],
+        max_attempts: u32,
+    ) -> TaskEnvelopeSnapshot {
+        TaskEnvelopeSnapshot::inline(
+            kind,
+            "root-agent",
+            payload.to_vec(),
+            idempotency_key,
+            TaskAttemptPolicySnapshot::new(max_attempts, 0, None).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn create_and_claim_recovery_task(
+        store: &mut FileSystemTaskStateStore,
+        task_id: &str,
+        envelope: &TaskEnvelopeSnapshot,
+    ) -> eva_storage::TaskExecutionClaim {
+        store
+            .create(&TaskStateSnapshot::queued_with_envelope(task_id, envelope.clone()).unwrap())
+            .unwrap();
+        store
+            .try_claim_queued(
+                task_id,
+                &format!("daemon.old.{task_id}"),
+                &format!("cancel.old.{task_id}"),
+                epoch_millis(),
+            )
+            .unwrap()
+            .unwrap()
+    }
+
+    fn recovery_effect_intent(
+        envelope: &TaskEnvelopeSnapshot,
+        effect_scope: &str,
+        claim: &eva_storage::TaskExecutionClaim,
+    ) -> EffectLedgerIntent {
+        let operation = EffectOperationIdentity::new(
+            &envelope.idempotency_key,
+            &envelope.kind,
+            &envelope.agent_id,
+            effect_scope,
+            envelope.input.digest(),
+        )
+        .unwrap();
+        EffectLedgerIntent::new(
+            operation,
+            claim.fence().task_id(),
+            claim.fence().owner_generation(),
+            claim.fence().execution_owner(),
+            claim.fence().attempt(),
+            claim.fence().cancel_token(),
+            epoch_millis(),
+        )
+        .unwrap()
+    }
+
+    fn recovery_handler_registry(effect_calls: Arc<AtomicUsize>) -> TaskHandlerRegistry {
+        let mut registry = TaskHandlerRegistry::with_runtime_defaults().unwrap();
+        for (kind, effect_scope) in [
+            ("runtime.effect.absent", "effect-scope-recovery-absent"),
+            ("runtime.effect.prepared", "effect-scope-recovery-prepared"),
+            (
+                "runtime.effect.committed",
+                "effect-scope-recovery-committed",
+            ),
+        ] {
+            let calls = Arc::clone(&effect_calls);
+            registry
+                .register_non_idempotent(
+                    TaskKind::parse(kind).unwrap(),
+                    effect_scope,
+                    move |_invocation: &TaskHandlerInvocation<'_>| {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(TaskHandlerResult::new(b"effect-executed".to_vec()))
+                    },
+                )
+                .unwrap();
+        }
+        registry
+    }
+
+    fn wait_for_recovery_status(
+        store: &FileSystemTaskStateStore,
+        task_id: &str,
+        expected_status: &str,
+    ) -> TaskStateSnapshot {
+        let started = Instant::now();
+        loop {
+            let snapshot = store.read(Some(task_id)).unwrap();
+            if snapshot.status == expected_status {
+                return snapshot;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "task {task_id} remained in status {} while waiting for {expected_status}",
+                snapshot.status
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn epoch_millis() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_millis()
+    }
+
     fn provider_process(
         session_id: &str,
         request_id: &str,

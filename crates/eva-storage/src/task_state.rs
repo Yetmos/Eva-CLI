@@ -28,6 +28,10 @@ const MAX_INLINE_TASK_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_TASK_EXECUTION_OWNER_BYTES: usize = 512;
 const MAX_TASK_CANCEL_TOKEN_BYTES: usize = 256;
 const TASK_STATE_CAS_RETRY_LIMIT: usize = 32;
+const COMMITTED_EFFECT_RECOVERY_LOG_PREFIX: &str =
+    "task recovered from committed effect: operation_digest=";
+const UNKNOWN_EFFECT_RECOVERY_REASON_PREFIX: &str =
+    "non-idempotent effect outcome is unknown; operator reconciliation required; operation_digest=";
 
 /// Default age at which a running task is reported as degraded when no newer
 /// fenced heartbeat has been persisted.
@@ -395,6 +399,38 @@ pub struct FileSystemTaskStateStore {
     durable_writer_required: bool,
     /// 可写 durable store 持有的长期 ownership；clone 共享同一进程 mutex 和 OS lock。
     writer: Option<DurableWriterGuard>,
+}
+
+#[derive(Clone, Copy)]
+enum TaskStateCommitMode {
+    Create,
+    CompareAndSet,
+    AttemptOutcome,
+    Heartbeat,
+    RetryRequeue,
+    RestartRecovery,
+}
+
+impl TaskStateCommitMode {
+    const fn create_only(self) -> bool {
+        matches!(self, Self::Create)
+    }
+
+    const fn allow_attempt_outcome(self) -> bool {
+        matches!(self, Self::AttemptOutcome)
+    }
+
+    const fn allow_heartbeat(self) -> bool {
+        matches!(self, Self::AttemptOutcome | Self::Heartbeat)
+    }
+
+    const fn allow_retry_requeue(self) -> bool {
+        matches!(self, Self::RetryRequeue)
+    }
+
+    const fn allow_restart_recovery(self) -> bool {
+        matches!(self, Self::RestartRecovery)
+    }
 }
 
 impl TaskAttemptPolicySnapshot {
@@ -1693,6 +1729,7 @@ impl TaskStateSnapshot {
             || self.cancel_accepted
             || !self.dead_letters.is_empty()
             || self.attempts >= self.retry_max_attempts
+            || self.requires_operator_reconciliation()
         {
             return Err(EvaError::conflict(
                 "task is not an abandoned replay delivery eligible for recovery",
@@ -1719,6 +1756,156 @@ impl TaskStateSnapshot {
                 "abandoned replay delivery recovered from {previous_status} after writer turnover"
             ),
         );
+        self.validate()
+    }
+
+    /// Clears a safely retryable abandoned task after writer-generation turnover.
+    fn mark_abandoned_task_queued(&mut self) -> Result<(), EvaError> {
+        if self.replay_delivery.is_some()
+            || self.envelope.is_none()
+            || !matches!(
+                self.status.as_str(),
+                "running" | "interrupted" | "recovering"
+            )
+            || self.cancel_requested
+            || self.cancel_accepted
+            || !self.dead_letters.is_empty()
+            || self.attempts >= self.retry_max_attempts
+            || self.requires_operator_reconciliation()
+        {
+            return Err(EvaError::conflict(
+                "task is not an abandoned task eligible for safe recovery",
+            )
+            .with_context("task_id", &self.task_id)
+            .with_context("status", &self.status));
+        }
+        let previous_status = self.status.clone();
+        self.status = "queued".to_owned();
+        self.execution_owner = None;
+        self.cancel_token = None;
+        self.heartbeat_at_ms = None;
+        self.deadline_at_ms = None;
+        self.result_digest = None;
+        self.result_size_bytes = None;
+        self.interrupted_reason = None;
+        self.error_kind = None;
+        self.error_message = None;
+        self.error_retryable = None;
+        self.retry_ready_at_ms = None;
+        self.push_log(
+            "warning",
+            format!("abandoned task recovered from {previous_status} for a safe retry"),
+        );
+        self.validate()
+    }
+
+    /// Reconciles task state to an immutable result already committed by the effect ledger.
+    fn recover_committed_effect(
+        &mut self,
+        operation_digest: &str,
+        result_digest: &str,
+        result_size_bytes: usize,
+    ) -> Result<(), EvaError> {
+        validate_canonical_sha256(operation_digest, "effect operation digest")?;
+        validate_canonical_sha256(result_digest, "task result digest")?;
+        if self.envelope.is_none() {
+            return Err(
+                EvaError::conflict("committed effect recovery requires a task envelope")
+                    .with_context("task_id", &self.task_id),
+            );
+        }
+        if self.status == "completed" {
+            if self.result_digest.as_deref() == Some(result_digest)
+                && self.result_size_bytes == Some(result_size_bytes)
+            {
+                return Ok(());
+            }
+            return Err(EvaError::conflict(
+                "committed effect conflicts with the existing task result",
+            )
+            .with_context("task_id", &self.task_id)
+            .with_context("operation_digest", operation_digest));
+        }
+        if !matches!(
+            self.status.as_str(),
+            "queued"
+                | "running"
+                | "cancelling"
+                | "failed"
+                | "timed_out"
+                | "cancelled"
+                | "interrupted"
+                | "recovering"
+        ) {
+            return Err(EvaError::conflict(
+                "task status cannot be reconciled from a committed effect",
+            )
+            .with_context("task_id", &self.task_id)
+            .with_context("status", &self.status));
+        }
+        self.status = "completed".to_owned();
+        self.cancel_accepted = false;
+        self.result_digest = Some(result_digest.to_owned());
+        self.result_size_bytes = Some(result_size_bytes);
+        self.interrupted_reason = None;
+        self.error_kind = None;
+        self.error_message = None;
+        self.error_retryable = None;
+        self.retry_ready_at_ms = None;
+        self.push_log(
+            "info",
+            format!("{COMMITTED_EFFECT_RECOVERY_LOG_PREFIX}{operation_digest}"),
+        );
+        self.validate()
+    }
+
+    /// Converts an unresolved prepared effect into a stable operator-owned terminal block.
+    fn block_unknown_effect(&mut self, operation_digest: &str) -> Result<(), EvaError> {
+        validate_canonical_sha256(operation_digest, "effect operation digest")?;
+        let reason = format!("{UNKNOWN_EFFECT_RECOVERY_REASON_PREFIX}{operation_digest}");
+        if self.status == "interrupted" && self.interrupted_reason.as_deref() == Some(&reason) {
+            return Ok(());
+        }
+        if self.status == "completed" {
+            return Err(EvaError::conflict(
+                "completed task cannot be blocked by a prepared effect",
+            )
+            .with_context("task_id", &self.task_id)
+            .with_context("operation_digest", operation_digest));
+        }
+        if self.envelope.is_none() {
+            return Err(
+                EvaError::conflict("prepared effect recovery requires a task envelope")
+                    .with_context("task_id", &self.task_id),
+            );
+        }
+        if !matches!(
+            self.status.as_str(),
+            "queued"
+                | "running"
+                | "cancelling"
+                | "failed"
+                | "timed_out"
+                | "cancelled"
+                | "interrupted"
+                | "recovering"
+        ) {
+            return Err(
+                EvaError::conflict("task status cannot be blocked by a prepared effect")
+                    .with_context("task_id", &self.task_id)
+                    .with_context("status", &self.status),
+            );
+        }
+        self.status = "interrupted".to_owned();
+        self.cancel_accepted = false;
+        self.result_digest = None;
+        self.result_size_bytes = None;
+        self.interrupted_reason = Some(reason.clone());
+        self.error_kind = None;
+        self.error_message = None;
+        self.error_retryable = None;
+        self.retry_ready_at_ms = None;
+        self.push_log("error", reason);
         self.validate()
     }
 
@@ -1781,6 +1968,15 @@ impl TaskStateSnapshot {
             "completed" | "failed" | "cancelled" | "timed_out" | "interrupted"
         )
     }
+
+    /// Whether restart recovery has delegated an unknown non-idempotent result to an operator.
+    pub fn requires_operator_reconciliation(&self) -> bool {
+        self.status == "interrupted"
+            && self
+                .interrupted_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with(UNKNOWN_EFFECT_RECOVERY_REASON_PREFIX))
+    }
 }
 
 impl FileSystemTaskStateStore {
@@ -1837,8 +2033,8 @@ impl FileSystemTaskStateStore {
         &self.project_root
     }
 
-    /// Runtime writer generation used by storage-internal cross-record transactions.
-    pub(crate) fn runtime_writer_generation(&self) -> Option<WriterGeneration> {
+    /// Runtime writer generation used by cross-record transactions and restart fencing.
+    pub fn runtime_writer_generation(&self) -> Option<WriterGeneration> {
         self.writer.as_ref().map(DurableWriterGuard::generation)
     }
 
@@ -2064,6 +2260,127 @@ impl FileSystemTaskStateStore {
         )
     }
 
+    /// Requeues an abandoned task only after the caller has proved retry is side-effect safe.
+    pub fn recover_abandoned_task_for_retry(
+        &mut self,
+        task_id: &str,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        RequestId::parse(task_id)?;
+        let writer_generation = self.recovery_writer_generation()?;
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let current = self.read(Some(task_id))?;
+            if current.replay_delivery.is_some() {
+                return Err(EvaError::conflict(
+                    "operator task recovery cannot mutate a replay delivery",
+                )
+                .with_context("task_id", task_id));
+            }
+            if current.status == "queued" {
+                return Ok(current);
+            }
+            let Some(candidate) = task_abandoned_recovery_candidate(&current) else {
+                return Ok(current);
+            };
+            reject_current_generation_recovery(&current, writer_generation)?;
+            let expected_version = current.record_version;
+            match self.compare_and_set_retry_requeue(&candidate) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(task_id))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                    if observed.status == "queued"
+                        || task_abandoned_recovery_candidate(&observed).is_none()
+                    {
+                        return Ok(observed);
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("abandoned task recovery exceeded the CAS retry limit")
+                .with_context("task_id", task_id),
+        )
+    }
+
+    /// Repairs any contradictory task lifecycle from an immutable committed effect result.
+    pub fn recover_task_from_committed_effect(
+        &mut self,
+        task_id: &str,
+        operation_digest: &str,
+        result_digest: &str,
+        result_size_bytes: usize,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        RequestId::parse(task_id)?;
+        validate_canonical_sha256(operation_digest, "effect operation digest")?;
+        validate_canonical_sha256(result_digest, "task result digest")?;
+        let writer_generation = self.recovery_writer_generation()?;
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let current = self.read(Some(task_id))?;
+            let mut candidate = current.clone();
+            candidate.recover_committed_effect(
+                operation_digest,
+                result_digest,
+                result_size_bytes,
+            )?;
+            if candidate == current {
+                return Ok(current);
+            }
+            reject_current_generation_recovery(&current, writer_generation)?;
+            let expected_version = current.record_version;
+            match self.compare_and_set_restart_recovery(&candidate) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(task_id))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("committed effect task recovery exceeded the CAS retry limit")
+                .with_context("task_id", task_id)
+                .with_context("operation_digest", operation_digest),
+        )
+    }
+
+    /// Persists a terminal manual block for a prepared effect whose outcome is unknowable.
+    pub fn block_task_for_unknown_effect(
+        &mut self,
+        task_id: &str,
+        operation_digest: &str,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        RequestId::parse(task_id)?;
+        validate_canonical_sha256(operation_digest, "effect operation digest")?;
+        let writer_generation = self.recovery_writer_generation()?;
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let current = self.read(Some(task_id))?;
+            let mut candidate = current.clone();
+            candidate.block_unknown_effect(operation_digest)?;
+            if candidate == current {
+                return Ok(current);
+            }
+            reject_current_generation_recovery(&current, writer_generation)?;
+            let expected_version = current.record_version;
+            match self.compare_and_set_restart_recovery(&candidate) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(task_id))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("unknown effect task block exceeded the CAS retry limit")
+                .with_context("task_id", task_id)
+                .with_context("operation_digest", operation_digest),
+        )
+    }
+
     /// 在最新 record version 上验证完整 attempt fence，并提交结果或合并并发取消。
     pub fn finish_execution(
         &mut self,
@@ -2274,7 +2591,7 @@ impl FileSystemTaskStateStore {
             .with_context("task_id", &snapshot.task_id)
             .with_context("actual", snapshot.record_version.0.to_string()));
         }
-        self.commit_snapshot(snapshot, StateVersion::ZERO, true, false, false, false)
+        self.commit_snapshot(snapshot, StateVersion::ZERO, TaskStateCommitMode::Create)
     }
 
     /// 使用 snapshot 携带的 record version 作为 expected 值执行持久 CAS。
@@ -2285,10 +2602,7 @@ impl FileSystemTaskStateStore {
         self.commit_snapshot(
             snapshot,
             snapshot.record_version,
-            false,
-            false,
-            false,
-            false,
+            TaskStateCommitMode::CompareAndSet,
         )
     }
 
@@ -2296,21 +2610,53 @@ impl FileSystemTaskStateStore {
         &mut self,
         snapshot: &TaskStateSnapshot,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        self.commit_snapshot(snapshot, snapshot.record_version, false, true, true, false)
+        self.commit_snapshot(
+            snapshot,
+            snapshot.record_version,
+            TaskStateCommitMode::AttemptOutcome,
+        )
     }
 
     fn compare_and_set_heartbeat(
         &mut self,
         snapshot: &TaskStateSnapshot,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        self.commit_snapshot(snapshot, snapshot.record_version, false, false, true, false)
+        self.commit_snapshot(
+            snapshot,
+            snapshot.record_version,
+            TaskStateCommitMode::Heartbeat,
+        )
     }
 
     fn compare_and_set_retry_requeue(
         &mut self,
         snapshot: &TaskStateSnapshot,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        self.commit_snapshot(snapshot, snapshot.record_version, false, false, false, true)
+        self.commit_snapshot(
+            snapshot,
+            snapshot.record_version,
+            TaskStateCommitMode::RetryRequeue,
+        )
+    }
+
+    fn compare_and_set_restart_recovery(
+        &mut self,
+        snapshot: &TaskStateSnapshot,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        self.commit_snapshot(
+            snapshot,
+            snapshot.record_version,
+            TaskStateCommitMode::RestartRecovery,
+        )
+    }
+
+    fn recovery_writer_generation(&self) -> Result<WriterGeneration, EvaError> {
+        self.writer
+            .as_ref()
+            .map(DurableWriterGuard::generation)
+            .ok_or_else(|| {
+                EvaError::conflict("task restart recovery requires runtime writer ownership")
+            })
     }
 
     /// 从权威 ID 记录原子重建 latest 派生别名，不改变 record version。
@@ -2337,10 +2683,7 @@ impl FileSystemTaskStateStore {
         &self,
         snapshot: &TaskStateSnapshot,
         expected: StateVersion,
-        create_only: bool,
-        allow_attempt_outcome: bool,
-        allow_heartbeat: bool,
-        allow_retry_requeue: bool,
+        mode: TaskStateCommitMode,
     ) -> Result<TaskStateSnapshot, EvaError> {
         snapshot.validate()?;
         let dir = self.task_dir();
@@ -2384,12 +2727,13 @@ impl FileSystemTaskStateStore {
                 validate_task_state_transition(
                     current,
                     snapshot,
-                    allow_attempt_outcome,
-                    allow_heartbeat,
-                    allow_retry_requeue,
+                    mode.allow_attempt_outcome(),
+                    mode.allow_heartbeat(),
+                    mode.allow_retry_requeue(),
+                    mode.allow_restart_recovery(),
                 )?;
             }
-            if create_only && current.is_some() {
+            if mode.create_only() && current.is_some() {
                 return Err(EvaError::conflict("task state already exists")
                     .with_context("task_id", &snapshot.task_id));
             }
@@ -2732,6 +3076,75 @@ fn task_replay_recovery_candidate(current: &TaskStateSnapshot) -> Option<TaskSta
         .map(|_| candidate)
 }
 
+fn task_abandoned_recovery_candidate(current: &TaskStateSnapshot) -> Option<TaskStateSnapshot> {
+    let mut candidate = current.clone();
+    candidate
+        .mark_abandoned_task_queued()
+        .ok()
+        .map(|_| candidate)
+}
+
+fn reject_current_generation_recovery(
+    current: &TaskStateSnapshot,
+    writer_generation: WriterGeneration,
+) -> Result<(), EvaError> {
+    if current.owner_generation == writer_generation {
+        return Err(EvaError::conflict(
+            "task restart recovery cannot reclaim the current writer generation",
+        )
+        .with_context("task_id", &current.task_id)
+        .with_context("status", &current.status)
+        .with_context("writer_generation", writer_generation.0.to_string()));
+    }
+    Ok(())
+}
+
+fn task_restart_recovery_transition_matches(
+    current: &TaskStateSnapshot,
+    proposed: &TaskStateSnapshot,
+) -> bool {
+    if proposed.logs.len() != current.logs.len().saturating_add(1)
+        || proposed.logs[..current.logs.len()] != current.logs
+    {
+        return false;
+    }
+    let Some(log) = proposed.logs.last() else {
+        return false;
+    };
+
+    if log.level == "info" {
+        let Some(operation_digest) = log
+            .message
+            .strip_prefix(COMMITTED_EFFECT_RECOVERY_LOG_PREFIX)
+        else {
+            return false;
+        };
+        let (Some(result_digest), Some(result_size_bytes)) =
+            (&proposed.result_digest, proposed.result_size_bytes)
+        else {
+            return false;
+        };
+        let mut expected = current.clone();
+        return expected
+            .recover_committed_effect(operation_digest, result_digest, result_size_bytes)
+            .is_ok()
+            && expected == *proposed;
+    }
+
+    if log.level == "error" {
+        let Some(operation_digest) = log
+            .message
+            .strip_prefix(UNKNOWN_EFFECT_RECOVERY_REASON_PREFIX)
+        else {
+            return false;
+        };
+        let mut expected = current.clone();
+        return expected.block_unknown_effect(operation_digest).is_ok() && expected == *proposed;
+    }
+
+    false
+}
+
 fn task_retry_special_transition_matches(
     current: &TaskStateSnapshot,
     proposed: &TaskStateSnapshot,
@@ -2741,6 +3154,7 @@ fn task_retry_special_transition_matches(
             task_retry_schedule_candidate(current, ready_at_ms).as_ref() == Some(proposed)
         })
         || task_replay_recovery_candidate(current).as_ref() == Some(proposed)
+        || task_abandoned_recovery_candidate(current).as_ref() == Some(proposed)
 }
 
 fn validate_task_state_transition(
@@ -2749,6 +3163,7 @@ fn validate_task_state_transition(
     allow_attempt_outcome: bool,
     allow_heartbeat: bool,
     allow_retry_requeue: bool,
+    allow_restart_recovery: bool,
 ) -> Result<(), EvaError> {
     let next_attempt = current.attempts.checked_add(1);
     let claim_deadline_valid = match (
@@ -2785,12 +3200,15 @@ fn validate_task_state_transition(
         && claim_deadline_valid;
     let is_retry_requeue =
         allow_retry_requeue && task_retry_special_transition_matches(current, proposed);
+    let is_restart_recovery =
+        allow_restart_recovery && task_restart_recovery_transition_matches(current, proposed);
 
     if (current.attempts != proposed.attempts
         || current.execution_owner != proposed.execution_owner
         || current.cancel_token != proposed.cancel_token)
         && !is_claim
         && !is_retry_requeue
+        && !is_restart_recovery
     {
         return Err(
             EvaError::conflict("task execution fence can change only during queued claim")
@@ -2802,6 +3220,7 @@ fn validate_task_state_transition(
     if current.execution_owner.is_some()
         && current.deadline_at_ms != proposed.deadline_at_ms
         && !is_retry_requeue
+        && !is_restart_recovery
     {
         return Err(
             EvaError::conflict("task attempt deadline is immutable after claim")
@@ -2813,6 +3232,7 @@ fn validate_task_state_transition(
         && current.heartbeat_at_ms != proposed.heartbeat_at_ms
         && !allow_heartbeat
         && !is_retry_requeue
+        && !is_restart_recovery
     {
         return Err(
             EvaError::conflict("claimed task heartbeat requires the fenced heartbeat API")
@@ -2827,6 +3247,7 @@ fn validate_task_state_transition(
             "completed" | "failed" | "timed_out" | "cancelled"
         )
         && !allow_attempt_outcome
+        && !is_restart_recovery
     {
         return Err(
             EvaError::conflict("claimed task outcome requires the fenced finish API")
@@ -2836,6 +3257,7 @@ fn validate_task_state_transition(
     }
     if current.is_terminal()
         && !is_retry_requeue
+        && !is_restart_recovery
         && (current.result_digest != proposed.result_digest
             || current.result_size_bytes != proposed.result_size_bytes
             || current.error_kind != proposed.error_kind
@@ -2881,7 +3303,7 @@ fn validate_task_state_transition(
         }
         _ => proposed.status == current.status,
     };
-    if (!allowed && !is_retry_requeue)
+    if (!allowed && !is_retry_requeue && !is_restart_recovery)
         || (proposed.status == "running" && !is_claim && current.status != "running")
     {
         return Err(
@@ -4631,6 +5053,302 @@ mod tests {
         let reread = store.read(Some("req-task-lifecycle-store")).unwrap();
         assert_eq!(reread.status, "cancelling");
         assert_eq!(reread.cancel_reason.as_deref(), Some("operator cancel"));
+    }
+
+    #[test]
+    fn abandoned_task_recovery_requeues_only_after_writer_turnover() {
+        let root = test_root("abandoned-restart-requeue");
+        let task_id = "req-abandoned-restart-requeue";
+        let first_generation = {
+            let backend = crate::FileSystemDurableBackend::open(
+                crate::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            create_retry_test_task(&mut store, task_id, 2, b"abandoned");
+            let running = store
+                .try_claim_queued(task_id, "daemon.old.worker", "cancel.old.worker", 100)
+                .unwrap()
+                .unwrap()
+                .snapshot()
+                .clone();
+            let error = store.recover_abandoned_task_for_retry(task_id).unwrap_err();
+            assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+            running.owner_generation
+        };
+
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let recovered = store.recover_abandoned_task_for_retry(task_id).unwrap();
+        assert_eq!(recovered.status, "queued");
+        assert_eq!(recovered.attempts, 1);
+        assert!(recovered.execution_owner.is_none());
+        assert!(recovered.cancel_token.is_none());
+        assert_ne!(recovered.owner_generation, first_generation);
+
+        let repeated = store.recover_abandoned_task_for_retry(task_id).unwrap();
+        assert_eq!(repeated, recovered);
+        let claimed = store
+            .try_claim_queued(task_id, "daemon.new.worker", "cancel.new.worker", 200)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.snapshot().attempts, 2);
+    }
+
+    #[test]
+    fn effect_recovery_cannot_mutate_current_writer_generation() {
+        let root = test_root("effect-recovery-current-generation");
+        let task_id = "req-effect-recovery-current-generation";
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        create_retry_test_task(&mut store, task_id, 2, b"current-generation");
+        let original = store.read(Some(task_id)).unwrap();
+        let operation_digest = sha256_digest(b"current-operation");
+
+        let committed_error = store
+            .recover_task_from_committed_effect(
+                task_id,
+                &operation_digest,
+                &sha256_digest(b"current-result"),
+                b"current-result".len(),
+            )
+            .unwrap_err();
+        assert_eq!(committed_error.kind(), eva_core::ErrorKind::Conflict);
+        let prepared_error = store
+            .block_task_for_unknown_effect(task_id, &operation_digest)
+            .unwrap_err();
+        assert_eq!(prepared_error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(store.read(Some(task_id)).unwrap(), original);
+    }
+
+    #[test]
+    fn committed_effect_recovery_outweighs_contradictory_terminal_state() {
+        let root = test_root("committed-effect-recovery");
+        let task_id = "req-committed-effect-recovery";
+        {
+            let backend = crate::FileSystemDurableBackend::open(
+                crate::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            create_retry_test_task(&mut store, task_id, 1, b"effect");
+            finish_retry_test_task(
+                &mut store,
+                task_id,
+                &TaskAttemptOutcome::Failed {
+                    error_kind: "unavailable".to_owned(),
+                    error_message: "task checkpoint lost committed business fact".to_owned(),
+                    retryable: false,
+                },
+            );
+        }
+
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let operation_digest = sha256_digest(b"operation");
+        let result_digest = sha256_digest(b"committed-result");
+        let recovered = store
+            .recover_task_from_committed_effect(
+                task_id,
+                &operation_digest,
+                &result_digest,
+                b"committed-result".len(),
+            )
+            .unwrap();
+        assert_eq!(recovered.status, "completed");
+        assert_eq!(
+            recovered.result_digest.as_deref(),
+            Some(result_digest.as_str())
+        );
+        assert_eq!(recovered.result_size_bytes, Some(b"committed-result".len()));
+        assert!(recovered.error_kind.is_none());
+        assert!(recovered.error_message.is_none());
+        assert_eq!(
+            store
+                .recover_task_from_committed_effect(
+                    task_id,
+                    &operation_digest,
+                    &result_digest,
+                    b"committed-result".len(),
+                )
+                .unwrap(),
+            recovered
+        );
+        let conflict = store
+            .recover_task_from_committed_effect(
+                task_id,
+                &operation_digest,
+                &sha256_digest(b"different-result"),
+                b"different-result".len(),
+            )
+            .unwrap_err();
+        assert_eq!(conflict.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(store.read(Some(task_id)).unwrap(), recovered);
+    }
+
+    #[test]
+    fn committed_effect_recovery_repairs_active_timeout_cancel_and_recovering_matrix() {
+        let root = test_root("committed-effect-recovery-matrix");
+        let running_task_id = "req-committed-matrix-running";
+        let timed_out_task_id = "req-committed-matrix-timed-out";
+        let cancelled_task_id = "req-committed-matrix-cancelled";
+        let recovering_task_id = "req-committed-matrix-recovering";
+        {
+            let backend = crate::FileSystemDurableBackend::open(
+                crate::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            for task_id in [
+                running_task_id,
+                timed_out_task_id,
+                cancelled_task_id,
+                recovering_task_id,
+            ] {
+                create_retry_test_task(&mut store, task_id, 2, task_id.as_bytes());
+            }
+            store
+                .try_claim_queued(
+                    running_task_id,
+                    "daemon.matrix.running",
+                    "cancel.matrix.running",
+                    100,
+                )
+                .unwrap()
+                .unwrap();
+            finish_retry_test_task(
+                &mut store,
+                timed_out_task_id,
+                &TaskAttemptOutcome::TimedOut {
+                    observed_at_ms: 200,
+                    retryable: false,
+                },
+            );
+            let cancelled_claim = store
+                .try_claim_queued(
+                    cancelled_task_id,
+                    "daemon.matrix.cancelled",
+                    "cancel.matrix.cancelled",
+                    100,
+                )
+                .unwrap()
+                .unwrap();
+            store
+                .request_cancellation(cancelled_task_id, "cancelled after effect commit")
+                .unwrap();
+            store
+                .finish_execution(
+                    cancelled_claim.fence(),
+                    &TaskAttemptOutcome::Completed {
+                        result_digest: sha256_digest(b"ignored-cancelled-result"),
+                        result_size_bytes: b"ignored-cancelled-result".len(),
+                    },
+                )
+                .unwrap();
+            let recovering_claim = store
+                .try_claim_queued(
+                    recovering_task_id,
+                    "daemon.matrix.recovering",
+                    "cancel.matrix.recovering",
+                    100,
+                )
+                .unwrap()
+                .unwrap();
+            let mut recovering = recovering_claim.snapshot().clone();
+            recovering.mark_recovering("legacy recovery contradicted committed effect");
+            store.compare_and_set(&recovering).unwrap();
+        }
+
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let operation_digest = sha256_digest(b"matrix-operation");
+        let result_digest = sha256_digest(b"matrix-result");
+        for task_id in [
+            running_task_id,
+            timed_out_task_id,
+            cancelled_task_id,
+            recovering_task_id,
+        ] {
+            let recovered = store
+                .recover_task_from_committed_effect(
+                    task_id,
+                    &operation_digest,
+                    &result_digest,
+                    b"matrix-result".len(),
+                )
+                .unwrap();
+            assert_eq!(recovered.status, "completed", "task_id={task_id}");
+            assert_eq!(
+                recovered.result_digest.as_deref(),
+                Some(result_digest.as_str())
+            );
+            assert_eq!(recovered.result_size_bytes, Some(b"matrix-result".len()));
+        }
+    }
+
+    #[test]
+    fn prepared_effect_recovery_creates_stable_operator_block() {
+        let root = test_root("prepared-effect-recovery");
+        let task_id = "req-prepared-effect-recovery";
+        {
+            let backend = crate::FileSystemDurableBackend::open(
+                crate::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            create_retry_test_task(&mut store, task_id, 2, b"prepared");
+            store
+                .try_claim_queued(task_id, "daemon.old.worker", "cancel.old.prepared", 100)
+                .unwrap()
+                .unwrap();
+        }
+
+        let operation_digest = sha256_digest(b"prepared-operation");
+        let blocked = {
+            let backend = crate::FileSystemDurableBackend::open(
+                crate::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            let blocked = store
+                .block_task_for_unknown_effect(task_id, &operation_digest)
+                .unwrap();
+            assert_eq!(blocked.status, "interrupted");
+            assert!(blocked.is_terminal());
+            assert!(blocked
+                .interrupted_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("operator reconciliation required")));
+            assert_eq!(
+                store
+                    .block_task_for_unknown_effect(task_id, &operation_digest)
+                    .unwrap(),
+                blocked
+            );
+            blocked
+        };
+
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        assert_eq!(
+            store.recover_abandoned_task_for_retry(task_id).unwrap(),
+            blocked
+        );
     }
 
     /// 创建包含日志和 replay 的 completed 快照 fixture。

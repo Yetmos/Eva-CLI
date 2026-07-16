@@ -420,6 +420,16 @@ impl TaskHandlerRegistry {
         self.handlers.contains_key(kind)
     }
 
+    /// Returns the durable effect contract for a non-idempotent handler.
+    ///
+    /// `None` means either the handler is pure/idempotent or the kind is not registered; callers
+    /// that need to distinguish those cases must check `contains` first.
+    pub fn non_idempotent_effect_scope(&self, kind: &TaskKind) -> Option<&str> {
+        self.handlers
+            .get(kind)
+            .and_then(|registration| registration.effect_scope.as_deref())
+    }
+
     /// Returns the number of distinct registered kinds.
     pub fn len(&self) -> usize {
         self.handlers.len()
