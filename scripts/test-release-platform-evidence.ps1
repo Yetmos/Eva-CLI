@@ -74,7 +74,25 @@ function Write-JsonFile {
 function Read-JsonFile {
   param([string]$Path)
 
-  return [System.IO.File]::ReadAllText($Path, $Utf8NoBom) | ConvertFrom-Json
+  $text = [System.IO.File]::ReadAllText($Path, $Utf8NoBom)
+  $convertFromJson = Get-Command ConvertFrom-Json -ErrorAction Stop
+  if ($convertFromJson.Parameters.ContainsKey("DateKind")) {
+    return $text | ConvertFrom-Json -DateKind String
+  }
+  return $text | ConvertFrom-Json
+}
+
+function ConvertTo-CanonicalTimestamp {
+  param([object]$Value)
+
+  $text = if ($Value -is [System.DateTimeOffset] -or $Value -is [System.DateTime]) {
+    $Value.ToUniversalTime().ToString("o", [System.Globalization.CultureInfo]::InvariantCulture)
+  } else {
+    [System.Convert]::ToString($Value, [System.Globalization.CultureInfo]::InvariantCulture)
+  }
+  [System.DateTimeOffset]$parsed = [System.DateTimeOffset]::MinValue
+  Assert-True ([System.DateTimeOffset]::TryParse($text, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) "timestamp is not round-trip parseable"
+  return $parsed.ToUniversalTime().ToString("o", [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
 function Get-Sha256 {
@@ -257,6 +275,27 @@ function Write-PlatformFixture {
     -ExpectedRunAttempt $RunAttempt | Out-Null
 }
 
+function Write-PlatformFixtureWithLegacyDateParsing {
+  param([object]$Fixture)
+
+  & {
+    function ConvertFrom-Json {
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
+        [string]$InputObject
+      )
+
+      process {
+        Microsoft.PowerShell.Utility\ConvertFrom-Json -InputObject $InputObject
+      }
+    }
+
+    Write-PlatformFixture $Fixture
+  }
+}
+
 function Invoke-Aggregate {
   param(
     [string[]]$Manifests,
@@ -391,6 +430,17 @@ try {
   }
 
   $linuxIndex = Read-JsonFile $linux.Manifest
+  $linuxSmokeCapture = Read-JsonFile $linux.Smoke
+  $linuxToolchainCapture = Read-JsonFile $linux.Toolchain
+  Assert-Equal (ConvertTo-CanonicalTimestamp $linuxIndex.captures.smoke.finished_at) (ConvertTo-CanonicalTimestamp $linuxSmokeCapture.finished_at) "smoke finished_at lost precision during the JSON round trip"
+  Assert-Equal (ConvertTo-CanonicalTimestamp $linuxIndex.captures.toolchain.finished_at) (ConvertTo-CanonicalTimestamp $linuxToolchainCapture.finished_at) "toolchain finished_at lost precision during the JSON round trip"
+  if ((Get-Command ConvertFrom-Json -ErrorAction Stop).Parameters.ContainsKey("DateKind")) {
+    $legacyDateFixture = New-RawPlatformFixture "legacy-json-date" "Linux" "X64"
+    Write-PlatformFixtureWithLegacyDateParsing $legacyDateFixture
+    $legacyDateIndex = Read-JsonFile $legacyDateFixture.Manifest
+    $legacyDateCapture = Read-JsonFile $legacyDateFixture.Smoke
+    Assert-Equal (ConvertTo-CanonicalTimestamp $legacyDateIndex.captures.smoke.finished_at) (ConvertTo-CanonicalTimestamp $legacyDateCapture.finished_at) "legacy DateTime deserialization lost finished_at precision"
+  }
   $linuxSubjectPath = Join-Path $linux.Root ([string]$linuxIndex.subject.path)
   $linuxSubject = [System.IO.File]::ReadAllText($linuxSubjectPath, $Utf8NoBom)
   $subjectLines = $linuxSubject.Split([char]"`n", [System.StringSplitOptions]::RemoveEmptyEntries)
@@ -445,6 +495,18 @@ try {
   $stdoutBytes[0] = $stdoutBytes[0] -bxor 1
   [System.IO.File]::WriteAllBytes($stdoutPath, $stdoutBytes)
   Invoke-AggregateExpectFailure $stdoutTamper.Manifest "reject-stdout" "platform_capture_stream_digest_mismatch"
+
+  $timestampTamper = Copy-PlatformFixture $linux "tamper-finished-at"
+  $timestampIndex = Read-JsonFile $timestampTamper.Manifest
+  $timestampIndex.captures.smoke.finished_at = "2026-01-01T00:00:00.0000000+00:00"
+  Write-JsonFile $timestampTamper.Manifest $timestampIndex
+  Invoke-AggregateExpectFailure $timestampTamper.Manifest "reject-finished-at" "platform_index_capture_mismatch"
+
+  $invalidTimestamp = New-RawPlatformFixture "invalid-finished-at" "Linux" "X64"
+  $invalidTimestampCapture = Read-JsonFile $invalidTimestamp.Smoke
+  $invalidTimestampCapture.finished_at = "not-a-timestamp"
+  Write-JsonFile $invalidTimestamp.Smoke $invalidTimestampCapture
+  Invoke-ProducerExpectFailure $invalidTimestamp "platform_capture_timestamp_invalid"
 
   $attemptTamper = New-RawPlatformFixture "tamper-attempt" "Linux" "X64" "2"
   Invoke-ProducerExpectFailure $attemptTamper "platform_capture_run_attempt_mismatch"

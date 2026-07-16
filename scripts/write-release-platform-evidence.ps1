@@ -312,7 +312,12 @@ function Read-JsonObject {
 
   $file = Read-StrictUtf8File $Path $Reason
   try {
-    $value = $file.Text | ConvertFrom-Json -ErrorAction Stop
+    $convertFromJson = Get-Command ConvertFrom-Json -ErrorAction Stop
+    $value = if ($convertFromJson.Parameters.ContainsKey("DateKind")) {
+      $file.Text | ConvertFrom-Json -DateKind String -ErrorAction Stop
+    } else {
+      $file.Text | ConvertFrom-Json -ErrorAction Stop
+    }
   } catch {
     Fail-PlatformEvidence $Reason "$Path is not valid JSON"
   }
@@ -363,12 +368,25 @@ function ConvertTo-NonNegativeInt64 {
 }
 
 function ConvertTo-FinishedAt {
-  param([string]$Value)
+  param([object]$Value)
 
-  Assert-LineText $Value "capture.finished_at" "platform_capture_timestamp_invalid"
+  if ($null -eq $Value) {
+    Fail-PlatformEvidence "platform_capture_timestamp_invalid" "capture.finished_at is null"
+  }
+  $text = if ($Value -is [System.DateTimeOffset]) {
+    $Value.ToUniversalTime().ToString("o", $InvariantCulture)
+  } elseif ($Value -is [System.DateTime]) {
+    if ($Value.Kind -eq [System.DateTimeKind]::Unspecified) {
+      Fail-PlatformEvidence "platform_capture_timestamp_invalid" "capture.finished_at has no timezone"
+    }
+    $Value.ToUniversalTime().ToString("o", $InvariantCulture)
+  } else {
+    [System.Convert]::ToString($Value, $InvariantCulture)
+  }
+  Assert-LineText $text "capture.finished_at" "platform_capture_timestamp_invalid"
   [System.DateTimeOffset]$parsed = [System.DateTimeOffset]::MinValue
-  if (-not [System.DateTimeOffset]::TryParse($Value, $InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) {
-    Fail-PlatformEvidence "platform_capture_timestamp_invalid" $Value
+  if (-not [System.DateTimeOffset]::TryParse($text, $InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) {
+    Fail-PlatformEvidence "platform_capture_timestamp_invalid" $text
   }
   if ($parsed.Offset -ne [System.TimeSpan]::Zero) {
     Fail-PlatformEvidence "platform_capture_timestamp_invalid" "finished_at must use UTC"
@@ -575,7 +593,7 @@ function Read-CaptureEvidence {
 
   $stdout = Read-CaptureStream (Get-RequiredProperty $capture "stdout" "platform_capture_stream_invalid") $captureDirectory $PlatformRoot "$Role.stdout"
   $stderr = Read-CaptureStream (Get-RequiredProperty $capture "stderr" "platform_capture_stream_invalid") $captureDirectory $PlatformRoot "$Role.stderr"
-  $finishedAt = ConvertTo-FinishedAt ([string](Get-RequiredProperty $capture "finished_at" "platform_capture_timestamp_invalid"))
+  $finishedAt = ConvertTo-FinishedAt (Get-RequiredProperty $capture "finished_at" "platform_capture_timestamp_invalid")
   $duration = ConvertTo-NonNegativeInt64 (Get-RequiredProperty $capture "duration_ms" "platform_capture_duration_invalid") "$Role.duration_ms" "platform_capture_duration_invalid"
   $captureId = [string](Get-RequiredProperty $capture "capture_id" "platform_capture_id_invalid")
   Assert-LineText $captureId "$Role.capture_id" "platform_capture_id_invalid"
@@ -793,11 +811,12 @@ function Assert-CaptureIndex {
       @("manifest_byte_count", $Actual.ManifestByteCount),
       @("manifest_sha256", $Actual.ManifestSha256),
       @("capture_id", $Actual.CaptureId),
-      @("finished_at", $Actual.FinishedAt),
       @("duration_ms", $Actual.DurationMilliseconds)
     )) {
     Assert-ClaimEqual (Get-RequiredProperty $Claim ([string]$mapping[0]) "platform_index_capture_invalid") $mapping[1] "platform_index_capture_mismatch" "$Role.$($mapping[0])"
   }
+  $claimedFinishedAt = ConvertTo-FinishedAt (Get-RequiredProperty $Claim "finished_at" "platform_index_capture_invalid")
+  Assert-ClaimEqual $claimedFinishedAt.Canonical $Actual.FinishedAt "platform_index_capture_mismatch" "$Role.finished_at"
   foreach ($streamName in @("stdout", "stderr")) {
     $streamClaim = Get-RequiredProperty $Claim $streamName "platform_index_capture_invalid"
     $actualStream = $Actual.$streamName

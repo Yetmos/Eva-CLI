@@ -1181,8 +1181,15 @@ fn opened_file_matches_checked_path(
 ) -> Result<bool, EvaError> {
     const F_GETPATH: i32 = 50;
     let mut buffer = [0_u8; 4096];
-    // SAFETY: the file descriptor remains open and buffer is writable for its full length.
-    let result = unsafe { fcntl_get_path(opened.as_raw_fd(), F_GETPATH, buffer.as_mut_ptr()) };
+    // SAFETY: the file descriptor remains open and the variadic third argument points to writable
+    // storage for MAXPATHLEN bytes, as required by macOS F_GETPATH.
+    let result = unsafe {
+        fcntl_get_path(
+            opened.as_raw_fd(),
+            F_GETPATH,
+            buffer.as_mut_ptr().cast::<std::ffi::c_void>(),
+        )
+    };
     if result == -1 {
         return Err(
             EvaError::not_found("failed to resolve opened release evidence handle")
@@ -1198,7 +1205,7 @@ fn opened_file_matches_checked_path(
 #[cfg(target_os = "macos")]
 extern "C" {
     #[link_name = "fcntl"]
-    fn fcntl_get_path(file_descriptor: i32, command: i32, buffer: *mut u8) -> i32;
+    fn fcntl_get_path(file_descriptor: i32, command: i32, ...) -> i32;
 }
 
 /// 其他 Unix 平台回退为路径和 handle 的设备/inode 身份比较。
