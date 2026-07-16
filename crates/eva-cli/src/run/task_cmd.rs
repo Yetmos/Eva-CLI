@@ -211,10 +211,7 @@ fn read_task_snapshot(
     open_task_state_store(project_root, durable_backend, TaskStoreAccess::Read)?.read(task_id)
 }
 
-/// 在持久化快照上应用取消请求。
-///
-/// 终态任务只记录被拒绝的迟到取消，不重写终态；非终态任务切换为 cancelled 并记录原因。
-/// 更新完成后才写回 store，因此调用者拿到的快照与持久化状态一致。
+/// 在最新 record version 上应用取消请求并与并发 claim/finish 做 CAS 合并。
 fn cancel_task_snapshot(
     project_root: &Path,
     durable_backend: Option<&Path>,
@@ -223,22 +220,7 @@ fn cancel_task_snapshot(
 ) -> Result<TaskStateSnapshot, EvaError> {
     let mut store = open_task_state_store(project_root, durable_backend, TaskStoreAccess::Write)?;
     let selected = store.read(task_id)?;
-    store.update_snapshot(&selected.task_id, |snapshot| {
-        snapshot.cancel_requested = true;
-        snapshot.cancel_reason = Some(reason.to_owned());
-        if snapshot.is_terminal() {
-            snapshot.cancel_accepted = false;
-            snapshot.push_log(
-                "warning",
-                "cancel requested after task reached a terminal state",
-            );
-        } else {
-            snapshot.cancel_accepted = true;
-            snapshot.status = "cancelled".to_owned();
-            snapshot.push_log("warning", format!("cancel accepted: {reason}"));
-        }
-        Ok(())
-    })
+    store.request_cancellation(&selected.task_id, reason)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +301,28 @@ fn write_task_status<W: Write>(
             }
             if let Some(message) = &snapshot.error_message {
                 writeln!(writer, "error: {message}").map_err(write_error_kind)?;
+            }
+            if let Some(owner) = &snapshot.execution_owner {
+                writeln!(
+                    writer,
+                    "execution: owner={} heartbeat_at_ms={} deadline_at_ms={}",
+                    owner,
+                    snapshot
+                        .heartbeat_at_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_owned()),
+                    snapshot
+                        .deadline_at_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_owned())
+                )
+                .map_err(write_error_kind)?;
+            }
+            if let (Some(digest), Some(size_bytes)) =
+                (&snapshot.result_digest, snapshot.result_size_bytes)
+            {
+                writeln!(writer, "result: digest={digest} size_bytes={size_bytes}")
+                    .map_err(write_error_kind)?;
             }
             writeln!(writer, "dead_letters: {}", snapshot.dead_letters.len())
                 .map_err(write_error_kind)?;
@@ -403,6 +407,7 @@ fn task_logs_json(snapshot: &TaskStateSnapshot) -> String {
 /// 将完整任务状态快照编码为稳定 JSON。
 fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
     let envelope = task_envelope_json(snapshot);
+    let execution = task_execution_json(snapshot);
     let (retry_backoff_ms, attempt_timeout_ms) = snapshot
         .envelope
         .as_ref()
@@ -414,7 +419,7 @@ fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
         })
         .unwrap_or((0, None));
     format!(
-        "{{\"task_id\":{},\"task_envelope\":{},\"status\":{},\"attempts\":{},\"retry_policy\":{{\"max_attempts\":{},\"retry_backoff_ms\":{},\"attempt_timeout_ms\":{}}},\"cancellation\":{{\"requested\":{},\"accepted\":{},\"reason\":{}}},\"error\":{},\"logs\":{},\"dead_letters\":{},\"replayed_events\":{}}}",
+        "{{\"task_id\":{},\"task_envelope\":{},\"status\":{},\"attempts\":{},\"retry_policy\":{{\"max_attempts\":{},\"retry_backoff_ms\":{},\"attempt_timeout_ms\":{}}},\"execution\":{},\"cancellation\":{{\"requested\":{},\"accepted\":{},\"reason\":{}}},\"error\":{},\"logs\":{},\"dead_letters\":{},\"replayed_events\":{}}}",
         json_string(&snapshot.task_id),
         envelope,
         json_string(&snapshot.status),
@@ -424,6 +429,7 @@ fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
         attempt_timeout_ms
             .map(|value| value.to_string())
             .unwrap_or_else(|| "null".to_owned()),
+        execution,
         snapshot.cancel_requested,
         snapshot.cancel_accepted,
         option_json(snapshot.cancel_reason.as_deref()),
@@ -431,6 +437,26 @@ fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
         json_array(snapshot.logs.iter().map(task_log_json)),
         json_array(snapshot.dead_letters.iter().map(dead_letter_json)),
         json_array(snapshot.replayed_events.iter().map(replay_json))
+    )
+}
+
+fn task_execution_json(snapshot: &TaskStateSnapshot) -> String {
+    format!(
+        "{{\"owner\":{},\"heartbeat_at_ms\":{},\"deadline_at_ms\":{},\"result_digest\":{},\"result_size_bytes\":{}}}",
+        option_json(snapshot.execution_owner.as_deref()),
+        snapshot
+            .heartbeat_at_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_owned()),
+        snapshot
+            .deadline_at_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_owned()),
+        option_json(snapshot.result_digest.as_deref()),
+        snapshot
+            .result_size_bytes
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_owned())
     )
 }
 

@@ -20,8 +20,12 @@ pub const RESPONSIBILITY: &str = "durable task state interfaces and process-boun
 
 const TASK_STATE_FORMAT_V2: &str = "eva.task-state.v2";
 const TASK_STATE_FORMAT_V3: &str = "eva.task-state.v3";
+const TASK_STATE_FORMAT_V4: &str = "eva.task-state.v4";
 const MAX_TASK_KIND_BYTES: usize = 128;
 const MAX_INLINE_TASK_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_TASK_EXECUTION_OWNER_BYTES: usize = 512;
+const MAX_TASK_CANCEL_TOKEN_BYTES: usize = 256;
+const TASK_STATE_CAS_RETRY_LIMIT: usize = 32;
 
 /// 一次任务允许执行的固定宽度、可持久化策略。
 /// Durable per-task attempt policy with platform-independent integer widths.
@@ -96,7 +100,7 @@ pub struct TaskEnvelopeSnapshot {
 
 /// CLI task 命令与 runtime 跨进程使用的完整任务状态快照。
 /// Stored task summary used by CLI task commands across process boundaries.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TaskStateSnapshot {
     /// 权威 task ID 文件的持久 CAS 版本；零表示尚未创建/legacy 无版本记录。
     pub record_version: StateVersion,
@@ -110,7 +114,9 @@ pub struct TaskStateSnapshot {
     pub status: String,
     /// 已执行尝试次数。
     pub attempts: usize,
-    /// 兼容 v2/现有 CLI 的重试上限镜像；v3 必须等于 envelope attempt policy。
+    /// 当前/最后一次 attempt 的 daemon worker owner；与 writer generation 含义独立。
+    pub execution_owner: Option<String>,
+    /// 兼容 v2/现有 CLI 的重试上限镜像；v3/v4 必须等于 envelope attempt policy。
     pub retry_max_attempts: usize,
     /// 是否收到取消请求。
     pub cancel_requested: bool,
@@ -124,6 +130,10 @@ pub struct TaskStateSnapshot {
     pub deadline_at_ms: Option<u128>,
     /// Runtime 取消传播使用的可选 token。
     pub cancel_token: Option<String>,
+    /// 成功结果 bytes 的 canonical SHA-256；不在任务快照中内联结果 bytes。
+    pub result_digest: Option<String>,
+    /// 成功结果 bytes 的长度；必须与 result_digest 成对出现。
+    pub result_size_bytes: Option<usize>,
     /// 中断或恢复原因。
     pub interrupted_reason: Option<String>,
     /// 失败/超时的稳定错误分类文本。
@@ -136,6 +146,135 @@ pub struct TaskStateSnapshot {
     pub dead_letters: Vec<TaskStateDeadLetterSnapshot>,
     /// 已重放事件摘要。
     pub replayed_events: Vec<TaskStateReplaySnapshot>,
+}
+
+impl fmt::Debug for TaskStateSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TaskStateSnapshot")
+            .field("record_version", &self.record_version)
+            .field("owner_generation", &self.owner_generation)
+            .field("task_id", &self.task_id)
+            .field("envelope", &self.envelope)
+            .field("status", &self.status)
+            .field("attempts", &self.attempts)
+            .field(
+                "execution_owner",
+                &self.execution_owner.as_ref().map(|_| "<redacted>"),
+            )
+            .field("retry_max_attempts", &self.retry_max_attempts)
+            .field("cancel_requested", &self.cancel_requested)
+            .field("cancel_accepted", &self.cancel_accepted)
+            .field("cancel_reason", &self.cancel_reason)
+            .field("heartbeat_at_ms", &self.heartbeat_at_ms)
+            .field("deadline_at_ms", &self.deadline_at_ms)
+            .field(
+                "cancel_token",
+                &self.cancel_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("result_digest", &self.result_digest)
+            .field("result_size_bytes", &self.result_size_bytes)
+            .field("interrupted_reason", &self.interrupted_reason)
+            .field("error_kind", &self.error_kind)
+            .field("error_message", &self.error_message)
+            .field("logs", &self.logs)
+            .field("dead_letters", &self.dead_letters)
+            .field("replayed_events", &self.replayed_events)
+            .finish()
+    }
+}
+
+/// 一个已提交 attempt 的完整 fencing identity；cancel token 在 Debug 中始终脱敏。
+#[derive(Clone, PartialEq, Eq)]
+pub struct TaskAttemptFence {
+    task_id: String,
+    owner_generation: WriterGeneration,
+    execution_owner: String,
+    attempt: usize,
+    cancel_token: String,
+}
+
+impl TaskAttemptFence {
+    /// 返回 attempt 所属任务。
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    /// 返回提交 claim 的 durable writer generation。
+    pub const fn owner_generation(&self) -> WriterGeneration {
+        self.owner_generation
+    }
+
+    /// 返回不可授权的 worker owner 摘要身份。
+    pub fn execution_owner(&self) -> &str {
+        &self.execution_owner
+    }
+
+    /// 返回从一开始的 attempt 序号。
+    pub const fn attempt(&self) -> usize {
+        self.attempt
+    }
+
+    /// 返回当前 attempt 的取消 fencing token。
+    pub fn cancel_token(&self) -> &str {
+        &self.cancel_token
+    }
+}
+
+impl fmt::Debug for TaskAttemptFence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TaskAttemptFence")
+            .field("task_id", &self.task_id)
+            .field("owner_generation", &self.owner_generation)
+            .field("execution_owner", &"<redacted>")
+            .field("attempt", &self.attempt)
+            .field("cancel_token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// 已持久 claim 的快照及其 finish fence。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskExecutionClaim {
+    snapshot: TaskStateSnapshot,
+    fence: TaskAttemptFence,
+}
+
+impl TaskExecutionClaim {
+    /// 返回 store 已 stamp 的 running 快照。
+    pub fn snapshot(&self) -> &TaskStateSnapshot {
+        &self.snapshot
+    }
+
+    /// 返回 finish/cancel 使用的完整 fencing identity。
+    pub fn fence(&self) -> &TaskAttemptFence {
+        &self.fence
+    }
+}
+
+/// handler 完成后由 storage 在最新 record version 上提交的终态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskAttemptOutcome {
+    /// handler 成功；仅持久化结果 bytes 的摘要和长度。
+    Completed {
+        /// canonical SHA-256。
+        result_digest: String,
+        /// 原始结果长度。
+        result_size_bytes: usize,
+    },
+    /// handler 返回稳定结构化错误或 panic 被隔离。
+    Failed {
+        /// `ErrorKind::as_str()` 风格分类。
+        error_kind: String,
+        /// 不含 payload/result/secret 的稳定消息。
+        error_message: String,
+    },
+    /// handler 返回 timeout 或完成时 deadline 已经过期。
+    TimedOut {
+        /// 判定 timeout 的 epoch 毫秒。
+        observed_at_ms: u128,
+    },
 }
 
 /// 一条持久化任务日志。
@@ -385,6 +524,7 @@ impl TaskStateSnapshot {
             envelope: None,
             status: "queued".to_owned(),
             attempts: 0,
+            execution_owner: None,
             retry_max_attempts: 1,
             cancel_requested: false,
             cancel_accepted: false,
@@ -392,6 +532,8 @@ impl TaskStateSnapshot {
             heartbeat_at_ms: None,
             deadline_at_ms: None,
             cancel_token: None,
+            result_digest: None,
+            result_size_bytes: None,
             interrupted_reason: None,
             error_kind: None,
             error_message: None,
@@ -401,7 +543,7 @@ impl TaskStateSnapshot {
         })
     }
 
-    /// 创建携带完整 v3 任务信封的 queued 快照，并同步兼容重试上限镜像。
+    /// 创建携带完整任务信封的 queued 快照，并同步兼容重试上限镜像。
     pub fn queued_with_envelope(
         task_id: impl Into<String>,
         envelope: TaskEnvelopeSnapshot,
@@ -434,6 +576,76 @@ impl TaskStateSnapshot {
             .with_context("attempts", self.attempts.to_string())
             .with_context("retry_max_attempts", self.retry_max_attempts.to_string()));
         }
+        if let Some(execution_owner) = self.execution_owner.as_deref() {
+            validate_execution_owner(execution_owner)?;
+            if self.envelope.is_none() || self.attempts == 0 || self.cancel_token.is_none() {
+                return Err(EvaError::invalid_argument(
+                    "task execution owner requires an envelope, active attempt, and cancel token",
+                ));
+            }
+        }
+        if let Some(cancel_token) = self.cancel_token.as_deref() {
+            validate_cancel_token(cancel_token)?;
+        }
+        match (&self.result_digest, self.result_size_bytes) {
+            (None, None) => {}
+            (Some(digest), Some(_)) if self.status == "completed" && self.envelope.is_some() => {
+                validate_canonical_sha256(digest, "task result digest")?;
+            }
+            (Some(_), Some(_)) => {
+                return Err(EvaError::invalid_argument(
+                    "task result metadata requires completed status",
+                ))
+            }
+            _ => {
+                return Err(EvaError::invalid_argument(
+                    "task result digest and size must appear together",
+                ))
+            }
+        }
+        if self.execution_owner.is_some() {
+            let execution_metadata_valid = match self.status.as_str() {
+                "running" | "cancelling" => {
+                    self.result_digest.is_none()
+                        && self.error_kind.is_none()
+                        && self.error_message.is_none()
+                        && self.interrupted_reason.is_none()
+                }
+                "completed" => {
+                    self.result_digest.is_some()
+                        && self.error_kind.is_none()
+                        && self.error_message.is_none()
+                        && self.interrupted_reason.is_none()
+                }
+                "failed" => {
+                    self.result_digest.is_none()
+                        && self.error_kind.is_some()
+                        && self.error_message.is_some()
+                        && self.interrupted_reason.is_none()
+                }
+                "timed_out" => {
+                    self.result_digest.is_none()
+                        && self.error_kind.as_deref() == Some("timeout")
+                        && self.error_message.is_some()
+                        && self.heartbeat_at_ms.is_some()
+                        && self.interrupted_reason.is_none()
+                }
+                "cancelled" => {
+                    self.result_digest.is_none()
+                        && self.error_kind.is_none()
+                        && self.error_message.is_none()
+                        && self.interrupted_reason.is_none()
+                }
+                "interrupted" | "recovering" => self.result_digest.is_none(),
+                _ => true,
+            };
+            if !execution_metadata_valid {
+                return Err(EvaError::invalid_argument(
+                    "task execution metadata does not match lifecycle status",
+                )
+                .with_context("status", &self.status));
+            }
+        }
         if let Some(envelope) = &self.envelope {
             envelope.validate()?;
             if self.retry_max_attempts != envelope.attempt_policy.max_attempts as usize {
@@ -456,7 +668,7 @@ impl TaskStateSnapshot {
     /// 缺少这些字段时按 version/generation 零读取，并只能通过一次成功 CAS 升级。
     pub fn to_storage(&self) -> String {
         let format = if self.envelope.is_some() {
-            TASK_STATE_FORMAT_V3
+            TASK_STATE_FORMAT_V4
         } else {
             TASK_STATE_FORMAT_V2
         };
@@ -508,6 +720,23 @@ impl TaskStateSnapshot {
                     envelope
                         .attempt_policy
                         .attempt_timeout_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_default()
+                ),
+                format!(
+                    "execution_owner={}",
+                    self.execution_owner
+                        .as_ref()
+                        .map(|value| encode_field(value))
+                        .unwrap_or_default()
+                ),
+                format!(
+                    "result_digest={}",
+                    self.result_digest.as_deref().unwrap_or_default()
+                ),
+                format!(
+                    "result_size_bytes={}",
+                    self.result_size_bytes
                         .map(|value| value.to_string())
                         .unwrap_or_default()
                 ),
@@ -606,6 +835,7 @@ impl TaskStateSnapshot {
             envelope: None,
             status: String::new(),
             attempts: 0,
+            execution_owner: None,
             retry_max_attempts: 1,
             cancel_requested: false,
             cancel_accepted: false,
@@ -613,6 +843,8 @@ impl TaskStateSnapshot {
             heartbeat_at_ms: None,
             deadline_at_ms: None,
             cancel_token: None,
+            result_digest: None,
+            result_size_bytes: None,
             interrupted_reason: None,
             error_kind: None,
             error_message: None,
@@ -655,6 +887,8 @@ impl TaskStateSnapshot {
                 snapshot.status = decode_field(value);
             } else if let Some(value) = line.strip_prefix("attempts=") {
                 snapshot.attempts = parse_stored_usize("attempts", value)?;
+            } else if let Some(value) = line.strip_prefix("execution_owner=") {
+                snapshot.execution_owner = decode_optional_field(value);
             } else if let Some(value) = line.strip_prefix("retry_max_attempts=") {
                 snapshot.retry_max_attempts = parse_stored_usize("retry_max_attempts", value)?;
             } else if let Some(value) = line.strip_prefix("envelope_kind=") {
@@ -693,6 +927,11 @@ impl TaskStateSnapshot {
                 snapshot.deadline_at_ms = parse_optional_stored_u128("deadline_at_ms", value)?;
             } else if let Some(value) = line.strip_prefix("cancel_token=") {
                 snapshot.cancel_token = decode_optional_field(value);
+            } else if let Some(value) = line.strip_prefix("result_digest=") {
+                snapshot.result_digest = decode_optional_field(value);
+            } else if let Some(value) = line.strip_prefix("result_size_bytes=") {
+                snapshot.result_size_bytes =
+                    parse_optional_stored_usize("result_size_bytes", value)?;
             } else if let Some(value) = line.strip_prefix("interrupted_reason=") {
                 snapshot.interrupted_reason = decode_optional_field(value);
             } else if let Some(value) = line.strip_prefix("error_kind=") {
@@ -738,24 +977,45 @@ impl TaskStateSnapshot {
             || envelope_max_attempts.is_some()
             || envelope_retry_backoff_ms.is_some()
             || envelope_attempt_timeout_ms.is_some();
+        let execution_fields = ["execution_owner", "result_digest", "result_size_bytes"];
+        let has_execution_fields = execution_fields
+            .iter()
+            .any(|field| seen_scalars.contains(*field));
         match format.as_deref() {
             None if snapshot.record_version == StateVersion::ZERO
                 && snapshot.owner_generation == WriterGeneration::ZERO
-                && !has_envelope_fields => {}
+                && !has_envelope_fields
+                && !has_execution_fields => {}
             Some(TASK_STATE_FORMAT_V2)
                 if snapshot.record_version != StateVersion::ZERO
                     || snapshot.owner_generation == WriterGeneration::ZERO =>
             {
-                if has_envelope_fields {
+                if has_envelope_fields || has_execution_fields {
                     return Err(EvaError::invalid_argument(
-                        "v2 task state cannot contain a task envelope",
+                        "v2 task state cannot contain envelope or execution fields",
                     ));
                 }
             }
-            Some(TASK_STATE_FORMAT_V3)
-                if snapshot.record_version != StateVersion::ZERO
-                    || snapshot.owner_generation == WriterGeneration::ZERO =>
+            Some(task_format)
+                if matches!(task_format, TASK_STATE_FORMAT_V3 | TASK_STATE_FORMAT_V4)
+                    && (snapshot.record_version != StateVersion::ZERO
+                        || snapshot.owner_generation == WriterGeneration::ZERO) =>
             {
+                if task_format == TASK_STATE_FORMAT_V3 && has_execution_fields {
+                    return Err(EvaError::invalid_argument(
+                        "v3 task state cannot contain v4 execution fields",
+                    ));
+                }
+                if task_format == TASK_STATE_FORMAT_V4 {
+                    for field in execution_fields {
+                        if !seen_scalars.contains(field) {
+                            return Err(EvaError::invalid_argument(
+                                "v4 task state is missing an execution scalar field",
+                            )
+                            .with_context("field", field));
+                        }
+                    }
+                }
                 let kind = required_stored_field(envelope_kind, "envelope_kind")?;
                 let agent_id = required_stored_field(envelope_agent_id, "envelope_agent_id")?;
                 let input_kind = required_stored_field(envelope_input_kind, "envelope_input_kind")?;
@@ -771,7 +1031,7 @@ impl TaskStateSnapshot {
                 let retry_backoff_ms =
                     required_stored_field(envelope_retry_backoff_ms, "envelope_retry_backoff_ms")?;
                 let attempt_timeout_ms = envelope_attempt_timeout_ms.ok_or_else(|| {
-                    EvaError::invalid_argument("v3 task state is missing an envelope scalar field")
+                    EvaError::invalid_argument("task state is missing an envelope scalar field")
                         .with_context("field", "envelope_attempt_timeout_ms")
                 })?;
                 let input = match input_kind.as_str() {
@@ -808,7 +1068,9 @@ impl TaskStateSnapshot {
                     )?,
                 )?);
             }
-            Some(TASK_STATE_FORMAT_V2) | Some(TASK_STATE_FORMAT_V3) => {
+            Some(TASK_STATE_FORMAT_V2)
+            | Some(TASK_STATE_FORMAT_V3)
+            | Some(TASK_STATE_FORMAT_V4) => {
                 return Err(EvaError::invalid_argument(
                     "uncommitted task state cannot have a durable owner generation",
                 ))
@@ -837,6 +1099,179 @@ impl TaskStateSnapshot {
             level: level.into(),
             message: message.into(),
         });
+    }
+
+    /// 将一个可执行 queued 快照绑定到唯一 worker owner、attempt 和 cancel token。
+    pub fn claim_for_execution(
+        &mut self,
+        execution_owner: impl Into<String>,
+        heartbeat_at_ms: u128,
+        deadline_at_ms: Option<u128>,
+        cancel_token: impl Into<String>,
+    ) -> Result<usize, EvaError> {
+        if self.status != "queued" {
+            return Err(EvaError::conflict("only a queued task can be claimed")
+                .with_context("task_id", &self.task_id)
+                .with_context("status", &self.status));
+        }
+        if self.envelope.is_none() {
+            return Err(
+                EvaError::conflict("task claim requires a recoverable task envelope")
+                    .with_context("task_id", &self.task_id),
+            );
+        }
+        if self.cancel_requested {
+            return Err(
+                EvaError::conflict("cancelled queued task cannot be claimed")
+                    .with_context("task_id", &self.task_id),
+            );
+        }
+        if !self.dead_letters.is_empty() {
+            return Err(EvaError::conflict(
+                "task with dead letters requires the retry owner before execution",
+            )
+            .with_context("task_id", &self.task_id));
+        }
+        if self.execution_owner.is_some() || self.cancel_token.is_some() {
+            return Err(
+                EvaError::conflict("queued task already carries an execution claim")
+                    .with_context("task_id", &self.task_id),
+            );
+        }
+        let execution_owner = execution_owner.into();
+        let cancel_token = cancel_token.into();
+        validate_execution_owner(&execution_owner)?;
+        validate_cancel_token(&cancel_token)?;
+        let attempt = self
+            .attempts
+            .checked_add(1)
+            .ok_or_else(|| EvaError::conflict("task attempt counter is exhausted"))?;
+        if attempt > self.retry_max_attempts {
+            return Err(
+                EvaError::conflict("task retry policy has no remaining attempt")
+                    .with_context("task_id", &self.task_id)
+                    .with_context("attempt", attempt.to_string())
+                    .with_context("max_attempts", self.retry_max_attempts.to_string()),
+            );
+        }
+
+        self.attempts = attempt;
+        self.execution_owner = Some(execution_owner.clone());
+        self.result_digest = None;
+        self.result_size_bytes = None;
+        self.interrupted_reason = None;
+        self.error_kind = None;
+        self.error_message = None;
+        self.mark_running(heartbeat_at_ms, deadline_at_ms, cancel_token);
+        self.push_log("info", format!("task attempt {attempt} claimed by worker"));
+        self.validate()?;
+        Ok(attempt)
+    }
+
+    /// 校验迟到完成者仍然拥有同一 attempt；token 只用于 fencing，不是授权 secret。
+    pub fn verify_execution_claim(
+        &self,
+        execution_owner: &str,
+        attempt: usize,
+        cancel_token: &str,
+    ) -> Result<(), EvaError> {
+        if self.execution_owner.as_deref() == Some(execution_owner)
+            && self.attempts == attempt
+            && self.cancel_token.as_deref() == Some(cancel_token)
+        {
+            return Ok(());
+        }
+        Err(
+            EvaError::conflict("task execution claim no longer matches the worker")
+                .with_context("task_id", &self.task_id)
+                .with_context("attempt", attempt.to_string()),
+        )
+    }
+
+    /// 只有仍为 running 的匹配 attempt 才能提交成功结果摘要。
+    pub fn complete_execution(
+        &mut self,
+        execution_owner: &str,
+        attempt: usize,
+        cancel_token: &str,
+        result_digest: impl Into<String>,
+        result_size_bytes: usize,
+    ) -> Result<(), EvaError> {
+        self.verify_execution_claim(execution_owner, attempt, cancel_token)?;
+        if self.status != "running" {
+            return Err(EvaError::conflict("task is no longer running")
+                .with_context("task_id", &self.task_id)
+                .with_context("status", &self.status));
+        }
+        let result_digest = result_digest.into();
+        validate_canonical_sha256(&result_digest, "task result digest")?;
+        self.status = "completed".to_owned();
+        self.result_digest = Some(result_digest);
+        self.result_size_bytes = Some(result_size_bytes);
+        self.error_kind = None;
+        self.error_message = None;
+        self.push_log("info", "task completed");
+        self.validate()
+    }
+
+    /// 只有仍为 running 的匹配 attempt 才能提交稳定失败分类和消息。
+    pub fn fail_execution(
+        &mut self,
+        execution_owner: &str,
+        attempt: usize,
+        cancel_token: &str,
+        error_kind: impl Into<String>,
+        error_message: impl Into<String>,
+    ) -> Result<(), EvaError> {
+        self.verify_execution_claim(execution_owner, attempt, cancel_token)?;
+        if self.status != "running" {
+            return Err(EvaError::conflict("task is no longer running")
+                .with_context("task_id", &self.task_id)
+                .with_context("status", &self.status));
+        }
+        self.result_digest = None;
+        self.result_size_bytes = None;
+        self.mark_failed(attempt, error_kind, error_message);
+        self.validate()
+    }
+
+    /// 将匹配的 running attempt 以稳定 timeout 终态收口。
+    pub fn time_out_execution(
+        &mut self,
+        execution_owner: &str,
+        attempt: usize,
+        cancel_token: &str,
+        now_ms: u128,
+    ) -> Result<(), EvaError> {
+        self.verify_execution_claim(execution_owner, attempt, cancel_token)?;
+        if self.status != "running" {
+            return Err(EvaError::conflict("task is no longer running")
+                .with_context("task_id", &self.task_id)
+                .with_context("status", &self.status));
+        }
+        self.result_digest = None;
+        self.result_size_bytes = None;
+        self.mark_timed_out(now_ms);
+        self.validate()
+    }
+
+    /// durable cancel CAS 获胜后，只有匹配 attempt 才能把 cancelling 收口为 cancelled。
+    pub fn cancel_execution(
+        &mut self,
+        execution_owner: &str,
+        attempt: usize,
+        cancel_token: &str,
+    ) -> Result<(), EvaError> {
+        self.verify_execution_claim(execution_owner, attempt, cancel_token)?;
+        if self.status != "cancelling" {
+            return Err(EvaError::conflict("task is not awaiting cancellation")
+                .with_context("task_id", &self.task_id)
+                .with_context("status", &self.status));
+        }
+        self.result_digest = None;
+        self.result_size_bytes = None;
+        self.mark_cancelled();
+        self.validate()
     }
 
     /// 将任务标为 running，设置首个心跳、可选 deadline 和取消 token，并追加日志。
@@ -883,6 +1318,8 @@ impl TaskStateSnapshot {
         self.status = "cancelled".to_owned();
         self.cancel_requested = true;
         self.cancel_accepted = true;
+        self.result_digest = None;
+        self.result_size_bytes = None;
         self.push_log("warning", "task marked cancelled");
     }
 
@@ -890,6 +1327,8 @@ impl TaskStateSnapshot {
     pub fn mark_timed_out(&mut self, now_ms: u128) {
         self.status = "timed_out".to_owned();
         self.heartbeat_at_ms = Some(now_ms);
+        self.result_digest = None;
+        self.result_size_bytes = None;
         self.error_kind = Some("timeout".to_owned());
         self.error_message = Some("task deadline exceeded".to_owned());
         self.push_log("error", format!("task timed out at {now_ms}"));
@@ -899,6 +1338,8 @@ impl TaskStateSnapshot {
     pub fn mark_completed(&mut self, attempts: usize) {
         self.status = "completed".to_owned();
         self.attempts = attempts;
+        self.result_digest = None;
+        self.result_size_bytes = None;
         self.error_kind = None;
         self.error_message = None;
         self.push_log("info", "task completed");
@@ -913,6 +1354,8 @@ impl TaskStateSnapshot {
     ) {
         self.status = "failed".to_owned();
         self.attempts = attempts;
+        self.result_digest = None;
+        self.result_size_bytes = None;
         self.error_kind = Some(error_kind.into());
         self.error_message = Some(error_message.into());
         self.push_log("error", "task failed");
@@ -922,6 +1365,8 @@ impl TaskStateSnapshot {
     pub fn mark_interrupted(&mut self, reason: impl Into<String>) {
         let reason = reason.into();
         self.status = "interrupted".to_owned();
+        self.result_digest = None;
+        self.result_size_bytes = None;
         self.interrupted_reason = Some(reason.clone());
         self.push_log("warning", format!("task interrupted: {reason}"));
     }
@@ -930,6 +1375,8 @@ impl TaskStateSnapshot {
     pub fn mark_recovering(&mut self, reason: impl Into<String>) {
         let reason = reason.into();
         self.status = "recovering".to_owned();
+        self.result_digest = None;
+        self.result_size_bytes = None;
         self.interrupted_reason = Some(reason.clone());
         self.push_log("warning", format!("task recovering: {reason}"));
     }
@@ -1075,6 +1522,152 @@ impl FileSystemTaskStateStore {
             .collect()
     }
 
+    /// 尝试领取一个 queued 任务；正常 CAS 竞争或不可领取状态返回 `Ok(None)`。
+    pub fn try_claim_queued(
+        &mut self,
+        task_id: &str,
+        execution_owner: &str,
+        cancel_token: &str,
+        observed_at_ms: u128,
+    ) -> Result<Option<TaskExecutionClaim>, EvaError> {
+        validate_execution_owner(execution_owner)?;
+        validate_cancel_token(cancel_token)?;
+        let snapshot = self.read(Some(task_id))?;
+        if snapshot.status != "queued"
+            || snapshot.envelope.is_none()
+            || snapshot.cancel_requested
+            || !snapshot.dead_letters.is_empty()
+            || snapshot.attempts >= snapshot.retry_max_attempts
+            || snapshot.execution_owner.is_some()
+            || snapshot.cancel_token.is_some()
+        {
+            return Ok(None);
+        }
+        let deadline_at_ms = snapshot
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.attempt_policy.attempt_timeout_ms)
+            .map(|timeout_ms| {
+                observed_at_ms
+                    .checked_add(u128::from(timeout_ms))
+                    .ok_or_else(|| {
+                        EvaError::conflict("task attempt deadline is out of range")
+                            .with_context("task_id", task_id)
+                    })
+            })
+            .transpose()?;
+        let mut candidate = snapshot.clone();
+        let attempt = candidate.claim_for_execution(
+            execution_owner,
+            observed_at_ms,
+            deadline_at_ms,
+            cancel_token,
+        )?;
+
+        match self.compare_and_set(&candidate) {
+            Ok(committed) => Ok(Some(task_execution_claim(committed)?)),
+            Err(error) => {
+                let current = self.read(Some(task_id))?;
+                if current.record_version == snapshot.record_version {
+                    return Err(error);
+                }
+                if current.status == "running"
+                    && current.execution_owner.as_deref() == Some(execution_owner)
+                    && current.attempts == attempt
+                    && current.cancel_token.as_deref() == Some(cancel_token)
+                {
+                    let current = self.refresh_latest(task_id)?;
+                    return Ok(Some(task_execution_claim(current)?));
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// 在最新 record version 上验证完整 attempt fence，并提交结果或合并并发取消。
+    pub fn finish_execution(
+        &mut self,
+        fence: &TaskAttemptFence,
+        outcome: &TaskAttemptOutcome,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let mut current = self.read(Some(fence.task_id()))?;
+            verify_task_attempt_fence(&current, fence)?;
+            if task_attempt_outcome_is_committed(&current, outcome) || current.status == "cancelled"
+            {
+                return self.refresh_latest(fence.task_id());
+            }
+            match current.status.as_str() {
+                "running" => apply_task_attempt_outcome(&mut current, fence, outcome)?,
+                "cancelling" => current.cancel_execution(
+                    fence.execution_owner(),
+                    fence.attempt(),
+                    fence.cancel_token(),
+                )?,
+                _ => {
+                    return Err(
+                        EvaError::conflict("task attempt terminal result was superseded")
+                            .with_context("task_id", fence.task_id())
+                            .with_context("status", &current.status),
+                    )
+                }
+            }
+            let expected_version = current.record_version;
+            match self.compare_and_set_attempt_outcome(&current) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(fence.task_id()))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("task attempt finish exceeded the CAS retry limit")
+                .with_context("task_id", fence.task_id()),
+        )
+    }
+
+    /// 以重读-CAS 循环提交取消，避免与 claim/finish 竞争时丢失控制请求。
+    pub fn request_cancellation(
+        &mut self,
+        task_id: &str,
+        reason: impl Into<String>,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        let reason = reason.into();
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let mut current = self.read(Some(task_id))?;
+            if current.cancel_requested && current.cancel_reason.as_deref() == Some(&reason) {
+                return self.refresh_latest(task_id);
+            }
+            let was_queued = current.status == "queued";
+            current.request_cancel(reason.clone());
+            if was_queued {
+                current.mark_cancelled();
+            }
+            let expected_version = current.record_version;
+            match self.compare_and_set(&current) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(task_id))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                    if observed.cancel_requested
+                        && observed.cancel_reason.as_deref() == Some(&reason)
+                    {
+                        return self.refresh_latest(task_id);
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("task cancellation exceeded the CAS retry limit")
+                .with_context("task_id", task_id),
+        )
+    }
+
     /// 对指定任务执行带版本的读-改-CAS，并返回由 store stamp 的已提交快照。
     pub fn update_snapshot<F>(
         &mut self,
@@ -1107,7 +1700,7 @@ impl FileSystemTaskStateStore {
             .with_context("task_id", &snapshot.task_id)
             .with_context("actual", snapshot.record_version.0.to_string()));
         }
-        self.commit_snapshot(snapshot, StateVersion::ZERO, true)
+        self.commit_snapshot(snapshot, StateVersion::ZERO, true, false)
     }
 
     /// 使用 snapshot 携带的 record version 作为 expected 值执行持久 CAS。
@@ -1115,7 +1708,14 @@ impl FileSystemTaskStateStore {
         &mut self,
         snapshot: &TaskStateSnapshot,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        self.commit_snapshot(snapshot, snapshot.record_version, false)
+        self.commit_snapshot(snapshot, snapshot.record_version, false, false)
+    }
+
+    fn compare_and_set_attempt_outcome(
+        &mut self,
+        snapshot: &TaskStateSnapshot,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        self.commit_snapshot(snapshot, snapshot.record_version, false, true)
     }
 
     /// 从权威 ID 记录原子重建 latest 派生别名，不改变 record version。
@@ -1143,6 +1743,7 @@ impl FileSystemTaskStateStore {
         snapshot: &TaskStateSnapshot,
         expected: StateVersion,
         create_only: bool,
+        allow_attempt_outcome: bool,
     ) -> Result<TaskStateSnapshot, EvaError> {
         snapshot.validate()?;
         let dir = self.task_dir();
@@ -1167,12 +1768,21 @@ impl FileSystemTaskStateStore {
                             .with_context("actual_task_id", &current.task_id),
                     );
                 }
+                if current.owner_generation != snapshot.owner_generation {
+                    return Err(EvaError::conflict(
+                        "task state owner generation does not match current record",
+                    )
+                    .with_context("task_id", &snapshot.task_id)
+                    .with_context("expected", current.owner_generation.0.to_string())
+                    .with_context("actual", snapshot.owner_generation.0.to_string()));
+                }
                 if current.envelope != snapshot.envelope {
                     return Err(EvaError::conflict(
                         "task lifecycle update cannot modify the immutable envelope",
                     )
                     .with_context("task_id", &snapshot.task_id));
                 }
+                validate_task_state_transition(current, snapshot, allow_attempt_outcome)?;
             }
             if create_only && current.is_some() {
                 return Err(EvaError::conflict("task state already exists")
@@ -1290,6 +1900,242 @@ fn read_task_snapshot(path: &Path) -> Result<TaskStateSnapshot, EvaError> {
     })
 }
 
+fn task_execution_claim(snapshot: TaskStateSnapshot) -> Result<TaskExecutionClaim, EvaError> {
+    let execution_owner = snapshot.execution_owner.clone().ok_or_else(|| {
+        EvaError::internal("committed task claim is missing execution owner")
+            .with_context("task_id", &snapshot.task_id)
+    })?;
+    let cancel_token = snapshot.cancel_token.clone().ok_or_else(|| {
+        EvaError::internal("committed task claim is missing cancel token")
+            .with_context("task_id", &snapshot.task_id)
+    })?;
+    if snapshot.status != "running" || snapshot.attempts == 0 {
+        return Err(
+            EvaError::internal("committed task claim is not a running attempt")
+                .with_context("task_id", &snapshot.task_id)
+                .with_context("status", &snapshot.status),
+        );
+    }
+    let fence = TaskAttemptFence {
+        task_id: snapshot.task_id.clone(),
+        owner_generation: snapshot.owner_generation,
+        execution_owner,
+        attempt: snapshot.attempts,
+        cancel_token,
+    };
+    Ok(TaskExecutionClaim { snapshot, fence })
+}
+
+fn verify_task_attempt_fence(
+    snapshot: &TaskStateSnapshot,
+    fence: &TaskAttemptFence,
+) -> Result<(), EvaError> {
+    if snapshot.task_id != fence.task_id {
+        return Err(EvaError::conflict(
+            "task attempt fence belongs to another task",
+        ));
+    }
+    if snapshot.owner_generation != fence.owner_generation {
+        return Err(
+            EvaError::conflict("task attempt fence belongs to another writer generation")
+                .with_context("task_id", fence.task_id()),
+        );
+    }
+    snapshot.verify_execution_claim(
+        fence.execution_owner(),
+        fence.attempt(),
+        fence.cancel_token(),
+    )
+}
+
+fn apply_task_attempt_outcome(
+    snapshot: &mut TaskStateSnapshot,
+    fence: &TaskAttemptFence,
+    outcome: &TaskAttemptOutcome,
+) -> Result<(), EvaError> {
+    match outcome {
+        TaskAttemptOutcome::Completed {
+            result_digest,
+            result_size_bytes,
+        } => snapshot.complete_execution(
+            fence.execution_owner(),
+            fence.attempt(),
+            fence.cancel_token(),
+            result_digest.clone(),
+            *result_size_bytes,
+        ),
+        TaskAttemptOutcome::Failed {
+            error_kind,
+            error_message,
+        } => snapshot.fail_execution(
+            fence.execution_owner(),
+            fence.attempt(),
+            fence.cancel_token(),
+            error_kind.clone(),
+            error_message.clone(),
+        ),
+        TaskAttemptOutcome::TimedOut { observed_at_ms } => snapshot.time_out_execution(
+            fence.execution_owner(),
+            fence.attempt(),
+            fence.cancel_token(),
+            *observed_at_ms,
+        ),
+    }
+}
+
+fn task_attempt_outcome_is_committed(
+    snapshot: &TaskStateSnapshot,
+    outcome: &TaskAttemptOutcome,
+) -> bool {
+    match outcome {
+        TaskAttemptOutcome::Completed {
+            result_digest,
+            result_size_bytes,
+        } => {
+            snapshot.status == "completed"
+                && snapshot.result_digest.as_ref() == Some(result_digest)
+                && snapshot.result_size_bytes == Some(*result_size_bytes)
+        }
+        TaskAttemptOutcome::Failed {
+            error_kind,
+            error_message,
+        } => {
+            snapshot.status == "failed"
+                && snapshot.error_kind.as_ref() == Some(error_kind)
+                && snapshot.error_message.as_ref() == Some(error_message)
+        }
+        TaskAttemptOutcome::TimedOut { observed_at_ms } => {
+            snapshot.status == "timed_out" && snapshot.heartbeat_at_ms == Some(*observed_at_ms)
+        }
+    }
+}
+
+fn validate_task_state_transition(
+    current: &TaskStateSnapshot,
+    proposed: &TaskStateSnapshot,
+    allow_attempt_outcome: bool,
+) -> Result<(), EvaError> {
+    let next_attempt = current.attempts.checked_add(1);
+    let claim_deadline_valid = match (
+        current
+            .envelope
+            .as_ref()
+            .and_then(|envelope| envelope.attempt_policy.attempt_timeout_ms),
+        proposed.heartbeat_at_ms,
+        proposed.deadline_at_ms,
+    ) {
+        (None, Some(_), None) => true,
+        (Some(timeout_ms), Some(heartbeat_at_ms), Some(deadline_at_ms)) => {
+            heartbeat_at_ms.checked_add(u128::from(timeout_ms)) == Some(deadline_at_ms)
+        }
+        _ => false,
+    };
+    let is_claim = current.status == "queued"
+        && proposed.status == "running"
+        && next_attempt == Some(proposed.attempts)
+        && current.envelope.is_some()
+        && !current.cancel_requested
+        && !proposed.cancel_requested
+        && current.dead_letters.is_empty()
+        && current.attempts < current.retry_max_attempts
+        && current.execution_owner.is_none()
+        && current.cancel_token.is_none()
+        && proposed.execution_owner.is_some()
+        && proposed.cancel_token.is_some()
+        && proposed.result_digest.is_none()
+        && proposed.result_size_bytes.is_none()
+        && proposed.interrupted_reason.is_none()
+        && proposed.error_kind.is_none()
+        && proposed.error_message.is_none()
+        && claim_deadline_valid;
+
+    if (current.attempts != proposed.attempts
+        || current.execution_owner != proposed.execution_owner
+        || current.cancel_token != proposed.cancel_token)
+        && !is_claim
+    {
+        return Err(
+            EvaError::conflict("task execution fence can change only during queued claim")
+                .with_context("task_id", &current.task_id)
+                .with_context("current_status", &current.status)
+                .with_context("proposed_status", &proposed.status),
+        );
+    }
+    if current.execution_owner.is_some() && current.deadline_at_ms != proposed.deadline_at_ms {
+        return Err(
+            EvaError::conflict("task attempt deadline is immutable after claim")
+                .with_context("task_id", &current.task_id),
+        );
+    }
+    if current.execution_owner.is_some()
+        && matches!(current.status.as_str(), "running" | "cancelling")
+        && matches!(
+            proposed.status.as_str(),
+            "completed" | "failed" | "timed_out" | "cancelled"
+        )
+        && !allow_attempt_outcome
+    {
+        return Err(
+            EvaError::conflict("claimed task outcome requires the fenced finish API")
+                .with_context("task_id", &current.task_id)
+                .with_context("proposed_status", &proposed.status),
+        );
+    }
+    if current.is_terminal()
+        && (current.result_digest != proposed.result_digest
+            || current.result_size_bytes != proposed.result_size_bytes
+            || current.error_kind != proposed.error_kind
+            || current.error_message != proposed.error_message
+            || current.interrupted_reason != proposed.interrupted_reason
+            || current.heartbeat_at_ms != proposed.heartbeat_at_ms)
+    {
+        return Err(
+            EvaError::conflict("task terminal outcome metadata is immutable")
+                .with_context("task_id", &current.task_id)
+                .with_context("status", &current.status),
+        );
+    }
+
+    let allowed = match current.status.as_str() {
+        "queued" => matches!(
+            proposed.status.as_str(),
+            "queued" | "running" | "cancelling" | "cancelled" | "interrupted" | "recovering"
+        ),
+        "running" => matches!(
+            proposed.status.as_str(),
+            "running"
+                | "cancelling"
+                | "completed"
+                | "failed"
+                | "cancelled"
+                | "timed_out"
+                | "interrupted"
+                | "recovering"
+        ),
+        "cancelling" => matches!(
+            proposed.status.as_str(),
+            "cancelling" | "cancelled" | "interrupted" | "recovering"
+        ),
+        "recovering" => matches!(
+            proposed.status.as_str(),
+            "recovering" | "cancelling" | "cancelled" | "interrupted"
+        ),
+        "completed" | "failed" | "cancelled" | "timed_out" | "interrupted" => {
+            proposed.status == current.status
+        }
+        _ => proposed.status == current.status,
+    };
+    if !allowed || (proposed.status == "running" && !is_claim && current.status != "running") {
+        return Err(
+            EvaError::conflict("task lifecycle transition is not allowed")
+                .with_context("task_id", &current.task_id)
+                .with_context("current_status", &current.status)
+                .with_context("proposed_status", &proposed.status),
+        );
+    }
+    Ok(())
+}
+
 fn is_single_task_field(field: &str) -> bool {
     matches!(
         field,
@@ -1299,6 +2145,7 @@ fn is_single_task_field(field: &str) -> bool {
             | "task_id"
             | "status"
             | "attempts"
+            | "execution_owner"
             | "retry_max_attempts"
             | "envelope_kind"
             | "envelope_agent_id"
@@ -1316,6 +2163,8 @@ fn is_single_task_field(field: &str) -> bool {
             | "heartbeat_at_ms"
             | "deadline_at_ms"
             | "cancel_token"
+            | "result_digest"
+            | "result_size_bytes"
             | "interrupted_reason"
             | "error_kind"
             | "error_message"
@@ -1324,7 +2173,7 @@ fn is_single_task_field(field: &str) -> bool {
 
 fn required_stored_field<T>(value: Option<T>, field: &'static str) -> Result<T, EvaError> {
     value.ok_or_else(|| {
-        EvaError::invalid_argument("v3 task state is missing an envelope scalar field")
+        EvaError::invalid_argument("task state is missing an envelope scalar field")
             .with_context("field", field)
     })
 }
@@ -1348,6 +2197,32 @@ fn validate_task_kind(value: &str) -> Result<(), EvaError> {
                     .with_context("task_kind", value),
             );
         }
+    }
+    Ok(())
+}
+
+fn validate_execution_owner(value: &str) -> Result<(), EvaError> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.len() > MAX_TASK_EXECUTION_OWNER_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(EvaError::invalid_argument(
+            "task execution owner is not a stable bounded identity",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_cancel_token(value: &str) -> Result<(), EvaError> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.len() > MAX_TASK_CANCEL_TOKEN_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(EvaError::invalid_argument(
+            "task cancel token is not a stable bounded fence",
+        ));
     }
     Ok(())
 }
@@ -1436,6 +2311,13 @@ fn parse_stored_usize(name: &'static str, value: &str) -> Result<usize, EvaError
             .with_context("field", name)
             .with_context("value", value)
     })
+}
+
+fn parse_optional_stored_usize(name: &'static str, value: &str) -> Result<Option<usize>, EvaError> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    parse_stored_usize(name, value).map(Some)
 }
 
 fn parse_stored_u32(name: &'static str, value: &str) -> Result<u32, EvaError> {
@@ -1530,7 +2412,7 @@ mod tests {
     }
 
     #[test]
-    /// 新 v3 任务在 writer 释放并只读重开后仍完整恢复二进制 inline payload 与执行策略。
+    /// 新 v4 任务在 writer 释放并只读重开后仍完整恢复二进制 inline payload 与执行策略。
     fn task_envelope_reopens_with_exact_inline_payload() {
         let root = test_root("envelope-inline-round-trip");
         let input = vec![0, b'\n', b'%', b'|', b'=', 0xff];
@@ -1686,8 +2568,8 @@ mod tests {
     }
 
     #[test]
-    /// v3 磁盘记录缺字段、摘要篡改、重复标量、未知 discriminator 或 policy 漂移均失败。
-    fn task_envelope_v3_rejects_corrupt_persisted_fields() {
+    /// v4 磁盘记录缺字段、摘要篡改、重复标量、未知 discriminator 或 policy 漂移均失败。
+    fn task_envelope_v4_rejects_corrupt_persisted_fields() {
         let envelope = TaskEnvelopeSnapshot::inline(
             "runtime.echo",
             "root-agent",
@@ -1713,12 +2595,375 @@ mod tests {
             ),
             stored.replace("envelope_input_kind=inline", "envelope_input_kind=unknown"),
             stored.replace("retry_max_attempts=1", "retry_max_attempts=2"),
+            stored.replace("execution_owner=\n", ""),
+            stored.replacen(
+                "result_digest=\n",
+                "result_digest=\nresult_digest=\n",
+                1,
+            ),
+            stored.replace("result_size_bytes=\n", "result_size_bytes=1\n"),
+            stored.replace(TASK_STATE_FORMAT_V4, TASK_STATE_FORMAT_V3),
         ];
 
         for corrupted in cases {
             let error = TaskStateSnapshot::from_storage(&corrupted).unwrap_err();
             assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
         }
+    }
+
+    #[test]
+    /// claim/finish 持久绑定 owner、attempt、cancel token 和结果摘要，Debug 不泄露 fencing token。
+    fn task_execution_claim_and_finish_round_trip_v4() {
+        let root = test_root("execution-claim-finish");
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"payload".to_vec(),
+            "idem-execution-claim",
+            TaskAttemptPolicySnapshot::new(2, 0, Some(500)).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-task-execution-claim",
+                    envelope.clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let owner = "daemon.100.7.0123456789abcdef";
+        let token = "cancel.0123456789abcdef";
+
+        let mut forged_claim = store.read(Some("req-task-execution-claim")).unwrap();
+        forged_claim.attempts = 1;
+        forged_claim.execution_owner = Some(owner.to_owned());
+        forged_claim.mark_running(1_000, Some(9_999), token);
+        let forged_claim_error = store.compare_and_set(&forged_claim).unwrap_err();
+        assert_eq!(forged_claim_error.kind(), eva_core::ErrorKind::Conflict);
+
+        let claim = store
+            .try_claim_queued("req-task-execution-claim", owner, token, 1_000)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(claim.snapshot().status, "running");
+        assert_eq!(claim.snapshot().attempts, 1);
+        assert_eq!(claim.snapshot().execution_owner.as_deref(), Some(owner));
+        assert_eq!(claim.snapshot().cancel_token.as_deref(), Some(token));
+        assert_eq!(claim.snapshot().heartbeat_at_ms, Some(1_000));
+        assert_eq!(claim.snapshot().deadline_at_ms, Some(1_500));
+        assert_eq!(claim.snapshot().envelope.as_ref(), Some(&envelope));
+        assert_eq!(claim.snapshot().record_version, StateVersion(2));
+        let claim_debug = format!("{claim:?}");
+        assert!(!claim_debug.contains(owner));
+        assert!(!claim_debug.contains(token));
+
+        let mut replaced_owner = claim.snapshot().clone();
+        replaced_owner.execution_owner = Some("daemon.100.7.other".to_owned());
+        let replace_error = store.compare_and_set(&replaced_owner).unwrap_err();
+        assert_eq!(replace_error.kind(), eva_core::ErrorKind::Conflict);
+
+        let mut forged_completion = claim.snapshot().clone();
+        forged_completion
+            .complete_execution(
+                claim.fence().execution_owner(),
+                claim.fence().attempt(),
+                claim.fence().cancel_token(),
+                sha256_digest(b"forged"),
+                6,
+            )
+            .unwrap();
+        let forged_completion_error = store.compare_and_set(&forged_completion).unwrap_err();
+        assert_eq!(
+            forged_completion_error.kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        assert_eq!(
+            forged_completion_error.message(),
+            "claimed task outcome requires the fenced finish API"
+        );
+
+        let result = b"result";
+        let result_digest = sha256_digest(result);
+        let completed = store
+            .finish_execution(
+                claim.fence(),
+                &TaskAttemptOutcome::Completed {
+                    result_digest: result_digest.clone(),
+                    result_size_bytes: result.len(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(completed.status, "completed");
+        assert_eq!(
+            completed.result_digest.as_deref(),
+            Some(result_digest.as_str())
+        );
+        assert_eq!(completed.result_size_bytes, Some(result.len()));
+        assert_eq!(completed.record_version, StateVersion(3));
+        assert!(
+            fs::read_to_string(store.task_path("req-task-execution-claim").unwrap())
+                .unwrap()
+                .starts_with("format=eva.task-state.v4\n")
+        );
+    }
+
+    #[test]
+    /// queued cancel 阻止 claim；running cancel 获胜后迟到 handler 结果只能收口为 cancelled。
+    fn task_cancellation_is_linearized_against_claim_and_finish() {
+        let root = test_root("execution-cancel-races");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        let policy = TaskAttemptPolicySnapshot::new(1, 0, None).unwrap();
+        for task_id in ["req-cancel-before-claim", "req-cancel-after-claim"] {
+            let envelope = TaskEnvelopeSnapshot::inline(
+                "runtime.echo",
+                "root-agent",
+                b"payload".to_vec(),
+                format!("idem-{task_id}"),
+                policy.clone(),
+            )
+            .unwrap();
+            store
+                .create(&TaskStateSnapshot::queued_with_envelope(task_id, envelope).unwrap())
+                .unwrap();
+        }
+
+        let cancelled = store
+            .request_cancellation("req-cancel-before-claim", "operator stop")
+            .unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(store
+            .try_claim_queued(
+                "req-cancel-before-claim",
+                "daemon.1.1.worker",
+                "cancel.before",
+                100,
+            )
+            .unwrap()
+            .is_none());
+
+        let claim = store
+            .try_claim_queued(
+                "req-cancel-after-claim",
+                "daemon.1.1.worker",
+                "cancel.after",
+                100,
+            )
+            .unwrap()
+            .unwrap();
+        let cancelling = store
+            .request_cancellation("req-cancel-after-claim", "operator stop")
+            .unwrap();
+        assert_eq!(cancelling.status, "cancelling");
+        let final_state = store
+            .finish_execution(
+                claim.fence(),
+                &TaskAttemptOutcome::Completed {
+                    result_digest: sha256_digest(b"late-result"),
+                    result_size_bytes: 11,
+                },
+            )
+            .unwrap();
+        assert_eq!(final_state.status, "cancelled");
+        assert!(final_state.result_digest.is_none());
+    }
+
+    #[test]
+    fn terminal_outcome_metadata_cannot_be_rewritten_by_plain_cas() {
+        let root = test_root("terminal-outcome-immutable");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        let policy = TaskAttemptPolicySnapshot::new(1, 0, None).unwrap();
+        for task_id in [
+            "req-terminal-completed",
+            "req-terminal-failed",
+            "req-terminal-timed-out",
+            "req-terminal-cancelled",
+        ] {
+            let envelope = TaskEnvelopeSnapshot::inline(
+                "runtime.echo",
+                "root-agent",
+                task_id.as_bytes().to_vec(),
+                format!("idem-{task_id}"),
+                policy.clone(),
+            )
+            .unwrap();
+            store
+                .create(&TaskStateSnapshot::queued_with_envelope(task_id, envelope).unwrap())
+                .unwrap();
+        }
+
+        let completed_claim = store
+            .try_claim_queued(
+                "req-terminal-completed",
+                "daemon.terminal.worker",
+                "cancel.terminal.completed",
+                100,
+            )
+            .unwrap()
+            .unwrap();
+        let completed = store
+            .finish_execution(
+                completed_claim.fence(),
+                &TaskAttemptOutcome::Completed {
+                    result_digest: sha256_digest(b"result"),
+                    result_size_bytes: 6,
+                },
+            )
+            .unwrap();
+
+        let failed_claim = store
+            .try_claim_queued(
+                "req-terminal-failed",
+                "daemon.terminal.worker",
+                "cancel.terminal.failed",
+                100,
+            )
+            .unwrap()
+            .unwrap();
+        let failed = store
+            .finish_execution(
+                failed_claim.fence(),
+                &TaskAttemptOutcome::Failed {
+                    error_kind: "unavailable".to_owned(),
+                    error_message: "handler unavailable".to_owned(),
+                },
+            )
+            .unwrap();
+
+        let timed_out_claim = store
+            .try_claim_queued(
+                "req-terminal-timed-out",
+                "daemon.terminal.worker",
+                "cancel.terminal.timed-out",
+                100,
+            )
+            .unwrap()
+            .unwrap();
+        let timed_out = store
+            .finish_execution(
+                timed_out_claim.fence(),
+                &TaskAttemptOutcome::TimedOut {
+                    observed_at_ms: 200,
+                },
+            )
+            .unwrap();
+        let mismatched_timeout = store
+            .finish_execution(
+                timed_out_claim.fence(),
+                &TaskAttemptOutcome::TimedOut {
+                    observed_at_ms: 201,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(mismatched_timeout.kind(), eva_core::ErrorKind::Conflict);
+
+        let cancelled_claim = store
+            .try_claim_queued(
+                "req-terminal-cancelled",
+                "daemon.terminal.worker",
+                "cancel.terminal.cancelled",
+                100,
+            )
+            .unwrap()
+            .unwrap();
+        store
+            .request_cancellation("req-terminal-cancelled", "operator stop")
+            .unwrap();
+        let cancelled = store
+            .finish_execution(
+                cancelled_claim.fence(),
+                &TaskAttemptOutcome::Completed {
+                    result_digest: sha256_digest(b"late"),
+                    result_size_bytes: 4,
+                },
+            )
+            .unwrap();
+
+        let mut tampered_completed = completed;
+        tampered_completed.result_digest = Some(sha256_digest(b"forged"));
+        let mut tampered_failed = failed;
+        tampered_failed.error_message = Some("forged failure".to_owned());
+        let mut tampered_timed_out = timed_out;
+        tampered_timed_out.heartbeat_at_ms = Some(201);
+        let mut tampered_cancelled = cancelled;
+        tampered_cancelled.heartbeat_at_ms = Some(101);
+
+        for tampered in [
+            tampered_completed,
+            tampered_failed,
+            tampered_timed_out,
+            tampered_cancelled,
+        ] {
+            let error = store.compare_and_set(&tampered).unwrap_err();
+            assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+            assert_eq!(
+                error.message(),
+                "task terminal outcome metadata is immutable"
+            );
+        }
+    }
+
+    #[test]
+    /// 旧 v3 queued 记录仍可读取，并在首次成功 claim 时惰性升级为 v4。
+    fn task_envelope_v3_is_lazily_upgraded_on_claim() {
+        let root = test_root("v3-lazy-claim");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"legacy-v3".to_vec(),
+            "idem-v3-lazy-claim",
+            TaskAttemptPolicySnapshot::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        let committed = store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-task-v3-lazy-claim",
+                    envelope.clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let v3 = committed
+            .to_storage()
+            .replace(TASK_STATE_FORMAT_V4, TASK_STATE_FORMAT_V3)
+            .lines()
+            .filter(|line| {
+                !line.starts_with("execution_owner=")
+                    && !line.starts_with("result_digest=")
+                    && !line.starts_with("result_size_bytes=")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(store.task_path("req-task-v3-lazy-claim").unwrap(), &v3).unwrap();
+        fs::write(store.latest_task_path(), v3).unwrap();
+
+        let reopened = store.read(Some("req-task-v3-lazy-claim")).unwrap();
+        assert_eq!(reopened.envelope, Some(envelope));
+        assert!(reopened.execution_owner.is_none());
+        store
+            .try_claim_queued(
+                "req-task-v3-lazy-claim",
+                "daemon.2.1.worker",
+                "cancel.v3",
+                200,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            fs::read_to_string(store.task_path("req-task-v3-lazy-claim").unwrap())
+                .unwrap()
+                .starts_with("format=eva.task-state.v4\n")
+        );
     }
 
     #[test]
@@ -1835,12 +3080,12 @@ mod tests {
         let mut first_store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
         let mut second_store = first_store.clone();
         let created = first_store
-            .create(&sample_snapshot("req-task-state-stale"))
+            .create(&TaskStateSnapshot::queued("req-task-state-stale").unwrap())
             .unwrap();
         let mut fresh = created.clone();
         let mut stale = created;
-        fresh.status = "completed-fresh".to_owned();
-        stale.status = "completed-stale".to_owned();
+        fresh.request_cancel("fresh cancellation");
+        stale.mark_interrupted("stale recovery");
 
         let committed = first_store.compare_and_set(&fresh).unwrap();
         let error = second_store.compare_and_set(&stale).unwrap_err();
@@ -1873,7 +3118,7 @@ mod tests {
 
         let committed = store
             .update_snapshot("req-task-state-legacy", |snapshot| {
-                snapshot.status = "migrated".to_owned();
+                snapshot.push_log("info", "legacy record migrated through fenced CAS");
                 Ok(())
             })
             .unwrap();
@@ -2051,6 +3296,7 @@ mod tests {
             envelope: None,
             status: "completed".to_owned(),
             attempts: 1,
+            execution_owner: None,
             retry_max_attempts: 2,
             cancel_requested: false,
             cancel_accepted: false,
@@ -2058,6 +3304,8 @@ mod tests {
             heartbeat_at_ms: None,
             deadline_at_ms: None,
             cancel_token: None,
+            result_digest: None,
+            result_size_bytes: None,
             interrupted_reason: None,
             error_kind: None,
             error_message: None,

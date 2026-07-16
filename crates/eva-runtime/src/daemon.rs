@@ -9,7 +9,7 @@ use crate::{
     run_scheduler_retry_tick, FileSystemTaskArtifactResolver, IdempotencyKey, RuntimeBuilder,
     RuntimeRecoveryCoordinator, RuntimeRecoveryReport, SchedulerRetryTickOptions,
     SchedulerRetryTickReport, ShutdownReport, TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope,
-    TaskHandlerRegistry, TaskInput, TaskKind,
+    TaskHandlerRegistry, TaskInput, TaskKind, TaskWorkerRuntime,
 };
 use eva_config::ProjectConfig;
 use eva_core::{AgentId, EvaError, GenerationId, RequestId};
@@ -2343,6 +2343,23 @@ fn start_daemon_inner(
     let task_artifacts = Arc::new(FileSystemTaskArtifactResolver::with_default_limit(
         &durable_backend.layout().artifact_dir,
     ));
+    let mut task_worker = if options.shutdown_after_smoke {
+        None
+    } else {
+        let task_store = FileSystemTaskStateStore::from_runtime_writer(
+            durable_backend.layout(),
+            lease.writer(),
+        )?;
+        Some(TaskWorkerRuntime::start_paused(
+            task_store,
+            Arc::clone(&task_handlers),
+            task_artifacts.clone(),
+            task_worker_execution_owner(lease.record()),
+        )?)
+    };
+    if let Some(worker) = task_worker.as_ref() {
+        worker.check_health()?;
+    }
     // All startup work must finish before publishing ready state, and the lease is renewed at that boundary.
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
@@ -2354,6 +2371,9 @@ fn start_daemon_inner(
     let running_state = DaemonStateRecord::running(project, run_mode);
     write_state(&options, &running_state)?;
     if let Err(error) = write_pid_projection(&options, lease.record()) {
+        if let Some(worker) = task_worker.as_mut() {
+            let _ = worker.stop_and_join();
+        }
         let _ = write_state(&options, &running_state.clone().stopped());
         let _ = lease.release_at(now_ms());
         return Err(error);
@@ -2379,7 +2399,11 @@ fn start_daemon_inner(
                 hardware_hotplug: hardware_hotplug.clone(),
                 memory_maintenance: memory_maintenance.clone(),
                 shutdown: None,
-                audit: daemon_start_audit(task_handlers.as_ref(), task_artifacts.as_ref()),
+                audit: daemon_start_audit(
+                    task_handlers.as_ref(),
+                    task_artifacts.as_ref(),
+                    task_worker.is_some(),
+                ),
             };
             let report_digest = (hooks.publish_report)(&ready_report)?;
             ensure_startup_not_aborted(&options, Some(hooks.handshake))?;
@@ -2390,6 +2414,9 @@ fn start_daemon_inner(
             )?;
             hooks.ready_published = true;
         }
+        if let Some(worker) = task_worker.as_ref() {
+            worker.activate();
+        }
         let (status, shutdown) = if options.shutdown_after_smoke {
             let shutdown_report = runtime.shutdown();
             let stopped = running_state.clone().stopped();
@@ -2397,14 +2424,27 @@ fn start_daemon_inner(
             remove_matching_pid(&options, lease.record())?;
             ("stopped".to_owned(), Some(shutdown_report))
         } else {
-            let loop_report = run_control_loop(
+            let worker = task_worker
+                .as_mut()
+                .ok_or_else(|| EvaError::internal("daemon task worker was not created"))?;
+            let loop_result = run_control_loop(
                 project,
                 &options,
                 &mut runtime,
                 running_state.clone(),
                 durable_backend.layout(),
                 &mut lease,
-            )?;
+                worker,
+            );
+            let join_result = worker.stop_and_join();
+            let loop_report = match (loop_result, join_result) {
+                (Ok(report), Ok(())) => report,
+                (Err(error), Ok(())) => return Err(error),
+                (Ok(_), Err(error)) => return Err(error),
+                (Err(error), Err(join_error)) => {
+                    return Err(error.with_context("task_worker_join_error", join_error.to_string()))
+                }
+            };
             (loop_report.status, loop_report.shutdown)
         };
         Ok::<_, EvaError>((status, shutdown))
@@ -2412,7 +2452,12 @@ fn start_daemon_inner(
 
     let (status, shutdown) = match lifecycle {
         Ok(report) => report,
-        Err(error) => {
+        Err(mut error) => {
+            if let Some(worker) = task_worker.as_mut() {
+                if let Err(join_error) = worker.stop_and_join() {
+                    error = error.with_context("task_worker_join_error", join_error.to_string());
+                }
+            }
             let _ = write_state(&options, &running_state.clone().stopped());
             let _ = remove_matching_pid(&options, lease.record());
             let _ = lease.release_at(now_ms());
@@ -2440,15 +2485,20 @@ fn start_daemon_inner(
         hardware_hotplug,
         memory_maintenance,
         shutdown,
-        audit: daemon_start_audit(task_handlers.as_ref(), task_artifacts.as_ref()),
+        audit: daemon_start_audit(
+            task_handlers.as_ref(),
+            task_artifacts.as_ref(),
+            task_worker.is_some(),
+        ),
     })
 }
 
 fn daemon_start_audit(
     task_handlers: &TaskHandlerRegistry,
     task_artifacts: &FileSystemTaskArtifactResolver,
+    task_worker_enabled: bool,
 ) -> Vec<String> {
-    vec![
+    let mut audit = vec![
         "daemon:v1.12.1:lock_acquired".to_owned(),
         "daemon:v1.12.1:durable_backend_verified".to_owned(),
         "daemon:v1.12.1:policy_verified".to_owned(),
@@ -2467,7 +2517,25 @@ fn daemon_start_audit(
             "daemon:w1-l05:task_artifact_input_limit_bytes:{}",
             task_artifacts.max_size_bytes()
         ),
-    ]
+    ];
+    if task_worker_enabled {
+        audit.push("daemon:w1-l06:task_worker_claim_gate_ready".to_owned());
+    }
+    audit
+}
+
+fn task_worker_execution_owner(lease: &DurableRuntimeLeaseRecord) -> String {
+    let identity = format!(
+        "{}:{}:{}",
+        lease.pid(),
+        lease.process_start_token(),
+        lease.generation().0
+    );
+    format!(
+        "daemon:g{}:worker-0:{}",
+        lease.generation().0,
+        sha256_digest(identity.as_bytes())
+    )
 }
 
 /// 只有 active/fresh lease、live OS-lock owner、PID projection 与 running state 完全一致时可用。
@@ -2748,6 +2816,7 @@ struct DaemonControlContext<'a> {
     running_state: &'a DaemonStateRecord,
     durable_layout: &'a DurableBackendLayout,
     lease: &'a DurableRuntimeLeaseGuard,
+    task_worker: &'a TaskWorkerRuntime,
 }
 
 /// 串行执行调度重试 tick 和按文件名排序的控制请求，直到处理到关闭操作。
@@ -2761,13 +2830,16 @@ fn run_control_loop(
     running_state: DaemonStateRecord,
     durable_layout: &DurableBackendLayout,
     lease: &mut DurableRuntimeLeaseGuard,
+    task_worker: &TaskWorkerRuntime,
 ) -> Result<DaemonControlLoopReport, EvaError> {
     let heartbeat_interval = Duration::from_millis(DAEMON_LEASE_HEARTBEAT_INTERVAL_MS);
     let mut next_heartbeat = Instant::now() + heartbeat_interval;
     loop {
+        task_worker.check_health()?;
         renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
         // 每轮先推进到期的调度重试，保证控制流量不会无限饿死恢复任务。
         let _tick = run_daemon_scheduler_tick(project, options)?;
+        task_worker.check_health()?;
         renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
         for request_path in pending_control_requests(options)? {
             renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
@@ -2787,6 +2859,7 @@ fn run_control_loop(
                 running_state: &running_state,
                 durable_layout,
                 lease,
+                task_worker,
             };
             let mut response = match handle_control_request(
                 &mut context,
@@ -2815,6 +2888,7 @@ fn run_control_loop(
                 });
             }
         }
+        task_worker.check_health()?;
         thread::sleep(Duration::from_millis(CONTROL_POLL_INTERVAL_MS));
     }
 }
@@ -3014,6 +3088,7 @@ fn record_daemon_control_observability(
     options: &DaemonStartOptions,
     request: &DaemonControlRequest,
     response: &DaemonControlResponse,
+    task_lifecycle_status: Option<&str>,
 ) {
     let Ok(span_id) = SpanId::parse(&format!(
         "runtime.daemon.control.{}",
@@ -3082,7 +3157,13 @@ fn record_daemon_control_observability(
         ],
     );
 
-    record_task_lifecycle_observability(&mut pipeline, request, response, &trace);
+    record_task_lifecycle_observability(
+        &mut pipeline,
+        request,
+        response,
+        &trace,
+        task_lifecycle_status,
+    );
 }
 
 /// 登记 `record_task_lifecycle_observability` 对应的数据或状态。
@@ -3091,10 +3172,15 @@ fn record_task_lifecycle_observability(
     request: &DaemonControlRequest,
     response: &DaemonControlResponse,
     parent_trace: &TraceFields,
+    task_lifecycle_status: Option<&str>,
 ) {
     let lifecycle_status = match request.operation {
-        DaemonControlOperation::SubmitTask if response.mutation_executed => "queued",
-        DaemonControlOperation::CancelTask if response.mutation_executed => "cancelling",
+        DaemonControlOperation::SubmitTask if response.mutation_executed => {
+            task_lifecycle_status.unwrap_or("queued")
+        }
+        DaemonControlOperation::CancelTask if response.mutation_executed => {
+            task_lifecycle_status.unwrap_or("cancelling")
+        }
         _ => return,
     };
     let Some(task_id) = response.task_id.as_deref() else {
@@ -3170,6 +3256,7 @@ fn handle_control_request(
         "daemon:v1.12.2:control:{}",
         request.operation.as_str()
     )];
+    let mut task_lifecycle_status = None;
 
     // 所有持久化变更均在响应构造前完成，因此 `mutation_executed` 只描述已成功分支。
     match request.operation {
@@ -3177,6 +3264,7 @@ fn handle_control_request(
             message = "daemon status returned through local control mailbox".to_owned();
         }
         DaemonControlOperation::Shutdown => {
+            context.task_worker.begin_shutdown();
             let shutdown_report = context.runtime.shutdown();
             state = state.stopped();
             write_state(context.options, &state)?;
@@ -3193,16 +3281,22 @@ fn handle_control_request(
                 context.project,
                 &request,
             )?;
+            context.task_worker.notify_new_work();
             task_id = Some(submitted_task_id);
+            task_lifecycle_status = Some("queued".to_owned());
             mutation_executed = true;
             message =
                 "task submitted to durable task store through daemon control mailbox".to_owned();
             audit.push("daemon:v1.12.2:task_submitted".to_owned());
         }
         DaemonControlOperation::CancelTask => {
-            let cancelled_task_id =
+            let cancelled =
                 cancel_control_task(context.durable_layout, context.lease.writer(), &request)?;
-            task_id = Some(cancelled_task_id);
+            context
+                .task_worker
+                .signal_cancellation(&cancelled.task_id, cancelled.cancel_token.as_deref());
+            task_lifecycle_status = Some(cancelled.status.clone());
+            task_id = Some(cancelled.task_id);
             mutation_executed = true;
             message = "task cancellation recorded through daemon control mailbox".to_owned();
             audit.push("daemon:v1.12.2:task_cancel_requested".to_owned());
@@ -3248,7 +3342,12 @@ fn handle_control_request(
         shutdown,
         audit,
     };
-    record_daemon_control_observability(context.options, &request, &response);
+    record_daemon_control_observability(
+        context.options,
+        &request,
+        &response,
+        task_lifecycle_status.as_deref(),
+    );
     Ok(response)
 }
 
@@ -3326,7 +3425,7 @@ fn cancel_control_task(
     durable_layout: &DurableBackendLayout,
     writer: DurableWriterGuard,
     request: &DaemonControlRequest,
-) -> Result<String, EvaError> {
+) -> Result<TaskStateSnapshot, EvaError> {
     let task_id = request.task_id.as_deref().ok_or_else(|| {
         EvaError::invalid_argument("daemon cancel task request requires a task id")
     })?;
@@ -3336,11 +3435,7 @@ fn cancel_control_task(
         .clone()
         .unwrap_or_else(|| "cancel requested by daemon control API".to_owned());
     let mut store = open_durable_task_store(durable_layout, writer)?;
-    store.update_snapshot(task_id, |snapshot| {
-        snapshot.request_cancel(reason);
-        Ok(())
-    })?;
-    Ok(task_id.to_owned())
+    store.request_cancellation(task_id, reason)
 }
 
 /// 表示 `AppliedAgentDrainControl` 数据结构。
@@ -5662,6 +5757,101 @@ mod tests {
         assert_eq!(reopened.envelope, Some(expected));
         assert_eq!(reopened.retry_max_attempts, 3);
         assert_eq!(reopened.owner_generation.0, report.lease.generation);
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_ready_worker_executes_echo_and_joins_before_lease_release() {
+        let _daemon_test_guard = daemon_test_guard();
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("ready-worker-executes");
+        let options = daemon_options(&root, false);
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-worker-loop").unwrap()),
+            )
+        });
+        wait_for_daemon_available(&options);
+
+        let payload = b"daemon-worker-result".to_vec();
+        let submit_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-worker-submit").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-worker-submit").unwrap(),
+                &submit_trace,
+                DaemonControlOperation::SubmitTask,
+            )
+            .with_task_id("req-daemon-worker-task")
+            .with_task_envelope(sample_task_envelope(payload.clone())),
+            2_000,
+        )
+        .unwrap();
+
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let task_store = FileSystemTaskStateStore::from_durable_layout(backend.layout());
+        let started_at = Instant::now();
+        let completed = loop {
+            let snapshot = task_store.read(Some("req-daemon-worker-task")).unwrap();
+            if snapshot.status == "completed" {
+                break snapshot;
+            }
+            assert!(
+                started_at.elapsed() < Duration::from_secs(3),
+                "daemon worker task remained in status {}",
+                snapshot.status
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(completed.attempts, 1);
+        assert_eq!(completed.result_size_bytes, Some(payload.len()));
+        assert_eq!(
+            completed.result_digest.as_deref(),
+            Some(sha256_digest(&payload).as_str())
+        );
+        assert!(completed.execution_owner.is_some());
+        assert!(completed.cancel_token.is_some());
+        let completed_debug = format!("{completed:?}");
+        assert!(completed_debug.contains("<redacted>"));
+        assert!(!completed_debug.contains("task-cancel:"));
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-worker-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-worker-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        let report = daemon.join().unwrap().unwrap();
+        assert_eq!(report.status, "stopped");
+        assert_eq!(report.lease.state, "released");
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "daemon:w1-l06:task_worker_claim_gate_ready"));
+        assert!(!pid_file(&options).exists());
+        let released =
+            probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms()).unwrap();
+        assert!(!released.owner_live());
+        assert_eq!(
+            released.record().map(DurableRuntimeLeaseRecord::state),
+            Some(DurableRuntimeLeaseState::Released)
+        );
 
         fs::remove_dir_all(root).ok();
     }

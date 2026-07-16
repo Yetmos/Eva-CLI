@@ -1972,6 +1972,33 @@ mod tests {
         assert!(!task_stdout.contains("line one"));
         assert!(task_stderr.is_empty());
 
+        let mut completed_task_stdout = task_stdout;
+        for _ in 0..100 {
+            if completed_task_stdout.contains("\"status\":\"completed\"") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            let (task_exit, task_stdout, task_stderr) = run_cli(&[
+                "task",
+                "status",
+                "--task",
+                "req-daemon-cli-task",
+                "--durable-backend",
+                durable.to_str().unwrap(),
+                "--project",
+                project.to_str().unwrap(),
+                "--output",
+                "json",
+            ]);
+            assert_eq!(task_exit, EXIT_OK, "{task_stderr}");
+            completed_task_stdout = task_stdout;
+        }
+        assert!(completed_task_stdout.contains("\"status\":\"completed\""));
+        assert!(completed_task_stdout.contains("\"execution\":{\"owner\":\"daemon:"));
+        assert!(completed_task_stdout.contains("\"result_digest\":\"sha256:"));
+        assert!(completed_task_stdout.contains("\"result_size_bytes\":19"));
+        assert!(!completed_task_stdout.contains("cancel_token"));
+
         let (legacy_exit, legacy_stdout, legacy_stderr) = run_cli(&[
             "daemon",
             "submit",
@@ -2022,7 +2049,7 @@ mod tests {
         assert!(cancel_stderr.is_empty());
         let task_state =
             fs::read_to_string(durable.join("tasks").join("req-daemon-cli-task.task")).unwrap();
-        assert!(task_state.starts_with("format=eva.task-state.v3\n"));
+        assert!(task_state.starts_with("format=eva.task-state.v4\n"));
         assert!(task_state.contains("envelope_kind=runtime.echo"));
         assert!(task_state.contains("envelope_agent_id=root-agent"));
         assert!(task_state.contains("envelope_input_kind=inline"));
@@ -2030,8 +2057,12 @@ mod tests {
         assert!(task_state.contains("envelope_max_attempts=3"));
         assert!(task_state.contains("envelope_retry_backoff_ms=250"));
         assert!(task_state.contains("envelope_attempt_timeout_ms=5000"));
-        assert!(task_state.contains("status=cancelling"));
+        assert!(task_state.contains("status=completed"));
+        assert!(task_state.contains("execution_owner="));
+        assert!(task_state.contains("result_digest=sha256:"));
+        assert!(task_state.contains("result_size_bytes=19"));
         assert!(task_state.contains("cancel_requested=true"));
+        assert!(task_state.contains("cancel_accepted=false"));
         let legacy_state = fs::read_to_string(
             durable
                 .join("tasks")

@@ -562,6 +562,7 @@ impl From<&TaskReport> for TaskStateSnapshot {
             envelope: report.envelope.as_ref().map(TaskEnvelope::to_snapshot),
             status: report.status.as_str().to_owned(),
             attempts: report.attempts,
+            execution_owner: None,
             retry_max_attempts: report.retry_policy.max_attempts,
             cancel_requested: report.cancellation.requested,
             cancel_accepted: report.cancellation.accepted,
@@ -569,6 +570,8 @@ impl From<&TaskReport> for TaskStateSnapshot {
             heartbeat_at_ms: None,
             deadline_at_ms: None,
             cancel_token: None,
+            result_digest: None,
+            result_size_bytes: None,
             interrupted_reason: None,
             error_kind: report
                 .error

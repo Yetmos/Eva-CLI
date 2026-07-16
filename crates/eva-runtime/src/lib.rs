@@ -46,7 +46,8 @@ pub use task::{
     TaskLogLevel, TaskReport, TaskStatus,
 };
 pub use task_worker::{
-    FileSystemTaskArtifactResolver, TaskArtifactResolver, TaskHandler, TaskHandlerInvocation,
-    TaskHandlerRegistry, TaskHandlerResult, DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES,
+    FileSystemTaskArtifactResolver, TaskArtifactResolver, TaskCancellationView, TaskHandler,
+    TaskHandlerInvocation, TaskHandlerRegistry, TaskHandlerResult, TaskWorkerRuntime,
+    DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES, DEFAULT_TASK_WORKER_POLL_INTERVAL_MS,
     TASK_HANDLER_NOT_REGISTERED_MESSAGE,
 };
