@@ -196,15 +196,20 @@ impl StdioRunner {
             })?;
 
         if !invocation.input.is_empty() {
-            let mut stdin = child.stdin.take().ok_or_else(|| {
-                EvaError::internal("stdio provider stdin was not available")
-                    .with_context("command", &invocation.command)
-            })?;
-            stdin.write_all(&invocation.input).map_err(|error| {
-                EvaError::unavailable("failed to write stdio provider input")
-                    .with_context("command", &invocation.command)
-                    .with_context("io_error", error.to_string())
-            })?;
+            let Some(mut stdin) = child.stdin.take() else {
+                kill_child(&mut child);
+                return Err(EvaError::internal("stdio provider stdin was not available")
+                    .with_context("command", &invocation.command));
+            };
+            if let Err(error) = stdin.write_all(&invocation.input) {
+                drop(stdin);
+                kill_child(&mut child);
+                return Err(
+                    EvaError::unavailable("failed to write stdio provider input")
+                        .with_context("command", &invocation.command)
+                        .with_context("io_error", error.to_string()),
+                );
+            }
         }
         drop(child.stdin.take());
 

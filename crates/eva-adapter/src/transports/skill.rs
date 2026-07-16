@@ -530,17 +530,18 @@ fn run_process(
         })?;
 
     if !invocation.input.is_empty() {
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            EvaError::internal("skill runner stdin was not available")
+        let Some(mut stdin) = child.stdin.take() else {
+            kill_child(&mut child);
+            return Err(EvaError::internal("skill runner stdin was not available")
+                .with_context("command", command));
+        };
+        if let Err(error) = stdin.write_all(invocation.input.as_bytes()) {
+            drop(stdin);
+            kill_child(&mut child);
+            return Err(EvaError::unavailable("failed to write skill runner input")
                 .with_context("command", command)
-        })?;
-        stdin
-            .write_all(invocation.input.as_bytes())
-            .map_err(|error| {
-                EvaError::unavailable("failed to write skill runner input")
-                    .with_context("command", command)
-                    .with_context("io_error", error.to_string())
-            })?;
+                .with_context("io_error", error.to_string()));
+        }
     }
     drop(child.stdin.take());
 
@@ -1467,9 +1468,9 @@ mod tests {
             AdapterInvocation::new(request_id, capability)
                 .with_credential_scope(scope)
                 .with_input("{\"scope\":\"current_diff\",\"severity\":\"major\"}"),
-        )
-        .unwrap();
+        );
         env::remove_var(env_name);
+        let report = report.unwrap();
 
         assert_eq!(report.status, "completed");
         assert!(!report.output.contains(secret));
@@ -1544,6 +1545,36 @@ mod tests {
 
         assert_eq!(report.status, "timeout");
         assert!(report.audit.contains(&"skill.status:timeout".to_owned()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_skill_runner_reaps_process_after_stdin_write_failure() {
+        let root = test_root("stdin-write-failure");
+        let work_root = root.path.join("work");
+        let marker = work_root.join("artifacts").join("survived.txt");
+        let config = SkillRunnerConfig::new(["sh"], 5_000, 4096, root.path.clone(), work_root);
+        let invocation = SkillRunnerInvocation {
+            adapter_id: AdapterId::parse("stdin-close-skill").unwrap(),
+            request_id: RequestId::parse("req-stdin-close-skill").unwrap(),
+            skill_id: "stdin-close".to_owned(),
+            entry_type: "process".to_owned(),
+            command: Some("sh".to_owned()),
+            args: vec![
+                "-c".to_owned(),
+                "exec 0<&-; sleep 0.2; printf survived > \"$EVA_SKILL_ARTIFACT_DIR/survived.txt\""
+                    .to_owned(),
+            ],
+            env: BTreeMap::new(),
+            input: "x".repeat(1024 * 1024),
+        };
+
+        let error = SkillRunner.run(&config, invocation).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Unavailable);
+        assert_eq!(error.message(), "failed to write skill runner input");
+        thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists());
     }
 
     /// 验证 `artifact_collection_rejects_uncontrolled_relative_paths` 场景下的预期行为。
@@ -1717,7 +1748,7 @@ mod tests {
             "-NoProfile".to_owned(),
             "-Command".to_owned(),
             format!(
-                "$dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'result.txt') -Value ('artifact-' + '{secret}' + $env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Out.Write('{secret}'); [Console]::Out.Write($env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Error.Write('stderr-ok'); [Console]::Error.Write($env:{PROVIDER_SESSION_TOKEN_ENV})"
+                "$null=[Console]::In.ReadToEnd(); $dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'result.txt') -Value ('artifact-' + '{secret}' + $env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Out.Write('{secret}'); [Console]::Out.Write($env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Error.Write('stderr-ok'); [Console]::Error.Write($env:{PROVIDER_SESSION_TOKEN_ENV})"
             ),
         ]
     }
@@ -1728,7 +1759,7 @@ mod tests {
         vec![
             "-c".to_owned(),
             format!(
-                "mkdir -p \"$EVA_SKILL_ARTIFACT_DIR\"; printf 'artifact-{secret}' > \"$EVA_SKILL_ARTIFACT_DIR/result.txt\"; printf \"${PROVIDER_SESSION_TOKEN_ENV}\" >> \"$EVA_SKILL_ARTIFACT_DIR/result.txt\"; printf '{secret}'; printf \"${PROVIDER_SESSION_TOKEN_ENV}\"; printf stderr-ok >&2; printf \"${PROVIDER_SESSION_TOKEN_ENV}\" >&2"
+                "cat >/dev/null; mkdir -p \"$EVA_SKILL_ARTIFACT_DIR\"; printf 'artifact-{secret}' > \"$EVA_SKILL_ARTIFACT_DIR/result.txt\"; printf \"${PROVIDER_SESSION_TOKEN_ENV}\" >> \"$EVA_SKILL_ARTIFACT_DIR/result.txt\"; printf '{secret}'; printf \"${PROVIDER_SESSION_TOKEN_ENV}\"; printf stderr-ok >&2; printf \"${PROVIDER_SESSION_TOKEN_ENV}\" >&2"
             ),
         ]
     }
@@ -1739,14 +1770,17 @@ mod tests {
         vec![
             "-NoProfile".to_owned(),
             "-Command".to_owned(),
-            "[Console]::Error.Write('failure'); exit 7".to_owned(),
+            "$null=[Console]::In.ReadToEnd(); [Console]::Error.Write('failure'); exit 7".to_owned(),
         ]
     }
 
     /// 执行 `fail_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn fail_args() -> Vec<String> {
-        vec!["-c".to_owned(), "printf failure >&2; exit 7".to_owned()]
+        vec![
+            "-c".to_owned(),
+            "cat >/dev/null; printf failure >&2; exit 7".to_owned(),
+        ]
     }
 
     /// 执行 `sleep_args` 对应的处理逻辑。
@@ -1755,14 +1789,17 @@ mod tests {
         vec![
             "-NoProfile".to_owned(),
             "-Command".to_owned(),
-            "Start-Sleep -Milliseconds 200; [Console]::Out.Write('done')".to_owned(),
+            "$null=[Console]::In.ReadToEnd(); Start-Sleep -Milliseconds 200; [Console]::Out.Write('done')".to_owned(),
         ]
     }
 
     /// 执行 `sleep_args` 对应的处理逻辑。
     #[cfg(not(windows))]
     fn sleep_args() -> Vec<String> {
-        vec!["-c".to_owned(), "sleep 0.2; printf done".to_owned()]
+        vec![
+            "-c".to_owned(),
+            "cat >/dev/null; sleep 0.2; printf done".to_owned(),
+        ]
     }
 
     /// 执行 `bad_artifact_args` 对应的处理逻辑。
@@ -1771,7 +1808,7 @@ mod tests {
         vec![
             "-NoProfile".to_owned(),
             "-Command".to_owned(),
-            "$dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'bad name.txt') -Value 'bad'".to_owned(),
+            "$null=[Console]::In.ReadToEnd(); $dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'bad name.txt') -Value 'bad'".to_owned(),
         ]
     }
 
@@ -1780,7 +1817,7 @@ mod tests {
     fn bad_artifact_args() -> Vec<String> {
         vec![
             "-c".to_owned(),
-            "mkdir -p \"$EVA_SKILL_ARTIFACT_DIR\"; printf bad > \"$EVA_SKILL_ARTIFACT_DIR/bad name.txt\"".to_owned(),
+            "cat >/dev/null; mkdir -p \"$EVA_SKILL_ARTIFACT_DIR\"; printf bad > \"$EVA_SKILL_ARTIFACT_DIR/bad name.txt\"".to_owned(),
         ]
     }
 }
