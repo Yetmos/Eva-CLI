@@ -9,7 +9,7 @@ use eva_core::EvaError;
 use eva_observability::TraceFields;
 use eva_runtime::BasicRunReport;
 use eva_storage::{
-    DurableBackendOptions, FileSystemDurableBackend, FileSystemTaskStateStore,
+    DurableBackendOptions, FileSystemDurableBackend, FileSystemTaskStateStore, TaskInputSnapshot,
     TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot,
     TaskStateStore,
 };
@@ -301,6 +301,22 @@ fn write_task_status<W: Write>(
                 snapshot.task_id, snapshot.status, snapshot.attempts, snapshot.retry_max_attempts
             )
             .map_err(write_error_kind)?;
+            if let Some(envelope) = &snapshot.envelope {
+                let input_kind = match &envelope.input {
+                    TaskInputSnapshot::Inline { .. } => "inline",
+                    TaskInputSnapshot::Artifact { .. } => "artifact",
+                };
+                writeln!(
+                    writer,
+                    "envelope: kind={} agent={} input={} digest={} idempotency_key={}",
+                    envelope.kind,
+                    envelope.agent_id,
+                    input_kind,
+                    envelope.input.digest(),
+                    envelope.idempotency_key
+                )
+                .map_err(write_error_kind)?;
+            }
             if let Some(message) = &snapshot.error_message {
                 writeln!(writer, "error: {message}").map_err(write_error_kind)?;
             }
@@ -386,12 +402,28 @@ fn task_logs_json(snapshot: &TaskStateSnapshot) -> String {
 
 /// 将完整任务状态快照编码为稳定 JSON。
 fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
+    let envelope = task_envelope_json(snapshot);
+    let (retry_backoff_ms, attempt_timeout_ms) = snapshot
+        .envelope
+        .as_ref()
+        .map(|envelope| {
+            (
+                envelope.attempt_policy.retry_backoff_ms,
+                envelope.attempt_policy.attempt_timeout_ms,
+            )
+        })
+        .unwrap_or((0, None));
     format!(
-        "{{\"task_id\":{},\"status\":{},\"attempts\":{},\"retry_policy\":{{\"max_attempts\":{}}},\"cancellation\":{{\"requested\":{},\"accepted\":{},\"reason\":{}}},\"error\":{},\"logs\":{},\"dead_letters\":{},\"replayed_events\":{}}}",
+        "{{\"task_id\":{},\"task_envelope\":{},\"status\":{},\"attempts\":{},\"retry_policy\":{{\"max_attempts\":{},\"retry_backoff_ms\":{},\"attempt_timeout_ms\":{}}},\"cancellation\":{{\"requested\":{},\"accepted\":{},\"reason\":{}}},\"error\":{},\"logs\":{},\"dead_letters\":{},\"replayed_events\":{}}}",
         json_string(&snapshot.task_id),
+        envelope,
         json_string(&snapshot.status),
         snapshot.attempts,
         snapshot.retry_max_attempts,
+        retry_backoff_ms,
+        attempt_timeout_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_owned()),
         snapshot.cancel_requested,
         snapshot.cancel_accepted,
         option_json(snapshot.cancel_reason.as_deref()),
@@ -399,6 +431,41 @@ fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
         json_array(snapshot.logs.iter().map(task_log_json)),
         json_array(snapshot.dead_letters.iter().map(dead_letter_json)),
         json_array(snapshot.replayed_events.iter().map(replay_json))
+    )
+}
+
+fn task_envelope_json(snapshot: &TaskStateSnapshot) -> String {
+    let Some(envelope) = &snapshot.envelope else {
+        return "null".to_owned();
+    };
+    let input = match &envelope.input {
+        TaskInputSnapshot::Inline { bytes, digest } => format!(
+            "{{\"input_kind\":\"inline\",\"size_bytes\":{},\"artifact_ref\":null,\"digest\":{}}}",
+            bytes.len(),
+            json_string(digest)
+        ),
+        TaskInputSnapshot::Artifact {
+            artifact_ref,
+            digest,
+        } => format!(
+            "{{\"input_kind\":\"artifact\",\"size_bytes\":null,\"artifact_ref\":{},\"digest\":{}}}",
+            json_string(artifact_ref),
+            json_string(digest)
+        ),
+    };
+    format!(
+        "{{\"kind\":{},\"agent_id\":{},\"input\":{},\"idempotency_key\":{},\"attempt_policy\":{{\"max_attempts\":{},\"retry_backoff_ms\":{},\"attempt_timeout_ms\":{}}}}}",
+        json_string(&envelope.kind),
+        json_string(&envelope.agent_id),
+        input,
+        json_string(&envelope.idempotency_key),
+        envelope.attempt_policy.max_attempts,
+        envelope.attempt_policy.retry_backoff_ms,
+        envelope
+            .attempt_policy
+            .attempt_timeout_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_owned())
     )
 }
 

@@ -1,20 +1,98 @@
 //! 跨进程任务快照、生命周期状态、日志/dead-letter/replay 与文件系统存储实现。
 //! Durable task state contracts and filesystem implementation.
 
+use crate::artifact_store::{sha256_digest, validate_filesystem_artifact_key};
 use crate::durable_backend::{
     acquire_record_write_lock, atomic_write, DurableWriterGuard, FileSystemDurableBackend,
     WriterGeneration,
 };
 use crate::state_store::StateVersion;
 use crate::DurableBackendLayout;
-use eva_core::{EvaError, RequestId};
+use eva_core::{AgentId, EvaError, RequestId};
 use std::collections::BTreeSet;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// 本模块的架构职责：让 runtime 与 CLI 通过稳定快照共享任务状态，而不共享进程内对象。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "durable task state interfaces and process-boundary snapshots";
+
+const TASK_STATE_FORMAT_V2: &str = "eva.task-state.v2";
+const TASK_STATE_FORMAT_V3: &str = "eva.task-state.v3";
+const MAX_TASK_KIND_BYTES: usize = 128;
+const MAX_INLINE_TASK_INPUT_BYTES: usize = 1024 * 1024;
+
+/// 一次任务允许执行的固定宽度、可持久化策略。
+/// Durable per-task attempt policy with platform-independent integer widths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskAttemptPolicySnapshot {
+    /// 包括首次执行在内的最大尝试次数，必须至少为一。
+    pub max_attempts: u32,
+    /// 可重试失败后再次领取前的固定退避毫秒数。
+    pub retry_backoff_ms: u64,
+    /// 单次 attempt 的可选超时；显式值必须大于零。
+    pub attempt_timeout_ms: Option<u64>,
+}
+
+/// 任务输入的互斥持久表示；inline 保存原始字节，artifact 保存稳定引用。
+/// Mutually exclusive durable task input representation.
+#[derive(Clone, PartialEq, Eq)]
+pub enum TaskInputSnapshot {
+    /// 状态记录内直接保存的小型、不透明输入。
+    Inline {
+        /// 原始输入字节；磁盘格式使用十六进制，避免文本转码破坏 payload。
+        bytes: Vec<u8>,
+        /// 原始字节的 canonical SHA-256。
+        digest: String,
+    },
+    /// 由执行边界读取并重新校验的 artifact 引用。
+    Artifact {
+        /// 与 `FileSystemArtifactStore` 相同语法的稳定相对 key。
+        artifact_ref: String,
+        /// 执行前必须与 artifact bytes 匹配的 canonical SHA-256。
+        digest: String,
+    },
+}
+
+impl fmt::Debug for TaskInputSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Inline { bytes, digest } => formatter
+                .debug_struct("TaskInputSnapshot")
+                .field("kind", &"inline")
+                .field("bytes", &"<redacted>")
+                .field("size_bytes", &bytes.len())
+                .field("digest", digest)
+                .finish(),
+            Self::Artifact {
+                artifact_ref,
+                digest,
+            } => formatter
+                .debug_struct("TaskInputSnapshot")
+                .field("kind", &"artifact")
+                .field("artifact_ref", artifact_ref)
+                .field("digest", digest)
+                .finish(),
+        }
+    }
+}
+
+/// 与生命周期状态一同提交、之后不可变的任务业务信封。
+/// Immutable durable task business envelope stored beside lifecycle state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskEnvelopeSnapshot {
+    /// 供后续 handler registry 精确匹配的点分 task kind。
+    pub kind: String,
+    /// 提交时选定且通过核心 ID 语法校验的 Agent。
+    pub agent_id: String,
+    /// inline bytes 或带摘要的 artifact 引用，恰好一种。
+    pub input: TaskInputSnapshot,
+    /// 副作用 ledger 后续使用的稳定幂等键；本项不执行去重。
+    pub idempotency_key: String,
+    /// 从提交到恢复均保持不变的 attempt policy。
+    pub attempt_policy: TaskAttemptPolicySnapshot,
+}
 
 /// CLI task 命令与 runtime 跨进程使用的完整任务状态快照。
 /// Stored task summary used by CLI task commands across process boundaries.
@@ -26,11 +104,13 @@ pub struct TaskStateSnapshot {
     pub owner_generation: WriterGeneration,
     /// 同时作为 RequestId 和文件名主键的任务 ID。
     pub task_id: String,
+    /// 新提交任务的完整不可变信封；None 仅表示 legacy/v2 状态没有可恢复 payload。
+    pub envelope: Option<TaskEnvelopeSnapshot>,
     /// queued/running/cancelling/终态等稳定状态文本。
     pub status: String,
     /// 已执行尝试次数。
     pub attempts: usize,
-    /// 重试策略允许的最大尝试次数。
+    /// 兼容 v2/现有 CLI 的重试上限镜像；v3 必须等于 envelope attempt policy。
     pub retry_max_attempts: usize,
     /// 是否收到取消请求。
     pub cancel_requested: bool,
@@ -121,6 +201,178 @@ pub struct FileSystemTaskStateStore {
     writer: Option<DurableWriterGuard>,
 }
 
+impl TaskAttemptPolicySnapshot {
+    /// 创建经校验的 attempt policy；外部零值不会被静默提升。
+    pub fn new(
+        max_attempts: u32,
+        retry_backoff_ms: u64,
+        attempt_timeout_ms: Option<u64>,
+    ) -> Result<Self, EvaError> {
+        let policy = Self {
+            max_attempts,
+            retry_backoff_ms,
+            attempt_timeout_ms,
+        };
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    fn validate(&self) -> Result<(), EvaError> {
+        if self.max_attempts == 0 {
+            return Err(EvaError::invalid_argument(
+                "task attempt policy max_attempts must be at least one",
+            ));
+        }
+        if self.attempt_timeout_ms == Some(0) {
+            return Err(EvaError::invalid_argument(
+                "task attempt timeout must be greater than zero when present",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl TaskInputSnapshot {
+    /// 构造 inline 输入并绑定原始字节摘要。
+    pub fn inline(bytes: impl Into<Vec<u8>>) -> Result<Self, EvaError> {
+        let bytes = bytes.into();
+        if bytes.len() > MAX_INLINE_TASK_INPUT_BYTES {
+            return Err(EvaError::invalid_argument(
+                "inline task input exceeds the durable size limit",
+            )
+            .with_context("size_bytes", bytes.len().to_string())
+            .with_context("max_size_bytes", MAX_INLINE_TASK_INPUT_BYTES.to_string()));
+        }
+        let digest = sha256_digest(&bytes);
+        Ok(Self::Inline { bytes, digest })
+    }
+
+    /// 构造 artifact 引用；这里只校验 key/digest 语法，真实 bytes 在执行边界重验。
+    pub fn artifact(
+        artifact_ref: impl Into<String>,
+        digest: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        let input = Self::Artifact {
+            artifact_ref: artifact_ref.into(),
+            digest: digest.into(),
+        };
+        input.validate()?;
+        Ok(input)
+    }
+
+    /// 返回 inline bytes 或 artifact bytes 声明绑定的 canonical digest。
+    pub fn digest(&self) -> &str {
+        match self {
+            Self::Inline { digest, .. } | Self::Artifact { digest, .. } => digest,
+        }
+    }
+
+    fn validate(&self) -> Result<(), EvaError> {
+        match self {
+            Self::Inline { bytes, digest } => {
+                if bytes.len() > MAX_INLINE_TASK_INPUT_BYTES {
+                    return Err(EvaError::invalid_argument(
+                        "inline task input exceeds the durable size limit",
+                    )
+                    .with_context("size_bytes", bytes.len().to_string())
+                    .with_context("max_size_bytes", MAX_INLINE_TASK_INPUT_BYTES.to_string()));
+                }
+                validate_canonical_sha256(digest, "task input digest")?;
+                let actual = sha256_digest(bytes);
+                if *digest != actual {
+                    return Err(EvaError::invalid_argument(
+                        "inline task input digest does not match payload bytes",
+                    )
+                    .with_context("expected_digest", digest)
+                    .with_context("actual_digest", actual));
+                }
+                Ok(())
+            }
+            Self::Artifact {
+                artifact_ref,
+                digest,
+            } => {
+                validate_filesystem_artifact_key(artifact_ref.clone()).map(|_| ())?;
+                validate_canonical_sha256(digest, "task artifact digest")
+            }
+        }
+    }
+}
+
+impl TaskEnvelopeSnapshot {
+    /// 对外复用持久格式的 task-kind 语法，而不判断 handler 是否已注册。
+    pub fn validate_kind(value: &str) -> Result<(), EvaError> {
+        validate_task_kind(value)
+    }
+
+    /// 创建带 inline bytes 的完整任务信封。
+    pub fn inline(
+        kind: impl Into<String>,
+        agent_id: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+        idempotency_key: impl Into<String>,
+        attempt_policy: TaskAttemptPolicySnapshot,
+    ) -> Result<Self, EvaError> {
+        Self::new(
+            kind,
+            agent_id,
+            TaskInputSnapshot::inline(bytes)?,
+            idempotency_key,
+            attempt_policy,
+        )
+    }
+
+    /// 创建带 artifact ref/digest 的完整任务信封。
+    pub fn artifact(
+        kind: impl Into<String>,
+        agent_id: impl Into<String>,
+        artifact_ref: impl Into<String>,
+        digest: impl Into<String>,
+        idempotency_key: impl Into<String>,
+        attempt_policy: TaskAttemptPolicySnapshot,
+    ) -> Result<Self, EvaError> {
+        Self::new(
+            kind,
+            agent_id,
+            TaskInputSnapshot::artifact(artifact_ref, digest)?,
+            idempotency_key,
+            attempt_policy,
+        )
+    }
+
+    /// 从已区分的 input 创建信封，并统一执行所有持久契约校验。
+    pub fn new(
+        kind: impl Into<String>,
+        agent_id: impl Into<String>,
+        input: TaskInputSnapshot,
+        idempotency_key: impl Into<String>,
+        attempt_policy: TaskAttemptPolicySnapshot,
+    ) -> Result<Self, EvaError> {
+        let envelope = Self {
+            kind: kind.into(),
+            agent_id: agent_id.into(),
+            input,
+            idempotency_key: idempotency_key.into(),
+            attempt_policy,
+        };
+        envelope.validate()?;
+        Ok(envelope)
+    }
+
+    /// 校验公开字段构造的信封，供 store 在落盘前再次 fail closed。
+    pub fn validate(&self) -> Result<(), EvaError> {
+        validate_task_kind(&self.kind)?;
+        AgentId::parse(&self.agent_id)?;
+        RequestId::parse(&self.idempotency_key).map_err(|error| {
+            EvaError::invalid_argument("task idempotency key is invalid")
+                .with_context("idempotency_key", &self.idempotency_key)
+                .with_context("cause", error.message())
+        })?;
+        self.input.validate()?;
+        self.attempt_policy.validate()
+    }
+}
+
 impl TaskStateSnapshot {
     /// 创建已校验 task ID 的 queued 初始快照，重试上限默认为一次。
     pub fn queued(task_id: impl Into<String>) -> Result<Self, EvaError> {
@@ -130,6 +382,7 @@ impl TaskStateSnapshot {
             record_version: StateVersion::ZERO,
             owner_generation: WriterGeneration::ZERO,
             task_id,
+            envelope: None,
             status: "queued".to_owned(),
             attempts: 0,
             retry_max_attempts: 1,
@@ -148,19 +401,119 @@ impl TaskStateSnapshot {
         })
     }
 
+    /// 创建携带完整 v3 任务信封的 queued 快照，并同步兼容重试上限镜像。
+    pub fn queued_with_envelope(
+        task_id: impl Into<String>,
+        envelope: TaskEnvelopeSnapshot,
+    ) -> Result<Self, EvaError> {
+        envelope.validate()?;
+        let mut snapshot = Self::queued(task_id)?;
+        snapshot.retry_max_attempts = envelope.attempt_policy.max_attempts as usize;
+        snapshot.envelope = Some(envelope);
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    /// 校验公共字段构造的快照；读盘与每次 commit 都调用，禁止绕过构造器。
+    pub fn validate(&self) -> Result<(), EvaError> {
+        RequestId::parse(&self.task_id)?;
+        if self.status.is_empty() {
+            return Err(EvaError::invalid_argument(
+                "task state status cannot be empty",
+            ));
+        }
+        if self.retry_max_attempts == 0 {
+            return Err(EvaError::invalid_argument(
+                "task retry_max_attempts must be at least one",
+            ));
+        }
+        if self.attempts > self.retry_max_attempts {
+            return Err(EvaError::invalid_argument(
+                "task attempts cannot exceed retry_max_attempts",
+            )
+            .with_context("attempts", self.attempts.to_string())
+            .with_context("retry_max_attempts", self.retry_max_attempts.to_string()));
+        }
+        if let Some(envelope) = &self.envelope {
+            envelope.validate()?;
+            if self.retry_max_attempts != envelope.attempt_policy.max_attempts as usize {
+                return Err(EvaError::invalid_argument(
+                    "task retry policy mirror does not match immutable envelope",
+                )
+                .with_context("retry_max_attempts", self.retry_max_attempts.to_string())
+                .with_context(
+                    "envelope_max_attempts",
+                    envelope.attempt_policy.max_attempts.to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// 序列化为逐行任务格式。
     /// 标量字段唯一；log/dead_letter/replay 以重复复合行保存顺序。特殊字符做百分号编码，
     /// 可选值用空串表示 None。新记录带 format、record version 与 owner generation；旧记录
     /// 缺少这些字段时按 version/generation 零读取，并只能通过一次成功 CAS 升级。
     pub fn to_storage(&self) -> String {
+        let format = if self.envelope.is_some() {
+            TASK_STATE_FORMAT_V3
+        } else {
+            TASK_STATE_FORMAT_V2
+        };
         let mut lines = vec![
-            "format=eva.task-state.v2".to_owned(),
+            format!("format={format}"),
             format!("record_version={}", self.record_version.0),
             format!("owner_generation={}", self.owner_generation.0),
             format!("task_id={}", encode_field(&self.task_id)),
             format!("status={}", encode_field(&self.status)),
             format!("attempts={}", self.attempts),
             format!("retry_max_attempts={}", self.retry_max_attempts),
+        ];
+        if let Some(envelope) = &self.envelope {
+            let (input_kind, inline_input_hex, artifact_ref, input_digest) = match &envelope.input {
+                TaskInputSnapshot::Inline { bytes, digest } => {
+                    ("inline", encode_hex(bytes), String::new(), digest.clone())
+                }
+                TaskInputSnapshot::Artifact {
+                    artifact_ref,
+                    digest,
+                } => (
+                    "artifact",
+                    String::new(),
+                    encode_field(artifact_ref),
+                    digest.clone(),
+                ),
+            };
+            lines.extend([
+                format!("envelope_kind={}", encode_field(&envelope.kind)),
+                format!("envelope_agent_id={}", encode_field(&envelope.agent_id)),
+                format!("envelope_input_kind={input_kind}"),
+                format!("envelope_inline_input_hex={inline_input_hex}"),
+                format!("envelope_artifact_ref={artifact_ref}"),
+                format!("envelope_input_digest={input_digest}"),
+                format!(
+                    "envelope_idempotency_key={}",
+                    encode_field(&envelope.idempotency_key)
+                ),
+                format!(
+                    "envelope_max_attempts={}",
+                    envelope.attempt_policy.max_attempts
+                ),
+                format!(
+                    "envelope_retry_backoff_ms={}",
+                    envelope.attempt_policy.retry_backoff_ms
+                ),
+                format!(
+                    "envelope_attempt_timeout_ms={}",
+                    envelope
+                        .attempt_policy
+                        .attempt_timeout_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_default()
+                ),
+            ]);
+        }
+        lines.extend([
             format!("cancel_requested={}", self.cancel_requested),
             format!("cancel_accepted={}", self.cancel_accepted),
             format!(
@@ -210,7 +563,7 @@ impl TaskStateSnapshot {
                     .map(|value| encode_field(value))
                     .unwrap_or_default()
             ),
-        ];
+        ]);
         lines.extend(self.logs.iter().map(|entry| {
             format!(
                 "log={}|{}|{}",
@@ -250,6 +603,7 @@ impl TaskStateSnapshot {
             record_version: StateVersion::ZERO,
             owner_generation: WriterGeneration::ZERO,
             task_id: String::new(),
+            envelope: None,
             status: String::new(),
             attempts: 0,
             retry_max_attempts: 1,
@@ -267,6 +621,16 @@ impl TaskStateSnapshot {
             replayed_events: Vec::new(),
         };
         let mut format = None;
+        let mut envelope_kind = None;
+        let mut envelope_agent_id = None;
+        let mut envelope_input_kind = None;
+        let mut envelope_inline_input_hex = None;
+        let mut envelope_artifact_ref = None;
+        let mut envelope_input_digest = None;
+        let mut envelope_idempotency_key = None;
+        let mut envelope_max_attempts = None;
+        let mut envelope_retry_backoff_ms = None;
+        let mut envelope_attempt_timeout_ms: Option<Option<u64>> = None;
         let mut seen_scalars = BTreeSet::new();
 
         for line in data.lines().filter(|line| !line.trim().is_empty()) {
@@ -293,6 +657,30 @@ impl TaskStateSnapshot {
                 snapshot.attempts = parse_stored_usize("attempts", value)?;
             } else if let Some(value) = line.strip_prefix("retry_max_attempts=") {
                 snapshot.retry_max_attempts = parse_stored_usize("retry_max_attempts", value)?;
+            } else if let Some(value) = line.strip_prefix("envelope_kind=") {
+                envelope_kind = Some(decode_field(value));
+            } else if let Some(value) = line.strip_prefix("envelope_agent_id=") {
+                envelope_agent_id = Some(decode_field(value));
+            } else if let Some(value) = line.strip_prefix("envelope_input_kind=") {
+                envelope_input_kind = Some(value.to_owned());
+            } else if let Some(value) = line.strip_prefix("envelope_inline_input_hex=") {
+                envelope_inline_input_hex = Some(value.to_owned());
+            } else if let Some(value) = line.strip_prefix("envelope_artifact_ref=") {
+                envelope_artifact_ref = Some(decode_field(value));
+            } else if let Some(value) = line.strip_prefix("envelope_input_digest=") {
+                envelope_input_digest = Some(value.to_owned());
+            } else if let Some(value) = line.strip_prefix("envelope_idempotency_key=") {
+                envelope_idempotency_key = Some(decode_field(value));
+            } else if let Some(value) = line.strip_prefix("envelope_max_attempts=") {
+                envelope_max_attempts = Some(parse_stored_u32("envelope_max_attempts", value)?);
+            } else if let Some(value) = line.strip_prefix("envelope_retry_backoff_ms=") {
+                envelope_retry_backoff_ms =
+                    Some(parse_stored_u64("envelope_retry_backoff_ms", value)?);
+            } else if let Some(value) = line.strip_prefix("envelope_attempt_timeout_ms=") {
+                envelope_attempt_timeout_ms = Some(parse_optional_stored_u64(
+                    "envelope_attempt_timeout_ms",
+                    value,
+                )?);
             } else if let Some(value) = line.strip_prefix("cancel_requested=") {
                 snapshot.cancel_requested = value == "true";
             } else if let Some(value) = line.strip_prefix("cancel_accepted=") {
@@ -340,13 +728,87 @@ impl TaskStateSnapshot {
         if snapshot.task_id.is_empty() || snapshot.status.is_empty() {
             return Err(EvaError::invalid_argument("task state file is incomplete"));
         }
+        let has_envelope_fields = envelope_kind.is_some()
+            || envelope_agent_id.is_some()
+            || envelope_input_kind.is_some()
+            || envelope_inline_input_hex.is_some()
+            || envelope_artifact_ref.is_some()
+            || envelope_input_digest.is_some()
+            || envelope_idempotency_key.is_some()
+            || envelope_max_attempts.is_some()
+            || envelope_retry_backoff_ms.is_some()
+            || envelope_attempt_timeout_ms.is_some();
         match format.as_deref() {
             None if snapshot.record_version == StateVersion::ZERO
-                && snapshot.owner_generation == WriterGeneration::ZERO => {}
-            Some("eva.task-state.v2")
+                && snapshot.owner_generation == WriterGeneration::ZERO
+                && !has_envelope_fields => {}
+            Some(TASK_STATE_FORMAT_V2)
                 if snapshot.record_version != StateVersion::ZERO
-                    || snapshot.owner_generation == WriterGeneration::ZERO => {}
-            Some("eva.task-state.v2") => {
+                    || snapshot.owner_generation == WriterGeneration::ZERO =>
+            {
+                if has_envelope_fields {
+                    return Err(EvaError::invalid_argument(
+                        "v2 task state cannot contain a task envelope",
+                    ));
+                }
+            }
+            Some(TASK_STATE_FORMAT_V3)
+                if snapshot.record_version != StateVersion::ZERO
+                    || snapshot.owner_generation == WriterGeneration::ZERO =>
+            {
+                let kind = required_stored_field(envelope_kind, "envelope_kind")?;
+                let agent_id = required_stored_field(envelope_agent_id, "envelope_agent_id")?;
+                let input_kind = required_stored_field(envelope_input_kind, "envelope_input_kind")?;
+                let inline_input_hex =
+                    required_stored_field(envelope_inline_input_hex, "envelope_inline_input_hex")?;
+                let artifact_ref =
+                    required_stored_field(envelope_artifact_ref, "envelope_artifact_ref")?;
+                let digest = required_stored_field(envelope_input_digest, "envelope_input_digest")?;
+                let idempotency_key =
+                    required_stored_field(envelope_idempotency_key, "envelope_idempotency_key")?;
+                let max_attempts =
+                    required_stored_field(envelope_max_attempts, "envelope_max_attempts")?;
+                let retry_backoff_ms =
+                    required_stored_field(envelope_retry_backoff_ms, "envelope_retry_backoff_ms")?;
+                let attempt_timeout_ms = envelope_attempt_timeout_ms.ok_or_else(|| {
+                    EvaError::invalid_argument("v3 task state is missing an envelope scalar field")
+                        .with_context("field", "envelope_attempt_timeout_ms")
+                })?;
+                let input = match input_kind.as_str() {
+                    "inline" if artifact_ref.is_empty() => TaskInputSnapshot::Inline {
+                        bytes: decode_hex(&inline_input_hex, "envelope_inline_input_hex")?,
+                        digest,
+                    },
+                    "artifact" if inline_input_hex.is_empty() => TaskInputSnapshot::Artifact {
+                        artifact_ref,
+                        digest,
+                    },
+                    "inline" | "artifact" => {
+                        return Err(EvaError::invalid_argument(
+                            "task envelope input discriminator has conflicting fields",
+                        )
+                        .with_context("input_kind", input_kind))
+                    }
+                    _ => {
+                        return Err(EvaError::invalid_argument(
+                            "task envelope input discriminator is unsupported",
+                        )
+                        .with_context("input_kind", input_kind))
+                    }
+                };
+                snapshot.envelope = Some(TaskEnvelopeSnapshot::new(
+                    kind,
+                    agent_id,
+                    input,
+                    idempotency_key,
+                    TaskAttemptPolicySnapshot::new(
+                        max_attempts,
+                        retry_backoff_ms,
+                        attempt_timeout_ms,
+                    )?,
+                )?);
+            }
+            Some(TASK_STATE_FORMAT_V2) | Some(TASK_STATE_FORMAT_V3) => {
                 return Err(EvaError::invalid_argument(
                     "uncommitted task state cannot have a durable owner generation",
                 ))
@@ -363,6 +825,7 @@ impl TaskStateSnapshot {
                 )
             }
         }
+        snapshot.validate()?;
         Ok(snapshot)
     }
 
@@ -681,7 +1144,7 @@ impl FileSystemTaskStateStore {
         expected: StateVersion,
         create_only: bool,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        RequestId::parse(&snapshot.task_id)?;
+        snapshot.validate()?;
         let dir = self.task_dir();
         fs::create_dir_all(&dir).map_err(|error| {
             EvaError::internal("failed to create task state directory")
@@ -704,6 +1167,12 @@ impl FileSystemTaskStateStore {
                             .with_context("actual_task_id", &current.task_id),
                     );
                 }
+                if current.envelope != snapshot.envelope {
+                    return Err(EvaError::conflict(
+                        "task lifecycle update cannot modify the immutable envelope",
+                    )
+                    .with_context("task_id", &snapshot.task_id));
+                }
             }
             if create_only && current.is_some() {
                 return Err(EvaError::conflict("task state already exists")
@@ -722,6 +1191,7 @@ impl FileSystemTaskStateStore {
             let mut committed = snapshot.clone();
             committed.record_version = actual.checked_next()?;
             committed.owner_generation = generation;
+            committed.validate()?;
             let data = committed.to_storage();
             atomic_write(&canonical_path, data.as_bytes()).map_err(|error| {
                 EvaError::internal("failed to atomically write task state")
@@ -830,6 +1300,16 @@ fn is_single_task_field(field: &str) -> bool {
             | "status"
             | "attempts"
             | "retry_max_attempts"
+            | "envelope_kind"
+            | "envelope_agent_id"
+            | "envelope_input_kind"
+            | "envelope_inline_input_hex"
+            | "envelope_artifact_ref"
+            | "envelope_input_digest"
+            | "envelope_idempotency_key"
+            | "envelope_max_attempts"
+            | "envelope_retry_backoff_ms"
+            | "envelope_attempt_timeout_ms"
             | "cancel_requested"
             | "cancel_accepted"
             | "cancel_reason"
@@ -840,6 +1320,94 @@ fn is_single_task_field(field: &str) -> bool {
             | "error_kind"
             | "error_message"
     )
+}
+
+fn required_stored_field<T>(value: Option<T>, field: &'static str) -> Result<T, EvaError> {
+    value.ok_or_else(|| {
+        EvaError::invalid_argument("v3 task state is missing an envelope scalar field")
+            .with_context("field", field)
+    })
+}
+
+/// task kind 是未来 handler registry 的语法键；这里只校验稳定点分格式，不判断是否注册。
+fn validate_task_kind(value: &str) -> Result<(), EvaError> {
+    if value.is_empty() || value.trim() != value || value.len() > MAX_TASK_KIND_BYTES {
+        return Err(
+            EvaError::invalid_argument("task kind must be a stable non-empty dotted name")
+                .with_context("task_kind", value),
+        );
+    }
+    for segment in value.split('.') {
+        if segment.is_empty()
+            || !segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(
+                EvaError::invalid_argument("task kind contains an invalid dotted segment")
+                    .with_context("task_kind", value),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_canonical_sha256(value: &str, field: &'static str) -> Result<(), EvaError> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(
+            EvaError::invalid_argument("task digest must use canonical lowercase SHA-256")
+                .with_context("field", field)
+                .with_context("digest", value),
+        );
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(
+            EvaError::invalid_argument("task digest must use canonical lowercase SHA-256")
+                .with_context("field", field)
+                .with_context("digest", value),
+        );
+    }
+    Ok(())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn decode_hex(value: &str, field: &'static str) -> Result<Vec<u8>, EvaError> {
+    if !value.len().is_multiple_of(2)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(EvaError::invalid_argument(
+            "task state binary field is not canonical lowercase hex",
+        )
+        .with_context("field", field));
+    }
+    let mut decoded = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        decoded.push((hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]));
+    }
+    Ok(decoded)
+}
+
+fn hex_nibble(value: u8) -> u8 {
+    match value {
+        b'0'..=b'9' => value - b'0',
+        b'a'..=b'f' => value - b'a' + 10,
+        _ => unreachable!("decode_hex validates every nibble"),
+    }
 }
 
 /// 按 `|` 拆分复合磁盘字段，并要求精确 arity。
@@ -870,6 +1438,14 @@ fn parse_stored_usize(name: &'static str, value: &str) -> Result<usize, EvaError
     })
 }
 
+fn parse_stored_u32(name: &'static str, value: &str) -> Result<u32, EvaError> {
+    value.parse::<u32>().map_err(|_| {
+        EvaError::invalid_argument("stored task field is not an unsigned 32-bit integer")
+            .with_context("field", name)
+            .with_context("value", value)
+    })
+}
+
 /// 严格解析日志/replay 序号。
 fn parse_stored_u64(name: &'static str, value: &str) -> Result<u64, EvaError> {
     value.parse::<u64>().map_err(|_| {
@@ -877,6 +1453,13 @@ fn parse_stored_u64(name: &'static str, value: &str) -> Result<u64, EvaError> {
             .with_context("field", name)
             .with_context("value", value)
     })
+}
+
+fn parse_optional_stored_u64(name: &'static str, value: &str) -> Result<Option<u64>, EvaError> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    parse_stored_u64(name, value).map(Some)
 }
 
 /// 将空串解析为 None，否则严格解析 epoch 毫秒 u128。
@@ -944,6 +1527,248 @@ mod tests {
         assert_eq!(latest, committed);
         assert_eq!(committed.record_version, StateVersion(1));
         assert_eq!(reader.project_root(), root.path());
+    }
+
+    #[test]
+    /// 新 v3 任务在 writer 释放并只读重开后仍完整恢复二进制 inline payload 与执行策略。
+    fn task_envelope_reopens_with_exact_inline_payload() {
+        let root = test_root("envelope-inline-round-trip");
+        let input = vec![0, b'\n', b'%', b'|', b'=', 0xff];
+        let expected_digest = sha256_digest(&input);
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            input.clone(),
+            "idem-envelope-inline",
+            TaskAttemptPolicySnapshot::new(3, 250, Some(5_000)).unwrap(),
+        )
+        .unwrap();
+        let committed = {
+            let backend = crate::FileSystemDurableBackend::open(
+                crate::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope(
+                        "req-task-envelope-inline",
+                        envelope.clone(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+        };
+
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_only(root.path()),
+        )
+        .unwrap();
+        let reopened = FileSystemTaskStateStore::from_durable_layout(backend.layout())
+            .read(Some("req-task-envelope-inline"))
+            .unwrap();
+        let leaked_bytes = format!("{input:?}");
+        let snapshot_debug = format!("{reopened:?}");
+
+        assert_eq!(reopened, committed);
+        assert_eq!(reopened.envelope.as_ref(), Some(&envelope));
+        assert!(!snapshot_debug.contains(&leaked_bytes));
+        assert!(snapshot_debug.contains("bytes: \"<redacted>\""));
+        assert!(snapshot_debug.contains("size_bytes: 6"));
+        assert!(snapshot_debug.contains(&expected_digest));
+        assert_eq!(
+            reopened.envelope.unwrap().input,
+            TaskInputSnapshot::Inline {
+                bytes: input,
+                digest: expected_digest,
+            }
+        );
+    }
+
+    #[test]
+    /// 合法但尚未注册的 kind 与 artifact ref/digest 也必须跨 durable reopen 原样恢复。
+    fn task_envelope_reopens_artifact_ref_with_unknown_kind() {
+        let root = test_root("envelope-artifact-round-trip");
+        let envelope = TaskEnvelopeSnapshot::artifact(
+            "vendor.future-handler",
+            "root-agent",
+            "tasks/input-1",
+            "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+            "idem-envelope-artifact",
+            TaskAttemptPolicySnapshot::new(2, 500, None).unwrap(),
+        )
+        .unwrap();
+        {
+            let backend = crate::FileSystemDurableBackend::open(
+                crate::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope(
+                        "req-task-envelope-artifact",
+                        envelope.clone(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_only(root.path()),
+        )
+        .unwrap();
+        let reopened = FileSystemTaskStateStore::from_durable_layout(backend.layout())
+            .read(Some("req-task-envelope-artifact"))
+            .unwrap();
+
+        assert_eq!(reopened.envelope, Some(envelope));
+    }
+
+    #[test]
+    /// kind 只做语法校验；合法未知 kind 可保存，而非法 kind/digest 在落盘前失败。
+    fn task_envelope_accepts_unknown_kind_and_rejects_invalid_kind_or_digest() {
+        let policy = TaskAttemptPolicySnapshot::new(1, 0, None).unwrap();
+        let unknown = TaskEnvelopeSnapshot::artifact(
+            "vendor.future-handler",
+            "root-agent",
+            "tasks/input-1",
+            "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+            "idem-future-handler",
+            policy.clone(),
+        )
+        .unwrap();
+        assert_eq!(unknown.kind, "vendor.future-handler");
+
+        for invalid_kind in ["", " runtime.echo", "runtime..echo", "runtime/echo"] {
+            let error = TaskEnvelopeSnapshot::inline(
+                invalid_kind,
+                "root-agent",
+                b"payload".to_vec(),
+                "idem-invalid-kind",
+                policy.clone(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+        }
+
+        for invalid_digest in [
+            "sha256:bad",
+            "SHA256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+            "sha256:2689367B205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+            "md5:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+        ] {
+            let error = TaskEnvelopeSnapshot::artifact(
+                "runtime.echo",
+                "root-agent",
+                "tasks/input-1",
+                invalid_digest,
+                "idem-invalid-digest",
+                policy.clone(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+        }
+
+        for invalid_ref in ["", "/absolute", "tasks/../input", "tasks\\input"] {
+            let error = TaskEnvelopeSnapshot::artifact(
+                "runtime.echo",
+                "root-agent",
+                invalid_ref,
+                "sha256:2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+                "idem-invalid-ref",
+                policy.clone(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+        }
+    }
+
+    #[test]
+    /// v3 磁盘记录缺字段、摘要篡改、重复标量、未知 discriminator 或 policy 漂移均失败。
+    fn task_envelope_v3_rejects_corrupt_persisted_fields() {
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"persisted-payload".to_vec(),
+            "idem-corrupt-v3",
+            TaskAttemptPolicySnapshot::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        let digest = envelope.input.digest().to_owned();
+        let stored = TaskStateSnapshot::queued_with_envelope("req-task-corrupt-v3", envelope)
+            .unwrap()
+            .to_storage();
+        let cases = [
+            stored.replace("envelope_agent_id=root-agent\n", ""),
+            stored.replace(
+                &format!("envelope_input_digest={digest}"),
+                "envelope_input_digest=sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            stored.replacen(
+                "envelope_kind=runtime.echo\n",
+                "envelope_kind=runtime.echo\nenvelope_kind=runtime.echo\n",
+                1,
+            ),
+            stored.replace("envelope_input_kind=inline", "envelope_input_kind=unknown"),
+            stored.replace("retry_max_attempts=1", "retry_max_attempts=2"),
+        ];
+
+        for corrupted in cases {
+            let error = TaskStateSnapshot::from_storage(&corrupted).unwrap_err();
+            assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+        }
+    }
+
+    #[test]
+    /// 生命周期 CAS 不得替换、删除或改写最初提交的 payload 与 attempt policy。
+    fn task_envelope_is_immutable_across_lifecycle_cas() {
+        let root = test_root("envelope-immutable");
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"original".to_vec(),
+            "idem-envelope-immutable",
+            TaskAttemptPolicySnapshot::new(2, 100, Some(2_000)).unwrap(),
+        )
+        .unwrap();
+        let created = store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-task-envelope-immutable",
+                    envelope.clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut changed = created.clone();
+        changed.envelope = Some(
+            TaskEnvelopeSnapshot::inline(
+                "runtime.echo",
+                "root-agent",
+                b"changed".to_vec(),
+                "idem-envelope-immutable",
+                TaskAttemptPolicySnapshot::new(2, 100, Some(2_000)).unwrap(),
+            )
+            .unwrap(),
+        );
+
+        let error = store.compare_and_set(&changed).unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            store
+                .read(Some("req-task-envelope-immutable"))
+                .unwrap()
+                .envelope,
+            Some(envelope)
+        );
     }
 
     #[test]
@@ -1055,7 +1880,9 @@ mod tests {
         let error = store.compare_and_set(&stale).unwrap_err();
 
         assert_eq!(stale.record_version, StateVersion::ZERO);
+        assert!(stale.envelope.is_none());
         assert_eq!(committed.record_version, StateVersion(1));
+        assert!(committed.envelope.is_none());
         assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
         assert_eq!(
             store.read(Some("req-task-state-legacy")).unwrap(),
@@ -1221,6 +2048,7 @@ mod tests {
             record_version: StateVersion::ZERO,
             owner_generation: WriterGeneration::ZERO,
             task_id: task_id.to_owned(),
+            envelope: None,
             status: "completed".to_owned(),
             attempts: 1,
             retry_max_attempts: 2,

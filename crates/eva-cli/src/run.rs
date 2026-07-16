@@ -212,7 +212,7 @@ where
         Command::Inspect(options) => inspect_cmd::execute_inspect(options, stdout, stderr),
         Command::Run(options) => run_cmd::execute_run(options, stdout, stderr),
         Command::Emit(command) => emit_cmd::execute_emit(command, stdout, stderr),
-        Command::Daemon(command) => daemon_cmd::execute_daemon(command, stdout, stderr),
+        Command::Daemon(command) => daemon_cmd::execute_daemon(*command, stdout, stderr),
         Command::Agent(command) => agent_cmd::execute_agent(command, stdout, stderr),
         Command::Capability(command) => capability_cmd::execute_capability(command, stdout, stderr),
         Command::Task(command) => task_cmd::execute_task(command, stdout, stderr),
@@ -271,7 +271,7 @@ enum Command {
     /// 启动或控制守护进程。
     Daemon(
         /// 已解析的 daemon 启动或控制子命令。
-        DaemonCommand,
+        Box<DaemonCommand>,
     ),
     /// 查询或变更 Agent 生命周期。
     Agent(
@@ -417,9 +417,9 @@ where
         )?)),
         "run" => Ok(Command::Run(run_cmd::parse_run_options(&args[1..])?)),
         "emit" => Ok(Command::Emit(emit_cmd::parse_emit_command(&args[1..])?)),
-        "daemon" => Ok(Command::Daemon(daemon_cmd::parse_daemon_command(
+        "daemon" => Ok(Command::Daemon(Box::new(daemon_cmd::parse_daemon_command(
             &args[1..],
-        )?)),
+        )?))),
         "agent" => Ok(Command::Agent(agent_cmd::parse_agent_command(&args[1..])?)),
         "capability" => Ok(Command::Capability(
             capability_cmd::parse_capability_command(&args[1..])?,
@@ -880,7 +880,7 @@ fn help_text() -> &'static str {
         "  eva daemon start [--foreground] [--dev] [--no-shutdown-after-smoke] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--observability-backend <path>] [--project <path>] [--output text|json]\n",
         "  eva daemon status [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva daemon shutdown|stop [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
-        "  eva daemon submit [--task <id>] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
+        "  eva daemon submit [--task <id>] [--kind <task.kind> --agent <id> (--input <text> | --artifact-ref <key> --artifact-digest <sha256>) [--idempotency-key <key>] [--max-attempts <n>] [--retry-backoff-ms <ms>] [--attempt-timeout-ms <ms>]] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva daemon cancel --task <id> [--reason <text>] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva daemon drain|reload [--plan <id>] [--generation <id>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva agent status [--agent <id>] [--project <path>] [--output text|json]\n",
@@ -1902,6 +1902,20 @@ mod tests {
             "submit",
             "--task",
             "req-daemon-cli-task",
+            "--kind",
+            "runtime.echo",
+            "--agent",
+            "root-agent",
+            "--input",
+            "line one\n%|line two",
+            "--idempotency-key",
+            "idem-daemon-cli-task",
+            "--max-attempts",
+            "3",
+            "--retry-backoff-ms",
+            "250",
+            "--attempt-timeout-ms",
+            "5000",
             "--durable-backend",
             durable.to_str().unwrap(),
             "--state-dir",
@@ -1921,6 +1935,50 @@ mod tests {
         assert!(submit_stdout.contains("\"operation\":\"submit_task\""));
         assert!(submit_stdout.contains("\"task_id\":\"req-daemon-cli-task\""));
         assert!(submit_stderr.is_empty());
+
+        let (task_exit, task_stdout, task_stderr) = run_cli(&[
+            "task",
+            "status",
+            "--task",
+            "req-daemon-cli-task",
+            "--durable-backend",
+            durable.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(task_exit, EXIT_OK, "{task_stderr}");
+        assert!(task_stdout.contains("\"kind\":\"runtime.echo\""));
+        assert!(task_stdout.contains("\"agent_id\":\"root-agent\""));
+        assert!(task_stdout.contains("\"input_kind\":\"inline\""));
+        assert!(task_stdout.contains("\"idempotency_key\":\"idem-daemon-cli-task\""));
+        assert!(task_stdout.contains("\"retry_backoff_ms\":250"));
+        assert!(task_stdout.contains("\"attempt_timeout_ms\":5000"));
+        assert!(!task_stdout.contains("line one"));
+        assert!(task_stderr.is_empty());
+
+        let (legacy_exit, legacy_stdout, legacy_stderr) = run_cli(&[
+            "daemon",
+            "submit",
+            "--task",
+            "req-daemon-cli-default-task",
+            "--durable-backend",
+            durable.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(legacy_exit, EXIT_OK, "{legacy_stderr}");
+        assert!(legacy_stdout.contains("\"task_id\":\"req-daemon-cli-default-task\""));
+        assert!(legacy_stderr.is_empty());
 
         let (cancel_exit, cancel_stdout, cancel_stderr) = run_cli(&[
             "daemon",
@@ -1950,8 +2008,25 @@ mod tests {
         assert!(cancel_stderr.is_empty());
         let task_state =
             fs::read_to_string(durable.join("tasks").join("req-daemon-cli-task.task")).unwrap();
+        assert!(task_state.starts_with("format=eva.task-state.v3\n"));
+        assert!(task_state.contains("envelope_kind=runtime.echo"));
+        assert!(task_state.contains("envelope_agent_id=root-agent"));
+        assert!(task_state.contains("envelope_input_kind=inline"));
+        assert!(task_state.contains("envelope_idempotency_key=idem-daemon-cli-task"));
+        assert!(task_state.contains("envelope_max_attempts=3"));
+        assert!(task_state.contains("envelope_retry_backoff_ms=250"));
+        assert!(task_state.contains("envelope_attempt_timeout_ms=5000"));
         assert!(task_state.contains("status=cancelling"));
         assert!(task_state.contains("cancel_requested=true"));
+        let legacy_state = fs::read_to_string(
+            durable
+                .join("tasks")
+                .join("req-daemon-cli-default-task.task"),
+        )
+        .unwrap();
+        assert!(legacy_state.contains("envelope_kind=legacy.submit"));
+        assert!(legacy_state.contains("envelope_input_kind=inline"));
+        assert!(legacy_state.contains("envelope_max_attempts=1"));
 
         let (shutdown_exit, shutdown_stdout, shutdown_stderr) = run_cli(&[
             "daemon",
@@ -1981,6 +2056,42 @@ mod tests {
         assert!(!pids.join("daemon.pid").exists());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    /// 非 canonical artifact digest 在创建 mailbox 请求前返回参数错误。
+    fn daemon_submit_rejects_invalid_task_envelope_before_mailbox_write() {
+        let project = workspace_root();
+        let root = test_temp_dir("daemon-submit-invalid-envelope");
+        let state = root.join("state");
+
+        let (exit, stdout, stderr) = run_cli(&[
+            "daemon",
+            "submit",
+            "--task",
+            "req-daemon-cli-invalid-envelope",
+            "--kind",
+            "runtime.echo",
+            "--agent",
+            "root-agent",
+            "--artifact-ref",
+            "tasks/input-1",
+            "--artifact-digest",
+            "sha256:BAD",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit, EXIT_CONFIG);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("\"kind\":\"invalid_argument\""));
+        assert!(!state.join("control").join("requests").exists());
+
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

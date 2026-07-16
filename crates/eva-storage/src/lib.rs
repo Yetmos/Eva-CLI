@@ -31,6 +31,7 @@ pub use state_store::{
     FileSystemStateStore, InMemoryStateStore, StateRecord, StateStore, StateVersion,
 };
 pub use task_state::{
-    FileSystemTaskStateStore, TaskStateDeadLetterSnapshot, TaskStateLogSnapshot,
-    TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
+    FileSystemTaskStateStore, TaskAttemptPolicySnapshot, TaskEnvelopeSnapshot, TaskInputSnapshot,
+    TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot,
+    TaskStateStore,
 };

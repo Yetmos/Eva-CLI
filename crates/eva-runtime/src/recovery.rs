@@ -1163,6 +1163,7 @@ mod tests {
             record_version: StateVersion::ZERO,
             owner_generation: WriterGeneration::ZERO,
             task_id: task_id.to_owned(),
+            envelope: None,
             status: status.to_owned(),
             attempts: 1,
             retry_max_attempts: 2,

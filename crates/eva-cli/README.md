@@ -17,11 +17,11 @@ V1.15.8 的 CLI 变化是 runtime marker 公开 `memory_redaction_audit_v1.15.8`
 | `eva config validate` | 加载 `eva.yaml`、Agent/Adapter/Capability manifest、policy、routes，并输出摘要。 |
 | `eva inspect` | 输出 agents、adapters、capabilities、routes、policy domains 和 runtime service summary。 |
 | `eva run --example basic` | 执行 V1.0 in-memory basic event loop，并写入本地或 durable backend task report。 |
-| `eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` | 验证 V1.12/V1.13.5/V1.15.4/V1.15.6/V1.16.1 daemon pid/lock/state、durable backend、provider/task recovery、policy、observability、hardware hotplug subscriber、memory/knowledge maintenance、JSONL audit wiring、shutdown contract 和本机 filesystem mailbox 控制面；不启动 provider 进程，也不暴露 raw hardware handle。 |
+| `eva daemon start/status/stop/shutdown/submit/cancel/drain/reload` | 验证 V1.12/V1.13.5/V1.15.4/V1.15.6/V1.16.1 daemon pid/lock/state、durable backend、provider/task recovery、policy、observability、hardware hotplug subscriber、memory/knowledge maintenance、JSONL audit wiring、shutdown contract 和本机 filesystem mailbox 控制面；`submit` 可传完整 TaskEnvelope；不启动 provider 进程，也不暴露 raw hardware handle。 |
 | `eva emit` | 向 in-memory 或 durable EventBus 发布 typed Event，支持显式 Agent/Capability/Adapter target 和 trace metadata。 |
 | `eva agent status/drain/reload` | 输出 Agent lifecycle evidence；连接 running daemon 时 `drain/reload` 写入 `agent-control.state`，无 daemon 时回退 `mutation_executed:false` evidence。 |
 | `eva capability list/probe/call` | 展示 registry/provider plan；`call` 经过 permission/runtime policy gate，只有 `--confirm` 匹配 request id 且非 dry-run 时才执行。 |
-| `eva task status` | 读取 `.eva/tasks` 或 `--durable-backend` 中最新或指定 task 的状态、attempts、retry、取消和 dead-letter 摘要。 |
+| `eva task status` | 读取 `.eva/tasks` 或 `--durable-backend` 中最新或指定 task 的状态、attempts、retry、取消和 dead-letter 摘要；v3 记录额外显示 kind、Agent、input kind/size/digest、artifact ref、幂等键和 attempt policy，但不回显 inline 原文。 |
 | `eva task logs` | 读取 task logs。 |
 | `eva task cancel` | 对未终态 task 写入取消标记；对已终态 task 记录 cancel request 但不改变终态。 |
 | `eva adapter list/probe` | 列出和 probe 已授权 Adapter handle，不启动真实 provider。 |
@@ -102,6 +102,7 @@ cargo run -- daemon start --foreground --dev --durable-backend .eva/daemon-durab
 cargo run -- daemon start --foreground --dev --no-shutdown-after-smoke --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --observability-backend .eva/daemon-observability --output json
 cargo run -- daemon status --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
 cargo run -- daemon submit --task req-daemon-task-1 --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
+cargo run -- daemon submit --task req-daemon-task-2 --kind runtime.echo --agent root-agent --input "hello" --idempotency-key idem-daemon-task-2 --max-attempts 3 --retry-backoff-ms 250 --attempt-timeout-ms 5000 --durable-backend .eva/daemon-durable --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
 cargo run -- daemon shutdown --state-dir .eva/daemon-state --lock-dir .eva/daemon-locks --pid-dir .eva/daemon-pids --output json
 ```
 
@@ -117,7 +118,7 @@ cargo run -- daemon shutdown --state-dir .eva/daemon-state --lock-dir .eva/daemo
 | `shutdown` | foreground smoke 结束时调用 `Runtime::shutdown()` 的幂等报告。 |
 | `trace_id` | control mailbox request/response 的链路标识；默认来自 CLI request id。 |
 | `request_file` / `response_file` | 本机 filesystem mailbox 的请求和响应文件路径。 |
-| daemon `submit` / `cancel` | `submit` 写入 durable `queued` task lifecycle；`cancel` 将非终态 task 推进到 `cancelling` 并追加日志。 |
+| daemon `submit` / `cancel` | `submit` 写入 durable `queued` lifecycle 与不可变 TaskEnvelope，并只在 envelope 内携带 Agent 身份；只有旧参数时生成 `legacy.submit`、首个 enabled Agent、空 inline input、task-ID 幂等键和单次 attempt。显式模式要求 `--kind`、`--agent` 以及 `--input` 或 artifact ref/digest；`cancel` 只推进 lifecycle 并保留原信封。 |
 
 ## V1.1 External Capability Commands
 
@@ -346,4 +347,4 @@ cargo run -- release perf --benchmark-evidence release-evidence/release-benchmar
 cargo run -- release migration --output json
 ```
 
-当前测试覆盖 version text/JSON、config validate JSON、inspect text/durable diagnostics JSON、unknown command、JSON escaping、basic run JSON、cancelled basic run、daemon foreground smoke/lock conflict/bad durable backend、agent daemon drain/reload mutation fallback、task status/logs/cancel、doctor sample project、V1.1 external capability commands、V1.2 memory context、V1.15.8 memory context observability、V1.3 hardware command JSON、V1.4 backup/lifecycle command JSON、V1.5 release hardening command JSON、V1.9.5 observability smoke JSONL backend、V1.10.4 restore apply policy denial、lock conflict、health failure rollback、gated report contract、V1.14.1 staged mutation plan preview/digest contract、V1.14.2 staged mutation apply contract、V1.14.3 restore rollback contract、V1.14.4 operator confirmation contract、V1.16.1 restore apply/rollback observability evidence、V1.16.2 tracing bridge smoke、V1.16.3 OTel exporter degraded smoke 和 V1.16.4 retention marker 断言，以及 V1.11.1 artifact evidence / V1.11.2 distribution evidence / V1.11.3 security scan and benchmark evidence release gates。
+当前测试覆盖 version text/JSON、config validate JSON、inspect text/durable diagnostics JSON、unknown command、JSON escaping、basic run JSON、cancelled basic run、daemon foreground smoke/lock conflict/bad durable backend、TaskEnvelope 显式/legacy submit、非法 digest 预投递拒绝、状态元数据与 inline 原文不泄露、agent daemon drain/reload mutation fallback、task status/logs/cancel、doctor sample project、V1.1 external capability commands、V1.2 memory context、V1.15.8 memory context observability、V1.3 hardware command JSON、V1.4 backup/lifecycle command JSON、V1.5 release hardening command JSON、V1.9.5 observability smoke JSONL backend、V1.10.4 restore apply policy denial、lock conflict、health failure rollback、gated report contract、V1.14.1 staged mutation plan preview/digest contract、V1.14.2 staged mutation apply contract、V1.14.3 restore rollback contract、V1.14.4 operator confirmation contract、V1.16.1 restore apply/rollback observability evidence、V1.16.2 tracing bridge smoke、V1.16.3 OTel exporter degraded smoke 和 V1.16.4 retention marker 断言，以及 V1.11.1 artifact evidence / V1.11.2 distribution evidence / V1.11.3 security scan and benchmark evidence release gates。

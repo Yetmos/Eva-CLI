@@ -5,12 +5,13 @@ use super::{
     trace_for, write_command_error, write_error_kind, CommonOptions, OutputFormat, EXIT_OK,
 };
 use eva_config::{load_project_config, ProjectConfig};
-use eva_core::{EvaError, RequestId};
+use eva_core::{AgentId, EvaError, RequestId};
 use eva_observability::TraceFields;
 use eva_runtime::{
     send_daemon_control_request, start_daemon, DaemonControlOperation, DaemonControlRequest,
     DaemonControlResponse, DaemonPathReport, DaemonPolicyReport, DaemonStartOptions,
-    DaemonStartReport, DaemonStateRecord,
+    DaemonStartReport, DaemonStateRecord, IdempotencyKey, TaskArtifactRef, TaskAttemptPolicy,
+    TaskEnvelope, TaskInput, TaskKind,
 };
 use eva_storage::DurableBackendReport;
 use std::io::Write;
@@ -56,6 +57,24 @@ pub(super) struct DaemonCliOptions {
     request_id: Option<String>,
     /// submit/cancel 操作的可选任务 ID。
     task_id: Option<String>,
+    /// submit 信封的 handler kind。
+    task_kind: Option<String>,
+    /// submit 信封或 agent control 使用的 Agent ID。
+    agent_id: Option<String>,
+    /// submit 信封内直接持久化的 UTF-8 输入。
+    task_input: Option<String>,
+    /// submit 信封引用的 artifact key。
+    task_artifact_ref: Option<String>,
+    /// artifact 引用声明的 canonical SHA-256。
+    task_artifact_digest: Option<String>,
+    /// submit 信封的稳定幂等键。
+    task_idempotency_key: Option<String>,
+    /// submit attempt policy 的最大尝试次数。
+    task_max_attempts: Option<u32>,
+    /// submit attempt policy 的固定退避毫秒数。
+    task_retry_backoff_ms: Option<u64>,
+    /// submit attempt policy 的可选单次超时。
+    task_attempt_timeout_ms: Option<u64>,
     /// cancel 操作的可选原因。
     reason: Option<String>,
     /// drain/reload 操作的可选计划 ID。
@@ -177,7 +196,8 @@ where
             let trace = trace_for(span).with_request_id(request_id.clone());
             match load_project_config(&options.common.project_root).and_then(|project| {
                 let daemon_options = daemon_options_from_cli(&project, &options)?;
-                let request = daemon_control_request(operation, &options, request_id, &trace);
+                let request =
+                    daemon_control_request(operation, &project, &options, request_id, &trace)?;
                 send_daemon_control_request(&daemon_options, request, options.control_timeout_ms)
             }) {
                 Ok(report) => {
@@ -202,6 +222,15 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
     let mut observability_backend = None;
     let mut request_id = None;
     let mut task_id = None;
+    let mut task_kind = None;
+    let mut agent_id = None;
+    let mut task_input = None;
+    let mut task_artifact_ref = None;
+    let mut task_artifact_digest = None;
+    let mut task_idempotency_key = None;
+    let mut task_max_attempts = None;
+    let mut task_retry_backoff_ms = None;
+    let mut task_attempt_timeout_ms = None;
     let mut reason = None;
     let mut plan_id = None;
     let mut generation_id = None;
@@ -261,6 +290,69 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
                 index += 1;
                 task_id = Some(required_option(args, index, "task id option")?.clone());
             }
+            "--kind" | "--task-kind" => {
+                index += 1;
+                task_kind = Some(required_option(args, index, "task kind option")?.clone());
+            }
+            "--agent" | "--agent-id" => {
+                index += 1;
+                agent_id = Some(required_option(args, index, "agent id option")?.clone());
+            }
+            "--input" | "--task-input" => {
+                index += 1;
+                task_input = Some(required_option(args, index, "task input option")?.clone());
+            }
+            "--artifact-ref" | "--input-artifact" => {
+                index += 1;
+                task_artifact_ref =
+                    Some(required_option(args, index, "task artifact reference option")?.clone());
+            }
+            "--artifact-digest" | "--input-digest" => {
+                index += 1;
+                task_artifact_digest =
+                    Some(required_option(args, index, "task artifact digest option")?.clone());
+            }
+            "--idempotency-key" => {
+                index += 1;
+                task_idempotency_key =
+                    Some(required_option(args, index, "task idempotency key option")?.clone());
+            }
+            "--max-attempts" | "--retry-attempts" => {
+                index += 1;
+                task_max_attempts = Some(
+                    required_option(args, index, "task max attempts option")?
+                        .parse::<u32>()
+                        .map_err(|_| {
+                            EvaError::invalid_argument(
+                                "task max attempts must be an unsigned 32-bit integer",
+                            )
+                        })?,
+                );
+            }
+            "--retry-backoff-ms" => {
+                index += 1;
+                task_retry_backoff_ms = Some(
+                    required_option(args, index, "task retry backoff option")?
+                        .parse::<u64>()
+                        .map_err(|_| {
+                            EvaError::invalid_argument(
+                                "task retry backoff must be an unsigned integer",
+                            )
+                        })?,
+                );
+            }
+            "--attempt-timeout-ms" => {
+                index += 1;
+                task_attempt_timeout_ms = Some(
+                    required_option(args, index, "task attempt timeout option")?
+                        .parse::<u64>()
+                        .map_err(|_| {
+                            EvaError::invalid_argument(
+                                "task attempt timeout must be an unsigned integer",
+                            )
+                        })?,
+                );
+            }
             "--reason" => {
                 index += 1;
                 reason = Some(required_option(args, index, "reason option")?.clone());
@@ -300,6 +392,15 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
         observability_backend,
         request_id,
         task_id,
+        task_kind,
+        agent_id,
+        task_input,
+        task_artifact_ref,
+        task_artifact_digest,
+        task_idempotency_key,
+        task_max_attempts,
+        task_retry_backoff_ms,
+        task_attempt_timeout_ms,
         reason,
         plan_id,
         generation_id,
@@ -352,12 +453,21 @@ fn default_control_request_id(operation: DaemonControlOperation) -> &'static str
 /// 构造 control mailbox 请求，并只附加与具体操作相关的可选 payload 字段。
 fn daemon_control_request(
     operation: DaemonControlOperation,
+    project: &ProjectConfig,
     options: &DaemonCliOptions,
     request_id: RequestId,
     trace: &TraceFields,
-) -> DaemonControlRequest {
-    let mut request = DaemonControlRequest::new(request_id, trace, operation);
-    if let Some(value) = &options.task_id {
+) -> Result<DaemonControlRequest, EvaError> {
+    let mut request = DaemonControlRequest::new(request_id.clone(), trace, operation);
+    if operation == DaemonControlOperation::SubmitTask {
+        let task_id = options
+            .task_id
+            .clone()
+            .unwrap_or_else(|| request_id.as_str().to_owned());
+        RequestId::parse(&task_id)?;
+        let envelope = task_envelope_from_cli(project, options, &task_id)?;
+        request = request.with_task_id(task_id).with_task_envelope(envelope);
+    } else if let Some(value) = &options.task_id {
         request = request.with_task_id(value.clone());
     }
     if let Some(value) = &options.reason {
@@ -369,7 +479,128 @@ fn daemon_control_request(
     if let Some(value) = &options.generation_id {
         request = request.with_generation_id(value.clone());
     }
-    request
+    if operation != DaemonControlOperation::SubmitTask {
+        if let Some(value) = &options.agent_id {
+            request = request.with_agent_id(value.clone());
+        }
+    }
+    if operation != DaemonControlOperation::SubmitTask
+        && (options.task_kind.is_some()
+            || options.task_input.is_some()
+            || options.task_artifact_ref.is_some()
+            || options.task_artifact_digest.is_some()
+            || options.task_idempotency_key.is_some()
+            || options.task_max_attempts.is_some()
+            || options.task_retry_backoff_ms.is_some()
+            || options.task_attempt_timeout_ms.is_some())
+    {
+        return Err(EvaError::invalid_argument(
+            "task envelope options are only valid for daemon submit",
+        ));
+    }
+    Ok(request)
+}
+
+fn task_envelope_from_cli(
+    project: &ProjectConfig,
+    options: &DaemonCliOptions,
+    task_id: &str,
+) -> Result<TaskEnvelope, EvaError> {
+    let explicit = options.task_kind.is_some()
+        || options.agent_id.is_some()
+        || options.task_input.is_some()
+        || options.task_artifact_ref.is_some()
+        || options.task_artifact_digest.is_some()
+        || options.task_idempotency_key.is_some()
+        || options.task_max_attempts.is_some()
+        || options.task_retry_backoff_ms.is_some()
+        || options.task_attempt_timeout_ms.is_some();
+    if !explicit {
+        let agent_id = project
+            .agents
+            .iter()
+            .find(|agent| agent.enabled)
+            .map(|agent| agent.id.clone())
+            .ok_or_else(|| EvaError::not_found("daemon submit requires an enabled agent"))?;
+        return TaskEnvelope::new(
+            TaskKind::parse("legacy.submit")?,
+            agent_id,
+            TaskInput::inline(Vec::new())?,
+            IdempotencyKey::parse(task_id)?,
+            TaskAttemptPolicy::new(1, 0, None)?,
+        );
+    }
+
+    let kind = options
+        .task_kind
+        .as_deref()
+        .ok_or_else(|| EvaError::invalid_argument("daemon submit requires --kind"))?;
+    let agent = options
+        .agent_id
+        .as_deref()
+        .ok_or_else(|| EvaError::invalid_argument("daemon submit requires --agent"))?;
+    let agent_id = configured_submit_agent(project, agent)?;
+    let input = match (
+        options.task_input.as_ref(),
+        options.task_artifact_ref.as_ref(),
+        options.task_artifact_digest.as_ref(),
+    ) {
+        (Some(input), None, None) => TaskInput::inline(input.as_bytes().to_vec())?,
+        (None, Some(artifact_ref), Some(digest)) => {
+            TaskInput::artifact(TaskArtifactRef::new(artifact_ref.clone(), digest.clone())?)
+        }
+        (None, Some(_), None) => {
+            return Err(EvaError::invalid_argument(
+                "daemon submit artifact input requires --artifact-digest",
+            ))
+        }
+        (None, None, Some(_)) => {
+            return Err(EvaError::invalid_argument(
+                "daemon submit --artifact-digest requires --artifact-ref",
+            ))
+        }
+        (Some(_), Some(_), _) | (Some(_), None, Some(_)) => {
+            return Err(EvaError::invalid_argument(
+                "daemon submit inline input and artifact input are mutually exclusive",
+            ))
+        }
+        (None, None, None) => {
+            return Err(EvaError::invalid_argument(
+                "daemon submit requires --input or --artifact-ref/--artifact-digest",
+            ))
+        }
+    };
+    let idempotency_key = options.task_idempotency_key.as_deref().unwrap_or(task_id);
+    TaskEnvelope::new(
+        TaskKind::parse(kind)?,
+        agent_id,
+        input,
+        IdempotencyKey::parse(idempotency_key)?,
+        TaskAttemptPolicy::new(
+            options.task_max_attempts.unwrap_or(1),
+            options.task_retry_backoff_ms.unwrap_or(0),
+            options.task_attempt_timeout_ms,
+        )?,
+    )
+}
+
+fn configured_submit_agent(project: &ProjectConfig, value: &str) -> Result<AgentId, EvaError> {
+    let agent_id = AgentId::parse(value)?;
+    let agent = project
+        .agents
+        .iter()
+        .find(|agent| agent.id == agent_id)
+        .ok_or_else(|| {
+            EvaError::not_found("daemon submit references an unknown agent")
+                .with_context("agent_id", value)
+        })?;
+    if !agent.enabled {
+        return Err(
+            EvaError::conflict("daemon submit references a disabled agent")
+                .with_context("agent_id", value),
+        );
+    }
+    Ok(agent_id)
 }
 
 /// 输出 daemon 启动、恢复、provider、可观测性、热插拔和维护摘要。
@@ -814,4 +1045,45 @@ fn shutdown_json(report: &eva_runtime::ShutdownReport) -> String {
         report.request_count,
         json_string(&report.phase)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn daemon_submit_uses_envelope_as_the_only_agent_identity() {
+        let project_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let project = load_project_config(&project_root).unwrap();
+        let args = [
+            "--task",
+            "req-daemon-cli-agent-identity",
+            "--kind",
+            "runtime.echo",
+            "--agent",
+            "root-agent",
+            "--input",
+            "identity-safe",
+        ]
+        .map(str::to_owned);
+        let options = parse_daemon_options(&args).unwrap();
+        let request_id = RequestId::parse("req-daemon-cli-agent-request").unwrap();
+        let trace = TraceFields::default().with_request_id(request_id.clone());
+
+        let request = daemon_control_request(
+            DaemonControlOperation::SubmitTask,
+            &project,
+            &options,
+            request_id,
+            &trace,
+        )
+        .unwrap();
+
+        assert!(request.agent_id.is_none());
+        assert_eq!(
+            request.task_envelope.unwrap().agent_id().as_str(),
+            "root-agent"
+        );
+    }
 }

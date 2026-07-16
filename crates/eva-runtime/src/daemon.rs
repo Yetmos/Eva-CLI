@@ -6,8 +6,9 @@
 //! Local daemon process-boundary and control-plane contracts for V1.12.
 
 use crate::{
-    run_scheduler_retry_tick, RuntimeBuilder, RuntimeRecoveryCoordinator, RuntimeRecoveryReport,
-    SchedulerRetryTickOptions, SchedulerRetryTickReport, ShutdownReport,
+    run_scheduler_retry_tick, IdempotencyKey, RuntimeBuilder, RuntimeRecoveryCoordinator,
+    RuntimeRecoveryReport, SchedulerRetryTickOptions, SchedulerRetryTickReport, ShutdownReport,
+    TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind,
 };
 use eva_config::ProjectConfig;
 use eva_core::{AgentId, EvaError, GenerationId, RequestId};
@@ -31,9 +32,11 @@ use eva_observability::{
 use eva_policy::PolicyDomainSet;
 use eva_scheduler::GenerationRouteGate;
 use eva_storage::{
-    DurableBackend, DurableBackendOptions, DurableBackendReport, FileSystemDurableBackend,
-    FileSystemProviderProcessTable, FileSystemTaskStateStore, TaskStateSnapshot, TaskStateStore,
+    artifact_store::sha256_digest, DurableBackend, DurableBackendOptions, DurableBackendReport,
+    FileSystemDurableBackend, FileSystemProviderProcessTable, FileSystemTaskStateStore,
+    TaskInputSnapshot, TaskStateSnapshot, TaskStateStore,
 };
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -64,6 +67,8 @@ const CONTROL_REQUEST_DIR: &str = "control/requests";
 const CONTROL_RESPONSE_DIR: &str = "control/responses";
 /// 定义 `CONTROL_REQUEST_EXT` 常量。
 const CONTROL_REQUEST_EXT: &str = "request";
+/// 无法解析或语义校验失败的请求会改名隔离，避免持续毒化 daemon loop。
+const CONTROL_REJECTED_EXT: &str = "rejected";
 /// 定义 `CONTROL_RESPONSE_EXT` 常量。
 const CONTROL_RESPONSE_EXT: &str = "response";
 /// 定义 `CONTROL_POLL_INTERVAL_MS` 常量。
@@ -253,6 +258,8 @@ pub enum DaemonControlOperation {
 /// 以 `request_id` 为邮箱文件名和响应关联键的版本化控制请求。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonControlRequest {
+    /// mailbox wire schema；新请求为 2，reader 继续接受旧版本 1。
+    wire_version: u32,
     /// 在请求和响应目录中唯一标识本次投递；复用该值会覆盖其邮箱关联语义。
     pub request_id: RequestId,
     /// 记录 `trace_id` 字段对应的值。
@@ -261,6 +268,8 @@ pub struct DaemonControlRequest {
     pub operation: DaemonControlOperation,
     /// 记录 `task_id` 字段对应的值。
     pub task_id: Option<String>,
+    /// submit_task 的完整不可变业务信封；其他 operation 必须为 None。
+    pub task_envelope: Option<TaskEnvelope>,
     /// 记录 `reason` 字段对应的值。
     pub reason: Option<String>,
     /// 记录 `plan_id` 字段对应的值。
@@ -752,10 +761,12 @@ impl DaemonControlRequest {
         operation: DaemonControlOperation,
     ) -> Self {
         Self {
+            wire_version: 2,
             request_id,
             trace_id: trace_id(trace),
             operation,
             task_id: None,
+            task_envelope: None,
             reason: None,
             plan_id: None,
             generation_id: None,
@@ -773,6 +784,12 @@ impl DaemonControlRequest {
     /// 设置 `task_id` 并返回更新后的实例。
     pub fn with_task_id(mut self, value: impl Into<String>) -> Self {
         self.task_id = Some(value.into());
+        self
+    }
+
+    /// 为 submit_task 绑定完整、已校验的任务信封。
+    pub fn with_task_envelope(mut self, envelope: TaskEnvelope) -> Self {
+        self.task_envelope = Some(envelope);
         self
     }
 
@@ -838,36 +855,166 @@ impl DaemonControlRequest {
 
     /// 按稳定存储格式编码 `to_storage` 对应的数据。
     fn to_storage(&self) -> String {
-        format!(
-            "version=1\nrequest_id={}\ntrace_id={}\noperation={}\ntask_id={}\nreason={}\nplan_id={}\ngeneration_id={}\nagent_id={}\nfrom_generation_id={}\nto_generation_id={}\nfrom_release={}\nto_release={}\ninflight_tasks={}\ntimeout_ms={}\ncreated_at_ms={}\n",
-            self.request_id.as_str(),
-            encode_field(&self.trace_id),
-            self.operation.as_str(),
-            encode_optional_field(self.task_id.as_deref()),
-            encode_optional_field(self.reason.as_deref()),
-            encode_optional_field(self.plan_id.as_deref()),
-            encode_optional_field(self.generation_id.as_deref()),
-            encode_optional_field(self.agent_id.as_deref()),
-            encode_optional_field(self.from_generation_id.as_deref()),
-            encode_optional_field(self.to_generation_id.as_deref()),
-            encode_optional_field(self.from_release.as_deref()),
-            encode_optional_field(self.to_release.as_deref()),
-            self.inflight_tasks
-                .map(|value| value.to_string())
-                .unwrap_or_default(),
-            self.timeout_ms
-                .map(|value| value.to_string())
-                .unwrap_or_default(),
-            self.created_at_ms
-        )
+        if self.wire_version == 1 {
+            return format!(
+                "version=1\nrequest_id={}\ntrace_id={}\noperation={}\ntask_id={}\nreason={}\nplan_id={}\ngeneration_id={}\nagent_id={}\nfrom_generation_id={}\nto_generation_id={}\nfrom_release={}\nto_release={}\ninflight_tasks={}\ntimeout_ms={}\ncreated_at_ms={}\n",
+                self.request_id.as_str(),
+                encode_field(&self.trace_id),
+                self.operation.as_str(),
+                encode_optional_field(self.task_id.as_deref()),
+                encode_optional_field(self.reason.as_deref()),
+                encode_optional_field(self.plan_id.as_deref()),
+                encode_optional_field(self.generation_id.as_deref()),
+                encode_optional_field(self.agent_id.as_deref()),
+                encode_optional_field(self.from_generation_id.as_deref()),
+                encode_optional_field(self.to_generation_id.as_deref()),
+                encode_optional_field(self.from_release.as_deref()),
+                encode_optional_field(self.to_release.as_deref()),
+                self.inflight_tasks
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                self.timeout_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                self.created_at_ms
+            );
+        }
+        let envelope = self.task_envelope.as_ref().map(TaskEnvelope::to_snapshot);
+        let (
+            envelope_kind,
+            envelope_agent_id,
+            input_kind,
+            inline_input_hex,
+            artifact_ref,
+            input_digest,
+            idempotency_key,
+            max_attempts,
+            retry_backoff_ms,
+            attempt_timeout_ms,
+        ) = match envelope {
+            Some(envelope) => {
+                let (input_kind, inline_input_hex, artifact_ref, input_digest) =
+                    match envelope.input {
+                        TaskInputSnapshot::Inline { bytes, digest } => {
+                            ("inline", encode_bytes(&bytes), String::new(), digest)
+                        }
+                        TaskInputSnapshot::Artifact {
+                            artifact_ref,
+                            digest,
+                        } => (
+                            "artifact",
+                            String::new(),
+                            encode_field(&artifact_ref),
+                            digest,
+                        ),
+                    };
+                (
+                    encode_field(&envelope.kind),
+                    encode_field(&envelope.agent_id),
+                    input_kind,
+                    inline_input_hex,
+                    artifact_ref,
+                    input_digest,
+                    encode_field(&envelope.idempotency_key),
+                    envelope.attempt_policy.max_attempts.to_string(),
+                    envelope.attempt_policy.retry_backoff_ms.to_string(),
+                    envelope
+                        .attempt_policy
+                        .attempt_timeout_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                )
+            }
+            None => (
+                String::new(),
+                String::new(),
+                "",
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
+        };
+        [
+            format!("version={}", self.wire_version),
+            format!("request_id={}", self.request_id.as_str()),
+            format!("trace_id={}", encode_field(&self.trace_id)),
+            format!("operation={}", self.operation.as_str()),
+            format!("task_id={}", encode_optional_field(self.task_id.as_deref())),
+            format!("task_envelope_kind={envelope_kind}"),
+            format!("task_envelope_agent_id={envelope_agent_id}"),
+            format!("task_input_kind={input_kind}"),
+            format!("task_inline_input_hex={inline_input_hex}"),
+            format!("task_artifact_ref={artifact_ref}"),
+            format!("task_input_digest={input_digest}"),
+            format!("task_idempotency_key={idempotency_key}"),
+            format!("task_max_attempts={max_attempts}"),
+            format!("task_retry_backoff_ms={retry_backoff_ms}"),
+            format!("task_attempt_timeout_ms={attempt_timeout_ms}"),
+            format!("reason={}", encode_optional_field(self.reason.as_deref())),
+            format!("plan_id={}", encode_optional_field(self.plan_id.as_deref())),
+            format!(
+                "generation_id={}",
+                encode_optional_field(self.generation_id.as_deref())
+            ),
+            format!(
+                "agent_id={}",
+                encode_optional_field(self.agent_id.as_deref())
+            ),
+            format!(
+                "from_generation_id={}",
+                encode_optional_field(self.from_generation_id.as_deref())
+            ),
+            format!(
+                "to_generation_id={}",
+                encode_optional_field(self.to_generation_id.as_deref())
+            ),
+            format!(
+                "from_release={}",
+                encode_optional_field(self.from_release.as_deref())
+            ),
+            format!(
+                "to_release={}",
+                encode_optional_field(self.to_release.as_deref())
+            ),
+            format!(
+                "inflight_tasks={}",
+                self.inflight_tasks
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            ),
+            format!(
+                "timeout_ms={}",
+                self.timeout_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            ),
+            format!("created_at_ms={}", self.created_at_ms),
+            String::new(),
+        ]
+        .join("\n")
     }
 
     /// 从持久化数据或输入构造 `from_storage` 对应的值。
     fn from_storage(data: &str) -> Result<Self, EvaError> {
+        let mut wire_version = None;
         let mut request_id = None;
         let mut trace_id = None;
         let mut operation = None;
         let mut task_id = None;
+        let mut task_envelope_kind = None;
+        let mut task_envelope_agent_id = None;
+        let mut task_input_kind = None;
+        let mut task_inline_input_hex = None;
+        let mut task_artifact_ref = None;
+        let mut task_input_digest = None;
+        let mut task_idempotency_key = None;
+        let mut task_max_attempts = None;
+        let mut task_retry_backoff_ms = None;
+        let mut task_attempt_timeout_ms = None;
         let mut reason = None;
         let mut plan_id = None;
         let mut generation_id = None;
@@ -879,24 +1026,45 @@ impl DaemonControlRequest {
         let mut inflight_tasks = None;
         let mut timeout_ms = None;
         let mut created_at_ms = None;
+        let mut seen = BTreeSet::new();
 
         for line in data.lines().filter(|line| !line.trim().is_empty()) {
             let Some((key, value)) = line.split_once('=') else {
                 return Err(EvaError::conflict("daemon control request is invalid"));
             };
+            if !seen.insert(key.to_owned()) {
+                return Err(
+                    EvaError::conflict("daemon control request has duplicate field")
+                        .with_context("field", key),
+                );
+            }
             match key {
                 "version" => {
-                    if value != "1" {
+                    let parsed = value.parse::<u32>().map_err(|_| {
+                        EvaError::conflict("daemon control request version is invalid")
+                    })?;
+                    if !matches!(parsed, 1 | 2) {
                         return Err(
                             EvaError::conflict("daemon control request version mismatch")
                                 .with_context("version", value),
                         );
                     }
+                    wire_version = Some(parsed);
                 }
                 "request_id" => request_id = Some(RequestId::parse(value)?),
                 "trace_id" => trace_id = Some(decode_field(value)?),
                 "operation" => operation = Some(DaemonControlOperation::parse(value)?),
                 "task_id" => task_id = decode_optional_field(value)?,
+                "task_envelope_kind" => task_envelope_kind = Some(decode_field(value)?),
+                "task_envelope_agent_id" => task_envelope_agent_id = Some(decode_field(value)?),
+                "task_input_kind" => task_input_kind = Some(value.to_owned()),
+                "task_inline_input_hex" => task_inline_input_hex = Some(value.to_owned()),
+                "task_artifact_ref" => task_artifact_ref = Some(decode_field(value)?),
+                "task_input_digest" => task_input_digest = Some(value.to_owned()),
+                "task_idempotency_key" => task_idempotency_key = Some(decode_field(value)?),
+                "task_max_attempts" => task_max_attempts = Some(value.to_owned()),
+                "task_retry_backoff_ms" => task_retry_backoff_ms = Some(value.to_owned()),
+                "task_attempt_timeout_ms" => task_attempt_timeout_ms = Some(value.to_owned()),
                 "reason" => reason = decode_optional_field(value)?,
                 "plan_id" => plan_id = decode_optional_field(value)?,
                 "generation_id" => generation_id = decode_optional_field(value)?,
@@ -936,15 +1104,116 @@ impl DaemonControlRequest {
                 }
             }
         }
+        let wire_version = wire_version
+            .ok_or_else(|| EvaError::conflict("daemon control request missing version"))?;
+        let operation = operation
+            .ok_or_else(|| EvaError::conflict("daemon control request missing operation"))?;
+        let task_envelope = if wire_version == 1 {
+            if task_envelope_kind.is_some()
+                || task_envelope_agent_id.is_some()
+                || task_input_kind.is_some()
+                || task_inline_input_hex.is_some()
+                || task_artifact_ref.is_some()
+                || task_input_digest.is_some()
+                || task_idempotency_key.is_some()
+                || task_max_attempts.is_some()
+                || task_retry_backoff_ms.is_some()
+                || task_attempt_timeout_ms.is_some()
+            {
+                return Err(EvaError::conflict(
+                    "daemon control request v1 cannot contain task envelope fields",
+                ));
+            }
+            None
+        } else {
+            let kind = required_control_field(task_envelope_kind, "task_envelope_kind")?;
+            let envelope_agent_id =
+                required_control_field(task_envelope_agent_id, "task_envelope_agent_id")?;
+            let input_kind = required_control_field(task_input_kind, "task_input_kind")?;
+            let inline_input_hex =
+                required_control_field(task_inline_input_hex, "task_inline_input_hex")?;
+            let artifact_ref = required_control_field(task_artifact_ref, "task_artifact_ref")?;
+            let input_digest = required_control_field(task_input_digest, "task_input_digest")?;
+            let idempotency_key =
+                required_control_field(task_idempotency_key, "task_idempotency_key")?;
+            let max_attempts = required_control_field(task_max_attempts, "task_max_attempts")?;
+            let retry_backoff_ms =
+                required_control_field(task_retry_backoff_ms, "task_retry_backoff_ms")?;
+            let attempt_timeout_ms =
+                required_control_field(task_attempt_timeout_ms, "task_attempt_timeout_ms")?;
+            let has_envelope = !kind.is_empty()
+                || !envelope_agent_id.is_empty()
+                || !input_kind.is_empty()
+                || !inline_input_hex.is_empty()
+                || !artifact_ref.is_empty()
+                || !input_digest.is_empty()
+                || !idempotency_key.is_empty()
+                || !max_attempts.is_empty()
+                || !retry_backoff_ms.is_empty()
+                || !attempt_timeout_ms.is_empty();
+            if !has_envelope {
+                None
+            } else {
+                let input = match input_kind.as_str() {
+                    "inline" if artifact_ref.is_empty() => {
+                        let input = TaskInput::inline(decode_bytes(
+                            &inline_input_hex,
+                            "task_inline_input_hex",
+                        )?)?;
+                        if input.digest() != input_digest {
+                            return Err(EvaError::invalid_argument(
+                                "daemon task inline input digest mismatch",
+                            ));
+                        }
+                        input
+                    }
+                    "artifact" if inline_input_hex.is_empty() => {
+                        TaskInput::artifact(TaskArtifactRef::new(artifact_ref, input_digest)?)
+                    }
+                    "inline" | "artifact" => {
+                        return Err(EvaError::invalid_argument(
+                            "daemon task input fields conflict with discriminator",
+                        ))
+                    }
+                    _ => {
+                        return Err(EvaError::invalid_argument(
+                            "daemon task input discriminator is unsupported",
+                        )
+                        .with_context("input_kind", input_kind))
+                    }
+                };
+                let max_attempts = max_attempts.parse::<u32>().map_err(|_| {
+                    EvaError::invalid_argument("daemon task max_attempts is invalid")
+                })?;
+                let retry_backoff_ms = retry_backoff_ms.parse::<u64>().map_err(|_| {
+                    EvaError::invalid_argument("daemon task retry_backoff_ms is invalid")
+                })?;
+                let attempt_timeout_ms = if attempt_timeout_ms.is_empty() {
+                    None
+                } else {
+                    Some(attempt_timeout_ms.parse::<u64>().map_err(|_| {
+                        EvaError::invalid_argument("daemon task attempt_timeout_ms is invalid")
+                    })?)
+                };
+                Some(TaskEnvelope::new(
+                    TaskKind::parse(&kind)?,
+                    AgentId::parse(&envelope_agent_id)?,
+                    input,
+                    IdempotencyKey::parse(&idempotency_key)?,
+                    TaskAttemptPolicy::new(max_attempts, retry_backoff_ms, attempt_timeout_ms)?,
+                )?)
+            }
+        };
 
-        Ok(Self {
+        let request = Self {
+            wire_version,
             request_id: request_id
                 .ok_or_else(|| EvaError::conflict("daemon control request missing request_id"))?,
             trace_id: trace_id
                 .ok_or_else(|| EvaError::conflict("daemon control request missing trace_id"))?,
-            operation: operation
-                .ok_or_else(|| EvaError::conflict("daemon control request missing operation"))?,
+            operation,
             task_id,
+            task_envelope,
             reason,
             plan_id,
             generation_id,
@@ -958,7 +1227,61 @@ impl DaemonControlRequest {
             created_at_ms: created_at_ms.ok_or_else(|| {
                 EvaError::conflict("daemon control request missing created_at_ms")
             })?,
-        })
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    fn validate(&self) -> Result<(), EvaError> {
+        if !matches!(self.wire_version, 1 | 2) {
+            return Err(EvaError::invalid_argument(
+                "daemon control request version is unsupported",
+            ));
+        }
+        if let Some(task_id) = &self.task_id {
+            RequestId::parse(task_id)?;
+        }
+        match self.operation {
+            DaemonControlOperation::SubmitTask
+                if self.wire_version == 1 && self.agent_id.is_some() =>
+            {
+                Err(EvaError::invalid_argument(
+                    "daemon control request v1 submit cannot carry a generic agent identity",
+                ))
+            }
+            DaemonControlOperation::SubmitTask
+                if self.wire_version >= 2 && self.task_envelope.is_none() =>
+            {
+                Err(EvaError::invalid_argument(
+                    "daemon submit request requires a complete task envelope",
+                ))
+            }
+            DaemonControlOperation::SubmitTask => {
+                if let Some(envelope) = &self.task_envelope {
+                    envelope.to_snapshot().validate()?;
+                    if self.wire_version >= 2 {
+                        if let Some(control_agent_id) = self.agent_id.as_deref() {
+                            let control_agent_id = AgentId::parse(control_agent_id)?;
+                            if &control_agent_id != envelope.agent_id() {
+                                return Err(EvaError::conflict(
+                                    "daemon submit control agent does not match task envelope agent",
+                                )
+                                .with_context("control_agent_id", control_agent_id.as_str())
+                                .with_context(
+                                    "envelope_agent_id",
+                                    envelope.agent_id().as_str(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+            _ if self.task_envelope.is_some() => Err(EvaError::invalid_argument(
+                "task envelope is only valid for daemon submit",
+            )),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -1347,6 +1670,7 @@ pub fn send_daemon_control_request(
     request: DaemonControlRequest,
     timeout_ms: u64,
 ) -> Result<DaemonControlResponse, EvaError> {
+    request.validate()?;
     let status = daemon_status(options)?;
     if !status.available {
         return Err(EvaError::unavailable("daemon control API is unavailable")
@@ -1440,9 +1764,15 @@ fn run_control_loop(
         // 每轮先推进到期的调度重试，保证控制流量不会无限饿死恢复任务。
         let _tick = run_daemon_scheduler_tick(project, options)?;
         for request_path in pending_control_requests(options)? {
-            let request = read_control_request(&request_path)?;
+            let request = match read_control_request(&request_path) {
+                Ok(request) => request,
+                Err(error) => {
+                    let _ = quarantine_control_request(&request_path, &error);
+                    continue;
+                }
+            };
             let response_path = control_response_file(options, &request.request_id);
-            let response = handle_control_request(
+            let response = match handle_control_request(
                 project,
                 options,
                 runtime,
@@ -1450,7 +1780,13 @@ fn run_control_loop(
                 request,
                 &request_path,
                 &response_path,
-            )?;
+            ) {
+                Ok(response) => response,
+                Err(error) => {
+                    let _ = quarantine_control_request(&request_path, &error);
+                    continue;
+                }
+            };
             let shutdown = response.shutdown.clone();
             let is_shutdown = response.operation == DaemonControlOperation::Shutdown;
             // 响应必须先原子发布；仅发布成功后才能删除请求这一恢复证据。
@@ -1658,8 +1994,10 @@ fn record_daemon_control_observability(
         .with_request_id(request.request_id.clone())
         .with_span_id(span_id);
     if let Some(agent_id) = request
-        .agent_id
-        .as_deref()
+        .task_envelope
+        .as_ref()
+        .map(|envelope| envelope.agent_id().as_str())
+        .or(request.agent_id.as_deref())
         .and_then(|value| AgentId::parse(value).ok())
     {
         trace = trace.with_agent_id(agent_id);
@@ -1735,7 +2073,12 @@ fn record_task_lifecycle_observability(
         return;
     };
     let trace = parent_trace.child_span(span_id);
-    let agent_id = request.agent_id.as_deref().unwrap_or("daemon-control");
+    let agent_id = request
+        .task_envelope
+        .as_ref()
+        .map(|envelope| envelope.agent_id().as_str())
+        .or(request.agent_id.as_deref())
+        .unwrap_or("daemon-control");
     let _ = AuditSink::record(
         pipeline,
         AuditEvent::new(AuditAction::TaskLifecycle, AuditOutcome::Ok, trace.clone())
@@ -1776,6 +2119,17 @@ fn handle_control_request(
     request_path: &Path,
     response_path: &Path,
 ) -> Result<DaemonControlResponse, EvaError> {
+    let mut request = request;
+    if request.operation == DaemonControlOperation::SubmitTask
+        && request.wire_version == 1
+        && request.task_envelope.is_none()
+    {
+        let task_id = request
+            .task_id
+            .as_deref()
+            .unwrap_or_else(|| request.request_id.as_str());
+        request.task_envelope = Some(legacy_submit_envelope(project, task_id)?);
+    }
     let mut state = read_state(options)?.unwrap_or_else(|| running_state.clone());
     let accepted = true;
     let mut mutation_executed = false;
@@ -1874,8 +2228,32 @@ fn submit_control_task(
         .clone()
         .unwrap_or_else(|| request.request_id.as_str().to_owned());
     RequestId::parse(&task_id)?;
+    let envelope = match &request.task_envelope {
+        Some(envelope) => envelope.clone(),
+        None if request.wire_version == 1 => legacy_submit_envelope(project, &task_id)?,
+        None => {
+            return Err(EvaError::invalid_argument(
+                "daemon submit request requires a complete task envelope",
+            ))
+        }
+    };
+    let agent = project
+        .agents
+        .iter()
+        .find(|agent| &agent.id == envelope.agent_id())
+        .ok_or_else(|| {
+            EvaError::not_found("daemon task envelope references an unknown agent")
+                .with_context("agent_id", envelope.agent_id().as_str())
+        })?;
+    if !agent.enabled {
+        return Err(
+            EvaError::conflict("daemon task envelope references a disabled agent")
+                .with_context("agent_id", envelope.agent_id().as_str()),
+        );
+    }
     let mut store = open_durable_task_store(options)?;
-    let mut snapshot = TaskStateSnapshot::queued(task_id.clone())?;
+    let mut snapshot =
+        TaskStateSnapshot::queued_with_envelope(task_id.clone(), envelope.to_snapshot())?;
     snapshot.push_log(
         "info",
         format!(
@@ -1885,6 +2263,26 @@ fn submit_control_task(
     );
     store.write(&snapshot)?;
     Ok(task_id)
+}
+
+/// 仅供 v1 mailbox/旧 CLI 兼容：显式标为 `legacy.submit`，不会冒充已注册 handler。
+fn legacy_submit_envelope(
+    project: &ProjectConfig,
+    task_id: &str,
+) -> Result<TaskEnvelope, EvaError> {
+    let agent_id = project
+        .agents
+        .iter()
+        .find(|agent| agent.enabled)
+        .map(|agent| agent.id.clone())
+        .ok_or_else(|| EvaError::not_found("daemon submit requires an enabled agent"))?;
+    TaskEnvelope::new(
+        TaskKind::parse("legacy.submit")?,
+        agent_id,
+        TaskInput::inline(Vec::new())?,
+        IdempotencyKey::parse(task_id)?,
+        TaskAttemptPolicy::new(1, 0, None)?,
+    )
 }
 
 /// 在既有快照上请求取消；缺少任务或状态转换非法时不创建替代快照。
@@ -2246,12 +2644,148 @@ fn pending_control_requests(options: &DaemonStartOptions) -> Result<Vec<PathBuf>
 
 /// 读取 `read_control_request` 所需的持久化数据，失败时保留错误上下文。
 fn read_control_request(path: &Path) -> Result<DaemonControlRequest, EvaError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        EvaError::internal("failed to inspect daemon control request")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(EvaError::invalid_argument(
+            "daemon control request entry must be a regular file",
+        ));
+    }
     let data = fs::read_to_string(path).map_err(|error| {
         EvaError::internal("failed to read daemon control request")
             .with_context("path", path.display().to_string())
             .with_context("io_error", error.to_string())
     })?;
     DaemonControlRequest::from_storage(&data)
+}
+
+/// 先把目录项移出 pending 集合，再安全删除原项并发布不含 payload 的独立摘要。
+fn quarantine_control_request(path: &Path, error: &EvaError) -> Result<(), EvaError> {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("unknown-request");
+    let quarantined_at_ms = now_ms();
+    let rejected = path.with_file_name(format!(
+        "{stem}.{quarantined_at_ms}.{}",
+        CONTROL_REJECTED_EXT
+    ));
+    let isolated = path.with_file_name(format!("{stem}.{quarantined_at_ms}.quarantine-entry"));
+    match fs::rename(path, &isolated) {
+        Ok(()) => {}
+        Err(io_error) if io_error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(io_error) => {
+            return Err(
+                EvaError::internal("failed to isolate invalid daemon control request")
+                    .with_context("path", path.display().to_string())
+                    .with_context("isolated_path", isolated.display().to_string())
+                    .with_context("io_error", io_error.to_string()),
+            )
+        }
+    }
+    let metadata = fs::symlink_metadata(&isolated).map_err(|io_error| {
+        EvaError::internal("failed to inspect isolated daemon control request")
+            .with_context("path", isolated.display().to_string())
+            .with_context("io_error", io_error.to_string())
+    })?;
+    let file_type = metadata.file_type();
+    let entry_kind = if file_type.is_file() {
+        "regular_file"
+    } else if file_type.is_symlink() {
+        "symlink"
+    } else if file_type.is_dir() {
+        "directory"
+    } else {
+        "other"
+    };
+    let request_bytes = if file_type.is_file() {
+        fs::read(&isolated).ok()
+    } else {
+        None
+    };
+    let request_size_bytes = request_bytes
+        .as_ref()
+        .map(Vec::len)
+        .unwrap_or_else(|| metadata.len().try_into().unwrap_or(usize::MAX));
+    let request_digest = request_bytes
+        .as_deref()
+        .map(sha256_digest)
+        .unwrap_or_default();
+    let quarantine_record = format!(
+        "version=1\nrequest_file={}\nentry_kind={}\nrequest_size_bytes={}\nrequest_sha256={}\nerror_kind={}\nerror_message={}\n",
+        encode_field(stem),
+        entry_kind,
+        request_size_bytes,
+        request_digest,
+        error.kind().as_str(),
+        encode_field(error.message())
+    );
+    let summary_temp = rejected.with_extension("summary.tmp");
+    let mut summary_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&summary_temp)
+        .map_err(|io_error| {
+            EvaError::internal("failed to create daemon control quarantine summary")
+                .with_context("path", summary_temp.display().to_string())
+                .with_context("io_error", io_error.to_string())
+        })?;
+    summary_file
+        .write_all(quarantine_record.as_bytes())
+        .and_then(|()| summary_file.flush())
+        .and_then(|()| summary_file.sync_all())
+        .map_err(|io_error| {
+            EvaError::internal("failed to persist daemon control quarantine summary")
+                .with_context("path", summary_temp.display().to_string())
+                .with_context("io_error", io_error.to_string())
+        })?;
+    let removal = if file_type.is_dir() {
+        fs::remove_dir(&isolated)
+    } else {
+        fs::remove_file(&isolated)
+    };
+    let entry_removed = match removal {
+        Ok(()) => true,
+        Err(io_error) if io_error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    };
+    let disposition = format!(
+        "entry_removed={entry_removed}\npayload_retained={}\n",
+        !entry_removed
+    );
+    summary_file
+        .write_all(disposition.as_bytes())
+        .and_then(|()| summary_file.flush())
+        .and_then(|()| summary_file.sync_all())
+        .map_err(|io_error| {
+            EvaError::internal("failed to finalize daemon control quarantine summary")
+                .with_context("path", summary_temp.display().to_string())
+                .with_context("io_error", io_error.to_string())
+        })?;
+    drop(summary_file);
+    fs::rename(&summary_temp, &rejected).map_err(|io_error| {
+        EvaError::internal("failed to publish daemon control quarantine summary")
+            .with_context("path", summary_temp.display().to_string())
+            .with_context("rejected_path", rejected.display().to_string())
+            .with_context("io_error", io_error.to_string())
+    })?;
+    let reason_path = rejected.with_extension("reason");
+    let reason = format!(
+        "error_kind={}\nerror_message={}\nrequest_sha256={}\npayload_retained={}\n",
+        error.kind().as_str(),
+        encode_field(error.message()),
+        request_digest,
+        !entry_removed
+    );
+    let _ = write_atomic(
+        &reason_path,
+        &reason,
+        "failed to write rejected daemon control request reason",
+    );
+    Ok(())
 }
 
 /// 持久化 `write_control_request` 对应的数据，写入失败时返回错误。
@@ -2539,6 +3073,51 @@ fn decode_audit(value: &str) -> Result<Vec<String>, EvaError> {
     value.split(',').map(decode_field).collect()
 }
 
+fn required_control_field<T>(value: Option<T>, field: &'static str) -> Result<T, EvaError> {
+    value.ok_or_else(|| {
+        EvaError::conflict("daemon control request v2 is missing a field")
+            .with_context("field", field)
+    })
+}
+
+fn encode_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn decode_bytes(value: &str, field: &'static str) -> Result<Vec<u8>, EvaError> {
+    if !value.len().is_multiple_of(2)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(EvaError::conflict(
+            "daemon control binary field is not canonical lowercase hex",
+        )
+        .with_context("field", field));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        let high = if pair[0].is_ascii_digit() {
+            pair[0] - b'0'
+        } else {
+            pair[0] - b'a' + 10
+        };
+        let low = if pair[1].is_ascii_digit() {
+            pair[1] - b'0'
+        } else {
+            pair[1] - b'a' + 10
+        };
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
 /// 按稳定存储格式编码 `encode_field` 对应的数据。
 fn encode_field(value: &str) -> String {
     /// 定义 `HEX` 常量。
@@ -2603,6 +3182,25 @@ mod tests {
         root
     }
 
+    fn read_tree_text(root: &Path) -> String {
+        let mut pending = vec![root.to_path_buf()];
+        let mut text = String::new();
+        while let Some(path) = pending.pop() {
+            if path.is_dir() {
+                pending.extend(
+                    fs::read_dir(path)
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path()),
+                );
+            } else if let Ok(bytes) = fs::read(path) {
+                text.push_str(&String::from_utf8_lossy(&bytes));
+                text.push('\n');
+            }
+        }
+        text
+    }
+
     /// 执行 `daemon_options` 对应的处理逻辑。
     fn daemon_options(root: &Path, shutdown_after_smoke: bool) -> DaemonStartOptions {
         DaemonStartOptions {
@@ -2615,6 +3213,184 @@ mod tests {
             dev_mode: true,
             shutdown_after_smoke,
         }
+    }
+
+    fn sample_task_envelope(input: Vec<u8>) -> crate::TaskEnvelope {
+        crate::TaskEnvelope::new(
+            crate::TaskKind::parse("runtime.echo").unwrap(),
+            eva_core::AgentId::parse("root-agent").unwrap(),
+            crate::TaskInput::inline(input).unwrap(),
+            crate::IdempotencyKey::parse("idem-daemon-envelope").unwrap(),
+            crate::TaskAttemptPolicy::new(3, 250, Some(5_000)).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    /// v2 control mailbox 对完整 TaskEnvelope 做无损往返，v1 字段布局不再承载新 payload。
+    fn daemon_control_request_v2_round_trips_task_envelope() {
+        let trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-envelope-wire").unwrap());
+        let input = b"daemon-debug-secret".to_vec();
+        let leaked_bytes = format!("{input:?}");
+        let request = DaemonControlRequest::new(
+            RequestId::parse("req-daemon-envelope-wire").unwrap(),
+            &trace,
+            DaemonControlOperation::SubmitTask,
+        )
+        .with_task_id("req-daemon-envelope-task")
+        .with_task_envelope(sample_task_envelope(input));
+
+        let stored = request.to_storage();
+        let reopened = DaemonControlRequest::from_storage(&stored).unwrap();
+        let request_debug = format!("{request:?}");
+        let mismatched = request.clone().with_agent_id("spoof-agent").to_storage();
+        let mismatch_error = DaemonControlRequest::from_storage(&mismatched).unwrap_err();
+
+        assert!(stored.starts_with("version=2\n"));
+        assert!(!request_debug.contains(&leaked_bytes));
+        assert!(request_debug.contains("bytes: \"<redacted>\""));
+        assert!(request_debug.contains("size_bytes: 19"));
+        assert_eq!(mismatch_error.kind(), eva_core::ErrorKind::Conflict);
+        assert!(mismatch_error.message().contains("does not match"));
+        assert_eq!(reopened, request);
+        assert_eq!(
+            reopened.task_envelope.as_ref().unwrap().kind().as_str(),
+            "runtime.echo"
+        );
+    }
+
+    #[test]
+    /// 旧 v1 submit mailbox 仍可读取，但服务端明确补成不可执行的 legacy.submit 信封。
+    fn daemon_control_request_v1_submit_uses_explicit_legacy_envelope() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let expected_agent_id = project
+            .agents
+            .iter()
+            .find(|agent| agent.enabled)
+            .unwrap()
+            .id
+            .as_str()
+            .to_owned();
+        let expected_agent_json = format!("\"agent_id\":\"{expected_agent_id}\"");
+        let root = temp_root("legacy-submit-wire");
+        let options = daemon_options(&root, false);
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-v1-loop").unwrap()),
+            )
+        });
+        wait_for_daemon_available(&options);
+        let trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-v1-submit").unwrap());
+        let mut request = DaemonControlRequest::new(
+            RequestId::parse("req-daemon-v1-submit").unwrap(),
+            &trace,
+            DaemonControlOperation::SubmitTask,
+        )
+        .with_task_id("req-daemon-v1-task");
+        request.wire_version = 1;
+        assert!(request.to_storage().starts_with("version=1\n"));
+
+        let spoof_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-v1-spoof-submit").unwrap());
+        let mut spoof_request = DaemonControlRequest::new(
+            RequestId::parse("req-daemon-v1-spoof-submit").unwrap(),
+            &spoof_trace,
+            DaemonControlOperation::SubmitTask,
+        )
+        .with_task_id("req-daemon-v1-spoof-task")
+        .with_agent_id("spoof-agent");
+        spoof_request.wire_version = 1;
+        assert!(DaemonControlRequest::from_storage(&spoof_request.to_storage()).is_err());
+        fs::write(
+            control_request_file(&options, &spoof_request.request_id),
+            spoof_request.to_storage(),
+        )
+        .unwrap();
+        let mut spoof_rejected = false;
+        for _ in 0..100 {
+            spoof_rejected = fs::read_dir(control_request_dir(&options))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry.path().extension().and_then(|value| value.to_str())
+                        == Some(CONTROL_REJECTED_EXT)
+                });
+            if spoof_rejected {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(spoof_rejected);
+        assert!(!options
+            .durable_backend
+            .join("tasks")
+            .join("req-daemon-v1-spoof-task.task")
+            .exists());
+
+        send_daemon_control_request(&options, request, 2_000).unwrap();
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-v1-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-v1-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        daemon.join().unwrap().unwrap();
+
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let reopened = FileSystemTaskStateStore::from_durable_layout(backend.layout())
+            .read(Some("req-daemon-v1-task"))
+            .unwrap();
+        let envelope = reopened.envelope.unwrap();
+        assert_eq!(envelope.kind, "legacy.submit".to_owned());
+        assert_eq!(envelope.agent_id, expected_agent_id);
+        let audit = fs::read_to_string(options.observability_backend.join("audit.jsonl")).unwrap();
+        let metrics =
+            fs::read_to_string(options.observability_backend.join("metrics.jsonl")).unwrap();
+        let spans =
+            fs::read_to_string(options.observability_backend.join("otel-spans.jsonl")).unwrap();
+        assert!(!audit.contains("req-daemon-v1-spoof-submit"));
+        let submit_audit = audit
+            .lines()
+            .filter(|line| line.contains("req-daemon-v1-submit"))
+            .collect::<Vec<_>>();
+        assert!(!submit_audit.is_empty());
+        assert!(submit_audit
+            .iter()
+            .all(|line| line.contains(&expected_agent_json)));
+        let task_metrics = metrics
+            .lines()
+            .filter(|line| line.contains("req-daemon-v1-task"))
+            .collect::<Vec<_>>();
+        assert!(!task_metrics.is_empty());
+        assert!(task_metrics
+            .iter()
+            .all(|line| line.contains(&expected_agent_json)));
+        let submit_spans = spans
+            .lines()
+            .filter(|line| line.contains("req-daemon-v1-submit"))
+            .collect::<Vec<_>>();
+        assert!(!submit_spans.is_empty());
+        assert!(submit_spans
+            .iter()
+            .all(|line| line.contains(&expected_agent_json)));
+
+        fs::remove_dir_all(root).ok();
     }
 
     /// 执行 `wait_for_daemon_available` 对应的处理逻辑。
@@ -2883,6 +3659,341 @@ mod tests {
         fs::remove_dir_all(root).ok();
     }
 
+    #[test]
+    /// daemon 提交后释放 writer，再以只读 backend 重开仍恢复完整 TaskEnvelope。
+    fn daemon_submit_task_envelope_survives_shutdown_and_store_reopen() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("submit-envelope-reopen");
+        let options = daemon_options(&root, false);
+        let recovery_input = b"daemon-start-report-secret".to_vec();
+        let leaked_recovery_bytes = format!("{recovery_input:?}");
+        {
+            let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+                &options.durable_backend,
+            ))
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            let recovery_snapshot = TaskStateSnapshot::queued_with_envelope(
+                "req-daemon-debug-recovery",
+                sample_task_envelope(recovery_input).to_snapshot(),
+            )
+            .unwrap();
+            store.create(&recovery_snapshot).unwrap();
+        }
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-envelope-loop").unwrap()),
+            )
+        });
+        wait_for_daemon_available(&options);
+        let envelope = sample_task_envelope(vec![0, b'\n', b'%', 0xff]);
+        let expected = envelope.to_snapshot();
+        let submit_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-envelope-submit").unwrap());
+
+        let submitted = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-envelope-submit").unwrap(),
+                &submit_trace,
+                DaemonControlOperation::SubmitTask,
+            )
+            .with_task_id("req-daemon-envelope-persisted")
+            .with_task_envelope(envelope),
+            2_000,
+        )
+        .unwrap();
+        assert!(submitted.mutation_executed);
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-envelope-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-envelope-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        let report = daemon.join().unwrap().unwrap();
+        let report_debug = format!("{report:?}");
+        assert!(!report_debug.contains(&leaked_recovery_bytes));
+        assert!(report_debug.contains("bytes: \"<redacted>\""));
+        assert!(report_debug.contains("size_bytes: 26"));
+
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let reopened = FileSystemTaskStateStore::from_durable_layout(backend.layout())
+            .read(Some("req-daemon-envelope-persisted"))
+            .unwrap();
+        assert_eq!(reopened.envelope, Some(expected));
+        assert_eq!(reopened.retry_max_attempts, 3);
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    /// poison request 仅保留不可逆摘要，Agent 身份分叉在 mutation 前被隔离且 daemon 继续服务。
+    fn invalid_task_envelope_request_is_quarantined_without_stopping_daemon() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("invalid-envelope-quarantine");
+        let options = daemon_options(&root, false);
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-invalid-envelope-loop").unwrap()),
+            )
+        });
+        wait_for_daemon_available(&options);
+        let invalid_digest_payload = b"invalid-digest-secret".to_vec();
+        let unknown_agent_payload = b"unknown-agent-secret".to_vec();
+        let mismatched_agent_payload = b"agent-mismatch-secret".to_vec();
+        let envelope = sample_task_envelope(invalid_digest_payload.clone());
+        let digest = envelope.input().digest().to_owned();
+        let trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-invalid-envelope-submit").unwrap());
+        let request = DaemonControlRequest::new(
+            RequestId::parse("req-daemon-invalid-envelope-submit").unwrap(),
+            &trace,
+            DaemonControlOperation::SubmitTask,
+        )
+        .with_task_id("req-daemon-invalid-envelope-task")
+        .with_task_envelope(envelope);
+        let tampered = request.to_storage().replace(
+            &format!("task_input_digest={digest}"),
+            "task_input_digest=sha256:BAD",
+        );
+        fs::write(
+            control_request_file(&options, &request.request_id),
+            tampered,
+        )
+        .unwrap();
+
+        let mut quarantined = false;
+        for _ in 0..100 {
+            quarantined = fs::read_dir(control_request_dir(&options))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry.path().extension().and_then(|value| value.to_str())
+                        == Some(CONTROL_REJECTED_EXT)
+                });
+            if quarantined {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(quarantined);
+        assert!(!options
+            .durable_backend
+            .join("tasks")
+            .join("req-daemon-invalid-envelope-task.task")
+            .exists());
+
+        let unknown_agent_envelope = crate::TaskEnvelope::new(
+            crate::TaskKind::parse("runtime.echo").unwrap(),
+            eva_core::AgentId::parse("missing-agent").unwrap(),
+            crate::TaskInput::inline(unknown_agent_payload.clone()).unwrap(),
+            crate::IdempotencyKey::parse("idem-unknown-agent").unwrap(),
+            crate::TaskAttemptPolicy::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        let unknown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-unknown-agent-submit").unwrap());
+        let unknown_request = DaemonControlRequest::new(
+            RequestId::parse("req-daemon-unknown-agent-submit").unwrap(),
+            &unknown_trace,
+            DaemonControlOperation::SubmitTask,
+        )
+        .with_task_id("req-daemon-unknown-agent-task")
+        .with_task_envelope(unknown_agent_envelope);
+        fs::write(
+            control_request_file(&options, &unknown_request.request_id),
+            unknown_request.to_storage(),
+        )
+        .unwrap();
+
+        let mismatch_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-agent-mismatch-submit").unwrap());
+        let mismatch_request = DaemonControlRequest::new(
+            RequestId::parse("req-daemon-agent-mismatch-submit").unwrap(),
+            &mismatch_trace,
+            DaemonControlOperation::SubmitTask,
+        )
+        .with_task_id("req-daemon-agent-mismatch-task")
+        .with_task_envelope(sample_task_envelope(mismatched_agent_payload.clone()))
+        .with_agent_id("spoof-agent");
+        fs::write(
+            control_request_file(&options, &mismatch_request.request_id),
+            mismatch_request.to_storage(),
+        )
+        .unwrap();
+        let directory_request = control_request_dir(&options).join("invalid-entry.request");
+        fs::create_dir_all(&directory_request).unwrap();
+        let mut rejected_count = 0;
+        for _ in 0..100 {
+            rejected_count = fs::read_dir(control_request_dir(&options))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.path().extension().and_then(|value| value.to_str())
+                        == Some(CONTROL_REJECTED_EXT)
+                })
+                .count();
+            if rejected_count >= 4 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(rejected_count, 4);
+        assert!(!directory_request.exists());
+        assert!(!options
+            .durable_backend
+            .join("tasks")
+            .join("req-daemon-unknown-agent-task.task")
+            .exists());
+        assert!(!options
+            .durable_backend
+            .join("tasks")
+            .join("req-daemon-agent-mismatch-task.task")
+            .exists());
+
+        let status_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-after-invalid-status").unwrap());
+        let status = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-after-invalid-status").unwrap(),
+                &status_trace,
+                DaemonControlOperation::Status,
+            ),
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(status.status, "running");
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-after-invalid-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-after-invalid-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        daemon.join().unwrap().unwrap();
+
+        let retained_text = read_tree_text(&root);
+        for payload in [
+            invalid_digest_payload,
+            unknown_agent_payload,
+            mismatched_agent_payload,
+        ] {
+            let plaintext = String::from_utf8(payload.clone()).unwrap();
+            assert!(!retained_text.contains(&plaintext));
+            assert!(!retained_text.contains(&encode_bytes(&payload)));
+        }
+        assert!(retained_text.matches("payload_retained=false").count() >= 4);
+        assert!(retained_text.contains("request_sha256=sha256:"));
+        assert!(retained_text.contains("request_size_bytes="));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_control_request_is_removed_without_reading_or_mutating_its_target() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("symlink-request-quarantine");
+        let options = daemon_options(&root, false);
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-symlink-loop").unwrap()),
+            )
+        });
+        wait_for_daemon_available(&options);
+
+        let target_payload = b"external-symlink-target-secret";
+        let target = root.join("external-target.txt");
+        fs::write(&target, target_payload).unwrap();
+        let request_path = control_request_dir(&options).join("symlink.request");
+        std::os::unix::fs::symlink(&target, &request_path).unwrap();
+
+        let mut rejected = false;
+        for _ in 0..100 {
+            rejected = fs::read_dir(control_request_dir(&options))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry.path().extension().and_then(|value| value.to_str())
+                        == Some(CONTROL_REJECTED_EXT)
+                });
+            if rejected {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(rejected);
+        assert!(!request_path.exists());
+        assert_eq!(fs::read(&target).unwrap(), target_payload);
+        let quarantine_text = read_tree_text(&control_request_dir(&options));
+        assert!(!quarantine_text.contains(&String::from_utf8_lossy(target_payload)));
+        assert!(!quarantine_text.contains(&encode_bytes(target_payload)));
+        assert!(quarantine_text.contains("entry_kind=symlink"));
+        assert!(quarantine_text.contains("request_sha256=\n"));
+
+        let status_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-after-symlink-status").unwrap());
+        let status = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-after-symlink-status").unwrap(),
+                &status_trace,
+                DaemonControlOperation::Status,
+            ),
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(status.status, "running");
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-after-symlink-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-after-symlink-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        daemon.join().unwrap().unwrap();
+
+        fs::remove_dir_all(root).ok();
+    }
+
     /// 验证 `daemon_control_submit_cancel_writes_observability_pipeline` 场景下的预期行为。
     #[test]
     fn daemon_control_submit_cancel_writes_observability_pipeline() {
@@ -2912,7 +4023,7 @@ mod tests {
                 DaemonControlOperation::SubmitTask,
             )
             .with_task_id("req-daemon-observed-task")
-            .with_agent_id("root-agent"),
+            .with_task_envelope(sample_task_envelope(b"observed".to_vec())),
             2_000,
         )
         .unwrap();
@@ -2964,6 +4075,30 @@ mod tests {
         assert!(metrics.contains("\"surface\":\"task\""));
         assert!(spans.contains("\"name\":\"runtime.daemon.control\""));
         assert!(spans.contains("\"name\":\"runtime.task.lifecycle\""));
+        let submit_audit = audit
+            .lines()
+            .filter(|line| line.contains("req-daemon-observed-submit"))
+            .collect::<Vec<_>>();
+        assert!(!submit_audit.is_empty());
+        assert!(submit_audit
+            .iter()
+            .all(|line| line.contains("\"agent_id\":\"root-agent\"")));
+        let task_metrics = metrics
+            .lines()
+            .filter(|line| line.contains("req-daemon-observed-task"))
+            .collect::<Vec<_>>();
+        assert!(!task_metrics.is_empty());
+        assert!(task_metrics
+            .iter()
+            .all(|line| line.contains("\"agent_id\":\"root-agent\"")));
+        let submit_spans = spans
+            .lines()
+            .filter(|line| line.contains("req-daemon-observed-submit"))
+            .collect::<Vec<_>>();
+        assert!(!submit_spans.is_empty());
+        assert!(submit_spans
+            .iter()
+            .all(|line| line.contains("\"agent_id\":\"root-agent\"")));
 
         fs::remove_dir_all(root).ok();
     }

@@ -36,6 +36,7 @@ pub use scheduler_retry::{
 pub use services::{RuntimeServices, ServiceState, ServiceSummary};
 pub use shutdown::{ShutdownReport, ShutdownState};
 pub use task::{
-    CancellationRecord, DeadLetterSummary, ReplaySummary, RetryPolicy, TaskLogEntry, TaskLogLevel,
-    TaskReport, TaskStatus,
+    CancellationRecord, DeadLetterSummary, IdempotencyKey, ReplaySummary, RetryPolicy,
+    TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind, TaskLogEntry,
+    TaskLogLevel, TaskReport, TaskStatus,
 };

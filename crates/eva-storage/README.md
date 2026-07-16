@@ -4,7 +4,7 @@
 
 ![V0.3/V0.4 runtime module flow](../assets/eva-runtime-module-flow.svg)
 
-`eva-storage` 负责 Eva-CLI 的状态、事件日志、task snapshot、audit record、artifact 和 provider process snapshot 存储契约。事件日志同时提供 in-memory 和 V1.6.2 filesystem durable 版本；task snapshot 已可使用 `.eva/tasks` 或 V1.6 durable backend 的 `tasks/` 布局，并在 V1.12.3 增加 heartbeat、deadline、cancel token、cancelling/recovering/interrupted 等长任务 lifecycle 字段；audit record 可写入 durable backend 的 `audit/` 目录；artifact 已提供 local filesystem backend；V1.13.5 新增 filesystem provider process table，用于记录受监督 provider execution slot 的跨进程 session/process recovery evidence。
+`eva-storage` 负责 Eva-CLI 的状态、事件日志、task snapshot、audit record、artifact 和 provider process snapshot 存储契约。事件日志同时提供 in-memory 和 V1.6.2 filesystem durable 版本；task snapshot 已可使用 `.eva/tasks` 或 V1.6 durable backend 的 `tasks/` 布局，并在 V1.12.3 增加 heartbeat、deadline、cancel token、cancelling/recovering/interrupted 等长任务 lifecycle 字段；W1-L02 再以 `eva.task-state.v3` 保存不可变 TaskEnvelope、二进制 inline input 或 artifact ref、幂等键和 attempt policy；audit record 可写入 durable backend 的 `audit/` 目录；artifact 已提供 local filesystem backend；V1.13.5 新增 filesystem provider process table，用于记录受监督 provider execution slot 的跨进程 session/process recovery evidence。
 
 ## V0.4 当前实现
 
@@ -14,7 +14,7 @@
 | EventLogRecord | `EventLogRecord`、`EventLogStatus` | 记录 sequence、原始 `Event`、消费 Agent、失败原因。 |
 | StateStore | `StateStore`、`InMemoryStateStore`、`FileSystemStateStore` | 内存实现支持 get/put/CAS；文件实现要求 runtime writer ownership，在 OS lock 内持久化单调版本并原子替换。 |
 | StateRecord | `StateRecord`、`StateVersion`、`WriterGeneration` | 保存 key、value、CAS version 和提交该版本的 writer generation。 |
-| TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 默认保存 `.eva/tasks` task snapshot，也可使用 durable backend 的 `tasks/` 目录；权威 ID 文件携带 record version/generation，既有任务必须 CAS，latest 是原子刷新但不与 ID 文件组成跨文件事务的派生别名。 |
+| TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 默认保存 `.eva/tasks` task snapshot，也可使用 durable backend 的 `tasks/` 目录；权威 ID 文件携带 record version/generation，既有任务必须 CAS，latest 是原子刷新但不与 ID 文件组成跨文件事务的派生别名。v3 TaskEnvelope 在 create 后不可被 lifecycle CAS 修改。 |
 | AuditSink | `FileSystemAuditSink`、`AuditRecord` | 将 `AuditEvent` 写入 durable backend `audit/` 目录，保存 action/outcome/trace/message/fields，并支持按 trace id 查询。 |
 | ArtifactStore | `ArtifactStore`、`ArtifactRecord`、`InMemoryArtifactStore`、`FileSystemArtifactStore` | 保存 bytes，并生成可重复 SHA-256 digest；filesystem backend 会落盘 bytes 和 v2 metadata，记录 size、content type、retention policy 和 retain-until timestamp，并在读取时重新校验 key、size 和 digest。 |
 | ProviderProcessTable | `ProviderProcessTable`、`ProviderProcessSnapshot`、`InMemoryProviderProcessTable`、`FileSystemProviderProcessTable` | 记录 provider session/process id、manifest digest、start command、health、last error、restart policy、retry backoff hint 和 audit；filesystem backend 写入 durable `state/provider-processes/`，供 daemon restart recovery 扫描。 |
@@ -33,6 +33,7 @@ use eva_storage::{
     DurableWriterGuard, EventLog, FileSystemEventLog, FileSystemStateStore,
     FileSystemTaskStateStore, InMemoryEventLog, FileSystemProviderProcessTable,
     InMemoryProviderProcessTable, InMemoryStateStore, ProviderProcessTable, StateStore,
+    TaskAttemptPolicySnapshot, TaskEnvelopeSnapshot, TaskInputSnapshot,
 };
 ```
 
@@ -46,7 +47,7 @@ use eva_storage::{
 cargo test -p eva-storage
 ```
 
-已覆盖：事件 append/watermark、ack consumer、fail structured error、replay cursor、filesystem EventLog 跨 reopen、真实双进程 runtime writer 竞争、generation 重开/损坏/耗尽、filesystem StateStore/TaskStateStore stale CAS、legacy task version 升级、latest 修复、原子替换故障保旧值、snapshot 列表与 lifecycle、ArtifactStore digest/missing/tamper/legacy/corrupt checks，以及 ProviderProcessTable in-memory/filesystem upsert/list/release/restart interrupt。
+已覆盖：事件 append/watermark、ack consumer、fail structured error、replay cursor、filesystem EventLog 跨 reopen、真实双进程 runtime writer 竞争、generation 重开/损坏/耗尽、filesystem StateStore/TaskStateStore stale CAS、legacy task version 升级、v3 TaskEnvelope 跨重开/二进制 payload/摘要篡改/字段缺失/不可变 CAS、latest 修复、原子替换故障保旧值、snapshot 列表与 lifecycle、ArtifactStore digest/missing/tamper/legacy/corrupt checks，以及 ProviderProcessTable in-memory/filesystem upsert/list/release/restart interrupt。
 
 ## V1.6.1 Durable Backend Baseline
 
@@ -91,6 +92,24 @@ Manifest, generation, state, task ID, and latest writes use a same-directory
 create-new temp file, `write_all`, `flush`, `sync_all`, and atomic replace. Unix
 also syncs the parent directory; Windows uses `MoveFileExW` with replace and
 write-through flags and never removes the destination before replacement.
+
+## W1-L02 Persisted TaskEnvelope
+
+New daemon submissions use `eva.task-state.v3`. `TaskEnvelopeSnapshot` stores a
+syntactically valid task kind and Agent ID, exactly one input source, a stable
+idempotency key, and a fixed-width attempt policy. Inline input is limited to 1
+MiB, encoded as lowercase hex, and rebound to its SHA-256 on every read;
+artifact input stores a stable relative key and canonical lowercase
+`sha256:<64 hex>` claim for the execution boundary to recheck.
+Derived container Debug output remains usable for diagnosis, but inline bytes
+are replaced by `<redacted>` plus their size and digest.
+
+Legacy records without a format and `eva.task-state.v2` remain readable with
+`envelope=None`; they are never given invented executable payloads. A v3
+envelope is immutable after create, while status/log/cancel/recovery fields can
+continue through fenced CAS. Valid but unregistered task kinds remain
+persistable because handler lookup and stable unknown-handler failure belong to
+W1-L05.
 
 `FileSystemAuditSink::open(layout)` writes audit records under the same backend
 `audit/` directory. `query_by_trace_id` can retrieve records by span, request,

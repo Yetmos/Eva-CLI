@@ -309,7 +309,7 @@ struct ArtifactMetadata {
 }
 
 /// 计算带算法前缀的稳定 SHA-256 文本；字符串写入内存不可能失败。
-fn sha256_digest(bytes: &[u8]) -> String {
+pub fn sha256_digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();
@@ -325,7 +325,7 @@ fn sha256_digest(bytes: &[u8]) -> String {
 /// 校验可安全映射到文件系统的相对 artifact key。
 /// 拒绝首尾空白、反斜线、空/`.`/`..` 分段和非稳定 ASCII 字符，防止目录穿越、
 /// 平台分隔符歧义和同一逻辑 key 在不同系统落到不同路径。
-fn validate_filesystem_artifact_key(key: String) -> Result<String, EvaError> {
+pub(crate) fn validate_filesystem_artifact_key(key: String) -> Result<String, EvaError> {
     if key.trim().is_empty() || key.trim() != key || key.contains('\\') {
         return Err(
             EvaError::invalid_argument("artifact key must be a stable relative path")

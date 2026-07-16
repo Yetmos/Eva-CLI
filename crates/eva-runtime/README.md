@@ -17,6 +17,7 @@
 | V1.12.1 | daemon process boundary | `start_daemon` / `daemon_status` / `stop_daemon` 固定本机 daemon pid/lock/state、foreground/dev smoke、durable backend、policy、observability 和 shutdown contract；不启动 provider 进程。 |
 | V1.12.2 | daemon control mailbox | `send_daemon_control_request` 和 foreground control loop 定义受控 filesystem mailbox 协议，支持 status、shutdown、submit task、cancel task、drain 和 reload plan；request/response 均带 trace id，不暴露远程网络监听。 |
 | V1.12.3 | durable task lifecycle | daemon submit/cancel 使用 `TaskStateSnapshot` lifecycle API：submit 写 `queued`，cancel 将非终态任务推进到 `cancelling` 并追加日志；recovery 会把 `queued`/`running`/`cancelling` 恢复为 `interrupted` 或 `recovering`。 |
+| W1-L02 | persisted TaskEnvelope | `TaskEnvelope` 固定 kind、Agent、inline bytes/artifact ref、idempotency key 和 attempt policy；daemon mailbox v2 无损传递，task state v3 跨重开恢复，legacy mailbox v1 在 mutation/observability 前显式映射为 `legacy.submit`；inline Debug 全链路脱敏。 |
 | V1.13.5 | provider execution recovery | daemon start 扫描 durable provider process table 和 task store；残留 active provider session 标记为 `interrupted`，关联 task 保留为 interrupted/recovering，只有显式 retryable restart policy 才生成 scheduler backoff 证据。 |
 | V1.15.4 | hardware hotplug subscriber | daemon start 运行 manifest snapshot hotplug subscriber，把逻辑设备状态写入 durable EventBus 和 `hardware-hotplug.state`，并在 report 中输出 `raw_handles_exposed:false`。 |
 | V1.15.6 | memory/knowledge maintenance smoke | daemon start 对 durable memory/knowledge store 执行一次 `index.lock` 保护的 TTL GC 和 knowledge rebuild checkpoint，输出 `memory_maintenance` report，并写 `memory.maintenance` audit。 |
@@ -40,7 +41,7 @@
 ## 公开入口
 
 ```rust
-use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, RuntimeBuilder, TaskReport};
+use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, RuntimeBuilder, TaskEnvelope, TaskReport};
 ```
 
 关键类型：
@@ -55,7 +56,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 | `RuntimeRecoveryCoordinator` | V1.6.4/V1.13.5 recovery coordinator；读取 task snapshots 和 provider process snapshots，持久化 interrupted/recovering 状态，可通过 durable EventBus 执行受控 redrive checkpoint，并可记录 `runtime.recovered` audit。 |
 | `DaemonStartOptions` | V1.12.1 daemon foreground/dev smoke 的 durable backend、state、lock、pid 和 observability 路径配置。 |
 | `DaemonMemoryMaintenanceReport` | V1.15.6 daemon start 中 memory TTL GC 与 knowledge rebuild checkpoint 的维护证据。 |
-| `DaemonControlRequest` | V1.12.2 本机 control mailbox 请求；封装 request id、trace id、operation、task/plan/generation 参数。 |
+| `DaemonControlRequest` | 本机 control mailbox 请求；v2 submit 封装完整强类型 TaskEnvelope，reader 继续兼容 v1，其他 operation 保留 task/plan/generation 参数。 |
 
 ## V1.12 Daemon Boundary And Control Mailbox
 
@@ -65,6 +66,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 - 成功后写入 `daemon.state` 和 `daemon.pid`，foreground smoke 会立即调用 `Runtime::shutdown()` 并移除 lock/pid。
 - 显式传入 `shutdown_after_smoke=false` 时进入前台 control loop，通过 `state/control/requests` 和 `state/control/responses` 处理本机 filesystem mailbox 请求。
 - control operation 覆盖 status、shutdown、submit task、cancel task、drain 和 reload plan；status/shutdown 作用于前台 daemon，submit/cancel 写 durable task lifecycle store，drain/reload 会写入 `agent-control.state`，记录 drain gate、reload generation route 和旧 generation draining 状态。
+- submit v2 请求必须携带完整 TaskEnvelope；envelope 是唯一 submit Agent 身份，daemon 会拒绝通用 control Agent 分叉并再次确认 Agent 当前存在且 enabled。reader 在读取前拒绝 symlink/directory 等非普通 request；损坏摘要、Agent 分叉、未知/disabled Agent 等 poison request 会先改名移出 pending，再通过同步临时摘要、安全删除原目录项和发布 rejected marker 的顺序隔离，不会把原 inline payload 搬入 rejected 记录，也不会结束 control loop。
 - `send_daemon_control_request` 在没有 running state、lock 和 pid 时返回稳定 `Unavailable`，避免把 stopped smoke state 误读成 live daemon。
 - JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
 - JSON/report 中新增 `recovery` 对象，包含 scanned/recovered task、provider process、backoff 和 skipped evidence。
@@ -125,4 +127,4 @@ cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```
 
-已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit、corrupt-store smoke、V1.13.5 provider interrupted/backoff recovery、daemon start provider recovery smoke、V1.15.4 hotplug subscriber state 重启一致性、V1.15.6 memory/knowledge maintenance smoke 和 V1.16.1 daemon control/task/scheduler retry observability smoke。
+已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit、corrupt-store smoke、V1.13.5 provider interrupted/backoff recovery、daemon start provider recovery smoke、V1.15.4 hotplug subscriber state 重启一致性、V1.15.6 memory/knowledge maintenance smoke、V1.16.1 daemon control/task/scheduler retry observability smoke，以及 W1-L02 mailbox v1/v2、TaskEnvelope 停机重开和 poison request 隔离。
