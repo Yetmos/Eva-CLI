@@ -19,9 +19,10 @@ use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// This module owns handler registration and one synchronous dispatch boundary.
 pub const RESPONSIBILITY: &str = "task handler registration and payload integrity dispatch";
@@ -36,6 +37,74 @@ pub const DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_TASK_WORKER_POLL_INTERVAL_MS: u64 = 25;
 /// Persisted heartbeat cadence for an active task attempt.
 pub const DEFAULT_TASK_HEARTBEAT_INTERVAL_MS: u64 = 1_000;
+/// Grace period in which an in-flight task may finish after claim admission closes.
+pub const DEFAULT_TASK_DRAIN_GRACE_PERIOD_MS: u64 = 2_000;
+/// Additional cooperative-cancellation period before the handler result capability is revoked.
+pub const DEFAULT_TASK_DRAIN_CANCELLATION_PERIOD_MS: u64 = 1_000;
+const HANDLER_RESULT_POLL_INTERVAL_MS: u64 = 5;
+
+/// Bounded timing owned by one worker shutdown/drain operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskWorkerDrainOptions {
+    graceful_period: Duration,
+    /// Total post-grace budget, split evenly between cooperative cancellation and terminal flush.
+    cancellation_period: Duration,
+}
+
+impl TaskWorkerDrainOptions {
+    /// Creates a two-phase drain and rejects configurations that cannot observe either phase.
+    pub fn new(graceful_period: Duration, cancellation_period: Duration) -> Result<Self, EvaError> {
+        if graceful_period.is_zero() || cancellation_period.is_zero() {
+            return Err(EvaError::invalid_argument(
+                "task worker drain periods must be greater than zero",
+            ));
+        }
+        Ok(Self {
+            graceful_period,
+            cancellation_period,
+        })
+    }
+
+    /// Returns the initial no-cancellation drain period.
+    pub const fn graceful_period(self) -> Duration {
+        self.graceful_period
+    }
+
+    /// Returns the total cancellation plus forced-terminalization period.
+    pub const fn cancellation_period(self) -> Duration {
+        self.cancellation_period
+    }
+
+    /// Returns the single wall-clock budget shared by every drain phase.
+    pub fn total_period(self) -> Duration {
+        self.graceful_period
+            .saturating_add(self.cancellation_period)
+    }
+}
+
+impl Default for TaskWorkerDrainOptions {
+    fn default() -> Self {
+        Self {
+            graceful_period: Duration::from_millis(DEFAULT_TASK_DRAIN_GRACE_PERIOD_MS),
+            cancellation_period: Duration::from_millis(DEFAULT_TASK_DRAIN_CANCELLATION_PERIOD_MS),
+        }
+    }
+}
+
+/// Stable evidence that one worker stopped claiming, drained, and joined before writer release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskWorkerDrainReport {
+    /// Whether a previous call had already completed the same one-way drain.
+    pub already_drained: bool,
+    /// Active attempts observed after the claim gate was closed.
+    pub inflight_tasks: usize,
+    /// Exact active attempts that received durable cooperative cancellation.
+    pub cancellation_requests: usize,
+    /// Attempts whose handler capability was revoked after both bounded phases elapsed.
+    pub forced_terminal_tasks: usize,
+    /// Stable final phase; successful reports always use `drained`.
+    pub phase: String,
+}
 
 /// Timing knobs for the worker scan and per-attempt heartbeat loops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -511,17 +580,71 @@ impl TaskHandlerRegistry {
 
 #[derive(Clone)]
 struct ActiveTaskAttempt {
-    cancel_token: String,
+    fence: TaskAttemptFence,
     cancellation: TaskCancellationView,
+    result_capability: HandlerResultCapability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandlerResultCapabilityState {
+    Pending,
+    Accepted,
+    Revoked,
+}
+
+#[derive(Clone)]
+struct HandlerResultCapability {
+    state: Arc<Mutex<HandlerResultCapabilityState>>,
+}
+
+impl HandlerResultCapability {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(HandlerResultCapabilityState::Pending)),
+        }
+    }
+
+    fn accept(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *state != HandlerResultCapabilityState::Pending {
+            return false;
+        }
+        *state = HandlerResultCapabilityState::Accepted;
+        true
+    }
+
+    fn revoke(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *state != HandlerResultCapabilityState::Pending {
+            return false;
+        }
+        *state = HandlerResultCapabilityState::Revoked;
+        true
+    }
+
+    fn is_revoked(&self) -> bool {
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            == HandlerResultCapabilityState::Revoked
+    }
 }
 
 struct TaskWorkerShared {
     stop_requested: AtomicBool,
-    claims_enabled: AtomicBool,
+    claim_gate: Mutex<bool>,
     poll_interval: Duration,
     wait_lock: Mutex<()>,
     wake: Condvar,
     active: Mutex<BTreeMap<String, ActiveTaskAttempt>>,
+    active_changed: Condvar,
     fatal_error: Mutex<Option<EvaError>>,
 }
 
@@ -529,11 +652,12 @@ impl TaskWorkerShared {
     fn new(timing: TaskWorkerTiming) -> Self {
         Self {
             stop_requested: AtomicBool::new(false),
-            claims_enabled: AtomicBool::new(false),
+            claim_gate: Mutex::new(false),
             poll_interval: timing.poll_interval,
             wait_lock: Mutex::new(()),
             wake: Condvar::new(),
             active: Mutex::new(BTreeMap::new()),
+            active_changed: Condvar::new(),
             fatal_error: Mutex::new(None),
         }
     }
@@ -543,7 +667,10 @@ impl TaskWorkerShared {
     }
 
     fn claims_enabled(&self) -> bool {
-        self.claims_enabled.load(Ordering::Acquire)
+        *self
+            .claim_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn set_fatal_error(&self, error: EvaError) {
@@ -566,40 +693,43 @@ impl TaskWorkerShared {
 
     fn register_attempt(
         &self,
-        task_id: &str,
-        cancel_token: &str,
+        fence: &TaskAttemptFence,
         cancellation: TaskCancellationView,
+        result_capability: HandlerResultCapability,
     ) -> Result<(), EvaError> {
         let mut active = self
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if active.contains_key(task_id) {
+        if active.contains_key(fence.task_id()) {
             return Err(
                 EvaError::internal("task worker registered the same task more than once")
-                    .with_context("task_id", task_id),
+                    .with_context("task_id", fence.task_id()),
             );
         }
         active.insert(
-            task_id.to_owned(),
+            fence.task_id().to_owned(),
             ActiveTaskAttempt {
-                cancel_token: cancel_token.to_owned(),
+                fence: fence.clone(),
                 cancellation,
+                result_capability,
             },
         );
+        self.active_changed.notify_all();
         Ok(())
     }
 
-    fn unregister_attempt(&self, task_id: &str, cancel_token: &str) {
+    fn unregister_attempt(&self, fence: &TaskAttemptFence) {
         let mut active = self
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if active
-            .get(task_id)
-            .is_some_and(|attempt| attempt.cancel_token == cancel_token)
+            .get(fence.task_id())
+            .is_some_and(|attempt| attempt.fence == *fence)
         {
-            active.remove(task_id);
+            active.remove(fence.task_id());
+            self.active_changed.notify_all();
         }
     }
 
@@ -611,24 +741,79 @@ impl TaskWorkerShared {
         let Some(attempt) = active.get(task_id) else {
             return false;
         };
-        if cancel_token != Some(attempt.cancel_token.as_str()) {
+        if cancel_token != Some(attempt.fence.cancel_token()) {
             return false;
         }
         attempt.cancellation.request();
         true
     }
 
-    fn request_stop(&self) {
+    fn activate_claims(&self) {
+        let mut enabled = self
+            .claim_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !self.should_stop() {
+            *enabled = true;
+        }
+        drop(enabled);
+        self.wake.notify_all();
+    }
+
+    fn close_claim_gate(&self) {
+        let mut enabled = self
+            .claim_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *enabled = false;
         self.stop_requested.store(true, Ordering::Release);
+        drop(enabled);
+        self.wake.notify_all();
+    }
+
+    fn active_attempts(&self) -> Vec<ActiveTaskAttempt> {
+        self.active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    fn active_count(&self) -> usize {
+        self.active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    fn wait_for_idle(&self, timeout: Duration) -> bool {
         let active = self
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (active, _) = self
+            .active_changed
+            .wait_timeout_while(active, timeout, |active| !active.is_empty())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        active.is_empty()
+    }
+
+    fn revoke_handler_results(&self) -> usize {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut revoked = 0;
         for attempt in active.values() {
+            if attempt.result_capability.revoke() {
+                revoked += 1;
+            }
             attempt.cancellation.request();
         }
         drop(active);
         self.wake.notify_all();
+        revoked
     }
 
     fn wait_for_work(&self) {
@@ -648,6 +833,8 @@ pub struct TaskWorkerRuntime {
     store: FileSystemTaskStateStore,
     execution_owner: String,
     join: Option<JoinHandle<()>>,
+    drain_report: Option<TaskWorkerDrainReport>,
+    drain_error: Option<EvaError>,
 }
 
 impl TaskWorkerRuntime {
@@ -801,13 +988,14 @@ impl TaskWorkerRuntime {
             store: replay_store,
             execution_owner,
             join: Some(join),
+            drain_report: None,
+            drain_error: None,
         })
     }
 
     /// Opens the one-way readiness gate and wakes the worker to begin durable claims.
     pub fn activate(&self) {
-        self.shared.claims_enabled.store(true, Ordering::Release);
-        self.shared.wake.notify_all();
+        self.shared.activate_claims();
     }
 
     /// Wakes the worker after a durable submission without changing task state.
@@ -836,22 +1024,175 @@ impl TaskWorkerRuntime {
         Ok(())
     }
 
-    /// Closes the claim gate and signals active handlers before shutdown state is published.
+    /// Closes the claim gate without cancelling active handlers during their grace period.
     pub fn begin_shutdown(&self) {
-        self.shared.request_stop();
+        self.shared.close_claim_gate();
     }
 
-    /// Stops new claims, signals cooperative cancellation, and joins before writer release.
-    pub fn stop_and_join(&mut self) -> Result<(), EvaError> {
-        self.shared.request_stop();
+    /// Stops claim admission, drains in two bounded phases, and joins before writer release.
+    pub fn drain_and_stop(
+        &mut self,
+        options: TaskWorkerDrainOptions,
+    ) -> Result<TaskWorkerDrainReport, EvaError> {
+        if let Some(previous) = &self.drain_report {
+            let mut repeated = previous.clone();
+            repeated.already_drained = true;
+            return Ok(repeated);
+        }
+        if let Some(previous) = &self.drain_error {
+            return Err(previous.clone());
+        }
+
+        let result = self.drain_and_stop_once(options);
+        match result {
+            Ok(report) => {
+                self.drain_report = Some(report.clone());
+                Ok(report)
+            }
+            Err(error) => {
+                self.drain_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn drain_and_stop_once(
+        &mut self,
+        options: TaskWorkerDrainOptions,
+    ) -> Result<TaskWorkerDrainReport, EvaError> {
+        let started_at = Instant::now();
+        let deadline = started_at
+            .checked_add(options.total_period())
+            .ok_or_else(|| {
+                EvaError::invalid_argument("task worker drain deadline is outside the clock range")
+            })?;
+
+        self.shared.close_claim_gate();
+        self.ensure_drain_budget(deadline, "claim_gate_closed")?;
+        let inflight_tasks = self.shared.active_count();
+        let mut cancellation_requests = 0;
+        let mut forced_terminal_tasks = 0;
+
+        let graceful_deadline = started_at
+            .checked_add(options.graceful_period())
+            .unwrap_or(deadline)
+            .min(deadline);
+        let graceful_wait = graceful_deadline.saturating_duration_since(Instant::now());
+        if !self.shared.wait_for_idle(graceful_wait) {
+            let active = self.shared.active_attempts();
+            const SHUTDOWN_CANCEL_REASON: &str = "daemon shutdown drain grace period elapsed";
+            for attempt in &active {
+                self.ensure_drain_budget(deadline, "durable_cancellation")?;
+                let cancelled = self
+                    .store
+                    .request_execution_cancellation(&attempt.fence, SHUTDOWN_CANCEL_REASON)?;
+                if cancelled.cancel_requested
+                    && cancelled.cancel_reason.as_deref() == Some(SHUTDOWN_CANCEL_REASON)
+                {
+                    cancellation_requests += 1;
+                }
+                attempt.cancellation.request();
+                self.ensure_drain_budget(deadline, "durable_cancellation")?;
+            }
+
+            let cancellation_period = options.cancellation_period();
+            let cancellation_wait = cancellation_period
+                .checked_div(2)
+                .unwrap_or(cancellation_period);
+            let cancellation_deadline = graceful_deadline
+                .checked_add(cancellation_wait)
+                .unwrap_or(deadline)
+                .min(deadline);
+            let cooperative_wait = cancellation_deadline.saturating_duration_since(Instant::now());
+            if !self.shared.wait_for_idle(cooperative_wait) {
+                self.ensure_drain_budget(deadline, "handler_result_revocation")?;
+                forced_terminal_tasks = self.shared.revoke_handler_results();
+                let terminal_wait = deadline.saturating_duration_since(Instant::now());
+                if !self.shared.wait_for_idle(terminal_wait) {
+                    return Err(self.drain_timeout("terminal_state_flush"));
+                }
+            }
+        }
+
+        self.ensure_drain_budget(deadline, "worker_join")?;
+        while self.join.as_ref().is_some_and(|join| !join.is_finished()) {
+            let remaining = self.remaining_drain_budget(deadline, "worker_join")?;
+            thread::sleep(remaining.min(Duration::from_millis(1)));
+        }
         if let Some(join) = self.join.take() {
             join.join()
                 .map_err(|_| EvaError::internal("failed to join task worker thread"))?;
         }
-        match self.shared.fatal_error() {
-            Some(error) => Err(error),
-            None => Ok(()),
+        self.ensure_drain_budget(deadline, "worker_join")?;
+        if let Some(error) = self.shared.fatal_error() {
+            return Err(error);
         }
+        if self.shared.active_count() != 0 {
+            return Err(EvaError::internal(
+                "task worker joined with active attempts still registered",
+            )
+            .with_context("execution_owner", &self.execution_owner));
+        }
+        self.ensure_drain_budget(deadline, "residual_scan")?;
+        let residual = self
+            .store
+            .list_records()?
+            .into_iter()
+            .filter(|snapshot| {
+                matches!(snapshot.status.as_str(), "running" | "cancelling")
+                    && snapshot.execution_owner.as_deref() == Some(&self.execution_owner)
+            })
+            .map(|snapshot| snapshot.task_id)
+            .collect::<Vec<_>>();
+        self.ensure_drain_budget(deadline, "residual_scan")?;
+        if !residual.is_empty() {
+            return Err(EvaError::conflict(
+                "task worker drain left durable active attempts behind",
+            )
+            .with_context("execution_owner", &self.execution_owner)
+            .with_context("task_ids", residual.join(",")));
+        }
+        let report = TaskWorkerDrainReport {
+            already_drained: false,
+            inflight_tasks,
+            cancellation_requests,
+            forced_terminal_tasks,
+            phase: "drained".to_owned(),
+        };
+        Ok(report)
+    }
+
+    fn remaining_drain_budget(
+        &self,
+        deadline: Instant,
+        phase: &'static str,
+    ) -> Result<Duration, EvaError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(self.drain_timeout(phase));
+        }
+        Ok(remaining)
+    }
+
+    fn ensure_drain_budget(&self, deadline: Instant, phase: &'static str) -> Result<(), EvaError> {
+        self.remaining_drain_budget(deadline, phase).map(|_| ())
+    }
+
+    fn drain_timeout(&self, phase: &'static str) -> EvaError {
+        EvaError::timeout("task worker drain exceeded its total wall-clock budget")
+            .with_retryable(false)
+            .with_context("execution_owner", &self.execution_owner)
+            .with_context("phase", phase)
+            .with_context(
+                "remaining_inflight_tasks",
+                self.shared.active_count().to_string(),
+            )
+    }
+
+    /// Uses the production default drain periods and discards the evidence summary.
+    pub fn stop_and_join(&mut self) -> Result<(), EvaError> {
+        self.drain_and_stop(TaskWorkerDrainOptions::default())
+            .map(|_| ())
     }
 }
 
@@ -1183,6 +1524,10 @@ impl fmt::Debug for TaskWorkerRuntime {
 
 impl Drop for TaskWorkerRuntime {
     fn drop(&mut self) {
+        if self.drain_report.is_some() || self.drain_error.is_some() {
+            self.shared.close_claim_gate();
+            return;
+        }
         let _ = self.stop_and_join();
     }
 }
@@ -1227,14 +1572,31 @@ fn run_task_worker_loop(
                 continue;
             }
             let cancel_token = next_cancel_token(&execution_owner, &snapshot.task_id)?;
-            let Some(claim) = store.try_claim_queued(
-                &snapshot.task_id,
-                &execution_owner,
-                &cancel_token,
-                worker_now_ms()?,
-            )?
-            else {
-                continue;
+            let cancellation = TaskCancellationView::default();
+            let result_capability = HandlerResultCapability::new();
+            let claim = {
+                let claim_gate = shared
+                    .claim_gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !*claim_gate || shared.should_stop() {
+                    return Ok(());
+                }
+                let Some(claim) = store.try_claim_queued(
+                    &snapshot.task_id,
+                    &execution_owner,
+                    &cancel_token,
+                    worker_now_ms()?,
+                )?
+                else {
+                    continue;
+                };
+                shared.register_attempt(
+                    claim.fence(),
+                    cancellation.clone(),
+                    result_capability.clone(),
+                )?;
+                claim
             };
             claimed_any = true;
             execute_task_claim(
@@ -1243,6 +1605,8 @@ fn run_task_worker_loop(
                 artifacts.as_ref(),
                 &shared,
                 claim,
+                cancellation,
+                result_capability,
                 timing.heartbeat_interval,
                 failure_bus.as_mut(),
                 effect_ledger.as_mut(),
@@ -1361,14 +1725,13 @@ fn execute_task_claim(
     artifacts: &dyn TaskArtifactResolver,
     shared: &TaskWorkerShared,
     claim: TaskExecutionClaim,
+    cancellation: TaskCancellationView,
+    result_capability: HandlerResultCapability,
     heartbeat_interval: Duration,
     mut failure_bus: Option<&mut DurableEventBus>,
     mut effect_ledger: Option<&mut FileSystemEffectLedger>,
 ) -> Result<(), EvaError> {
     let task_id = RequestId::parse(&claim.snapshot().task_id)?;
-    let cancel_token = claim.fence().cancel_token().to_owned();
-    let cancellation = TaskCancellationView::default();
-    shared.register_attempt(task_id.as_str(), &cancel_token, cancellation.clone())?;
     let mut heartbeat = match TaskHeartbeatLoop::start(
         store,
         claim.fence(),
@@ -1377,7 +1740,7 @@ fn execute_task_claim(
     ) {
         Ok(heartbeat) => heartbeat,
         Err(error) => {
-            shared.unregister_attempt(task_id.as_str(), &cancel_token);
+            shared.unregister_attempt(claim.fence());
             store.finish_execution(
                 claim.fence(),
                 &TaskAttemptOutcome::Failed {
@@ -1394,8 +1757,8 @@ fn execute_task_claim(
         let mut latest = store.read(Some(task_id.as_str()))?;
         if !latest.cancel_requested && shared.should_stop() {
             cancellation.request();
-            latest = store.request_cancellation(
-                task_id.as_str(),
+            latest = store.request_execution_cancellation(
+                claim.fence(),
                 "daemon shutdown preceded handler dispatch",
             )?;
         }
@@ -1414,6 +1777,7 @@ fn execute_task_claim(
                 },
                 non_idempotent: false,
                 effect_committed: false,
+                prepared_effect_operation_digest: None,
             }
         } else if claim.snapshot().deadline_expired(observed_before_dispatch) {
             TaskDispatchDecision {
@@ -1423,9 +1787,10 @@ fn execute_task_claim(
                 },
                 non_idempotent: false,
                 effect_committed: false,
+                prepared_effect_operation_digest: None,
             }
         } else {
-            dispatch_claimed_attempt(
+            match dispatch_claimed_attempt(
                 store,
                 registry,
                 artifacts,
@@ -1433,8 +1798,30 @@ fn execute_task_claim(
                 claim.snapshot(),
                 claim.fence(),
                 &cancellation,
+                &result_capability,
                 effect_ledger.as_deref_mut(),
-            )?
+            ) {
+                Ok(decision) => decision,
+                Err(error) => TaskDispatchDecision {
+                    outcome: TaskAttemptOutcome::Failed {
+                        error_kind: error.kind().as_str().to_owned(),
+                        error_message: error.message().to_owned(),
+                        retryable: error.is_retryable(),
+                    },
+                    non_idempotent: claim
+                        .snapshot()
+                        .envelope
+                        .as_ref()
+                        .and_then(|snapshot| TaskEnvelope::try_from(snapshot.clone()).ok())
+                        .is_some_and(|envelope| {
+                            registry
+                                .non_idempotent_effect_scope(envelope.kind())
+                                .is_some()
+                        }),
+                    effect_committed: false,
+                    prepared_effect_operation_digest: None,
+                },
+            }
         };
         let heartbeat_error = heartbeat.stop_and_join();
         let effect_committed = decision.effect_committed;
@@ -1446,25 +1833,28 @@ fn execute_task_claim(
             },
             _ => decision.outcome,
         };
-        let finished = if effect_committed {
-            match &outcome {
-                TaskAttemptOutcome::Completed {
-                    result_digest,
-                    result_size_bytes,
-                } => store.finish_committed_effect_execution(
-                    claim.fence(),
-                    result_digest,
-                    *result_size_bytes,
-                )?,
-                _ => {
-                    return Err(EvaError::internal(
-                        "committed effect dispatch did not produce a completed outcome",
-                    ))
+        let finished =
+            if let Some(operation_digest) = decision.prepared_effect_operation_digest.as_deref() {
+                store.block_prepared_effect_execution(claim.fence(), operation_digest)?
+            } else if effect_committed {
+                match &outcome {
+                    TaskAttemptOutcome::Completed {
+                        result_digest,
+                        result_size_bytes,
+                    } => store.finish_committed_effect_execution(
+                        claim.fence(),
+                        result_digest,
+                        *result_size_bytes,
+                    )?,
+                    _ => {
+                        return Err(EvaError::internal(
+                            "committed effect dispatch did not produce a completed outcome",
+                        ))
+                    }
                 }
-            }
-        } else {
-            store.finish_execution(claim.fence(), &outcome)?
-        };
+            } else {
+                store.finish_execution(claim.fence(), &outcome)?
+            };
         if !latest.cancel_requested {
             if let Some(bus) = failure_bus.as_deref_mut() {
                 materialize_task_failure_evidence(store, bus, artifacts, &finished)?;
@@ -1473,7 +1863,7 @@ fn execute_task_claim(
         Ok(())
     })();
 
-    shared.unregister_attempt(task_id.as_str(), &cancel_token);
+    shared.unregister_attempt(claim.fence());
     execution
 }
 
@@ -1761,6 +2151,7 @@ fn dispatch_claimed_attempt(
     snapshot: &eva_storage::TaskStateSnapshot,
     fence: &TaskAttemptFence,
     cancellation: &TaskCancellationView,
+    result_capability: &HandlerResultCapability,
     effect_ledger: Option<&mut FileSystemEffectLedger>,
 ) -> Result<TaskDispatchDecision, EvaError> {
     let envelope = snapshot
@@ -1782,21 +2173,43 @@ fn dispatch_claimed_attempt(
                 snapshot,
                 fence,
                 cancellation,
+                result_capability,
                 effect_ledger,
             )
         }
-        Some(_) => catch_unwind(AssertUnwindSafe(|| {
-            registry.dispatch_attempt(
-                task_id,
-                &envelope,
-                artifacts,
+        Some(registration) => {
+            let (payload, payload_digest) =
+                resolve_task_payload(&envelope, artifacts).map_err(|error| {
+                    error
+                        .with_context("task_id", task_id.as_str())
+                        .with_context("agent_id", envelope.agent_id().as_str())
+                })?;
+            match invoke_handler_isolated(
+                Arc::clone(&registration.handler),
+                task_id.clone(),
+                envelope.clone(),
+                payload,
+                payload_digest,
                 snapshot.attempts,
                 snapshot.deadline_at_ms,
-                cancellation,
-            )
-        }))
-        .unwrap_or_else(|_| Err(EvaError::internal(TASK_HANDLER_PANIC_MESSAGE)))
-        .map(ClaimedDispatchResult::Executed),
+                cancellation.clone(),
+                result_capability.clone(),
+            ) {
+                Ok(IsolatedHandlerOutcome::Returned(result)) => {
+                    result.map(ClaimedDispatchResult::Executed)
+                }
+                Ok(IsolatedHandlerOutcome::DeadlineExceeded(observed_at_ms)) => Err(
+                    EvaError::timeout("task handler exceeded its durable attempt deadline")
+                        .with_retryable(true)
+                        .with_context("observed_at_ms", observed_at_ms.to_string()),
+                ),
+                Ok(IsolatedHandlerOutcome::ResultRevoked) => Err(EvaError::timeout(
+                    "task handler outlived the daemon shutdown drain deadline",
+                )
+                .with_retryable(false)),
+                Err(error) => Err(error),
+            }
+        }
         None => Err(EvaError::not_found(TASK_HANDLER_NOT_REGISTERED_MESSAGE)
             .with_context("task_id", task_id.as_str())
             .with_context("task_kind", envelope.kind().as_str())
@@ -1811,15 +2224,17 @@ fn dispatch_claimed_attempt(
             },
             non_idempotent,
             effect_committed: false,
+            prepared_effect_operation_digest: None,
         });
     }
-    let (outcome, effect_committed) = match dispatched {
+    let (outcome, effect_committed, prepared_effect_operation_digest) = match dispatched {
         Ok(ClaimedDispatchResult::Executed(result)) => (
             TaskAttemptOutcome::Completed {
                 result_digest: result.digest().to_owned(),
                 result_size_bytes: result.size_bytes(),
             },
             false,
+            None,
         ),
         Ok(ClaimedDispatchResult::EffectCommitted {
             result_digest,
@@ -1830,6 +2245,17 @@ fn dispatch_claimed_attempt(
                 result_size_bytes,
             },
             true,
+            None,
+        ),
+        Ok(ClaimedDispatchResult::EffectPreparedUnknown { operation_digest }) => (
+            TaskAttemptOutcome::Failed {
+                error_kind: ErrorKind::Conflict.as_str().to_owned(),
+                error_message: "non-idempotent effect outcome requires operator reconciliation"
+                    .to_owned(),
+                retryable: false,
+            },
+            false,
+            Some(operation_digest),
         ),
         Err(error) if error.kind() == ErrorKind::Timeout => (
             TaskAttemptOutcome::TimedOut {
@@ -1837,6 +2263,7 @@ fn dispatch_claimed_attempt(
                 retryable: error.is_retryable(),
             },
             false,
+            None,
         ),
         Err(error) => (
             TaskAttemptOutcome::Failed {
@@ -1845,12 +2272,14 @@ fn dispatch_claimed_attempt(
                 retryable: error.is_retryable(),
             },
             false,
+            None,
         ),
     };
     Ok(TaskDispatchDecision {
         outcome,
         non_idempotent,
         effect_committed,
+        prepared_effect_operation_digest,
     })
 }
 
@@ -1858,6 +2287,7 @@ struct TaskDispatchDecision {
     outcome: TaskAttemptOutcome,
     non_idempotent: bool,
     effect_committed: bool,
+    prepared_effect_operation_digest: Option<String>,
 }
 
 enum ClaimedDispatchResult {
@@ -1866,6 +2296,96 @@ enum ClaimedDispatchResult {
         result_digest: String,
         result_size_bytes: usize,
     },
+    EffectPreparedUnknown {
+        operation_digest: String,
+    },
+}
+
+enum IsolatedHandlerOutcome {
+    Returned(Result<TaskHandlerResult, EvaError>),
+    DeadlineExceeded(u128),
+    ResultRevoked,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_handler_isolated(
+    handler: Arc<dyn TaskHandler>,
+    task_id: RequestId,
+    envelope: TaskEnvelope,
+    payload: Vec<u8>,
+    payload_digest: String,
+    attempt: usize,
+    deadline_at_ms: Option<u128>,
+    cancellation: TaskCancellationView,
+    result_capability: HandlerResultCapability,
+) -> Result<IsolatedHandlerOutcome, EvaError> {
+    let thread_cancellation = cancellation.clone();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let join = thread::Builder::new()
+        .name("eva-task-handler-attempt".to_owned())
+        .spawn(move || {
+            let invocation = TaskHandlerInvocation {
+                task_id: &task_id,
+                envelope: &envelope,
+                payload: &payload,
+                payload_digest: &payload_digest,
+                attempt,
+                deadline_at_ms,
+                cancellation: &thread_cancellation,
+            };
+            let result = catch_unwind(AssertUnwindSafe(|| handler.handle(&invocation)))
+                .unwrap_or_else(|_| Err(EvaError::internal(TASK_HANDLER_PANIC_MESSAGE)));
+            let _ = sender.send(result);
+        })
+        .map_err(|error| {
+            EvaError::internal("failed to start isolated task handler thread")
+                .with_context("io_error", error.to_string())
+        })?;
+
+    loop {
+        match receiver.recv_timeout(Duration::from_millis(HANDLER_RESULT_POLL_INTERVAL_MS)) {
+            Ok(result) => {
+                join.join()
+                    .map_err(|_| EvaError::internal(TASK_HANDLER_PANIC_MESSAGE))?;
+                if !result_capability.accept() {
+                    return Ok(IsolatedHandlerOutcome::ResultRevoked);
+                }
+                return Ok(IsolatedHandlerOutcome::Returned(result));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                join.join()
+                    .map_err(|_| EvaError::internal(TASK_HANDLER_PANIC_MESSAGE))?;
+                if !result_capability.accept() {
+                    return Ok(IsolatedHandlerOutcome::ResultRevoked);
+                }
+                return Ok(IsolatedHandlerOutcome::Returned(Err(EvaError::internal(
+                    "isolated task handler exited without a result",
+                ))));
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+
+        if result_capability.is_revoked() {
+            cancellation.request();
+            drop(join);
+            return Ok(IsolatedHandlerOutcome::ResultRevoked);
+        }
+        let observed_at_ms = match worker_now_ms() {
+            Ok(value) => value,
+            Err(error) => {
+                result_capability.revoke();
+                cancellation.request();
+                drop(join);
+                return Err(error);
+            }
+        };
+        if deadline_at_ms.is_some_and(|deadline| observed_at_ms >= deadline) {
+            result_capability.revoke();
+            cancellation.request();
+            drop(join);
+            return Ok(IsolatedHandlerOutcome::DeadlineExceeded(observed_at_ms));
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1879,6 +2399,7 @@ fn dispatch_non_idempotent_attempt(
     snapshot: &TaskStateSnapshot,
     fence: &TaskAttemptFence,
     cancellation: &TaskCancellationView,
+    result_capability: &HandlerResultCapability,
     effect_ledger: Option<&mut FileSystemEffectLedger>,
 ) -> Result<ClaimedDispatchResult, EvaError> {
     let effect_ledger = effect_ledger.ok_or_else(|| {
@@ -1928,27 +2449,39 @@ fn dispatch_non_idempotent_attempt(
     }
 
     if cancellation.is_requested() {
-        return Err(prepared_effect_error(
-            EvaError::conflict("task cancellation followed the effect prepare boundary")
-                .with_retryable(false),
-            intent.operation(),
-        ));
+        return Ok(ClaimedDispatchResult::EffectPreparedUnknown {
+            operation_digest: intent.operation().operation_digest().to_owned(),
+        });
     }
 
-    let invocation = TaskHandlerInvocation {
-        task_id,
-        envelope,
-        payload: &payload,
-        payload_digest: &payload_digest,
-        attempt: snapshot.attempts,
-        deadline_at_ms: snapshot.deadline_at_ms,
-        cancellation,
+    let result = match invoke_handler_isolated(
+        Arc::clone(&registration.handler),
+        task_id.clone(),
+        envelope.clone(),
+        payload,
+        payload_digest,
+        snapshot.attempts,
+        None,
+        cancellation.clone(),
+        result_capability.clone(),
+    ) {
+        Ok(IsolatedHandlerOutcome::Returned(Ok(result))) => result,
+        Ok(IsolatedHandlerOutcome::Returned(Err(_))) if cancellation.is_requested() => {
+            return Ok(ClaimedDispatchResult::EffectPreparedUnknown {
+                operation_digest: intent.operation().operation_digest().to_owned(),
+            });
+        }
+        Ok(IsolatedHandlerOutcome::Returned(Err(error))) => {
+            return Err(prepared_effect_error(error, intent.operation()));
+        }
+        Ok(IsolatedHandlerOutcome::DeadlineExceeded(_))
+        | Ok(IsolatedHandlerOutcome::ResultRevoked)
+        | Err(_) => {
+            return Ok(ClaimedDispatchResult::EffectPreparedUnknown {
+                operation_digest: intent.operation().operation_digest().to_owned(),
+            });
+        }
     };
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        registration.handler.handle(&invocation)
-    }))
-    .unwrap_or_else(|_| Err(EvaError::internal(TASK_HANDLER_PANIC_MESSAGE)))
-    .map_err(|error| prepared_effect_error(error, intent.operation()))?;
     effect_ledger
         .commit(
             &intent,
@@ -2602,6 +3135,7 @@ mod tests {
                 .unwrap();
             let mut ledger =
                 FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+            let result_capability = HandlerResultCapability::new();
             let outcome = dispatch_claimed_attempt(
                 &store,
                 registry.as_ref(),
@@ -2610,6 +3144,7 @@ mod tests {
                 claim.snapshot(),
                 claim.fence(),
                 &TaskCancellationView::default(),
+                &result_capability,
                 Some(&mut ledger),
             )
             .unwrap();
@@ -4349,6 +4884,8 @@ mod tests {
         }
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_by_handler = Arc::clone(&calls);
+        let release_handler = Arc::new(AtomicBool::new(false));
+        let release_by_handler = Arc::clone(&release_handler);
         let mut registry = TaskHandlerRegistry::new();
         registry
             .register(
@@ -4356,11 +4893,12 @@ mod tests {
                 move |invocation: &TaskHandlerInvocation<'_>| {
                     calls_by_handler.fetch_add(1, Ordering::SeqCst);
                     let started_at = Instant::now();
-                    while !invocation.cancellation().is_requested() {
+                    while !release_by_handler.load(Ordering::Acquire) {
                         assert!(started_at.elapsed() < Duration::from_secs(2));
+                        assert!(!invocation.cancellation().is_requested());
                         thread::yield_now();
                     }
-                    Ok(TaskHandlerResult::new(b"stopped".as_slice()))
+                    Ok(TaskHandlerResult::new(b"drained".as_slice()))
                 },
             )
             .unwrap();
@@ -4373,10 +4911,22 @@ mod tests {
         .unwrap();
         wait_until(Duration::from_secs(2), || calls.load(Ordering::SeqCst) == 1);
 
-        worker.begin_shutdown();
-        worker.stop_and_join().unwrap();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            release_handler.store(true, Ordering::Release);
+        });
+        let report = worker
+            .drain_and_stop(
+                TaskWorkerDrainOptions::new(Duration::from_millis(200), Duration::from_millis(200))
+                    .unwrap(),
+            )
+            .unwrap();
+        release.join().unwrap();
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(report.inflight_tasks, 1);
+        assert_eq!(report.cancellation_requests, 0);
+        assert_eq!(report.forced_terminal_tasks, 0);
         assert_eq!(
             store.read(Some("req-worker-shutdown-1")).unwrap().status,
             "completed"
@@ -4384,6 +4934,333 @@ mod tests {
         assert_eq!(
             store.read(Some("req-worker-shutdown-2")).unwrap().status,
             "queued"
+        );
+    }
+
+    #[test]
+    fn shutdown_revokes_non_cooperative_handler_result_and_is_idempotent() {
+        let root = test_root("worker-shutdown-forced-terminal");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        for task_id in ["req-worker-forced-1", "req-worker-forced-2"] {
+            let task = TaskEnvelope::new(
+                TaskKind::parse("vendor.shutdown-non-cooperative").unwrap(),
+                AgentId::parse("root-agent").unwrap(),
+                TaskInput::inline(task_id.as_bytes()).unwrap(),
+                IdempotencyKey::parse(task_id).unwrap(),
+                TaskAttemptPolicy::new(1, 0, None).unwrap(),
+            )
+            .unwrap();
+            store
+                .create(
+                    &eva_storage::TaskStateSnapshot::queued_with_envelope(
+                        task_id,
+                        task.to_snapshot(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let started = Arc::new(AtomicBool::new(false));
+        let started_by_handler = Arc::clone(&started);
+        let release = Arc::new(AtomicBool::new(false));
+        let release_by_handler = Arc::clone(&release);
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_by_handler = Arc::clone(&exited);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register(
+                TaskKind::parse("vendor.shutdown-non-cooperative").unwrap(),
+                move |_: &TaskHandlerInvocation<'_>| {
+                    started_by_handler.store(true, Ordering::Release);
+                    while !release_by_handler.load(Ordering::Acquire) {
+                        thread::yield_now();
+                    }
+                    exited_by_handler.store(true, Ordering::Release);
+                    Ok(TaskHandlerResult::new(b"late-result".as_slice()))
+                },
+            )
+            .unwrap();
+        let mut worker = TaskWorkerRuntime::start(
+            store.clone(),
+            Arc::new(registry),
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:g1:worker-forced",
+        )
+        .unwrap();
+        wait_until(Duration::from_secs(2), || started.load(Ordering::Acquire));
+
+        worker.begin_shutdown();
+        worker.activate();
+        let started_at = Instant::now();
+        let report = worker
+            .drain_and_stop(
+                TaskWorkerDrainOptions::new(Duration::from_millis(20), Duration::from_millis(200))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(started_at.elapsed() < Duration::from_secs(1));
+        let cancelled = store.read(Some("req-worker-forced-1")).unwrap();
+        let terminal_version = cancelled.record_version;
+
+        assert_eq!(report.inflight_tasks, 1);
+        assert_eq!(report.cancellation_requests, 1);
+        assert_eq!(report.forced_terminal_tasks, 1);
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.cancel_requested);
+        assert!(cancelled.cancel_accepted);
+        assert_eq!(
+            store.read(Some("req-worker-forced-2")).unwrap().status,
+            "queued"
+        );
+
+        let repeated = worker
+            .drain_and_stop(TaskWorkerDrainOptions::default())
+            .unwrap();
+        assert!(repeated.already_drained);
+        assert_eq!(
+            store
+                .read(Some("req-worker-forced-1"))
+                .unwrap()
+                .record_version,
+            terminal_version
+        );
+
+        drop(worker);
+        drop(store);
+        drop(writer);
+        let successor = backend.acquire_runtime_writer().unwrap();
+        assert_eq!(successor.generation().0, 2);
+
+        release.store(true, Ordering::Release);
+        wait_until(Duration::from_secs(2), || exited.load(Ordering::Acquire));
+        thread::sleep(Duration::from_millis(20));
+        let unchanged = FileSystemTaskStateStore::from_durable_layout(backend.layout())
+            .read(Some("req-worker-forced-1"))
+            .unwrap();
+        assert_eq!(unchanged.status, "cancelled");
+        assert_eq!(unchanged.record_version, terminal_version);
+        drop(successor);
+    }
+
+    #[test]
+    fn shutdown_minimum_budget_is_absolute_and_failed_drain_is_not_retried() {
+        let root = test_root("worker-shutdown-absolute-budget");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        let task = TaskEnvelope::new(
+            TaskKind::parse("vendor.shutdown-minimum-budget").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"minimum-budget".as_slice()).unwrap(),
+            IdempotencyKey::parse("req-worker-minimum-budget").unwrap(),
+            TaskAttemptPolicy::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-worker-minimum-budget",
+                    task.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let started = Arc::new(AtomicBool::new(false));
+        let started_by_handler = Arc::clone(&started);
+        let release = Arc::new(AtomicBool::new(false));
+        let release_by_handler = Arc::clone(&release);
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_by_handler = Arc::clone(&exited);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register(
+                TaskKind::parse("vendor.shutdown-minimum-budget").unwrap(),
+                move |_: &TaskHandlerInvocation<'_>| {
+                    started_by_handler.store(true, Ordering::Release);
+                    while !release_by_handler.load(Ordering::Acquire) {
+                        thread::yield_now();
+                    }
+                    exited_by_handler.store(true, Ordering::Release);
+                    Ok(TaskHandlerResult::new(b"late-minimum-result".as_slice()))
+                },
+            )
+            .unwrap();
+        let mut worker = TaskWorkerRuntime::start(
+            store.clone(),
+            Arc::new(registry),
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:g1:worker-minimum-budget",
+        )
+        .unwrap();
+        wait_until(Duration::from_secs(2), || started.load(Ordering::Acquire));
+
+        let first_started_at = Instant::now();
+        let error = worker
+            .drain_and_stop(
+                TaskWorkerDrainOptions::new(Duration::from_millis(1), Duration::from_millis(1))
+                    .unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert!(first_started_at.elapsed() < Duration::from_millis(500));
+
+        let repeated_started_at = Instant::now();
+        let repeated = worker.stop_and_join().unwrap_err();
+        assert_eq!(repeated, error);
+        assert!(repeated_started_at.elapsed() < Duration::from_millis(100));
+
+        let drop_started_at = Instant::now();
+        drop(worker);
+        assert!(drop_started_at.elapsed() < Duration::from_millis(100));
+
+        release.store(true, Ordering::Release);
+        wait_until(Duration::from_secs(2), || exited.load(Ordering::Acquire));
+        wait_until(Duration::from_secs(2), || {
+            store
+                .read(Some("req-worker-minimum-budget"))
+                .is_ok_and(|snapshot| snapshot.is_terminal())
+        });
+    }
+
+    #[test]
+    fn handler_result_capability_linearizes_accept_against_revoke() {
+        let revoked_first = HandlerResultCapability::new();
+        assert!(revoked_first.revoke());
+        assert!(!revoked_first.accept());
+        assert!(revoked_first.is_revoked());
+
+        let accepted_first = HandlerResultCapability::new();
+        assert!(accepted_first.accept());
+        assert!(!accepted_first.revoke());
+        assert!(!accepted_first.is_revoked());
+    }
+
+    #[test]
+    fn shutdown_blocks_prepared_effect_and_discards_late_handler_result() {
+        let root = test_root("worker-shutdown-prepared-effect");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let task = TaskEnvelope::new(
+            TaskKind::parse("vendor.shutdown-effect").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"shutdown-effect-input".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-shutdown-effect").unwrap(),
+            TaskAttemptPolicy::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-worker-shutdown-effect",
+                    task.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let started = Arc::new(AtomicBool::new(false));
+        let started_by_handler = Arc::clone(&started);
+        let release = Arc::new(AtomicBool::new(false));
+        let release_by_handler = Arc::clone(&release);
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_by_handler = Arc::clone(&exited);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register_non_idempotent(
+                TaskKind::parse("vendor.shutdown-effect").unwrap(),
+                "vendor.shutdown-effect.v1",
+                move |_: &TaskHandlerInvocation<'_>| {
+                    started_by_handler.store(true, Ordering::Release);
+                    while !release_by_handler.load(Ordering::Acquire) {
+                        thread::yield_now();
+                    }
+                    exited_by_handler.store(true, Ordering::Release);
+                    Ok(TaskHandlerResult::new(b"late-effect-result".as_slice()))
+                },
+            )
+            .unwrap();
+        let failure_bus =
+            DurableEventBus::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let worker_ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut inspection_ledger =
+            FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let operation = EffectOperationIdentity::new(
+            "idem-shutdown-effect",
+            "vendor.shutdown-effect",
+            "root-agent",
+            "vendor.shutdown-effect.v1",
+            task.input().digest(),
+        )
+        .unwrap();
+        let mut worker = TaskWorkerRuntime::start_paused_with_durable_services(
+            store.clone(),
+            Arc::new(registry),
+            Arc::new(InMemoryArtifactStore::new()),
+            "daemon:g1:worker-shutdown-effect",
+            failure_bus,
+            worker_ledger,
+        )
+        .unwrap();
+        worker.activate();
+        wait_until(Duration::from_secs(2), || started.load(Ordering::Acquire));
+        assert_eq!(
+            inspection_ledger
+                .inspect(&operation)
+                .unwrap()
+                .unwrap()
+                .state(),
+            EffectLedgerState::Prepared
+        );
+
+        let report = worker
+            .drain_and_stop(
+                TaskWorkerDrainOptions::new(Duration::from_millis(20), Duration::from_millis(200))
+                    .unwrap(),
+            )
+            .unwrap();
+        let blocked = store.read(Some("req-worker-shutdown-effect")).unwrap();
+        let blocked_version = blocked.record_version;
+
+        assert_eq!(report.cancellation_requests, 1);
+        assert_eq!(report.forced_terminal_tasks, 1);
+        assert_eq!(blocked.status, "interrupted");
+        assert!(blocked.requires_operator_reconciliation());
+        assert_eq!(
+            inspection_ledger
+                .inspect(&operation)
+                .unwrap()
+                .unwrap()
+                .state(),
+            EffectLedgerState::Prepared
+        );
+
+        release.store(true, Ordering::Release);
+        wait_until(Duration::from_secs(2), || exited.load(Ordering::Acquire));
+        thread::sleep(Duration::from_millis(20));
+        let unchanged = store.read(Some("req-worker-shutdown-effect")).unwrap();
+        assert_eq!(unchanged.status, "interrupted");
+        assert_eq!(unchanged.record_version, blocked_version);
+        assert_eq!(
+            inspection_ledger
+                .inspect(&operation)
+                .unwrap()
+                .unwrap()
+                .state(),
+            EffectLedgerState::Prepared
         );
     }
 

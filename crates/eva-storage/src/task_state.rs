@@ -2478,6 +2478,105 @@ impl FileSystemTaskStateStore {
         )
     }
 
+    /// Requests shutdown cancellation only while the exact fenced attempt is still active.
+    ///
+    /// Unlike the operator-facing task-ID API, this path never annotates a terminal task with a
+    /// late cancellation after the worker has already committed its result.
+    pub fn request_execution_cancellation(
+        &mut self,
+        fence: &TaskAttemptFence,
+        reason: impl Into<String>,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        let reason = reason.into();
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let mut current = self.read(Some(fence.task_id()))?;
+            verify_task_attempt_fence(&current, fence)?;
+            if current.is_terminal() {
+                return self.refresh_latest(fence.task_id());
+            }
+            if current.cancel_requested {
+                return self.refresh_latest(fence.task_id());
+            }
+            if !matches!(current.status.as_str(), "running" | "cancelling") {
+                return Err(
+                    EvaError::conflict("task attempt cannot enter shutdown cancellation")
+                        .with_context("task_id", fence.task_id())
+                        .with_context("status", &current.status),
+                );
+            }
+            current.request_cancel(reason.clone());
+            let expected_version = current.record_version;
+            match self.compare_and_set(&current) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(fence.task_id()))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                    if observed.is_terminal() || observed.cancel_requested {
+                        return self.refresh_latest(fence.task_id());
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("task shutdown cancellation exceeded the CAS retry limit")
+                .with_context("task_id", fence.task_id()),
+        )
+    }
+
+    /// Converts the exact active attempt to an operator-owned block after a prepared effect's
+    /// handler outlives the daemon drain deadline. The detached handler owns no ledger permit, so
+    /// its late return cannot commit or rewrite this terminal state.
+    pub fn block_prepared_effect_execution(
+        &mut self,
+        fence: &TaskAttemptFence,
+        operation_digest: &str,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        validate_canonical_sha256(operation_digest, "effect operation digest")?;
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let current = self.read(Some(fence.task_id()))?;
+            verify_task_attempt_fence(&current, fence)?;
+            let mut candidate = current.clone();
+            candidate.block_unknown_effect(operation_digest)?;
+            if candidate == current {
+                return self.refresh_latest(fence.task_id());
+            }
+            if !matches!(current.status.as_str(), "running" | "cancelling") {
+                return Err(
+                    EvaError::conflict("prepared effect attempt is no longer active")
+                        .with_context("task_id", fence.task_id())
+                        .with_context("status", &current.status),
+                );
+            }
+            let expected_version = current.record_version;
+            match self.compare_and_set_attempt_outcome(&candidate) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(fence.task_id()))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                    if observed.requires_operator_reconciliation() {
+                        if observed.interrupted_reason == candidate.interrupted_reason {
+                            return self.refresh_latest(fence.task_id());
+                        }
+                        return Err(EvaError::conflict(
+                            "prepared effect shutdown block conflicts with another operation",
+                        )
+                        .with_context("task_id", fence.task_id())
+                        .with_context("operation_digest", operation_digest));
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("prepared effect shutdown block exceeded the CAS retry limit")
+                .with_context("task_id", fence.task_id())
+                .with_context("operation_digest", operation_digest),
+        )
+    }
+
     /// Persist a monotonic heartbeat for the exact claimed attempt.
     ///
     /// The owner, writer generation, attempt number, and cancel token are
@@ -3923,6 +4022,66 @@ mod tests {
                 .unwrap()
                 .starts_with("format=eva.task-state.v5\n")
         );
+    }
+
+    #[test]
+    fn shutdown_cancellation_and_prepared_block_require_the_exact_attempt_and_operation() {
+        let root = test_root("execution-shutdown-prepared-block");
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let task_id = "req-task-shutdown-prepared";
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "vendor.shutdown-effect",
+            "root-agent",
+            b"payload".to_vec(),
+            "idem-task-shutdown-prepared",
+            TaskAttemptPolicySnapshot::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(&TaskStateSnapshot::queued_with_envelope(task_id, envelope).unwrap())
+            .unwrap();
+        let claim = store
+            .try_claim_queued(
+                task_id,
+                "daemon.shutdown.owner",
+                "cancel.shutdown.token",
+                100,
+            )
+            .unwrap()
+            .unwrap();
+
+        let cancelling = store
+            .request_execution_cancellation(claim.fence(), "daemon drain elapsed")
+            .unwrap();
+        assert_eq!(cancelling.status, "cancelling");
+        let repeated_cancel = store
+            .request_execution_cancellation(claim.fence(), "daemon drain elapsed")
+            .unwrap();
+        assert_eq!(repeated_cancel.record_version, cancelling.record_version);
+
+        let operation_digest = sha256_digest(b"shutdown-operation-one");
+        let conflicting_digest = sha256_digest(b"shutdown-operation-two");
+        let blocked = store
+            .block_prepared_effect_execution(claim.fence(), &operation_digest)
+            .unwrap();
+        assert_eq!(blocked.status, "interrupted");
+        assert!(blocked.requires_operator_reconciliation());
+        let repeated = store
+            .block_prepared_effect_execution(claim.fence(), &operation_digest)
+            .unwrap();
+        assert_eq!(repeated.record_version, blocked.record_version);
+
+        let error = store
+            .block_prepared_effect_execution(claim.fence(), &conflicting_digest)
+            .unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        let unchanged = store.read(Some(task_id)).unwrap();
+        assert_eq!(unchanged.record_version, blocked.record_version);
+        assert_eq!(unchanged.interrupted_reason, blocked.interrupted_reason);
     }
 
     #[test]

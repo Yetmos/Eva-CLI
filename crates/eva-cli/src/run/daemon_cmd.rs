@@ -15,6 +15,7 @@ use eva_runtime::{
     DaemonPathReport, DaemonPolicyReport, DaemonStartOptions, DaemonStartReport,
     DaemonStartupFrame, DaemonStartupHandshake, DaemonStartupPhase, DaemonStateRecord,
     IdempotencyKey, TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind,
+    MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS,
 };
 use eva_storage::DurableBackendReport;
 use std::env;
@@ -105,6 +106,8 @@ pub(super) struct DaemonCliOptions {
     generation_id: Option<String>,
     /// 等待 control mailbox 响应的毫秒预算。
     control_timeout_ms: u64,
+    /// daemon shutdown 内部等待、取消和强制收口的总毫秒预算。
+    drain_timeout_ms: Option<u64>,
     /// 等待 background child ready frame 的独立毫秒预算。
     startup_timeout_ms: u64,
     /// 是否以前台模式运行 daemon。
@@ -390,6 +393,7 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
     let mut plan_id = None;
     let mut generation_id = None;
     let mut control_timeout_ms = 5_000;
+    let mut drain_timeout_ms = None;
     let mut startup_timeout_ms = DEFAULT_BACKGROUND_STARTUP_TIMEOUT_MS;
     let mut foreground = true;
     let mut dev_mode = false;
@@ -529,6 +533,25 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
                         EvaError::invalid_argument("control timeout must be an integer")
                     })?;
             }
+            "--drain-timeout-ms" => {
+                index += 1;
+                let value = required_option(args, index, "shutdown drain timeout option")?
+                    .parse::<u64>()
+                    .map_err(|_| {
+                        EvaError::invalid_argument("shutdown drain timeout must be an integer")
+                    })?;
+                if !(2..=MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS).contains(&value) {
+                    return Err(EvaError::invalid_argument(
+                        "shutdown drain timeout is outside the live lease budget",
+                    )
+                    .with_context("minimum_ms", "2")
+                    .with_context(
+                        "maximum_ms",
+                        MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS.to_string(),
+                    ));
+                }
+                drain_timeout_ms = Some(value);
+            }
             "--startup-timeout-ms" => {
                 index += 1;
                 startup_timeout_ms = required_option(args, index, "startup timeout option")?
@@ -574,6 +597,7 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
         plan_id,
         generation_id,
         control_timeout_ms,
+        drain_timeout_ms,
         startup_timeout_ms,
         foreground,
         dev_mode,
@@ -667,6 +691,14 @@ fn daemon_control_request(
         return Err(EvaError::invalid_argument(
             "task envelope options are only valid for daemon submit",
         ));
+    }
+    if let Some(timeout_ms) = options.drain_timeout_ms {
+        if operation != DaemonControlOperation::Shutdown {
+            return Err(EvaError::invalid_argument(
+                "shutdown drain timeout is only valid for daemon shutdown or stop",
+            ));
+        }
+        request = request.with_timeout_ms(timeout_ms);
     }
     Ok(request)
 }
@@ -1957,5 +1989,49 @@ mod tests {
             request.task_envelope.unwrap().agent_id().as_str(),
             "root-agent"
         );
+    }
+
+    #[test]
+    fn daemon_shutdown_keeps_drain_and_client_timeouts_distinct() {
+        let project_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let project = load_project_config(&project_root).unwrap();
+        let args =
+            ["--drain-timeout-ms", "1200", "--control-timeout-ms", "5000"].map(str::to_owned);
+        let options = parse_daemon_options(&args).unwrap();
+        let request_id = RequestId::parse("req-daemon-cli-drain-timeout").unwrap();
+        let trace = TraceFields::default().with_request_id(request_id.clone());
+
+        let request = daemon_control_request(
+            DaemonControlOperation::Shutdown,
+            &project,
+            &options,
+            request_id.clone(),
+            &trace,
+        )
+        .unwrap();
+        assert_eq!(request.timeout_ms, Some(1_200));
+        assert_eq!(options.control_timeout_ms, 5_000);
+
+        let error = daemon_control_request(
+            DaemonControlOperation::Status,
+            &project,
+            &options,
+            request_id,
+            &trace,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+        for valid in [2, MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS] {
+            assert!(
+                parse_daemon_options(&["--drain-timeout-ms".to_owned(), valid.to_string(),])
+                    .is_ok()
+            );
+        }
+        assert!(parse_daemon_options(&["--drain-timeout-ms".to_owned(), "1".to_owned()]).is_err());
+        assert!(parse_daemon_options(&[
+            "--drain-timeout-ms".to_owned(),
+            (MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS + 1).to_string(),
+        ])
+        .is_err());
     }
 }

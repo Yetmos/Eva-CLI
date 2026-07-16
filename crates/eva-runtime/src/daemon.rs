@@ -9,7 +9,8 @@ use crate::{
     run_scheduler_retry_tick_with_handler, FileSystemTaskArtifactResolver, IdempotencyKey,
     RuntimeBuilder, RuntimeRecoveryCoordinator, RuntimeRecoveryReport, SchedulerRetryTickOptions,
     SchedulerRetryTickReport, ShutdownReport, TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope,
-    TaskHandlerRegistry, TaskInput, TaskKind, TaskWorkerRuntime,
+    TaskHandlerRegistry, TaskInput, TaskKind, TaskWorkerDrainOptions, TaskWorkerDrainReport,
+    TaskWorkerRuntime,
 };
 use eva_config::ProjectConfig;
 use eva_core::{AgentId, EvaError, GenerationId, RequestId};
@@ -66,6 +67,9 @@ const PID_FILE: &str = "daemon.pid";
 const PID_PROJECTION_FORMAT: &str = "eva.daemon-pid.v1";
 /// 定义持久化守护生命周期状态的文件名。
 const STATE_FILE: &str = "daemon.state";
+/// Durable proof that one exact lease generation completed worker drain and residual scanning.
+const SHUTDOWN_DRAIN_EVIDENCE_FILE: &str = "daemon.shutdown-drain";
+const SHUTDOWN_DRAIN_EVIDENCE_FORMAT: &str = "eva.daemon-shutdown-drain.v1";
 /// 定义 `AGENT_CONTROL_STATE_FILE` 常量。
 const AGENT_CONTROL_STATE_FILE: &str = "agent-control.state";
 /// 定义 `HARDWARE_HOTPLUG_STATE_FILE` 常量。
@@ -88,6 +92,8 @@ pub const DAEMON_LEASE_HEARTBEAT_INTERVAL_MS: u64 = 10_000;
 /// becomes degraded, while the storage TTL remains the stale cutoff.
 pub const DAEMON_LEASE_DEGRADED_AFTER_MS: u128 = 20_000;
 pub const DAEMON_LEASE_STALE_AFTER_MS: u128 = DEFAULT_RUNTIME_LEASE_TTL_MS;
+/// Shutdown drain stays below the degraded lease window so the live owner remains observable.
+pub const MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS: u64 = 15_000;
 const STARTUP_DIR: &str = "startup";
 const STARTUP_FRAME_FORMAT: &str = "eva.daemon-startup.v1";
 const STARTUP_ABORT_FORMAT: &str = "eva.daemon-startup-abort.v1";
@@ -211,6 +217,194 @@ pub struct DaemonStateRecord {
     pub started_at_ms: u128,
     /// 记录 `stopped_at_ms` 字段对应的值。
     pub stopped_at_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonShutdownDrainEvidence {
+    pid: u32,
+    process_start_token: String,
+    generation: u64,
+    request_id: RequestId,
+    completed_at_ms: u128,
+    inflight_tasks: usize,
+    cancellation_requests: usize,
+    forced_terminal_tasks: usize,
+    phase: String,
+}
+
+impl DaemonShutdownDrainEvidence {
+    fn completed(
+        request_id: RequestId,
+        lease: &DurableRuntimeLeaseRecord,
+        drain: &TaskWorkerDrainReport,
+    ) -> Result<Self, EvaError> {
+        if drain.already_drained || drain.phase != "drained" {
+            return Err(EvaError::conflict(
+                "daemon shutdown drain report is not a first successful completion",
+            ));
+        }
+        Ok(Self {
+            pid: lease.pid(),
+            process_start_token: lease.process_start_token().to_owned(),
+            generation: lease.generation().0,
+            request_id,
+            completed_at_ms: now_ms(),
+            inflight_tasks: drain.inflight_tasks,
+            cancellation_requests: drain.cancellation_requests,
+            forced_terminal_tasks: drain.forced_terminal_tasks,
+            phase: drain.phase.clone(),
+        })
+    }
+
+    fn matches_status(&self, status: &DaemonStatusReport) -> bool {
+        status
+            .state
+            .as_ref()
+            .is_some_and(|state| state.status == "stopped" && state.pid == self.pid)
+            && status.lease.as_ref().is_some_and(|lease| {
+                lease.state == "released"
+                    && !lease.owner_live
+                    && !lease.expired
+                    && lease.pid == self.pid
+                    && lease.process_start_token == self.process_start_token
+                    && lease.generation == self.generation
+            })
+            && self.phase == "drained"
+    }
+
+    fn to_storage(&self) -> String {
+        format!(
+            "format={SHUTDOWN_DRAIN_EVIDENCE_FORMAT}\npid={}\nprocess_start_token={}\ngeneration={}\nrequest_id={}\ncompleted_at_ms={}\ninflight_tasks={}\ncancellation_requests={}\nforced_terminal_tasks={}\nphase={}\n",
+            self.pid,
+            encode_field(&self.process_start_token),
+            self.generation,
+            self.request_id.as_str(),
+            self.completed_at_ms,
+            self.inflight_tasks,
+            self.cancellation_requests,
+            self.forced_terminal_tasks,
+            self.phase,
+        )
+    }
+
+    fn from_storage(data: &str) -> Result<Self, EvaError> {
+        let mut format = None;
+        let mut pid = None;
+        let mut process_start_token = None;
+        let mut generation = None;
+        let mut request_id = None;
+        let mut completed_at_ms = None;
+        let mut inflight_tasks = None;
+        let mut cancellation_requests = None;
+        let mut forced_terminal_tasks = None;
+        let mut phase = None;
+
+        for line in data.lines().filter(|line| !line.trim().is_empty()) {
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(EvaError::conflict(
+                    "daemon shutdown drain evidence is invalid",
+                ));
+            };
+            match key {
+                "format" => format = Some(value.to_owned()),
+                "pid" => {
+                    pid = Some(value.parse::<u32>().map_err(|_| {
+                        EvaError::conflict("daemon shutdown drain evidence pid is invalid")
+                    })?)
+                }
+                "process_start_token" => process_start_token = Some(decode_field(value)?),
+                "generation" => {
+                    generation = Some(value.parse::<u64>().map_err(|_| {
+                        EvaError::conflict("daemon shutdown drain evidence generation is invalid")
+                    })?)
+                }
+                "request_id" => request_id = Some(RequestId::parse(value)?),
+                "completed_at_ms" => {
+                    completed_at_ms = Some(value.parse::<u128>().map_err(|_| {
+                        EvaError::conflict(
+                            "daemon shutdown drain evidence completion time is invalid",
+                        )
+                    })?)
+                }
+                "inflight_tasks" => {
+                    inflight_tasks = Some(value.parse::<usize>().map_err(|_| {
+                        EvaError::conflict(
+                            "daemon shutdown drain evidence inflight count is invalid",
+                        )
+                    })?)
+                }
+                "cancellation_requests" => {
+                    cancellation_requests = Some(value.parse::<usize>().map_err(|_| {
+                        EvaError::conflict(
+                            "daemon shutdown drain evidence cancellation count is invalid",
+                        )
+                    })?)
+                }
+                "forced_terminal_tasks" => {
+                    forced_terminal_tasks = Some(value.parse::<usize>().map_err(|_| {
+                        EvaError::conflict(
+                            "daemon shutdown drain evidence forced-terminal count is invalid",
+                        )
+                    })?)
+                }
+                "phase" => phase = Some(value.to_owned()),
+                _ => {
+                    return Err(EvaError::conflict(
+                        "daemon shutdown drain evidence has an unknown field",
+                    )
+                    .with_context("field", key))
+                }
+            }
+        }
+
+        if format.as_deref() != Some(SHUTDOWN_DRAIN_EVIDENCE_FORMAT) {
+            return Err(EvaError::conflict(
+                "daemon shutdown drain evidence format mismatch",
+            ));
+        }
+        let evidence = Self {
+            pid: pid.ok_or_else(|| {
+                EvaError::conflict("daemon shutdown drain evidence is missing pid")
+            })?,
+            process_start_token: process_start_token.ok_or_else(|| {
+                EvaError::conflict("daemon shutdown drain evidence is missing process start token")
+            })?,
+            generation: generation.ok_or_else(|| {
+                EvaError::conflict("daemon shutdown drain evidence is missing generation")
+            })?,
+            request_id: request_id.ok_or_else(|| {
+                EvaError::conflict("daemon shutdown drain evidence is missing request id")
+            })?,
+            completed_at_ms: completed_at_ms.ok_or_else(|| {
+                EvaError::conflict("daemon shutdown drain evidence is missing completion time")
+            })?,
+            inflight_tasks: inflight_tasks.ok_or_else(|| {
+                EvaError::conflict("daemon shutdown drain evidence is missing inflight count")
+            })?,
+            cancellation_requests: cancellation_requests.ok_or_else(|| {
+                EvaError::conflict("daemon shutdown drain evidence is missing cancellation count")
+            })?,
+            forced_terminal_tasks: forced_terminal_tasks.ok_or_else(|| {
+                EvaError::conflict(
+                    "daemon shutdown drain evidence is missing forced-terminal count",
+                )
+            })?,
+            phase: phase.ok_or_else(|| {
+                EvaError::conflict("daemon shutdown drain evidence is missing phase")
+            })?,
+        };
+        if evidence.pid == 0
+            || evidence.process_start_token.is_empty()
+            || evidence.generation == 0
+            || evidence.completed_at_ms == 0
+            || evidence.phase != "drained"
+        {
+            return Err(EvaError::conflict(
+                "daemon shutdown drain evidence violates its completion contract",
+            ));
+        }
+        Ok(evidence)
+    }
 }
 
 /// 表示 `DaemonStartReport` 数据结构。
@@ -1777,6 +1971,20 @@ impl DaemonControlRequest {
         if let Some(task_id) = &self.task_id {
             RequestId::parse(task_id)?;
         }
+        if self.operation == DaemonControlOperation::Shutdown
+            && self.timeout_ms.is_some_and(|timeout_ms| {
+                !(2..=MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS).contains(&timeout_ms)
+            })
+        {
+            return Err(EvaError::invalid_argument(
+                "daemon shutdown drain timeout is outside the live lease budget",
+            )
+            .with_context("minimum_ms", "2")
+            .with_context(
+                "maximum_ms",
+                MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS.to_string(),
+            ));
+        }
         match self.operation {
             DaemonControlOperation::SubmitTask
                 if self.wire_version == 1 && self.agent_id.is_some() =>
@@ -2572,6 +2780,7 @@ fn daemon_start_audit(
         "daemon:v1.15.4:hardware_hotplug_subscriber_ready".to_owned(),
         "daemon:v1.15.6:memory_maintenance_ready".to_owned(),
         "daemon:w1-l10:effect_aware_recovery_ready".to_owned(),
+        "daemon:w1-l11:bounded_shutdown_drain_ready".to_owned(),
         format!(
             "daemon:w1-l05:task_handler_registry_ready:{}",
             task_handlers.registered_kinds().join(",")
@@ -2665,6 +2874,9 @@ pub fn send_daemon_control_request(
     request.validate()?;
     let status = daemon_status(options)?;
     if !status.available {
+        if let Some(response) = repeated_shutdown_response(options, &request, &status)? {
+            return Ok(response);
+        }
         return Err(EvaError::unavailable("daemon control API is unavailable")
             .with_context("operation", request.operation.as_str())
             .with_context("request_id", request.request_id.as_str())
@@ -2720,7 +2932,15 @@ pub fn send_daemon_control_request(
                     .with_context("path", response_path.display().to_string())
                     .with_context("io_error", error.to_string())
             })?;
-            return DaemonControlResponse::from_storage(&data);
+            let mut response = DaemonControlResponse::from_storage(&data)?;
+            if response.operation != DaemonControlOperation::Shutdown {
+                return Ok(response);
+            }
+            let released_status = daemon_status(options)?;
+            if shutdown_is_fully_released(options, &released_status)? {
+                response.lease = released_status.lease;
+                return Ok(response);
+            }
         }
         if now_ms().saturating_sub(started_at) >= timeout_ms as u128 {
             return Err(EvaError::timeout("daemon control response timed out")
@@ -2731,6 +2951,58 @@ pub fn send_daemon_control_request(
         }
         thread::sleep(Duration::from_millis(CONTROL_POLL_INTERVAL_MS));
     }
+}
+
+fn shutdown_is_fully_released(
+    options: &DaemonStartOptions,
+    status: &DaemonStatusReport,
+) -> Result<bool, EvaError> {
+    let projections_released = status.status == "stopped"
+        && !status.pid_present
+        && status
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.state == "released" && !lease.owner_live && !lease.expired);
+    if !projections_released {
+        return Ok(false);
+    }
+    Ok(read_shutdown_drain_evidence(options)?
+        .is_some_and(|evidence| evidence.matches_status(status)))
+}
+
+fn repeated_shutdown_response(
+    options: &DaemonStartOptions,
+    request: &DaemonControlRequest,
+    status: &DaemonStatusReport,
+) -> Result<Option<DaemonControlResponse>, EvaError> {
+    if request.operation != DaemonControlOperation::Shutdown
+        || !shutdown_is_fully_released(options, status)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(DaemonControlResponse {
+        request_id: request.request_id.clone(),
+        trace_id: request.trace_id.clone(),
+        operation: request.operation,
+        accepted: true,
+        daemon_available: false,
+        status: "stopped".to_owned(),
+        mutation_executed: false,
+        request_file: display_path(&control_request_file(options, &request.request_id)),
+        response_file: display_path(&control_response_file(options, &request.request_id)),
+        state: status.state.clone(),
+        lease: status.lease.clone(),
+        task_id: None,
+        plan_id: None,
+        generation_id: None,
+        message: "daemon shutdown was already fully drained and released".to_owned(),
+        shutdown: Some(ShutdownReport {
+            already_shutdown: true,
+            request_count: 2,
+            phase: "already_shutdown".to_owned(),
+        }),
+        audit: vec!["daemon:w1-l11:shutdown_idempotent_noop".to_owned()],
+    }))
 }
 
 /// 仅在能够安全 claim ownership 时清理守护投影；活动或 dead-but-unexpired owner 均拒绝。
@@ -2898,8 +3170,8 @@ struct DaemonControlContext<'a> {
     runtime: &'a mut crate::Runtime,
     running_state: &'a DaemonStateRecord,
     durable_layout: &'a DurableBackendLayout,
-    lease: &'a DurableRuntimeLeaseGuard,
-    task_worker: &'a TaskWorkerRuntime,
+    lease: &'a mut DurableRuntimeLeaseGuard,
+    task_worker: &'a mut TaskWorkerRuntime,
 }
 
 /// 串行执行调度重试 tick 和按文件名排序的控制请求，直到处理到关闭操作。
@@ -2913,7 +3185,7 @@ fn run_control_loop(
     running_state: DaemonStateRecord,
     durable_layout: &DurableBackendLayout,
     lease: &mut DurableRuntimeLeaseGuard,
-    task_worker: &TaskWorkerRuntime,
+    task_worker: &mut TaskWorkerRuntime,
 ) -> Result<DaemonControlLoopReport, EvaError> {
     let heartbeat_interval = Duration::from_millis(DAEMON_LEASE_HEARTBEAT_INTERVAL_MS);
     let mut next_heartbeat = Instant::now() + heartbeat_interval;
@@ -3312,6 +3584,23 @@ fn record_task_lifecycle_observability(
     );
 }
 
+fn shutdown_drain_options(timeout_ms: Option<u64>) -> Result<TaskWorkerDrainOptions, EvaError> {
+    let Some(timeout_ms) = timeout_ms else {
+        return Ok(TaskWorkerDrainOptions::default());
+    };
+    if timeout_ms < 2 {
+        return Err(EvaError::invalid_argument(
+            "daemon shutdown drain timeout must be at least two milliseconds",
+        ));
+    }
+    let cancellation_ms = (timeout_ms / 3).max(1);
+    let graceful_ms = timeout_ms.saturating_sub(cancellation_ms).max(1);
+    TaskWorkerDrainOptions::new(
+        Duration::from_millis(graceful_ms),
+        Duration::from_millis(cancellation_ms),
+    )
+}
+
 /// 执行单个控制操作并构造响应；可观测性采用尽力而为，不改变已完成的业务结果。
 fn handle_control_request(
     context: &mut DaemonControlContext<'_>,
@@ -3350,14 +3639,30 @@ fn handle_control_request(
             message = "daemon status returned through local control mailbox".to_owned();
         }
         DaemonControlOperation::Shutdown => {
-            context.task_worker.begin_shutdown();
+            context.lease.renew_at(now_ms())?;
+            let drain_options = shutdown_drain_options(request.timeout_ms)?;
+            let drain = context.task_worker.drain_and_stop(drain_options)?;
+            context.lease.renew_at(now_ms())?;
             let shutdown_report = context.runtime.shutdown();
+            let drain_evidence = DaemonShutdownDrainEvidence::completed(
+                request.request_id.clone(),
+                context.lease.record(),
+                &drain,
+            )?;
+            write_shutdown_drain_evidence(context.options, &drain_evidence)?;
             state = state.stopped();
             write_state(context.options, &state)?;
             remove_matching_pid(context.options, context.lease.record())?;
             mutation_executed = true;
-            message = "daemon shutdown recorded through local control mailbox".to_owned();
+            message =
+                "daemon shutdown drained task ownership through local control mailbox".to_owned();
             audit.push("daemon:v1.12.2:shutdown_recorded".to_owned());
+            audit.push("daemon:w1-l11:claim_gate_closed".to_owned());
+            audit.push(format!(
+                "daemon:w1-l11:drained:inflight={}:cancelled={}:forced={}",
+                drain.inflight_tasks, drain.cancellation_requests, drain.forced_terminal_tasks
+            ));
+            audit.push("daemon:w1-l11:stable_task_state_flushed".to_owned());
             shutdown = Some(shutdown_report);
         }
         DaemonControlOperation::SubmitTask => {
@@ -4045,6 +4350,26 @@ fn read_state(options: &DaemonStartOptions) -> Result<Option<DaemonStateRecord>,
     DaemonStateRecord::from_storage(&data).map(Some)
 }
 
+fn read_shutdown_drain_evidence(
+    options: &DaemonStartOptions,
+) -> Result<Option<DaemonShutdownDrainEvidence>, EvaError> {
+    let path = shutdown_drain_evidence_file(options);
+    let data = match fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(
+                EvaError::internal("failed to read daemon shutdown drain evidence")
+                    .with_context("path", path.display().to_string())
+                    .with_context("io_error", error.to_string()),
+            )
+        }
+    };
+    DaemonShutdownDrainEvidence::from_storage(&data)
+        .map(Some)
+        .map_err(|error| error.with_context("path", path.display().to_string()))
+}
+
 /// 严格读取 PID projection；损坏内容不能被当作“不存在”后继续接管。
 fn read_pid_projection(
     options: &DaemonStartOptions,
@@ -4141,6 +4466,18 @@ fn write_state(options: &DaemonStartOptions, state: &DaemonStateRecord) -> Resul
         EvaError::internal("failed to write daemon state")
             .with_context("path", path.display().to_string())
             .with_context("io_error", error.to_string())
+    })
+}
+
+fn write_shutdown_drain_evidence(
+    options: &DaemonStartOptions,
+    evidence: &DaemonShutdownDrainEvidence,
+) -> Result<(), EvaError> {
+    let path = shutdown_drain_evidence_file(options);
+    atomic_storage_write(&path, evidence.to_storage().as_bytes()).map_err(|error| {
+        EvaError::internal("failed to persist daemon shutdown drain evidence")
+            .with_context("path", path.display().to_string())
+            .with_context("storage_error", error.to_string())
     })
 }
 
@@ -4685,6 +5022,10 @@ fn delay_after_startup_lease_for_test() -> Result<(), EvaError> {
 /// 执行 `state_file` 对应的处理逻辑。
 fn state_file(options: &DaemonStartOptions) -> PathBuf {
     options.state_dir.join(STATE_FILE)
+}
+
+fn shutdown_drain_evidence_file(options: &DaemonStartOptions) -> PathBuf {
+    options.state_dir.join(SHUTDOWN_DRAIN_EVIDENCE_FILE)
 }
 
 /// 执行 `agent_control_state_file` 对应的处理逻辑。
@@ -5790,6 +6131,25 @@ mod tests {
         assert_eq!(status.status, "running");
         assert!(Path::new(&status.response_file).is_file());
 
+        let invalid_shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-invalid-shutdown").unwrap());
+        let invalid_shutdown = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-invalid-shutdown").unwrap(),
+                &invalid_shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            )
+            .with_timeout_ms(1),
+            2_000,
+        )
+        .unwrap_err();
+        assert_eq!(
+            invalid_shutdown.kind(),
+            eva_core::ErrorKind::InvalidArgument
+        );
+        assert!(daemon_status(&options).unwrap().available);
+
         let shutdown_trace = TraceFields::default()
             .with_request_id(RequestId::parse("req-daemon-control-shutdown").unwrap());
         let shutdown = send_daemon_control_request(
@@ -5820,6 +6180,125 @@ mod tests {
             Some(DurableRuntimeLeaseState::Released)
         );
         assert!(!pid_file(&options).exists());
+
+        let repeated_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-control-shutdown-again").unwrap());
+        let repeated = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-control-shutdown-again").unwrap(),
+                &repeated_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        assert!(repeated.accepted);
+        assert!(!repeated.mutation_executed);
+        assert!(!repeated.daemon_available);
+        assert_eq!(repeated.status, "stopped");
+        assert_eq!(
+            repeated
+                .shutdown
+                .as_ref()
+                .map(|shutdown| shutdown.phase.as_str()),
+            Some("already_shutdown")
+        );
+        assert_eq!(
+            repeated.lease.as_ref().map(|lease| lease.generation),
+            Some(report.lease.generation)
+        );
+        let evidence = read_shutdown_drain_evidence(&options).unwrap().unwrap();
+        assert_eq!(evidence.generation, report.lease.generation);
+        assert_eq!(evidence.phase, "drained");
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn repeated_shutdown_requires_generation_bound_drain_evidence() {
+        let root = temp_root("shutdown-drain-evidence");
+        let options = daemon_options(&root, false);
+        fs::create_dir_all(&options.state_dir).unwrap();
+        let state = DaemonStateRecord {
+            status: "stopped".to_owned(),
+            mode: "foreground".to_owned(),
+            pid: 4242,
+            generation_id: DAEMON_GENERATION.to_owned(),
+            project_root: root.display().to_string(),
+            started_at_ms: 10,
+            stopped_at_ms: Some(20),
+        };
+        let status = DaemonStatusReport {
+            available: false,
+            status: "stopped".to_owned(),
+            lock_present: true,
+            pid_present: false,
+            pid_matches_lease: false,
+            freshness: "stale".to_owned(),
+            heartbeat_age_ms: Some(0),
+            lease: Some(DaemonLeaseReport {
+                state: "released".to_owned(),
+                pid: 4242,
+                process_start_token: "shutdown-evidence-owner".to_owned(),
+                generation: 7,
+                heartbeat_at_ms: 20,
+                expires_at_ms: 30,
+                owner_live: false,
+                expired: false,
+            }),
+            paths: DaemonPathReport::from_options(&options),
+            state: Some(state),
+        };
+        let trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-evidence-repeat").unwrap());
+        let request = DaemonControlRequest::new(
+            RequestId::parse("req-daemon-evidence-repeat").unwrap(),
+            &trace,
+            DaemonControlOperation::Shutdown,
+        );
+
+        assert!(repeated_shutdown_response(&options, &request, &status)
+            .unwrap()
+            .is_none());
+
+        let mut evidence = DaemonShutdownDrainEvidence {
+            pid: 4242,
+            process_start_token: "shutdown-evidence-owner".to_owned(),
+            generation: 6,
+            request_id: RequestId::parse("req-daemon-evidence-original").unwrap(),
+            completed_at_ms: 20,
+            inflight_tasks: 1,
+            cancellation_requests: 1,
+            forced_terminal_tasks: 1,
+            phase: "drained".to_owned(),
+        };
+        write_shutdown_drain_evidence(&options, &evidence).unwrap();
+        assert!(repeated_shutdown_response(&options, &request, &status)
+            .unwrap()
+            .is_none());
+
+        evidence.generation = 7;
+        evidence.pid = 4243;
+        write_shutdown_drain_evidence(&options, &evidence).unwrap();
+        assert!(repeated_shutdown_response(&options, &request, &status)
+            .unwrap()
+            .is_none());
+
+        evidence.pid = 4242;
+        evidence.process_start_token = "another-shutdown-owner".to_owned();
+        write_shutdown_drain_evidence(&options, &evidence).unwrap();
+        assert!(repeated_shutdown_response(&options, &request, &status)
+            .unwrap()
+            .is_none());
+
+        evidence.process_start_token = "shutdown-evidence-owner".to_owned();
+        write_shutdown_drain_evidence(&options, &evidence).unwrap();
+        let repeated = repeated_shutdown_response(&options, &request, &status)
+            .unwrap()
+            .unwrap();
+        assert!(!repeated.mutation_executed);
+        assert!(repeated.shutdown.unwrap().already_shutdown);
 
         fs::remove_dir_all(root).ok();
     }

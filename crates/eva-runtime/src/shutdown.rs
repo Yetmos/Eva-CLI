@@ -28,7 +28,7 @@ pub struct ShutdownReport {
 }
 
 impl ShutdownState {
-    /// 中文：记录一次关闭请求；首次和重复调用返回不同阶段，但最终状态始终为已请求。
+    /// 中文：记录一次已经完成 drain 的关闭请求；重复调用只返回缓存语义。
     pub fn request(&mut self) -> ShutdownReport {
         let already_shutdown = self.requested;
         self.requested = true;
@@ -40,7 +40,7 @@ impl ShutdownState {
             phase: if already_shutdown {
                 "already_shutdown".to_owned()
             } else {
-                "noop_shutdown_recorded".to_owned()
+                "drained".to_owned()
             },
         }
     }

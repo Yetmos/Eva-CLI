@@ -24,6 +24,7 @@ pub use daemon::{
     DaemonMemoryMaintenanceReport, DaemonPathReport, DaemonPolicyReport, DaemonStartOptions,
     DaemonStartReport, DaemonStartupCleanupReport, DaemonStartupFrame, DaemonStartupHandshake,
     DaemonStartupPhase, DaemonStateRecord, DaemonStatusReport, DaemonStopReport,
+    MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS,
 };
 pub use diagnostics::{
     inspect_durable_backend, DurableDiagnosticsOptions, DurableDiagnosticsReport,
@@ -49,7 +50,9 @@ pub use task::{
 pub use task_worker::{
     FileSystemTaskArtifactResolver, OwnedReplayDeliveryStatus, OwnedReplayHandler,
     TaskArtifactResolver, TaskCancellationView, TaskHandler, TaskHandlerInvocation,
-    TaskHandlerRegistry, TaskHandlerResult, TaskWorkerRuntime,
-    DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES, DEFAULT_TASK_HEARTBEAT_INTERVAL_MS,
-    DEFAULT_TASK_WORKER_POLL_INTERVAL_MS, TASK_HANDLER_NOT_REGISTERED_MESSAGE,
+    TaskHandlerRegistry, TaskHandlerResult, TaskWorkerDrainOptions, TaskWorkerDrainReport,
+    TaskWorkerRuntime, DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES,
+    DEFAULT_TASK_DRAIN_CANCELLATION_PERIOD_MS, DEFAULT_TASK_DRAIN_GRACE_PERIOD_MS,
+    DEFAULT_TASK_HEARTBEAT_INTERVAL_MS, DEFAULT_TASK_WORKER_POLL_INTERVAL_MS,
+    TASK_HANDLER_NOT_REGISTERED_MESSAGE,
 };

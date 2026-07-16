@@ -879,7 +879,7 @@ fn help_text() -> &'static str {
         "  eva emit <topic> [--event-id <id>] [--payload <text>|--payload-empty|--payload-bytes-hex <hex>] [--target-agent <id>|--target-capability <name>|--target-adapter <id>] [--request-id <id>] [--generation <id>] [--correlation-id <event_id>] [--causation-id <event_id>] [--durable-backend <path>] [--output text|json]\n",
         "  eva daemon start [--foreground|--background] [--startup-timeout-ms <ms>] [--dev] [--no-shutdown-after-smoke] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--observability-backend <path>] [--project <path>] [--output text|json]\n",
         "  eva daemon status [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
-        "  eva daemon shutdown|stop [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
+        "  eva daemon shutdown|stop [--drain-timeout-ms <ms>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva daemon submit [--task <id>] [--kind <task.kind> --agent <id> (--input <text> | --artifact-ref <key> --artifact-digest <sha256>) [--idempotency-key <key>] [--max-attempts <n>] [--retry-backoff-ms <ms>] [--attempt-timeout-ms <ms>]] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva daemon cancel --task <id> [--reason <text>] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva daemon drain|reload [--plan <id>] [--generation <id>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
@@ -2120,6 +2120,7 @@ mod tests {
         assert!(shutdown_stdout.contains("\"operation\":\"shutdown\""));
         assert!(shutdown_stdout.contains("\"mutation_executed\":true"));
         assert!(shutdown_stdout.contains("\"shutdown\":{\"already_shutdown\":false"));
+        assert!(shutdown_stdout.contains("\"lease\":{\"state\":\"released\""));
         assert!(shutdown_stderr.is_empty());
 
         let report = daemon.join().unwrap().unwrap();
@@ -2127,6 +2128,30 @@ mod tests {
         assert!(locks.join("daemon.lock").is_file());
         assert!(locks.join("daemon.lease").is_file());
         assert!(!pids.join("daemon.pid").exists());
+
+        let (repeated_exit, repeated_stdout, repeated_stderr) = run_cli(&[
+            "daemon",
+            "shutdown",
+            "--request-id",
+            "req-daemon-cli-shutdown-again",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(repeated_exit, EXIT_OK, "{repeated_stderr}");
+        assert!(repeated_stdout.contains("\"operation\":\"shutdown\""));
+        assert!(repeated_stdout.contains("\"daemon_available\":false"));
+        assert!(repeated_stdout.contains("\"mutation_executed\":false"));
+        assert!(repeated_stdout.contains("\"already_shutdown\":true"));
+        assert!(repeated_stdout.contains("\"phase\":\"already_shutdown\""));
+        assert!(repeated_stderr.is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }
