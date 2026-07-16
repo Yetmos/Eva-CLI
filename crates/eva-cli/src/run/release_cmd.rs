@@ -1762,17 +1762,20 @@ mod evidence_path_tests {
     use std::os::unix::fs::symlink;
     #[cfg(windows)]
     use std::os::windows::fs::symlink_file;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// 创建独立目录，避免并行 identity 测试共享同一文件对象。
     fn identity_fixture() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "eva-release-evidence-identity-{}-{suffix}",
-            std::process::id()
+            "eva-release-evidence-identity-{}-{suffix}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
