@@ -1847,6 +1847,8 @@ mod tests {
         assert!(status_stdout.is_empty());
         assert!(status_stderr.contains("\"command\":\"daemon.status\""));
         assert!(status_stderr.contains("\"kind\":\"unavailable\""));
+        assert!(status_stderr.contains("\"key\":\"lease_freshness\",\"value\":\"stale\""));
+        assert!(status_stderr.contains("\"key\":\"lease_heartbeat_age_ms\""));
         assert!(status_stderr.contains("\"trace_id\",\"value\":\"request_id:req-daemon-status\""));
 
         fs::remove_dir_all(root).unwrap();
@@ -1908,8 +1910,31 @@ mod tests {
         assert!(status_stdout.contains("\"lease\":{\"state\":\"active\""));
         assert!(status_stdout.contains("\"owner_live\":true"));
         assert!(status_stdout.contains("\"expired\":false"));
+        assert!(status_stdout.contains("\"freshness\":\"live\""));
+        assert!(status_stdout.contains("\"heartbeat_age_ms\":"));
         assert!(status_stdout.contains("\"response_file\""));
         assert!(status_stderr.is_empty());
+
+        let (text_status_exit, text_status_stdout, text_status_stderr) = run_cli(&[
+            "daemon",
+            "status",
+            "--request-id",
+            "req-daemon-status-text",
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--lock-dir",
+            locks.to_str().unwrap(),
+            "--pid-dir",
+            pids.to_str().unwrap(),
+            "--project",
+            project.to_str().unwrap(),
+            "--output",
+            "text",
+        ]);
+        assert_eq!(text_status_exit, EXIT_OK, "{text_status_stderr}");
+        assert!(text_status_stdout.contains("freshness=live"));
+        assert!(text_status_stdout.contains("heartbeat_age_ms="));
+        assert!(text_status_stderr.is_empty());
 
         let (submit_exit, submit_stdout, submit_stderr) = run_cli(&[
             "daemon",
@@ -1997,6 +2022,8 @@ mod tests {
         assert!(completed_task_stdout.contains("\"execution\":{\"owner\":\"daemon:"));
         assert!(completed_task_stdout.contains("\"result_digest\":\"sha256:"));
         assert!(completed_task_stdout.contains("\"result_size_bytes\":19"));
+        assert!(completed_task_stdout.contains("\"freshness\":\"not_applicable\""));
+        assert!(completed_task_stdout.contains("\"heartbeat_age_ms\":"));
         assert!(!completed_task_stdout.contains("cancel_token"));
 
         let (legacy_exit, legacy_stdout, legacy_stderr) = run_cli(&[
@@ -2646,6 +2673,7 @@ mod tests {
         assert_eq!(status_exit, EXIT_OK, "{status_stderr}");
         assert!(status_stdout.contains("\"command\":\"task.status\""));
         assert!(status_stdout.contains("\"status\":\"completed\""));
+        assert!(status_stdout.contains("\"freshness\":\"not_applicable\""));
 
         let (logs_exit, logs_stdout, logs_stderr) = run_cli(&[
             "task",
@@ -2675,6 +2703,71 @@ mod tests {
         assert_eq!(cancel_exit, EXIT_OK, "{cancel_stderr}");
         assert!(cancel_stdout.contains("\"requested\":true"));
         assert!(cancel_stdout.contains("\"accepted\":false"));
+    }
+
+    #[test]
+    fn task_status_reports_stale_fenced_heartbeat_in_json_and_text() {
+        use eva_storage::{
+            DurableBackendOptions, FileSystemDurableBackend, FileSystemTaskStateStore,
+            TaskAttemptPolicySnapshot, TaskEnvelopeSnapshot, TaskStateSnapshot,
+        };
+
+        let project = workspace_root();
+        let durable = test_temp_dir("stale-task-status");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(&durable)).unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"stale".to_vec(),
+            "idem-stale-task-status",
+            TaskAttemptPolicySnapshot::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope("req-stale-task-status", envelope)
+                    .unwrap(),
+            )
+            .unwrap();
+        store
+            .try_claim_queued(
+                "req-stale-task-status",
+                "daemon:stale-task-status",
+                "cancel.stale-task-status",
+                1,
+            )
+            .unwrap()
+            .unwrap();
+        drop(store);
+        drop(backend);
+
+        for output in ["json", "text"] {
+            let (exit, stdout, stderr) = run_cli(&[
+                "task",
+                "status",
+                "--task",
+                "req-stale-task-status",
+                "--durable-backend",
+                durable.to_str().unwrap(),
+                "--project",
+                project.to_str().unwrap(),
+                "--output",
+                output,
+            ]);
+            assert_eq!(exit, EXIT_OK, "{stderr}");
+            match output {
+                "json" => assert!(stdout.contains("\"freshness\":\"stale\"")),
+                "text" => assert!(stdout.contains("freshness: stale")),
+                _ => unreachable!(),
+            }
+            assert!(stdout.contains("heartbeat_age_ms"));
+            assert!(!stdout.contains("cancel.stale-task-status"));
+            assert!(stderr.is_empty());
+        }
+
+        fs::remove_dir_all(durable).unwrap();
     }
 
     #[test]

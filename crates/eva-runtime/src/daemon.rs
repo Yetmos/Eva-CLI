@@ -83,7 +83,11 @@ const CONTROL_RESPONSE_EXT: &str = "response";
 /// 定义 `CONTROL_POLL_INTERVAL_MS` 常量。
 const CONTROL_POLL_INTERVAL_MS: u64 = 50;
 /// Lease heartbeat 的单调调度间隔；墙上时钟仅写入持久记录。
-const DAEMON_LEASE_HEARTBEAT_INTERVAL_MS: u64 = 10_000;
+pub const DAEMON_LEASE_HEARTBEAT_INTERVAL_MS: u64 = 10_000;
+/// A daemon lease remains live for two missed scheduler ticks before status
+/// becomes degraded, while the storage TTL remains the stale cutoff.
+pub const DAEMON_LEASE_DEGRADED_AFTER_MS: u128 = 20_000;
+pub const DAEMON_LEASE_STALE_AFTER_MS: u128 = DEFAULT_RUNTIME_LEASE_TTL_MS;
 const STARTUP_DIR: &str = "startup";
 const STARTUP_FRAME_FORMAT: &str = "eva.daemon-startup.v1";
 const STARTUP_ABORT_FORMAT: &str = "eva.daemon-startup-abort.v1";
@@ -158,6 +162,25 @@ pub struct DaemonLeaseReport {
     pub owner_live: bool,
     /// Probe 时 lease 是否已到期；live owner 即使到期也绝不被抢占。
     pub expired: bool,
+}
+
+/// Derived daemon lease liveness classification. It is observational and does
+/// not itself reclaim or release an owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonFreshness {
+    Live,
+    Degraded,
+    Stale,
+}
+
+impl DaemonFreshness {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Degraded => "degraded",
+            Self::Stale => "stale",
+        }
+    }
 }
 
 /// 表示 `DaemonPolicyReport` 数据结构。
@@ -257,6 +280,10 @@ pub struct DaemonStatusReport {
     pub pid_present: bool,
     /// PID projection 是否与 state 和 lease 的 owner PID 一致。
     pub pid_matches_lease: bool,
+    /// Derived freshness of the observed daemon lease.
+    pub freshness: String,
+    /// Age of the observed lease heartbeat at status read time.
+    pub heartbeat_age_ms: Option<u128>,
     /// 当前 lease；从未 claim 时为 `None`。
     pub lease: Option<DaemonLeaseReport>,
     /// 记录 `paths` 字段对应的值。
@@ -563,6 +590,30 @@ impl DaemonLeaseReport {
             record.state() == DurableRuntimeLeaseState::Active,
             record.expires_at_ms() <= now_ms,
         )
+    }
+
+    /// Return the non-negative age of the last persisted daemon heartbeat.
+    pub fn heartbeat_age_ms(&self, now_ms: u128) -> u128 {
+        now_ms.saturating_sub(self.heartbeat_at_ms)
+    }
+
+    /// Classify the lease without treating a degraded owner as reclaimable.
+    pub fn freshness_at(&self, now_ms: u128) -> DaemonFreshness {
+        if self.state != "active"
+            || !self.owner_live
+            || self.expired
+            || now_ms >= self.expires_at_ms
+        {
+            return DaemonFreshness::Stale;
+        }
+        let age_ms = self.heartbeat_age_ms(now_ms);
+        if age_ms < DAEMON_LEASE_DEGRADED_AFTER_MS {
+            DaemonFreshness::Live
+        } else if age_ms < DAEMON_LEASE_STALE_AFTER_MS {
+            DaemonFreshness::Degraded
+        } else {
+            DaemonFreshness::Stale
+        }
     }
 }
 
@@ -2545,7 +2596,8 @@ pub fn daemon_status(options: &DaemonStartOptions) -> Result<DaemonStatusReport,
     let pid = read_pid_projection(options)?;
     let pid_present = pid.is_some();
     let state = read_state(options)?;
-    let probe = probe_runtime_lease(lock_file(options), lease_file(options), now_ms())?;
+    let observed_now_ms = now_ms();
+    let probe = probe_runtime_lease(lock_file(options), lease_file(options), observed_now_ms)?;
     let lease = probe
         .record()
         .map(|record| DaemonLeaseReport::from_record(record, probe.owner_live(), probe.expired()));
@@ -2565,12 +2617,21 @@ pub fn daemon_status(options: &DaemonStartOptions) -> Result<DaemonStatusReport,
         .as_ref()
         .map(|lease| lease.state == "active" && lease.owner_live && !lease.expired)
         .unwrap_or(false);
+    let freshness = lease
+        .as_ref()
+        .map(|lease| lease.freshness_at(observed_now_ms).as_str().to_owned())
+        .unwrap_or_else(|| "stale".to_owned());
+    let heartbeat_age_ms = lease
+        .as_ref()
+        .map(|lease| lease.heartbeat_age_ms(observed_now_ms));
     Ok(DaemonStatusReport {
         available: running && lease_available && pid_matches_lease,
         status,
         lock_present,
         pid_present,
         pid_matches_lease,
+        freshness,
+        heartbeat_age_ms,
         lease,
         paths,
         state,
@@ -2615,6 +2676,14 @@ pub fn send_daemon_control_request(
                     .map(|lease| lease.expired)
                     .unwrap_or(false)
                     .to_string(),
+            )
+            .with_context("lease_freshness", &status.freshness)
+            .with_context(
+                "lease_heartbeat_age_ms",
+                status
+                    .heartbeat_age_ms
+                    .map(|age| age.to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
             )
             .with_context(
                 "suggestion",
@@ -5601,6 +5670,60 @@ mod tests {
         drop(lease);
         drop(backend);
         fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_freshness_transitions_after_heartbeat_stops() {
+        let heartbeat_at_ms = 1_000;
+        let lease = DaemonLeaseReport {
+            state: "active".to_owned(),
+            pid: 42,
+            process_start_token: "daemon-freshness".to_owned(),
+            generation: 7,
+            heartbeat_at_ms,
+            expires_at_ms: heartbeat_at_ms + DAEMON_LEASE_STALE_AFTER_MS,
+            owner_live: true,
+            expired: false,
+        };
+
+        assert_eq!(
+            lease.freshness_at(heartbeat_at_ms + DAEMON_LEASE_DEGRADED_AFTER_MS - 1),
+            DaemonFreshness::Live
+        );
+        assert_eq!(
+            lease.freshness_at(heartbeat_at_ms + DAEMON_LEASE_DEGRADED_AFTER_MS),
+            DaemonFreshness::Degraded
+        );
+        assert_eq!(
+            lease.freshness_at(heartbeat_at_ms + DAEMON_LEASE_STALE_AFTER_MS - 1),
+            DaemonFreshness::Degraded
+        );
+        assert_eq!(
+            lease.freshness_at(heartbeat_at_ms + DAEMON_LEASE_STALE_AFTER_MS),
+            DaemonFreshness::Stale
+        );
+
+        let mut dead_owner = lease;
+        dead_owner.owner_live = false;
+        assert_eq!(
+            dead_owner.freshness_at(heartbeat_at_ms),
+            DaemonFreshness::Stale
+        );
+
+        let mut released = dead_owner;
+        released.state = "released".to_owned();
+        assert_eq!(
+            released.freshness_at(heartbeat_at_ms),
+            DaemonFreshness::Stale
+        );
+        let mut expired = released;
+        expired.state = "active".to_owned();
+        expired.owner_live = true;
+        expired.expired = true;
+        assert_eq!(
+            expired.freshness_at(heartbeat_at_ms),
+            DaemonFreshness::Stale
+        );
     }
 
     /// 验证 `daemon_control_status_and_shutdown_round_trip_has_trace_id` 场景下的预期行为。

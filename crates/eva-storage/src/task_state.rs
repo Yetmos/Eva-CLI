@@ -27,6 +27,39 @@ const MAX_TASK_EXECUTION_OWNER_BYTES: usize = 512;
 const MAX_TASK_CANCEL_TOKEN_BYTES: usize = 256;
 const TASK_STATE_CAS_RETRY_LIMIT: usize = 32;
 
+/// Default age at which a running task is reported as degraded when no newer
+/// fenced heartbeat has been persisted.
+pub const DEFAULT_TASK_HEARTBEAT_DEGRADED_AFTER_MS: u128 = 5_000;
+/// Default age at which a running task is reported as stale and becomes
+/// eligible for a later recovery decision.
+pub const DEFAULT_TASK_HEARTBEAT_STALE_AFTER_MS: u128 = 15_000;
+
+/// Derived liveness classification for a task attempt. This is observational
+/// metadata; it never changes the durable lifecycle status by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskFreshness {
+    /// A running/cancelling attempt has a recent heartbeat.
+    Live,
+    /// The heartbeat is late but still inside the reclaim grace window.
+    Degraded,
+    /// The heartbeat is absent or past the stale threshold.
+    Stale,
+    /// The task is queued, recovering, or terminal and has no active lease.
+    NotApplicable,
+}
+
+impl TaskFreshness {
+    /// Stable wire/text spelling used by CLI and diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Degraded => "degraded",
+            Self::Stale => "stale",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+}
+
 /// 一次任务允许执行的固定宽度、可持久化策略。
 /// Durable per-task attempt policy with platform-independent integer widths.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1294,6 +1327,16 @@ impl TaskStateSnapshot {
         self.push_log("info", format!("task heartbeat at {heartbeat_at_ms}"));
     }
 
+    /// Update the heartbeat timestamp without appending an unbounded log entry.
+    /// The fenced store API is responsible for proving the attempt owner.
+    fn touch_heartbeat(&mut self, heartbeat_at_ms: u128) {
+        self.heartbeat_at_ms = Some(
+            self.heartbeat_at_ms
+                .map(|previous| previous.max(heartbeat_at_ms))
+                .unwrap_or(heartbeat_at_ms),
+        );
+    }
+
     /// 记录取消请求。
     /// 非终态转换为 cancelling 且接受；终态保持原 status 并拒绝迟到取消，但仍保存请求与原因。
     pub fn request_cancel(&mut self, reason: impl Into<String>) {
@@ -1386,6 +1429,51 @@ impl TaskStateSnapshot {
         self.deadline_at_ms
             .map(|deadline| now_ms >= deadline)
             .unwrap_or(false)
+    }
+
+    /// Return the non-negative age of the latest persisted heartbeat.
+    pub fn heartbeat_age_ms(&self, now_ms: u128) -> Option<u128> {
+        self.heartbeat_at_ms
+            .map(|heartbeat| now_ms.saturating_sub(heartbeat))
+    }
+
+    /// Derive a liveness classification without mutating the task lifecycle.
+    /// Missing heartbeats are treated conservatively as stale. Thresholds are
+    /// caller-owned so daemon and tests can use a shorter controlled window.
+    pub fn freshness_at(
+        &self,
+        now_ms: u128,
+        degraded_after_ms: u128,
+        stale_after_ms: u128,
+    ) -> TaskFreshness {
+        if !matches!(self.status.as_str(), "running" | "cancelling") {
+            return TaskFreshness::NotApplicable;
+        }
+        if self.execution_owner.is_none() || self.cancel_token.is_none() || self.attempts == 0 {
+            return TaskFreshness::Stale;
+        }
+        let Some(age_ms) = self.heartbeat_age_ms(now_ms) else {
+            return TaskFreshness::Stale;
+        };
+        if degraded_after_ms > stale_after_ms {
+            return TaskFreshness::Stale;
+        }
+        if age_ms < degraded_after_ms {
+            TaskFreshness::Live
+        } else if age_ms < stale_after_ms {
+            TaskFreshness::Degraded
+        } else {
+            TaskFreshness::Stale
+        }
+    }
+
+    /// Derive liveness using the repository's default task heartbeat windows.
+    pub fn default_freshness_at(&self, now_ms: u128) -> TaskFreshness {
+        self.freshness_at(
+            now_ms,
+            DEFAULT_TASK_HEARTBEAT_DEGRADED_AFTER_MS,
+            DEFAULT_TASK_HEARTBEAT_STALE_AFTER_MS,
+        )
     }
 
     /// 判断状态是否禁止继续正常执行；interrupted 视为终态，recovering 不是。
@@ -1629,6 +1717,48 @@ impl FileSystemTaskStateStore {
         )
     }
 
+    /// Persist a monotonic heartbeat for the exact claimed attempt.
+    ///
+    /// The owner, writer generation, attempt number, and cancel token are
+    /// verified on every CAS retry. A heartbeat arriving after a terminal
+    /// transition is rejected rather than reviving or rewriting that outcome.
+    pub fn heartbeat_execution(
+        &mut self,
+        fence: &TaskAttemptFence,
+        heartbeat_at_ms: u128,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let mut current = self.read(Some(fence.task_id()))?;
+            verify_task_attempt_fence(&current, fence)?;
+            if !matches!(current.status.as_str(), "running" | "cancelling") {
+                return Err(
+                    EvaError::conflict("task heartbeat cannot renew a terminal attempt")
+                        .with_context("task_id", fence.task_id())
+                        .with_context("status", &current.status),
+                );
+            }
+            let previous_heartbeat = current.heartbeat_at_ms.unwrap_or_default();
+            if heartbeat_at_ms <= previous_heartbeat {
+                return Ok(current);
+            }
+            current.touch_heartbeat(heartbeat_at_ms);
+            let expected_version = current.record_version;
+            match self.compare_and_set_heartbeat(&current) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(fence.task_id()))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("task heartbeat exceeded the CAS retry limit")
+                .with_context("task_id", fence.task_id()),
+        )
+    }
+
     /// 以重读-CAS 循环提交取消，避免与 claim/finish 竞争时丢失控制请求。
     pub fn request_cancellation(
         &mut self,
@@ -1700,7 +1830,7 @@ impl FileSystemTaskStateStore {
             .with_context("task_id", &snapshot.task_id)
             .with_context("actual", snapshot.record_version.0.to_string()));
         }
-        self.commit_snapshot(snapshot, StateVersion::ZERO, true, false)
+        self.commit_snapshot(snapshot, StateVersion::ZERO, true, false, false)
     }
 
     /// 使用 snapshot 携带的 record version 作为 expected 值执行持久 CAS。
@@ -1708,14 +1838,21 @@ impl FileSystemTaskStateStore {
         &mut self,
         snapshot: &TaskStateSnapshot,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        self.commit_snapshot(snapshot, snapshot.record_version, false, false)
+        self.commit_snapshot(snapshot, snapshot.record_version, false, false, false)
     }
 
     fn compare_and_set_attempt_outcome(
         &mut self,
         snapshot: &TaskStateSnapshot,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        self.commit_snapshot(snapshot, snapshot.record_version, false, true)
+        self.commit_snapshot(snapshot, snapshot.record_version, false, true, true)
+    }
+
+    fn compare_and_set_heartbeat(
+        &mut self,
+        snapshot: &TaskStateSnapshot,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        self.commit_snapshot(snapshot, snapshot.record_version, false, false, true)
     }
 
     /// 从权威 ID 记录原子重建 latest 派生别名，不改变 record version。
@@ -1744,6 +1881,7 @@ impl FileSystemTaskStateStore {
         expected: StateVersion,
         create_only: bool,
         allow_attempt_outcome: bool,
+        allow_heartbeat: bool,
     ) -> Result<TaskStateSnapshot, EvaError> {
         snapshot.validate()?;
         let dir = self.task_dir();
@@ -1782,7 +1920,12 @@ impl FileSystemTaskStateStore {
                     )
                     .with_context("task_id", &snapshot.task_id));
                 }
-                validate_task_state_transition(current, snapshot, allow_attempt_outcome)?;
+                validate_task_state_transition(
+                    current,
+                    snapshot,
+                    allow_attempt_outcome,
+                    allow_heartbeat,
+                )?;
             }
             if create_only && current.is_some() {
                 return Err(EvaError::conflict("task state already exists")
@@ -2014,6 +2157,7 @@ fn validate_task_state_transition(
     current: &TaskStateSnapshot,
     proposed: &TaskStateSnapshot,
     allow_attempt_outcome: bool,
+    allow_heartbeat: bool,
 ) -> Result<(), EvaError> {
     let next_attempt = current.attempts.checked_add(1);
     let claim_deadline_valid = match (
@@ -2065,6 +2209,17 @@ fn validate_task_state_transition(
         return Err(
             EvaError::conflict("task attempt deadline is immutable after claim")
                 .with_context("task_id", &current.task_id),
+        );
+    }
+    if current.execution_owner.is_some()
+        && matches!(current.status.as_str(), "running" | "cancelling")
+        && current.heartbeat_at_ms != proposed.heartbeat_at_ms
+        && !allow_heartbeat
+    {
+        return Err(
+            EvaError::conflict("claimed task heartbeat requires the fenced heartbeat API")
+                .with_context("task_id", &current.task_id)
+                .with_context("status", &current.status),
         );
     }
     if current.execution_owner.is_some()
@@ -2391,6 +2546,8 @@ fn decode_field(value: &str) -> String {
 /// 任务快照重开、取消、durable 布局、列表、生命周期和损坏文件回归测试。
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -2713,6 +2870,192 @@ mod tests {
                 .unwrap()
                 .starts_with("format=eva.task-state.v4\n")
         );
+    }
+
+    #[test]
+    fn task_heartbeat_is_monotonic_fenced_and_drives_freshness() {
+        let root = test_root("execution-heartbeat-freshness");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"heartbeat".to_vec(),
+            "idem-execution-heartbeat",
+            TaskAttemptPolicySnapshot::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope("req-task-execution-heartbeat", envelope)
+                    .unwrap(),
+            )
+            .unwrap();
+        let claim = store
+            .try_claim_queued(
+                "req-task-execution-heartbeat",
+                "daemon.heartbeat.worker",
+                "cancel.heartbeat",
+                1_000,
+            )
+            .unwrap()
+            .unwrap();
+        let fence = claim.fence().clone();
+
+        let renewed = store.heartbeat_execution(&fence, 2_000).unwrap();
+        assert_eq!(renewed.heartbeat_at_ms, Some(2_000));
+        assert_eq!(renewed.record_version, StateVersion(3));
+        assert_eq!(
+            renewed.freshness_at(6_999, 5_000, 15_000),
+            TaskFreshness::Live
+        );
+        assert_eq!(
+            renewed.freshness_at(7_000, 5_000, 15_000),
+            TaskFreshness::Degraded
+        );
+        assert_eq!(
+            renewed.freshness_at(16_999, 5_000, 15_000),
+            TaskFreshness::Degraded
+        );
+        assert_eq!(
+            renewed.freshness_at(17_000, 5_000, 15_000),
+            TaskFreshness::Stale
+        );
+        let mut ownerless = TaskStateSnapshot::queued("req-ownerless-heartbeat").unwrap();
+        ownerless.mark_running(2_000, None, "legacy-cancel-token");
+        assert_eq!(
+            ownerless.freshness_at(2_000, 5_000, 15_000),
+            TaskFreshness::Stale
+        );
+
+        let unchanged = store.heartbeat_execution(&fence, 1_500).unwrap();
+        assert_eq!(unchanged.heartbeat_at_ms, Some(2_000));
+        assert_eq!(unchanged.record_version, StateVersion(3));
+
+        let mut unfenced = renewed;
+        unfenced.heartbeat_at_ms = Some(3_000);
+        let unfenced_error = store.compare_and_set(&unfenced).unwrap_err();
+        assert_eq!(unfenced_error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            unfenced_error.message(),
+            "claimed task heartbeat requires the fenced heartbeat API"
+        );
+
+        let completed = store
+            .finish_execution(
+                &fence,
+                &TaskAttemptOutcome::Completed {
+                    result_digest: sha256_digest(b"done"),
+                    result_size_bytes: 4,
+                },
+            )
+            .unwrap();
+        let late_error = store.heartbeat_execution(&fence, 4_000).unwrap_err();
+        assert_eq!(late_error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            store.read(Some("req-task-execution-heartbeat")).unwrap(),
+            completed
+        );
+    }
+
+    #[test]
+    fn task_heartbeat_linearizes_with_cancel_and_finish() {
+        let root = test_root("execution-heartbeat-races");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"heartbeat-race".to_vec(),
+            "idem-execution-heartbeat-race",
+            TaskAttemptPolicySnapshot::new(1, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-task-execution-heartbeat-race",
+                    envelope,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let claim = store
+            .try_claim_queued(
+                "req-task-execution-heartbeat-race",
+                "daemon.heartbeat.race",
+                "cancel.heartbeat.race",
+                1_000,
+            )
+            .unwrap()
+            .unwrap();
+        let fence = claim.fence().clone();
+
+        let start = Arc::new(Barrier::new(3));
+        let heartbeat_start = Arc::clone(&start);
+        let mut heartbeat_store = store.clone();
+        let heartbeat_fence = fence.clone();
+        let heartbeat = thread::spawn(move || {
+            heartbeat_start.wait();
+            heartbeat_store.heartbeat_execution(&heartbeat_fence, 2_000)
+        });
+        let cancel_start = Arc::clone(&start);
+        let mut cancel_store = store.clone();
+        let cancellation = thread::spawn(move || {
+            cancel_start.wait();
+            cancel_store.request_cancellation("req-task-execution-heartbeat-race", "operator stop")
+        });
+        start.wait();
+        heartbeat.join().unwrap().unwrap();
+        cancellation.join().unwrap().unwrap();
+
+        let cancelling = store
+            .read(Some("req-task-execution-heartbeat-race"))
+            .unwrap();
+        assert_eq!(cancelling.status, "cancelling");
+        assert!(cancelling.cancel_requested);
+        assert!(cancelling.cancel_accepted);
+        assert_eq!(cancelling.heartbeat_at_ms, Some(2_000));
+
+        let finish_start = Arc::new(Barrier::new(3));
+        let late_heartbeat_start = Arc::clone(&finish_start);
+        let mut late_heartbeat_store = store.clone();
+        let late_heartbeat_fence = fence.clone();
+        let late_heartbeat = thread::spawn(move || {
+            late_heartbeat_start.wait();
+            late_heartbeat_store.heartbeat_execution(&late_heartbeat_fence, 3_000)
+        });
+        let outcome_start = Arc::clone(&finish_start);
+        let mut outcome_store = store.clone();
+        let outcome_fence = fence.clone();
+        let finish = thread::spawn(move || {
+            outcome_start.wait();
+            outcome_store.finish_execution(
+                &outcome_fence,
+                &TaskAttemptOutcome::Completed {
+                    result_digest: sha256_digest(b"late-success"),
+                    result_size_bytes: 12,
+                },
+            )
+        });
+        finish_start.wait();
+        let heartbeat_result = late_heartbeat.join().unwrap();
+        let finished = finish.join().unwrap().unwrap();
+        if let Err(error) = heartbeat_result {
+            assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        }
+
+        assert_eq!(finished.status, "cancelled");
+        assert!(finished.cancel_requested);
+        assert!(finished.cancel_accepted);
+        assert!(finished.result_digest.is_none());
+        let persisted = store
+            .read(Some("req-task-execution-heartbeat-race"))
+            .unwrap();
+        assert_eq!(persisted.status, "cancelled");
+        assert!(
+            persisted.heartbeat_at_ms == Some(2_000) || persisted.heartbeat_at_ms == Some(3_000)
+        );
+        let stale_fence_error = store.heartbeat_execution(&fence, 4_000).unwrap_err();
+        assert_eq!(stale_fence_error.kind(), eva_core::ErrorKind::Conflict);
     }
 
     #[test]

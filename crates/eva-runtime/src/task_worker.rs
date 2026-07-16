@@ -4,8 +4,8 @@ use crate::{TaskArtifactRef, TaskEnvelope, TaskInput, TaskKind};
 use eva_core::{ErrorKind, EvaError, RequestId};
 use eva_storage::{
     artifact_store::sha256_digest, ArtifactRecord, ArtifactStore, FileSystemArtifactStore,
-    FileSystemTaskStateStore, InMemoryArtifactStore, TaskAttemptOutcome, TaskExecutionClaim,
-    TaskStateStore,
+    FileSystemTaskStateStore, InMemoryArtifactStore, TaskAttemptFence, TaskAttemptOutcome,
+    TaskExecutionClaim, TaskStateStore,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -27,6 +27,47 @@ pub const DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Idle wait between durable task scans. Explicit notifications wake the worker earlier.
 pub const DEFAULT_TASK_WORKER_POLL_INTERVAL_MS: u64 = 25;
+/// Persisted heartbeat cadence for an active task attempt.
+pub const DEFAULT_TASK_HEARTBEAT_INTERVAL_MS: u64 = 1_000;
+
+/// Timing knobs for the worker scan and per-attempt heartbeat loops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TaskWorkerTiming {
+    /// Idle scan interval.
+    poll_interval: Duration,
+    /// Active-attempt heartbeat interval.
+    heartbeat_interval: Duration,
+}
+
+impl Default for TaskWorkerTiming {
+    fn default() -> Self {
+        Self {
+            poll_interval: Duration::from_millis(DEFAULT_TASK_WORKER_POLL_INTERVAL_MS),
+            heartbeat_interval: Duration::from_millis(DEFAULT_TASK_HEARTBEAT_INTERVAL_MS),
+        }
+    }
+}
+
+impl TaskWorkerTiming {
+    /// Build timing values while rejecting a busy-loop configuration.
+    #[cfg(test)]
+    fn new(poll_interval: Duration, heartbeat_interval: Duration) -> Result<Self, EvaError> {
+        Self {
+            poll_interval,
+            heartbeat_interval,
+        }
+        .validate()
+    }
+
+    fn validate(self) -> Result<Self, EvaError> {
+        if self.poll_interval.is_zero() || self.heartbeat_interval.is_zero() {
+            return Err(EvaError::invalid_argument(
+                "task worker timing intervals must be greater than zero",
+            ));
+        }
+        Ok(self)
+    }
+}
 
 const TASK_HANDLER_PANIC_MESSAGE: &str = "task handler panicked";
 
@@ -365,6 +406,7 @@ struct ActiveTaskAttempt {
 struct TaskWorkerShared {
     stop_requested: AtomicBool,
     claims_enabled: AtomicBool,
+    poll_interval: Duration,
     wait_lock: Mutex<()>,
     wake: Condvar,
     active: Mutex<BTreeMap<String, ActiveTaskAttempt>>,
@@ -372,10 +414,11 @@ struct TaskWorkerShared {
 }
 
 impl TaskWorkerShared {
-    fn new() -> Self {
+    fn new(timing: TaskWorkerTiming) -> Self {
         Self {
             stop_requested: AtomicBool::new(false),
             claims_enabled: AtomicBool::new(false),
+            poll_interval: timing.poll_interval,
             wait_lock: Mutex::new(()),
             wake: Condvar::new(),
             active: Mutex::new(BTreeMap::new()),
@@ -482,10 +525,7 @@ impl TaskWorkerShared {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !self.should_stop() {
-            let _ = self.wake.wait_timeout(
-                guard,
-                Duration::from_millis(DEFAULT_TASK_WORKER_POLL_INTERVAL_MS),
-            );
+            let _ = self.wake.wait_timeout(guard, self.poll_interval);
         }
     }
 }
@@ -504,7 +544,13 @@ impl TaskWorkerRuntime {
         artifacts: Arc<dyn TaskArtifactResolver>,
         execution_owner: impl Into<String>,
     ) -> Result<Self, EvaError> {
-        let worker = Self::start_paused(store, registry, artifacts, execution_owner)?;
+        let worker = Self::start_paused_with_timing(
+            store,
+            registry,
+            artifacts,
+            execution_owner,
+            TaskWorkerTiming::default(),
+        )?;
         worker.activate();
         Ok(worker)
     }
@@ -516,6 +562,24 @@ impl TaskWorkerRuntime {
         artifacts: Arc<dyn TaskArtifactResolver>,
         execution_owner: impl Into<String>,
     ) -> Result<Self, EvaError> {
+        Self::start_paused_with_timing(
+            store,
+            registry,
+            artifacts,
+            execution_owner,
+            TaskWorkerTiming::default(),
+        )
+    }
+
+    /// Creates a paused worker with explicit scan and heartbeat intervals.
+    fn start_paused_with_timing(
+        store: FileSystemTaskStateStore,
+        registry: Arc<TaskHandlerRegistry>,
+        artifacts: Arc<dyn TaskArtifactResolver>,
+        execution_owner: impl Into<String>,
+        timing: TaskWorkerTiming,
+    ) -> Result<Self, EvaError> {
+        let timing = timing.validate()?;
         let execution_owner = execution_owner.into();
         if execution_owner.is_empty()
             || execution_owner.trim() != execution_owner
@@ -526,7 +590,7 @@ impl TaskWorkerRuntime {
                 "task worker execution owner is invalid",
             ));
         }
-        let shared = Arc::new(TaskWorkerShared::new());
+        let shared = Arc::new(TaskWorkerShared::new(timing));
         let thread_shared = Arc::clone(&shared);
         let join = thread::Builder::new()
             .name("eva-task-worker".to_owned())
@@ -537,6 +601,7 @@ impl TaskWorkerRuntime {
                         registry,
                         artifacts,
                         execution_owner,
+                        timing,
                         Arc::clone(&thread_shared),
                     )
                 }));
@@ -638,6 +703,7 @@ fn run_task_worker_loop(
     registry: Arc<TaskHandlerRegistry>,
     artifacts: Arc<dyn TaskArtifactResolver>,
     execution_owner: String,
+    timing: TaskWorkerTiming,
     shared: Arc<TaskWorkerShared>,
 ) -> Result<(), EvaError> {
     loop {
@@ -673,11 +739,112 @@ fn run_task_worker_loop(
                 artifacts.as_ref(),
                 &shared,
                 claim,
+                timing.heartbeat_interval,
             )?;
         }
         if !claimed_any {
             shared.wait_for_work();
         }
+    }
+}
+
+/// A short-lived heartbeat thread owned by one synchronous handler attempt.
+/// The handler trait is intentionally synchronous, so the durable lease must
+/// be renewed independently while the handler is blocked.
+struct TaskHeartbeatLoop {
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    error: Arc<Mutex<Option<EvaError>>>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl TaskHeartbeatLoop {
+    fn start(
+        store: &FileSystemTaskStateStore,
+        fence: &TaskAttemptFence,
+        cancellation: TaskCancellationView,
+        interval: Duration,
+    ) -> Result<Self, EvaError> {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let error = Arc::new(Mutex::new(None));
+        let thread_stop = Arc::clone(&stop);
+        let thread_error = Arc::clone(&error);
+        let mut heartbeat_store = store.clone();
+        let heartbeat_fence = fence.clone();
+        let join = thread::Builder::new()
+            .name("eva-task-heartbeat".to_owned())
+            .spawn(move || loop {
+                let stopped = thread_stop
+                    .0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let (stopped, _) = thread_stop
+                    .1
+                    .wait_timeout_while(stopped, interval, |stopped| !*stopped)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if *stopped {
+                    break;
+                }
+                drop(stopped);
+                let now_ms = match worker_now_ms() {
+                    Ok(value) => value,
+                    Err(clock_error) => {
+                        let mut slot = thread_error
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        *slot = Some(clock_error);
+                        cancellation.request();
+                        break;
+                    }
+                };
+                match heartbeat_store.heartbeat_execution(&heartbeat_fence, now_ms) {
+                    Ok(_) => {}
+                    Err(heartbeat_error) => {
+                        let mut slot = thread_error
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        *slot = Some(heartbeat_error);
+                        cancellation.request();
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| {
+                EvaError::internal("failed to start task heartbeat thread")
+                    .with_context("io_error", error.to_string())
+            })?;
+        Ok(Self {
+            stop,
+            error,
+            join: Some(join),
+        })
+    }
+
+    fn stop_and_join(&mut self) -> Option<EvaError> {
+        {
+            let mut stopped = self
+                .stop
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *stopped = true;
+            self.stop.1.notify_all();
+        }
+        let join_error = self.join.take().and_then(|join| {
+            join.join()
+                .err()
+                .map(|_| EvaError::internal("task heartbeat thread panicked"))
+        });
+        self.error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .or(join_error)
+    }
+}
+
+impl Drop for TaskHeartbeatLoop {
+    fn drop(&mut self) {
+        let _ = self.stop_and_join();
     }
 }
 
@@ -687,11 +854,31 @@ fn execute_task_claim(
     artifacts: &dyn TaskArtifactResolver,
     shared: &TaskWorkerShared,
     claim: TaskExecutionClaim,
+    heartbeat_interval: Duration,
 ) -> Result<(), EvaError> {
     let task_id = RequestId::parse(&claim.snapshot().task_id)?;
     let cancel_token = claim.fence().cancel_token().to_owned();
     let cancellation = TaskCancellationView::default();
     shared.register_attempt(task_id.as_str(), &cancel_token, cancellation.clone())?;
+    let mut heartbeat = match TaskHeartbeatLoop::start(
+        store,
+        claim.fence(),
+        cancellation.clone(),
+        heartbeat_interval,
+    ) {
+        Ok(heartbeat) => heartbeat,
+        Err(error) => {
+            shared.unregister_attempt(task_id.as_str(), &cancel_token);
+            store.finish_execution(
+                claim.fence(),
+                &TaskAttemptOutcome::Failed {
+                    error_kind: error.kind().as_str().to_owned(),
+                    error_message: error.message().to_owned(),
+                },
+            )?;
+            return Ok(());
+        }
+    };
 
     let execution = (|| {
         let mut latest = store.read(Some(task_id.as_str()))?;
@@ -725,6 +912,14 @@ fn execute_task_claim(
                 claim.snapshot(),
                 &cancellation,
             )?
+        };
+        let heartbeat_error = heartbeat.stop_and_join();
+        let outcome = match heartbeat_error {
+            Some(error) => TaskAttemptOutcome::Failed {
+                error_kind: error.kind().as_str().to_owned(),
+                error_message: "task heartbeat persistence failed".to_owned(),
+            },
+            None => outcome,
         };
         store.finish_execution(claim.fence(), &outcome)?;
         Ok(())
@@ -1287,7 +1482,6 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_by_handler = Arc::clone(&calls);
         let mut registry = TaskHandlerRegistry::new();
@@ -1331,6 +1525,124 @@ mod tests {
             completed.result_digest.as_deref(),
             Some(sha256_digest(b"execute-once").as_str())
         );
+    }
+
+    #[test]
+    fn active_worker_renews_heartbeat_and_cannot_be_reclaimed() {
+        let root = test_root("worker-heartbeat-owner");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        let task = envelope(
+            "vendor.heartbeat",
+            TaskInput::inline(b"keep-alive".as_slice()).unwrap(),
+        );
+        store
+            .create(
+                &eva_storage::TaskStateSnapshot::queued_with_envelope(
+                    "req-worker-heartbeat",
+                    task.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let sentinel = envelope(
+            "runtime.echo",
+            TaskInput::inline(b"competitor-scanned".as_slice()).unwrap(),
+        );
+        store
+            .create(
+                &eva_storage::TaskStateSnapshot::queued_with_envelope(
+                    "req-worker-z-heartbeat-sentinel",
+                    sentinel.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_by_handler = Arc::clone(&calls);
+        let handler_started = Arc::new(AtomicBool::new(false));
+        let started_by_handler = Arc::clone(&handler_started);
+        let release_handler = Arc::new(AtomicBool::new(false));
+        let release_by_handler = Arc::clone(&release_handler);
+        let mut registry = TaskHandlerRegistry::with_runtime_defaults().unwrap();
+        registry
+            .register(
+                TaskKind::parse("vendor.heartbeat").unwrap(),
+                move |invocation: &TaskHandlerInvocation<'_>| {
+                    calls_by_handler.fetch_add(1, Ordering::SeqCst);
+                    started_by_handler.store(true, Ordering::Release);
+                    while !release_by_handler.load(Ordering::Acquire) {
+                        assert!(!invocation.cancellation().is_requested());
+                        thread::yield_now();
+                    }
+                    Ok(TaskHandlerResult::new(invocation.payload()))
+                },
+            )
+            .unwrap();
+        let registry = Arc::new(registry);
+        let artifacts: Arc<dyn TaskArtifactResolver> = Arc::new(InMemoryArtifactStore::new());
+        let timing =
+            TaskWorkerTiming::new(Duration::from_millis(5), Duration::from_millis(10)).unwrap();
+        let mut owner = TaskWorkerRuntime::start_paused_with_timing(
+            store.clone(),
+            Arc::clone(&registry),
+            Arc::clone(&artifacts),
+            "daemon:g1:heartbeat-owner",
+            timing,
+        )
+        .unwrap();
+        owner.activate();
+        wait_until(Duration::from_secs(2), || {
+            handler_started.load(Ordering::Acquire)
+        });
+        let initial_heartbeat = store
+            .read(Some("req-worker-heartbeat"))
+            .unwrap()
+            .heartbeat_at_ms
+            .unwrap();
+        wait_until(Duration::from_secs(2), || {
+            store
+                .read(Some("req-worker-heartbeat"))
+                .unwrap()
+                .heartbeat_at_ms
+                .is_some_and(|heartbeat| heartbeat > initial_heartbeat)
+        });
+
+        let mut competitor = TaskWorkerRuntime::start_paused_with_timing(
+            store.clone(),
+            registry,
+            artifacts,
+            "daemon:g1:heartbeat-competitor",
+            timing,
+        )
+        .unwrap();
+        competitor.activate();
+        competitor.notify_new_work();
+        let sentinel = wait_for_task_status(&store, "req-worker-z-heartbeat-sentinel", "completed");
+
+        let active = store.read(Some("req-worker-heartbeat")).unwrap();
+        assert_eq!(active.status, "running");
+        assert_eq!(active.attempts, 1);
+        assert_eq!(
+            active.execution_owner.as_deref(),
+            Some("daemon:g1:heartbeat-owner")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sentinel.execution_owner.as_deref(),
+            Some("daemon:g1:heartbeat-competitor")
+        );
+        assert_eq!(
+            active.default_freshness_at(worker_now_ms().unwrap()),
+            eva_storage::TaskFreshness::Live
+        );
+
+        release_handler.store(true, Ordering::Release);
+        let completed = wait_for_task_status(&store, "req-worker-heartbeat", "completed");
+        owner.stop_and_join().unwrap();
+        competitor.stop_and_join().unwrap();
+        assert_eq!(completed.attempts, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

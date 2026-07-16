@@ -1516,10 +1516,16 @@ fn write_daemon_control<W: Write>(
                 .map_err(write_error_kind)?;
             writeln!(writer, "trace_id: {}", report.trace_id).map_err(write_error_kind)?;
             if let Some(lease) = &report.lease {
+                let observed_at_ms = daemon_observed_at_ms();
                 writeln!(
                     writer,
-                    "lease: state={} generation={} owner_live={} expired={}",
-                    lease.state, lease.generation, lease.owner_live, lease.expired
+                    "lease: state={} generation={} owner_live={} expired={} freshness={} heartbeat_age_ms={}",
+                    lease.state,
+                    lease.generation,
+                    lease.owner_live,
+                    lease.expired,
+                    lease.freshness_at(observed_at_ms).as_str(),
+                    lease.heartbeat_age_ms(observed_at_ms),
                 )
                 .map_err(write_error_kind)?;
             }
@@ -1738,17 +1744,27 @@ fn daemon_paths_json(paths: &DaemonPathReport) -> String {
 
 /// 将 daemon lease 身份、续租时间和 owner 判活证据编码为稳定 JSON。
 fn daemon_lease_json(lease: &DaemonLeaseReport) -> String {
+    let observed_at_ms = daemon_observed_at_ms();
     format!(
-        "{{\"state\":{},\"pid\":{},\"process_start_token\":{},\"generation\":{},\"heartbeat_at_ms\":{},\"expires_at_ms\":{},\"owner_live\":{},\"expired\":{}}}",
+        "{{\"state\":{},\"pid\":{},\"process_start_token\":{},\"generation\":{},\"heartbeat_at_ms\":{},\"heartbeat_age_ms\":{},\"freshness\":{},\"expires_at_ms\":{},\"owner_live\":{},\"expired\":{}}}",
         json_string(&lease.state),
         lease.pid,
         json_string(&lease.process_start_token),
         lease.generation,
         lease.heartbeat_at_ms,
+        lease.heartbeat_age_ms(observed_at_ms),
+        json_string(lease.freshness_at(observed_at_ms).as_str()),
         lease.expires_at_ms,
         lease.owner_live,
         lease.expired
     )
+}
+
+fn daemon_observed_at_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 /// 将 daemon 硬件热插拔订阅报告编码为 JSON。

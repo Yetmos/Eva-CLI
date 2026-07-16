@@ -17,6 +17,10 @@
         "retry_policy": {
           "max_attempts": 1
         },
+        "execution": {
+          "heartbeat_age_ms": null,
+          "freshness": "not_applicable"
+        },
         "cancellation": {
           "requested": false,
           "accepted": false,

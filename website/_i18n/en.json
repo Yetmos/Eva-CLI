@@ -330,7 +330,7 @@
       {
         "id": "v1.x-real-runtime-implementation-plan",
         "title": "V1.x Real Runtime Implementation Plan",
-        "description": "Tracks 123 W0-W10 logic-level changes with stable IDs, prerequisites, owning boundaries, and testable evidence; the current snapshot is 16 Done, 2 Ready, and 105 Blocked."
+        "description": "Tracks 123 W0-W10 logic-level changes with stable IDs, prerequisites, owning boundaries, and testable evidence; the current snapshot is 17 Done, 2 Ready, and 104 Blocked."
       },
       {
         "id": "project-release-plan",

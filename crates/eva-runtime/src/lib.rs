@@ -48,6 +48,6 @@ pub use task::{
 pub use task_worker::{
     FileSystemTaskArtifactResolver, TaskArtifactResolver, TaskCancellationView, TaskHandler,
     TaskHandlerInvocation, TaskHandlerRegistry, TaskHandlerResult, TaskWorkerRuntime,
-    DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES, DEFAULT_TASK_WORKER_POLL_INTERVAL_MS,
-    TASK_HANDLER_NOT_REGISTERED_MESSAGE,
+    DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES, DEFAULT_TASK_HEARTBEAT_INTERVAL_MS,
+    DEFAULT_TASK_WORKER_POLL_INTERVAL_MS, TASK_HANDLER_NOT_REGISTERED_MESSAGE,
 };

@@ -15,6 +15,7 @@ use eva_storage::{
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Task 子命令及其共享选项。
@@ -154,7 +155,10 @@ pub(super) fn write_task_snapshot(
 
 /// 将基础运行报告的任务部分转换为与 task 命令相同的 JSON 契约。
 pub(super) fn task_snapshot_json_from_report(report: &BasicRunReport) -> String {
-    task_snapshot_json(&TaskStateSnapshot::from(&report.task))
+    task_snapshot_json(
+        &TaskStateSnapshot::from(&report.task),
+        task_observed_at_ms(),
+    )
 }
 
 /// 解析任务 ID、取消原因和后端路径，并委托公共选项解析器处理其余参数。
@@ -275,12 +279,24 @@ fn write_task_status<W: Write>(
     snapshot: &TaskStateSnapshot,
     trace: &TraceFields,
 ) -> Result<(), EvaError> {
+    let observed_at_ms = task_observed_at_ms();
+    let freshness = snapshot.default_freshness_at(observed_at_ms);
+    let heartbeat_age_ms = snapshot.heartbeat_age_ms(observed_at_ms);
     match output {
         OutputFormat::Text => {
             writeln!(
                 writer,
                 "task {} status={} attempts={}/{}",
                 snapshot.task_id, snapshot.status, snapshot.attempts, snapshot.retry_max_attempts
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "freshness: {} heartbeat_age_ms={}",
+                freshness.as_str(),
+                heartbeat_age_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_owned())
             )
             .map_err(write_error_kind)?;
             if let Some(envelope) = &snapshot.envelope {
@@ -336,7 +352,12 @@ fn write_task_status<W: Write>(
         OutputFormat::Json => writeln!(
             writer,
             "{}",
-            success_envelope("task.status", EXIT_OK, &task_snapshot_json(snapshot), trace)
+            success_envelope(
+                "task.status",
+                EXIT_OK,
+                &task_snapshot_json(snapshot, observed_at_ms),
+                trace,
+            )
         )
         .map_err(write_error_kind),
     }
@@ -388,7 +409,12 @@ fn write_task_cancel<W: Write>(
         OutputFormat::Json => writeln!(
             writer,
             "{}",
-            success_envelope("task.cancel", EXIT_OK, &task_snapshot_json(snapshot), trace)
+            success_envelope(
+                "task.cancel",
+                EXIT_OK,
+                &task_snapshot_json(snapshot, task_observed_at_ms()),
+                trace,
+            )
         )
         .map_err(write_error_kind),
     }
@@ -405,9 +431,9 @@ fn task_logs_json(snapshot: &TaskStateSnapshot) -> String {
 }
 
 /// 将完整任务状态快照编码为稳定 JSON。
-fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
+fn task_snapshot_json(snapshot: &TaskStateSnapshot, observed_at_ms: u128) -> String {
     let envelope = task_envelope_json(snapshot);
-    let execution = task_execution_json(snapshot);
+    let execution = task_execution_json(snapshot, observed_at_ms);
     let (retry_backoff_ms, attempt_timeout_ms) = snapshot
         .envelope
         .as_ref()
@@ -440,14 +466,20 @@ fn task_snapshot_json(snapshot: &TaskStateSnapshot) -> String {
     )
 }
 
-fn task_execution_json(snapshot: &TaskStateSnapshot) -> String {
+fn task_execution_json(snapshot: &TaskStateSnapshot, observed_at_ms: u128) -> String {
+    let freshness = snapshot.default_freshness_at(observed_at_ms);
     format!(
-        "{{\"owner\":{},\"heartbeat_at_ms\":{},\"deadline_at_ms\":{},\"result_digest\":{},\"result_size_bytes\":{}}}",
+        "{{\"owner\":{},\"heartbeat_at_ms\":{},\"heartbeat_age_ms\":{},\"freshness\":{},\"deadline_at_ms\":{},\"result_digest\":{},\"result_size_bytes\":{}}}",
         option_json(snapshot.execution_owner.as_deref()),
         snapshot
             .heartbeat_at_ms
             .map(|value| value.to_string())
             .unwrap_or_else(|| "null".to_owned()),
+        snapshot
+            .heartbeat_age_ms(observed_at_ms)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_owned()),
+        json_string(freshness.as_str()),
         snapshot
             .deadline_at_ms
             .map(|value| value.to_string())
@@ -458,6 +490,13 @@ fn task_execution_json(snapshot: &TaskStateSnapshot) -> String {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "null".to_owned())
     )
+}
+
+fn task_observed_at_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 fn task_envelope_json(snapshot: &TaskStateSnapshot) -> String {
