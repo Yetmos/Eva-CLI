@@ -9,9 +9,9 @@ use eva_core::{AgentId, EvaError, RequestId};
 use eva_observability::TraceFields;
 use eva_runtime::{
     send_daemon_control_request, start_daemon, DaemonControlOperation, DaemonControlRequest,
-    DaemonControlResponse, DaemonPathReport, DaemonPolicyReport, DaemonStartOptions,
-    DaemonStartReport, DaemonStateRecord, IdempotencyKey, TaskArtifactRef, TaskAttemptPolicy,
-    TaskEnvelope, TaskInput, TaskKind,
+    DaemonControlResponse, DaemonLeaseReport, DaemonPathReport, DaemonPolicyReport,
+    DaemonStartOptions, DaemonStartReport, DaemonStateRecord, IdempotencyKey, TaskArtifactRef,
+    TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind,
 };
 use eva_storage::DurableBackendReport;
 use std::io::Write;
@@ -618,6 +618,15 @@ fn write_daemon_start<W: Write>(
             writeln!(writer, "pid: {}", report.pid).map_err(write_error_kind)?;
             writeln!(
                 writer,
+                "lease: state={} generation={} heartbeat_at_ms={} expires_at_ms={}",
+                report.lease.state,
+                report.lease.generation,
+                report.lease.heartbeat_at_ms,
+                report.lease.expires_at_ms
+            )
+            .map_err(write_error_kind)?;
+            writeln!(
+                writer,
                 "provider_processes_started: {}",
                 report.provider_processes_started
             )
@@ -690,6 +699,14 @@ fn write_daemon_control<W: Write>(
             writeln!(writer, "mutation_executed: {}", report.mutation_executed)
                 .map_err(write_error_kind)?;
             writeln!(writer, "trace_id: {}", report.trace_id).map_err(write_error_kind)?;
+            if let Some(lease) = &report.lease {
+                writeln!(
+                    writer,
+                    "lease: state={} generation={} owner_live={} expired={}",
+                    lease.state, lease.generation, lease.owner_live, lease.expired
+                )
+                .map_err(write_error_kind)?;
+            }
             writeln!(writer, "message: {}", report.message).map_err(write_error_kind)
         }
         OutputFormat::Json => writeln!(
@@ -709,7 +726,7 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
         .map(shutdown_json)
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"status\":{},\"mode\":{},\"pid\":{},\"generation_id\":{},\"project_root\":{},\"foreground\":{},\"dev_mode\":{},\"provider_processes_started\":{},\"paths\":{},\"durable_backend\":{},\"recovery\":{},\"policy\":{},\"observability\":{},\"hardware_hotplug\":{},\"memory_maintenance\":{},\"shutdown\":{},\"audit\":{}}}",
+        "{{\"status\":{},\"mode\":{},\"pid\":{},\"generation_id\":{},\"project_root\":{},\"foreground\":{},\"dev_mode\":{},\"provider_processes_started\":{},\"paths\":{},\"lease\":{},\"durable_backend\":{},\"recovery\":{},\"policy\":{},\"observability\":{},\"hardware_hotplug\":{},\"memory_maintenance\":{},\"shutdown\":{},\"audit\":{}}}",
         json_string(&report.status),
         json_string(&report.mode),
         report.pid,
@@ -719,6 +736,7 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
         report.dev_mode,
         report.provider_processes_started,
         daemon_paths_json(&report.paths),
+        daemon_lease_json(&report.lease),
         durable_backend_json(&report.durable_backend),
         recovery_json(&report.recovery),
         daemon_policy_json(&report.policy),
@@ -856,8 +874,13 @@ fn daemon_control_json(report: &DaemonControlResponse) -> String {
         .as_ref()
         .map(shutdown_json)
         .unwrap_or_else(|| "null".to_owned());
+    let lease = report
+        .lease
+        .as_ref()
+        .map(daemon_lease_json)
+        .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"request_id\":{},\"trace_id\":{},\"operation\":{},\"accepted\":{},\"daemon_available\":{},\"status\":{},\"mutation_executed\":{},\"request_file\":{},\"response_file\":{},\"state\":{},\"task_id\":{},\"plan_id\":{},\"generation_id\":{},\"message\":{},\"shutdown\":{},\"audit\":{}}}",
+        "{{\"request_id\":{},\"trace_id\":{},\"operation\":{},\"accepted\":{},\"daemon_available\":{},\"status\":{},\"mutation_executed\":{},\"request_file\":{},\"response_file\":{},\"state\":{},\"lease\":{},\"task_id\":{},\"plan_id\":{},\"generation_id\":{},\"message\":{},\"shutdown\":{},\"audit\":{}}}",
         json_string(report.request_id.as_str()),
         json_string(&report.trace_id),
         json_string(report.operation.as_str()),
@@ -868,6 +891,7 @@ fn daemon_control_json(report: &DaemonControlResponse) -> String {
         json_string(&report.request_file),
         json_string(&report.response_file),
         state,
+        lease,
         option_json(report.task_id.as_deref()),
         option_json(report.plan_id.as_deref()),
         option_json(report.generation_id.as_deref()),
@@ -880,7 +904,7 @@ fn daemon_control_json(report: &DaemonControlResponse) -> String {
 /// 将 daemon 解析后的状态、锁、pid 和 control 路径编码为 JSON。
 fn daemon_paths_json(paths: &DaemonPathReport) -> String {
     format!(
-        "{{\"durable_backend_root\":{},\"observability_backend_root\":{},\"state_dir\":{},\"lock_dir\":{},\"pid_dir\":{},\"control_request_dir\":{},\"control_response_dir\":{},\"state_file\":{},\"hardware_hotplug_state_file\":{},\"lock_file\":{},\"pid_file\":{}}}",
+        "{{\"durable_backend_root\":{},\"observability_backend_root\":{},\"state_dir\":{},\"lock_dir\":{},\"pid_dir\":{},\"control_request_dir\":{},\"control_response_dir\":{},\"state_file\":{},\"hardware_hotplug_state_file\":{},\"lock_file\":{},\"lease_file\":{},\"pid_file\":{}}}",
         json_string(&paths.durable_backend_root),
         json_string(&paths.observability_backend_root),
         json_string(&paths.state_dir),
@@ -891,7 +915,23 @@ fn daemon_paths_json(paths: &DaemonPathReport) -> String {
         json_string(&paths.state_file),
         json_string(&paths.hardware_hotplug_state_file),
         json_string(&paths.lock_file),
+        json_string(&paths.lease_file),
         json_string(&paths.pid_file)
+    )
+}
+
+/// 将 daemon lease 身份、续租时间和 owner 判活证据编码为稳定 JSON。
+fn daemon_lease_json(lease: &DaemonLeaseReport) -> String {
+    format!(
+        "{{\"state\":{},\"pid\":{},\"process_start_token\":{},\"generation\":{},\"heartbeat_at_ms\":{},\"expires_at_ms\":{},\"owner_live\":{},\"expired\":{}}}",
+        json_string(&lease.state),
+        lease.pid,
+        json_string(&lease.process_start_token),
+        lease.generation,
+        lease.heartbeat_at_ms,
+        lease.expires_at_ms,
+        lease.owner_live,
+        lease.expired
     )
 }
 

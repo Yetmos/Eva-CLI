@@ -20,8 +20,8 @@ This document separates those implemented local contracts from the intended prod
 
 | Surface | What it does now | What it does not do |
 | --- | --- | --- |
-| `daemon start` | Opens a durable backend, lock/PID/state files, recovery scan, observability, memory maintenance, and a foreground control loop | Start provider processes or install a background service |
-| daemon control | Uses filesystem request/response mailboxes for status, submit, cancel, drain, reload, and shutdown | Authenticate a network control plane or prove PID liveness |
+| `daemon start` | Claims a fenced daemon/writer lease, opens durable PID/state, runs recovery, observability and memory maintenance, and enters a foreground control loop | Start provider processes or install a background service |
+| daemon control | Uses filesystem request/response mailboxes and validates a fresh lease, live OS-lock owner, and full PID identity | Authenticate a network control plane or provide background service supervision |
 | Agent drain/reload | Returns a local plan or writes daemon-side Agent generation/control state | Restart an Agent/provider process or reread configuration/scripts |
 | lifecycle library | Models in-memory generation promotion, drain, rollback, apply locks, and handoff evidence | Supervise OS child processes or switch real ingress traffic |
 | `upgrade check` | Builds an in-memory readiness, migration, drain, and rollback report | Start a candidate Runtime or write an apply plan file |
@@ -40,7 +40,7 @@ Default paths derive from `runtime.data_dir` (the sample uses `.eva/data`):
 .eva/data/observability
 ```
 
-The default command is a one-shot smoke. It starts, verifies boundaries, shuts down, and removes its normal lock/PID files:
+The default command is a one-shot smoke. It starts, verifies boundaries, shuts down, removes the PID projection, marks `daemon.lease` released, and retains the unlocked fixed `daemon.lock` anchor:
 
 ```powershell
 cargo run -q -- daemon start --foreground --dev --output json
@@ -58,7 +58,7 @@ cargo run -q -- daemon submit --task req-upgrade-doc --output json
 cargo run -q -- daemon shutdown --output json
 ```
 
-`provider_processes_started` remains `false`. Status is derived from the saved state plus lock/PID file presence; it does not probe whether the recorded PID is alive. An abnormal termination can leave a stale `create_new` lock and make the next start fail with a conflict. There is no automatic stale-lock repair or machine-reboot recovery.
+`provider_processes_started` remains `false`. Status requires a running state, a versioned PID/process-token/generation projection, a fresh active lease, and a live OS lock on the fixed anchor. The daemon renews heartbeat on the foreground loop; a live owner is never stolen even after expiry, a dead-but-unexpired owner waits for its TTL, and a dead expired owner is reclaimed with a higher durable writer generation. Corrupt/legacy ownership metadata fails closed. Background spawn, service installation, task-worker liveness, and machine-reboot recovery remain unimplemented.
 
 At startup, the daemon scans durable task/provider snapshots, marks interrupted work, and writes local evidence. When kept in the persistent mailbox loop with `--no-shutdown-after-smoke`, it also runs due scheduler retry dispatch. Its durable event records are filesystem records rather than a production WAL with fsync, segmentation, or compaction guarantees. The basic example still uses `InMemoryEventBus` unless a command explicitly selects a durable path.
 
@@ -111,7 +111,7 @@ If binary probing or health fails after policy approval, prepared handoff and ro
 - The daemon recovery scanner classifies interrupted task/provider snapshots but does not replay non-idempotent provider side effects.
 - `upgrade apply` preserves local prepared/committed reports and a pointer mutation only inside the supplied state store.
 - Rollback objects are plans/evidence. There is no CLI command that reactivates an old OS-managed Runtime service.
-- A failed or stale lock requires explicit operator inspection; status does not repair it.
+- Corrupt or legacy lease/anchor metadata requires explicit operator inspection; valid dead expired daemon leases are reclaimed atomically on the next claim.
 
 ## Not Implemented
 
@@ -119,7 +119,7 @@ The current code does not provide:
 
 - Windows Service, systemd, launchd, or boot/login registration;
 - a persistent Supervisor process or `SupervisorRecoveryGuard`;
-- heartbeat, control epoch, PID reattachment, or automatic child restart;
+- task/worker heartbeat, control epoch, PID reattachment, or automatic child restart;
 - two live Runtime processes, canary traffic, Ingress Gate, or session routing;
 - automatic snapshot-backed upgrade/rollback;
 - production provider process supervision;

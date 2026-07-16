@@ -957,7 +957,7 @@ mod tests {
     use std::net::TcpListener;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     /// 返回仓库根目录，供 CLI 集成测试读取真实示例配置和 schema。
     fn workspace_root() -> PathBuf {
@@ -999,7 +999,8 @@ mod tests {
 
     /// 等待 daemon 状态、锁和 pid 边界全部就绪，限制轮询次数以防测试无限挂起。
     fn wait_for_daemon_files(state: &Path, locks: &Path, pids: &Path) {
-        for _ in 0..100 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
             let state_running = fs::read_to_string(state.join("daemon.state"))
                 .map(|data| data.contains("status=running"))
                 .unwrap_or(false);
@@ -1009,9 +1010,15 @@ mod tests {
             {
                 return;
             }
+            if Instant::now() >= deadline {
+                panic!(
+                    "daemon files did not become available: state_running={state_running}, lock_present={}, pid_present={}",
+                    locks.join("daemon.lock").is_file(),
+                    pids.join("daemon.pid").is_file()
+                );
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
-        panic!("daemon files did not become available");
     }
 
     /// 递归复制测试项目 fixture，保留文件层级但不共享可变状态。
@@ -1795,6 +1802,9 @@ mod tests {
         assert!(stdout.contains("\"watcher_kind\":\"manifest_snapshot\""));
         assert!(stdout.contains("\"raw_handles_exposed\":false"));
         assert!(stdout.contains("\"hardware_hotplug_state_file\":"));
+        assert!(stdout.contains("\"lease_file\":"));
+        assert!(stdout.contains("\"lease\":{\"state\":\"released\""));
+        assert!(stdout.contains("\"generation\":1"));
         assert!(stdout.contains("\"memory_maintenance\":{"));
         assert!(stdout.contains("\"memory_gc\":{"));
         assert!(stdout.contains("\"knowledge_rebuild\":{"));
@@ -1812,7 +1822,8 @@ mod tests {
             .join("knowledge")
             .join("knowledge-rebuild.checkpoint")
             .is_file());
-        assert!(!locks.join("daemon.lock").exists());
+        assert!(locks.join("daemon.lock").is_file());
+        assert!(locks.join("daemon.lease").is_file());
         assert!(!pids.join("daemon.pid").exists());
         assert!(observability.join("audit.jsonl").is_file());
         assert!(stderr.is_empty());
@@ -1894,6 +1905,9 @@ mod tests {
         assert!(status_stdout.contains("\"trace_id\":\"request_id:req-daemon-status\""));
         assert!(status_stdout.contains("\"daemon_available\":true"));
         assert!(status_stdout.contains("\"status\":\"running\""));
+        assert!(status_stdout.contains("\"lease\":{\"state\":\"active\""));
+        assert!(status_stdout.contains("\"owner_live\":true"));
+        assert!(status_stdout.contains("\"expired\":false"));
         assert!(status_stdout.contains("\"response_file\""));
         assert!(status_stderr.is_empty());
 
@@ -2052,7 +2066,8 @@ mod tests {
 
         let report = daemon.join().unwrap().unwrap();
         assert_eq!(report.status, "stopped");
-        assert!(!locks.join("daemon.lock").exists());
+        assert!(locks.join("daemon.lock").is_file());
+        assert!(locks.join("daemon.lease").is_file());
         assert!(!pids.join("daemon.pid").exists());
 
         fs::remove_dir_all(root).unwrap();
@@ -2130,7 +2145,7 @@ mod tests {
         assert!(stdout.is_empty());
         assert!(stderr.contains("\"command\":\"daemon.start\""));
         assert!(stderr.contains("\"kind\":\"conflict\""));
-        assert!(stderr.contains("daemon lock already exists"));
+        assert!(stderr.contains("daemon lock anchor format is corrupt or unsupported"));
         assert!(!state.join("daemon.state").exists());
 
         fs::remove_dir_all(root).unwrap();

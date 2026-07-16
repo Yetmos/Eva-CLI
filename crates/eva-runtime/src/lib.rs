@@ -16,8 +16,8 @@ pub use basic::{BasicRunOptions, BasicRunReport};
 pub use builder::{RuntimeBuilder, RuntimeMode, RuntimeOptions};
 pub use daemon::{
     daemon_status, send_daemon_control_request, start_daemon, stop_daemon, DaemonControlOperation,
-    DaemonControlRequest, DaemonControlResponse, DaemonMemoryMaintenanceReport, DaemonPathReport,
-    DaemonPolicyReport, DaemonStartOptions, DaemonStartReport, DaemonStateRecord,
+    DaemonControlRequest, DaemonControlResponse, DaemonLeaseReport, DaemonMemoryMaintenanceReport,
+    DaemonPathReport, DaemonPolicyReport, DaemonStartOptions, DaemonStartReport, DaemonStateRecord,
     DaemonStatusReport, DaemonStopReport,
 };
 pub use diagnostics::{

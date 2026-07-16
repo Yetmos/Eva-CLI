@@ -32,16 +32,18 @@ use eva_observability::{
 use eva_policy::PolicyDomainSet;
 use eva_scheduler::GenerationRouteGate;
 use eva_storage::{
-    artifact_store::sha256_digest, DurableBackend, DurableBackendOptions, DurableBackendReport,
+    artifact_store::sha256_digest, probe_runtime_lease, DurableBackend, DurableBackendLayout,
+    DurableBackendOptions, DurableBackendReport, DurableRuntimeLeaseGuard,
+    DurableRuntimeLeaseRecord, DurableRuntimeLeaseState, DurableWriterGuard,
     FileSystemDurableBackend, FileSystemProviderProcessTable, FileSystemTaskStateStore,
-    TaskInputSnapshot, TaskStateSnapshot, TaskStateStore,
+    TaskInputSnapshot, TaskStateSnapshot, TaskStateStore, DEFAULT_RUNTIME_LEASE_TTL_MS,
 };
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 说明本模块承担的架构职责。
@@ -51,10 +53,14 @@ pub const RESPONSIBILITY: &str =
 
 /// 定义 `DAEMON_GENERATION` 常量。
 const DAEMON_GENERATION: &str = "daemon-v1.12.4";
-/// 定义通过 `create_new` 原子取得的单实例锁文件名。
+/// 永久保留且从不替换的 daemon OS-lock anchor 文件名。
 const LOCK_FILE: &str = "daemon.lock";
+/// 原子替换的 daemon lease 记录；固定 OS-lock anchor 与此记录必须使用不同路径。
+const LEASE_FILE: &str = "daemon.lease";
 /// 定义守护进程可用性探测所需的 PID 文件名。
 const PID_FILE: &str = "daemon.pid";
+/// PID projection 的版本化磁盘格式；legacy 纯数字只读但不证明 owner identity。
+const PID_PROJECTION_FORMAT: &str = "eva.daemon-pid.v1";
 /// 定义持久化守护生命周期状态的文件名。
 const STATE_FILE: &str = "daemon.state";
 /// 定义 `AGENT_CONTROL_STATE_FILE` 常量。
@@ -73,6 +79,8 @@ const CONTROL_REJECTED_EXT: &str = "rejected";
 const CONTROL_RESPONSE_EXT: &str = "response";
 /// 定义 `CONTROL_POLL_INTERVAL_MS` 常量。
 const CONTROL_POLL_INTERVAL_MS: u64 = 50;
+/// Lease heartbeat 的单调调度间隔；墙上时钟仅写入持久记录。
+const DAEMON_LEASE_HEARTBEAT_INTERVAL_MS: u64 = 10_000;
 
 /// 定义守护进程各持久化边界及前台运行模式。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,8 +126,31 @@ pub struct DaemonPathReport {
     pub hardware_hotplug_state_file: String,
     /// 记录 `lock_file` 字段对应的值。
     pub lock_file: String,
+    /// 记录原子 daemon lease 文件路径。
+    pub lease_file: String,
     /// 记录 `pid_file` 字段对应的值。
     pub pid_file: String,
+}
+
+/// Daemon lease 的稳定只读投影；PID/token/generation 共同标识一次进程 incarnation。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonLeaseReport {
+    /// `active` 或 `released`。
+    pub state: String,
+    /// Lease owner 的操作系统 PID。
+    pub pid: u32,
+    /// 复用 durable writer owner token 的进程启动身份。
+    pub process_start_token: String,
+    /// 复用 durable writer fencing generation 的单调代际。
+    pub generation: u64,
+    /// 最近一次成功 heartbeat 的 epoch 毫秒。
+    pub heartbeat_at_ms: u128,
+    /// Lease 最早可接管的 epoch 毫秒。
+    pub expires_at_ms: u128,
+    /// 固定 anchor 上的 OS lock 当前是否仍由 owner 持有。
+    pub owner_live: bool,
+    /// Probe 时 lease 是否已到期；live owner 即使到期也绝不被抢占。
+    pub expired: bool,
 }
 
 /// 表示 `DaemonPolicyReport` 数据结构。
@@ -173,6 +204,8 @@ pub struct DaemonStartReport {
     pub provider_processes_started: bool,
     /// 记录 `paths` 字段对应的值。
     pub paths: DaemonPathReport,
+    /// 本次 daemon incarnation 最终发布的 lease 投影。
+    pub lease: DaemonLeaseReport,
     /// 记录 `durable_backend` 字段对应的值。
     pub durable_backend: DurableBackendReport,
     /// 记录 `recovery` 字段对应的值。
@@ -215,6 +248,10 @@ pub struct DaemonStatusReport {
     pub lock_present: bool,
     /// 记录 `pid_present` 字段对应的值。
     pub pid_present: bool,
+    /// PID projection 是否与 state 和 lease 的 owner PID 一致。
+    pub pid_matches_lease: bool,
+    /// 当前 lease；从未 claim 时为 `None`。
+    pub lease: Option<DaemonLeaseReport>,
     /// 记录 `paths` 字段对应的值。
     pub paths: DaemonPathReport,
     /// 记录 `state` 字段对应的值。
@@ -232,10 +269,24 @@ pub struct DaemonStopReport {
     pub lock_removed: bool,
     /// 记录 `pid_removed` 字段对应的值。
     pub pid_removed: bool,
+    /// stop 返回时的最终 lease 投影；无历史且无需清理时为 `None`。
+    pub lease: Option<DaemonLeaseReport>,
     /// 记录 `paths` 字段对应的值。
     pub paths: DaemonPathReport,
     /// 记录 `state` 字段对应的值。
     pub state: Option<DaemonStateRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DaemonPidProjection {
+    Versioned {
+        pid: u32,
+        process_start_token: String,
+        generation: u64,
+    },
+    Legacy {
+        pid: u32,
+    },
 }
 
 /// 定义文件邮箱可请求的只读查询与持久化状态变更。
@@ -317,6 +368,8 @@ pub struct DaemonControlResponse {
     pub response_file: String,
     /// 记录 `state` 字段对应的值。
     pub state: Option<DaemonStateRecord>,
+    /// 响应生成时由持有中的 guard 提供的 lease 身份。
+    pub lease: Option<DaemonLeaseReport>,
     /// 记录 `task_id` 字段对应的值。
     pub task_id: Option<String>,
     /// 记录 `plan_id` 字段对应的值。
@@ -372,15 +425,6 @@ struct DaemonAgentControlState {
     audit: Vec<String>,
 }
 
-/// 持有单实例锁文件所有权，并在正常作用域退出时尽力释放。
-#[derive(Debug, PartialEq, Eq)]
-struct DaemonLockGuard {
-    /// 记录 `path` 字段对应的值。
-    path: PathBuf,
-    /// 控制析构是否删除锁文件；删除失败不会覆盖正在返回的原始错误。
-    release_on_drop: bool,
-}
-
 /// 为相关类型实现其约定的行为与方法。
 impl DaemonStartOptions {
     /// 执行 `defaults` 对应的处理逻辑。
@@ -431,8 +475,129 @@ impl DaemonPathReport {
             state_file: display_path(&state_file(options)),
             hardware_hotplug_state_file: display_path(&hardware_hotplug_state_file(options)),
             lock_file: display_path(&lock_file(options)),
+            lease_file: display_path(&lease_file(options)),
             pid_file: display_path(&pid_file(options)),
         }
+    }
+}
+
+impl DaemonLeaseReport {
+    fn from_record(record: &DurableRuntimeLeaseRecord, owner_live: bool, expired: bool) -> Self {
+        let state = match record.state() {
+            DurableRuntimeLeaseState::Active => "active",
+            DurableRuntimeLeaseState::Released => "released",
+        };
+        Self {
+            state: state.to_owned(),
+            pid: record.pid(),
+            process_start_token: record.process_start_token().to_owned(),
+            generation: record.generation().0,
+            heartbeat_at_ms: record.heartbeat_at_ms(),
+            expires_at_ms: record.expires_at_ms(),
+            owner_live,
+            expired,
+        }
+    }
+
+    fn from_guard(lease: &DurableRuntimeLeaseGuard, now_ms: u128) -> Self {
+        let record = lease.record();
+        Self::from_record(
+            record,
+            record.state() == DurableRuntimeLeaseState::Active,
+            record.expires_at_ms() <= now_ms,
+        )
+    }
+}
+
+impl DaemonPidProjection {
+    fn pid(&self) -> u32 {
+        match self {
+            Self::Versioned { pid, .. } | Self::Legacy { pid } => *pid,
+        }
+    }
+
+    fn matches_lease(&self, lease: &DurableRuntimeLeaseRecord) -> bool {
+        match self {
+            Self::Versioned {
+                pid,
+                process_start_token,
+                generation,
+            } => {
+                *pid == lease.pid()
+                    && process_start_token == lease.process_start_token()
+                    && *generation == lease.generation().0
+            }
+            Self::Legacy { .. } => false,
+        }
+    }
+
+    fn from_lease(lease: &DurableRuntimeLeaseRecord) -> Self {
+        Self::Versioned {
+            pid: lease.pid(),
+            process_start_token: lease.process_start_token().to_owned(),
+            generation: lease.generation().0,
+        }
+    }
+
+    fn to_storage(&self) -> String {
+        match self {
+            Self::Versioned {
+                pid,
+                process_start_token,
+                generation,
+            } => format!(
+                "format={PID_PROJECTION_FORMAT}\npid={pid}\nprocess_start_token={process_start_token}\ngeneration={generation}\n"
+            ),
+            Self::Legacy { pid } => pid.to_string(),
+        }
+    }
+
+    fn from_storage(data: &str) -> Result<Self, EvaError> {
+        if let Ok(pid) = data.trim().parse::<u32>() {
+            if pid == 0 {
+                return Err(EvaError::conflict("daemon pid file contains zero"));
+            }
+            return Ok(Self::Legacy { pid });
+        }
+
+        let mut fields = std::collections::BTreeMap::new();
+        for line in data.lines().filter(|line| !line.is_empty()) {
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(EvaError::conflict("daemon pid projection is invalid"));
+            };
+            if key.is_empty() || fields.insert(key, value).is_some() {
+                return Err(EvaError::conflict(
+                    "daemon pid projection contains duplicate or empty fields",
+                ));
+            }
+        }
+        if fields.len() != 4 || fields.get("format").copied() != Some(PID_PROJECTION_FORMAT) {
+            return Err(EvaError::conflict(
+                "daemon pid projection format is corrupt or unsupported",
+            ));
+        }
+        let pid = fields
+            .get("pid")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| EvaError::conflict("daemon pid projection pid is invalid"))?;
+        let process_start_token = fields
+            .get("process_start_token")
+            .filter(|value| !value.is_empty())
+            .map(|value| (*value).to_owned())
+            .ok_or_else(|| {
+                EvaError::conflict("daemon pid projection process start token is invalid")
+            })?;
+        let generation = fields
+            .get("generation")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|generation| *generation > 0)
+            .ok_or_else(|| EvaError::conflict("daemon pid projection generation is invalid"))?;
+        Ok(Self::Versioned {
+            pid,
+            process_start_token,
+            generation,
+        })
     }
 }
 
@@ -1290,9 +1455,10 @@ impl DaemonControlResponse {
     /// 按稳定存储格式编码 `to_storage` 对应的数据。
     fn to_storage(&self) -> String {
         let state = self.state.as_ref();
+        let lease = self.lease.as_ref();
         let shutdown = self.shutdown.as_ref();
         format!(
-            "version=1\nrequest_id={}\ntrace_id={}\noperation={}\naccepted={}\ndaemon_available={}\nstatus={}\nmutation_executed={}\nrequest_file={}\nresponse_file={}\nstate_status={}\nstate_mode={}\nstate_pid={}\nstate_generation_id={}\nstate_project_root={}\nstate_started_at_ms={}\nstate_stopped_at_ms={}\ntask_id={}\nplan_id={}\ngeneration_id={}\nmessage={}\nshutdown_already_shutdown={}\nshutdown_request_count={}\nshutdown_phase={}\naudit={}\n",
+            "version=2\nrequest_id={}\ntrace_id={}\noperation={}\naccepted={}\ndaemon_available={}\nstatus={}\nmutation_executed={}\nrequest_file={}\nresponse_file={}\nstate_status={}\nstate_mode={}\nstate_pid={}\nstate_generation_id={}\nstate_project_root={}\nstate_started_at_ms={}\nstate_stopped_at_ms={}\nlease_state={}\nlease_pid={}\nlease_process_start_token={}\nlease_generation={}\nlease_heartbeat_at_ms={}\nlease_expires_at_ms={}\nlease_owner_live={}\nlease_expired={}\ntask_id={}\nplan_id={}\ngeneration_id={}\nmessage={}\nshutdown_already_shutdown={}\nshutdown_request_count={}\nshutdown_phase={}\naudit={}\n",
             self.request_id.as_str(),
             encode_field(&self.trace_id),
             self.operation.as_str(),
@@ -1316,6 +1482,24 @@ impl DaemonControlResponse {
                 .and_then(|value| value.stopped_at_ms)
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
+            encode_optional_field(lease.map(|value| value.state.as_str())),
+            lease.map(|value| value.pid.to_string()).unwrap_or_default(),
+            encode_optional_field(lease.map(|value| value.process_start_token.as_str())),
+            lease
+                .map(|value| value.generation.to_string())
+                .unwrap_or_default(),
+            lease
+                .map(|value| value.heartbeat_at_ms.to_string())
+                .unwrap_or_default(),
+            lease
+                .map(|value| value.expires_at_ms.to_string())
+                .unwrap_or_default(),
+            lease
+                .map(|value| value.owner_live.to_string())
+                .unwrap_or_default(),
+            lease
+                .map(|value| value.expired.to_string())
+                .unwrap_or_default(),
             encode_optional_field(self.task_id.as_deref()),
             encode_optional_field(self.plan_id.as_deref()),
             encode_optional_field(self.generation_id.as_deref()),
@@ -1333,6 +1517,7 @@ impl DaemonControlResponse {
 
     /// 从持久化数据或输入构造 `from_storage` 对应的值。
     fn from_storage(data: &str) -> Result<Self, EvaError> {
+        let mut wire_version = None;
         let mut request_id = None;
         let mut trace_id = None;
         let mut operation = None;
@@ -1349,6 +1534,14 @@ impl DaemonControlResponse {
         let mut state_project_root = None;
         let mut state_started_at_ms = None;
         let mut state_stopped_at_ms = None;
+        let mut lease_state = None;
+        let mut lease_pid = None;
+        let mut lease_process_start_token = None;
+        let mut lease_generation = None;
+        let mut lease_heartbeat_at_ms = None;
+        let mut lease_expires_at_ms = None;
+        let mut lease_owner_live = None;
+        let mut lease_expired = None;
         let mut task_id = None;
         let mut plan_id = None;
         let mut generation_id = None;
@@ -1364,12 +1557,13 @@ impl DaemonControlResponse {
             };
             match key {
                 "version" => {
-                    if value != "1" {
+                    if !matches!(value, "1" | "2") {
                         return Err(
                             EvaError::conflict("daemon control response version mismatch")
                                 .with_context("version", value),
                         );
                     }
+                    wire_version = Some(value.parse::<u32>().expect("validated literal"));
                 }
                 "request_id" => request_id = Some(RequestId::parse(value)?),
                 "trace_id" => trace_id = Some(decode_field(value)?),
@@ -1417,6 +1611,34 @@ impl DaemonControlResponse {
                                 "daemon control response state_stopped_at_ms is invalid",
                             )
                         })?)
+                    }
+                }
+                "lease_state" => lease_state = decode_optional_field(value)?,
+                "lease_pid" => lease_pid = parse_optional_u32(value, "lease_pid")?,
+                "lease_process_start_token" => {
+                    lease_process_start_token = decode_optional_field(value)?
+                }
+                "lease_generation" => {
+                    lease_generation = parse_optional_u64(value, "lease_generation")?
+                }
+                "lease_heartbeat_at_ms" => {
+                    lease_heartbeat_at_ms = parse_optional_u128(value, "lease_heartbeat_at_ms")?
+                }
+                "lease_expires_at_ms" => {
+                    lease_expires_at_ms = parse_optional_u128(value, "lease_expires_at_ms")?
+                }
+                "lease_owner_live" => {
+                    lease_owner_live = if value.is_empty() {
+                        None
+                    } else {
+                        Some(parse_bool(value, "lease_owner_live")?)
+                    }
+                }
+                "lease_expired" => {
+                    lease_expired = if value.is_empty() {
+                        None
+                    } else {
+                        Some(parse_bool(value, "lease_expired")?)
                     }
                 }
                 "task_id" => task_id = decode_optional_field(value)?,
@@ -1490,6 +1712,58 @@ impl DaemonControlResponse {
             }),
             _ => None,
         };
+        let lease = match (
+            lease_state,
+            lease_pid,
+            lease_process_start_token,
+            lease_generation,
+            lease_heartbeat_at_ms,
+            lease_expires_at_ms,
+            lease_owner_live,
+            lease_expired,
+        ) {
+            (
+                Some(state),
+                Some(pid),
+                Some(process_start_token),
+                Some(generation),
+                Some(heartbeat_at_ms),
+                Some(expires_at_ms),
+                Some(owner_live),
+                Some(expired),
+            ) => Some(DaemonLeaseReport {
+                state,
+                pid,
+                process_start_token,
+                generation,
+                heartbeat_at_ms,
+                expires_at_ms,
+                owner_live,
+                expired,
+            }),
+            (None, None, None, None, None, None, None, None) => None,
+            _ => {
+                return Err(EvaError::conflict(
+                    "daemon control response lease projection is incomplete",
+                ))
+            }
+        };
+
+        let wire_version = wire_version
+            .ok_or_else(|| EvaError::conflict("daemon control response missing version"))?;
+        if wire_version == 1 && lease.is_some() {
+            return Err(EvaError::conflict(
+                "daemon control response v1 cannot contain a lease projection",
+            ));
+        }
+        if wire_version == 2 && lease.is_none() {
+            return Err(EvaError::conflict(
+                "daemon control response v2 requires a lease projection",
+            ));
+        }
+        if let Some(lease) = lease.as_ref() {
+            validate_daemon_lease_report(lease)?;
+        }
 
         Ok(Self {
             request_id: request_id
@@ -1515,6 +1789,7 @@ impl DaemonControlResponse {
                 EvaError::conflict("daemon control response missing response_file")
             })?,
             state,
+            lease,
             task_id,
             plan_id,
             generation_id,
@@ -1523,6 +1798,31 @@ impl DaemonControlResponse {
             shutdown,
             audit,
         })
+    }
+}
+
+fn validate_daemon_lease_report(lease: &DaemonLeaseReport) -> Result<(), EvaError> {
+    if lease.pid == 0
+        || lease.generation == 0
+        || lease.process_start_token.is_empty()
+        || !matches!(lease.state.as_str(), "active" | "released")
+    {
+        return Err(EvaError::conflict(
+            "daemon control response lease identity is invalid",
+        ));
+    }
+    match lease.state.as_str() {
+        "active" if lease.expires_at_ms > lease.heartbeat_at_ms => Ok(()),
+        "released"
+            if lease.expires_at_ms == lease.heartbeat_at_ms
+                && !lease.owner_live
+                && !lease.expired =>
+        {
+            Ok(())
+        }
+        _ => Err(EvaError::conflict(
+            "daemon control response lease lifecycle is invalid",
+        )),
     }
 }
 
@@ -1548,21 +1848,50 @@ pub fn start_daemon(
             .with_context("path", options.lock_dir.display().to_string())
             .with_context("io_error", error.to_string())
     })?;
-    // `create_new` 锁是多个守护进程之间唯一的原子互斥点，必须先于恢复和状态写入。
-    let lock = DaemonLockGuard::acquire(lock_file(&options))?;
-
+    let observed_probe = probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms())?;
+    if observed_probe.owner_live() {
+        return Err(EvaError::conflict(
+            "daemon start refused because the lease owner is still live",
+        )
+        .with_context("anchor_path", lock_file(&options).display().to_string())
+        .with_context(
+            "generation",
+            observed_probe
+                .record()
+                .map(|record| record.generation().0.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+        ));
+    }
+    if let Some(record) = observed_probe.record().filter(|record| {
+        record.state() == DurableRuntimeLeaseState::Active && !observed_probe.expired()
+    }) {
+        return Err(EvaError::conflict(
+            "daemon start refused until the dead owner's lease expires",
+        )
+        .with_context("pid", record.pid().to_string())
+        .with_context("generation", record.generation().0.to_string())
+        .with_context("expires_at_ms", record.expires_at_ms().to_string()));
+    }
     let durable_backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
         &options.durable_backend,
     ))?;
     let durable_report = durable_backend.verify()?;
-    let mut task_store = FileSystemTaskStateStore::from_writable_backend(&durable_backend)?;
+    // 固定 anchor 必须先于 durable writer 取得；guard 同时持有两层 ownership 到 daemon 退出。
+    let mut lease = DurableRuntimeLeaseGuard::acquire(
+        &durable_backend,
+        lock_file(&options),
+        lease_file(&options),
+        now_ms(),
+        DEFAULT_RUNTIME_LEASE_TTL_MS,
+    )?;
+    let mut task_store =
+        FileSystemTaskStateStore::from_runtime_writer(durable_backend.layout(), lease.writer())?;
     let mut provider_process_table =
         FileSystemProviderProcessTable::from_durable_layout(durable_backend.layout());
     // 先消除崩溃遗留的运行中任务/提供者快照，再允许新控制请求观察到 running。
     let recovery = RuntimeRecoveryCoordinator
         .recover_task_store_with_provider_processes(&mut task_store, &mut provider_process_table)?;
     drop(task_store);
-    drop(durable_backend);
     record_daemon_recovery_observability(&options, trace, &recovery);
     let policy = verify_policy(project)?;
     let observability = verify_observability(&options, trace)?;
@@ -1577,32 +1906,55 @@ pub fn start_daemon(
             .with_context("path", options.pid_dir.display().to_string())
             .with_context("io_error", error.to_string())
     })?;
+    ensure_control_dirs(&options)?;
+    // Recovery/policy validation may be slow; publish ready state only from a freshly renewed lease.
+    lease.renew_at(now_ms())?;
 
     // 状态和 PID 均成功写入后，`daemon_status` 才可能将进程判为可用。
     let running_state = DaemonStateRecord::running(project);
     write_state(&options, &running_state)?;
-    fs::write(pid_file(&options), running_state.pid.to_string()).map_err(|error| {
-        EvaError::internal("failed to write daemon pid file")
-            .with_context("path", pid_file(&options).display().to_string())
-            .with_context("io_error", error.to_string())
-    })?;
-    ensure_control_dirs(&options)?;
-    let hardware_hotplug = start_hardware_hotplug_subscriber(project, &options)?;
-    let memory_maintenance = run_memory_maintenance(&options, trace)?;
+    if let Err(error) = write_pid_projection(&options, lease.record()) {
+        let _ = write_state(&options, &running_state.clone().stopped());
+        let _ = lease.release_at(now_ms());
+        return Err(error);
+    }
 
-    let mut runtime = RuntimeBuilder::new().build(project)?;
-    let (status, shutdown) = if options.shutdown_after_smoke {
-        let shutdown_report = runtime.shutdown();
-        let stopped = running_state.clone().stopped();
-        write_state(&options, &stopped)?;
-        remove_if_exists(&pid_file(&options))?;
-        ("stopped".to_owned(), Some(shutdown_report))
-    } else {
-        let loop_report = run_control_loop(project, &options, &mut runtime, running_state.clone())?;
-        (loop_report.status, loop_report.shutdown)
+    let lifecycle = (|| {
+        let hardware_hotplug = start_hardware_hotplug_subscriber(project, &options)?;
+        let memory_maintenance = run_memory_maintenance(&options, trace)?;
+        let mut runtime = RuntimeBuilder::new().build(project)?;
+        lease.renew_at(now_ms())?;
+        let (status, shutdown) = if options.shutdown_after_smoke {
+            let shutdown_report = runtime.shutdown();
+            let stopped = running_state.clone().stopped();
+            write_state(&options, &stopped)?;
+            remove_matching_pid(&options, lease.record())?;
+            ("stopped".to_owned(), Some(shutdown_report))
+        } else {
+            let loop_report = run_control_loop(
+                project,
+                &options,
+                &mut runtime,
+                running_state.clone(),
+                durable_backend.layout(),
+                &mut lease,
+            )?;
+            (loop_report.status, loop_report.shutdown)
+        };
+        Ok::<_, EvaError>((hardware_hotplug, memory_maintenance, status, shutdown))
+    })();
+
+    let (hardware_hotplug, memory_maintenance, status, shutdown) = match lifecycle {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = write_state(&options, &running_state.clone().stopped());
+            let _ = remove_matching_pid(&options, lease.record());
+            let _ = lease.release_at(now_ms());
+            return Err(error);
+        }
     };
-
-    drop(lock);
+    let released = lease.release_at(now_ms())?.clone();
+    let lease_report = DaemonLeaseReport::from_record(&released, false, false);
 
     Ok(DaemonStartReport {
         status,
@@ -1614,6 +1966,7 @@ pub fn start_daemon(
         dev_mode: options.dev_mode,
         provider_processes_started: false,
         paths: DaemonPathReport::from_options(&options),
+        lease: lease_report,
         durable_backend: durable_report,
         recovery,
         policy,
@@ -1636,12 +1989,17 @@ pub fn start_daemon(
     })
 }
 
-/// 只有状态为 running 且锁、PID 同时存在时才报告控制面可用，避免信任单个陈旧文件。
+/// 只有 active/fresh lease、live OS-lock owner、PID projection 与 running state 完全一致时可用。
 pub fn daemon_status(options: &DaemonStartOptions) -> Result<DaemonStatusReport, EvaError> {
     let paths = DaemonPathReport::from_options(options);
     let lock_present = lock_file(options).exists();
-    let pid_present = pid_file(options).exists();
+    let pid = read_pid_projection(options)?;
+    let pid_present = pid.is_some();
     let state = read_state(options)?;
+    let probe = probe_runtime_lease(lock_file(options), lease_file(options), now_ms())?;
+    let lease = probe
+        .record()
+        .map(|record| DaemonLeaseReport::from_record(record, probe.owner_live(), probe.expired()));
     let status = state
         .as_ref()
         .map(|record| record.status.clone())
@@ -1650,11 +2008,21 @@ pub fn daemon_status(options: &DaemonStartOptions) -> Result<DaemonStatusReport,
         .as_ref()
         .map(|record| record.status == "running")
         .unwrap_or(false);
+    let pid_matches_lease = match (pid.as_ref(), state.as_ref(), probe.record()) {
+        (Some(pid), Some(state), Some(lease)) => pid.pid() == state.pid && pid.matches_lease(lease),
+        _ => false,
+    };
+    let lease_available = lease
+        .as_ref()
+        .map(|lease| lease.state == "active" && lease.owner_live && !lease.expired)
+        .unwrap_or(false);
     Ok(DaemonStatusReport {
-        available: running && lock_present && pid_present,
+        available: running && lease_available && pid_matches_lease,
         status,
         lock_present,
         pid_present,
+        pid_matches_lease,
+        lease,
         paths,
         state,
     })
@@ -1680,6 +2048,25 @@ pub fn send_daemon_control_request(
             .with_context("state_status", &status.status)
             .with_context("lock_present", status.lock_present.to_string())
             .with_context("pid_present", status.pid_present.to_string())
+            .with_context("pid_matches_lease", status.pid_matches_lease.to_string())
+            .with_context(
+                "lease_owner_live",
+                status
+                    .lease
+                    .as_ref()
+                    .map(|lease| lease.owner_live)
+                    .unwrap_or(false)
+                    .to_string(),
+            )
+            .with_context(
+                "lease_expired",
+                status
+                    .lease
+                    .as_ref()
+                    .map(|lease| lease.expired)
+                    .unwrap_or(false)
+                    .to_string(),
+            )
             .with_context(
                 "suggestion",
                 "start a foreground daemon with --no-shutdown-after-smoke, then retry the control command",
@@ -1714,28 +2101,150 @@ pub fn send_daemon_control_request(
     }
 }
 
-/// 清理守护文件并把状态标为 stopped；活动运行时应优先通过 `Shutdown` 控制请求正常关闭。
+/// 仅在能够安全 claim ownership 时清理守护投影；活动或 dead-but-unexpired owner 均拒绝。
 pub fn stop_daemon(options: &DaemonStartOptions) -> Result<DaemonStopReport, EvaError> {
     let paths = DaemonPathReport::from_options(options);
-    let lock_removed = remove_if_exists(&lock_file(options))?;
-    let pid_removed = remove_if_exists(&pid_file(options))?;
+    let observed_state = read_state(options)?;
+    let observed_pid = read_pid_projection(options)?;
+    let observed_probe = probe_runtime_lease(lock_file(options), lease_file(options), now_ms())?;
+    let observed_record = observed_probe.record().cloned();
+    if let Some(pid) = observed_pid.as_ref() {
+        let previous = observed_record.as_ref().ok_or_else(|| {
+            EvaError::conflict("daemon pid projection has no matching historical lease")
+                .with_context("pid", pid.pid().to_string())
+        })?;
+        if !pid.matches_lease(previous) {
+            return Err(EvaError::conflict(
+                "daemon pid projection belongs to another historical lease",
+            )
+            .with_context("pid", pid.pid().to_string())
+            .with_context("expected_generation", previous.generation().0.to_string()));
+        }
+        if observed_state
+            .as_ref()
+            .is_some_and(|state| state.pid != pid.pid())
+        {
+            return Err(EvaError::conflict(
+                "daemon state and pid projection belong to different owners",
+            )
+            .with_context("pid_file_pid", pid.pid().to_string()));
+        }
+    }
+    let observed_lease = observed_probe.record().map(|record| {
+        DaemonLeaseReport::from_record(
+            record,
+            observed_probe.owner_live(),
+            observed_probe.expired(),
+        )
+    });
+    if observed_probe.owner_live() {
+        return Err(EvaError::conflict(
+            "daemon stop refused because the lease owner is still live",
+        )
+        .with_context("anchor_path", lock_file(options).display().to_string())
+        .with_context(
+            "generation",
+            observed_record
+                .as_ref()
+                .map(|record| record.generation().0.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+        ));
+    }
+    if let Some(record) = observed_record.as_ref().filter(|record| {
+        record.state() == DurableRuntimeLeaseState::Active && !observed_probe.expired()
+    }) {
+        return Err(
+            EvaError::conflict("daemon stop refused until the dead owner's lease expires")
+                .with_context("pid", record.pid().to_string())
+                .with_context("generation", record.generation().0.to_string())
+                .with_context("expires_at_ms", record.expires_at_ms().to_string()),
+        );
+    }
+    let already_stopped = observed_state
+        .as_ref()
+        .map(|state| state.status == "stopped")
+        .unwrap_or(true);
+    let lease_inactive = observed_lease
+        .as_ref()
+        .map(|lease| lease.state == "released")
+        .unwrap_or(true);
+    if already_stopped && observed_pid.is_none() && lease_inactive && !observed_probe.owner_live() {
+        return Ok(DaemonStopReport {
+            status: observed_state
+                .as_ref()
+                .map(|state| state.status.clone())
+                .unwrap_or_else(|| "unavailable".to_owned()),
+            mutation_executed: false,
+            lock_removed: false,
+            pid_removed: false,
+            lease: observed_lease,
+            paths,
+            state: observed_state,
+        });
+    }
+
+    let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+        &options.durable_backend,
+    ))?;
+    let mut lease = DurableRuntimeLeaseGuard::acquire(
+        &backend,
+        lock_file(options),
+        lease_file(options),
+        now_ms(),
+        DEFAULT_RUNTIME_LEASE_TTL_MS,
+    )?;
+    let pid_projection = read_pid_projection(options)?;
+    match (pid_projection.as_ref(), observed_record.as_ref()) {
+        (Some(pid), Some(previous)) if !pid.matches_lease(previous) => {
+            return Err(EvaError::conflict(
+                "daemon pid projection belongs to another historical lease",
+            )
+            .with_context("pid", pid.pid().to_string())
+            .with_context("expected_generation", previous.generation().0.to_string()))
+        }
+        (Some(pid), None) => {
+            return Err(EvaError::conflict(
+                "daemon pid projection has no matching historical lease",
+            )
+            .with_context("pid", pid.pid().to_string()))
+        }
+        _ => {}
+    }
     let state = match read_state(options)? {
         Some(record) => {
+            if let Some(pid) = pid_projection.as_ref() {
+                if pid.pid() != record.pid {
+                    return Err(EvaError::conflict(
+                        "daemon state and pid projection belong to different owners",
+                    )
+                    .with_context("state_pid", record.pid.to_string())
+                    .with_context("pid_file_pid", pid.pid().to_string()));
+                }
+            }
             let stopped = record.stopped();
             write_state(options, &stopped)?;
             Some(stopped)
         }
         None => None,
     };
+    let pid_removed = match (pid_projection, observed_record.as_ref()) {
+        (Some(_), Some(previous)) => remove_matching_pid(options, previous)?,
+        (None, _) => false,
+        (Some(_), None) => unreachable!("validated above"),
+    };
+    let released = lease.release_at(now_ms())?.clone();
+    let lease = Some(DaemonLeaseReport::from_record(&released, false, false));
 
     Ok(DaemonStopReport {
         status: state
             .as_ref()
             .map(|record| record.status.clone())
             .unwrap_or_else(|| "unavailable".to_owned()),
-        mutation_executed: lock_removed || pid_removed || state.is_some(),
-        lock_removed,
+        // 进入此分支即已安全 claim 并发布 released lease，即使没有旧 PID/state 也发生了变更。
+        mutation_executed: true,
+        lock_removed: false,
         pid_removed,
+        lease,
         paths,
         state,
     })
@@ -1750,6 +2259,16 @@ struct DaemonControlLoopReport {
     shutdown: Option<ShutdownReport>,
 }
 
+/// 单个 mailbox mutation 所需的 daemon-owned runtime、writer 与配置引用。
+struct DaemonControlContext<'a> {
+    project: &'a ProjectConfig,
+    options: &'a DaemonStartOptions,
+    runtime: &'a mut crate::Runtime,
+    running_state: &'a DaemonStateRecord,
+    durable_layout: &'a DurableBackendLayout,
+    lease: &'a DurableRuntimeLeaseGuard,
+}
+
 /// 串行执行调度重试 tick 和按文件名排序的控制请求，直到处理到关闭操作。
 ///
 /// 每个请求先执行状态变更，再原子写响应，最后删除请求。响应写入失败时请求会保留以便诊断
@@ -1759,11 +2278,18 @@ fn run_control_loop(
     options: &DaemonStartOptions,
     runtime: &mut crate::Runtime,
     running_state: DaemonStateRecord,
+    durable_layout: &DurableBackendLayout,
+    lease: &mut DurableRuntimeLeaseGuard,
 ) -> Result<DaemonControlLoopReport, EvaError> {
+    let heartbeat_interval = Duration::from_millis(DAEMON_LEASE_HEARTBEAT_INTERVAL_MS);
+    let mut next_heartbeat = Instant::now() + heartbeat_interval;
     loop {
+        renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
         // 每轮先推进到期的调度重试，保证控制流量不会无限饿死恢复任务。
         let _tick = run_daemon_scheduler_tick(project, options)?;
+        renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
         for request_path in pending_control_requests(options)? {
+            renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
             let request = match read_control_request(&request_path) {
                 Ok(request) => request,
                 Err(error) => {
@@ -1772,21 +2298,30 @@ fn run_control_loop(
                 }
             };
             let response_path = control_response_file(options, &request.request_id);
-            let response = match handle_control_request(
+            let operation = request.operation;
+            let mut context = DaemonControlContext {
                 project,
                 options,
                 runtime,
-                &running_state,
+                running_state: &running_state,
+                durable_layout,
+                lease,
+            };
+            let mut response = match handle_control_request(
+                &mut context,
                 request,
                 &request_path,
                 &response_path,
             ) {
                 Ok(response) => response,
+                Err(error) if operation == DaemonControlOperation::Shutdown => return Err(error),
                 Err(error) => {
                     let _ = quarantine_control_request(&request_path, &error);
                     continue;
                 }
             };
+            renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
+            response.lease = Some(DaemonLeaseReport::from_guard(lease, now_ms()));
             let shutdown = response.shutdown.clone();
             let is_shutdown = response.operation == DaemonControlOperation::Shutdown;
             // 响应必须先原子发布；仅发布成功后才能删除请求这一恢复证据。
@@ -1801,6 +2336,21 @@ fn run_control_loop(
         }
         thread::sleep(Duration::from_millis(CONTROL_POLL_INTERVAL_MS));
     }
+}
+
+/// 以单调时钟节流 heartbeat，持久记录只使用 epoch 时间；续租失败会终止 control loop。
+fn renew_daemon_lease_if_due(
+    lease: &mut DurableRuntimeLeaseGuard,
+    next_heartbeat: &mut Instant,
+    heartbeat_interval: Duration,
+) -> Result<bool, EvaError> {
+    let observed_at = Instant::now();
+    if observed_at < *next_heartbeat {
+        return Ok(false);
+    }
+    lease.renew_at(now_ms())?;
+    *next_heartbeat = observed_at + heartbeat_interval;
+    Ok(true)
 }
 
 /// 以当前逻辑时间重驱已到期的调度重试；每个循环最多调用一次该边界。
@@ -2111,10 +2661,7 @@ fn record_task_lifecycle_observability(
 
 /// 执行单个控制操作并构造响应；可观测性采用尽力而为，不改变已完成的业务结果。
 fn handle_control_request(
-    project: &ProjectConfig,
-    options: &DaemonStartOptions,
-    runtime: &mut crate::Runtime,
-    running_state: &DaemonStateRecord,
+    context: &mut DaemonControlContext<'_>,
     request: DaemonControlRequest,
     request_path: &Path,
     response_path: &Path,
@@ -2128,9 +2675,9 @@ fn handle_control_request(
             .task_id
             .as_deref()
             .unwrap_or_else(|| request.request_id.as_str());
-        request.task_envelope = Some(legacy_submit_envelope(project, task_id)?);
+        request.task_envelope = Some(legacy_submit_envelope(context.project, task_id)?);
     }
-    let mut state = read_state(options)?.unwrap_or_else(|| running_state.clone());
+    let mut state = read_state(context.options)?.unwrap_or_else(|| context.running_state.clone());
     let accepted = true;
     let mut mutation_executed = false;
     let mut task_id = request.task_id.clone();
@@ -2149,17 +2696,22 @@ fn handle_control_request(
             message = "daemon status returned through local control mailbox".to_owned();
         }
         DaemonControlOperation::Shutdown => {
-            let shutdown_report = runtime.shutdown();
+            let shutdown_report = context.runtime.shutdown();
             state = state.stopped();
-            write_state(options, &state)?;
-            remove_if_exists(&pid_file(options))?;
+            write_state(context.options, &state)?;
+            remove_matching_pid(context.options, context.lease.record())?;
             mutation_executed = true;
             message = "daemon shutdown recorded through local control mailbox".to_owned();
             audit.push("daemon:v1.12.2:shutdown_recorded".to_owned());
             shutdown = Some(shutdown_report);
         }
         DaemonControlOperation::SubmitTask => {
-            let submitted_task_id = submit_control_task(options, project, &request)?;
+            let submitted_task_id = submit_control_task(
+                context.durable_layout,
+                context.lease.writer(),
+                context.project,
+                &request,
+            )?;
             task_id = Some(submitted_task_id);
             mutation_executed = true;
             message =
@@ -2167,14 +2719,15 @@ fn handle_control_request(
             audit.push("daemon:v1.12.2:task_submitted".to_owned());
         }
         DaemonControlOperation::CancelTask => {
-            let cancelled_task_id = cancel_control_task(options, &request)?;
+            let cancelled_task_id =
+                cancel_control_task(context.durable_layout, context.lease.writer(), &request)?;
             task_id = Some(cancelled_task_id);
             mutation_executed = true;
             message = "task cancellation recorded through daemon control mailbox".to_owned();
             audit.push("daemon:v1.12.2:task_cancel_requested".to_owned());
         }
         DaemonControlOperation::Drain => {
-            let applied = apply_agent_drain_control(options, &request)?;
+            let applied = apply_agent_drain_control(context.options, &request)?;
             task_id = Some(applied.agent_id.clone());
             generation_id = Some(applied.generation_id);
             plan_id = applied.plan_id;
@@ -2184,7 +2737,7 @@ fn handle_control_request(
             audit.extend(applied.audit);
         }
         DaemonControlOperation::ReloadPlan => {
-            let applied = apply_agent_reload_control(options, &request)?;
+            let applied = apply_agent_reload_control(context.options, &request)?;
             task_id = Some(applied.agent_id.clone());
             plan_id = Some(applied.plan_id);
             generation_id = Some(applied.active_generation);
@@ -2206,6 +2759,7 @@ fn handle_control_request(
         request_file: display_path(request_path),
         response_file: display_path(response_path),
         state: Some(state),
+        lease: Some(DaemonLeaseReport::from_guard(context.lease, now_ms())),
         task_id,
         plan_id,
         generation_id,
@@ -2213,13 +2767,14 @@ fn handle_control_request(
         shutdown,
         audit,
     };
-    record_daemon_control_observability(options, &request, &response);
+    record_daemon_control_observability(context.options, &request, &response);
     Ok(response)
 }
 
 /// 创建 queued 任务快照；任务标识默认沿用请求标识，作为持久化关联键。
 fn submit_control_task(
-    options: &DaemonStartOptions,
+    durable_layout: &DurableBackendLayout,
+    writer: DurableWriterGuard,
     project: &ProjectConfig,
     request: &DaemonControlRequest,
 ) -> Result<String, EvaError> {
@@ -2251,7 +2806,7 @@ fn submit_control_task(
                 .with_context("agent_id", envelope.agent_id().as_str()),
         );
     }
-    let mut store = open_durable_task_store(options)?;
+    let mut store = open_durable_task_store(durable_layout, writer)?;
     let mut snapshot =
         TaskStateSnapshot::queued_with_envelope(task_id.clone(), envelope.to_snapshot())?;
     snapshot.push_log(
@@ -2287,7 +2842,8 @@ fn legacy_submit_envelope(
 
 /// 在既有快照上请求取消；缺少任务或状态转换非法时不创建替代快照。
 fn cancel_control_task(
-    options: &DaemonStartOptions,
+    durable_layout: &DurableBackendLayout,
+    writer: DurableWriterGuard,
     request: &DaemonControlRequest,
 ) -> Result<String, EvaError> {
     let task_id = request.task_id.as_deref().ok_or_else(|| {
@@ -2298,7 +2854,7 @@ fn cancel_control_task(
         .reason
         .clone()
         .unwrap_or_else(|| "cancel requested by daemon control API".to_owned());
-    let mut store = open_durable_task_store(options)?;
+    let mut store = open_durable_task_store(durable_layout, writer)?;
     store.update_snapshot(task_id, |snapshot| {
         snapshot.request_cancel(reason);
         Ok(())
@@ -2491,64 +3047,10 @@ fn control_agent_id(request: &DaemonControlRequest) -> Result<String, EvaError> 
 
 /// 读取 `open_durable_task_store` 所需的持久化数据，失败时保留错误上下文。
 fn open_durable_task_store(
-    options: &DaemonStartOptions,
+    durable_layout: &DurableBackendLayout,
+    writer: DurableWriterGuard,
 ) -> Result<FileSystemTaskStateStore, EvaError> {
-    let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
-        &options.durable_backend,
-    ))?;
-    FileSystemTaskStateStore::from_writable_backend(&backend)
-}
-
-/// 为相关类型实现其约定的行为与方法。
-impl DaemonLockGuard {
-    /// 执行 `acquire` 对应的处理逻辑。
-    fn acquire(path: PathBuf) -> Result<Self, EvaError> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                EvaError::internal("failed to create daemon lock directory")
-                    .with_context("path", parent.display().to_string())
-                    .with_context("io_error", error.to_string())
-            })?;
-        }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    EvaError::conflict("daemon lock already exists")
-                        .with_context("path", path.display().to_string())
-                } else {
-                    EvaError::internal("failed to create daemon lock")
-                        .with_context("path", path.display().to_string())
-                        .with_context("io_error", error.to_string())
-                }
-            })?;
-        writeln!(
-            file,
-            "pid={}\ngeneration_id={DAEMON_GENERATION}\n",
-            std::process::id()
-        )
-        .map_err(|error| {
-            EvaError::internal("failed to write daemon lock")
-                .with_context("path", path.display().to_string())
-                .with_context("io_error", error.to_string())
-        })?;
-        Ok(Self {
-            path,
-            release_on_drop: true,
-        })
-    }
-}
-
-/// 为相关类型实现其约定的行为与方法。
-impl Drop for DaemonLockGuard {
-    /// 停止、取消或释放 `drop` 管理的状态。
-    fn drop(&mut self) {
-        if self.release_on_drop {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
+    FileSystemTaskStateStore::from_runtime_writer(durable_layout, writer)
 }
 
 /// 校验 `verify_policy` 对应的约束，不满足时返回明确错误。
@@ -2842,6 +3344,57 @@ fn read_state(options: &DaemonStartOptions) -> Result<Option<DaemonStateRecord>,
     DaemonStateRecord::from_storage(&data).map(Some)
 }
 
+/// 严格读取 PID projection；损坏内容不能被当作“不存在”后继续接管。
+fn read_pid_projection(
+    options: &DaemonStartOptions,
+) -> Result<Option<DaemonPidProjection>, EvaError> {
+    let path = pid_file(options);
+    let data = match fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(EvaError::internal("failed to read daemon pid file")
+                .with_context("path", path.display().to_string())
+                .with_context("io_error", error.to_string()))
+        }
+    };
+    DaemonPidProjection::from_storage(&data)
+        .map(Some)
+        .map_err(|error| error.with_context("path", path.display().to_string()))
+}
+
+fn write_pid_projection(
+    options: &DaemonStartOptions,
+    lease: &DurableRuntimeLeaseRecord,
+) -> Result<(), EvaError> {
+    let path = pid_file(options);
+    fs::write(&path, DaemonPidProjection::from_lease(lease).to_storage()).map_err(|error| {
+        EvaError::internal("failed to write daemon pid projection")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })
+}
+
+/// 只删除仍投影到预期完整 lease identity 的 PID，防止 PID reuse 或迟到 shutdown 清掉 successor。
+fn remove_matching_pid(
+    options: &DaemonStartOptions,
+    expected: &DurableRuntimeLeaseRecord,
+) -> Result<bool, EvaError> {
+    let Some(actual) = read_pid_projection(options)? else {
+        return Ok(false);
+    };
+    if !actual.matches_lease(expected) {
+        return Err(
+            EvaError::conflict("daemon pid projection belongs to another owner")
+                .with_context("path", pid_file(options).display().to_string())
+                .with_context("expected_pid", expected.pid().to_string())
+                .with_context("actual_pid", actual.pid().to_string())
+                .with_context("expected_generation", expected.generation().0.to_string()),
+        );
+    }
+    remove_if_exists(&pid_file(options))
+}
+
 /// 读取 `read_agent_control_state` 所需的持久化数据，失败时保留错误上下文。
 #[cfg(test)]
 fn read_agent_control_state(
@@ -2945,6 +3498,11 @@ fn lock_file(options: &DaemonStartOptions) -> PathBuf {
     options.lock_dir.join(LOCK_FILE)
 }
 
+/// 返回与固定 lock anchor 分离、可原子替换的 lease record 路径。
+fn lease_file(options: &DaemonStartOptions) -> PathBuf {
+    options.lock_dir.join(LEASE_FILE)
+}
+
 /// 执行 `pid_file` 对应的处理逻辑。
 fn pid_file(options: &DaemonStartOptions) -> PathBuf {
     options.pid_dir.join(PID_FILE)
@@ -3030,13 +3588,36 @@ fn parse_optional_usize(value: &str, message: &'static str) -> Result<Option<usi
 }
 
 /// 解析 `parse_optional_u64` 对应的数据，并拒绝无效格式。
-#[cfg(test)]
 fn parse_optional_u64(value: &str, message: &'static str) -> Result<Option<u64>, EvaError> {
     if value.is_empty() {
         Ok(None)
     } else {
         value
             .parse::<u64>()
+            .map(Some)
+            .map_err(|_| EvaError::conflict(message))
+    }
+}
+
+/// 解析可选 u32 字段，并拒绝无效格式。
+fn parse_optional_u32(value: &str, message: &'static str) -> Result<Option<u32>, EvaError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        value
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|_| EvaError::conflict(message))
+    }
+}
+
+/// 解析可选 u128 字段，并拒绝无效格式。
+fn parse_optional_u128(value: &str, message: &'static str) -> Result<Option<u128>, EvaError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        value
+            .parse::<u128>()
             .map(Some)
             .map_err(|_| EvaError::conflict(message))
     }
@@ -3161,7 +3742,16 @@ mod tests {
     use eva_storage::{
         FileSystemProviderProcessTable, ProviderProcessSnapshot, ProviderProcessTable,
     };
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn daemon_test_guard() -> MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// 执行 `workspace_root` 对应的处理逻辑。
     fn workspace_root() -> PathBuf {
@@ -3263,6 +3853,7 @@ mod tests {
     #[test]
     /// 旧 v1 submit mailbox 仍可读取，但服务端明确补成不可执行的 legacy.submit 信封。
     fn daemon_control_request_v1_submit_uses_explicit_legacy_envelope() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let expected_agent_id = project
             .agents
@@ -3395,16 +3986,18 @@ mod tests {
 
     /// 执行 `wait_for_daemon_available` 对应的处理逻辑。
     fn wait_for_daemon_available(options: &DaemonStartOptions) {
-        for _ in 0..100 {
-            if daemon_status(options)
-                .map(|report| report.available)
-                .unwrap_or(false)
-            {
-                return;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let last_observation = match daemon_status(options) {
+                Ok(report) if report.available => return,
+                Ok(report) => format!("{report:?}"),
+                Err(error) => format!("{error:?}"),
+            };
+            if Instant::now() >= deadline {
+                panic!("daemon did not become available: {last_observation}");
             }
-            std::thread::sleep(Duration::from_millis(20));
+            thread::sleep(Duration::from_millis(20));
         }
-        panic!("daemon did not become available");
     }
 
     /// 执行 `wait_for_scheduler_retry_ack` 对应的处理逻辑。
@@ -3451,6 +4044,7 @@ mod tests {
     /// 验证 `daemon_start_smoke_verifies_boundaries_and_stops` 场景下的预期行为。
     #[test]
     fn daemon_start_smoke_verifies_boundaries_and_stops() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("start");
         let options = daemon_options(&root, true);
@@ -3485,7 +4079,14 @@ mod tests {
             .is_file());
         assert!(report.shutdown.is_some());
         assert!(state_file(&options).is_file());
-        assert!(!lock_file(&options).exists());
+        assert!(lock_file(&options).is_file());
+        let lease =
+            probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms()).unwrap();
+        assert!(!lease.owner_live());
+        assert_eq!(
+            lease.record().map(DurableRuntimeLeaseRecord::state),
+            Some(DurableRuntimeLeaseState::Released)
+        );
         assert!(!pid_file(&options).exists());
 
         fs::remove_dir_all(root).ok();
@@ -3494,6 +4095,7 @@ mod tests {
     /// 验证 `daemon_hotplug_subscriber_persists_state_across_restart` 场景下的预期行为。
     #[test]
     fn daemon_hotplug_subscriber_persists_state_across_restart() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("hotplug-subscriber");
         let options = daemon_options(&root, true);
@@ -3527,6 +4129,7 @@ mod tests {
     /// 验证 `daemon_start_recovers_interrupted_provider_process_state` 场景下的预期行为。
     #[test]
     fn daemon_start_recovers_interrupted_provider_process_state() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("provider-recovery");
         let options = daemon_options(&root, true);
@@ -3579,6 +4182,7 @@ mod tests {
     /// 验证 `daemon_lock_conflict_blocks_start_before_state_write` 场景下的预期行为。
     #[test]
     fn daemon_lock_conflict_blocks_start_before_state_write() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("lock");
         let options = daemon_options(&root, true);
@@ -3593,9 +4197,293 @@ mod tests {
         fs::remove_dir_all(root).ok();
     }
 
+    #[test]
+    fn daemon_status_binds_pid_to_live_lease_and_stop_refuses_live_owner() {
+        let _daemon_test_guard = daemon_test_guard();
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("status-lease-identity");
+        let options = daemon_options(&root, false);
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-lease-loop").unwrap()),
+            )
+        });
+        wait_for_daemon_available(&options);
+
+        let live = daemon_status(&options).unwrap();
+        let live_lease = live.lease.as_ref().unwrap();
+        assert!(live.available);
+        assert!(live.pid_matches_lease);
+        assert_eq!(live_lease.state, "active");
+        assert!(live_lease.owner_live);
+        assert!(!live_lease.expired);
+        assert_eq!(live_lease.pid, std::process::id());
+        assert!(live_lease.generation > 0);
+
+        let pid_projection_bytes = fs::read(pid_file(&options)).unwrap();
+        fs::write(
+            pid_file(&options),
+            format!(
+                "format={PID_PROJECTION_FORMAT}\npid={}\nprocess_start_token=old-incarnation\ngeneration={}\n",
+                std::process::id(),
+                live_lease.generation
+            ),
+        )
+        .unwrap();
+        let mismatched = daemon_status(&options).unwrap();
+        assert!(!mismatched.available);
+        assert!(!mismatched.pid_matches_lease);
+        fs::write(pid_file(&options), std::process::id().to_string()).unwrap();
+        let legacy = daemon_status(&options).unwrap();
+        assert!(!legacy.available);
+        assert!(!legacy.pid_matches_lease);
+        fs::write(pid_file(&options), pid_projection_bytes).unwrap();
+        assert!(daemon_status(&options).unwrap().available);
+
+        let competing_start = start_daemon(
+            &project,
+            options.clone(),
+            &TraceFields::default()
+                .with_request_id(RequestId::parse("req-daemon-competing-start").unwrap()),
+        )
+        .unwrap_err();
+        assert_eq!(competing_start.kind(), eva_core::ErrorKind::Conflict);
+        assert!(daemon_status(&options).unwrap().available);
+
+        let stop_error = stop_daemon(&options).unwrap_err();
+        assert_eq!(stop_error.kind(), eva_core::ErrorKind::Conflict);
+        let after_stop_attempt = daemon_status(&options).unwrap();
+        assert!(after_stop_attempt.available, "{after_stop_attempt:?}");
+
+        let status_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-lease-status").unwrap());
+        let status = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-lease-status").unwrap(),
+                &status_trace,
+                DaemonControlOperation::Status,
+            ),
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(
+            status.lease.as_ref().unwrap().generation,
+            live_lease.generation
+        );
+        assert!(status.lease.as_ref().unwrap().owner_live);
+        let response_wire = status.to_storage();
+        assert!(response_wire.starts_with("version=2\n"));
+        assert_eq!(
+            DaemonControlResponse::from_storage(&response_wire).unwrap(),
+            status
+        );
+        let legacy_wire = response_wire
+            .lines()
+            .filter(|line| !line.starts_with("lease_"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replacen("version=2", "version=1", 1)
+            + "\n";
+        assert!(DaemonControlResponse::from_storage(&legacy_wire)
+            .unwrap()
+            .lease
+            .is_none());
+
+        let shutdown_trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-lease-shutdown").unwrap());
+        send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                RequestId::parse("req-daemon-lease-shutdown").unwrap(),
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        daemon.join().unwrap().unwrap();
+
+        let released = daemon_status(&options).unwrap();
+        assert!(!released.available);
+        assert_eq!(released.lease.as_ref().unwrap().state, "released");
+        assert!(!released.lease.as_ref().unwrap().owner_live);
+        assert!(lock_file(&options).is_file());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn shutdown_pid_identity_failure_exits_and_releases_lease() {
+        let _daemon_test_guard = daemon_test_guard();
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("shutdown-pid-mismatch");
+        let options = daemon_options(&root, false);
+        let daemon_project = project.clone();
+        let daemon_options = options.clone();
+        let daemon = std::thread::spawn(move || {
+            start_daemon(
+                &daemon_project,
+                daemon_options,
+                &TraceFields::default()
+                    .with_request_id(RequestId::parse("req-daemon-pid-mismatch-loop").unwrap()),
+            )
+        });
+        wait_for_daemon_available(&options);
+        let lease = daemon_status(&options).unwrap().lease.unwrap();
+        fs::write(
+            pid_file(&options),
+            format!(
+                "format={PID_PROJECTION_FORMAT}\npid={}\nprocess_start_token=stale-owner\ngeneration={}\n",
+                lease.pid, lease.generation
+            ),
+        )
+        .unwrap();
+        let trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-pid-mismatch-shutdown").unwrap());
+        let request = DaemonControlRequest::new(
+            RequestId::parse("req-daemon-pid-mismatch-shutdown").unwrap(),
+            &trace,
+            DaemonControlOperation::Shutdown,
+        );
+        write_control_request(
+            &control_request_file(&options, &request.request_id),
+            &request,
+        )
+        .unwrap();
+
+        let mut released = false;
+        for _ in 0..100 {
+            let probe =
+                probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms()).unwrap();
+            if !probe.owner_live()
+                && probe.record().map(DurableRuntimeLeaseRecord::state)
+                    == Some(DurableRuntimeLeaseState::Released)
+            {
+                released = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(released, "shutdown failure did not release daemon lease");
+        let error = daemon.join().unwrap().unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(read_state(&options).unwrap().unwrap().status, "stopped");
+        assert!(pid_file(&options).is_file());
+        assert!(!control_response_file(&options, &request.request_id).exists());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn stop_daemon_waits_for_dead_fresh_lease_and_reclaims_dead_expired_lease() {
+        let _daemon_test_guard = daemon_test_guard();
+        let root = temp_root("stop-stale-lease");
+        let options = daemon_options(&root, true);
+        fs::create_dir_all(&options.lock_dir).unwrap();
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let claimed_at = now_ms();
+        let mut owner = DurableRuntimeLeaseGuard::acquire(
+            &backend,
+            lock_file(&options),
+            lease_file(&options),
+            claimed_at,
+            DEFAULT_RUNTIME_LEASE_TTL_MS,
+        )
+        .unwrap();
+        let owner_record = owner.record().clone();
+        owner.release_at(claimed_at).unwrap();
+        drop(owner);
+        let generation_before = fs::read(&backend.layout().writer_generation_path).unwrap();
+        let fresh_expiry = claimed_at + DEFAULT_RUNTIME_LEASE_TTL_MS;
+        fs::write(
+            lease_file(&options),
+            format!(
+                "format=eva.daemon-lease.v1\nstate=active\npid={}\nprocess_start_token={}\ngeneration={}\nheartbeat_at_ms={}\nexpires_at_ms={}\n",
+                owner_record.pid(),
+                owner_record.process_start_token(),
+                owner_record.generation().0,
+                claimed_at,
+                fresh_expiry
+            ),
+        )
+        .unwrap();
+
+        let fresh_error = stop_daemon(&options).unwrap_err();
+        assert_eq!(fresh_error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            fs::read(&backend.layout().writer_generation_path).unwrap(),
+            generation_before
+        );
+
+        fs::write(
+            lease_file(&options),
+            format!(
+                "format=eva.daemon-lease.v1\nstate=active\npid={}\nprocess_start_token={}\ngeneration={}\nheartbeat_at_ms=1\nexpires_at_ms=2\n",
+                owner_record.pid(),
+                owner_record.process_start_token(),
+                owner_record.generation().0
+            ),
+        )
+        .unwrap();
+        let stopped = stop_daemon(&options).unwrap();
+        assert!(stopped.mutation_executed);
+        assert!(!stopped.lock_removed);
+        assert_eq!(stopped.lease.as_ref().unwrap().state, "released");
+        assert_eq!(
+            stopped.lease.as_ref().unwrap().generation,
+            owner_record.generation().0 + 1
+        );
+        assert!(lock_file(&options).is_file());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn daemon_heartbeat_scheduler_renews_only_after_monotonic_deadline() {
+        let root = temp_root("heartbeat-scheduler");
+        let options = daemon_options(&root, true);
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let mut lease = DurableRuntimeLeaseGuard::acquire(
+            &backend,
+            lock_file(&options),
+            lease_file(&options),
+            now_ms(),
+            DEFAULT_RUNTIME_LEASE_TTL_MS,
+        )
+        .unwrap();
+        let initial = lease.record().clone();
+        let interval = Duration::from_millis(10);
+        let mut next_heartbeat = Instant::now() + interval;
+
+        assert!(!renew_daemon_lease_if_due(&mut lease, &mut next_heartbeat, interval).unwrap());
+        assert_eq!(lease.record(), &initial);
+
+        thread::sleep(interval);
+        assert!(renew_daemon_lease_if_due(&mut lease, &mut next_heartbeat, interval).unwrap());
+        assert!(lease.record().heartbeat_at_ms() >= initial.heartbeat_at_ms());
+        assert!(lease.record().expires_at_ms() >= initial.expires_at_ms());
+
+        lease.release_at(now_ms()).unwrap();
+        drop(lease);
+        drop(backend);
+        fs::remove_dir_all(root).ok();
+    }
+
     /// 验证 `daemon_control_status_and_shutdown_round_trip_has_trace_id` 场景下的预期行为。
     #[test]
     fn daemon_control_status_and_shutdown_round_trip_has_trace_id() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("control");
         let options = daemon_options(&root, false);
@@ -3653,7 +4541,14 @@ mod tests {
         let report = daemon.join().unwrap().unwrap();
         assert_eq!(report.status, "stopped");
         assert!(report.shutdown.is_some());
-        assert!(!lock_file(&options).exists());
+        assert!(lock_file(&options).is_file());
+        let lease =
+            probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms()).unwrap();
+        assert!(!lease.owner_live());
+        assert_eq!(
+            lease.record().map(DurableRuntimeLeaseRecord::state),
+            Some(DurableRuntimeLeaseState::Released)
+        );
         assert!(!pid_file(&options).exists());
 
         fs::remove_dir_all(root).ok();
@@ -3662,6 +4557,7 @@ mod tests {
     #[test]
     /// daemon 提交后释放 writer，再以只读 backend 重开仍恢复完整 TaskEnvelope。
     fn daemon_submit_task_envelope_survives_shutdown_and_store_reopen() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("submit-envelope-reopen");
         let options = daemon_options(&root, false);
@@ -3737,6 +4633,7 @@ mod tests {
             .unwrap();
         assert_eq!(reopened.envelope, Some(expected));
         assert_eq!(reopened.retry_max_attempts, 3);
+        assert_eq!(reopened.owner_generation.0, report.lease.generation);
 
         fs::remove_dir_all(root).ok();
     }
@@ -3744,6 +4641,7 @@ mod tests {
     #[test]
     /// poison request 仅保留不可逆摘要，Agent 身份分叉在 mutation 前被隔离且 daemon 继续服务。
     fn invalid_task_envelope_request_is_quarantined_without_stopping_daemon() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("invalid-envelope-quarantine");
         let options = daemon_options(&root, false);
@@ -3919,6 +4817,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlink_control_request_is_removed_without_reading_or_mutating_its_target() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("symlink-request-quarantine");
         let options = daemon_options(&root, false);
@@ -3997,6 +4896,7 @@ mod tests {
     /// 验证 `daemon_control_submit_cancel_writes_observability_pipeline` 场景下的预期行为。
     #[test]
     fn daemon_control_submit_cancel_writes_observability_pipeline() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("control-observability");
         let options = daemon_options(&root, false);
@@ -4106,6 +5006,7 @@ mod tests {
     /// 验证 `daemon_control_observability_degrades_without_blocking_control_flow` 场景下的预期行为。
     #[test]
     fn daemon_control_observability_degrades_without_blocking_control_flow() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("control-observability-degraded");
         let options = daemon_options(&root, false);
@@ -4159,6 +5060,7 @@ mod tests {
     /// 验证 `daemon_control_loop_ticks_scheduler_retry_once` 场景下的预期行为。
     #[test]
     fn daemon_control_loop_ticks_scheduler_retry_once() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("scheduler-retry");
         let options = daemon_options(&root, false);
@@ -4267,6 +5169,7 @@ mod tests {
     /// 验证 `daemon_drain_mutates_agent_control_state` 场景下的预期行为。
     #[test]
     fn daemon_drain_mutates_agent_control_state() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("agent-drain");
         let options = daemon_options(&root, false);
@@ -4336,6 +5239,7 @@ mod tests {
     /// 验证 `daemon_reload_mutates_generation_route_state` 场景下的预期行为。
     #[test]
     fn daemon_reload_mutates_generation_route_state() {
+        let _daemon_test_guard = daemon_test_guard();
         let project = load_project_config(workspace_root()).unwrap();
         let root = temp_root("agent-reload");
         let options = daemon_options(&root, false);

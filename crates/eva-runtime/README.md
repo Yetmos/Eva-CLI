@@ -62,12 +62,12 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 
 `eva-runtime::daemon` 提供本机 daemon 进程边界 smoke，而不是生产后台守护进程：
 
-- `start_daemon` 先获取 `daemon.lock`，再验证 durable backend、扫描 durable task/provider process recovery state、policy domain 和 file JSONL observability backend。
-- 成功后写入 `daemon.state` 和 `daemon.pid`，foreground smoke 会立即调用 `Runtime::shutdown()` 并移除 lock/pid。
+- `start_daemon` 在固定且永不替换的 `daemon.lock` 上获取 OS lock，并原子发布含 PID、process token、writer generation、heartbeat 和 expiry 的 `daemon.lease`，再扫描 durable task/provider process recovery state、policy domain 和 file JSONL observability backend。
+- 成功后写入 `daemon.state` 和带完整 lease identity 的 `daemon.pid`；foreground smoke 会立即调用 `Runtime::shutdown()`，删除 PID、将 lease 标为 `released`，但永久保留未持锁的 `daemon.lock` anchor。
 - 显式传入 `shutdown_after_smoke=false` 时进入前台 control loop，通过 `state/control/requests` 和 `state/control/responses` 处理本机 filesystem mailbox 请求。
 - control operation 覆盖 status、shutdown、submit task、cancel task、drain 和 reload plan；status/shutdown 作用于前台 daemon，submit/cancel 写 durable task lifecycle store，drain/reload 会写入 `agent-control.state`，记录 drain gate、reload generation route 和旧 generation draining 状态。
 - submit v2 请求必须携带完整 TaskEnvelope；envelope 是唯一 submit Agent 身份，daemon 会拒绝通用 control Agent 分叉并再次确认 Agent 当前存在且 enabled。reader 在读取前拒绝 symlink/directory 等非普通 request；损坏摘要、Agent 分叉、未知/disabled Agent 等 poison request 会先改名移出 pending，再通过同步临时摘要、安全删除原目录项和发布 rejected marker 的顺序隔离，不会把原 inline payload 搬入 rejected 记录，也不会结束 control loop。
-- `send_daemon_control_request` 在没有 running state、lock 和 pid 时返回稳定 `Unavailable`，避免把 stopped smoke state 误读成 live daemon。
+- `send_daemon_control_request` 只有在 running state、版本化 PID projection、fresh active lease 与 live OS-lock owner 完整一致时才可用，避免 stale state、PID reuse 或 stopped smoke 被误读成 live daemon。
 - JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
 - JSON/report 中新增 `recovery` 对象，包含 scanned/recovered task、provider process、backoff 和 skipped evidence。
 - JSON/report 中新增 `hardware_hotplug` 对象，包含 watcher kind、published typed events、`hardware-hotplug.state` 和 `raw_handles_exposed:false` evidence。

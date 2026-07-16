@@ -5,7 +5,7 @@ use eva_core::EvaError;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,8 +24,15 @@ pub const DURABLE_LAYOUT_VERSION: &str = "eva.durable.v1";
 const WRITER_GENERATION_FORMAT: &str = "eva.writer-generation.v1";
 /// Runtime owner 文件的磁盘格式。
 const RUNTIME_OWNER_FORMAT: &str = "eva.runtime-owner.v1";
+/// Stable daemon lock anchor marker. The anchor is never replaced or removed.
+const RUNTIME_LEASE_ANCHOR_FORMAT: &str = "eva.daemon-lock-anchor.v1";
+/// Versioned daemon lease record stored separately from the lock anchor.
+const RUNTIME_LEASE_FORMAT: &str = "eva.daemon-lease.v1";
 /// 同一进程内临时文件和 owner token 的冲突消除计数器。
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Default daemon lease lifetime. Callers should renew substantially before this deadline.
+pub const DEFAULT_RUNTIME_LEASE_TTL_MS: u128 = 30_000;
 
 /// 长期 writer ownership 的单调 fencing generation；零表示没有 durable owner。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -154,6 +161,45 @@ pub struct DurableWriterGuard {
     inner: Arc<DurableWriterGuardInner>,
 }
 
+/// Persistent lifecycle state of a daemon lease record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableRuntimeLeaseState {
+    /// The owner may mutate runtime state while it holds the OS lock anchor.
+    Active,
+    /// A cleanly released lease may be claimed immediately.
+    Released,
+}
+
+/// Strictly versioned daemon lease metadata stored outside the fixed lock anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableRuntimeLeaseRecord {
+    state: DurableRuntimeLeaseState,
+    pid: u32,
+    process_start_token: String,
+    generation: WriterGeneration,
+    heartbeat_at_ms: u128,
+    expires_at_ms: u128,
+}
+
+/// A point-in-time daemon lease observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableRuntimeLeaseProbe {
+    record: Option<DurableRuntimeLeaseRecord>,
+    owner_live: bool,
+    expired: bool,
+}
+
+/// Owns both the fixed daemon OS-lock anchor and the durable runtime writer generation.
+#[derive(Debug)]
+pub struct DurableRuntimeLeaseGuard {
+    anchor_path: PathBuf,
+    lease_path: PathBuf,
+    record: DurableRuntimeLeaseRecord,
+    ttl_ms: u128,
+    writer: DurableWriterGuard,
+    _anchor_file: File,
+}
+
 #[derive(Debug)]
 struct DurableWriterGuardInner {
     root: PathBuf,
@@ -212,6 +258,158 @@ impl WriterGeneration {
             .checked_add(1)
             .map(Self)
             .ok_or_else(|| EvaError::conflict("durable writer generation exhausted"))
+    }
+}
+
+impl DurableRuntimeLeaseState {
+    /// Stable storage and reporting value for the lease state.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Released => "released",
+        }
+    }
+
+    fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "released" => Some(Self::Released),
+            _ => None,
+        }
+    }
+}
+
+impl DurableRuntimeLeaseRecord {
+    /// Current persisted lifecycle state.
+    pub const fn state(&self) -> DurableRuntimeLeaseState {
+        self.state
+    }
+
+    /// OS process identifier projected into the lease.
+    pub const fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Opaque owner-incarnation token used with the generation to prevent PID reuse mistakes.
+    pub fn process_start_token(&self) -> &str {
+        &self.process_start_token
+    }
+
+    /// Durable writer generation fenced to this lease.
+    pub const fn generation(&self) -> WriterGeneration {
+        self.generation
+    }
+
+    /// Last successfully persisted heartbeat timestamp.
+    pub const fn heartbeat_at_ms(&self) -> u128 {
+        self.heartbeat_at_ms
+    }
+
+    /// Earliest timestamp at which a dead active owner may be reclaimed.
+    pub const fn expires_at_ms(&self) -> u128 {
+        self.expires_at_ms
+    }
+
+    /// Whether this active lease is expired at the supplied wall-clock timestamp.
+    pub const fn is_expired_at(&self, now_ms: u128) -> bool {
+        matches!(self.state, DurableRuntimeLeaseState::Active) && self.expires_at_ms <= now_ms
+    }
+
+    fn active(writer: &DurableWriterGuard, now_ms: u128, ttl_ms: u128) -> Result<Self, EvaError> {
+        let expires_at_ms = lease_expiry(now_ms, ttl_ms)?;
+        Ok(Self {
+            state: DurableRuntimeLeaseState::Active,
+            pid: std::process::id(),
+            process_start_token: writer.owner_token().to_owned(),
+            generation: writer.generation(),
+            heartbeat_at_ms: now_ms,
+            expires_at_ms,
+        })
+    }
+
+    fn to_storage(&self) -> String {
+        format!(
+            "format={RUNTIME_LEASE_FORMAT}\nstate={}\npid={}\nprocess_start_token={}\ngeneration={}\nheartbeat_at_ms={}\nexpires_at_ms={}\n",
+            self.state.as_str(),
+            self.pid,
+            self.process_start_token,
+            self.generation.0,
+            self.heartbeat_at_ms,
+            self.expires_at_ms
+        )
+    }
+
+    fn from_storage(data: &str) -> Result<Self, EvaError> {
+        let fields = parse_metadata(data, "durable runtime lease")?;
+        if fields.len() != 7 {
+            return Err(EvaError::conflict(
+                "durable runtime lease has unexpected fields",
+            ));
+        }
+        if fields.get("format").map(String::as_str) != Some(RUNTIME_LEASE_FORMAT) {
+            return Err(EvaError::conflict(
+                "durable runtime lease format is unsupported",
+            ));
+        }
+        let state = fields
+            .get("state")
+            .and_then(|value| DurableRuntimeLeaseState::from_storage(value))
+            .ok_or_else(|| EvaError::conflict("durable runtime lease state is invalid"))?;
+        let pid = parse_runtime_lease_field::<u32>(&fields, "pid")?;
+        if pid == 0 {
+            return Err(EvaError::conflict(
+                "durable runtime lease pid must be positive",
+            ));
+        }
+        let process_start_token = fields
+            .get("process_start_token")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .ok_or_else(|| {
+                EvaError::conflict("durable runtime lease process start token is invalid")
+            })?;
+        let generation = WriterGeneration(parse_runtime_lease_field::<u64>(&fields, "generation")?);
+        if generation == WriterGeneration::ZERO {
+            return Err(EvaError::conflict(
+                "durable runtime lease generation must be positive",
+            ));
+        }
+        let heartbeat_at_ms = parse_runtime_lease_field::<u128>(&fields, "heartbeat_at_ms")?;
+        let expires_at_ms = parse_runtime_lease_field::<u128>(&fields, "expires_at_ms")?;
+        let valid_time_range = match state {
+            DurableRuntimeLeaseState::Active => expires_at_ms > heartbeat_at_ms,
+            DurableRuntimeLeaseState::Released => expires_at_ms == heartbeat_at_ms,
+        };
+        if !valid_time_range {
+            return Err(EvaError::conflict(
+                "durable runtime lease time range is invalid",
+            ));
+        }
+        Ok(Self {
+            state,
+            pid,
+            process_start_token,
+            generation,
+            heartbeat_at_ms,
+            expires_at_ms,
+        })
+    }
+}
+
+impl DurableRuntimeLeaseProbe {
+    /// Parsed lease record, if the anchor exists and a record has been published.
+    pub fn record(&self) -> Option<&DurableRuntimeLeaseRecord> {
+        self.record.as_ref()
+    }
+
+    /// Whether another process currently holds the fixed OS-lock anchor.
+    pub const fn owner_live(&self) -> bool {
+        self.owner_live
+    }
+
+    /// Whether the observed active record is past its expiry timestamp.
+    pub const fn expired(&self) -> bool {
+        self.expired
     }
 }
 
@@ -649,7 +847,7 @@ impl DurableWriterGuard {
             || fields.get("owner_token").map(String::as_str)
                 != Some(self.inner.owner_token.as_str())
             || owner_generation != Some(self.inner.generation.0)
-            || owner_pid.is_none()
+            || owner_pid != Some(std::process::id())
         {
             return Err(EvaError::conflict(
                 "durable runtime writer owner record is stale or invalid",
@@ -672,6 +870,238 @@ impl DurableWriterGuard {
         self.verify_current()?;
         operation(self.inner.generation)
     }
+}
+
+impl DurableRuntimeLeaseGuard {
+    /// Claims a daemon lease while holding the fixed anchor and a new durable writer generation.
+    ///
+    /// A live anchor is never stolen, even if its record is expired. Once the anchor is available,
+    /// an active record must also be expired before takeover; corrupt and legacy records fail closed.
+    pub fn acquire(
+        backend: &FileSystemDurableBackend,
+        anchor_path: impl AsRef<Path>,
+        lease_path: impl AsRef<Path>,
+        now_ms: u128,
+        ttl_ms: u128,
+    ) -> Result<Self, EvaError> {
+        let anchor_path = anchor_path.as_ref().to_path_buf();
+        let lease_path = lease_path.as_ref().to_path_buf();
+        validate_runtime_lease_paths(&anchor_path, &lease_path)?;
+        lease_expiry(now_ms, ttl_ms)?;
+
+        let anchor_existed = path_exists(&anchor_path, "daemon lock anchor")?;
+        let lease_existed = path_exists(&lease_path, "daemon lease record")?;
+        if !anchor_existed && lease_existed {
+            return Err(EvaError::conflict(
+                "daemon lease record exists without its fixed lock anchor",
+            )
+            .with_context("anchor_path", anchor_path.display().to_string())
+            .with_context("lease_path", lease_path.display().to_string()));
+        }
+
+        ensure_parent_directory(&anchor_path, "daemon lock anchor")?;
+        ensure_parent_directory(&lease_path, "daemon lease record")?;
+        let (anchor_file, anchor_created) = acquire_runtime_lease_anchor(&anchor_path)?;
+        if anchor_created && path_exists(&lease_path, "daemon lease record")? {
+            return Err(EvaError::conflict(
+                "daemon lease record appeared while its lock anchor was missing",
+            )
+            .with_context("anchor_path", anchor_path.display().to_string())
+            .with_context("lease_path", lease_path.display().to_string()));
+        }
+
+        let previous = read_runtime_lease_record(&lease_path)?;
+        if let Some(record) = previous.as_ref() {
+            if record.state == DurableRuntimeLeaseState::Active && !record.is_expired_at(now_ms) {
+                return Err(EvaError::conflict(
+                    "daemon lease owner is dead but its lease has not expired",
+                )
+                .with_context("lease_path", lease_path.display().to_string())
+                .with_context("pid", record.pid.to_string())
+                .with_context("generation", record.generation.0.to_string())
+                .with_context("expires_at_ms", record.expires_at_ms.to_string()));
+            }
+        }
+
+        let persisted_generation = read_writer_generation(&backend.layout.writer_generation_path)?;
+        if let Some(record) = previous.as_ref() {
+            if record.generation > persisted_generation {
+                return Err(EvaError::conflict(
+                    "daemon lease generation is ahead of durable writer generation",
+                )
+                .with_context("lease_path", lease_path.display().to_string())
+                .with_context("lease_generation", record.generation.0.to_string())
+                .with_context("writer_generation", persisted_generation.0.to_string()));
+            }
+        }
+
+        let writer = backend.acquire_runtime_writer()?;
+        if let Some(record) = previous.as_ref() {
+            if writer.generation() <= record.generation {
+                return Err(EvaError::conflict(
+                    "daemon lease takeover did not advance the writer generation",
+                )
+                .with_context("lease_path", lease_path.display().to_string())
+                .with_context("previous_generation", record.generation.0.to_string())
+                .with_context("new_generation", writer.generation().0.to_string()));
+            }
+        }
+
+        let record = DurableRuntimeLeaseRecord::active(&writer, now_ms, ttl_ms)?;
+        write_runtime_lease_record(&lease_path, &record)?;
+        Ok(Self {
+            anchor_path,
+            lease_path,
+            record,
+            ttl_ms,
+            writer,
+            _anchor_file: anchor_file,
+        })
+    }
+
+    /// Current in-memory copy of the last lease record successfully written by this guard.
+    pub fn record(&self) -> &DurableRuntimeLeaseRecord {
+        &self.record
+    }
+
+    /// Clone the fenced writer for stores that must share this daemon's generation.
+    pub fn writer(&self) -> DurableWriterGuard {
+        self.writer.clone()
+    }
+
+    /// Stable OS-lock anchor path held for this guard's lifetime.
+    pub fn anchor_path(&self) -> &Path {
+        &self.anchor_path
+    }
+
+    /// Atomically replaced lease record path associated with the anchor.
+    pub fn lease_path(&self) -> &Path {
+        &self.lease_path
+    }
+
+    /// Atomically extends heartbeat and expiry after verifying both writer and lease identity.
+    pub fn renew_at(&mut self, now_ms: u128) -> Result<&DurableRuntimeLeaseRecord, EvaError> {
+        if self.record.state != DurableRuntimeLeaseState::Active {
+            return Err(
+                EvaError::conflict("released daemon lease cannot be renewed")
+                    .with_context("lease_path", self.lease_path.display().to_string()),
+            );
+        }
+        self.verify_current_record()?;
+        let heartbeat_at_ms = self.record.heartbeat_at_ms.max(now_ms);
+        let expires_at_ms = lease_expiry(heartbeat_at_ms, self.ttl_ms)?;
+        let next = DurableRuntimeLeaseRecord {
+            heartbeat_at_ms,
+            expires_at_ms,
+            ..self.record.clone()
+        };
+        write_runtime_lease_record(&self.lease_path, &next)?;
+        self.record = next;
+        Ok(&self.record)
+    }
+
+    /// Atomically marks a matching lease released so the next owner need not wait for expiry.
+    pub fn release_at(&mut self, now_ms: u128) -> Result<&DurableRuntimeLeaseRecord, EvaError> {
+        if self.record.state == DurableRuntimeLeaseState::Released {
+            return Ok(&self.record);
+        }
+        self.verify_current_record()?;
+        let heartbeat_at_ms = self.record.heartbeat_at_ms.max(now_ms);
+        let next = DurableRuntimeLeaseRecord {
+            state: DurableRuntimeLeaseState::Released,
+            heartbeat_at_ms,
+            expires_at_ms: heartbeat_at_ms,
+            ..self.record.clone()
+        };
+        write_runtime_lease_record(&self.lease_path, &next)?;
+        self.record = next;
+        Ok(&self.record)
+    }
+
+    fn verify_current_record(&self) -> Result<(), EvaError> {
+        self.writer.verify_current()?;
+        let current = read_runtime_lease_record(&self.lease_path)?.ok_or_else(|| {
+            EvaError::conflict("daemon lease record disappeared while owned")
+                .with_context("lease_path", self.lease_path.display().to_string())
+        })?;
+        if current != self.record {
+            return Err(
+                EvaError::conflict("daemon lease record was replaced by another owner")
+                    .with_context("lease_path", self.lease_path.display().to_string())
+                    .with_context("expected_generation", self.record.generation.0.to_string())
+                    .with_context("actual_generation", current.generation.0.to_string()),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Drop for DurableRuntimeLeaseGuard {
+    fn drop(&mut self) {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(self.record.heartbeat_at_ms);
+        let _ = self.release_at(now_ms);
+    }
+}
+
+/// Inspects a daemon lease without modifying the fixed anchor or lease record.
+pub fn probe_runtime_lease(
+    anchor_path: impl AsRef<Path>,
+    lease_path: impl AsRef<Path>,
+    now_ms: u128,
+) -> Result<DurableRuntimeLeaseProbe, EvaError> {
+    let anchor_path = anchor_path.as_ref();
+    let lease_path = lease_path.as_ref();
+    validate_runtime_lease_paths(anchor_path, lease_path)?;
+    let anchor_exists = path_exists(anchor_path, "daemon lock anchor")?;
+    let lease_exists = path_exists(lease_path, "daemon lease record")?;
+    if !anchor_exists {
+        if lease_exists {
+            return Err(EvaError::conflict(
+                "daemon lease record exists without its fixed lock anchor",
+            )
+            .with_context("anchor_path", anchor_path.display().to_string())
+            .with_context("lease_path", lease_path.display().to_string()));
+        }
+        return Ok(DurableRuntimeLeaseProbe {
+            record: None,
+            owner_live: false,
+            expired: false,
+        });
+    }
+
+    let mut anchor_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(anchor_path)
+        .map_err(|error| {
+            runtime_lease_io_error(anchor_path, "failed to open daemon lock anchor", error)
+        })?;
+    let owner_live = match anchor_file.try_lock() {
+        Ok(()) => false,
+        Err(TryLockError::WouldBlock) => true,
+        Err(TryLockError::Error(error)) => {
+            return Err(runtime_lease_io_error(
+                anchor_path,
+                "failed to inspect daemon lock anchor",
+                error,
+            ))
+        }
+    };
+    if !owner_live {
+        validate_runtime_lease_anchor(&mut anchor_file, anchor_path)?;
+    }
+    let record = read_runtime_lease_record(lease_path)?;
+    let expired = record
+        .as_ref()
+        .is_some_and(|record| record.is_expired_at(now_ms));
+    Ok(DurableRuntimeLeaseProbe {
+        record,
+        owner_live,
+        expired,
+    })
 }
 
 impl PartialEq for DurableWriterGuard {
@@ -876,6 +1306,246 @@ fn read_writer_generation(path: &Path) -> Result<WriterGeneration, EvaError> {
         );
     }
     Ok(WriterGeneration(generation))
+}
+
+fn validate_runtime_lease_paths(anchor_path: &Path, lease_path: &Path) -> Result<(), EvaError> {
+    if anchor_path.as_os_str().is_empty() || lease_path.as_os_str().is_empty() {
+        return Err(EvaError::invalid_argument(
+            "daemon lease paths must not be empty",
+        ));
+    }
+    if anchor_path == lease_path {
+        return Err(EvaError::invalid_argument(
+            "daemon lock anchor and lease record must use different paths",
+        )
+        .with_context("path", anchor_path.display().to_string()));
+    }
+    Ok(())
+}
+
+fn ensure_parent_directory(path: &Path, label: &'static str) -> Result<(), EvaError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            EvaError::invalid_argument(format!("{label} path must have a parent directory"))
+                .with_context("path", path.display().to_string())
+        })?;
+    fs::create_dir_all(parent).map_err(|error| {
+        runtime_lease_io_error(parent, "failed to create daemon lease directory", error)
+    })
+}
+
+fn path_exists(path: &Path, label: &'static str) -> Result<bool, EvaError> {
+    path.try_exists().map_err(|error| {
+        EvaError::internal(format!("failed to inspect {label}"))
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })
+}
+
+fn acquire_runtime_lease_anchor(path: &Path) -> Result<(File, bool), EvaError> {
+    let (mut file, created) = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => (file, false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            publish_runtime_lease_anchor(path)?
+        }
+        Err(error) => {
+            return Err(runtime_lease_io_error(
+                path,
+                "failed to open daemon lock anchor",
+                error,
+            ))
+        }
+    };
+
+    match runtime_lease_anchor_marker_matches(&mut file) {
+        Ok(true) => {}
+        Ok(false) => return Err(invalid_runtime_lease_anchor(path)),
+        // Windows may deny reads while a live byte-range lock is held. `try_lock` below is
+        // the liveness authority; if it succeeds, the mandatory post-lock read surfaces the
+        // actual I/O or format error.
+        Err(_) => {}
+    }
+
+    file.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => EvaError::conflict("daemon lease is owned by a live process")
+            .with_context("anchor_path", path.display().to_string()),
+        TryLockError::Error(error) => {
+            runtime_lease_io_error(path, "failed to acquire daemon lock anchor", error)
+        }
+    })?;
+    validate_runtime_lease_anchor(&mut file, path)?;
+    Ok((file, created))
+}
+
+fn publish_runtime_lease_anchor(path: &Path) -> Result<(File, bool), EvaError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            EvaError::invalid_argument("daemon lock anchor path must have a parent directory")
+                .with_context("path", path.display().to_string())
+        })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        EvaError::invalid_argument("daemon lock anchor path must have a file name")
+            .with_context("path", path.display().to_string())
+    })?;
+    let (temp_path, mut temp_file) = loop {
+        let mut temp_name = OsString::from(".");
+        temp_name.push(file_name);
+        temp_name.push(format!(".init-{}", unique_token("anchor", 0)));
+        let candidate = parent.join(temp_name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (candidate, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(runtime_lease_io_error(
+                    &candidate,
+                    "failed to create daemon lock anchor staging file",
+                    error,
+                ))
+            }
+        }
+    };
+    let mut cleanup = PendingFileCleanup {
+        path: temp_path.clone(),
+        armed: true,
+    };
+    temp_file
+        .write_all(format!("format={RUNTIME_LEASE_ANCHOR_FORMAT}\n").as_bytes())
+        .and_then(|()| temp_file.flush())
+        .and_then(|()| temp_file.sync_all())
+        .map_err(|error| {
+            runtime_lease_io_error(
+                &temp_path,
+                "failed to initialize daemon lock anchor staging file",
+                error,
+            )
+        })?;
+    drop(temp_file);
+
+    let created = match fs::hard_link(&temp_path, path) {
+        Ok(()) => {
+            sync_parent_directory(parent).map_err(|error| {
+                runtime_lease_io_error(parent, "failed to sync daemon lock anchor directory", error)
+            })?;
+            true
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(error) => {
+            return Err(runtime_lease_io_error(
+                path,
+                "failed to publish daemon lock anchor",
+                error,
+            ))
+        }
+    };
+    fs::remove_file(&temp_path).map_err(|error| {
+        runtime_lease_io_error(
+            &temp_path,
+            "failed to remove daemon lock anchor staging link",
+            error,
+        )
+    })?;
+    cleanup.armed = false;
+    sync_parent_directory(parent).map_err(|error| {
+        runtime_lease_io_error(parent, "failed to sync daemon lock anchor directory", error)
+    })?;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| {
+            runtime_lease_io_error(path, "failed to open published daemon lock anchor", error)
+        })?;
+    Ok((file, created))
+}
+
+fn validate_runtime_lease_anchor(file: &mut File, path: &Path) -> Result<(), EvaError> {
+    if runtime_lease_anchor_marker_matches(file)
+        .map_err(|error| runtime_lease_io_error(path, "failed to read daemon lock anchor", error))?
+    {
+        return Ok(());
+    }
+    Err(invalid_runtime_lease_anchor(path))
+}
+
+fn runtime_lease_anchor_marker_matches(file: &mut File) -> io::Result<bool> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut data = String::new();
+    file.read_to_string(&mut data)?;
+    Ok(data == format!("format={RUNTIME_LEASE_ANCHOR_FORMAT}\n"))
+}
+
+fn invalid_runtime_lease_anchor(path: &Path) -> EvaError {
+    EvaError::conflict("daemon lock anchor format is corrupt or unsupported")
+        .with_context("path", path.display().to_string())
+}
+
+fn read_runtime_lease_record(path: &Path) -> Result<Option<DurableRuntimeLeaseRecord>, EvaError> {
+    let data = match fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(EvaError::conflict("daemon lease record cannot be read")
+                .with_context("path", path.display().to_string())
+                .with_context("io_error", error.to_string()))
+        }
+    };
+    DurableRuntimeLeaseRecord::from_storage(&data)
+        .map(Some)
+        .map_err(|error| error.with_context("path", path.display().to_string()))
+}
+
+fn write_runtime_lease_record(
+    path: &Path,
+    record: &DurableRuntimeLeaseRecord,
+) -> Result<(), EvaError> {
+    atomic_write(path, record.to_storage().as_bytes()).map_err(|error| {
+        runtime_lease_io_error(path, "failed to persist daemon lease record", error)
+    })
+}
+
+fn parse_runtime_lease_field<T>(
+    fields: &BTreeMap<String, String>,
+    field: &'static str,
+) -> Result<T, EvaError>
+where
+    T: std::str::FromStr,
+{
+    fields
+        .get(field)
+        .ok_or_else(|| {
+            EvaError::conflict("durable runtime lease is incomplete").with_context("field", field)
+        })?
+        .parse::<T>()
+        .map_err(|_| {
+            EvaError::conflict("durable runtime lease field is invalid")
+                .with_context("field", field)
+        })
+}
+
+fn lease_expiry(now_ms: u128, ttl_ms: u128) -> Result<u128, EvaError> {
+    if ttl_ms == 0 {
+        return Err(EvaError::invalid_argument(
+            "daemon lease ttl must be positive",
+        ));
+    }
+    now_ms
+        .checked_add(ttl_ms)
+        .ok_or_else(|| EvaError::invalid_argument("daemon lease expiry overflows u128"))
+}
+
+fn runtime_lease_io_error(path: &Path, message: &'static str, error: io::Error) -> EvaError {
+    EvaError::internal(message)
+        .with_context("path", path.display().to_string())
+        .with_context("io_error", error.to_string())
 }
 
 fn parse_metadata(data: &str, label: &'static str) -> Result<BTreeMap<String, String>, EvaError> {
@@ -1402,6 +2072,449 @@ mod tests {
         );
         assert_eq!(report.mode, "in_memory");
         assert!(!report.migration_locked);
+    }
+
+    #[test]
+    fn runtime_lease_process_child() {
+        let Ok(root) = std::env::var("EVA_STORAGE_LEASE_CHILD_ROOT") else {
+            return;
+        };
+        let anchor = PathBuf::from(std::env::var("EVA_STORAGE_LEASE_CHILD_ANCHOR").unwrap());
+        let lease = PathBuf::from(std::env::var("EVA_STORAGE_LEASE_CHILD_LEASE").unwrap());
+        let start = PathBuf::from(std::env::var("EVA_STORAGE_LEASE_CHILD_START").unwrap());
+        let release = PathBuf::from(std::env::var("EVA_STORAGE_LEASE_CHILD_RELEASE").unwrap());
+        let outcome = PathBuf::from(std::env::var("EVA_STORAGE_LEASE_CHILD_OUTCOME").unwrap());
+        wait_for_path(&start, Duration::from_secs(10));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let backend = loop {
+            match FileSystemDurableBackend::open(DurableBackendOptions::read_write(&root)) {
+                Ok(backend) => break backend,
+                Err(error)
+                    if error.kind() == eva_core::ErrorKind::Conflict
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    fs::write(&outcome, format!("open-error:{}", error.kind().as_str())).unwrap();
+                    return;
+                }
+            }
+        };
+        match DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 200, 50) {
+            Ok(guard) => {
+                fs::write(
+                    &outcome,
+                    format!("acquired:{}", guard.record().generation().0),
+                )
+                .unwrap();
+                wait_for_path(&release, Duration::from_secs(10));
+            }
+            Err(error) if error.kind() == eva_core::ErrorKind::Conflict => {
+                fs::write(&outcome, b"conflict").unwrap();
+            }
+            Err(error) => {
+                fs::write(&outcome, format!("lease-error:{}", error.kind().as_str())).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn two_processes_reclaim_one_expired_daemon_lease_once() {
+        let root = test_root("two-process-daemon-lease");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let dead = seed_dead_runtime_lease(&backend, &anchor, &lease, 100, 50);
+        assert_eq!(dead.generation(), WriterGeneration(1));
+        let start = root.path().join("lease-start");
+        let release = root.path().join("lease-release");
+        let outcome_a = root.path().join("lease-outcome-a");
+        let outcome_b = root.path().join("lease-outcome-b");
+        let mut child_a =
+            spawn_runtime_lease_child(root.path(), &anchor, &lease, &start, &release, &outcome_a);
+        let mut child_b =
+            spawn_runtime_lease_child(root.path(), &anchor, &lease, &start, &release, &outcome_b);
+        fs::write(&start, b"go").unwrap();
+
+        wait_for_path(&outcome_a, Duration::from_secs(10));
+        wait_for_path(&outcome_b, Duration::from_secs(10));
+        let outcomes = [
+            fs::read_to_string(&outcome_a).unwrap(),
+            fs::read_to_string(&outcome_b).unwrap(),
+        ];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| outcome.as_str() == "acquired:2")
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| outcome.as_str() == "conflict")
+                .count(),
+            1
+        );
+        assert_eq!(
+            read_writer_generation(&backend.layout().writer_generation_path).unwrap(),
+            WriterGeneration(2)
+        );
+
+        fs::write(&release, b"release").unwrap();
+        assert!(child_a.wait().unwrap().success());
+        assert!(child_b.wait().unwrap().success());
+        let released = probe_runtime_lease(&anchor, &lease, 201).unwrap();
+        assert!(!released.owner_live());
+        assert_eq!(
+            released.record().map(DurableRuntimeLeaseRecord::state),
+            Some(DurableRuntimeLeaseState::Released)
+        );
+
+        let successor =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 202, 50).unwrap();
+        assert_eq!(successor.record().generation(), WriterGeneration(3));
+        drop(successor);
+        assert!(anchor.is_file());
+    }
+
+    #[test]
+    fn two_processes_initialize_one_daemon_anchor_without_stranding_empty_file() {
+        let root = test_root("two-process-daemon-anchor-init");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let start = root.path().join("lease-init-start");
+        let release = root.path().join("lease-init-release");
+        let outcome_a = root.path().join("lease-init-outcome-a");
+        let outcome_b = root.path().join("lease-init-outcome-b");
+        let mut child_a =
+            spawn_runtime_lease_child(root.path(), &anchor, &lease, &start, &release, &outcome_a);
+        let mut child_b =
+            spawn_runtime_lease_child(root.path(), &anchor, &lease, &start, &release, &outcome_b);
+        fs::write(&start, b"go").unwrap();
+
+        wait_for_path(&outcome_a, Duration::from_secs(10));
+        wait_for_path(&outcome_b, Duration::from_secs(10));
+        let outcomes = [
+            fs::read_to_string(&outcome_a).unwrap(),
+            fs::read_to_string(&outcome_b).unwrap(),
+        ];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| outcome.as_str() == "acquired:1")
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| outcome.as_str() == "conflict")
+                .count(),
+            1
+        );
+        assert!(anchor.is_file());
+        assert_eq!(
+            read_writer_generation(&backend.layout().writer_generation_path).unwrap(),
+            WriterGeneration(1)
+        );
+
+        fs::write(&release, b"release").unwrap();
+        assert!(child_a.wait().unwrap().success());
+        assert!(child_b.wait().unwrap().success());
+        let released = probe_runtime_lease(&anchor, &lease, 201).unwrap();
+        assert!(!released.owner_live());
+        assert_eq!(
+            released.record().map(DurableRuntimeLeaseRecord::state),
+            Some(DurableRuntimeLeaseState::Released)
+        );
+        assert_eq!(
+            fs::read_to_string(&anchor).unwrap(),
+            format!("format={RUNTIME_LEASE_ANCHOR_FORMAT}\n")
+        );
+    }
+
+    #[test]
+    fn live_expired_daemon_lease_cannot_be_stolen() {
+        let root = test_root("live-expired-daemon-lease");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let guard = DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 100, 30)
+            .expect("first lease should be acquired");
+
+        let probe = probe_runtime_lease(&anchor, &lease, 131).unwrap();
+        assert!(probe.owner_live());
+        assert!(probe.expired());
+        assert_eq!(probe.record(), Some(guard.record()));
+        let error =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 131, 30).unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            read_writer_generation(&backend.layout().writer_generation_path).unwrap(),
+            WriterGeneration(1)
+        );
+        drop(guard);
+        assert!(anchor.exists());
+        assert_eq!(
+            fs::read_to_string(&anchor).unwrap(),
+            format!("format={RUNTIME_LEASE_ANCHOR_FORMAT}\n")
+        );
+    }
+
+    #[test]
+    fn dead_daemon_lease_waits_for_expiry_then_advances_generation() {
+        let root = test_root("dead-daemon-lease");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let dead = seed_dead_runtime_lease(&backend, &anchor, &lease, 100, 100);
+
+        let error =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 199, 100).unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            read_writer_generation(&backend.layout().writer_generation_path).unwrap(),
+            WriterGeneration(1)
+        );
+
+        let successor =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 200, 100).unwrap();
+        assert_eq!(successor.record().generation(), WriterGeneration(2));
+        assert_eq!(successor.record().pid(), dead.pid());
+        assert_ne!(
+            successor.record().process_start_token(),
+            dead.process_start_token()
+        );
+        assert_eq!(successor.record().heartbeat_at_ms(), 200);
+        assert_eq!(successor.record().expires_at_ms(), 300);
+    }
+
+    #[test]
+    fn daemon_heartbeat_atomically_extends_only_the_matching_lease() {
+        let root = test_root("daemon-heartbeat");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let mut guard =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 100, 30).unwrap();
+        let renewed = guard.renew_at(120).unwrap().clone();
+        assert_eq!(renewed.heartbeat_at_ms(), 120);
+        assert_eq!(renewed.expires_at_ms(), 150);
+        assert_eq!(
+            read_runtime_lease_record(&lease).unwrap(),
+            Some(renewed.clone())
+        );
+        let unchanged = guard.renew_at(110).unwrap();
+        assert_eq!(unchanged.heartbeat_at_ms(), 120);
+        assert_eq!(unchanged.expires_at_ms(), 150);
+        drop(guard);
+        assert_eq!(
+            fs::read_to_string(&anchor).unwrap(),
+            format!("format={RUNTIME_LEASE_ANCHOR_FORMAT}\n")
+        );
+    }
+
+    #[test]
+    fn stale_daemon_guard_cannot_renew_or_release_successor_record() {
+        let root = test_root("stale-daemon-guard");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let mut guard =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 100, 30).unwrap();
+        let successor = DurableRuntimeLeaseRecord {
+            process_start_token: "successor-token".to_owned(),
+            generation: WriterGeneration(2),
+            heartbeat_at_ms: 200,
+            expires_at_ms: 230,
+            ..guard.record().clone()
+        };
+        write_runtime_lease_record(&lease, &successor).unwrap();
+        let successor_bytes = fs::read(&lease).unwrap();
+
+        assert_eq!(
+            guard.renew_at(210).unwrap_err().kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        assert_eq!(fs::read(&lease).unwrap(), successor_bytes);
+        assert_eq!(
+            guard.release_at(210).unwrap_err().kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        assert_eq!(fs::read(&lease).unwrap(), successor_bytes);
+        drop(guard);
+        assert_eq!(fs::read(&lease).unwrap(), successor_bytes);
+    }
+
+    #[test]
+    fn corrupt_or_legacy_daemon_metadata_fails_closed_before_writer_claim() {
+        let root = test_root("corrupt-daemon-lease");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        drop(acquire_runtime_lease_anchor(&anchor).unwrap().0);
+        fs::write(&lease, b"format=legacy.daemon-lock.v0\npid=123\n").unwrap();
+        let lease_bytes = fs::read(&lease).unwrap();
+
+        let error =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 1_000, 30).unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(fs::read(&lease).unwrap(), lease_bytes);
+        assert_eq!(
+            read_writer_generation(&backend.layout().writer_generation_path).unwrap(),
+            WriterGeneration::ZERO
+        );
+        assert_eq!(
+            probe_runtime_lease(&anchor, &lease, 1_000)
+                .unwrap_err()
+                .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+
+        fs::write(&anchor, b"pid=123\n").unwrap();
+        fs::remove_file(&lease).unwrap();
+        let anchor_bytes = fs::read(&anchor).unwrap();
+        let error =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 1_000, 30).unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(fs::read(&anchor).unwrap(), anchor_bytes);
+        assert!(!lease.exists());
+    }
+
+    #[test]
+    fn daemon_lease_generation_ahead_of_writer_fails_without_burning_generations() {
+        let root = test_root("daemon-lease-generation-ahead");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let mut first =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 100, 30).unwrap();
+        first.release_at(101).unwrap();
+        drop(first);
+        let forged = fs::read_to_string(&lease)
+            .unwrap()
+            .replace("generation=1\n", "generation=100\n");
+        fs::write(&lease, forged.as_bytes()).unwrap();
+        let generation_bytes = fs::read(&backend.layout().writer_generation_path).unwrap();
+        let lease_bytes = fs::read(&lease).unwrap();
+
+        for _ in 0..2 {
+            let error =
+                DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 102, 30).unwrap_err();
+            assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+            assert!(error.message().contains("ahead"));
+            assert_eq!(
+                fs::read(&backend.layout().writer_generation_path).unwrap(),
+                generation_bytes
+            );
+            assert_eq!(fs::read(&lease).unwrap(), lease_bytes);
+        }
+    }
+
+    #[test]
+    fn missing_anchor_with_lease_record_fails_closed_without_creating_anchor() {
+        let root = test_root("missing-daemon-anchor");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        fs::write(
+            &lease,
+            "format=eva.daemon-lease.v1\nstate=active\npid=1\nprocess_start_token=orphan\ngeneration=1\nheartbeat_at_ms=100\nexpires_at_ms=200\n",
+        )
+        .unwrap();
+        let lease_bytes = fs::read(&lease).unwrap();
+
+        assert_eq!(
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 200, 30)
+                .unwrap_err()
+                .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        assert!(!anchor.exists());
+        assert_eq!(fs::read(&lease).unwrap(), lease_bytes);
+        assert_eq!(
+            probe_runtime_lease(&anchor, &lease, 200)
+                .unwrap_err()
+                .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn released_daemon_lease_can_be_reclaimed_immediately() {
+        let root = test_root("released-daemon-lease");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let mut first =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 100, 1_000).unwrap();
+        first.release_at(101).unwrap();
+        assert_eq!(first.record().state(), DurableRuntimeLeaseState::Released);
+        drop(first);
+
+        let second =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 102, 1_000).unwrap();
+        assert_eq!(second.record().generation(), WriterGeneration(2));
+        assert_eq!(second.record().state(), DurableRuntimeLeaseState::Active);
+        assert!(anchor.exists());
+    }
+
+    fn seed_dead_runtime_lease(
+        backend: &FileSystemDurableBackend,
+        anchor: &Path,
+        lease: &Path,
+        heartbeat_at_ms: u128,
+        ttl_ms: u128,
+    ) -> DurableRuntimeLeaseRecord {
+        let (anchor_file, _) = acquire_runtime_lease_anchor(anchor).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let record = DurableRuntimeLeaseRecord::active(&writer, heartbeat_at_ms, ttl_ms).unwrap();
+        write_runtime_lease_record(lease, &record).unwrap();
+        drop(writer);
+        drop(anchor_file);
+        record
+    }
+
+    fn spawn_runtime_lease_child(
+        root: &Path,
+        anchor: &Path,
+        lease: &Path,
+        start: &Path,
+        release: &Path,
+        outcome: &Path,
+    ) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "durable_backend::tests::runtime_lease_process_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("EVA_STORAGE_LEASE_CHILD_ROOT", root)
+            .env("EVA_STORAGE_LEASE_CHILD_ANCHOR", anchor)
+            .env("EVA_STORAGE_LEASE_CHILD_LEASE", lease)
+            .env("EVA_STORAGE_LEASE_CHILD_START", start)
+            .env("EVA_STORAGE_LEASE_CHILD_RELEASE", release)
+            .env("EVA_STORAGE_LEASE_CHILD_OUTCOME", outcome)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
     }
 
     fn spawn_writer_child(root: &Path, start: &Path, release: &Path, outcome: &Path) -> Child {

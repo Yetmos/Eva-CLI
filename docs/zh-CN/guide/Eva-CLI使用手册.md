@@ -164,7 +164,7 @@ cargo run -q -- emit /input/user --payload-bytes-hex 68656c6c6f --target-agent r
 
 ## Daemon 与 Agent 控制
 
-不带 `--no-shutdown-after-smoke` 的 `daemon start` 会完成一次启动检查后立即 shutdown，并清理 lock/PID。要验证控制邮箱，需要两个终端。
+不带 `--no-shutdown-after-smoke` 的 `daemon start` 会完成一次启动检查后立即 shutdown，删除 PID projection 并将 lease 标为 released；固定 `daemon.lock` anchor 会永久保留但不再持锁。要验证控制邮箱，需要两个终端。
 
 终端 A：
 
