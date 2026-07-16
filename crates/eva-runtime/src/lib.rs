@@ -15,10 +15,14 @@ pub mod task;
 pub use basic::{BasicRunOptions, BasicRunReport};
 pub use builder::{RuntimeBuilder, RuntimeMode, RuntimeOptions};
 pub use daemon::{
-    daemon_status, send_daemon_control_request, start_daemon, stop_daemon, DaemonControlOperation,
-    DaemonControlRequest, DaemonControlResponse, DaemonLeaseReport, DaemonMemoryMaintenanceReport,
-    DaemonPathReport, DaemonPolicyReport, DaemonStartOptions, DaemonStartReport, DaemonStateRecord,
-    DaemonStatusReport, DaemonStopReport,
+    cleanup_failed_daemon_start, clear_daemon_startup_handshake, daemon_startup_report_path,
+    daemon_status, read_daemon_startup_frame, read_daemon_startup_report,
+    request_daemon_startup_abort, send_daemon_control_request, start_daemon,
+    start_daemon_background_child, stop_daemon, write_daemon_startup_report,
+    DaemonControlOperation, DaemonControlRequest, DaemonControlResponse, DaemonLeaseReport,
+    DaemonMemoryMaintenanceReport, DaemonPathReport, DaemonPolicyReport, DaemonStartOptions,
+    DaemonStartReport, DaemonStartupCleanupReport, DaemonStartupFrame, DaemonStartupHandshake,
+    DaemonStartupPhase, DaemonStateRecord, DaemonStatusReport, DaemonStopReport,
 };
 pub use diagnostics::{
     inspect_durable_backend, DurableDiagnosticsOptions, DurableDiagnosticsReport,

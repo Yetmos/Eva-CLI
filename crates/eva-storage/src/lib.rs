@@ -15,12 +15,12 @@ pub use artifact_store::{
 };
 pub use audit_store::{AuditRecord, FileSystemAuditSink};
 pub use durable_backend::{
-    migration_lock_is_held, probe_runtime_lease, DurableBackend, DurableBackendLayout,
-    DurableBackendManifest, DurableBackendMode, DurableBackendOptions, DurableBackendReport,
-    DurableRuntimeLeaseGuard, DurableRuntimeLeaseProbe, DurableRuntimeLeaseRecord,
-    DurableRuntimeLeaseState, DurableWriterGuard, FileSystemDurableBackend, InMemoryDurableBackend,
-    WriterGeneration, CURRENT_DURABLE_SCHEMA_VERSION, DEFAULT_RUNTIME_LEASE_TTL_MS,
-    DURABLE_LAYOUT_VERSION,
+    atomic_write, migration_lock_is_held, probe_runtime_lease, DurableBackend,
+    DurableBackendLayout, DurableBackendManifest, DurableBackendMode, DurableBackendOptions,
+    DurableBackendReport, DurableRuntimeLeaseGuard, DurableRuntimeLeaseIdentity,
+    DurableRuntimeLeaseProbe, DurableRuntimeLeaseRecord, DurableRuntimeLeaseState,
+    DurableWriterGuard, FileSystemDurableBackend, InMemoryDurableBackend, WriterGeneration,
+    CURRENT_DURABLE_SCHEMA_VERSION, DEFAULT_RUNTIME_LEASE_TTL_MS, DURABLE_LAYOUT_VERSION,
 };
 pub use event_log::{
     EventLog, EventLogRecord, EventLogStatus, FileSystemEventLog, InMemoryEventLog,

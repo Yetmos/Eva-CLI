@@ -170,6 +170,14 @@ pub enum DurableRuntimeLeaseState {
     Released,
 }
 
+/// Stable daemon owner identity used for an explicitly confirmed failed-start reclaim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableRuntimeLeaseIdentity {
+    pid: u32,
+    process_start_token: String,
+    generation: WriterGeneration,
+}
+
 /// Strictly versioned daemon lease metadata stored outside the fixed lock anchor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableRuntimeLeaseRecord {
@@ -279,6 +287,60 @@ impl DurableRuntimeLeaseState {
     }
 }
 
+impl DurableRuntimeLeaseIdentity {
+    /// Builds the exact identity reported by a child whose process exit was independently observed.
+    pub fn new(
+        pid: u32,
+        process_start_token: impl Into<String>,
+        generation: WriterGeneration,
+    ) -> Result<Self, EvaError> {
+        let process_start_token = process_start_token.into();
+        if pid == 0 {
+            return Err(EvaError::invalid_argument(
+                "daemon lease identity pid must be positive",
+            ));
+        }
+        validate_process_start_token(&process_start_token)?;
+        if generation == WriterGeneration::ZERO {
+            return Err(EvaError::invalid_argument(
+                "daemon lease identity generation must be positive",
+            ));
+        }
+        Ok(Self {
+            pid,
+            process_start_token,
+            generation,
+        })
+    }
+
+    /// Expected OS process identifier.
+    pub const fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Expected opaque process-incarnation token.
+    pub fn process_start_token(&self) -> &str {
+        &self.process_start_token
+    }
+
+    /// Expected durable writer generation.
+    pub const fn generation(&self) -> WriterGeneration {
+        self.generation
+    }
+}
+
+fn validate_process_start_token(process_start_token: &str) -> Result<(), EvaError> {
+    if process_start_token.is_empty()
+        || process_start_token.contains('\n')
+        || process_start_token.contains('\r')
+    {
+        return Err(EvaError::invalid_argument(
+            "daemon lease identity process start token is invalid",
+        ));
+    }
+    Ok(())
+}
+
 impl DurableRuntimeLeaseRecord {
     /// Current persisted lifecycle state.
     pub const fn state(&self) -> DurableRuntimeLeaseState {
@@ -310,17 +372,32 @@ impl DurableRuntimeLeaseRecord {
         self.expires_at_ms
     }
 
+    /// Returns the PID/token/generation identity used for a failed-start reclaim decision.
+    pub fn identity(&self) -> DurableRuntimeLeaseIdentity {
+        DurableRuntimeLeaseIdentity {
+            pid: self.pid,
+            process_start_token: self.process_start_token.clone(),
+            generation: self.generation,
+        }
+    }
+
     /// Whether this active lease is expired at the supplied wall-clock timestamp.
     pub const fn is_expired_at(&self, now_ms: u128) -> bool {
         matches!(self.state, DurableRuntimeLeaseState::Active) && self.expires_at_ms <= now_ms
     }
 
-    fn active(writer: &DurableWriterGuard, now_ms: u128, ttl_ms: u128) -> Result<Self, EvaError> {
+    fn active(
+        writer: &DurableWriterGuard,
+        process_start_token: &str,
+        now_ms: u128,
+        ttl_ms: u128,
+    ) -> Result<Self, EvaError> {
+        validate_process_start_token(process_start_token)?;
         let expires_at_ms = lease_expiry(now_ms, ttl_ms)?;
         Ok(Self {
             state: DurableRuntimeLeaseState::Active,
             pid: std::process::id(),
-            process_start_token: writer.owner_token().to_owned(),
+            process_start_token: process_start_token.to_owned(),
             generation: writer.generation(),
             heartbeat_at_ms: now_ms,
             expires_at_ms,
@@ -884,8 +961,76 @@ impl DurableRuntimeLeaseGuard {
         now_ms: u128,
         ttl_ms: u128,
     ) -> Result<Self, EvaError> {
-        let anchor_path = anchor_path.as_ref().to_path_buf();
-        let lease_path = lease_path.as_ref().to_path_buf();
+        Self::acquire_inner(
+            backend,
+            anchor_path.as_ref(),
+            lease_path.as_ref(),
+            now_ms,
+            ttl_ms,
+            None,
+            None,
+        )
+    }
+
+    /// Claims a daemon lease with a launcher-issued process incarnation token.
+    ///
+    /// Background launchers use this token to bind a child handle to a lease even if the child is
+    /// killed before it can publish its claimed startup frame.
+    pub fn acquire_with_process_start_token(
+        backend: &FileSystemDurableBackend,
+        anchor_path: impl AsRef<Path>,
+        lease_path: impl AsRef<Path>,
+        process_start_token: &str,
+        now_ms: u128,
+        ttl_ms: u128,
+    ) -> Result<Self, EvaError> {
+        validate_process_start_token(process_start_token)?;
+        Self::acquire_inner(
+            backend,
+            anchor_path.as_ref(),
+            lease_path.as_ref(),
+            now_ms,
+            ttl_ms,
+            Some(process_start_token),
+            None,
+        )
+    }
+
+    /// Reclaims one exact active lease after the caller has independently observed child exit.
+    ///
+    /// Unlike normal acquisition, an exact dead failed-start identity may be reclaimed before its
+    /// expiry. The fixed anchor must be unlocked and the current active record must match all of
+    /// PID, process-start token, and writer generation; every other state fails closed.
+    pub fn reclaim_failed_start(
+        backend: &FileSystemDurableBackend,
+        anchor_path: impl AsRef<Path>,
+        lease_path: impl AsRef<Path>,
+        expected: &DurableRuntimeLeaseIdentity,
+        now_ms: u128,
+        ttl_ms: u128,
+    ) -> Result<Self, EvaError> {
+        Self::acquire_inner(
+            backend,
+            anchor_path.as_ref(),
+            lease_path.as_ref(),
+            now_ms,
+            ttl_ms,
+            None,
+            Some(expected),
+        )
+    }
+
+    fn acquire_inner(
+        backend: &FileSystemDurableBackend,
+        anchor_path: &Path,
+        lease_path: &Path,
+        now_ms: u128,
+        ttl_ms: u128,
+        process_start_token: Option<&str>,
+        failed_start_identity: Option<&DurableRuntimeLeaseIdentity>,
+    ) -> Result<Self, EvaError> {
+        let anchor_path = anchor_path.to_path_buf();
+        let lease_path = lease_path.to_path_buf();
         validate_runtime_lease_paths(&anchor_path, &lease_path)?;
         lease_expiry(now_ms, ttl_ms)?;
 
@@ -898,10 +1043,22 @@ impl DurableRuntimeLeaseGuard {
             .with_context("anchor_path", anchor_path.display().to_string())
             .with_context("lease_path", lease_path.display().to_string()));
         }
+        if failed_start_identity.is_some() && !anchor_existed {
+            return Err(EvaError::conflict(
+                "failed-start reclaim requires an existing daemon lock anchor",
+            )
+            .with_context("anchor_path", anchor_path.display().to_string()));
+        }
 
         ensure_parent_directory(&anchor_path, "daemon lock anchor")?;
         ensure_parent_directory(&lease_path, "daemon lease record")?;
         let (anchor_file, anchor_created) = acquire_runtime_lease_anchor(&anchor_path)?;
+        if failed_start_identity.is_some() && anchor_created {
+            return Err(EvaError::conflict(
+                "daemon lock anchor changed during failed-start reclaim",
+            )
+            .with_context("anchor_path", anchor_path.display().to_string()));
+        }
         if anchor_created && path_exists(&lease_path, "daemon lease record")? {
             return Err(EvaError::conflict(
                 "daemon lease record appeared while its lock anchor was missing",
@@ -911,15 +1068,50 @@ impl DurableRuntimeLeaseGuard {
         }
 
         let previous = read_runtime_lease_record(&lease_path)?;
-        if let Some(record) = previous.as_ref() {
-            if record.state == DurableRuntimeLeaseState::Active && !record.is_expired_at(now_ms) {
-                return Err(EvaError::conflict(
-                    "daemon lease owner is dead but its lease has not expired",
-                )
-                .with_context("lease_path", lease_path.display().to_string())
-                .with_context("pid", record.pid.to_string())
-                .with_context("generation", record.generation.0.to_string())
-                .with_context("expires_at_ms", record.expires_at_ms.to_string()));
+        match failed_start_identity {
+            Some(expected) => {
+                let record = previous.as_ref().ok_or_else(|| {
+                    EvaError::conflict(
+                        "failed-start reclaim requires an existing active daemon lease",
+                    )
+                    .with_context("lease_path", lease_path.display().to_string())
+                })?;
+                if record.state != DurableRuntimeLeaseState::Active {
+                    return Err(EvaError::conflict(
+                        "failed-start reclaim requires an active daemon lease",
+                    )
+                    .with_context("lease_path", lease_path.display().to_string())
+                    .with_context("actual_state", record.state.as_str()));
+                }
+                let actual = record.identity();
+                if actual != *expected {
+                    return Err(EvaError::conflict(
+                        "failed-start daemon lease identity does not match",
+                    )
+                    .with_context("lease_path", lease_path.display().to_string())
+                    .with_context("expected_pid", expected.pid.to_string())
+                    .with_context("actual_pid", actual.pid.to_string())
+                    .with_context("expected_generation", expected.generation.0.to_string())
+                    .with_context("actual_generation", actual.generation.0.to_string())
+                    .with_context(
+                        "process_start_token_matches",
+                        (expected.process_start_token == actual.process_start_token).to_string(),
+                    ));
+                }
+            }
+            None => {
+                if let Some(record) = previous.as_ref().filter(|record| {
+                    record.state == DurableRuntimeLeaseState::Active
+                        && !record.is_expired_at(now_ms)
+                }) {
+                    return Err(EvaError::conflict(
+                        "daemon lease owner is dead but its lease has not expired",
+                    )
+                    .with_context("lease_path", lease_path.display().to_string())
+                    .with_context("pid", record.pid.to_string())
+                    .with_context("generation", record.generation.0.to_string())
+                    .with_context("expires_at_ms", record.expires_at_ms.to_string()));
+                }
             }
         }
 
@@ -947,7 +1139,12 @@ impl DurableRuntimeLeaseGuard {
             }
         }
 
-        let record = DurableRuntimeLeaseRecord::active(&writer, now_ms, ttl_ms)?;
+        let record = DurableRuntimeLeaseRecord::active(
+            &writer,
+            process_start_token.unwrap_or_else(|| writer.owner_token()),
+            now_ms,
+            ttl_ms,
+        )?;
         write_runtime_lease_record(&lease_path, &record)?;
         Ok(Self {
             anchor_path,
@@ -1596,7 +1793,7 @@ fn unique_token(prefix: &str, generation: u64) -> String {
 }
 
 /// 同目录 create-new temp -> write/flush/sync -> 原子替换 -> 目录同步。
-pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
+pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     atomic_write_with_replace(path, data, replace_file_atomically)
 }
 
@@ -2473,6 +2670,192 @@ mod tests {
         assert!(anchor.exists());
     }
 
+    #[test]
+    fn failed_start_reclaim_allows_exact_fresh_dead_identity() {
+        let root = test_root("failed-start-reclaim-exact");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let previous = seed_dead_runtime_lease(&backend, &anchor, &lease, 100, 1_000);
+        let expected = previous.identity();
+
+        assert_eq!(
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 101, 30)
+                .unwrap_err()
+                .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        let successor = DurableRuntimeLeaseGuard::reclaim_failed_start(
+            &backend, &anchor, &lease, &expected, 101, 30,
+        )
+        .unwrap();
+        assert_eq!(successor.record().generation(), WriterGeneration(2));
+        assert_eq!(successor.record().state(), DurableRuntimeLeaseState::Active);
+        assert_eq!(successor.record().heartbeat_at_ms(), 101);
+        assert_eq!(successor.record().expires_at_ms(), 131);
+        assert_ne!(
+            successor.record().process_start_token(),
+            expected.process_start_token()
+        );
+    }
+
+    #[test]
+    fn failed_start_reclaim_rejects_live_released_and_mismatched_identity() {
+        let root = test_root("failed-start-reclaim-rejections");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+
+        let live =
+            DurableRuntimeLeaseGuard::acquire(&backend, &anchor, &lease, 100, 1_000).unwrap();
+        let live_identity = live.record().identity();
+        assert_eq!(
+            DurableRuntimeLeaseGuard::reclaim_failed_start(
+                &backend,
+                &anchor,
+                &lease,
+                &live_identity,
+                101,
+                30,
+            )
+            .unwrap_err()
+            .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        drop(live);
+
+        let previous = seed_dead_runtime_lease(&backend, &anchor, &lease, 100, 1_000);
+        assert_eq!(previous.state(), DurableRuntimeLeaseState::Active);
+        assert_eq!(previous.generation(), WriterGeneration(2));
+        let expected = previous.identity();
+        let lease_bytes = fs::read(&lease).unwrap();
+        let wrong_pid = if expected.pid() == u32::MAX {
+            expected.pid() - 1
+        } else {
+            expected.pid() + 1
+        };
+        let mismatches = [
+            DurableRuntimeLeaseIdentity::new(
+                wrong_pid,
+                expected.process_start_token(),
+                expected.generation(),
+            )
+            .unwrap(),
+            DurableRuntimeLeaseIdentity::new(
+                expected.pid(),
+                "different-process-incarnation",
+                expected.generation(),
+            )
+            .unwrap(),
+            DurableRuntimeLeaseIdentity::new(
+                expected.pid(),
+                expected.process_start_token(),
+                WriterGeneration(expected.generation().0 + 1),
+            )
+            .unwrap(),
+        ];
+        for mismatch in mismatches {
+            assert_eq!(
+                DurableRuntimeLeaseGuard::reclaim_failed_start(
+                    &backend, &anchor, &lease, &mismatch, 101, 30,
+                )
+                .unwrap_err()
+                .kind(),
+                eva_core::ErrorKind::Conflict
+            );
+            assert_eq!(fs::read(&lease).unwrap(), lease_bytes);
+            assert_eq!(
+                read_writer_generation(&backend.layout().writer_generation_path).unwrap(),
+                WriterGeneration(2)
+            );
+        }
+
+        let released = DurableRuntimeLeaseRecord {
+            state: DurableRuntimeLeaseState::Released,
+            expires_at_ms: previous.heartbeat_at_ms,
+            ..previous
+        };
+        write_runtime_lease_record(&lease, &released).unwrap();
+        let released_bytes = fs::read(&lease).unwrap();
+        assert_eq!(
+            DurableRuntimeLeaseGuard::reclaim_failed_start(
+                &backend, &anchor, &lease, &expected, 101, 30,
+            )
+            .unwrap_err()
+            .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        assert_eq!(fs::read(&lease).unwrap(), released_bytes);
+    }
+
+    #[test]
+    fn failed_start_reclaim_rejects_corrupt_and_missing_anchor_metadata() {
+        let root = test_root("failed-start-reclaim-corrupt");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        drop(acquire_runtime_lease_anchor(&anchor).unwrap().0);
+        fs::write(&lease, b"format=legacy.daemon.v0\npid=1\n").unwrap();
+        let expected = DurableRuntimeLeaseIdentity::new(1, "child", WriterGeneration(1)).unwrap();
+        let corrupt_bytes = fs::read(&lease).unwrap();
+        assert_eq!(
+            DurableRuntimeLeaseGuard::reclaim_failed_start(
+                &backend, &anchor, &lease, &expected, 101, 30,
+            )
+            .unwrap_err()
+            .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        assert_eq!(fs::read(&lease).unwrap(), corrupt_bytes);
+        assert_eq!(
+            read_writer_generation(&backend.layout().writer_generation_path).unwrap(),
+            WriterGeneration::ZERO
+        );
+
+        fs::remove_file(&anchor).unwrap();
+        assert_eq!(
+            DurableRuntimeLeaseGuard::reclaim_failed_start(
+                &backend, &anchor, &lease, &expected, 101, 30,
+            )
+            .unwrap_err()
+            .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        assert!(!anchor.exists());
+        assert_eq!(fs::read(&lease).unwrap(), corrupt_bytes);
+    }
+
+    #[test]
+    fn failed_start_reclaim_cannot_overwrite_a_successor_identity() {
+        let root = test_root("failed-start-reclaim-successor");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let previous = seed_dead_runtime_lease(&backend, &anchor, &lease, 100, 1_000);
+        let expected = previous.identity();
+        let successor = seed_dead_runtime_lease(&backend, &anchor, &lease, 200, 1_000);
+        assert_eq!(successor.generation(), WriterGeneration(2));
+        let successor_bytes = fs::read(&lease).unwrap();
+
+        assert_eq!(
+            DurableRuntimeLeaseGuard::reclaim_failed_start(
+                &backend, &anchor, &lease, &expected, 201, 30,
+            )
+            .unwrap_err()
+            .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        assert_eq!(fs::read(&lease).unwrap(), successor_bytes);
+        assert_eq!(
+            read_writer_generation(&backend.layout().writer_generation_path).unwrap(),
+            WriterGeneration(2)
+        );
+    }
+
     fn seed_dead_runtime_lease(
         backend: &FileSystemDurableBackend,
         anchor: &Path,
@@ -2482,7 +2865,13 @@ mod tests {
     ) -> DurableRuntimeLeaseRecord {
         let (anchor_file, _) = acquire_runtime_lease_anchor(anchor).unwrap();
         let writer = backend.acquire_runtime_writer().unwrap();
-        let record = DurableRuntimeLeaseRecord::active(&writer, heartbeat_at_ms, ttl_ms).unwrap();
+        let record = DurableRuntimeLeaseRecord::active(
+            &writer,
+            writer.owner_token(),
+            heartbeat_at_ms,
+            ttl_ms,
+        )
+        .unwrap();
         write_runtime_lease_record(lease, &record).unwrap();
         drop(writer);
         drop(anchor_file);

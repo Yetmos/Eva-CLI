@@ -8,14 +8,31 @@ use eva_config::{load_project_config, ProjectConfig};
 use eva_core::{AgentId, EvaError, RequestId};
 use eva_observability::TraceFields;
 use eva_runtime::{
-    send_daemon_control_request, start_daemon, DaemonControlOperation, DaemonControlRequest,
-    DaemonControlResponse, DaemonLeaseReport, DaemonPathReport, DaemonPolicyReport,
-    DaemonStartOptions, DaemonStartReport, DaemonStateRecord, IdempotencyKey, TaskArtifactRef,
-    TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind,
+    cleanup_failed_daemon_start, daemon_status, read_daemon_startup_frame,
+    read_daemon_startup_report, request_daemon_startup_abort, send_daemon_control_request,
+    start_daemon, start_daemon_background_child, write_daemon_startup_report,
+    DaemonControlOperation, DaemonControlRequest, DaemonControlResponse, DaemonLeaseReport,
+    DaemonPathReport, DaemonPolicyReport, DaemonStartOptions, DaemonStartReport,
+    DaemonStartupFrame, DaemonStartupHandshake, DaemonStartupPhase, DaemonStateRecord,
+    IdempotencyKey, TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind,
 };
 use eva_storage::DurableBackendReport;
-use std::io::Write;
+use std::env;
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const BACKGROUND_CHILD_ENV: &str = "EVA_DAEMON_BACKGROUND_CHILD";
+const DEFAULT_BACKGROUND_STARTUP_TIMEOUT_MS: u64 = 15_000;
+const BACKGROUND_ABORT_GRACE: Duration = Duration::from_secs(2);
+const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const STARTUP_HANDSHAKE_PROTOCOL: &str = "eva.daemon-startup.v1";
+#[cfg(debug_assertions)]
+const BACKGROUND_REPORT_DELAY_ENV: &str = "EVA_DAEMON_TEST_REPORT_DELAY_MS";
+#[cfg(debug_assertions)]
+const BACKGROUND_READY_VALIDATION_DELAY_ENV: &str = "EVA_DAEMON_TEST_READY_VALIDATION_DELAY_MS";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Daemon 顶层命令；控制类操作共享同一传输与输出路径。
@@ -25,6 +42,11 @@ pub(super) enum DaemonCommand {
         /// 已解析的 daemon 路径、前台模式、烟测退出标志与公共选项。
         DaemonCliOptions,
     ),
+    /// Internal child entrypoint used by `daemon start --background`; never shown in help.
+    BackgroundChild {
+        options: DaemonCliOptions,
+        handshake: DaemonStartupHandshake,
+    },
     /// 向已运行 daemon 发送一条控制请求。
     Control {
         /// daemon 路径、请求和公共 CLI 选项。
@@ -83,12 +105,35 @@ pub(super) struct DaemonCliOptions {
     generation_id: Option<String>,
     /// 等待 control mailbox 响应的毫秒预算。
     control_timeout_ms: u64,
+    /// 等待 background child ready frame 的独立毫秒预算。
+    startup_timeout_ms: u64,
     /// 是否以前台模式运行 daemon。
     foreground: bool,
     /// 是否启用开发模式边界。
     dev_mode: bool,
     /// 启动烟测后是否自动关闭。
     shutdown_after_smoke: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonBackgroundStartReport {
+    start_json: String,
+    status: String,
+    mode: String,
+    pid: u32,
+    generation_id: String,
+    project_root: String,
+    dev_mode: bool,
+    paths: DaemonPathReport,
+    lease: DaemonLeaseReport,
+    handshake: DaemonStartupFrame,
+    startup_timeout_ms: u64,
+    startup_elapsed_ms: u128,
+}
+
+enum DaemonStartResult {
+    Foreground(Box<DaemonStartReport>),
+    Background(Box<DaemonBackgroundStartReport>),
 }
 
 /// 解析 daemon start/status/stop/submit/cancel/drain/reload，并为控制操作绑定稳定协议元数据。
@@ -98,6 +143,14 @@ pub(super) fn parse_daemon_command(args: &[String]) -> Result<DaemonCommand, Eva
         .ok_or_else(|| EvaError::invalid_argument("missing daemon subcommand"))?;
     match subcommand.as_str() {
         "start" => Ok(DaemonCommand::Start(parse_daemon_options(rest)?)),
+        "__background-child" => {
+            if env::var_os(BACKGROUND_CHILD_ENV).is_none() {
+                return Err(EvaError::unsupported(
+                    "daemon background child entrypoint is internal",
+                ));
+            }
+            parse_background_child_command(rest)
+        }
         "status" => Ok(DaemonCommand::Control {
             options: parse_daemon_options(rest)?,
             operation: DaemonControlOperation::Status,
@@ -147,6 +200,66 @@ pub(super) fn parse_daemon_command(args: &[String]) -> Result<DaemonCommand, Eva
     }
 }
 
+fn parse_background_child_command(args: &[String]) -> Result<DaemonCommand, EvaError> {
+    let mut nonce = None;
+    let mut launcher_pid = None;
+    let mut child_start_token = None;
+    let mut daemon_args = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--startup-nonce" => {
+                if nonce.is_some() {
+                    return Err(EvaError::invalid_argument(
+                        "daemon startup nonce option must not be repeated",
+                    ));
+                }
+                index += 1;
+                nonce = Some(required_option(args, index, "startup nonce option")?.clone());
+            }
+            "--launcher-pid" => {
+                if launcher_pid.is_some() {
+                    return Err(EvaError::invalid_argument(
+                        "daemon launcher pid option must not be repeated",
+                    ));
+                }
+                index += 1;
+                launcher_pid = Some(
+                    required_option(args, index, "launcher pid option")?
+                        .parse::<u32>()
+                        .map_err(|_| {
+                            EvaError::invalid_argument(
+                                "daemon launcher pid must be an unsigned 32-bit integer",
+                            )
+                        })?,
+                );
+            }
+            "--child-start-token" => {
+                if child_start_token.is_some() {
+                    return Err(EvaError::invalid_argument(
+                        "daemon child start token option must not be repeated",
+                    ));
+                }
+                index += 1;
+                child_start_token =
+                    Some(required_option(args, index, "child start token option")?.clone());
+            }
+            _ => daemon_args.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    let handshake = DaemonStartupHandshake::new(
+        nonce.ok_or_else(|| EvaError::invalid_argument("missing daemon startup nonce"))?,
+        launcher_pid.ok_or_else(|| EvaError::invalid_argument("missing daemon launcher pid"))?,
+        child_start_token
+            .ok_or_else(|| EvaError::invalid_argument("missing daemon child start token"))?,
+    )?;
+    Ok(DaemonCommand::BackgroundChild {
+        options: parse_daemon_options(&daemon_args)?,
+        handshake,
+    })
+}
+
 /// 执行 daemon 启动或发送控制请求。
 ///
 /// 启动路径先加载并解析项目相对路径，再进入 `start_daemon`；控制路径先创建 trace 与请求，
@@ -165,11 +278,26 @@ where
             let trace = trace_for("cli.daemon.start")
                 .with_request_id(RequestId::parse("req-daemon-start")?);
             match load_project_config(&options.common.project_root).and_then(|project| {
-                daemon_options_from_cli(&project, &options)
-                    .and_then(|daemon_options| start_daemon(&project, daemon_options, &trace))
+                daemon_options_from_cli(&project, &options).and_then(|daemon_options| {
+                    if daemon_options.foreground {
+                        start_daemon(&project, daemon_options, &trace)
+                            .map(|report| DaemonStartResult::Foreground(Box::new(report)))
+                    } else {
+                        start_daemon_background(
+                            &project,
+                            &daemon_options,
+                            options.startup_timeout_ms,
+                        )
+                        .map(|report| DaemonStartResult::Background(Box::new(report)))
+                    }
+                })
             }) {
-                Ok(report) => {
+                Ok(DaemonStartResult::Foreground(report)) => {
                     write_daemon_start(stdout, options.common.output, &report, &trace)?;
+                    Ok(EXIT_OK)
+                }
+                Ok(DaemonStartResult::Background(report)) => {
+                    write_daemon_background_start(stdout, options.common.output, &report, &trace)?;
                     Ok(EXIT_OK)
                 }
                 Err(error) => write_command_error(
@@ -180,6 +308,33 @@ where
                     &trace,
                 ),
             }
+        }
+        DaemonCommand::BackgroundChild { options, handshake } => {
+            let trace = trace_for("cli.daemon.background_child")
+                .with_request_id(RequestId::parse("req-daemon-background-child")?);
+            load_project_config(&options.common.project_root).and_then(|project| {
+                daemon_options_from_cli(&project, &options).and_then(|mut daemon_options| {
+                    daemon_options.foreground = true;
+                    daemon_options.shutdown_after_smoke = false;
+                    let report_options = daemon_options.clone();
+                    let mut publish_report = |report: &DaemonStartReport| {
+                        delay_background_report_for_test()?;
+                        write_daemon_startup_report(
+                            &report_options,
+                            &handshake,
+                            &daemon_start_json(report),
+                        )
+                    };
+                    start_daemon_background_child(
+                        &project,
+                        daemon_options,
+                        &trace,
+                        &handshake,
+                        &mut publish_report,
+                    )
+                    .map(|_| EXIT_OK)
+                })
+            })
         }
         DaemonCommand::Control {
             options,
@@ -235,6 +390,7 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
     let mut plan_id = None;
     let mut generation_id = None;
     let mut control_timeout_ms = 5_000;
+    let mut startup_timeout_ms = DEFAULT_BACKGROUND_STARTUP_TIMEOUT_MS;
     let mut foreground = true;
     let mut dev_mode = false;
     let mut shutdown_after_smoke = true;
@@ -373,6 +529,19 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
                         EvaError::invalid_argument("control timeout must be an integer")
                     })?;
             }
+            "--startup-timeout-ms" => {
+                index += 1;
+                startup_timeout_ms = required_option(args, index, "startup timeout option")?
+                    .parse::<u64>()
+                    .map_err(|_| {
+                        EvaError::invalid_argument("startup timeout must be an integer")
+                    })?;
+                if startup_timeout_ms == 0 {
+                    return Err(EvaError::invalid_argument(
+                        "startup timeout must be greater than zero",
+                    ));
+                }
+            }
             "--foreground" => foreground = true,
             "--background" => foreground = false,
             "--dev" | "--dev-mode" => dev_mode = true,
@@ -405,6 +574,7 @@ fn parse_daemon_options(args: &[String]) -> Result<DaemonCliOptions, EvaError> {
         plan_id,
         generation_id,
         control_timeout_ms,
+        startup_timeout_ms,
         foreground,
         dev_mode,
         shutdown_after_smoke,
@@ -434,7 +604,7 @@ fn daemon_options_from_cli(
     }
     options.foreground = cli.foreground;
     options.dev_mode = cli.dev_mode;
-    options.shutdown_after_smoke = cli.shutdown_after_smoke;
+    options.shutdown_after_smoke = cli.foreground && cli.shutdown_after_smoke;
     Ok(options.resolve_against_project(&project.project_root))
 }
 
@@ -601,6 +771,652 @@ fn configured_submit_agent(project: &ProjectConfig, value: &str) -> Result<Agent
         );
     }
     Ok(agent_id)
+}
+
+fn start_daemon_background(
+    project: &ProjectConfig,
+    options: &DaemonStartOptions,
+    startup_timeout_ms: u64,
+) -> Result<DaemonBackgroundStartReport, EvaError> {
+    let handshake = new_background_handshake()?;
+    let started = Instant::now();
+    let timeout = Duration::from_millis(startup_timeout_ms);
+    let deadline = started.checked_add(timeout).ok_or_else(|| {
+        EvaError::invalid_argument("background daemon startup timeout is too large")
+    })?;
+    let mut child = spawn_background_child(project, options, &handshake)?;
+    let expected_pid = child.id();
+    loop {
+        let failed =
+            match read_daemon_startup_frame(options, &handshake, DaemonStartupPhase::Failed) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    return Err(abort_background_start(
+                        options,
+                        &handshake,
+                        &mut child,
+                        EvaError::conflict("background daemon failure frame is invalid")
+                            .with_context("frame_error", error.to_string()),
+                    ));
+                }
+            };
+        let ready = match read_daemon_startup_frame(options, &handshake, DaemonStartupPhase::Ready)
+        {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Err(abort_background_start(
+                    options,
+                    &handshake,
+                    &mut child,
+                    EvaError::conflict("background daemon ready frame is invalid")
+                        .with_context("frame_error", error.to_string()),
+                ));
+            }
+        };
+        if failed.is_some() && ready.is_some() {
+            return Err(abort_background_start(
+                options,
+                &handshake,
+                &mut child,
+                EvaError::conflict(
+                    "background daemon published both ready and failed startup frames",
+                ),
+            ));
+        }
+        if let Some(frame) = failed {
+            let error = daemon_startup_failure(&frame);
+            return Err(abort_background_start(
+                options, &handshake, &mut child, error,
+            ));
+        }
+        if let Some(frame) = ready {
+            match complete_background_ready(
+                options,
+                &handshake,
+                &mut child,
+                frame,
+                startup_timeout_ms,
+                started.elapsed().as_millis(),
+            ) {
+                Ok(report) => return Ok(report),
+                Err(error) => {
+                    return Err(abort_background_start(
+                        options, &handshake, &mut child, error,
+                    ));
+                }
+            }
+        }
+
+        if let Some(exit) = child.try_wait().map_err(|error| {
+            EvaError::internal("failed to inspect background daemon child")
+                .with_context("io_error", error.to_string())
+        })? {
+            return Err(finish_failed_background_start(
+                options,
+                &handshake,
+                expected_pid,
+                EvaError::internal("background daemon exited before ready handshake"),
+                exit,
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(abort_background_start(
+                options,
+                &handshake,
+                &mut child,
+                EvaError::timeout("background daemon ready handshake timed out")
+                    .with_context("startup_timeout_ms", startup_timeout_ms.to_string()),
+            ));
+        }
+        std::thread::sleep(BACKGROUND_POLL_INTERVAL);
+    }
+}
+
+fn spawn_background_child(
+    project: &ProjectConfig,
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+) -> Result<Child, EvaError> {
+    let executable = env::current_exe().map_err(|error| {
+        EvaError::internal("failed to resolve Eva executable for background daemon")
+            .with_context("io_error", error.to_string())
+    })?;
+    let mut command = Command::new(executable);
+    command
+        .arg("daemon")
+        .arg("__background-child")
+        .arg("--startup-nonce")
+        .arg(handshake.nonce())
+        .arg("--launcher-pid")
+        .arg(handshake.launcher_pid().to_string())
+        .arg("--child-start-token")
+        .arg(handshake.child_start_token())
+        .arg("--foreground")
+        .arg("--no-shutdown-after-smoke")
+        .arg("--project")
+        .arg(&project.project_root)
+        .arg("--durable-backend")
+        .arg(&options.durable_backend)
+        .arg("--state-dir")
+        .arg(&options.state_dir)
+        .arg("--lock-dir")
+        .arg(&options.lock_dir)
+        .arg("--pid-dir")
+        .arg(&options.pid_dir)
+        .arg("--observability-backend")
+        .arg(&options.observability_backend)
+        .env(BACKGROUND_CHILD_ENV, "1")
+        .current_dir(&project.project_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if options.dev_mode {
+        command.arg("--dev");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    spawn_background_process(&mut command).map_err(|error| {
+        EvaError::internal("failed to spawn background daemon child")
+            .with_context("io_error", error.to_string())
+    })
+}
+
+#[cfg(not(windows))]
+fn spawn_background_process(command: &mut Command) -> io::Result<Child> {
+    command.spawn()
+}
+
+#[cfg(windows)]
+fn spawn_background_process(command: &mut Command) -> io::Result<Child> {
+    use std::sync::{Mutex, OnceLock};
+
+    static SPAWN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _spawn_lock = SPAWN_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _inheritance_guard = WindowsStandardHandleInheritanceGuard::clear()?;
+    command.spawn()
+}
+
+#[cfg(windows)]
+struct WindowsStandardHandleInheritanceGuard {
+    handles: Vec<std::os::windows::io::RawHandle>,
+}
+
+#[cfg(windows)]
+impl WindowsStandardHandleInheritanceGuard {
+    fn clear() -> io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+
+        const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+        let candidates = [
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ];
+        let mut guard = Self {
+            handles: Vec::new(),
+        };
+        for handle in candidates {
+            if handle.is_null()
+                || handle == (-1_isize) as std::os::windows::io::RawHandle
+                || guard.handles.contains(&handle)
+            {
+                continue;
+            }
+            let mut flags = 0;
+            // The handle comes from this process's live stdout/stderr objects.
+            if unsafe { GetHandleInformation(handle, &mut flags) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if flags & HANDLE_FLAG_INHERIT == 0 {
+                continue;
+            }
+            // The spawn mutex keeps the process-wide flag stable until CreateProcess returns.
+            if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            guard.handles.push(handle);
+        }
+        Ok(guard)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsStandardHandleInheritanceGuard {
+    fn drop(&mut self) {
+        const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+        for handle in self.handles.drain(..) {
+            // Every stored handle was successfully queried and cleared by `clear` above.
+            let _ =
+                unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        }
+    }
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetHandleInformation(handle: std::os::windows::io::RawHandle, flags: *mut u32) -> i32;
+    fn SetHandleInformation(handle: std::os::windows::io::RawHandle, mask: u32, flags: u32) -> i32;
+}
+
+fn new_background_handshake() -> Result<DaemonStartupHandshake, EvaError> {
+    static NONCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let launcher_pid = std::process::id();
+    let counter = NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    DaemonStartupHandshake::new(
+        format!("{launcher_pid}-{timestamp}-{counter}"),
+        launcher_pid,
+        format!("child-{launcher_pid}-{timestamp}-{counter}"),
+    )
+}
+
+fn complete_background_ready(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    child: &mut Child,
+    ready: DaemonStartupFrame,
+    startup_timeout_ms: u64,
+    startup_elapsed_ms: u128,
+) -> Result<DaemonBackgroundStartReport, EvaError> {
+    let expected_pid = child.id();
+    delay_ready_validation_for_test()?;
+    let persisted_ready = read_daemon_startup_frame(options, handshake, DaemonStartupPhase::Ready)?
+        .ok_or_else(|| EvaError::conflict("background daemon ready frame disappeared"))?;
+    if persisted_ready != ready {
+        return Err(EvaError::conflict(
+            "background daemon ready frame changed during validation",
+        ));
+    }
+    if ready.child_pid != expected_pid {
+        return Err(EvaError::conflict(
+            "background daemon ready frame returned a mismatched child pid",
+        )
+        .with_context("expected_pid", expected_pid.to_string())
+        .with_context("actual_pid", ready.child_pid.to_string()));
+    }
+    let claimed = read_daemon_startup_frame(options, handshake, DaemonStartupPhase::Claimed)?
+        .ok_or_else(|| {
+            EvaError::conflict("background daemon ready frame has no claimed predecessor")
+        })?;
+    ensure_startup_frames_match(&claimed, &ready)?;
+    let report_digest = ready.report_digest.as_deref().ok_or_else(|| {
+        EvaError::conflict("background daemon ready frame is missing its report digest")
+    })?;
+    let start_json = read_daemon_startup_report(options, handshake, report_digest)?
+        .ok_or_else(|| EvaError::conflict("background daemon ready report is missing"))?;
+    validate_background_start_json(&start_json, &ready)?;
+    if child
+        .try_wait()
+        .map_err(|error| {
+            EvaError::internal("failed to inspect ready background daemon child")
+                .with_context("io_error", error.to_string())
+        })?
+        .is_some()
+    {
+        return Err(EvaError::conflict(
+            "background daemon exited while validating its ready frame",
+        ));
+    }
+
+    // The daemon anchor is intentionally untouched until the nonce-bound ready frame is complete.
+    let status = daemon_status(options)?;
+    let lease = status
+        .lease
+        .clone()
+        .ok_or_else(|| EvaError::conflict("ready daemon has no lease projection"))?;
+    let state = status
+        .state
+        .as_ref()
+        .ok_or_else(|| EvaError::conflict("ready daemon has no running state projection"))?;
+    let expected_token = ready.process_start_token.as_deref().unwrap_or_default();
+    let expected_generation = ready.generation.unwrap_or_default();
+    if !status.available
+        || !status.pid_matches_lease
+        || state.status != "running"
+        || state.mode != "background"
+        || state.pid != expected_pid
+        || lease.state != "active"
+        || !lease.owner_live
+        || lease.expired
+        || lease.pid != expected_pid
+        || lease.process_start_token != expected_token
+        || lease.generation != expected_generation
+    {
+        return Err(EvaError::conflict(
+            "background daemon ready frame does not match live daemon state",
+        )
+        .with_context("child_pid", expected_pid.to_string())
+        .with_context("daemon_available", status.available.to_string())
+        .with_context("pid_matches_lease", status.pid_matches_lease.to_string()));
+    }
+    if child
+        .try_wait()
+        .map_err(|error| {
+            EvaError::internal("failed to recheck ready background daemon child")
+                .with_context("io_error", error.to_string())
+        })?
+        .is_some()
+    {
+        return Err(EvaError::conflict(
+            "background daemon exited before launcher success publication",
+        ));
+    }
+
+    Ok(DaemonBackgroundStartReport {
+        start_json,
+        status: status.status,
+        mode: state.mode.clone(),
+        pid: expected_pid,
+        generation_id: state.generation_id.clone(),
+        project_root: state.project_root.clone(),
+        dev_mode: options.dev_mode,
+        paths: status.paths,
+        lease,
+        handshake: ready,
+        startup_timeout_ms,
+        startup_elapsed_ms,
+    })
+}
+
+fn ensure_startup_frames_match(
+    claimed: &DaemonStartupFrame,
+    ready: &DaemonStartupFrame,
+) -> Result<(), EvaError> {
+    if claimed.phase != DaemonStartupPhase::Claimed
+        || ready.phase != DaemonStartupPhase::Ready
+        || claimed.nonce != ready.nonce
+        || claimed.launcher_pid != ready.launcher_pid
+        || claimed.child_pid != ready.child_pid
+        || claimed.process_start_token != ready.process_start_token
+        || claimed.generation != ready.generation
+    {
+        return Err(EvaError::conflict(
+            "background daemon claimed and ready identities do not match",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_background_start_json(
+    start_json: &str,
+    ready: &DaemonStartupFrame,
+) -> Result<(), EvaError> {
+    let token = ready.process_start_token.as_deref().unwrap_or_default();
+    let generation = ready.generation.unwrap_or_default();
+    let required = [
+        "\"status\":\"running\"".to_owned(),
+        "\"mode\":\"background\"".to_owned(),
+        format!("\"pid\":{}", ready.child_pid),
+        "\"foreground\":false".to_owned(),
+        format!(
+            "\"lease\":{{\"state\":\"active\",\"pid\":{},\"process_start_token\":{},\"generation\":{}",
+            ready.child_pid,
+            json_string(token),
+            generation
+        ),
+    ];
+    if !start_json.starts_with('{')
+        || !start_json.ends_with('}')
+        || required
+            .iter()
+            .any(|fragment| !start_json.contains(fragment))
+    {
+        return Err(EvaError::conflict(
+            "background daemon startup report is not bound to its ready identity",
+        ));
+    }
+    Ok(())
+}
+
+fn daemon_startup_failure(frame: &DaemonStartupFrame) -> EvaError {
+    let message = "background daemon reported startup failure";
+    let error = match frame.error_kind.as_deref() {
+        Some("invalid_argument") => EvaError::invalid_argument(message),
+        Some("not_found") => EvaError::not_found(message),
+        Some("conflict") => EvaError::conflict(message),
+        Some("permission_denied") => EvaError::permission_denied(message),
+        Some("timeout") => EvaError::timeout(message),
+        Some("unavailable") => EvaError::unavailable(message),
+        Some("unsupported") => EvaError::unsupported(message),
+        _ => EvaError::internal(message),
+    };
+    error
+        .with_context("child_pid", frame.child_pid.to_string())
+        .with_context(
+            "child_error_kind",
+            frame.error_kind.as_deref().unwrap_or("unknown"),
+        )
+        .with_context("child_cleanup_complete", frame.cleanup_complete.to_string())
+}
+
+fn abort_background_start(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    child: &mut Child,
+    failure: EvaError,
+) -> EvaError {
+    match terminate_background_child(options, handshake, child) {
+        Ok(exit) => finish_failed_background_start(options, handshake, child.id(), failure, exit),
+        Err(error) => failure
+            .with_context("child_pid", child.id().to_string())
+            .with_context("termination_error", error.to_string()),
+    }
+}
+
+fn terminate_background_child(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    child: &mut Child,
+) -> Result<ExitStatus, EvaError> {
+    if let Some(exit) = child.try_wait().map_err(|error| {
+        EvaError::internal("failed to inspect background daemon child during cleanup")
+            .with_context("io_error", error.to_string())
+    })? {
+        return Ok(exit);
+    }
+    let _ = request_daemon_startup_abort(options, handshake);
+    let deadline = Instant::now() + BACKGROUND_ABORT_GRACE;
+    loop {
+        if let Some(exit) = child.try_wait().map_err(|error| {
+            EvaError::internal("failed to wait for background daemon startup abort")
+                .with_context("io_error", error.to_string())
+        })? {
+            return Ok(exit);
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(BACKGROUND_POLL_INTERVAL);
+    }
+    let _ = child.kill();
+    child.wait().map_err(|error| {
+        EvaError::internal("failed to reap background daemon child")
+            .with_context("io_error", error.to_string())
+    })
+}
+
+fn finish_failed_background_start(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    child_pid: u32,
+    failure: EvaError,
+    exit: ExitStatus,
+) -> EvaError {
+    let (claimed, claimed_error) =
+        match read_daemon_startup_frame(options, handshake, DaemonStartupPhase::Claimed) {
+            Ok(frame) => (frame, None),
+            Err(error) => (None, Some(error)),
+        };
+    let cleanup =
+        cleanup_failed_daemon_start(options, handshake, child_pid, claimed.as_ref(), &failure);
+    let mut result = failure
+        .with_context("child_pid", child_pid.to_string())
+        .with_context("exit_status", exit_status_text(exit));
+    if let Some(error) = claimed_error {
+        result = result.with_context("claimed_frame_error", error.to_string());
+    }
+    match cleanup {
+        Ok(report) => result
+            .with_context("cleanup_complete", report.cleanup_complete.to_string())
+            .with_context("cleanup_identity_source", report.identity_source)
+            .with_context("cleanup_pid_removed", report.pid_removed.to_string())
+            .with_context("cleanup_state_stopped", report.state_stopped.to_string()),
+        Err(error) => result.with_context("cleanup_error", error.to_string()),
+    }
+}
+
+fn exit_status_text(exit: ExitStatus) -> String {
+    exit.code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal".to_owned())
+}
+
+#[cfg(debug_assertions)]
+fn delay_background_report_for_test() -> Result<(), EvaError> {
+    let Some(value) = env::var_os(BACKGROUND_REPORT_DELAY_ENV) else {
+        return Ok(());
+    };
+    let delay_ms = value
+        .to_str()
+        .ok_or_else(|| EvaError::invalid_argument("daemon test report delay is not utf-8"))?
+        .parse::<u64>()
+        .map_err(|_| EvaError::invalid_argument("daemon test report delay is invalid"))?;
+    std::thread::sleep(Duration::from_millis(delay_ms));
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn delay_ready_validation_for_test() -> Result<(), EvaError> {
+    let Some(value) = env::var_os(BACKGROUND_READY_VALIDATION_DELAY_ENV) else {
+        return Ok(());
+    };
+    let delay_ms = value
+        .to_str()
+        .ok_or_else(|| EvaError::invalid_argument("daemon test ready delay is not utf-8"))?
+        .parse::<u64>()
+        .map_err(|_| EvaError::invalid_argument("daemon test ready delay is invalid"))?;
+    std::thread::sleep(Duration::from_millis(delay_ms));
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn delay_background_report_for_test() -> Result<(), EvaError> {
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn delay_ready_validation_for_test() -> Result<(), EvaError> {
+    Ok(())
+}
+
+/// 输出 daemon 后台启动的 ready handshake 摘要。
+fn write_daemon_background_start<W: Write>(
+    writer: &mut W,
+    output: OutputFormat,
+    report: &DaemonBackgroundStartReport,
+    trace: &TraceFields,
+) -> Result<(), EvaError> {
+    match output {
+        OutputFormat::Text => {
+            writeln!(writer, "Daemon background start").map_err(write_error_kind)?;
+            writeln!(writer, "status: {}", report.status).map_err(write_error_kind)?;
+            writeln!(writer, "mode: {}", report.mode).map_err(write_error_kind)?;
+            writeln!(writer, "pid: {}", report.pid).map_err(write_error_kind)?;
+            writeln!(writer, "generation_id: {}", report.generation_id)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "project_root: {}", report.project_root).map_err(write_error_kind)?;
+            writeln!(writer, "foreground: false").map_err(write_error_kind)?;
+            writeln!(writer, "dev_mode: {}", report.dev_mode).map_err(write_error_kind)?;
+            writeln!(writer, "ready: true").map_err(write_error_kind)?;
+            writeln!(
+                writer,
+                "lease: state={} pid={} token={} generation={} heartbeat_at_ms={} expires_at_ms={} owner_live={} expired={}",
+                report.lease.state,
+                report.lease.pid,
+                report.lease.process_start_token,
+                report.lease.generation,
+                report.lease.heartbeat_at_ms,
+                report.lease.expires_at_ms,
+                report.lease.owner_live,
+                report.lease.expired
+            )
+            .map_err(write_error_kind)?;
+            writeln!(writer, "state_file: {}", report.paths.state_file)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "lock_file: {}", report.paths.lock_file).map_err(write_error_kind)?;
+            writeln!(writer, "lease_file: {}", report.paths.lease_file)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "pid_file: {}", report.paths.pid_file).map_err(write_error_kind)?;
+            writeln!(writer, "startup_nonce: {}", report.handshake.nonce)
+                .map_err(write_error_kind)?;
+            writeln!(writer, "startup_elapsed_ms: {}", report.startup_elapsed_ms)
+                .map_err(write_error_kind)
+        }
+        OutputFormat::Json => {
+            let data = daemon_background_start_json(report)?;
+            writeln!(
+                writer,
+                "{}",
+                success_envelope("daemon.start", EXIT_OK, &data, trace)
+            )
+            .map_err(write_error_kind)
+        }
+    }
+}
+
+fn daemon_background_start_json(report: &DaemonBackgroundStartReport) -> Result<String, EvaError> {
+    let base = report
+        .start_json
+        .strip_suffix('}')
+        .ok_or_else(|| EvaError::conflict("daemon startup report is not a JSON object"))?;
+    let handshake_json = format!(
+        "{{\"protocol\":{},\"nonce\":{},\"phase\":{},\"ready_at_ms\":{},\"report_digest\":{}}}",
+        json_string(STARTUP_HANDSHAKE_PROTOCOL),
+        json_string(&report.handshake.nonce),
+        json_string(report.handshake.phase.as_str()),
+        report.handshake.observed_at_ms,
+        json_string(
+            report
+                .handshake
+                .report_digest
+                .as_deref()
+                .unwrap_or_default()
+        ),
+    );
+    let spawn_json = format!(
+        "{{\"strategy\":{},\"launcher_pid\":{},\"child_pid\":{},\"startup_timeout_ms\":{},\"startup_elapsed_ms\":{},\"handshake\":{}}}",
+        json_string(background_spawn_strategy()),
+        report.handshake.launcher_pid,
+        report.handshake.child_pid,
+        report.startup_timeout_ms,
+        report.startup_elapsed_ms,
+        handshake_json,
+    );
+    Ok(format!("{base},\"spawn\":{spawn_json}}}"))
+}
+
+fn background_spawn_strategy() -> &'static str {
+    if cfg!(windows) {
+        "windows_detached_process_group"
+    } else {
+        "unix_process_group_stdio_child"
+    }
 }
 
 /// 输出 daemon 启动、恢复、provider、可观测性、热插拔和维护摘要。

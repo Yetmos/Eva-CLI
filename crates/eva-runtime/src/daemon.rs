@@ -32,11 +32,12 @@ use eva_observability::{
 use eva_policy::PolicyDomainSet;
 use eva_scheduler::GenerationRouteGate;
 use eva_storage::{
-    artifact_store::sha256_digest, probe_runtime_lease, DurableBackend, DurableBackendLayout,
-    DurableBackendOptions, DurableBackendReport, DurableRuntimeLeaseGuard,
-    DurableRuntimeLeaseRecord, DurableRuntimeLeaseState, DurableWriterGuard,
-    FileSystemDurableBackend, FileSystemProviderProcessTable, FileSystemTaskStateStore,
-    TaskInputSnapshot, TaskStateSnapshot, TaskStateStore, DEFAULT_RUNTIME_LEASE_TTL_MS,
+    artifact_store::sha256_digest, atomic_write as atomic_storage_write, probe_runtime_lease,
+    DurableBackend, DurableBackendLayout, DurableBackendOptions, DurableBackendReport,
+    DurableRuntimeLeaseGuard, DurableRuntimeLeaseIdentity, DurableRuntimeLeaseRecord,
+    DurableRuntimeLeaseState, DurableWriterGuard, FileSystemDurableBackend,
+    FileSystemProviderProcessTable, FileSystemTaskStateStore, TaskInputSnapshot, TaskStateSnapshot,
+    TaskStateStore, WriterGeneration, DEFAULT_RUNTIME_LEASE_TTL_MS,
 };
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -81,6 +82,10 @@ const CONTROL_RESPONSE_EXT: &str = "response";
 const CONTROL_POLL_INTERVAL_MS: u64 = 50;
 /// Lease heartbeat 的单调调度间隔；墙上时钟仅写入持久记录。
 const DAEMON_LEASE_HEARTBEAT_INTERVAL_MS: u64 = 10_000;
+const STARTUP_DIR: &str = "startup";
+const STARTUP_FRAME_FORMAT: &str = "eva.daemon-startup.v1";
+const STARTUP_ABORT_FORMAT: &str = "eva.daemon-startup-abort.v1";
+const STARTUP_REPORT_SUFFIX: &str = "report.json";
 
 /// 定义守护进程各持久化边界及前台运行模式。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +283,44 @@ pub struct DaemonStopReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonStartupHandshake {
+    nonce: String,
+    launcher_pid: u32,
+    child_start_token: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonStartupPhase {
+    Claimed,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonStartupFrame {
+    pub phase: DaemonStartupPhase,
+    pub nonce: String,
+    pub launcher_pid: u32,
+    pub child_pid: u32,
+    pub process_start_token: Option<String>,
+    pub generation: Option<u64>,
+    pub report_digest: Option<String>,
+    pub observed_at_ms: u128,
+    pub error_kind: Option<String>,
+    pub cleanup_complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonStartupCleanupReport {
+    pub child_pid: u32,
+    pub identity_source: String,
+    pub pid_removed: bool,
+    pub state_stopped: bool,
+    pub lease: Option<DaemonLeaseReport>,
+    pub cleanup_complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum DaemonPidProjection {
     Versioned {
         pid: u32,
@@ -287,6 +330,18 @@ enum DaemonPidProjection {
     Legacy {
         pid: u32,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonRunMode {
+    Foreground,
+    BackgroundChild,
+}
+
+struct DaemonStartupHooks<'a> {
+    handshake: &'a DaemonStartupHandshake,
+    publish_report: &'a mut dyn FnMut(&DaemonStartReport) -> Result<String, EvaError>,
+    ready_published: bool,
 }
 
 /// 定义文件邮箱可请求的只读查询与持久化状态变更。
@@ -509,6 +564,265 @@ impl DaemonLeaseReport {
     }
 }
 
+impl DaemonStartupHandshake {
+    pub fn new(
+        nonce: impl Into<String>,
+        launcher_pid: u32,
+        child_start_token: impl Into<String>,
+    ) -> Result<Self, EvaError> {
+        let nonce = nonce.into();
+        validate_startup_nonce(&nonce)?;
+        if launcher_pid == 0 {
+            return Err(EvaError::invalid_argument(
+                "daemon startup launcher pid must be positive",
+            ));
+        }
+        let child_start_token = child_start_token.into();
+        validate_startup_child_token(&child_start_token)?;
+        Ok(Self {
+            nonce,
+            launcher_pid,
+            child_start_token,
+        })
+    }
+
+    pub fn nonce(&self) -> &str {
+        &self.nonce
+    }
+
+    pub const fn launcher_pid(&self) -> u32 {
+        self.launcher_pid
+    }
+
+    pub fn child_start_token(&self) -> &str {
+        &self.child_start_token
+    }
+}
+
+impl DaemonStartupPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Claimed => "claimed",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "claimed" => Ok(Self::Claimed),
+            "ready" => Ok(Self::Ready),
+            "failed" => Ok(Self::Failed),
+            _ => Err(EvaError::conflict("daemon startup frame phase is invalid")),
+        }
+    }
+}
+
+impl DaemonStartupFrame {
+    fn claimed(handshake: &DaemonStartupHandshake, lease: &DurableRuntimeLeaseRecord) -> Self {
+        Self {
+            phase: DaemonStartupPhase::Claimed,
+            nonce: handshake.nonce.clone(),
+            launcher_pid: handshake.launcher_pid,
+            child_pid: lease.pid(),
+            process_start_token: Some(lease.process_start_token().to_owned()),
+            generation: Some(lease.generation().0),
+            report_digest: None,
+            observed_at_ms: now_ms(),
+            error_kind: None,
+            cleanup_complete: false,
+        }
+    }
+
+    fn ready(
+        handshake: &DaemonStartupHandshake,
+        lease: &DurableRuntimeLeaseRecord,
+        report_digest: String,
+    ) -> Self {
+        Self {
+            phase: DaemonStartupPhase::Ready,
+            nonce: handshake.nonce.clone(),
+            launcher_pid: handshake.launcher_pid,
+            child_pid: lease.pid(),
+            process_start_token: Some(lease.process_start_token().to_owned()),
+            generation: Some(lease.generation().0),
+            report_digest: Some(report_digest),
+            observed_at_ms: now_ms(),
+            error_kind: None,
+            cleanup_complete: false,
+        }
+    }
+
+    fn failed(
+        handshake: &DaemonStartupHandshake,
+        child_pid: u32,
+        claimed: Option<&Self>,
+        error: &EvaError,
+        cleanup_complete: bool,
+    ) -> Self {
+        Self {
+            phase: DaemonStartupPhase::Failed,
+            nonce: handshake.nonce.clone(),
+            launcher_pid: handshake.launcher_pid,
+            child_pid: claimed.map(|frame| frame.child_pid).unwrap_or(child_pid),
+            process_start_token: claimed.and_then(|frame| frame.process_start_token.clone()),
+            generation: claimed.and_then(|frame| frame.generation),
+            report_digest: None,
+            observed_at_ms: now_ms(),
+            error_kind: Some(error.kind().as_str().to_owned()),
+            cleanup_complete,
+        }
+    }
+
+    fn validate(&self) -> Result<(), EvaError> {
+        validate_startup_nonce(&self.nonce)?;
+        if self.launcher_pid == 0 || self.child_pid == 0 {
+            return Err(EvaError::conflict(
+                "daemon startup frame process identity is invalid",
+            ));
+        }
+        let has_identity = self
+            .process_start_token
+            .as_ref()
+            .is_some_and(|token| !token.is_empty())
+            && self.generation.is_some_and(|generation| generation > 0);
+        let has_report_digest = self
+            .report_digest
+            .as_deref()
+            .is_some_and(is_canonical_sha256);
+        match self.phase {
+            DaemonStartupPhase::Claimed
+                if has_identity
+                    && self.report_digest.is_none()
+                    && self.error_kind.is_none()
+                    && !self.cleanup_complete =>
+            {
+                Ok(())
+            }
+            DaemonStartupPhase::Ready
+                if has_identity
+                    && has_report_digest
+                    && self.error_kind.is_none()
+                    && !self.cleanup_complete =>
+            {
+                Ok(())
+            }
+            DaemonStartupPhase::Failed
+                if self.report_digest.is_none() && self.error_kind.is_some() =>
+            {
+                Ok(())
+            }
+            _ => Err(EvaError::conflict(
+                "daemon startup frame fields do not match its phase",
+            )),
+        }
+    }
+
+    fn to_storage(&self) -> String {
+        format!(
+            "format={STARTUP_FRAME_FORMAT}\nphase={}\nnonce={}\nlauncher_pid={}\nchild_pid={}\nprocess_start_token={}\ngeneration={}\nreport_digest={}\nobserved_at_ms={}\nerror_kind={}\ncleanup_complete={}\n",
+            self.phase.as_str(),
+            self.nonce,
+            self.launcher_pid,
+            self.child_pid,
+            self.process_start_token.as_deref().unwrap_or_default(),
+            self.generation
+                .map(|generation| generation.to_string())
+                .unwrap_or_default(),
+            self.report_digest.as_deref().unwrap_or_default(),
+            self.observed_at_ms,
+            self.error_kind.as_deref().unwrap_or_default(),
+            self.cleanup_complete
+        )
+    }
+
+    fn from_storage(data: &str) -> Result<Self, EvaError> {
+        let mut fields = std::collections::BTreeMap::new();
+        for line in data.lines().filter(|line| !line.is_empty()) {
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(EvaError::conflict("daemon startup frame is invalid"));
+            };
+            if key.is_empty() || fields.insert(key, value).is_some() {
+                return Err(EvaError::conflict(
+                    "daemon startup frame contains duplicate or empty fields",
+                ));
+            }
+        }
+        if fields.len() != 11 || fields.get("format").copied() != Some(STARTUP_FRAME_FORMAT) {
+            return Err(EvaError::conflict(
+                "daemon startup frame format is corrupt or unsupported",
+            ));
+        }
+        let parse_u32 = |name: &str| {
+            fields
+                .get(name)
+                .and_then(|value| value.parse::<u32>().ok())
+                .ok_or_else(|| EvaError::conflict("daemon startup frame integer is invalid"))
+        };
+        let parse_optional_u64 = |name: &str| -> Result<Option<u64>, EvaError> {
+            let value = fields.get(name).copied().unwrap_or_default();
+            if value.is_empty() {
+                Ok(None)
+            } else {
+                value
+                    .parse::<u64>()
+                    .map(Some)
+                    .map_err(|_| EvaError::conflict("daemon startup frame generation is invalid"))
+            }
+        };
+        let frame = Self {
+            phase: DaemonStartupPhase::parse(fields.get("phase").copied().unwrap_or_default())?,
+            nonce: fields.get("nonce").copied().unwrap_or_default().to_owned(),
+            launcher_pid: parse_u32("launcher_pid")?,
+            child_pid: parse_u32("child_pid")?,
+            process_start_token: fields
+                .get("process_start_token")
+                .copied()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            generation: parse_optional_u64("generation")?,
+            report_digest: fields
+                .get("report_digest")
+                .copied()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            observed_at_ms: fields
+                .get("observed_at_ms")
+                .and_then(|value| value.parse::<u128>().ok())
+                .ok_or_else(|| EvaError::conflict("daemon startup frame timestamp is invalid"))?,
+            error_kind: fields
+                .get("error_kind")
+                .copied()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            cleanup_complete: match fields.get("cleanup_complete").copied() {
+                Some("true") => true,
+                Some("false") => false,
+                _ => {
+                    return Err(EvaError::conflict(
+                        "daemon startup frame cleanup flag is invalid",
+                    ))
+                }
+            },
+        };
+        frame.validate()?;
+        Ok(frame)
+    }
+}
+
+impl DaemonRunMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Foreground => "foreground_dev",
+            Self::BackgroundChild => "background",
+        }
+    }
+
+    const fn foreground(self) -> bool {
+        matches!(self, Self::Foreground)
+    }
+}
+
 impl DaemonPidProjection {
     fn pid(&self) -> u32 {
         match self {
@@ -517,15 +831,19 @@ impl DaemonPidProjection {
     }
 
     fn matches_lease(&self, lease: &DurableRuntimeLeaseRecord) -> bool {
+        self.matches_identity(&lease.identity())
+    }
+
+    fn matches_identity(&self, identity: &DurableRuntimeLeaseIdentity) -> bool {
         match self {
             Self::Versioned {
                 pid,
                 process_start_token,
                 generation,
             } => {
-                *pid == lease.pid()
-                    && process_start_token == lease.process_start_token()
-                    && *generation == lease.generation().0
+                *pid == identity.pid()
+                    && process_start_token == identity.process_start_token()
+                    && *generation == identity.generation().0
             }
             Self::Legacy { .. } => false,
         }
@@ -604,10 +922,10 @@ impl DaemonPidProjection {
 /// 为相关类型实现其约定的行为与方法。
 impl DaemonStateRecord {
     /// 执行 `running` 对应的受控流程。
-    fn running(project: &ProjectConfig) -> Self {
+    fn running(project: &ProjectConfig, mode: DaemonRunMode) -> Self {
         Self {
             status: "running".to_owned(),
-            mode: "foreground_dev".to_owned(),
+            mode: mode.as_str().to_owned(),
             pid: std::process::id(),
             generation_id: DAEMON_GENERATION.to_owned(),
             project_root: display_path(&project.project_root),
@@ -1837,12 +2155,68 @@ pub fn start_daemon(
     trace: &TraceFields,
 ) -> Result<DaemonStartReport, EvaError> {
     if !options.foreground {
-        return Err(
-            EvaError::unsupported("background daemon spawn is not implemented in V1.12.1")
-                .with_context("suggestion", "use foreground/dev smoke mode"),
-        );
+        return Err(EvaError::unsupported(
+            "background daemon spawning must use the CLI parent/child entrypoint",
+        ));
     }
+    start_daemon_inner(project, options, trace, DaemonRunMode::Foreground, None)
+}
 
+pub fn start_daemon_background_child(
+    project: &ProjectConfig,
+    mut options: DaemonStartOptions,
+    trace: &TraceFields,
+    handshake: &DaemonStartupHandshake,
+    publish_report: &mut dyn FnMut(&DaemonStartReport) -> Result<String, EvaError>,
+) -> Result<DaemonStartReport, EvaError> {
+    options.foreground = true;
+    options.shutdown_after_smoke = false;
+    let mut hooks = DaemonStartupHooks {
+        handshake,
+        publish_report,
+        ready_published: false,
+    };
+    let result = start_daemon_inner(
+        project,
+        options.clone(),
+        trace,
+        DaemonRunMode::BackgroundChild,
+        Some(&mut hooks),
+    );
+    if let Err(error) = &result {
+        if !hooks.ready_published {
+            let claimed =
+                read_daemon_startup_frame(&options, handshake, DaemonStartupPhase::Claimed)
+                    .ok()
+                    .flatten();
+            let _ = remove_if_exists(&daemon_startup_report_path(&options, handshake));
+            let cleanup_complete = daemon_startup_cleanup_complete(&options).unwrap_or(false);
+            let failed = DaemonStartupFrame::failed(
+                handshake,
+                std::process::id(),
+                claimed.as_ref(),
+                error,
+                cleanup_complete,
+            );
+            if let Err(frame_error) =
+                write_daemon_startup_failure_frame(&options, handshake, &failed)
+            {
+                return Err(error
+                    .clone()
+                    .with_context("startup_failure_frame_error", frame_error.to_string()));
+            }
+        }
+    }
+    result
+}
+
+fn start_daemon_inner(
+    project: &ProjectConfig,
+    options: DaemonStartOptions,
+    trace: &TraceFields,
+    run_mode: DaemonRunMode,
+    mut startup_hooks: Option<&mut DaemonStartupHooks<'_>>,
+) -> Result<DaemonStartReport, EvaError> {
     fs::create_dir_all(&options.lock_dir).map_err(|error| {
         EvaError::internal("failed to create daemon lock directory")
             .with_context("path", options.lock_dir.display().to_string())
@@ -1877,12 +2251,35 @@ pub fn start_daemon(
     ))?;
     let durable_report = durable_backend.verify()?;
     // 固定 anchor 必须先于 durable writer 取得；guard 同时持有两层 ownership 到 daemon 退出。
-    let mut lease = DurableRuntimeLeaseGuard::acquire(
-        &durable_backend,
-        lock_file(&options),
-        lease_file(&options),
-        now_ms(),
-        DEFAULT_RUNTIME_LEASE_TTL_MS,
+    let mut lease = if let Some(handshake) = startup_hooks.as_deref().map(|hooks| hooks.handshake) {
+        DurableRuntimeLeaseGuard::acquire_with_process_start_token(
+            &durable_backend,
+            lock_file(&options),
+            lease_file(&options),
+            handshake.child_start_token(),
+            now_ms(),
+            DEFAULT_RUNTIME_LEASE_TTL_MS,
+        )?
+    } else {
+        DurableRuntimeLeaseGuard::acquire(
+            &durable_backend,
+            lock_file(&options),
+            lease_file(&options),
+            now_ms(),
+            DEFAULT_RUNTIME_LEASE_TTL_MS,
+        )?
+    };
+    delay_after_startup_lease_for_test()?;
+    if let Some(hooks) = startup_hooks.as_deref_mut() {
+        write_daemon_startup_frame(
+            &options,
+            hooks.handshake,
+            &DaemonStartupFrame::claimed(hooks.handshake, lease.record()),
+        )?;
+    }
+    ensure_startup_not_aborted(
+        &options,
+        startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
     let mut task_store =
         FileSystemTaskStateStore::from_runtime_writer(durable_backend.layout(), lease.writer())?;
@@ -1892,9 +2289,24 @@ pub fn start_daemon(
     let recovery = RuntimeRecoveryCoordinator
         .recover_task_store_with_provider_processes(&mut task_store, &mut provider_process_table)?;
     drop(task_store);
+    lease.renew_at(now_ms())?;
+    ensure_startup_not_aborted(
+        &options,
+        startup_hooks.as_deref().map(|hooks| hooks.handshake),
+    )?;
     record_daemon_recovery_observability(&options, trace, &recovery);
     let policy = verify_policy(project)?;
+    lease.renew_at(now_ms())?;
+    ensure_startup_not_aborted(
+        &options,
+        startup_hooks.as_deref().map(|hooks| hooks.handshake),
+    )?;
     let observability = verify_observability(&options, trace)?;
+    lease.renew_at(now_ms())?;
+    ensure_startup_not_aborted(
+        &options,
+        startup_hooks.as_deref().map(|hooks| hooks.handshake),
+    )?;
 
     fs::create_dir_all(&options.state_dir).map_err(|error| {
         EvaError::internal("failed to create daemon state directory")
@@ -1907,11 +2319,33 @@ pub fn start_daemon(
             .with_context("io_error", error.to_string())
     })?;
     ensure_control_dirs(&options)?;
-    // Recovery/policy validation may be slow; publish ready state only from a freshly renewed lease.
     lease.renew_at(now_ms())?;
+    ensure_startup_not_aborted(
+        &options,
+        startup_hooks.as_deref().map(|hooks| hooks.handshake),
+    )?;
+    let hardware_hotplug = start_hardware_hotplug_subscriber(project, &options)?;
+    lease.renew_at(now_ms())?;
+    ensure_startup_not_aborted(
+        &options,
+        startup_hooks.as_deref().map(|hooks| hooks.handshake),
+    )?;
+    let memory_maintenance = run_memory_maintenance(&options, trace)?;
+    lease.renew_at(now_ms())?;
+    ensure_startup_not_aborted(
+        &options,
+        startup_hooks.as_deref().map(|hooks| hooks.handshake),
+    )?;
+    let mut runtime = RuntimeBuilder::new().build(project)?;
+    // All startup work must finish before publishing ready state, and the lease is renewed at that boundary.
+    lease.renew_at(now_ms())?;
+    ensure_startup_not_aborted(
+        &options,
+        startup_hooks.as_deref().map(|hooks| hooks.handshake),
+    )?;
 
     // 状态和 PID 均成功写入后，`daemon_status` 才可能将进程判为可用。
-    let running_state = DaemonStateRecord::running(project);
+    let running_state = DaemonStateRecord::running(project, run_mode);
     write_state(&options, &running_state)?;
     if let Err(error) = write_pid_projection(&options, lease.record()) {
         let _ = write_state(&options, &running_state.clone().stopped());
@@ -1920,10 +2354,36 @@ pub fn start_daemon(
     }
 
     let lifecycle = (|| {
-        let hardware_hotplug = start_hardware_hotplug_subscriber(project, &options)?;
-        let memory_maintenance = run_memory_maintenance(&options, trace)?;
-        let mut runtime = RuntimeBuilder::new().build(project)?;
-        lease.renew_at(now_ms())?;
+        if let Some(hooks) = startup_hooks.as_deref_mut() {
+            let ready_report = DaemonStartReport {
+                status: "running".to_owned(),
+                mode: run_mode.as_str().to_owned(),
+                pid: running_state.pid,
+                generation_id: DAEMON_GENERATION.to_owned(),
+                project_root: display_path(&project.project_root),
+                foreground: run_mode.foreground(),
+                dev_mode: options.dev_mode,
+                provider_processes_started: false,
+                paths: DaemonPathReport::from_options(&options),
+                lease: DaemonLeaseReport::from_guard(&lease, now_ms()),
+                durable_backend: durable_report.clone(),
+                recovery: recovery.clone(),
+                policy: policy.clone(),
+                observability: observability.clone(),
+                hardware_hotplug: hardware_hotplug.clone(),
+                memory_maintenance: memory_maintenance.clone(),
+                shutdown: None,
+                audit: daemon_start_audit(),
+            };
+            let report_digest = (hooks.publish_report)(&ready_report)?;
+            ensure_startup_not_aborted(&options, Some(hooks.handshake))?;
+            write_daemon_startup_frame(
+                &options,
+                hooks.handshake,
+                &DaemonStartupFrame::ready(hooks.handshake, lease.record(), report_digest),
+            )?;
+            hooks.ready_published = true;
+        }
         let (status, shutdown) = if options.shutdown_after_smoke {
             let shutdown_report = runtime.shutdown();
             let stopped = running_state.clone().stopped();
@@ -1941,10 +2401,10 @@ pub fn start_daemon(
             )?;
             (loop_report.status, loop_report.shutdown)
         };
-        Ok::<_, EvaError>((hardware_hotplug, memory_maintenance, status, shutdown))
+        Ok::<_, EvaError>((status, shutdown))
     })();
 
-    let (hardware_hotplug, memory_maintenance, status, shutdown) = match lifecycle {
+    let (status, shutdown) = match lifecycle {
         Ok(report) => report,
         Err(error) => {
             let _ = write_state(&options, &running_state.clone().stopped());
@@ -1958,11 +2418,11 @@ pub fn start_daemon(
 
     Ok(DaemonStartReport {
         status,
-        mode: "foreground_dev".to_owned(),
+        mode: run_mode.as_str().to_owned(),
         pid: running_state.pid,
         generation_id: DAEMON_GENERATION.to_owned(),
         project_root: display_path(&project.project_root),
-        foreground: options.foreground,
+        foreground: run_mode.foreground(),
         dev_mode: options.dev_mode,
         provider_processes_started: false,
         paths: DaemonPathReport::from_options(&options),
@@ -1974,19 +2434,23 @@ pub fn start_daemon(
         hardware_hotplug,
         memory_maintenance,
         shutdown,
-        audit: vec![
-            "daemon:v1.12.1:lock_acquired".to_owned(),
-            "daemon:v1.12.1:durable_backend_verified".to_owned(),
-            "daemon:v1.12.1:policy_verified".to_owned(),
-            "daemon:v1.12.1:observability_verified".to_owned(),
-            "daemon:v1.12.1:provider_processes_not_started".to_owned(),
-            "daemon:v1.12.2:control_mailbox_ready".to_owned(),
-            "daemon:v1.12.4:scheduler_retry_tick_ready".to_owned(),
-            "daemon:v1.13.5:provider_recovery_scanned".to_owned(),
-            "daemon:v1.15.4:hardware_hotplug_subscriber_ready".to_owned(),
-            "daemon:v1.15.6:memory_maintenance_ready".to_owned(),
-        ],
+        audit: daemon_start_audit(),
     })
+}
+
+fn daemon_start_audit() -> Vec<String> {
+    vec![
+        "daemon:v1.12.1:lock_acquired".to_owned(),
+        "daemon:v1.12.1:durable_backend_verified".to_owned(),
+        "daemon:v1.12.1:policy_verified".to_owned(),
+        "daemon:v1.12.1:observability_verified".to_owned(),
+        "daemon:v1.12.1:provider_processes_not_started".to_owned(),
+        "daemon:v1.12.2:control_mailbox_ready".to_owned(),
+        "daemon:v1.12.4:scheduler_retry_tick_ready".to_owned(),
+        "daemon:v1.13.5:provider_recovery_scanned".to_owned(),
+        "daemon:v1.15.4:hardware_hotplug_subscriber_ready".to_owned(),
+        "daemon:v1.15.6:memory_maintenance_ready".to_owned(),
+    ]
 }
 
 /// 只有 active/fresh lease、live OS-lock owner、PID projection 与 running state 完全一致时可用。
@@ -3308,6 +3772,39 @@ fn write_control_response(path: &Path, response: &DaemonControlResponse) -> Resu
     )
 }
 
+fn write_startup_atomic(path: &Path, data: &str, message: &'static str) -> Result<(), EvaError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            EvaError::internal("failed to create daemon startup directory")
+                .with_context("path", parent.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+    }
+    let result = atomic_storage_write(path, data.as_bytes()).map_err(|error| {
+        EvaError::internal(message)
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    });
+    confirm_startup_atomic_result(path, data, result)
+}
+
+fn confirm_startup_atomic_result(
+    path: &Path,
+    data: &str,
+    result: Result<(), EvaError>,
+) -> Result<(), EvaError> {
+    let Err(error) = result else {
+        return Ok(());
+    };
+    match fs::read(path) {
+        Ok(actual) if actual == data.as_bytes() => Ok(()),
+        Ok(_) => Err(error.with_context("publication_readback", "mismatch")),
+        Err(read_error) => Err(error
+            .with_context("publication_readback", "unavailable")
+            .with_context("publication_readback_error", read_error.to_string())),
+    }
+}
+
 /// 持久化 `write_atomic` 对应的数据，写入失败时返回错误。
 fn write_atomic(path: &Path, data: &str, message: &'static str) -> Result<(), EvaError> {
     if let Some(parent) = path.parent() {
@@ -3476,6 +3973,509 @@ fn remove_if_exists(path: &Path) -> Result<bool, EvaError> {
             .with_context("path", path.display().to_string())
             .with_context("io_error", error.to_string())),
     }
+}
+
+pub fn daemon_startup_report_path(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+) -> PathBuf {
+    startup_dir(options).join(format!("{}.{}", handshake.nonce, STARTUP_REPORT_SUFFIX))
+}
+
+pub fn write_daemon_startup_report(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    report_json: &str,
+) -> Result<String, EvaError> {
+    if report_json.trim() != report_json
+        || !report_json.starts_with('{')
+        || !report_json.ends_with('}')
+    {
+        return Err(EvaError::invalid_argument(
+            "daemon startup report must be one canonical JSON object",
+        ));
+    }
+    let digest = sha256_digest(report_json.as_bytes());
+    write_startup_atomic(
+        &daemon_startup_report_path(options, handshake),
+        report_json,
+        "failed to publish daemon startup report",
+    )?;
+    Ok(digest)
+}
+
+pub fn read_daemon_startup_report(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    expected_digest: &str,
+) -> Result<Option<String>, EvaError> {
+    if !is_canonical_sha256(expected_digest) {
+        return Err(EvaError::conflict(
+            "daemon startup report digest is not canonical SHA-256",
+        ));
+    }
+    let path = daemon_startup_report_path(options, handshake);
+    let report = match fs::read_to_string(&path) {
+        Ok(report) => report,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(EvaError::internal("failed to read daemon startup report")
+                .with_context("path", path.display().to_string())
+                .with_context("io_error", error.to_string()))
+        }
+    };
+    let actual_digest = sha256_digest(report.as_bytes());
+    if actual_digest != expected_digest {
+        return Err(EvaError::conflict("daemon startup report digest mismatch")
+            .with_context("path", path.display().to_string())
+            .with_context("expected_digest", expected_digest)
+            .with_context("actual_digest", actual_digest));
+    }
+    Ok(Some(report))
+}
+
+pub fn read_daemon_startup_frame(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    phase: DaemonStartupPhase,
+) -> Result<Option<DaemonStartupFrame>, EvaError> {
+    let path = startup_frame_file(options, handshake, phase);
+    let data = match fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(EvaError::internal("failed to read daemon startup frame")
+                .with_context("path", path.display().to_string())
+                .with_context("io_error", error.to_string()))
+        }
+    };
+    let frame = DaemonStartupFrame::from_storage(&data)?;
+    if frame.phase != phase
+        || frame.nonce != handshake.nonce
+        || frame.launcher_pid != handshake.launcher_pid
+        || frame
+            .process_start_token
+            .as_deref()
+            .is_some_and(|token| token != handshake.child_start_token())
+    {
+        return Err(EvaError::conflict(
+            "daemon startup frame does not match the launcher handshake",
+        ));
+    }
+    Ok(Some(frame))
+}
+
+pub fn request_daemon_startup_abort(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+) -> Result<(), EvaError> {
+    write_startup_atomic(
+        &startup_abort_file(options, handshake),
+        &format!(
+            "format={STARTUP_ABORT_FORMAT}\nnonce={}\nlauncher_pid={}\n",
+            handshake.nonce, handshake.launcher_pid
+        ),
+        "failed to publish daemon startup abort request",
+    )
+}
+
+pub fn cleanup_failed_daemon_start(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    expected_child_pid: u32,
+    claimed: Option<&DaemonStartupFrame>,
+    failure: &EvaError,
+) -> Result<DaemonStartupCleanupReport, EvaError> {
+    if expected_child_pid == 0 {
+        return Err(EvaError::invalid_argument(
+            "failed daemon startup cleanup requires a positive child pid",
+        ));
+    }
+    if let Some(frame) = claimed {
+        frame.validate()?;
+        if frame.phase != DaemonStartupPhase::Claimed
+            || frame.nonce != handshake.nonce
+            || frame.launcher_pid != handshake.launcher_pid
+            || frame.child_pid != expected_child_pid
+        {
+            return Err(EvaError::conflict(
+                "failed daemon startup cleanup claimed frame is mismatched",
+            ));
+        }
+    }
+
+    let anchor_path = lock_file(options);
+    let lease_path = lease_file(options);
+    let probe = probe_runtime_lease(&anchor_path, &lease_path, now_ms())?;
+    let identity_from_claimed = claimed
+        .map(|frame| {
+            DurableRuntimeLeaseIdentity::new(
+                expected_child_pid,
+                frame.process_start_token.clone().ok_or_else(|| {
+                    EvaError::conflict("claimed startup frame is missing process identity")
+                })?,
+                WriterGeneration(frame.generation.ok_or_else(|| {
+                    EvaError::conflict("claimed startup frame is missing writer generation")
+                })?),
+            )
+        })
+        .transpose()?;
+    let (identity, identity_source) = match (identity_from_claimed, probe.record()) {
+        (Some(identity), Some(record)) => {
+            if record.identity() != identity {
+                return Err(EvaError::conflict(
+                    "failed daemon startup cleanup lease identity changed",
+                ));
+            }
+            (Some(identity), "claimed_frame")
+        }
+        (Some(_), None) => {
+            return Err(EvaError::conflict(
+                "failed daemon startup cleanup lost the claimed lease record",
+            ))
+        }
+        (None, Some(record))
+            if record.pid() == expected_child_pid
+                && record.process_start_token() == handshake.child_start_token() =>
+        {
+            (Some(record.identity()), "lease_probe")
+        }
+        (None, Some(_record)) => {
+            write_daemon_startup_failure_frame(
+                options,
+                handshake,
+                &DaemonStartupFrame::failed(handshake, expected_child_pid, None, failure, true),
+            )?;
+            return Ok(DaemonStartupCleanupReport {
+                child_pid: expected_child_pid,
+                identity_source: "other_owner".to_owned(),
+                pid_removed: false,
+                state_stopped: false,
+                lease: None,
+                cleanup_complete: true,
+            });
+        }
+        (None, None) => (None, "no_lease"),
+    };
+
+    if probe.owner_live() {
+        return Err(
+            EvaError::conflict("failed daemon startup cleanup refused a live lease owner")
+                .with_context("child_pid", expected_child_pid.to_string()),
+        );
+    }
+
+    let Some(identity) = identity else {
+        let cleanup_complete = daemon_startup_cleanup_complete(options)?;
+        if !cleanup_complete {
+            return Err(EvaError::conflict(
+                "failed daemon startup has residue without a reclaimable lease identity",
+            ));
+        }
+        write_daemon_startup_failure_frame(
+            options,
+            handshake,
+            &DaemonStartupFrame::failed(handshake, expected_child_pid, claimed, failure, true),
+        )?;
+        return Ok(DaemonStartupCleanupReport {
+            child_pid: expected_child_pid,
+            identity_source: identity_source.to_owned(),
+            pid_removed: false,
+            state_stopped: false,
+            lease: None,
+            cleanup_complete: true,
+        });
+    };
+
+    let previous_state = probe
+        .record()
+        .map(|record| record.state())
+        .ok_or_else(|| EvaError::conflict("failed daemon startup lease record disappeared"))?;
+    if previous_state == DurableRuntimeLeaseState::Released {
+        let projection = read_pid_projection(options)?;
+        let state_running = read_state(options)?.is_some_and(|state| state.status == "running");
+        if projection.is_none() && !state_running {
+            let lease_report = probe
+                .record()
+                .map(|record| DaemonLeaseReport::from_record(record, false, false));
+            write_daemon_startup_failure_frame(
+                options,
+                handshake,
+                &DaemonStartupFrame::failed(handshake, expected_child_pid, claimed, failure, true),
+            )?;
+            return Ok(DaemonStartupCleanupReport {
+                child_pid: expected_child_pid,
+                identity_source: identity_source.to_owned(),
+                pid_removed: false,
+                state_stopped: false,
+                lease: lease_report,
+                cleanup_complete: true,
+            });
+        }
+    }
+    let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+        &options.durable_backend,
+    ))?;
+    let mut lease = match previous_state {
+        DurableRuntimeLeaseState::Active => DurableRuntimeLeaseGuard::reclaim_failed_start(
+            &backend,
+            &anchor_path,
+            &lease_path,
+            &identity,
+            now_ms(),
+            DEFAULT_RUNTIME_LEASE_TTL_MS,
+        )?,
+        DurableRuntimeLeaseState::Released => DurableRuntimeLeaseGuard::acquire(
+            &backend,
+            &anchor_path,
+            &lease_path,
+            now_ms(),
+            DEFAULT_RUNTIME_LEASE_TTL_MS,
+        )?,
+    };
+
+    let projection = read_pid_projection(options)?;
+    let projection_matches = projection
+        .as_ref()
+        .is_some_and(|projection| projection.matches_identity(&identity));
+    if projection.is_some() && !projection_matches {
+        return Err(EvaError::conflict(
+            "failed daemon startup pid projection belongs to another identity",
+        ));
+    }
+
+    let mut state_stopped = false;
+    if let Some(state) = read_state(options)?.filter(|state| state.status == "running") {
+        if state.pid != expected_child_pid
+            || (!projection_matches && previous_state == DurableRuntimeLeaseState::Released)
+        {
+            return Err(EvaError::conflict(
+                "failed daemon startup running state is not bound to the reclaimed identity",
+            ));
+        }
+        write_state(options, &state.stopped())?;
+        state_stopped = true;
+    }
+    let pid_removed = if projection_matches {
+        remove_if_exists(&pid_file(options))?
+    } else {
+        false
+    };
+    let released = lease.release_at(now_ms())?.clone();
+    let lease_report = DaemonLeaseReport::from_record(&released, false, false);
+    drop(lease);
+    let cleanup_complete = daemon_startup_cleanup_complete(options)?;
+    if !cleanup_complete {
+        return Err(EvaError::conflict(
+            "failed daemon startup cleanup did not reach a stable inactive state",
+        ));
+    }
+    write_daemon_startup_failure_frame(
+        options,
+        handshake,
+        &DaemonStartupFrame::failed(handshake, expected_child_pid, claimed, failure, true),
+    )?;
+    Ok(DaemonStartupCleanupReport {
+        child_pid: expected_child_pid,
+        identity_source: identity_source.to_owned(),
+        pid_removed,
+        state_stopped,
+        lease: Some(lease_report),
+        cleanup_complete: true,
+    })
+}
+
+pub fn clear_daemon_startup_handshake(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+) -> Result<(), EvaError> {
+    for path in [
+        startup_frame_file(options, handshake, DaemonStartupPhase::Claimed),
+        startup_frame_file(options, handshake, DaemonStartupPhase::Ready),
+        startup_frame_file(options, handshake, DaemonStartupPhase::Failed),
+        startup_abort_file(options, handshake),
+        daemon_startup_report_path(options, handshake),
+    ] {
+        remove_if_exists(&path)?;
+    }
+    Ok(())
+}
+
+fn write_daemon_startup_frame(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    frame: &DaemonStartupFrame,
+) -> Result<(), EvaError> {
+    frame.validate()?;
+    if frame.nonce != handshake.nonce
+        || frame.launcher_pid != handshake.launcher_pid
+        || frame
+            .process_start_token
+            .as_deref()
+            .is_some_and(|token| token != handshake.child_start_token())
+    {
+        return Err(EvaError::conflict(
+            "daemon startup frame cannot be published for another launcher",
+        ));
+    }
+    write_startup_atomic(
+        &startup_frame_file(options, handshake, frame.phase),
+        &frame.to_storage(),
+        "failed to publish daemon startup frame",
+    )
+}
+
+fn write_daemon_startup_failure_frame(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    frame: &DaemonStartupFrame,
+) -> Result<(), EvaError> {
+    if frame.phase != DaemonStartupPhase::Failed {
+        return Err(EvaError::invalid_argument(
+            "daemon startup failure publisher requires a failed frame",
+        ));
+    }
+    let ready_path = startup_frame_file(options, handshake, DaemonStartupPhase::Ready);
+    match fs::symlink_metadata(&ready_path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            write_daemon_startup_frame(options, handshake, frame)
+        }
+        Err(error) => Err(EvaError::internal(
+            "failed to inspect daemon ready frame before failure publication",
+        )
+        .with_context("path", ready_path.display().to_string())
+        .with_context("io_error", error.to_string())),
+    }
+}
+
+fn daemon_startup_abort_requested(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+) -> Result<bool, EvaError> {
+    let path = startup_abort_file(options, handshake);
+    let data = match fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(
+                EvaError::internal("failed to read daemon startup abort request")
+                    .with_context("path", path.display().to_string())
+                    .with_context("io_error", error.to_string()),
+            )
+        }
+    };
+    let expected = format!(
+        "format={STARTUP_ABORT_FORMAT}\nnonce={}\nlauncher_pid={}\n",
+        handshake.nonce, handshake.launcher_pid
+    );
+    if data != expected {
+        return Err(EvaError::conflict(
+            "daemon startup abort request is corrupt or belongs to another launcher",
+        ));
+    }
+    Ok(true)
+}
+
+fn ensure_startup_not_aborted(
+    options: &DaemonStartOptions,
+    handshake: Option<&DaemonStartupHandshake>,
+) -> Result<(), EvaError> {
+    if let Some(handshake) = handshake {
+        if daemon_startup_abort_requested(options, handshake)? {
+            return Err(EvaError::conflict(
+                "background daemon startup was aborted by its launcher",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn daemon_startup_cleanup_complete(options: &DaemonStartOptions) -> Result<bool, EvaError> {
+    let probe = probe_runtime_lease(lock_file(options), lease_file(options), now_ms())?;
+    let lease_inactive = probe
+        .record()
+        .map(|record| record.state() == DurableRuntimeLeaseState::Released)
+        .unwrap_or(true);
+    let state_inactive = read_state(options)?
+        .map(|state| state.status != "running")
+        .unwrap_or(true);
+    Ok(!probe.owner_live()
+        && lease_inactive
+        && read_pid_projection(options)?.is_none()
+        && state_inactive)
+}
+
+fn startup_dir(options: &DaemonStartOptions) -> PathBuf {
+    options.state_dir.join(STARTUP_DIR)
+}
+
+fn startup_frame_file(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+    phase: DaemonStartupPhase,
+) -> PathBuf {
+    startup_dir(options).join(format!("{}.{}", handshake.nonce, phase.as_str()))
+}
+
+fn startup_abort_file(options: &DaemonStartOptions, handshake: &DaemonStartupHandshake) -> PathBuf {
+    startup_dir(options).join(format!("{}.abort", handshake.nonce))
+}
+
+fn validate_startup_nonce(nonce: &str) -> Result<(), EvaError> {
+    if nonce.is_empty()
+        || nonce.len() > 128
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(EvaError::invalid_argument(
+            "daemon startup nonce must use 1..=128 ASCII alphanumeric, '-' or '_' bytes",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_startup_child_token(token: &str) -> Result<(), EvaError> {
+    if token.is_empty()
+        || token.len() > 128
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(EvaError::invalid_argument(
+            "daemon startup child token must use 1..=128 ASCII alphanumeric, '-' or '_' bytes",
+        ));
+    }
+    Ok(())
+}
+
+fn is_canonical_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
+}
+
+#[cfg(debug_assertions)]
+fn delay_after_startup_lease_for_test() -> Result<(), EvaError> {
+    let Some(value) = std::env::var_os("EVA_DAEMON_TEST_LEASE_CLAIM_DELAY_MS") else {
+        return Ok(());
+    };
+    let delay_ms = value
+        .to_str()
+        .ok_or_else(|| EvaError::invalid_argument("daemon test lease delay is not utf-8"))?
+        .parse::<u64>()
+        .map_err(|_| EvaError::invalid_argument("daemon test lease delay is invalid"))?;
+    thread::sleep(Duration::from_millis(delay_ms));
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn delay_after_startup_lease_for_test() -> Result<(), EvaError> {
+    Ok(())
 }
 
 /// 执行 `state_file` 对应的处理逻辑。
@@ -5314,6 +6314,126 @@ mod tests {
         )
         .unwrap();
         daemon.join().unwrap().unwrap();
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn startup_report_digest_and_frame_round_trip_are_strict() {
+        let root = temp_root("startup-report-digest");
+        let options = daemon_options(&root, false);
+        let handshake =
+            DaemonStartupHandshake::new("nonce-1", std::process::id(), "child-token-1").unwrap();
+        let report = "{\"status\":\"running\"}";
+        let digest = write_daemon_startup_report(&options, &handshake, report).unwrap();
+        assert!(is_canonical_sha256(&digest));
+        assert_eq!(
+            read_daemon_startup_report(&options, &handshake, &digest)
+                .unwrap()
+                .as_deref(),
+            Some(report)
+        );
+
+        let frame = DaemonStartupFrame {
+            phase: DaemonStartupPhase::Ready,
+            nonce: handshake.nonce().to_owned(),
+            launcher_pid: handshake.launcher_pid(),
+            child_pid: std::process::id(),
+            process_start_token: Some("child-token-1".to_owned()),
+            generation: Some(7),
+            report_digest: Some(digest.clone()),
+            observed_at_ms: 10,
+            error_kind: None,
+            cleanup_complete: false,
+        };
+        frame.validate().unwrap();
+        assert_eq!(
+            DaemonStartupFrame::from_storage(&frame.to_storage()).unwrap(),
+            frame
+        );
+
+        let mut missing_digest = frame.clone();
+        missing_digest.report_digest = None;
+        assert_eq!(
+            missing_digest.validate().unwrap_err().kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        fs::write(
+            daemon_startup_report_path(&options, &handshake),
+            "{\"status\":\"tampered\"}",
+        )
+        .unwrap();
+        assert_eq!(
+            read_daemon_startup_report(&options, &handshake, &digest)
+                .unwrap_err()
+                .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+
+        let ready_path = startup_frame_file(&options, &handshake, DaemonStartupPhase::Ready);
+        fs::write(&ready_path, frame.to_storage()).unwrap();
+        confirm_startup_atomic_result(
+            &ready_path,
+            &frame.to_storage(),
+            Err(EvaError::internal("injected parent directory sync failure")),
+        )
+        .unwrap();
+        let failed = DaemonStartupFrame::failed(
+            &handshake,
+            std::process::id(),
+            None,
+            &EvaError::internal("late startup error"),
+            true,
+        );
+        write_daemon_startup_failure_frame(&options, &handshake, &failed).unwrap();
+        assert!(!startup_frame_file(&options, &handshake, DaemonStartupPhase::Failed).exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn missing_claimed_cleanup_rejects_same_pid_with_another_start_token() {
+        let root = temp_root("startup-successor-token");
+        let options = daemon_options(&root, false);
+        fs::create_dir_all(&options.lock_dir).unwrap();
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let successor_token = "successor-child-token";
+        let successor = DurableRuntimeLeaseGuard::acquire_with_process_start_token(
+            &backend,
+            lock_file(&options),
+            lease_file(&options),
+            successor_token,
+            now_ms(),
+            DEFAULT_RUNTIME_LEASE_TTL_MS,
+        )
+        .unwrap();
+        let handshake = DaemonStartupHandshake::new(
+            "successor-nonce",
+            std::process::id(),
+            "expected-dead-child-token",
+        )
+        .unwrap();
+
+        let report = cleanup_failed_daemon_start(
+            &options,
+            &handshake,
+            std::process::id(),
+            None,
+            &EvaError::timeout("injected launcher timeout"),
+        )
+        .unwrap();
+        assert_eq!(report.identity_source, "other_owner");
+        assert!(report.cleanup_complete);
+        let probe =
+            probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms()).unwrap();
+        assert!(probe.owner_live());
+        assert_eq!(
+            probe.record().unwrap().process_start_token(),
+            successor_token
+        );
+        assert_eq!(probe.record().unwrap(), successor.record());
+        drop(successor);
         fs::remove_dir_all(root).ok();
     }
 }
