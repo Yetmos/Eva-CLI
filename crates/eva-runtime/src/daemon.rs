@@ -6,8 +6,8 @@
 //! Local daemon process-boundary and control-plane contracts for V1.12.
 
 use crate::{
-    run_scheduler_retry_tick, FileSystemTaskArtifactResolver, IdempotencyKey, RuntimeBuilder,
-    RuntimeRecoveryCoordinator, RuntimeRecoveryReport, SchedulerRetryTickOptions,
+    run_scheduler_retry_tick_with_handler, FileSystemTaskArtifactResolver, IdempotencyKey,
+    RuntimeBuilder, RuntimeRecoveryCoordinator, RuntimeRecoveryReport, SchedulerRetryTickOptions,
     SchedulerRetryTickReport, ShutdownReport, TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope,
     TaskHandlerRegistry, TaskInput, TaskKind, TaskWorkerRuntime,
 };
@@ -2401,11 +2401,14 @@ fn start_daemon_inner(
             durable_backend.layout(),
             lease.writer(),
         )?;
-        Some(TaskWorkerRuntime::start_paused(
+        let task_failure_bus =
+            DurableEventBus::open_with_writer(durable_backend.layout(), lease.writer())?;
+        Some(TaskWorkerRuntime::start_paused_with_failure_bus(
             task_store,
             Arc::clone(&task_handlers),
             task_artifacts.clone(),
             task_worker_execution_owner(lease.record()),
+            task_failure_bus,
         )?)
     };
     if let Some(worker) = task_worker.as_ref() {
@@ -2571,6 +2574,7 @@ fn daemon_start_audit(
     ];
     if task_worker_enabled {
         audit.push("daemon:w1-l06:task_worker_claim_gate_ready".to_owned());
+        audit.push("daemon:w1-l08:owned_replay_delivery_ready".to_owned());
     }
     audit
 }
@@ -2907,7 +2911,7 @@ fn run_control_loop(
         task_worker.check_health()?;
         renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
         // 每轮先推进到期的调度重试，保证控制流量不会无限饿死恢复任务。
-        let _tick = run_daemon_scheduler_tick(project, options)?;
+        let _tick = run_daemon_scheduler_tick(project, options, lease.writer(), task_worker)?;
         task_worker.check_health()?;
         renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
         for request_path in pending_control_requests(options)? {
@@ -2981,14 +2985,17 @@ fn renew_daemon_lease_if_due(
 fn run_daemon_scheduler_tick(
     project: &ProjectConfig,
     options: &DaemonStartOptions,
+    writer: DurableWriterGuard,
+    task_worker: &TaskWorkerRuntime,
 ) -> Result<SchedulerRetryTickReport, EvaError> {
     let durable_backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
         &options.durable_backend,
     ))?;
-    let mut bus = DurableEventBus::open(durable_backend.layout())?;
-    let report = run_scheduler_retry_tick(
+    let mut bus = DurableEventBus::open_with_writer(durable_backend.layout(), writer)?;
+    let report = run_scheduler_retry_tick_with_handler(
         project,
         &mut bus,
+        task_worker,
         SchedulerRetryTickOptions {
             redrive_ready_at_ms: now_ms() as u64,
             ..SchedulerRetryTickOptions::default()
@@ -3432,6 +3439,12 @@ fn submit_control_task(
         .clone()
         .unwrap_or_else(|| request.request_id.as_str().to_owned());
     RequestId::parse(&task_id)?;
+    if task_id.starts_with("replay-delivery-") {
+        return Err(EvaError::invalid_argument(
+            "daemon submit task id uses the reserved replay-delivery namespace",
+        )
+        .with_context("task_id", &task_id));
+    }
     let envelope = match &request.task_envelope {
         Some(envelope) => envelope.clone(),
         None if request.wire_version == 1 => legacy_submit_envelope(project, &task_id)?,
@@ -4919,7 +4932,7 @@ mod tests {
     use super::*;
     use eva_config::load_project_config;
     use eva_core::{Event, EventId, EventPayload, Topic};
-    use eva_eventbus::EventBus;
+    use eva_eventbus::{EventBus, ReplayHandlerBinding};
     use eva_storage::{
         FileSystemProviderProcessTable, ProviderProcessSnapshot, ProviderProcessTable,
     };
@@ -5205,6 +5218,7 @@ mod tests {
             Topic::parse(topic).unwrap(),
             EventPayload::empty(),
         )
+        .with_request_id(RequestId::parse("req-daemon-retry-handler").unwrap())
     }
 
     /// 执行 `daemon_provider_process` 对应的处理逻辑。
@@ -6413,8 +6427,16 @@ mod tests {
             let mut bus = DurableEventBus::open(backend.layout()).unwrap();
             let event = durable_event("evt-daemon-retry", "/input/user");
             bus.publish(event.clone()).unwrap();
-            bus.dead_letter(event, EvaError::timeout("handler timeout"))
-                .unwrap();
+            bus.dead_letter_for_handlers(
+                event,
+                EvaError::timeout("handler timeout"),
+                vec![ReplayHandlerBinding::new(
+                    "runtime.echo",
+                    AgentId::parse("root-agent").unwrap(),
+                )
+                .unwrap()],
+            )
+            .unwrap();
         }
         let daemon_project = project.clone();
         let daemon_options = options.clone();

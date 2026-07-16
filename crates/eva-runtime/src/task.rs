@@ -560,6 +560,7 @@ impl From<&TaskReport> for TaskStateSnapshot {
             owner_generation: WriterGeneration::ZERO,
             task_id: report.task_id.as_str().to_owned(),
             envelope: report.envelope.as_ref().map(TaskEnvelope::to_snapshot),
+            replay_delivery: None,
             status: report.status.as_str().to_owned(),
             attempts: report.attempts,
             execution_owner: None,
@@ -581,6 +582,8 @@ impl From<&TaskReport> for TaskStateSnapshot {
                 .error
                 .as_ref()
                 .map(|error| error.message().to_owned()),
+            error_retryable: report.error.as_ref().map(EvaError::is_retryable),
+            retry_ready_at_ms: None,
             logs: report
                 .logs
                 .iter()

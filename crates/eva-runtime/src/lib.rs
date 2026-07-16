@@ -35,8 +35,9 @@ pub use recovery::{
 };
 pub use runtime::{Runtime, RuntimeStatus, RuntimeSummary};
 pub use scheduler_retry::{
-    run_scheduler_retry_tick, SchedulerRetryDispatchedEvent, SchedulerRetryFailedEvent,
-    SchedulerRetrySkippedEvent, SchedulerRetryTickOptions, SchedulerRetryTickReport,
+    run_scheduler_retry_tick, run_scheduler_retry_tick_with_handler, SchedulerRetryDispatchedEvent,
+    SchedulerRetryFailedEvent, SchedulerRetrySkippedEvent, SchedulerRetryTickOptions,
+    SchedulerRetryTickReport,
 };
 pub use services::{RuntimeServices, ServiceState, ServiceSummary};
 pub use shutdown::{ShutdownReport, ShutdownState};
@@ -46,8 +47,9 @@ pub use task::{
     TaskLogLevel, TaskReport, TaskStatus,
 };
 pub use task_worker::{
-    FileSystemTaskArtifactResolver, TaskArtifactResolver, TaskCancellationView, TaskHandler,
-    TaskHandlerInvocation, TaskHandlerRegistry, TaskHandlerResult, TaskWorkerRuntime,
+    FileSystemTaskArtifactResolver, OwnedReplayDeliveryStatus, OwnedReplayHandler,
+    TaskArtifactResolver, TaskCancellationView, TaskHandler, TaskHandlerInvocation,
+    TaskHandlerRegistry, TaskHandlerResult, TaskWorkerRuntime,
     DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES, DEFAULT_TASK_HEARTBEAT_INTERVAL_MS,
     DEFAULT_TASK_WORKER_POLL_INTERVAL_MS, TASK_HANDLER_NOT_REGISTERED_MESSAGE,
 };

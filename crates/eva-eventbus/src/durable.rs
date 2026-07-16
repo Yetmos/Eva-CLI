@@ -2,17 +2,21 @@
 //! Durable EventBus implementation backed by filesystem storage.
 
 use crate::bus::{EventBus, EventReceipt};
-use crate::dead_letter::{DeadLetterRecord, RedrivePolicy};
+use crate::dead_letter::{
+    DeadLetterRecord, RedrivePolicy, ReplayHandlerBinding, MAX_REPLAY_HANDLERS,
+};
 use eva_core::{
     AgentId, ErrorKind, EvaError, Event, EventId, EventMetadata, EventPayload, EventTarget,
     GenerationId, RequestId, Topic, TraceContext,
 };
 use eva_storage::{
-    DurableBackendLayout, EventLog, EventLogRecord, EventLogStatus, FileSystemEventLog,
+    atomic_write, DurableBackendLayout, DurableWriterGuard, EventLog, EventLogRecord,
+    EventLogStatus, FileSystemEventLog,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, UNIX_EPOCH};
 
 /// 本模块的架构职责：持久化事件发布状态，并提供可查询、可重驱的死信记录。
@@ -25,6 +29,8 @@ const DEAD_LETTER_DIR: &str = "dead_letters";
 const DEAD_LETTER_EXTENSION: &str = "dead";
 /// 当前支持的死信磁盘格式版本。
 const DEAD_LETTER_VERSION: &str = "1";
+/// Serializes dead-letter read-modify-write commits made by clones of one runtime writer.
+static DEAD_LETTER_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// V1.6 持久运行时路径使用的文件系统 EventBus。
 /// Filesystem-backed EventBus used by V1.6 durable runtime paths.
@@ -46,6 +52,8 @@ pub struct FileSystemDeadLetterStore {
     root: PathBuf,
     /// 从磁盘加载并按事件标识排序的当前内存视图。
     records: Vec<DeadLetterRecord>,
+    /// 可写 runtime ownership；兼容入口不带 guard，显式只读入口永不持有 guard。
+    writer: Option<DurableWriterGuard>,
 }
 
 impl DurableEventBus {
@@ -54,6 +62,18 @@ impl DurableEventBus {
         Ok(Self {
             log: FileSystemEventLog::open(layout)?,
             dead_letter_store: FileSystemDeadLetterStore::open(layout)?,
+            receipts: Vec::new(),
+        })
+    }
+
+    /// 使用同一 runtime writer 打开事件日志和死信存储。
+    pub fn open_with_writer(
+        layout: &DurableBackendLayout,
+        writer: DurableWriterGuard,
+    ) -> Result<Self, EvaError> {
+        Ok(Self {
+            log: FileSystemEventLog::open_with_writer(layout, writer.clone())?,
+            dead_letter_store: FileSystemDeadLetterStore::open_with_writer(layout, writer)?,
             receipts: Vec::new(),
         })
     }
@@ -104,6 +124,16 @@ impl DurableEventBus {
         self.event_log_record(event_id).map(|record| record.status)
     }
 
+    /// Reloads the authoritative event-log view after a competing writer commit.
+    pub fn refresh_event_log(&mut self) -> Result<(), EvaError> {
+        self.log.refresh()
+    }
+
+    /// Reloads the authoritative dead-letter view after a competing writer commit.
+    pub fn refresh_dead_letters(&mut self) -> Result<(), EvaError> {
+        self.dead_letter_store.refresh()
+    }
+
     /// 按约定的 replay 后缀查找原事件最近一次重驱记录。
     pub fn latest_replay_record(&self, original_event_id: &EventId) -> Option<&EventLogRecord> {
         let replay_prefix = format!("{}:replay-", original_event_id.as_str());
@@ -121,6 +151,54 @@ impl DurableEventBus {
         reason: EvaError,
     ) -> Result<DeadLetterRecord, EvaError> {
         self.dead_letter_store.push(event, reason)
+    }
+
+    /// Persists an unbound dead letter and its first absolute redrive boundary atomically.
+    pub fn dead_letter_with_redrive(
+        &mut self,
+        event: Event,
+        reason: EvaError,
+        redrive: RedrivePolicy,
+    ) -> Result<DeadLetterRecord, EvaError> {
+        self.dead_letter_store
+            .push_with_handlers_and_redrive(event, reason, Vec::new(), redrive)
+    }
+
+    /// Persists a dead letter with its ordered, explicit handler-owner bindings.
+    pub fn dead_letter_for_handlers(
+        &mut self,
+        event: Event,
+        reason: EvaError,
+        replay_handlers: Vec<ReplayHandlerBinding>,
+    ) -> Result<DeadLetterRecord, EvaError> {
+        if replay_handlers.is_empty() {
+            return Err(EvaError::invalid_argument(
+                "dead-letter replay handler plan cannot be empty",
+            ));
+        }
+        self.dead_letter_store
+            .push_with_handlers(event, reason, replay_handlers)
+    }
+
+    /// Atomically persists handler bindings and the first absolute redrive boundary.
+    pub fn dead_letter_for_handlers_with_redrive(
+        &mut self,
+        event: Event,
+        reason: EvaError,
+        replay_handlers: Vec<ReplayHandlerBinding>,
+        redrive: RedrivePolicy,
+    ) -> Result<DeadLetterRecord, EvaError> {
+        if replay_handlers.is_empty() {
+            return Err(EvaError::invalid_argument(
+                "dead-letter replay handler plan cannot be empty",
+            ));
+        }
+        self.dead_letter_store.push_with_handlers_and_redrive(
+            event,
+            reason,
+            replay_handlers,
+            redrive,
+        )
     }
 
     /// 更新指定死信的退避策略，并在修改内存视图前持久化。
@@ -150,6 +228,18 @@ impl DurableEventBus {
         let event = self.dead_letter_store.redrive_for_publish(event_id)?;
         self.publish(event)
     }
+
+    /// Redrives one dead letter while atomically retaining an explicit scheduler clock boundary.
+    pub fn redrive_dead_letter_at(
+        &mut self,
+        event_id: &EventId,
+        next_attempt_after_ms: u64,
+    ) -> Result<EventReceipt, EvaError> {
+        let event = self
+            .dead_letter_store
+            .redrive_for_publish_at(event_id, next_attempt_after_ms)?;
+        self.publish(event)
+    }
 }
 
 impl EventBus for DurableEventBus {
@@ -165,6 +255,18 @@ impl EventBus for DurableEventBus {
 
     /// 在持久日志中把事件标记为指定消费者已确认。
     fn ack(&mut self, event_id: &EventId, consumer: AgentId) -> Result<EventLogRecord, EvaError> {
+        if let Some(record) = self.event_log_record(event_id).cloned() {
+            if record.status == EventLogStatus::Acked {
+                if record.consumer.as_ref() == Some(&consumer) {
+                    return Ok(record);
+                }
+                return Err(EvaError::conflict(
+                    "acked event cannot be reassigned to another consumer",
+                )
+                .with_context("event_id", event_id.as_str())
+                .with_context("consumer", consumer.as_str()));
+            }
+        }
         self.log.ack(event_id, consumer)
     }
 
@@ -175,6 +277,13 @@ impl EventBus for DurableEventBus {
         consumer: AgentId,
         error: EvaError,
     ) -> Result<EventLogRecord, EvaError> {
+        if self.event_log_status(event_id) == Some(EventLogStatus::Acked) {
+            return Err(
+                EvaError::conflict("acked event cannot transition to failed")
+                    .with_context("event_id", event_id.as_str())
+                    .with_context("consumer", consumer.as_str()),
+            );
+        }
         self.log.fail(event_id, consumer, error)
     }
 }
@@ -182,17 +291,33 @@ impl EventBus for DurableEventBus {
 impl FileSystemDeadLetterStore {
     /// 从后端布局的标准死信目录以读写模式打开存储。
     pub fn open(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
-        Self::open_dir_with_mode(layout.event_dir.join(DEAD_LETTER_DIR), true)
+        Self::open_dir_with_mode(layout.event_dir.join(DEAD_LETTER_DIR), true, None)
+    }
+
+    /// 使用 runtime writer ownership 打开标准死信目录。
+    pub fn open_with_writer(
+        layout: &DurableBackendLayout,
+        writer: DurableWriterGuard,
+    ) -> Result<Self, EvaError> {
+        if writer.root() != layout.root {
+            return Err(EvaError::conflict(
+                "durable dead-letter writer belongs to a different backend root",
+            )
+            .with_context("layout_root", layout.root.display().to_string())
+            .with_context("writer_root", writer.root().display().to_string()));
+        }
+        writer.verify_current()?;
+        Self::open_dir_with_mode(layout.event_dir.join(DEAD_LETTER_DIR), true, Some(writer))
     }
 
     /// 从标准死信目录只读加载；目录不存在时返回空存储。
     pub fn open_read_only(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
-        Self::open_dir_with_mode(layout.event_dir.join(DEAD_LETTER_DIR), false)
+        Self::open_dir_with_mode(layout.event_dir.join(DEAD_LETTER_DIR), false, None)
     }
 
     /// 从显式目录以读写模式打开死信存储。
     pub fn open_dir(root: impl Into<PathBuf>) -> Result<Self, EvaError> {
-        Self::open_dir_with_mode(root, true)
+        Self::open_dir_with_mode(root, true, None)
     }
 
     /// 按模式处理目录存在性，加载、排序并验证所有记录。
@@ -202,6 +327,7 @@ impl FileSystemDeadLetterStore {
     fn open_dir_with_mode(
         root: impl Into<PathBuf>,
         create_if_missing: bool,
+        writer: Option<DurableWriterGuard>,
     ) -> Result<Self, EvaError> {
         let root = root.into();
         if root.exists() {
@@ -221,6 +347,7 @@ impl FileSystemDeadLetterStore {
             return Ok(Self {
                 root,
                 records: Vec::new(),
+                writer,
             });
         }
 
@@ -228,7 +355,11 @@ impl FileSystemDeadLetterStore {
         records.sort_by(|left, right| left.event_id().cmp(right.event_id()));
         validate_records(&records)?;
 
-        Ok(Self { root, records })
+        Ok(Self {
+            root,
+            records,
+            writer,
+        })
     }
 
     /// 返回当前已验证死信记录快照。
@@ -236,26 +367,79 @@ impl FileSystemDeadLetterStore {
         &self.records
     }
 
+    /// Reloads the complete authoritative record set without mutating a dead letter.
+    fn refresh(&mut self) -> Result<(), EvaError> {
+        if let Some(writer) = self.writer.clone() {
+            let _write_lock = acquire_dead_letter_write_lock(&self.root)?;
+            writer.verify_current()?;
+            let mut records = load_dead_letters(&self.root)?;
+            records.sort_by(|left, right| left.event_id().cmp(right.event_id()));
+            validate_records(&records)?;
+            self.records = records;
+            return Ok(());
+        }
+        if !self.root.exists() {
+            self.records.clear();
+            return Ok(());
+        }
+        let mut records = load_dead_letters(&self.root)?;
+        records.sort_by(|left, right| left.event_id().cmp(right.event_id()));
+        validate_records(&records)?;
+        self.records = records;
+        Ok(())
+    }
+
     /// 为新事件创建唯一死信记录，先持久化再更新内存索引。
     ///
     /// 重复事件标识被拒绝；磁盘写入失败时内存保持不变，避免同一进程看到并不存在
     /// 于持久层的死信。
     pub fn push(&mut self, event: Event, reason: EvaError) -> Result<DeadLetterRecord, EvaError> {
-        if self
-            .records
-            .iter()
-            .any(|record| record.event_id() == event.event_id())
-        {
-            return Err(EvaError::conflict("dead-letter event already exists")
-                .with_context("event_id", event.event_id().as_str()));
-        }
+        self.push_with_handlers(event, reason, Vec::new())
+    }
 
-        let record = DeadLetterRecord::new(event, reason);
-        self.persist(&record)?;
-        self.records.push(record.clone());
-        self.records
-            .sort_by(|left, right| left.event_id().cmp(right.event_id()));
-        Ok(record)
+    /// Creates one unique dead-letter record with explicit replay handler bindings.
+    pub fn push_with_handlers(
+        &mut self,
+        event: Event,
+        reason: EvaError,
+        replay_handlers: Vec<ReplayHandlerBinding>,
+    ) -> Result<DeadLetterRecord, EvaError> {
+        self.push_with_handlers_and_redrive(
+            event,
+            reason,
+            replay_handlers,
+            RedrivePolicy::default(),
+        )
+    }
+
+    /// Creates one record with binding and redrive state in the same atomic file replacement.
+    pub fn push_with_handlers_and_redrive(
+        &mut self,
+        event: Event,
+        reason: EvaError,
+        replay_handlers: Vec<ReplayHandlerBinding>,
+        redrive: RedrivePolicy,
+    ) -> Result<DeadLetterRecord, EvaError> {
+        self.with_write_transaction(move |root, records| {
+            if records
+                .iter()
+                .any(|record| record.event_id() == event.event_id())
+            {
+                return Err(EvaError::conflict("dead-letter event already exists")
+                    .with_context("event_id", event.event_id().as_str()));
+            }
+
+            let record = DeadLetterRecord::with_replay_handlers_and_redrive(
+                event,
+                reason,
+                replay_handlers,
+                redrive,
+            )?;
+            persist_dead_letter(root, &record)?;
+            records.push(record.clone());
+            records.sort_by(|left, right| left.event_id().cmp(right.event_id()));
+            Ok(record)
+        })
     }
 
     /// 更新指定记录的退避参数，先覆盖磁盘文件再替换内存副本。
@@ -264,28 +448,30 @@ impl FileSystemDeadLetterStore {
         event_id: &EventId,
         redrive: RedrivePolicy,
     ) -> Result<DeadLetterRecord, EvaError> {
-        let index = self
-            .records
-            .iter()
-            .position(|record| record.event_id() == event_id)
-            .ok_or_else(|| {
-                EvaError::not_found("dead-letter event does not exist")
-                    .with_context("event_id", event_id.as_str())
-            })?;
-        let mut record = self.records[index].clone();
-        record.redrive = redrive;
-        self.persist(&record)?;
-        self.records[index] = record.clone();
-        Ok(record)
+        self.with_write_transaction(|root, records| {
+            let index = records
+                .iter()
+                .position(|record| record.event_id() == event_id)
+                .ok_or_else(|| {
+                    EvaError::not_found("dead-letter event does not exist")
+                        .with_context("event_id", event_id.as_str())
+                })?;
+            let mut record = records[index].clone();
+            record.redrive = redrive;
+            persist_dead_letter(root, &record)?;
+            records[index] = record.clone();
+            Ok(record)
+        })
     }
 
     /// 以稳定的当前记录列表为基准，为每个死信准备一次重驱。
     pub fn replay_all_for_publish(&mut self) -> Result<Vec<Event>, EvaError> {
-        let event_ids = self
-            .records
-            .iter()
-            .map(|record| record.event_id().clone())
-            .collect::<Vec<_>>();
+        let event_ids = self.with_write_transaction(|_, records| {
+            Ok(records
+                .iter()
+                .map(|record| record.event_id().clone())
+                .collect::<Vec<_>>())
+        })?;
         event_ids
             .iter()
             .map(|event_id| self.redrive_for_publish(event_id))
@@ -298,47 +484,93 @@ impl FileSystemDeadLetterStore {
     /// 重试不会复用相同事件 id，牺牲“仅成功才计数”以换取幂等标识和崩溃可恢复性。
     /// 退避乘法使用饱和计算，极端计数不会整数溢出回绕为过早重试。
     pub fn redrive_for_publish(&mut self, event_id: &EventId) -> Result<Event, EvaError> {
-        let index = self
-            .records
-            .iter()
-            .position(|record| record.event_id() == event_id)
-            .ok_or_else(|| {
-                EvaError::not_found("dead-letter event does not exist")
-                    .with_context("event_id", event_id.as_str())
-            })?;
-        let mut record = self.records[index].clone();
-        record.replay_count += 1;
-        record.redrive.next_attempt_after_ms = record
-            .redrive
-            .retry_delay_ms
-            .saturating_mul(record.replay_count as u64);
-        let event = replay_event_for_publish(&record)?;
-        self.persist(&record)?;
-        self.records[index] = record;
-        Ok(event)
-    }
-
-    /// 将事件标识十六进制编码为不会逃逸目录的记录路径。
-    fn record_path(&self, event_id: &EventId) -> PathBuf {
-        self.root.join(format!(
-            "{}.{}",
-            encode_path_segment(event_id.as_str()),
-            DEAD_LETTER_EXTENSION
-        ))
-    }
-
-    /// 以当前 v1 行式格式覆盖写入一条死信记录。
-    ///
-    /// 单文件写入不使用临时文件或 fsync，不承诺崩溃原子性；读取端会严格解析并在
-    /// 截断/损坏时拒绝打开，调用方必须把写入错误视为未提交。
-    fn persist(&self, record: &DeadLetterRecord) -> Result<(), EvaError> {
-        let path = self.record_path(record.event_id());
-        fs::write(&path, dead_letter_to_storage(record)).map_err(|error| {
-            EvaError::internal("failed to write durable dead-letter record")
-                .with_context("path", path.display().to_string())
-                .with_context("io_error", error.to_string())
+        self.redrive_for_publish_with_next(event_id, |record| {
+            record
+                .redrive
+                .retry_delay_ms
+                .saturating_mul(record.replay_count as u64)
         })
     }
+
+    /// Increments replay identity while atomically retaining an absolute scheduler boundary.
+    pub fn redrive_for_publish_at(
+        &mut self,
+        event_id: &EventId,
+        next_attempt_after_ms: u64,
+    ) -> Result<Event, EvaError> {
+        self.redrive_for_publish_with_next(event_id, |_| next_attempt_after_ms)
+    }
+
+    fn redrive_for_publish_with_next(
+        &mut self,
+        event_id: &EventId,
+        next_attempt_after_ms: impl FnOnce(&DeadLetterRecord) -> u64,
+    ) -> Result<Event, EvaError> {
+        self.with_write_transaction(|root, records| {
+            let index = records
+                .iter()
+                .position(|record| record.event_id() == event_id)
+                .ok_or_else(|| {
+                    EvaError::not_found("dead-letter event does not exist")
+                        .with_context("event_id", event_id.as_str())
+                })?;
+            let mut record = records[index].clone();
+            record.replay_count += 1;
+            record.redrive.next_attempt_after_ms = next_attempt_after_ms(&record);
+            let event = replay_event_for_publish(&record)?;
+            persist_dead_letter(root, &record)?;
+            records[index] = record;
+            Ok(event)
+        })
+    }
+
+    /// 在 runtime writer 串行区内刷新权威磁盘视图，再执行一次 read-modify-write。
+    fn with_write_transaction<T>(
+        &mut self,
+        operation: impl FnOnce(&Path, &mut Vec<DeadLetterRecord>) -> Result<T, EvaError>,
+    ) -> Result<T, EvaError> {
+        let Some(writer) = self.writer.clone() else {
+            return operation(&self.root, &mut self.records);
+        };
+        let _write_lock = acquire_dead_letter_write_lock(&self.root)?;
+        writer.verify_current()?;
+        let mut records = load_dead_letters(&self.root)?;
+        records.sort_by(|left, right| left.event_id().cmp(right.event_id()));
+        validate_records(&records)?;
+        let result = operation(&self.root, &mut records)?;
+        self.records = records;
+        Ok(result)
+    }
+}
+
+/// 获取进程内死信写锁；跨进程排他由 `DurableWriterGuard` 的 OS ownership 保证。
+fn acquire_dead_letter_write_lock(root: &Path) -> Result<MutexGuard<'static, ()>, EvaError> {
+    DEAD_LETTER_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| {
+            EvaError::internal("durable dead-letter process lock is poisoned")
+                .with_context("path", root.display().to_string())
+        })
+}
+
+/// 将事件标识十六进制编码为不会逃逸目录的记录路径。
+fn dead_letter_record_path(root: &Path, event_id: &EventId) -> PathBuf {
+    root.join(format!(
+        "{}.{}",
+        encode_path_segment(event_id.as_str()),
+        DEAD_LETTER_EXTENSION
+    ))
+}
+
+/// 以同目录临时文件、同步和原子替换提交一条 v1 死信记录。
+fn persist_dead_letter(root: &Path, record: &DeadLetterRecord) -> Result<(), EvaError> {
+    let path = dead_letter_record_path(root, record.event_id());
+    atomic_write(&path, dead_letter_to_storage(record).as_bytes()).map_err(|error| {
+        EvaError::internal("failed to atomically write durable dead-letter record")
+            .with_context("path", path.display().to_string())
+            .with_context("io_error", error.to_string())
+    })
 }
 
 /// 从原死信创建保留请求/代际/关联链的重驱子事件。
@@ -351,14 +583,25 @@ fn replay_event_for_publish(record: &DeadLetterRecord) -> Result<Event, EvaError
         record.event.event_id().as_str(),
         record.replay_count
     ))?;
-    Ok(record
+    let child_trace = record
         .event
-        .child_event(
-            replay_id,
-            record.event.topic().clone(),
-            record.event.payload().clone(),
-        )
-        .with_target(record.event.target().clone()))
+        .metadata()
+        .trace()
+        .child_of(record.event.event_id().clone());
+    let mut metadata = EventMetadata::new().with_trace(child_trace);
+    if let Some(request_id) = record.event.metadata().request_id() {
+        metadata = metadata.with_request_id(request_id.clone());
+    }
+    if let Some(generation_id) = record.event.metadata().generation_id() {
+        metadata = metadata.with_generation_id(generation_id.clone());
+    }
+    Ok(Event::new(
+        replay_id,
+        record.event.topic().clone(),
+        record.event.payload().clone(),
+    )
+    .with_target(record.event.target().clone())
+    .with_metadata(metadata))
 }
 
 /// 读取所有 `.dead` 文件并严格解析，忽略其他目录内容。
@@ -422,6 +665,23 @@ fn dead_letter_to_storage(record: &DeadLetterRecord) -> String {
         "next_attempt_after_ms",
         &record.redrive.next_attempt_after_ms.to_string(),
     );
+    push_field(
+        &mut data,
+        "replay_handler_count",
+        &record.replay_handlers.len().to_string(),
+    );
+    for (index, binding) in record.replay_handlers.iter().enumerate() {
+        push_encoded_string(
+            &mut data,
+            &format!("replay_handler_{index}_kind"),
+            binding.handler_kind(),
+        );
+        push_encoded_string(
+            &mut data,
+            &format!("replay_handler_{index}_agent_id"),
+            binding.agent_id().as_str(),
+        );
+    }
     data
 }
 
@@ -445,16 +705,33 @@ fn dead_letter_from_storage(data: &str) -> Result<DeadLetterRecord, EvaError> {
     let replay_count = parse_usize(require_field(&fields, "replay_count")?, "replay_count")?;
     let retry_delay_ms = optional_u64(&fields, "retry_delay_ms")?.unwrap_or(0);
     let next_attempt_after_ms = optional_u64(&fields, "next_attempt_after_ms")?.unwrap_or(0);
+    let replay_handler_count = optional_usize(&fields, "replay_handler_count")?.unwrap_or(0);
+    if replay_handler_count > MAX_REPLAY_HANDLERS {
+        return Err(EvaError::conflict(
+            "dead-letter replay handler count exceeds scheduler route limit",
+        )
+        .with_context("replay_handler_count", replay_handler_count.to_string())
+        .with_context("max_replay_handlers", MAX_REPLAY_HANDLERS.to_string()));
+    }
+    let replay_handlers = (0..replay_handler_count)
+        .map(|index| {
+            let handler_kind =
+                decoded_required_string(&fields, &format!("replay_handler_{index}_kind"))?;
+            let agent_id = AgentId::parse(&decoded_required_string(
+                &fields,
+                &format!("replay_handler_{index}_agent_id"),
+            )?)?;
+            ReplayHandlerBinding::new(handler_kind, agent_id)
+        })
+        .collect::<Result<Vec<_>, EvaError>>()?;
 
-    Ok(DeadLetterRecord {
-        event,
-        reason,
-        replay_count,
-        redrive: RedrivePolicy {
-            retry_delay_ms,
-            next_attempt_after_ms,
-        },
-    })
+    let mut record = DeadLetterRecord::with_replay_handlers(event, reason, replay_handlers)?;
+    record.replay_count = replay_count;
+    record.redrive = RedrivePolicy {
+        retry_delay_ms,
+        next_attempt_after_ms,
+    };
+    Ok(record)
 }
 
 /// 将事件标识、路由目标、载荷、元数据和可选错误编码到字段缓冲区。
@@ -751,6 +1028,13 @@ fn optional_u64(fields: &BTreeMap<String, String>, key: &str) -> Result<Option<u
     }
 }
 
+fn optional_usize(fields: &BTreeMap<String, String>, key: &str) -> Result<Option<usize>, EvaError> {
+    match fields.get(key).map(String::as_str) {
+        Some(value) if !value.is_empty() => parse_usize(value, key).map(Some),
+        _ => Ok(None),
+    }
+}
+
 /// 解析平台宽度的非负计数字段。
 fn parse_usize(value: &str, field: &str) -> Result<usize, EvaError> {
     value.parse::<usize>().map_err(|_| {
@@ -991,6 +1275,96 @@ mod tests {
     }
 
     #[test]
+    /// 验证 replay handler binding 与事件身份元数据跨重开和重驱完整保留。
+    fn replay_handler_bindings_and_event_identity_survive_reopen() {
+        let root = test_root("handler-binding");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let event = traced_event("evt-bound");
+            bus.publish(event.clone()).unwrap();
+            bus.dead_letter_for_handlers(
+                event,
+                EvaError::timeout("handler timeout"),
+                vec![
+                    ReplayHandlerBinding::new("runtime.echo", AgentId::parse("agent-a").unwrap())
+                        .unwrap(),
+                ],
+            )
+            .unwrap();
+        }
+
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+        assert_eq!(bus.dead_letters()[0].replay_handlers.len(), 1);
+        assert_eq!(
+            bus.dead_letters()[0].replay_handlers[0].handler_kind(),
+            "runtime.echo"
+        );
+        assert_eq!(
+            bus.dead_letters()[0].replay_handlers[0].agent_id().as_str(),
+            "agent-a"
+        );
+
+        let receipt = bus
+            .redrive_dead_letter(&EventId::parse("evt-bound").unwrap())
+            .unwrap();
+        let replay = bus.event_log_record(&receipt.event_id).unwrap();
+        assert_eq!(
+            replay.event.metadata().request_id().map(RequestId::as_str),
+            Some("req-1")
+        );
+        assert_eq!(
+            replay
+                .event
+                .metadata()
+                .generation_id()
+                .map(GenerationId::as_str),
+            Some("gen-1")
+        );
+        assert_eq!(
+            replay
+                .event
+                .metadata()
+                .trace()
+                .causation_id()
+                .map(EventId::as_str),
+            Some("evt-bound")
+        );
+    }
+
+    #[test]
+    /// 验证已 ACK replay 不允许后续 fail 降级，重复 ACK 保持幂等。
+    fn durable_replay_completion_is_monotonic() {
+        let root = test_root("monotonic-completion");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+        let event = event("evt-monotonic");
+        bus.publish(event.clone()).unwrap();
+        let consumer = AgentId::parse("agent-a").unwrap();
+
+        let first = bus.ack(event.event_id(), consumer.clone()).unwrap();
+        let second = bus.ack(event.event_id(), consumer).unwrap();
+        assert_eq!(first, second);
+        let error = bus
+            .fail(
+                event.event_id(),
+                AgentId::parse("agent-b").unwrap(),
+                EvaError::timeout("late failure"),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Conflict);
+        assert_eq!(
+            bus.event_log_status(event.event_id()),
+            Some(eva_storage::EventLogStatus::Acked)
+        );
+    }
+
+    #[test]
     /// 验证按退避时间查询到期死信及最近重驱状态。
     fn due_dead_letters_and_latest_replay_status_are_queryable() {
         let root = test_root("due-redrive-query");
@@ -1031,6 +1405,122 @@ mod tests {
             bus.event_log_status(&receipt.event_id),
             Some(eva_storage::EventLogStatus::Acked)
         );
+    }
+
+    #[test]
+    fn scheduler_redrive_preserves_absolute_retry_clock_atomically() {
+        let root = test_root("absolute-redrive-clock");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut bus = DurableEventBus::open_with_writer(backend.layout(), writer).unwrap();
+        let original = event("evt-absolute-redrive-clock");
+        bus.publish(original.clone()).unwrap();
+        bus.dead_letter_for_handlers_with_redrive(
+            original.clone(),
+            EvaError::timeout("handler timeout"),
+            vec![
+                ReplayHandlerBinding::new("runtime.echo", AgentId::parse("root-agent").unwrap())
+                    .unwrap(),
+            ],
+            RedrivePolicy {
+                retry_delay_ms: 1_000,
+                next_attempt_after_ms: 9_000,
+            },
+        )
+        .unwrap();
+
+        let receipt = bus
+            .redrive_dead_letter_at(original.event_id(), 1_700_000_000_000)
+            .unwrap();
+        assert_eq!(
+            receipt.event_id.as_str(),
+            "evt-absolute-redrive-clock:replay-1"
+        );
+        assert_eq!(bus.dead_letters()[0].replay_count, 1);
+        assert_eq!(
+            bus.dead_letters()[0].redrive.next_attempt_after_ms,
+            1_700_000_000_000
+        );
+    }
+
+    #[test]
+    /// 验证共享 writer 的陈旧 store 会在每次提交前重载，避免覆盖策略或 replay 计数。
+    fn writer_bound_stale_stores_preserve_authoritative_redrive_state() {
+        let root = test_root("stale-writer-stores");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut first =
+            FileSystemDeadLetterStore::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut second =
+            FileSystemDeadLetterStore::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let original = event("evt-stale");
+
+        first
+            .push(original.clone(), EvaError::timeout("handler timeout"))
+            .unwrap();
+        second
+            .set_redrive_policy(
+                original.event_id(),
+                RedrivePolicy {
+                    retry_delay_ms: 250,
+                    next_attempt_after_ms: 250,
+                },
+            )
+            .unwrap();
+
+        let first_replay = first.redrive_for_publish(original.event_id()).unwrap();
+        let second_replay = second.redrive_for_publish(original.event_id()).unwrap();
+        assert_eq!(first_replay.event_id().as_str(), "evt-stale:replay-1");
+        assert_eq!(second_replay.event_id().as_str(), "evt-stale:replay-2");
+
+        let reopened = FileSystemDeadLetterStore::open_read_only(backend.layout()).unwrap();
+        assert_eq!(reopened.records().len(), 1);
+        assert_eq!(reopened.records()[0].replay_count, 2);
+        assert_eq!(reopened.records()[0].redrive.retry_delay_ms, 250);
+        assert_eq!(reopened.records()[0].redrive.next_attempt_after_ms, 500);
+    }
+
+    #[test]
+    /// 验证原子替换前遗留的临时文件不会破坏已提交记录，重开仍得到完整状态。
+    fn atomic_dead_letter_replace_survives_interrupted_temp_file_reopen() {
+        let root = test_root("atomic-reopen");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemDeadLetterStore::open_with_writer(backend.layout(), writer).unwrap();
+        let original = event("evt-atomic");
+        store
+            .push(original.clone(), EvaError::timeout("handler timeout"))
+            .unwrap();
+        store
+            .set_redrive_policy(
+                original.event_id(),
+                RedrivePolicy {
+                    retry_delay_ms: 100,
+                    next_attempt_after_ms: 100,
+                },
+            )
+            .unwrap();
+        store.redrive_for_publish(original.event_id()).unwrap();
+
+        let canonical = dead_letter_record_path(&store.root, original.event_id());
+        let interrupted_temp = canonical.with_file_name(format!(
+            ".{}.tmp-interrupted",
+            canonical.file_name().unwrap().to_string_lossy()
+        ));
+        fs::write(&interrupted_temp, b"truncated uncommitted replacement").unwrap();
+        drop(store);
+
+        let reopened = FileSystemDeadLetterStore::open_read_only(backend.layout()).unwrap();
+        assert_eq!(reopened.records().len(), 1);
+        assert_eq!(reopened.records()[0].event_id().as_str(), "evt-atomic");
+        assert_eq!(reopened.records()[0].replay_count, 1);
+        assert_eq!(reopened.records()[0].redrive.retry_delay_ms, 100);
+        assert_eq!(reopened.records()[0].redrive.next_attempt_after_ms, 100);
+        assert!(interrupted_temp.exists());
     }
 
     #[test]

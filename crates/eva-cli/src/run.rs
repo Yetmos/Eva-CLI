@@ -2076,7 +2076,7 @@ mod tests {
         assert!(cancel_stderr.is_empty());
         let task_state =
             fs::read_to_string(durable.join("tasks").join("req-daemon-cli-task.task")).unwrap();
-        assert!(task_state.starts_with("format=eva.task-state.v4\n"));
+        assert!(task_state.starts_with("format=eva.task-state.v5\n"));
         assert!(task_state.contains("envelope_kind=runtime.echo"));
         assert!(task_state.contains("envelope_agent_id=root-agent"));
         assert!(task_state.contains("envelope_input_kind=inline"));

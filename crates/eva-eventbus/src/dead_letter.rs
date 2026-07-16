@@ -1,7 +1,17 @@
 //! 中文：无法正常投递事件的死信记录、重驱策略和内存队列。
 //! Dead-letter records for events that cannot be delivered.
 
-use eva_core::{EvaError, Event, EventId};
+use eva_core::{AgentId, EvaError, Event, EventId};
+
+const MAX_REPLAY_HANDLER_KIND_BYTES: usize = 128;
+pub(crate) const MAX_REPLAY_HANDLERS: usize = 32;
+
+/// A durable binding from one replay delivery owner to its registered handler kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayHandlerBinding {
+    handler_kind: String,
+    agent_id: AgentId,
+}
 
 /// 中文：本模块负责保留失败事件、结构化原因和可重放状态。
 /// Architectural responsibility for this module.
@@ -19,6 +29,8 @@ pub struct DeadLetterRecord {
     pub replay_count: usize,
     /// 中文：后续自动或人工重驱使用的时间策略。
     pub redrive: RedrivePolicy,
+    /// Ordered handler owners frozen when the event enters the dead-letter path.
+    pub replay_handlers: Vec<ReplayHandlerBinding>,
 }
 
 /// 中文：持久化死信记录使用的重驱时间元数据。
@@ -47,12 +59,66 @@ impl DeadLetterRecord {
             reason,
             replay_count: 0,
             redrive: RedrivePolicy::default(),
+            replay_handlers: Vec::new(),
         }
+    }
+
+    /// Creates a record with an explicit ordered replay-handler plan.
+    pub fn with_replay_handlers(
+        event: Event,
+        reason: EvaError,
+        replay_handlers: Vec<ReplayHandlerBinding>,
+    ) -> Result<Self, EvaError> {
+        Self::with_replay_handlers_and_redrive(
+            event,
+            reason,
+            replay_handlers,
+            RedrivePolicy::default(),
+        )
+    }
+
+    /// Creates a record with handler bindings and its first absolute retry boundary.
+    pub fn with_replay_handlers_and_redrive(
+        event: Event,
+        reason: EvaError,
+        replay_handlers: Vec<ReplayHandlerBinding>,
+        redrive: RedrivePolicy,
+    ) -> Result<Self, EvaError> {
+        validate_replay_handlers(&replay_handlers)?;
+        Ok(Self {
+            event,
+            reason,
+            replay_count: 0,
+            redrive,
+            replay_handlers,
+        })
     }
 
     /// 中文：返回原始事件标识，供查询和定向重驱使用。
     pub fn event_id(&self) -> &EventId {
         self.event.event_id()
+    }
+}
+
+impl ReplayHandlerBinding {
+    /// Creates a binding without consulting a runtime registry.
+    pub fn new(handler_kind: impl Into<String>, agent_id: AgentId) -> Result<Self, EvaError> {
+        let handler_kind = handler_kind.into();
+        validate_handler_kind(&handler_kind)?;
+        Ok(Self {
+            handler_kind,
+            agent_id,
+        })
+    }
+
+    /// Returns the stable dotted registry key.
+    pub fn handler_kind(&self) -> &str {
+        &self.handler_kind
+    }
+
+    /// Returns the Agent that owns this exact replay delivery.
+    pub fn agent_id(&self) -> &AgentId {
+        &self.agent_id
     }
 }
 
@@ -67,6 +133,18 @@ impl DeadLetterQueue {
         let record = DeadLetterRecord::new(event, reason);
         self.records.push(record.clone());
         record
+    }
+
+    /// Appends a record with an explicit ordered replay-handler plan.
+    pub fn push_with_handlers(
+        &mut self,
+        event: Event,
+        reason: EvaError,
+        replay_handlers: Vec<ReplayHandlerBinding>,
+    ) -> Result<DeadLetterRecord, EvaError> {
+        let record = DeadLetterRecord::with_replay_handlers(event, reason, replay_handlers)?;
+        self.records.push(record.clone());
+        Ok(record)
     }
 
     /// 中文：返回所有死信记录的只读切片。
@@ -131,6 +209,42 @@ impl DeadLetterQueue {
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
+}
+
+fn validate_replay_handlers(bindings: &[ReplayHandlerBinding]) -> Result<(), EvaError> {
+    if bindings.len() > MAX_REPLAY_HANDLERS {
+        return Err(EvaError::invalid_argument(
+            "dead-letter replay handler count exceeds scheduler route limit",
+        )
+        .with_context("replay_handler_count", bindings.len().to_string())
+        .with_context("max_replay_handlers", MAX_REPLAY_HANDLERS.to_string()));
+    }
+    for binding in bindings {
+        validate_handler_kind(binding.handler_kind())?;
+    }
+    Ok(())
+}
+
+fn validate_handler_kind(value: &str) -> Result<(), EvaError> {
+    if value.is_empty() || value.trim() != value || value.len() > MAX_REPLAY_HANDLER_KIND_BYTES {
+        return Err(
+            EvaError::invalid_argument("replay handler kind must be a stable dotted name")
+                .with_context("handler_kind", value),
+        );
+    }
+    for segment in value.split('.') {
+        if segment.is_empty()
+            || !segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(EvaError::invalid_argument(
+                "replay handler kind contains an invalid segment",
+            )
+            .with_context("handler_kind", value));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # eva-runtime / 运行时组合根
 
-更新时间：2026-07-16
+更新时间：2026-07-17
 
 `eva-runtime` 是 Eva-CLI 的 composition root。下层 crate 不反向依赖 runtime；跨模块服务装配、运行闭环、V0.5 任务诊断和 V1.0 core 发布标识都由本 crate 统一组合。
 
@@ -21,6 +21,7 @@
 | W1-L05 | task handler registry | `TaskHandlerRegistry` 以稳定 kind 注册同步 handler；dispatch 在调用前重验 inline/artifact 原始字节与摘要，unknown kind 固定失败且不访问 artifact，默认只注册无副作用 `runtime.echo`，`legacy.submit` 不可执行。 |
 | W1-L06 | durable task worker | `TaskWorkerRuntime` 在 ready gate 后扫描 queued task，以 task-state v4 CAS 绑定 daemon owner、attempt、deadline 和 cancel token，再调用 registry 并 fenced 提交 completed/failed/timed_out/cancelled；双 worker 竞争只有一个 handler 调用，shutdown 在发布 stopped 前先关闭 claim。 |
 | W1-L07 | heartbeat and liveness | worker 为每个同步 handler attempt 启动可唤醒 heartbeat loop，每次续租都复验 writer generation、owner、attempt 和 cancel token；task/daemon status 从同一 lease 证据派生 live/degraded/stale 与 heartbeat age，ownerless running 记录保守视为 stale。 |
+| W1-L08 | owned replay delivery | scheduler retry 只把有持久 binding 的 replay 交给 daemon-owned worker；每个 delivery 复用正常 claim/heartbeat/finish fence，全部 handler 成功后才 ACK，Pending/Failed 和 backoff 跨重开继续。 |
 | V1.13.5 | provider execution recovery | daemon start 扫描 durable provider process table 和 task store；残留 active provider session 标记为 `interrupted`，关联 task 保留为 interrupted/recovering，只有显式 retryable restart policy 才生成 scheduler backoff 证据。 |
 | V1.15.4 | hardware hotplug subscriber | daemon start 运行 manifest snapshot hotplug subscriber，把逻辑设备状态写入 durable EventBus 和 `hardware-hotplug.state`，并在 report 中输出 `raw_handles_exposed:false`。 |
 | V1.15.6 | memory/knowledge maintenance smoke | daemon start 对 durable memory/knowledge store 执行一次 `index.lock` 保护的 TTL GC 和 knowledge rebuild checkpoint，输出 `memory_maintenance` report，并写 `memory.maintenance` audit。 |
@@ -44,7 +45,7 @@
 ## 公开入口
 
 ```rust
-use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, RuntimeBuilder, TaskEnvelope, TaskHandlerRegistry, TaskReport, TaskWorkerRuntime};
+use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, OwnedReplayDeliveryStatus, OwnedReplayHandler, RuntimeBuilder, TaskEnvelope, TaskHandlerRegistry, TaskReport, TaskWorkerRuntime};
 ```
 
 关键类型：
@@ -57,7 +58,9 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 | `BasicRunReport` | CLI `run` 的完整机器可读报告。 |
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
 | `TaskHandlerRegistry` | daemon-owned task kind→handler 映射；只在 payload 完整性重验和 handler 成功后返回 `TaskHandlerResult`，worker lifecycle/CAS 由 W1-L06 承接。 |
-| `TaskWorkerRuntime` | daemon-owned 单 worker 线程；ready 前暂停 claim，运行中周期续租 fenced heartbeat、把 durable cancel 传播为只读 view、隔离 handler panic，并在 daemon lease 释放前 stop/join。 |
+| `TaskWorkerRuntime` | daemon-owned 单 worker 线程；ready 前暂停 claim，运行中周期续租 fenced heartbeat、把 durable cancel 传播为只读 view、隔离 handler panic，并在 daemon lease 释放前 stop/join；同时以确定性 task 承接 scheduler replay delivery。 |
+| `OwnedReplayHandler` | scheduler 与执行层之间的 owner 协议；返回 Pending/Succeeded/Failed 持久状态，不允许 scheduler 以内联调用替代 worker fence。 |
+| `OwnedReplayDeliveryStatus` | 一个 binding 对应的 durable delivery 结果；只有 Succeeded 可推进最终 ACK，Failed 可携带是否已安排重试。 |
 | `RuntimeRecoveryCoordinator` | V1.6.4/V1.13.5 recovery coordinator；读取 task snapshots 和 provider process snapshots，持久化 interrupted/recovering 状态，可通过 durable EventBus 执行受控 redrive checkpoint，并可记录 `runtime.recovered` audit。 |
 | `DaemonStartOptions` | V1.12.1 daemon foreground/dev smoke 的 durable backend、state、lock、pid 和 observability 路径配置。 |
 | `DaemonMemoryMaintenanceReport` | V1.15.6 daemon start 中 memory TTL GC 与 knowledge rebuild checkpoint 的维护证据。 |
@@ -73,6 +76,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 - control operation 覆盖 status、shutdown、submit task、cancel task、drain 和 reload plan；status/shutdown 作用于前台 daemon，submit/cancel 写 durable task lifecycle store，drain/reload 会写入 `agent-control.state`，记录 drain gate、reload generation route 和旧 generation draining 状态。
 - submit v2 请求必须携带完整 TaskEnvelope；envelope 是唯一 submit Agent 身份，daemon 会拒绝通用 control Agent 分叉并再次确认 Agent 当前存在且 enabled。reader 在读取前拒绝 symlink/directory 等非普通 request；损坏摘要、Agent 分叉、未知/disabled Agent 等 poison request 会先改名移出 pending，再通过同步临时摘要、安全删除原目录项和发布 rejected marker 的顺序隔离，不会把原 inline payload 搬入 rejected 记录，也不会结束 control loop。
 - 长驻 daemon 在 ready 前创建暂停的 task worker，ready 后才允许 queued→running claim；claim/heartbeat/finish/cancel 在最新 record version 上合并，terminal outcome 元数据不可由普通 CAS 改写，CLI status 输出 owner、freshness、heartbeat age 和 result 摘要但不输出 cancel token。
+- scheduler retry 与 task failure bus 使用同一 runtime writer：生产 task 失败先落稳定 failure event 和带 handler binding/backoff 的 dead letter，再 checkpoint task summary；scheduler 只在 binding 对应的 worker task 成功后 ACK replay，重启继续同一 replay ID。
 - `send_daemon_control_request` 只有在 running state、版本化 PID projection、fresh active lease 与 live OS-lock owner 完整一致时才可用，避免 stale state、PID reuse 或 stopped smoke 被误读成 live daemon；status 的 text/JSON lease 同时报告 live/degraded/stale 与 heartbeat age，unavailable 错误保留 stale freshness context。
 - JSON/report 中固定输出 `provider_processes_started:false`，避免把边界 smoke 误读成 provider supervision。
 - JSON/report 中新增 `recovery` 对象，包含 scanned/recovered task、provider process、backoff 和 skipped evidence。
@@ -105,6 +109,16 @@ task-only 入口只负责确定性状态修复：
 restart redrive 和 corrupt task store，`release check` 暴露
 `REL-DURABLE-RECOVERY-001`。
 
+## W1-L08 Owned Replay Delivery
+
+replay 的持久身份、调度与执行分别由三个边界负责：
+
+- `eva-eventbus` 保存原 dead letter、有序 handler binding、首次绝对 backoff、replay event log 和单调 ACK/Failed 状态；无 binding 的旧记录保持可读但不能被自动 ACK。
+- `eva-runtime::scheduler_retry` 只协调 due record 与 `OwnedReplayHandler`，复用既有 Appended/Failed replay ID；fan-out 按冻结顺序检查每个 delivery，仅在全部 Succeeded 后 ACK 一次。
+- `TaskWorkerRuntime` 把每个 binding 映射为确定性 task-state v5 replay delivery，仍走正常 claim、heartbeat、deadline、cancel 和 finish fence；retryable failure 由 storage 先持久化绝对到期时间，到期后才重排。
+
+生产 task 的 failure evidence 使用 event → 原子 dead-letter(binding + backoff) → task summary CAS 的顺序。任一中间崩溃都可从 terminal intent 补齐；竞争 worker 对重复提交刷新权威视图并核对身份，不会提前 retry、重复 dead letter 或把合法竞争当成 fatal health failure。
+
 ## V1.13.5 Provider Execution Recovery
 
 `RuntimeRecoveryCoordinator::recover_task_store_with_provider_processes()` 同时读取
@@ -120,7 +134,7 @@ restart redrive 和 corrupt task store，`release check` 暴露
 
 - 当前 daemon 路径提供本机 filesystem mailbox 控制面、前台 loop、scheduler retry tick、agent drain/reload state、provider execution-state recovery、manifest snapshot hotplug subscriber、一次性 memory/knowledge maintenance 和 best-effort observability wiring；不提供生产后台 service-manager 集成、远程网络监听、OS provider process supervisor、真实 OS hotplug watcher、长驻 memory scheduler、生产级 OTel/数据库 sink 或完整 scheduler apply。
 - recovery checkpoint 已恢复 task/event/audit evidence 和 durable provider process snapshots，但不会重启或杀死真实 OS provider 进程；CLI 仍会把最近一次 basic task report 写入 `.eva/tasks` 供后续命令读取。
-- W1-L07 worker 只保证当前 live writer 下的 fenced heartbeat 与竞争 worker 不重复 claim；启动 recovery 仍会把跨 generation 的旧 queued/running/cancelling 快照保守标记为 interrupted/recovering。retry/ACK、effect ledger、基于 stale/effect 的 crash backlog 重排和有 deadline 的 shutdown drain 分别留给 W1-L08 至 W1-L11。
+- W1-L08 已保证绑定 replay 的 handler-success-only ACK、失败续跑和 replay delivery 跨 generation 重排；一般生产 task 的副作用去重、基于 effect ledger 的 crash 决策与有 deadline 的 shutdown drain 仍分别由 W1-L09 至 W1-L11 承接。
 - Lua 执行已使用受限真实 VM，并具备 host binding、资源限制和 generation lifecycle；当前 daemon reload 记录 generation route/drain 状态，但不等同于生产级进程内 VM 热替换。
 - Adapter、MCP、Discovery、Memory、Hardware、Backup 和 Lifecycle 已有受控 1.x 实现并由 CLI/runtime 按场景组合；真实 OS provider supervision、raw hardware I/O 和生产 service-manager handoff 仍在边界之外。
 
@@ -134,4 +148,4 @@ cargo run -- run --example basic --output json
 cargo run -- run --example basic --timeout-ms 0 --replay-dead-letters --output json
 ```
 
-已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit、corrupt-store smoke、V1.13.5 provider interrupted/backoff recovery、daemon start provider recovery smoke、V1.15.4 hotplug subscriber state 重启一致性、V1.15.6 memory/knowledge maintenance smoke、V1.16.1 daemon control/task/scheduler retry observability smoke，以及 W1-L02 mailbox v1/v2、TaskEnvelope 停机重开、poison request 隔离、W1-L06 双 worker claim/ready gate/panic/timeout/cancel 终态/shutdown claim gate/真实 daemon echo 执行，以及 W1-L07 heartbeat 与 cancel/finish CAS 竞争、活 worker 续租、竞争 worker 不抢占、freshness 阈值和 CLI live/stale/not-applicable 输出。
+已覆盖：V0.3 no-op summary、幂等 shutdown、V0.5/V1.0 builder summary、basic 成功路径、missing route 错误路径、cancelled task、timeout task、dead-letter replay 报告，以及 V1.6.4 recovery scanner、event redrive checkpoint、recovery audit、corrupt-store smoke、V1.13.5 provider interrupted/backoff recovery、daemon start provider recovery smoke、V1.15.4 hotplug subscriber state 重启一致性、V1.15.6 memory/knowledge maintenance smoke、V1.16.1 daemon control/task/scheduler retry observability smoke，以及 W1-L02 mailbox v1/v2、TaskEnvelope 停机重开、poison request 隔离、W1-L06 双 worker claim/ready gate/panic/timeout/cancel 终态/shutdown claim gate/真实 daemon echo 执行、W1-L07 heartbeat 与 cancel/finish CAS 竞争、活 worker 续租、竞争 worker 不抢占、freshness 阈值和 CLI live/stale/not-applicable 输出，以及 W1-L08 无 binding 不 ACK、handler 失败重开续跑、Appended replay 恢复、fan-out 只重试失败项、持久 backoff、跨 generation delivery 恢复和并发 failure-intent 补偿。

@@ -5,7 +5,7 @@
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "durable event log interfaces and replay boundaries";
 
-use crate::DurableBackendLayout;
+use crate::{atomic_write, DurableBackendLayout, DurableWriterGuard};
 use eva_core::{
     AdapterId, AgentId, CapabilityName, ErrorKind, EvaError, Event, EventId, EventMetadata,
     EventPayload, EventTarget, GenerationId, RequestId, Topic, TraceContext,
@@ -90,6 +90,8 @@ pub struct FileSystemEventLog {
     next_sequence: u64,
     /// 按 sequence 排序的内存索引。
     records: Vec<EventLogRecord>,
+    /// 可选 runtime writer；持有时所有 mutation 都在 fencing 写锁内重读权威磁盘状态。
+    writer: Option<DurableWriterGuard>,
 }
 
 impl EventLogStatus {
@@ -128,6 +130,45 @@ impl EventLogRecord {
     }
 }
 
+/// 将记录单调推进到 Acked；同一消费者重复确认幂等，其他消费者不能改写归属。
+fn transition_to_acked(record: &mut EventLogRecord, consumer: AgentId) -> Result<bool, EvaError> {
+    if record.status == EventLogStatus::Acked {
+        if record.consumer.as_ref() == Some(&consumer) {
+            return Ok(false);
+        }
+        return Err(
+            EvaError::conflict("acked event cannot be reassigned to another consumer")
+                .with_context("event_id", record.event.event_id().as_str())
+                .with_context("consumer", consumer.as_str()),
+        );
+    }
+
+    record.status = EventLogStatus::Acked;
+    record.consumer = Some(consumer);
+    record.error = None;
+    Ok(true)
+}
+
+/// 将未完成记录标记为 Failed；Acked 是终态，迟到失败不得覆盖成功事实。
+fn transition_to_failed(
+    record: &mut EventLogRecord,
+    consumer: AgentId,
+    error: EvaError,
+) -> Result<(), EvaError> {
+    if record.status == EventLogStatus::Acked {
+        return Err(
+            EvaError::conflict("acked event cannot transition to failed")
+                .with_context("event_id", record.event.event_id().as_str())
+                .with_context("consumer", consumer.as_str()),
+        );
+    }
+
+    record.status = EventLogStatus::Failed;
+    record.consumer = Some(consumer);
+    record.error = Some(error);
+    Ok(())
+}
+
 impl InMemoryEventLog {
     /// 创建空内存日志。
     pub fn new() -> Self {
@@ -161,17 +202,33 @@ impl InMemoryEventLog {
 impl FileSystemEventLog {
     /// 从 durable layout 以可创建模式打开 event log。
     pub fn open(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
-        Self::open_dir_with_mode(layout.event_dir.join(EVENT_LOG_DIR), true)
+        Self::open_dir_with_mode(layout.event_dir.join(EVENT_LOG_DIR), true, None)
+    }
+
+    /// 在 runtime writer ownership 下打开 event log；后续 mutation 会受 generation fence 保护。
+    pub fn open_with_writer(
+        layout: &DurableBackendLayout,
+        writer: DurableWriterGuard,
+    ) -> Result<Self, EvaError> {
+        if writer.root() != layout.root {
+            return Err(EvaError::conflict(
+                "durable event log writer belongs to a different backend root",
+            )
+            .with_context("layout_root", layout.root.display().to_string())
+            .with_context("writer_root", writer.root().display().to_string()));
+        }
+        let root = layout.event_dir.join(EVENT_LOG_DIR);
+        writer.with_write_lock(|_| Self::open_dir_with_mode(root, true, Some(writer.clone())))
     }
 
     /// 只读打开；目录缺失时返回空视图且不创建任何路径。
     pub fn open_read_only(layout: &DurableBackendLayout) -> Result<Self, EvaError> {
-        Self::open_dir_with_mode(layout.event_dir.join(EVENT_LOG_DIR), false)
+        Self::open_dir_with_mode(layout.event_dir.join(EVENT_LOG_DIR), false, None)
     }
 
     /// 从显式记录目录以可创建模式打开，供独立测试或嵌入使用。
     pub fn open_dir(root: impl Into<PathBuf>) -> Result<Self, EvaError> {
-        Self::open_dir_with_mode(root, true)
+        Self::open_dir_with_mode(root, true, None)
     }
 
     /// 打开目录、加载全部目标扩展名记录、排序并验证 sequence/event ID 唯一性。
@@ -179,6 +236,7 @@ impl FileSystemEventLog {
     fn open_dir_with_mode(
         root: impl Into<PathBuf>,
         create_if_missing: bool,
+        writer: Option<DurableWriterGuard>,
     ) -> Result<Self, EvaError> {
         let root = root.into();
         if root.exists() {
@@ -199,18 +257,17 @@ impl FileSystemEventLog {
                 root,
                 next_sequence: 0,
                 records: Vec::new(),
+                writer,
             });
         }
 
-        let mut records = load_records(&root)?;
-        records.sort_by_key(|record| record.sequence);
-        validate_loaded_records(&records)?;
-        let next_sequence = records.last().map(|record| record.sequence).unwrap_or(0);
+        let (next_sequence, records) = load_authoritative_records(&root)?;
 
         Ok(Self {
             root,
             next_sequence,
             records,
+            writer,
         })
     }
 
@@ -219,19 +276,33 @@ impl FileSystemEventLog {
         &self.records
     }
 
+    /// Reloads the authoritative on-disk index without performing a mutation.
+    ///
+    /// Writer-backed instances take the same serialized writer lock used by mutations. Read-only
+    /// instances preserve the open-time convention that a missing directory is an empty log.
+    pub fn refresh(&mut self) -> Result<(), EvaError> {
+        if let Some(writer) = self.writer.clone() {
+            return writer.with_write_lock(|_| self.reload_authoritative_records());
+        }
+        if !self.root.exists() {
+            self.next_sequence = 0;
+            self.records.clear();
+            return Ok(());
+        }
+        self.reload_authoritative_records()
+    }
+
     /// 以 20 位零填充序号生成记录路径，使字典序与重放顺序一致。
     fn record_path(&self, sequence: u64) -> PathBuf {
         self.root
             .join(format!("{sequence:020}.{EVENT_RECORD_EXTENSION}"))
     }
 
-    /// 将记录直接写入最终序号文件；append 创建，ack/fail 覆盖同一路径。
-    /// 当前没有临时文件 + rename 原子提交，也没有文件锁/CAS；调用方必须保证单写者，
-    /// 崩溃半写将在下次 strict open 时作为 Conflict/I/O 错误暴露。
+    /// 以临时文件 + 原子替换提交记录；append 创建，ack/fail 覆盖同一路径。
     fn persist_record(&self, record: &EventLogRecord) -> Result<(), EvaError> {
         let path = self.record_path(record.sequence);
-        fs::write(&path, record_to_storage(record)).map_err(|error| {
-            EvaError::internal("failed to write durable event log record")
+        atomic_write(&path, record_to_storage(record).as_bytes()).map_err(|error| {
+            EvaError::internal("failed to atomically write durable event log record")
                 .with_context("path", path.display().to_string())
                 .with_context("io_error", error.to_string())
         })
@@ -254,6 +325,29 @@ impl FileSystemEventLog {
                     .with_context("event_id", event_id.as_str())
             })
     }
+
+    /// 从磁盘重建内存索引；仅在完整加载和校验成功后替换当前视图。
+    fn reload_authoritative_records(&mut self) -> Result<(), EvaError> {
+        let (next_sequence, records) = load_authoritative_records(&self.root)?;
+        self.next_sequence = next_sequence;
+        self.records = records;
+        Ok(())
+    }
+
+    /// writer 模式在同一 owner 的串行写锁内重读权威状态，防止陈旧实例覆盖新提交。
+    fn with_mutation<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, EvaError>,
+    ) -> Result<T, EvaError> {
+        if let Some(writer) = self.writer.clone() {
+            writer.with_write_lock(|_| {
+                self.reload_authoritative_records()?;
+                operation(self)
+            })
+        } else {
+            operation(self)
+        }
+    }
 }
 
 impl EventLog for InMemoryEventLog {
@@ -273,9 +367,7 @@ impl EventLog for InMemoryEventLog {
     /// 原地标记成功消费并清除可能存在的旧失败错误。
     fn ack(&mut self, event_id: &EventId, consumer: AgentId) -> Result<EventLogRecord, EvaError> {
         let record = self.find_mut(event_id)?;
-        record.status = EventLogStatus::Acked;
-        record.consumer = Some(consumer);
-        record.error = None;
+        transition_to_acked(record, consumer)?;
         Ok(record.clone())
     }
 
@@ -287,9 +379,7 @@ impl EventLog for InMemoryEventLog {
         error: EvaError,
     ) -> Result<EventLogRecord, EvaError> {
         let record = self.find_mut(event_id)?;
-        record.status = EventLogStatus::Failed;
-        record.consumer = Some(consumer);
-        record.error = Some(error);
+        transition_to_failed(record, consumer, error)?;
         Ok(record.clone())
     }
 
@@ -310,31 +400,34 @@ impl EventLog for InMemoryEventLog {
 
 impl EventLog for FileSystemEventLog {
     /// 在持久化成功后才推进 watermark 和内存索引。
-    /// I/O 失败时可安全重试同一序号，但多进程并发写不受本类型保护。
+    /// writer 模式先在串行写锁内重读权威索引，I/O 失败时不会推进内存视图。
     fn append(&mut self, event: Event) -> Result<EventLogRecord, EvaError> {
-        if self.contains_event(event.event_id()) {
-            return Err(EvaError::conflict("event already exists in log")
-                .with_context("event_id", event.event_id().as_str()));
-        }
+        self.with_mutation(|log| {
+            if log.contains_event(event.event_id()) {
+                return Err(EvaError::conflict("event already exists in log")
+                    .with_context("event_id", event.event_id().as_str()));
+            }
 
-        let sequence = self.next_sequence + 1;
-        let record = EventLogRecord::appended(sequence, event);
-        self.persist_record(&record)?;
-        self.next_sequence = sequence;
-        self.records.push(record.clone());
-        Ok(record)
+            let sequence = log.next_sequence + 1;
+            let record = EventLogRecord::appended(sequence, event);
+            log.persist_record(&record)?;
+            log.next_sequence = sequence;
+            log.records.push(record.clone());
+            Ok(record)
+        })
     }
 
     /// 克隆旧记录、先持久化 Acked 状态，再替换内存项；写失败保留旧内存状态。
     fn ack(&mut self, event_id: &EventId, consumer: AgentId) -> Result<EventLogRecord, EvaError> {
-        let position = self.record_position(event_id)?;
-        let mut record = self.records[position].clone();
-        record.status = EventLogStatus::Acked;
-        record.consumer = Some(consumer);
-        record.error = None;
-        self.persist_record(&record)?;
-        self.records[position] = record.clone();
-        Ok(record)
+        self.with_mutation(|log| {
+            let position = log.record_position(event_id)?;
+            let mut record = log.records[position].clone();
+            if transition_to_acked(&mut record, consumer)? {
+                log.persist_record(&record)?;
+                log.records[position] = record.clone();
+            }
+            Ok(record)
+        })
     }
 
     /// 先持久化 Failed 状态与错误，再提交内存替换；失败不产生内存/磁盘成功假象。
@@ -344,14 +437,14 @@ impl EventLog for FileSystemEventLog {
         consumer: AgentId,
         error: EvaError,
     ) -> Result<EventLogRecord, EvaError> {
-        let position = self.record_position(event_id)?;
-        let mut record = self.records[position].clone();
-        record.status = EventLogStatus::Failed;
-        record.consumer = Some(consumer);
-        record.error = Some(error);
-        self.persist_record(&record)?;
-        self.records[position] = record.clone();
-        Ok(record)
+        self.with_mutation(|log| {
+            let position = log.record_position(event_id)?;
+            let mut record = log.records[position].clone();
+            transition_to_failed(&mut record, consumer, error)?;
+            log.persist_record(&record)?;
+            log.records[position] = record.clone();
+            Ok(record)
+        })
     }
 
     /// 从已加载内存索引按包含式游标返回记录。
@@ -367,6 +460,15 @@ impl EventLog for FileSystemEventLog {
     fn watermark(&self) -> u64 {
         self.next_sequence
     }
+}
+
+/// 加载、排序并校验磁盘权威记录，同时恢复最高已提交 sequence。
+fn load_authoritative_records(root: &Path) -> Result<(u64, Vec<EventLogRecord>), EvaError> {
+    let mut records = load_records(root)?;
+    records.sort_by_key(|record| record.sequence);
+    validate_loaded_records(&records)?;
+    let next_sequence = records.last().map(|record| record.sequence).unwrap_or(0);
+    Ok((next_sequence, records))
 }
 
 /// 加载目录内所有 `.event` 文件；其他扩展名被忽略。
@@ -919,6 +1021,34 @@ mod tests {
     }
 
     #[test]
+    /// 验证 Acked 是单调终态：同消费者重复 ACK 幂等，异消费者 ACK 和迟到 FAIL 冲突。
+    fn in_memory_ack_is_idempotent_and_terminal() {
+        let mut log = InMemoryEventLog::new();
+        let event = event("evt-monotonic");
+        let event_id = event.event_id().clone();
+        let consumer = AgentId::parse("root-agent").unwrap();
+        log.append(event).unwrap();
+
+        let first = log.ack(&event_id, consumer.clone()).unwrap();
+        let second = log.ack(&event_id, consumer).unwrap();
+        assert_eq!(first, second);
+
+        let ack_error = log
+            .ack(&event_id, AgentId::parse("other-agent").unwrap())
+            .unwrap_err();
+        assert_eq!(ack_error.kind(), ErrorKind::Conflict);
+        let fail_error = log
+            .fail(
+                &event_id,
+                AgentId::parse("other-agent").unwrap(),
+                EvaError::timeout("late handler failure"),
+            )
+            .unwrap_err();
+        assert_eq!(fail_error.kind(), ErrorKind::Conflict);
+        assert_eq!(log.records()[0], first);
+    }
+
+    #[test]
     /// 验证 fail 完整保留 kind、retry、provider code 和错误上下文。
     fn fail_preserves_structured_error() {
         let mut log = InMemoryEventLog::new();
@@ -1039,6 +1169,70 @@ mod tests {
                 &[("node".to_owned(), "agent-1".to_owned())]
             );
         }
+    }
+
+    #[test]
+    /// 验证共享 writer 的陈旧实例在 append 前重读磁盘，不会复用已提交 sequence。
+    fn filesystem_writer_reloads_before_stale_append() {
+        let root = test_root("writer-stale-append");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut first =
+            FileSystemEventLog::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let mut stale =
+            FileSystemEventLog::open_with_writer(backend.layout(), writer.clone()).unwrap();
+
+        assert_eq!(first.append(event("evt-first")).unwrap().sequence, 1);
+        assert_eq!(stale.append(event("evt-second")).unwrap().sequence, 2);
+        assert_eq!(stale.watermark(), 2);
+
+        drop(first);
+        drop(stale);
+        drop(writer);
+        let reopened = FileSystemEventLog::open(backend.layout()).unwrap();
+        assert_eq!(reopened.watermark(), 2);
+        assert_eq!(reopened.records().len(), 2);
+        assert_eq!(reopened.records()[0].event.event_id().as_str(), "evt-first");
+        assert_eq!(
+            reopened.records()[1].event.event_id().as_str(),
+            "evt-second"
+        );
+    }
+
+    #[test]
+    /// 验证 ACK 胜出后，持同一 writer clone 的陈旧实例不能以迟到 FAIL 覆盖磁盘终态。
+    fn filesystem_writer_prevents_stale_fail_from_overwriting_ack() {
+        let root = test_root("writer-ack-vs-fail");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut ack_log =
+            FileSystemEventLog::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let event = event("evt-raced");
+        let event_id = event.event_id().clone();
+        ack_log.append(event).unwrap();
+        let mut stale_fail_log =
+            FileSystemEventLog::open_with_writer(backend.layout(), writer.clone()).unwrap();
+
+        let consumer = AgentId::parse("root-agent").unwrap();
+        let acked = ack_log.ack(&event_id, consumer.clone()).unwrap();
+        assert_eq!(ack_log.ack(&event_id, consumer).unwrap(), acked);
+        let error = stale_fail_log
+            .fail(
+                &event_id,
+                AgentId::parse("other-agent").unwrap(),
+                EvaError::timeout("late handler failure"),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Conflict);
+        assert_eq!(stale_fail_log.records()[0], acked);
+
+        drop(ack_log);
+        drop(stale_fail_log);
+        drop(writer);
+        let reopened = FileSystemEventLog::open(backend.layout()).unwrap();
+        assert_eq!(reopened.records()[0], acked);
     }
 
     /// 测试临时日志根目录所有者。

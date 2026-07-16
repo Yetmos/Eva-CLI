@@ -163,7 +163,14 @@ impl RuntimeRecoveryCoordinator {
             };
             // 只有带持久化死信的非终态任务具备重驱证据；其他非终态任务只能判为中断。
             let redrive_candidate = status == "recovering";
-            snapshot.status = status.to_owned();
+            if status == "queued" && snapshot.replay_delivery.is_some() {
+                if snapshot.mark_abandoned_replay_delivery_queued().is_err() {
+                    unchanged_tasks.push(snapshot.task_id);
+                    continue;
+                }
+            } else {
+                snapshot.status = status.to_owned();
+            }
             snapshot.push_log(
                 "warning",
                 format!("runtime recovery marked {previous_status} task as {status} after restart"),
@@ -285,6 +292,14 @@ impl RuntimeRecoveryCoordinator {
 
 /// 只转换崩溃时可能仍在推进的状态；完成、失败等终态返回 `None` 并保持原样。
 fn recovery_status(snapshot: &TaskStateSnapshot) -> Option<&'static str> {
+    if snapshot.replay_delivery.is_some() && !snapshot.cancel_requested && !snapshot.cancel_accepted
+    {
+        return match snapshot.status.as_str() {
+            "queued" => None,
+            "running" | "interrupted" | "recovering" => Some("queued"),
+            _ => None,
+        };
+    }
     match snapshot.status.as_str() {
         "queued" | "running" | "cancelling" if !snapshot.dead_letters.is_empty() => {
             Some("recovering")
@@ -300,7 +315,11 @@ fn persist_recovered_snapshots(
     report: &mut RuntimeRecoveryReport,
 ) -> Result<(), EvaError> {
     for snapshot in &mut report.recovered_snapshots {
-        *snapshot = store.compare_and_set(snapshot)?;
+        *snapshot = if snapshot.replay_delivery.is_some() && snapshot.status == "queued" {
+            store.recover_abandoned_replay_delivery(&snapshot.task_id)?
+        } else {
+            store.compare_and_set(snapshot)?
+        };
     }
     report.audit.push(format!(
         "runtime.recovery:persisted:{}",
@@ -648,7 +667,8 @@ mod tests {
     use eva_storage::{
         DurableBackendOptions, FileSystemAuditSink, FileSystemDurableBackend,
         FileSystemProviderProcessTable, ProviderProcessTable, StateVersion,
-        TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateStore, WriterGeneration,
+        TaskAttemptPolicySnapshot, TaskEnvelopeSnapshot, TaskStateDeadLetterSnapshot,
+        TaskStateLogSnapshot, TaskStateStore, WriterGeneration,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -686,6 +706,76 @@ mod tests {
         assert_eq!(report.recovered_tasks[0].task_id, "req-recovery-cancelling");
         assert_eq!(report.recovered_tasks[0].status, "interrupted");
         assert_eq!(report.recovered_snapshots[0].status, "interrupted");
+    }
+
+    #[test]
+    fn recovery_requeues_abandoned_replay_delivery_across_writer_generation() {
+        let root = test_root("owned-replay-generation");
+        let task_id = format!("replay-delivery-{}", "a".repeat(64));
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"replay-payload".to_vec(),
+            task_id.clone(),
+            TaskAttemptPolicySnapshot::new(u32::MAX, 0, None).unwrap(),
+        )
+        .unwrap();
+        let (first_generation, running_snapshot) = {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_replay_delivery(
+                        &task_id,
+                        envelope.clone(),
+                        "evt-owned-replay:replay-1",
+                        0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let running = store
+                .try_claim_queued(&task_id, "daemon.old.worker", "cancel.old.replay", 100)
+                .unwrap()
+                .unwrap()
+                .snapshot()
+                .clone();
+            (running.owner_generation, running)
+        };
+
+        let classified = RuntimeRecoveryCoordinator.recover_snapshots(vec![running_snapshot]);
+        assert_eq!(classified.recovered_snapshots[0].status, "queued");
+        classified.recovered_snapshots[0].validate().unwrap();
+
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+
+        let report = RuntimeRecoveryCoordinator
+            .recover_task_store(&mut store)
+            .unwrap();
+        assert_eq!(report.recovered_tasks.len(), 1);
+        assert_eq!(report.recovered_tasks[0].previous_status, "running");
+        assert_eq!(report.recovered_tasks[0].status, "queued");
+        let recovered = store.read(Some(&task_id)).unwrap();
+        let second_generation = recovered.owner_generation;
+        assert_ne!(first_generation, second_generation);
+        assert_eq!(recovered.status, "queued");
+        assert_eq!(recovered.owner_generation, second_generation);
+        assert_eq!(recovered.attempts, 1);
+        assert!(recovered.execution_owner.is_none());
+        assert!(recovered.cancel_token.is_none());
+        assert_eq!(recovered.envelope.as_ref(), Some(&envelope));
+        assert!(recovered.replay_delivery.is_some());
+
+        let resumed = store
+            .try_claim_queued(&task_id, "daemon.new.worker", "cancel.new.replay", 200)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.snapshot().attempts, 2);
+        assert_eq!(resumed.fence().owner_generation(), second_generation);
     }
 
     /// 验证 `recovery_marks_dead_letter_tasks_as_recovering` 场景下的预期行为。
@@ -1164,6 +1254,7 @@ mod tests {
             owner_generation: WriterGeneration::ZERO,
             task_id: task_id.to_owned(),
             envelope: None,
+            replay_delivery: None,
             status: status.to_owned(),
             attempts: 1,
             execution_owner: None,
@@ -1179,6 +1270,8 @@ mod tests {
             interrupted_reason: None,
             error_kind: None,
             error_message: None,
+            error_retryable: None,
+            retry_ready_at_ms: None,
             logs: vec![TaskStateLogSnapshot {
                 sequence: 1,
                 level: "info".to_owned(),

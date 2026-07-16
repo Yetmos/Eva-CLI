@@ -1,11 +1,16 @@
 //! Durable task handler lookup and payload integrity boundary.
 
-use crate::{TaskArtifactRef, TaskEnvelope, TaskInput, TaskKind};
-use eva_core::{ErrorKind, EvaError, RequestId};
+use crate::{
+    IdempotencyKey, TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind,
+};
+use eva_core::{ErrorKind, EvaError, Event, EventId, EventPayload, EventTarget, RequestId, Topic};
+use eva_eventbus::{
+    DeadLetterRecord, DurableEventBus, EventBus, RedrivePolicy, ReplayHandlerBinding,
+};
 use eva_storage::{
     artifact_store::sha256_digest, ArtifactRecord, ArtifactStore, FileSystemArtifactStore,
     FileSystemTaskStateStore, InMemoryArtifactStore, TaskAttemptFence, TaskAttemptOutcome,
-    TaskExecutionClaim, TaskStateStore,
+    TaskExecutionClaim, TaskStateDeadLetterSnapshot, TaskStateSnapshot, TaskStateStore,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -102,6 +107,49 @@ pub trait TaskHandler: Send + Sync {
     /// Handles one immutable envelope with the exact resolved input bytes.
     fn handle(&self, invocation: &TaskHandlerInvocation<'_>)
         -> Result<TaskHandlerResult, EvaError>;
+}
+
+/// Durable state of one replay delivery owned by the daemon task worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnedReplayDeliveryStatus {
+    /// The deterministic delivery task is queued, running, or cancelling.
+    Pending {
+        /// Durable task identity derived from replay event and delivery index.
+        task_id: String,
+        /// Current task lifecycle status.
+        status: String,
+    },
+    /// The fenced delivery task completed and will never be invoked again.
+    Succeeded {
+        /// Durable task identity derived from replay event and delivery index.
+        task_id: String,
+        /// Canonical digest persisted by the worker finish boundary.
+        result_digest: String,
+        /// Result size persisted beside the digest.
+        result_size_bytes: usize,
+    },
+    /// The latest attempt failed; a retry may already have been requeued.
+    Failed {
+        /// Durable task identity derived from replay event and delivery index.
+        task_id: String,
+        /// Structured failure reconstructed from the terminal task record.
+        error: EvaError,
+        /// Whether this reconciliation durably returned the delivery to queued.
+        retry_scheduled: bool,
+    },
+}
+
+/// Reconciles replay deliveries through the daemon's durable task claim loop.
+pub trait OwnedReplayHandler: Send + Sync {
+    /// Creates or inspects one deterministic delivery task without running the handler inline.
+    fn reconcile_replay_delivery(
+        &self,
+        binding: &ReplayHandlerBinding,
+        event: &Event,
+        delivery_index: usize,
+        retry_backoff_ms: u64,
+        observed_at_ms: u64,
+    ) -> Result<OwnedReplayDeliveryStatus, EvaError>;
 }
 
 impl<F> TaskHandler for F
@@ -533,6 +581,8 @@ impl TaskWorkerShared {
 /// Daemon-owned durable task claim and execution thread.
 pub struct TaskWorkerRuntime {
     shared: Arc<TaskWorkerShared>,
+    store: FileSystemTaskStateStore,
+    execution_owner: String,
     join: Option<JoinHandle<()>>,
 }
 
@@ -571,6 +621,24 @@ impl TaskWorkerRuntime {
         )
     }
 
+    /// Creates a paused worker that durably binds failed production tasks for replay.
+    pub fn start_paused_with_failure_bus(
+        store: FileSystemTaskStateStore,
+        registry: Arc<TaskHandlerRegistry>,
+        artifacts: Arc<dyn TaskArtifactResolver>,
+        execution_owner: impl Into<String>,
+        failure_bus: DurableEventBus,
+    ) -> Result<Self, EvaError> {
+        Self::start_paused_with_timing_and_failure_bus(
+            store,
+            registry,
+            artifacts,
+            execution_owner,
+            TaskWorkerTiming::default(),
+            Some(failure_bus),
+        )
+    }
+
     /// Creates a paused worker with explicit scan and heartbeat intervals.
     fn start_paused_with_timing(
         store: FileSystemTaskStateStore,
@@ -578,6 +646,24 @@ impl TaskWorkerRuntime {
         artifacts: Arc<dyn TaskArtifactResolver>,
         execution_owner: impl Into<String>,
         timing: TaskWorkerTiming,
+    ) -> Result<Self, EvaError> {
+        Self::start_paused_with_timing_and_failure_bus(
+            store,
+            registry,
+            artifacts,
+            execution_owner,
+            timing,
+            None,
+        )
+    }
+
+    fn start_paused_with_timing_and_failure_bus(
+        store: FileSystemTaskStateStore,
+        registry: Arc<TaskHandlerRegistry>,
+        artifacts: Arc<dyn TaskArtifactResolver>,
+        execution_owner: impl Into<String>,
+        timing: TaskWorkerTiming,
+        failure_bus: Option<DurableEventBus>,
     ) -> Result<Self, EvaError> {
         let timing = timing.validate()?;
         let execution_owner = execution_owner.into();
@@ -591,17 +677,22 @@ impl TaskWorkerRuntime {
             ));
         }
         let shared = Arc::new(TaskWorkerShared::new(timing));
+        let replay_store = store.clone();
         let thread_shared = Arc::clone(&shared);
+        let thread_registry = Arc::clone(&registry);
+        let thread_artifacts = Arc::clone(&artifacts);
+        let thread_execution_owner = execution_owner.clone();
         let join = thread::Builder::new()
             .name("eva-task-worker".to_owned())
             .spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     run_task_worker_loop(
                         store,
-                        registry,
-                        artifacts,
-                        execution_owner,
+                        thread_registry,
+                        thread_artifacts,
+                        thread_execution_owner,
                         timing,
+                        failure_bus,
                         Arc::clone(&thread_shared),
                     )
                 }));
@@ -619,6 +710,8 @@ impl TaskWorkerRuntime {
             })?;
         Ok(Self {
             shared,
+            store: replay_store,
+            execution_owner,
             join: Some(join),
         })
     }
@@ -674,6 +767,232 @@ impl TaskWorkerRuntime {
     }
 }
 
+impl OwnedReplayHandler for TaskWorkerRuntime {
+    fn reconcile_replay_delivery(
+        &self,
+        binding: &ReplayHandlerBinding,
+        event: &Event,
+        delivery_index: usize,
+        retry_backoff_ms: u64,
+        observed_at_ms: u64,
+    ) -> Result<OwnedReplayDeliveryStatus, EvaError> {
+        self.check_health()?;
+        if !self.shared.claims_enabled() || self.shared.should_stop() {
+            return Err(
+                EvaError::unavailable("task worker is not accepting replay handler work")
+                    .with_context("execution_owner", &self.execution_owner),
+            );
+        }
+        let task_id = replay_delivery_task_id(event, binding, delivery_index)?;
+        let envelope = TaskEnvelope::new(
+            TaskKind::parse(binding.handler_kind())?,
+            binding.agent_id().clone(),
+            TaskInput::inline(event_payload_bytes(event.payload()))?,
+            IdempotencyKey::parse(task_id.as_str())?,
+            TaskAttemptPolicy::new(u32::MAX, retry_backoff_ms, None)?,
+        )?;
+        let expected_envelope = envelope.to_snapshot();
+        let expected_queued = TaskStateSnapshot::queued_with_replay_delivery(
+            task_id.as_str(),
+            expected_envelope.clone(),
+            event.event_id().as_str(),
+            delivery_index,
+        )?;
+        let mut store = self.store.clone();
+        for _ in 0..4 {
+            let snapshot = match store.read(Some(task_id.as_str())) {
+                Ok(snapshot) => snapshot,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    match store.create(&expected_queued) {
+                        Ok(snapshot) => {
+                            self.notify_new_work();
+                            snapshot
+                        }
+                        Err(error) if error.kind() == ErrorKind::Conflict => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error) => return Err(error),
+            };
+            if snapshot.envelope.as_ref() != Some(&expected_envelope) {
+                return Err(EvaError::conflict(
+                    "replay delivery task envelope does not match its durable binding",
+                )
+                .with_context("task_id", task_id.as_str())
+                .with_context("replay_event_id", event.event_id().as_str())
+                .with_context("delivery_index", delivery_index.to_string()));
+            }
+            if snapshot.replay_delivery != expected_queued.replay_delivery {
+                return Err(EvaError::conflict(
+                    "replay delivery task is missing its durable replay identity",
+                )
+                .with_context("task_id", task_id.as_str())
+                .with_context("replay_event_id", event.event_id().as_str())
+                .with_context("delivery_index", delivery_index.to_string()));
+            }
+            match snapshot.status.as_str() {
+                "queued" | "running" | "cancelling" => {
+                    self.notify_new_work();
+                    return Ok(OwnedReplayDeliveryStatus::Pending {
+                        task_id: task_id.as_str().to_owned(),
+                        status: snapshot.status,
+                    });
+                }
+                "completed" => {
+                    return Ok(OwnedReplayDeliveryStatus::Succeeded {
+                        task_id: task_id.as_str().to_owned(),
+                        result_digest: snapshot.result_digest.ok_or_else(|| {
+                            EvaError::conflict(
+                                "completed replay delivery is missing its result digest",
+                            )
+                            .with_context("task_id", task_id.as_str())
+                        })?,
+                        result_size_bytes: snapshot.result_size_bytes.ok_or_else(|| {
+                            EvaError::conflict(
+                                "completed replay delivery is missing its result size",
+                            )
+                            .with_context("task_id", task_id.as_str())
+                        })?,
+                    });
+                }
+                "failed" | "timed_out" => {
+                    let error = task_snapshot_error(&snapshot)?;
+                    let retryable =
+                        error.is_retryable() && snapshot.attempts < snapshot.retry_max_attempts;
+                    let was_deferred = snapshot.retry_ready_at_ms.is_some();
+                    let retry_scheduled = if retryable {
+                        let requeued = store
+                            .requeue_retryable(task_id.as_str(), u128::from(observed_at_ms))?;
+                        let scheduled = requeued.retry_ready_at_ms.is_some()
+                            || matches!(requeued.status.as_str(), "queued" | "running");
+                        if scheduled {
+                            if matches!(requeued.status.as_str(), "queued" | "running") {
+                                self.notify_new_work();
+                            }
+                            if was_deferred
+                                && matches!(requeued.status.as_str(), "queued" | "running")
+                            {
+                                return Ok(OwnedReplayDeliveryStatus::Pending {
+                                    task_id: task_id.as_str().to_owned(),
+                                    status: requeued.status,
+                                });
+                            }
+                        }
+                        scheduled
+                    } else {
+                        false
+                    };
+                    return Ok(OwnedReplayDeliveryStatus::Failed {
+                        task_id: task_id.as_str().to_owned(),
+                        error,
+                        retry_scheduled,
+                    });
+                }
+                "interrupted" | "recovering" => {
+                    let recovered = store.recover_abandoned_replay_delivery(task_id.as_str())?;
+                    if recovered.status == "queued" {
+                        self.notify_new_work();
+                        return Ok(OwnedReplayDeliveryStatus::Pending {
+                            task_id: task_id.as_str().to_owned(),
+                            status: recovered.status,
+                        });
+                    }
+                    return Ok(OwnedReplayDeliveryStatus::Failed {
+                        task_id: task_id.as_str().to_owned(),
+                        error: EvaError::conflict(
+                            "replay delivery could not be recovered from its durable task state",
+                        )
+                        .with_context("status", recovered.status),
+                        retry_scheduled: false,
+                    });
+                }
+                "cancelled" => {
+                    return Ok(OwnedReplayDeliveryStatus::Failed {
+                        task_id: task_id.as_str().to_owned(),
+                        error: EvaError::conflict(
+                            "replay delivery cannot continue from its durable task state",
+                        )
+                        .with_context("status", &snapshot.status),
+                        retry_scheduled: false,
+                    });
+                }
+                status => {
+                    return Err(EvaError::conflict(
+                        "replay delivery task has an unsupported lifecycle status",
+                    )
+                    .with_context("task_id", task_id.as_str())
+                    .with_context("status", status));
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("replay delivery reconciliation exceeded the CAS retry limit")
+                .with_context("task_id", task_id.as_str()),
+        )
+    }
+}
+
+fn replay_delivery_task_id(
+    event: &Event,
+    binding: &ReplayHandlerBinding,
+    delivery_index: usize,
+) -> Result<RequestId, EvaError> {
+    let material = format!(
+        "{}\0{delivery_index}\0{}\0{}",
+        event.event_id().as_str(),
+        binding.handler_kind(),
+        binding.agent_id().as_str()
+    );
+    let digest = sha256_digest(material.as_bytes());
+    RequestId::parse(&format!(
+        "replay-delivery-{}",
+        digest.strip_prefix("sha256:").unwrap_or(&digest)
+    ))
+}
+
+fn event_payload_bytes(payload: &EventPayload) -> Vec<u8> {
+    match payload {
+        EventPayload::Empty => Vec::new(),
+        EventPayload::Text(value) => value.as_bytes().to_vec(),
+        EventPayload::Bytes(value) => value.clone(),
+    }
+}
+
+fn task_snapshot_error(snapshot: &TaskStateSnapshot) -> Result<EvaError, EvaError> {
+    let kind = match snapshot.error_kind.as_deref() {
+        Some("invalid_argument") => ErrorKind::InvalidArgument,
+        Some("not_found") => ErrorKind::NotFound,
+        Some("conflict") => ErrorKind::Conflict,
+        Some("permission_denied") => ErrorKind::PermissionDenied,
+        Some("timeout") => ErrorKind::Timeout,
+        Some("unavailable") => ErrorKind::Unavailable,
+        Some("internal") => ErrorKind::Internal,
+        Some("unsupported") => ErrorKind::Unsupported,
+        Some(value) => {
+            return Err(
+                EvaError::conflict("replay delivery task has an invalid error kind")
+                    .with_context("task_id", &snapshot.task_id)
+                    .with_context("error_kind", value),
+            )
+        }
+        None => {
+            return Err(
+                EvaError::conflict("failed replay delivery task is missing its error kind")
+                    .with_context("task_id", &snapshot.task_id),
+            )
+        }
+    };
+    let message = snapshot.error_message.as_deref().ok_or_else(|| {
+        EvaError::conflict("failed replay delivery task is missing its error message")
+            .with_context("task_id", &snapshot.task_id)
+    })?;
+    Ok(EvaError::new(kind, message).with_retryable(
+        snapshot
+            .error_retryable
+            .unwrap_or_else(|| kind.default_retryable()),
+    ))
+}
+
 impl fmt::Debug for TaskWorkerRuntime {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let active_tasks = self
@@ -704,6 +1023,7 @@ fn run_task_worker_loop(
     artifacts: Arc<dyn TaskArtifactResolver>,
     execution_owner: String,
     timing: TaskWorkerTiming,
+    mut failure_bus: Option<DurableEventBus>,
     shared: Arc<TaskWorkerShared>,
 ) -> Result<(), EvaError> {
     loop {
@@ -718,6 +1038,18 @@ fn run_task_worker_loop(
         for snapshot in store.list_records()? {
             if shared.should_stop() {
                 return Ok(());
+            }
+            if task_failure_evidence_event_id(&snapshot)?.is_some() {
+                if let Some(bus) = failure_bus.as_mut() {
+                    materialize_task_failure_evidence(
+                        &mut store,
+                        bus,
+                        artifacts.as_ref(),
+                        &snapshot,
+                    )?;
+                    claimed_any = true;
+                }
+                continue;
             }
             if snapshot.status != "queued" {
                 continue;
@@ -740,6 +1072,7 @@ fn run_task_worker_loop(
                 &shared,
                 claim,
                 timing.heartbeat_interval,
+                failure_bus.as_mut(),
             )?;
         }
         if !claimed_any {
@@ -855,6 +1188,7 @@ fn execute_task_claim(
     shared: &TaskWorkerShared,
     claim: TaskExecutionClaim,
     heartbeat_interval: Duration,
+    mut failure_bus: Option<&mut DurableEventBus>,
 ) -> Result<(), EvaError> {
     let task_id = RequestId::parse(&claim.snapshot().task_id)?;
     let cancel_token = claim.fence().cancel_token().to_owned();
@@ -874,6 +1208,7 @@ fn execute_task_claim(
                 &TaskAttemptOutcome::Failed {
                     error_kind: error.kind().as_str().to_owned(),
                     error_message: error.message().to_owned(),
+                    retryable: error.is_retryable(),
                 },
             )?;
             return Ok(());
@@ -899,10 +1234,12 @@ fn execute_task_claim(
             TaskAttemptOutcome::Failed {
                 error_kind: ErrorKind::Conflict.as_str().to_owned(),
                 error_message: "task cancellation preceded handler dispatch".to_owned(),
+                retryable: false,
             }
         } else if claim.snapshot().deadline_expired(observed_before_dispatch) {
             TaskAttemptOutcome::TimedOut {
                 observed_at_ms: observed_before_dispatch,
+                retryable: true,
             }
         } else {
             dispatch_claimed_attempt(
@@ -918,15 +1255,279 @@ fn execute_task_claim(
             Some(error) => TaskAttemptOutcome::Failed {
                 error_kind: error.kind().as_str().to_owned(),
                 error_message: "task heartbeat persistence failed".to_owned(),
+                retryable: error.is_retryable(),
             },
             None => outcome,
         };
-        store.finish_execution(claim.fence(), &outcome)?;
+        let finished = store.finish_execution(claim.fence(), &outcome)?;
+        if !latest.cancel_requested {
+            if let Some(bus) = failure_bus.as_deref_mut() {
+                materialize_task_failure_evidence(store, bus, artifacts, &finished)?;
+            }
+        }
         Ok(())
     })();
 
     shared.unregister_attempt(task_id.as_str(), &cancel_token);
     execution
+}
+
+fn task_failure_evidence_event_id(
+    snapshot: &TaskStateSnapshot,
+) -> Result<Option<EventId>, EvaError> {
+    if snapshot.replay_delivery.is_some()
+        || snapshot.envelope.is_none()
+        || snapshot.error_retryable.is_none()
+        || !matches!(snapshot.status.as_str(), "failed" | "timed_out")
+    {
+        return Ok(None);
+    }
+    let event_id = task_failure_event_id(&snapshot.task_id, snapshot.attempts)?;
+    if let Some(existing) = snapshot
+        .dead_letters
+        .iter()
+        .find(|record| record.event_id == event_id.as_str())
+    {
+        if existing.topic != "/runtime/task/failure"
+            || snapshot.error_kind.as_deref() != Some(existing.reason_kind.as_str())
+            || snapshot.error_message.as_deref() != Some(existing.reason.as_str())
+        {
+            return Err(EvaError::conflict(
+                "task failure evidence summary does not match its terminal outcome",
+            )
+            .with_context("task_id", &snapshot.task_id)
+            .with_context("event_id", event_id.as_str()));
+        }
+        return Ok(None);
+    }
+    Ok(Some(event_id))
+}
+
+fn materialize_task_failure_evidence(
+    store: &mut FileSystemTaskStateStore,
+    bus: &mut DurableEventBus,
+    artifacts: &dyn TaskArtifactResolver,
+    snapshot: &TaskStateSnapshot,
+) -> Result<(), EvaError> {
+    let Some(event_id) = task_failure_evidence_event_id(snapshot)? else {
+        return Ok(());
+    };
+    let record = record_task_failure_dead_letter(bus, artifacts, snapshot, event_id)?;
+    checkpoint_task_failure_evidence(store, snapshot, &record)
+}
+
+fn record_task_failure_dead_letter(
+    bus: &mut DurableEventBus,
+    artifacts: &dyn TaskArtifactResolver,
+    snapshot: &TaskStateSnapshot,
+    event_id: EventId,
+) -> Result<DeadLetterRecord, EvaError> {
+    let reason = task_snapshot_error(snapshot)?;
+    let envelope = snapshot
+        .envelope
+        .clone()
+        .ok_or_else(|| EvaError::internal("failed task is missing its durable envelope"))
+        .and_then(TaskEnvelope::try_from)?;
+    let payload = resolve_task_payload(&envelope, artifacts)
+        .ok()
+        .map(|(bytes, _)| bytes);
+    let topic = Topic::parse("/runtime/task/failure")?;
+    let event = Event::new(
+        event_id.clone(),
+        topic,
+        payload
+            .as_ref()
+            .map(|bytes| EventPayload::bytes(bytes.clone()))
+            .unwrap_or_else(EventPayload::empty),
+    )
+    .with_target(EventTarget::Agent(envelope.agent_id().clone()))
+    .with_request_id(RequestId::parse(&snapshot.task_id)?);
+    ensure_task_failure_event(bus, &event)?;
+    let now_ms = u64::try_from(worker_now_ms()?).unwrap_or(u64::MAX);
+    let redrive = RedrivePolicy {
+        retry_delay_ms: envelope.attempt_policy().retry_backoff_ms,
+        next_attempt_after_ms: now_ms.saturating_add(envelope.attempt_policy().retry_backoff_ms),
+    };
+    let expected_bindings = if payload.is_some() {
+        vec![ReplayHandlerBinding::new(
+            envelope.kind().as_str(),
+            envelope.agent_id().clone(),
+        )?]
+    } else {
+        Vec::new()
+    };
+    if let Some(existing) = bus
+        .dead_letters()
+        .iter()
+        .find(|record| record.event_id() == &event_id)
+        .cloned()
+    {
+        validate_task_failure_dead_letter(
+            &existing,
+            &event,
+            &reason,
+            &expected_bindings,
+            redrive.retry_delay_ms,
+        )?;
+        return Ok(existing);
+    }
+    let result = if expected_bindings.is_empty() {
+        bus.dead_letter_with_redrive(event.clone(), reason.clone(), redrive)
+    } else {
+        bus.dead_letter_for_handlers_with_redrive(
+            event.clone(),
+            reason.clone(),
+            expected_bindings.clone(),
+            redrive,
+        )
+    };
+    match result {
+        Ok(record) => Ok(record),
+        Err(error) if error.kind() == ErrorKind::Conflict => {
+            bus.refresh_dead_letters()?;
+            let Some(existing) = bus
+                .dead_letters()
+                .iter()
+                .find(|record| record.event_id() == &event_id)
+                .cloned()
+            else {
+                return Err(error);
+            };
+            validate_task_failure_dead_letter(
+                &existing,
+                &event,
+                &reason,
+                &expected_bindings,
+                redrive.retry_delay_ms,
+            )?;
+            Ok(existing)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn ensure_task_failure_event(bus: &mut DurableEventBus, event: &Event) -> Result<(), EvaError> {
+    if let Some(existing) = bus.event_log_record(event.event_id()) {
+        return validate_task_failure_event(existing, event);
+    }
+    match bus.publish(event.clone()) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::Conflict => {
+            bus.refresh_event_log()?;
+            let Some(existing) = bus.event_log_record(event.event_id()) else {
+                return Err(error);
+            };
+            validate_task_failure_event(existing, event)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn validate_task_failure_event(
+    existing: &eva_storage::EventLogRecord,
+    expected: &Event,
+) -> Result<(), EvaError> {
+    validate_task_failure_event_identity(&existing.event, expected)
+}
+
+fn validate_task_failure_event_identity(
+    existing: &Event,
+    expected: &Event,
+) -> Result<(), EvaError> {
+    if existing.topic() == expected.topic()
+        && existing.target() == expected.target()
+        && existing.payload() == expected.payload()
+        && existing.metadata().request_id() == expected.metadata().request_id()
+    {
+        return Ok(());
+    }
+    Err(
+        EvaError::conflict("task failure event identity collides with another durable event")
+            .with_context("event_id", expected.event_id().as_str()),
+    )
+}
+
+fn validate_task_failure_dead_letter(
+    existing: &DeadLetterRecord,
+    expected_event: &Event,
+    expected_reason: &EvaError,
+    expected_bindings: &[ReplayHandlerBinding],
+    expected_retry_delay_ms: u64,
+) -> Result<(), EvaError> {
+    if validate_task_failure_event_identity(&existing.event, expected_event).is_ok()
+        && existing.replay_handlers.as_slice() == expected_bindings
+        && existing.reason.kind() == expected_reason.kind()
+        && existing.reason.message() == expected_reason.message()
+        && existing.reason.is_retryable() == expected_reason.is_retryable()
+        && existing.redrive.retry_delay_ms == expected_retry_delay_ms
+    {
+        return Ok(());
+    }
+    Err(
+        EvaError::conflict("task failure dead-letter identity collides with another record")
+            .with_context("event_id", expected_event.event_id().as_str()),
+    )
+}
+
+fn checkpoint_task_failure_evidence(
+    store: &mut FileSystemTaskStateStore,
+    original: &TaskStateSnapshot,
+    record: &DeadLetterRecord,
+) -> Result<(), EvaError> {
+    let summary = TaskStateDeadLetterSnapshot {
+        event_id: record.event_id().as_str().to_owned(),
+        topic: record.event.topic().as_str().to_owned(),
+        reason_kind: record.reason.kind().as_str().to_owned(),
+        reason: record.reason.message().to_owned(),
+        replay_count: record.replay_count,
+    };
+    for _ in 0..4 {
+        let mut current = store.read(Some(&original.task_id))?;
+        if let Some(existing) = current
+            .dead_letters
+            .iter()
+            .find(|existing| existing.event_id == summary.event_id)
+        {
+            if existing == &summary {
+                return Ok(());
+            }
+            return Err(EvaError::conflict(
+                "task failure evidence identity collides with another summary",
+            )
+            .with_context("task_id", &original.task_id)
+            .with_context("event_id", &summary.event_id));
+        }
+        if !matches!(current.status.as_str(), "failed" | "timed_out")
+            || current.attempts != original.attempts
+            || current.error_retryable.is_none()
+        {
+            return Err(EvaError::conflict(
+                "task failure outcome changed before evidence checkpoint",
+            )
+            .with_context("task_id", &original.task_id)
+            .with_context("status", &current.status));
+        }
+        current.dead_letters.push(summary.clone());
+        current.push_log(
+            "info",
+            format!("task failure evidence committed: {}", summary.event_id),
+        );
+        match store.compare_and_set(&current) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::Conflict => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(
+        EvaError::conflict("task failure evidence checkpoint exceeded the CAS retry limit")
+            .with_context("task_id", &original.task_id),
+    )
+}
+
+fn task_failure_event_id(task_id: &str, attempt: usize) -> Result<EventId, EvaError> {
+    let digest = sha256_digest(format!("{task_id}\0{attempt}").as_bytes());
+    let hex = digest.strip_prefix("sha256:").unwrap_or(&digest);
+    EventId::parse(&format!("task-failure-{}", &hex[..32]))
 }
 
 fn dispatch_claimed_attempt(
@@ -956,19 +1557,24 @@ fn dispatch_claimed_attempt(
     });
     let observed_at_ms = worker_now_ms()?;
     if snapshot.deadline_expired(observed_at_ms) {
-        return Ok(TaskAttemptOutcome::TimedOut { observed_at_ms });
+        return Ok(TaskAttemptOutcome::TimedOut {
+            observed_at_ms,
+            retryable: true,
+        });
     }
     Ok(match dispatched {
         Ok(result) => TaskAttemptOutcome::Completed {
             result_digest: result.digest().to_owned(),
             result_size_bytes: result.size_bytes(),
         },
-        Err(error) if error.kind() == ErrorKind::Timeout => {
-            TaskAttemptOutcome::TimedOut { observed_at_ms }
-        }
+        Err(error) if error.kind() == ErrorKind::Timeout => TaskAttemptOutcome::TimedOut {
+            observed_at_ms,
+            retryable: error.is_retryable(),
+        },
         Err(error) => TaskAttemptOutcome::Failed {
             error_kind: error.kind().as_str().to_owned(),
             error_message: error.message().to_owned(),
+            retryable: error.is_retryable(),
         },
     })
 }
@@ -1073,7 +1679,7 @@ fn resolve_task_payload(
 mod tests {
     use super::*;
     use crate::{IdempotencyKey, TaskAttemptPolicy};
-    use eva_core::{AgentId, ErrorKind};
+    use eva_core::{AgentId, ErrorKind, EventId, EventPayload, Topic};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1462,6 +2068,569 @@ mod tests {
     }
 
     #[test]
+    fn daemon_owned_worker_executes_bound_replay_with_exact_binary_payload() {
+        let root = test_root("owned-replay");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let observer = store.clone();
+        let registry = Arc::new(TaskHandlerRegistry::with_runtime_defaults().unwrap());
+        let artifacts: Arc<dyn TaskArtifactResolver> = Arc::new(InMemoryArtifactStore::new());
+        let mut worker =
+            TaskWorkerRuntime::start(store, registry, artifacts, "replay-owner-1").unwrap();
+        let payload = vec![0, 0xff, b'\n', b'=', 0x80];
+        let replay = Event::new(
+            EventId::parse("evt-owned-replay").unwrap(),
+            Topic::parse("/input/user").unwrap(),
+            EventPayload::bytes(payload.clone()),
+        )
+        .with_request_id(RequestId::parse("req-owned-replay").unwrap());
+        let binding =
+            ReplayHandlerBinding::new("runtime.echo", AgentId::parse("root-agent").unwrap())
+                .unwrap();
+
+        let pending = worker
+            .reconcile_replay_delivery(&binding, &replay, 0, 0, 0)
+            .unwrap();
+        let task_id = match pending {
+            OwnedReplayDeliveryStatus::Pending { task_id, .. } => task_id,
+            status => panic!("expected pending replay delivery, got {status:?}"),
+        };
+        wait_for_task_status(&observer, &task_id, "completed");
+        let completed = worker
+            .reconcile_replay_delivery(&binding, &replay, 0, 0, 0)
+            .unwrap();
+        match completed {
+            OwnedReplayDeliveryStatus::Succeeded {
+                result_digest,
+                result_size_bytes,
+                ..
+            } => {
+                assert_eq!(result_digest, sha256_digest(&payload));
+                assert_eq!(result_size_bytes, payload.len());
+            }
+            status => panic!("expected successful replay delivery, got {status:?}"),
+        }
+        worker.stop_and_join().unwrap();
+    }
+
+    #[test]
+    fn daemon_owned_worker_persists_unknown_replay_handler_failure() {
+        let root = test_root("owned-replay-errors");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let observer = store.clone();
+        let registry = Arc::new(TaskHandlerRegistry::with_runtime_defaults().unwrap());
+        let artifacts: Arc<dyn TaskArtifactResolver> = Arc::new(InMemoryArtifactStore::new());
+        let mut worker =
+            TaskWorkerRuntime::start(store, registry, artifacts, "replay-owner-2").unwrap();
+        let event = Event::new(
+            EventId::parse("evt-replay-no-request").unwrap(),
+            Topic::parse("/input/user").unwrap(),
+            EventPayload::empty(),
+        );
+        let unknown_binding =
+            ReplayHandlerBinding::new("vendor.unknown", AgentId::parse("root-agent").unwrap())
+                .unwrap();
+        let pending = worker
+            .reconcile_replay_delivery(&unknown_binding, &event, 0, 0, 0)
+            .unwrap();
+        let task_id = match pending {
+            OwnedReplayDeliveryStatus::Pending { task_id, .. } => task_id,
+            status => panic!("expected pending replay delivery, got {status:?}"),
+        };
+        thread::sleep(Duration::from_millis(100));
+        worker.check_health().unwrap();
+        wait_for_task_status(&observer, &task_id, "failed");
+        let failed = worker
+            .reconcile_replay_delivery(&unknown_binding, &event, 0, 0, 0)
+            .unwrap();
+        match failed {
+            OwnedReplayDeliveryStatus::Failed {
+                error,
+                retry_scheduled,
+                ..
+            } => {
+                assert_eq!(error.kind(), ErrorKind::NotFound);
+                assert_eq!(error.message(), TASK_HANDLER_NOT_REGISTERED_MESSAGE);
+                assert!(!retry_scheduled);
+            }
+            status => panic!("expected failed replay delivery, got {status:?}"),
+        }
+        worker.stop_and_join().unwrap();
+    }
+
+    #[test]
+    fn retryable_replay_delivery_requeues_and_completes_under_worker_fence() {
+        let root = test_root("owned-replay-retry");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let observer = store.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register(
+                TaskKind::parse("vendor.retry-once").unwrap(),
+                move |invocation: &TaskHandlerInvocation<'_>| {
+                    if handler_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Err(EvaError::timeout("retry once"))
+                    } else {
+                        Ok(TaskHandlerResult::new(invocation.payload()))
+                    }
+                },
+            )
+            .unwrap();
+        let artifacts: Arc<dyn TaskArtifactResolver> = Arc::new(InMemoryArtifactStore::new());
+        let mut worker =
+            TaskWorkerRuntime::start(store, Arc::new(registry), artifacts, "replay-owner-retry")
+                .unwrap();
+        let replay = Event::new(
+            EventId::parse("evt-owned-replay-retry").unwrap(),
+            Topic::parse("/input/user").unwrap(),
+            EventPayload::text("retry-payload"),
+        );
+        let binding =
+            ReplayHandlerBinding::new("vendor.retry-once", AgentId::parse("root-agent").unwrap())
+                .unwrap();
+        let pending = worker
+            .reconcile_replay_delivery(&binding, &replay, 0, 0, 0)
+            .unwrap();
+        let task_id = match pending {
+            OwnedReplayDeliveryStatus::Pending { task_id, .. } => task_id,
+            status => panic!("expected pending replay delivery, got {status:?}"),
+        };
+        wait_for_task_status(&observer, &task_id, "timed_out");
+
+        let failed = worker
+            .reconcile_replay_delivery(&binding, &replay, 0, 0, 0)
+            .unwrap();
+        assert!(matches!(
+            failed,
+            OwnedReplayDeliveryStatus::Failed {
+                retry_scheduled: true,
+                ..
+            }
+        ));
+        wait_for_task_status(&observer, &task_id, "completed");
+        assert!(matches!(
+            worker
+                .reconcile_replay_delivery(&binding, &replay, 0, 0, 0)
+                .unwrap(),
+            OwnedReplayDeliveryStatus::Succeeded { .. }
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        worker.stop_and_join().unwrap();
+    }
+
+    #[test]
+    fn replay_retry_respects_explicit_non_retryable_timeout_override() {
+        let root = test_root("owned-replay-non-retryable");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let observer = store.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let mut registry = TaskHandlerRegistry::new();
+        registry
+            .register(
+                TaskKind::parse("vendor.non-retryable-timeout").unwrap(),
+                move |_: &TaskHandlerInvocation<'_>| {
+                    handler_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(EvaError::timeout("permanent timeout classification").with_retryable(false))
+                },
+            )
+            .unwrap();
+        let artifacts: Arc<dyn TaskArtifactResolver> = Arc::new(InMemoryArtifactStore::new());
+        let mut worker = TaskWorkerRuntime::start(
+            store,
+            Arc::new(registry),
+            artifacts,
+            "replay-owner-non-retryable",
+        )
+        .unwrap();
+        let replay = Event::new(
+            EventId::parse("evt-owned-replay-non-retryable").unwrap(),
+            Topic::parse("/input/user").unwrap(),
+            EventPayload::text("payload"),
+        );
+        let binding = ReplayHandlerBinding::new(
+            "vendor.non-retryable-timeout",
+            AgentId::parse("root-agent").unwrap(),
+        )
+        .unwrap();
+        let pending = worker
+            .reconcile_replay_delivery(&binding, &replay, 0, 1_000, 100)
+            .unwrap();
+        let task_id = match pending {
+            OwnedReplayDeliveryStatus::Pending { task_id, .. } => task_id,
+            status => panic!("expected pending replay delivery, got {status:?}"),
+        };
+        wait_for_task_status(&observer, &task_id, "timed_out");
+
+        match worker
+            .reconcile_replay_delivery(&binding, &replay, 0, 1_000, 10_000)
+            .unwrap()
+        {
+            OwnedReplayDeliveryStatus::Failed {
+                error,
+                retry_scheduled,
+                ..
+            } => {
+                assert_eq!(error.kind(), ErrorKind::Timeout);
+                assert!(!error.is_retryable());
+                assert!(!retry_scheduled);
+            }
+            status => panic!("expected failed replay delivery, got {status:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let persisted = observer.read(Some(&task_id)).unwrap();
+        assert_eq!(persisted.error_retryable, Some(false));
+        assert!(persisted.retry_ready_at_ms.is_none());
+        worker.stop_and_join().unwrap();
+    }
+
+    #[test]
+    fn production_task_failure_persists_executable_replay_binding() {
+        let root = test_root("task-failure-binding");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let observer = store.clone();
+        let task = TaskEnvelope::new(
+            TaskKind::parse("vendor.production-missing").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"durable-failure-payload".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-production-failure").unwrap(),
+            TaskAttemptPolicy::new(1, 5_000, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(
+                &TaskStateSnapshot::queued_with_envelope(
+                    "req-production-failure",
+                    task.to_snapshot(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let failure_bus = DurableEventBus::open_with_writer(backend.layout(), writer).unwrap();
+        let registry = Arc::new(TaskHandlerRegistry::with_runtime_defaults().unwrap());
+        let artifacts: Arc<dyn TaskArtifactResolver> = Arc::new(InMemoryArtifactStore::new());
+        let mut worker = TaskWorkerRuntime::start_paused_with_failure_bus(
+            store,
+            registry,
+            artifacts,
+            "production-failure-owner",
+            failure_bus,
+        )
+        .unwrap();
+        let retry_clock_floor = u64::try_from(worker_now_ms().unwrap()).unwrap();
+        worker.activate();
+
+        thread::sleep(Duration::from_millis(100));
+        worker.check_health().unwrap();
+        wait_for_task_status(&observer, "req-production-failure", "failed");
+        worker.stop_and_join().unwrap();
+
+        let bus = DurableEventBus::open_read_only(backend.layout()).unwrap();
+        assert_eq!(bus.dead_letters().len(), 1);
+        let dead_letter = &bus.dead_letters()[0];
+        assert_eq!(dead_letter.replay_handlers.len(), 1);
+        assert_eq!(dead_letter.redrive.retry_delay_ms, 5_000);
+        assert!(
+            dead_letter.redrive.next_attempt_after_ms >= retry_clock_floor.saturating_add(5_000)
+        );
+        assert_eq!(
+            dead_letter.replay_handlers[0].handler_kind(),
+            "vendor.production-missing"
+        );
+        assert_eq!(
+            dead_letter.replay_handlers[0].agent_id().as_str(),
+            "root-agent"
+        );
+        assert_eq!(
+            dead_letter
+                .event
+                .metadata()
+                .request_id()
+                .map(RequestId::as_str),
+            Some("req-production-failure")
+        );
+        assert_eq!(
+            dead_letter.event.payload().as_bytes(),
+            Some(b"durable-failure-payload".as_slice())
+        );
+        assert_eq!(
+            bus.event_log_status(dead_letter.event_id()),
+            Some(eva_storage::EventLogStatus::Appended)
+        );
+        let task = observer.read(Some("req-production-failure")).unwrap();
+        assert_eq!(task.dead_letters.len(), 1);
+        assert_eq!(
+            task.dead_letters[0].event_id,
+            dead_letter.event_id().as_str()
+        );
+    }
+
+    #[test]
+    fn worker_rebuilds_dead_letter_from_terminal_intent_after_event_only_crash() {
+        let root = test_root("task-failure-event-only-crash");
+        let task_id = "req-production-failure-recovery";
+        let failure_event_id = {
+            let backend = eva_storage::FileSystemDurableBackend::open(
+                eva_storage::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let writer = backend.acquire_runtime_writer().unwrap();
+            let mut store =
+                FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                    .unwrap();
+            let task = TaskEnvelope::new(
+                TaskKind::parse("vendor.failure-recovery").unwrap(),
+                AgentId::parse("root-agent").unwrap(),
+                TaskInput::inline(b"event-only-payload".as_slice()).unwrap(),
+                IdempotencyKey::parse("idem-production-failure-recovery").unwrap(),
+                TaskAttemptPolicy::new(2, 250, None).unwrap(),
+            )
+            .unwrap();
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope(task_id, task.to_snapshot()).unwrap(),
+                )
+                .unwrap();
+            let claim = store
+                .try_claim_queued(task_id, "daemon.failure.old", "cancel.failure.old", 100)
+                .unwrap()
+                .unwrap();
+            let failed = store
+                .finish_execution(
+                    claim.fence(),
+                    &TaskAttemptOutcome::Failed {
+                        error_kind: ErrorKind::Unavailable.as_str().to_owned(),
+                        error_message: "provider temporarily unavailable".to_owned(),
+                        retryable: true,
+                    },
+                )
+                .unwrap();
+            assert_eq!(failed.status, "failed");
+            assert_eq!(failed.error_retryable, Some(true));
+            assert!(failed.dead_letters.is_empty());
+
+            let event_id = task_failure_event_id(task_id, failed.attempts).unwrap();
+            let event = Event::new(
+                event_id.clone(),
+                Topic::parse("/runtime/task/failure").unwrap(),
+                EventPayload::bytes(b"event-only-payload".to_vec()),
+            )
+            .with_target(EventTarget::Agent(AgentId::parse("root-agent").unwrap()))
+            .with_request_id(RequestId::parse(task_id).unwrap());
+            let mut bus = DurableEventBus::open_with_writer(backend.layout(), writer).unwrap();
+            bus.publish(event).unwrap();
+            assert!(bus.dead_letters().is_empty());
+            event_id
+        };
+
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let store = FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+            .unwrap();
+        let observer = store.clone();
+        let failure_bus = DurableEventBus::open_with_writer(backend.layout(), writer).unwrap();
+        let registry = Arc::new(TaskHandlerRegistry::with_runtime_defaults().unwrap());
+        let artifacts: Arc<dyn TaskArtifactResolver> = Arc::new(InMemoryArtifactStore::new());
+        let mut worker = TaskWorkerRuntime::start_paused_with_failure_bus(
+            store,
+            registry,
+            artifacts,
+            "production-failure-recovery-owner",
+            failure_bus,
+        )
+        .unwrap();
+        worker.activate();
+
+        let started = std::time::Instant::now();
+        loop {
+            let snapshot = observer.read(Some(task_id)).unwrap();
+            if snapshot
+                .dead_letters
+                .iter()
+                .any(|record| record.event_id == failure_event_id.as_str())
+            {
+                break;
+            }
+            worker.check_health().unwrap();
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "worker did not rebuild task failure dead-letter evidence"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        worker.stop_and_join().unwrap();
+
+        let bus = DurableEventBus::open_read_only(backend.layout()).unwrap();
+        assert_eq!(
+            bus.log()
+                .records()
+                .iter()
+                .filter(|record| record.event.event_id() == &failure_event_id)
+                .count(),
+            1
+        );
+        let dead_letter = bus
+            .dead_letters()
+            .iter()
+            .find(|record| record.event_id() == &failure_event_id)
+            .unwrap();
+        assert_eq!(dead_letter.replay_handlers.len(), 1);
+        assert_eq!(
+            dead_letter.replay_handlers[0].handler_kind(),
+            "vendor.failure-recovery"
+        );
+        assert_eq!(dead_letter.redrive.retry_delay_ms, 250);
+    }
+
+    #[test]
+    fn stale_workers_reconcile_one_terminal_failure_evidence_without_fatal_conflict() {
+        let root = test_root("two-workers-one-failure-evidence");
+        let backend = eva_storage::FileSystemDurableBackend::open(
+            eva_storage::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let mut store =
+            FileSystemTaskStateStore::from_runtime_writer(backend.layout(), writer.clone())
+                .unwrap();
+        let task_id = "req-two-workers-one-failure";
+        let task = TaskEnvelope::new(
+            TaskKind::parse("vendor.concurrent-failure").unwrap(),
+            AgentId::parse("root-agent").unwrap(),
+            TaskInput::inline(b"concurrent-failure-payload".as_slice()).unwrap(),
+            IdempotencyKey::parse("idem-two-workers-one-failure").unwrap(),
+            TaskAttemptPolicy::new(2, 250, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(&TaskStateSnapshot::queued_with_envelope(task_id, task.to_snapshot()).unwrap())
+            .unwrap();
+        let claim = store
+            .try_claim_queued(
+                task_id,
+                "daemon.concurrent.old",
+                "cancel.concurrent.old",
+                100,
+            )
+            .unwrap()
+            .unwrap();
+        let failed = store
+            .finish_execution(
+                claim.fence(),
+                &TaskAttemptOutcome::Failed {
+                    error_kind: ErrorKind::Unavailable.as_str().to_owned(),
+                    error_message: "provider temporarily unavailable".to_owned(),
+                    retryable: true,
+                },
+            )
+            .unwrap();
+        assert!(failed.dead_letters.is_empty());
+
+        // Both worker buses intentionally retain a view from before the competing event/dead-letter
+        // commit. Their reconciliation must refresh and validate that commit instead of exiting.
+        let first_failure_bus =
+            DurableEventBus::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let second_failure_bus =
+            DurableEventBus::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        let artifacts: Arc<dyn TaskArtifactResolver> = Arc::new(InMemoryArtifactStore::new());
+        let event_id = task_failure_event_id(task_id, failed.attempts).unwrap();
+        let mut seed_bus =
+            DurableEventBus::open_with_writer(backend.layout(), writer.clone()).unwrap();
+        record_task_failure_dead_letter(
+            &mut seed_bus,
+            artifacts.as_ref(),
+            &failed,
+            event_id.clone(),
+        )
+        .unwrap();
+        drop(seed_bus);
+
+        let registry = Arc::new(TaskHandlerRegistry::with_runtime_defaults().unwrap());
+        let mut first = TaskWorkerRuntime::start_paused_with_failure_bus(
+            store.clone(),
+            Arc::clone(&registry),
+            Arc::clone(&artifacts),
+            "daemon:g1:failure-worker-1",
+            first_failure_bus,
+        )
+        .unwrap();
+        let mut second = TaskWorkerRuntime::start_paused_with_failure_bus(
+            store.clone(),
+            registry,
+            artifacts,
+            "daemon:g1:failure-worker-2",
+            second_failure_bus,
+        )
+        .unwrap();
+        first.activate();
+        second.activate();
+
+        let started = Instant::now();
+        let checkpointed = loop {
+            let snapshot = store.read(Some(task_id)).unwrap();
+            if snapshot.dead_letters.len() == 1 {
+                break snapshot;
+            }
+            first.check_health().unwrap();
+            second.check_health().unwrap();
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "workers did not reconcile the terminal failure evidence"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        first.check_health().unwrap();
+        second.check_health().unwrap();
+        first.stop_and_join().unwrap();
+        second.stop_and_join().unwrap();
+
+        assert_eq!(checkpointed.dead_letters[0].event_id, event_id.as_str());
+        let bus = DurableEventBus::open_read_only(backend.layout()).unwrap();
+        assert_eq!(
+            bus.log()
+                .records()
+                .iter()
+                .filter(|record| record.event.event_id() == &event_id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            bus.dead_letters()
+                .iter()
+                .filter(|record| record.event_id() == &event_id)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn two_workers_claim_and_execute_one_task_exactly_once() {
         let root = test_root("two-workers-one-claim");
         let backend = eva_storage::FileSystemDurableBackend::open(
@@ -1511,6 +2680,9 @@ mod tests {
         first.notify_new_work();
         second.notify_new_work();
 
+        thread::sleep(Duration::from_millis(100));
+        first.check_health().unwrap();
+        second.check_health().unwrap();
         let completed = wait_for_task_status(&store, "req-worker-once", "completed");
         first.stop_and_join().unwrap();
         second.stop_and_join().unwrap();

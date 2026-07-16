@@ -8,7 +8,7 @@ use crate::durable_backend::{
 };
 use crate::state_store::StateVersion;
 use crate::DurableBackendLayout;
-use eva_core::{AgentId, EvaError, RequestId};
+use eva_core::{AgentId, EvaError, EventId, RequestId};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
@@ -21,6 +21,8 @@ pub const RESPONSIBILITY: &str = "durable task state interfaces and process-boun
 const TASK_STATE_FORMAT_V2: &str = "eva.task-state.v2";
 const TASK_STATE_FORMAT_V3: &str = "eva.task-state.v3";
 const TASK_STATE_FORMAT_V4: &str = "eva.task-state.v4";
+const TASK_STATE_FORMAT_V5: &str = "eva.task-state.v5";
+const REPLAY_DELIVERY_TASK_PREFIX: &str = "replay-delivery-";
 const MAX_TASK_KIND_BYTES: usize = 128;
 const MAX_INLINE_TASK_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_TASK_EXECUTION_OWNER_BYTES: usize = 512;
@@ -131,6 +133,15 @@ pub struct TaskEnvelopeSnapshot {
     pub attempt_policy: TaskAttemptPolicySnapshot,
 }
 
+/// Durable identity proving that a task is one scheduler replay delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskReplayDeliverySnapshot {
+    /// Persisted replay event whose payload is bound into the task envelope.
+    pub replay_event_id: String,
+    /// Stable position in the ordered handler-owner delivery plan.
+    pub delivery_index: usize,
+}
+
 /// CLI task 命令与 runtime 跨进程使用的完整任务状态快照。
 /// Stored task summary used by CLI task commands across process boundaries.
 #[derive(Clone, PartialEq, Eq)]
@@ -143,13 +154,15 @@ pub struct TaskStateSnapshot {
     pub task_id: String,
     /// 新提交任务的完整不可变信封；None 仅表示 legacy/v2 状态没有可恢复 payload。
     pub envelope: Option<TaskEnvelopeSnapshot>,
+    /// Internal replay-delivery identity; absent for operator-submitted tasks.
+    pub replay_delivery: Option<TaskReplayDeliverySnapshot>,
     /// queued/running/cancelling/终态等稳定状态文本。
     pub status: String,
     /// 已执行尝试次数。
     pub attempts: usize,
     /// 当前/最后一次 attempt 的 daemon worker owner；与 writer generation 含义独立。
     pub execution_owner: Option<String>,
-    /// 兼容 v2/现有 CLI 的重试上限镜像；v3/v4 必须等于 envelope attempt policy。
+    /// 兼容 v2/现有 CLI 的重试上限镜像；v3+ 必须等于 envelope attempt policy。
     pub retry_max_attempts: usize,
     /// 是否收到取消请求。
     pub cancel_requested: bool,
@@ -173,6 +186,10 @@ pub struct TaskStateSnapshot {
     pub error_kind: Option<String>,
     /// 失败/超时的人类可读消息。
     pub error_message: Option<String>,
+    /// Handler-provided retry classification; None preserves legacy kind defaults.
+    pub error_retryable: Option<bool>,
+    /// Earliest epoch millisecond at which a failed attempt may be requeued.
+    pub retry_ready_at_ms: Option<u128>,
     /// 有序生命周期与执行日志。
     pub logs: Vec<TaskStateLogSnapshot>,
     /// 未能处理的事件摘要。
@@ -189,6 +206,7 @@ impl fmt::Debug for TaskStateSnapshot {
             .field("owner_generation", &self.owner_generation)
             .field("task_id", &self.task_id)
             .field("envelope", &self.envelope)
+            .field("replay_delivery", &self.replay_delivery)
             .field("status", &self.status)
             .field("attempts", &self.attempts)
             .field(
@@ -210,6 +228,8 @@ impl fmt::Debug for TaskStateSnapshot {
             .field("interrupted_reason", &self.interrupted_reason)
             .field("error_kind", &self.error_kind)
             .field("error_message", &self.error_message)
+            .field("error_retryable", &self.error_retryable)
+            .field("retry_ready_at_ms", &self.retry_ready_at_ms)
             .field("logs", &self.logs)
             .field("dead_letters", &self.dead_letters)
             .field("replayed_events", &self.replayed_events)
@@ -302,11 +322,15 @@ pub enum TaskAttemptOutcome {
         error_kind: String,
         /// 不含 payload/result/secret 的稳定消息。
         error_message: String,
+        /// Exact retry classification returned by the handler boundary.
+        retryable: bool,
     },
     /// handler 返回 timeout 或完成时 deadline 已经过期。
     TimedOut {
         /// 判定 timeout 的 epoch 毫秒。
         observed_at_ms: u128,
+        /// Exact retry classification for the timeout outcome.
+        retryable: bool,
     },
 }
 
@@ -545,6 +569,26 @@ impl TaskEnvelopeSnapshot {
     }
 }
 
+impl TaskReplayDeliverySnapshot {
+    /// Creates a validated replay-delivery marker.
+    pub fn new(
+        replay_event_id: impl Into<String>,
+        delivery_index: usize,
+    ) -> Result<Self, EvaError> {
+        let marker = Self {
+            replay_event_id: replay_event_id.into(),
+            delivery_index,
+        };
+        marker.validate()?;
+        Ok(marker)
+    }
+
+    fn validate(&self) -> Result<(), EvaError> {
+        EventId::parse(&self.replay_event_id)?;
+        Ok(())
+    }
+}
+
 impl TaskStateSnapshot {
     /// 创建已校验 task ID 的 queued 初始快照，重试上限默认为一次。
     pub fn queued(task_id: impl Into<String>) -> Result<Self, EvaError> {
@@ -555,6 +599,7 @@ impl TaskStateSnapshot {
             owner_generation: WriterGeneration::ZERO,
             task_id,
             envelope: None,
+            replay_delivery: None,
             status: "queued".to_owned(),
             attempts: 0,
             execution_owner: None,
@@ -570,6 +615,8 @@ impl TaskStateSnapshot {
             interrupted_reason: None,
             error_kind: None,
             error_message: None,
+            error_retryable: None,
+            retry_ready_at_ms: None,
             logs: Vec::new(),
             dead_letters: Vec::new(),
             replayed_events: Vec::new(),
@@ -585,6 +632,25 @@ impl TaskStateSnapshot {
         let mut snapshot = Self::queued(task_id)?;
         snapshot.retry_max_attempts = envelope.attempt_policy.max_attempts as usize;
         snapshot.envelope = Some(envelope);
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    /// Creates a queued task with an immutable scheduler replay-delivery identity.
+    pub fn queued_with_replay_delivery(
+        task_id: impl Into<String>,
+        envelope: TaskEnvelopeSnapshot,
+        replay_event_id: impl Into<String>,
+        delivery_index: usize,
+    ) -> Result<Self, EvaError> {
+        envelope.validate()?;
+        let mut snapshot = Self::queued(task_id)?;
+        snapshot.retry_max_attempts = envelope.attempt_policy.max_attempts as usize;
+        snapshot.envelope = Some(envelope);
+        snapshot.replay_delivery = Some(TaskReplayDeliverySnapshot::new(
+            replay_event_id,
+            delivery_index,
+        )?);
         snapshot.validate()?;
         Ok(snapshot)
     }
@@ -620,6 +686,45 @@ impl TaskStateSnapshot {
         if let Some(cancel_token) = self.cancel_token.as_deref() {
             validate_cancel_token(cancel_token)?;
         }
+        if let Some(replay_delivery) = &self.replay_delivery {
+            replay_delivery.validate()?;
+            if !is_replay_delivery_task_id(&self.task_id) {
+                return Err(EvaError::invalid_argument(
+                    "replay delivery marker requires a reserved deterministic task id",
+                )
+                .with_context("task_id", &self.task_id));
+            }
+            let envelope = self.envelope.as_ref().ok_or_else(|| {
+                EvaError::invalid_argument("replay delivery marker requires a task envelope")
+            })?;
+            if envelope.idempotency_key != self.task_id
+                || envelope.attempt_policy.max_attempts != u32::MAX
+                || envelope.attempt_policy.attempt_timeout_ms.is_some()
+            {
+                return Err(EvaError::invalid_argument(
+                    "replay delivery envelope does not match its internal retry contract",
+                )
+                .with_context("task_id", &self.task_id));
+            }
+        }
+        if self.error_retryable.is_some()
+            && (!matches!(self.status.as_str(), "failed" | "timed_out")
+                || self.error_kind.is_none()
+                || self.error_message.is_none())
+        {
+            return Err(EvaError::invalid_argument(
+                "task retry classification requires a failed or timed-out outcome",
+            ));
+        }
+        if self.retry_ready_at_ms.is_some()
+            && (!matches!(self.status.as_str(), "failed" | "timed_out")
+                || self.attempts >= self.retry_max_attempts
+                || self.error_retryable == Some(false))
+        {
+            return Err(EvaError::invalid_argument(
+                "task retry readiness requires a retryable outcome with remaining attempts",
+            ));
+        }
         match (&self.result_digest, self.result_size_bytes) {
             (None, None) => {}
             (Some(digest), Some(_)) if self.status == "completed" && self.envelope.is_some() => {
@@ -642,12 +747,16 @@ impl TaskStateSnapshot {
                     self.result_digest.is_none()
                         && self.error_kind.is_none()
                         && self.error_message.is_none()
+                        && self.error_retryable.is_none()
+                        && self.retry_ready_at_ms.is_none()
                         && self.interrupted_reason.is_none()
                 }
                 "completed" => {
                     self.result_digest.is_some()
                         && self.error_kind.is_none()
                         && self.error_message.is_none()
+                        && self.error_retryable.is_none()
+                        && self.retry_ready_at_ms.is_none()
                         && self.interrupted_reason.is_none()
                 }
                 "failed" => {
@@ -667,6 +776,8 @@ impl TaskStateSnapshot {
                     self.result_digest.is_none()
                         && self.error_kind.is_none()
                         && self.error_message.is_none()
+                        && self.error_retryable.is_none()
+                        && self.retry_ready_at_ms.is_none()
                         && self.interrupted_reason.is_none()
                 }
                 "interrupted" | "recovering" => self.result_digest.is_none(),
@@ -701,7 +812,7 @@ impl TaskStateSnapshot {
     /// 缺少这些字段时按 version/generation 零读取，并只能通过一次成功 CAS 升级。
     pub fn to_storage(&self) -> String {
         let format = if self.envelope.is_some() {
-            TASK_STATE_FORMAT_V4
+            TASK_STATE_FORMAT_V5
         } else {
             TASK_STATE_FORMAT_V2
         };
@@ -770,6 +881,32 @@ impl TaskStateSnapshot {
                 format!(
                     "result_size_bytes={}",
                     self.result_size_bytes
+                        .map(|value| value.to_string())
+                        .unwrap_or_default()
+                ),
+                format!(
+                    "replay_event_id={}",
+                    self.replay_delivery
+                        .as_ref()
+                        .map(|value| encode_field(&value.replay_event_id))
+                        .unwrap_or_default()
+                ),
+                format!(
+                    "replay_delivery_index={}",
+                    self.replay_delivery
+                        .as_ref()
+                        .map(|value| value.delivery_index.to_string())
+                        .unwrap_or_default()
+                ),
+                format!(
+                    "error_retryable={}",
+                    self.error_retryable
+                        .map(|value| value.to_string())
+                        .unwrap_or_default()
+                ),
+                format!(
+                    "retry_ready_at_ms={}",
+                    self.retry_ready_at_ms
                         .map(|value| value.to_string())
                         .unwrap_or_default()
                 ),
@@ -866,6 +1003,7 @@ impl TaskStateSnapshot {
             owner_generation: WriterGeneration::ZERO,
             task_id: String::new(),
             envelope: None,
+            replay_delivery: None,
             status: String::new(),
             attempts: 0,
             execution_owner: None,
@@ -881,6 +1019,8 @@ impl TaskStateSnapshot {
             interrupted_reason: None,
             error_kind: None,
             error_message: None,
+            error_retryable: None,
+            retry_ready_at_ms: None,
             logs: Vec::new(),
             dead_letters: Vec::new(),
             replayed_events: Vec::new(),
@@ -896,6 +1036,8 @@ impl TaskStateSnapshot {
         let mut envelope_max_attempts = None;
         let mut envelope_retry_backoff_ms = None;
         let mut envelope_attempt_timeout_ms: Option<Option<u64>> = None;
+        let mut replay_event_id: Option<Option<String>> = None;
+        let mut replay_delivery_index: Option<Option<usize>> = None;
         let mut seen_scalars = BTreeSet::new();
 
         for line in data.lines().filter(|line| !line.trim().is_empty()) {
@@ -948,6 +1090,16 @@ impl TaskStateSnapshot {
                     "envelope_attempt_timeout_ms",
                     value,
                 )?);
+            } else if let Some(value) = line.strip_prefix("replay_event_id=") {
+                replay_event_id = Some(decode_optional_field(value));
+            } else if let Some(value) = line.strip_prefix("replay_delivery_index=") {
+                replay_delivery_index =
+                    Some(parse_optional_stored_usize("replay_delivery_index", value)?);
+            } else if let Some(value) = line.strip_prefix("error_retryable=") {
+                snapshot.error_retryable = parse_optional_stored_bool("error_retryable", value)?;
+            } else if let Some(value) = line.strip_prefix("retry_ready_at_ms=") {
+                snapshot.retry_ready_at_ms =
+                    parse_optional_stored_u128("retry_ready_at_ms", value)?;
             } else if let Some(value) = line.strip_prefix("cancel_requested=") {
                 snapshot.cancel_requested = value == "true";
             } else if let Some(value) = line.strip_prefix("cancel_accepted=") {
@@ -1014,36 +1166,61 @@ impl TaskStateSnapshot {
         let has_execution_fields = execution_fields
             .iter()
             .any(|field| seen_scalars.contains(*field));
+        let v5_fields = [
+            "replay_event_id",
+            "replay_delivery_index",
+            "error_retryable",
+            "retry_ready_at_ms",
+        ];
+        let has_v5_fields = v5_fields.iter().any(|field| seen_scalars.contains(*field));
         match format.as_deref() {
             None if snapshot.record_version == StateVersion::ZERO
                 && snapshot.owner_generation == WriterGeneration::ZERO
                 && !has_envelope_fields
-                && !has_execution_fields => {}
+                && !has_execution_fields
+                && !has_v5_fields => {}
             Some(TASK_STATE_FORMAT_V2)
                 if snapshot.record_version != StateVersion::ZERO
                     || snapshot.owner_generation == WriterGeneration::ZERO =>
             {
-                if has_envelope_fields || has_execution_fields {
+                if has_envelope_fields || has_execution_fields || has_v5_fields {
                     return Err(EvaError::invalid_argument(
                         "v2 task state cannot contain envelope or execution fields",
                     ));
                 }
             }
             Some(task_format)
-                if matches!(task_format, TASK_STATE_FORMAT_V3 | TASK_STATE_FORMAT_V4)
-                    && (snapshot.record_version != StateVersion::ZERO
-                        || snapshot.owner_generation == WriterGeneration::ZERO) =>
+                if matches!(
+                    task_format,
+                    TASK_STATE_FORMAT_V3 | TASK_STATE_FORMAT_V4 | TASK_STATE_FORMAT_V5
+                ) && (snapshot.record_version != StateVersion::ZERO
+                    || snapshot.owner_generation == WriterGeneration::ZERO) =>
             {
-                if task_format == TASK_STATE_FORMAT_V3 && has_execution_fields {
+                if task_format == TASK_STATE_FORMAT_V3 && (has_execution_fields || has_v5_fields) {
                     return Err(EvaError::invalid_argument(
-                        "v3 task state cannot contain v4 execution fields",
+                        "v3 task state cannot contain later execution fields",
                     ));
                 }
-                if task_format == TASK_STATE_FORMAT_V4 {
+                if task_format == TASK_STATE_FORMAT_V4 && has_v5_fields {
+                    return Err(EvaError::invalid_argument(
+                        "v4 task state cannot contain v5 replay or retry fields",
+                    ));
+                }
+                if matches!(task_format, TASK_STATE_FORMAT_V4 | TASK_STATE_FORMAT_V5) {
                     for field in execution_fields {
                         if !seen_scalars.contains(field) {
                             return Err(EvaError::invalid_argument(
-                                "v4 task state is missing an execution scalar field",
+                                "task state is missing an execution scalar field",
+                            )
+                            .with_context("field", field));
+                        }
+                    }
+                }
+                if task_format == TASK_STATE_FORMAT_V5 {
+                    for field in v5_fields {
+                        if !seen_scalars.contains(field) {
+                            return Err(EvaError::invalid_argument(
+                                "v5 task state is missing a replay or retry scalar field",
                             )
                             .with_context("field", field));
                         }
@@ -1100,10 +1277,34 @@ impl TaskStateSnapshot {
                         attempt_timeout_ms,
                     )?,
                 )?);
+                if task_format == TASK_STATE_FORMAT_V5 {
+                    match (
+                        replay_event_id.ok_or_else(|| {
+                            EvaError::invalid_argument("v5 task state is missing replay_event_id")
+                        })?,
+                        replay_delivery_index.ok_or_else(|| {
+                            EvaError::invalid_argument(
+                                "v5 task state is missing replay_delivery_index",
+                            )
+                        })?,
+                    ) {
+                        (None, None) => {}
+                        (Some(event_id), Some(delivery_index)) => {
+                            snapshot.replay_delivery =
+                                Some(TaskReplayDeliverySnapshot::new(event_id, delivery_index)?);
+                        }
+                        _ => {
+                            return Err(EvaError::invalid_argument(
+                                "replay delivery identity fields must appear together",
+                            ));
+                        }
+                    }
+                }
             }
             Some(TASK_STATE_FORMAT_V2)
             | Some(TASK_STATE_FORMAT_V3)
-            | Some(TASK_STATE_FORMAT_V4) => {
+            | Some(TASK_STATE_FORMAT_V4)
+            | Some(TASK_STATE_FORMAT_V5) => {
                 return Err(EvaError::invalid_argument(
                     "uncommitted task state cannot have a durable owner generation",
                 ))
@@ -1195,6 +1396,8 @@ impl TaskStateSnapshot {
         self.interrupted_reason = None;
         self.error_kind = None;
         self.error_message = None;
+        self.error_retryable = None;
+        self.retry_ready_at_ms = None;
         self.mark_running(heartbeat_at_ms, deadline_at_ms, cancel_token);
         self.push_log("info", format!("task attempt {attempt} claimed by worker"));
         self.validate()?;
@@ -1243,6 +1446,8 @@ impl TaskStateSnapshot {
         self.result_size_bytes = Some(result_size_bytes);
         self.error_kind = None;
         self.error_message = None;
+        self.error_retryable = None;
+        self.retry_ready_at_ms = None;
         self.push_log("info", "task completed");
         self.validate()
     }
@@ -1255,6 +1460,7 @@ impl TaskStateSnapshot {
         cancel_token: &str,
         error_kind: impl Into<String>,
         error_message: impl Into<String>,
+        retryable: bool,
     ) -> Result<(), EvaError> {
         self.verify_execution_claim(execution_owner, attempt, cancel_token)?;
         if self.status != "running" {
@@ -1264,7 +1470,7 @@ impl TaskStateSnapshot {
         }
         self.result_digest = None;
         self.result_size_bytes = None;
-        self.mark_failed(attempt, error_kind, error_message);
+        self.mark_failed(attempt, error_kind, error_message, retryable);
         self.validate()
     }
 
@@ -1275,6 +1481,7 @@ impl TaskStateSnapshot {
         attempt: usize,
         cancel_token: &str,
         now_ms: u128,
+        retryable: bool,
     ) -> Result<(), EvaError> {
         self.verify_execution_claim(execution_owner, attempt, cancel_token)?;
         if self.status != "running" {
@@ -1284,7 +1491,7 @@ impl TaskStateSnapshot {
         }
         self.result_digest = None;
         self.result_size_bytes = None;
-        self.mark_timed_out(now_ms);
+        self.mark_timed_out(now_ms, retryable);
         self.validate()
     }
 
@@ -1363,17 +1570,23 @@ impl TaskStateSnapshot {
         self.cancel_accepted = true;
         self.result_digest = None;
         self.result_size_bytes = None;
+        self.error_kind = None;
+        self.error_message = None;
+        self.error_retryable = None;
+        self.retry_ready_at_ms = None;
         self.push_log("warning", "task marked cancelled");
     }
 
     /// 将任务转换为 timed_out，记录超时时刻和稳定 timeout 错误。
-    pub fn mark_timed_out(&mut self, now_ms: u128) {
+    pub fn mark_timed_out(&mut self, now_ms: u128, retryable: bool) {
         self.status = "timed_out".to_owned();
         self.heartbeat_at_ms = Some(now_ms);
         self.result_digest = None;
         self.result_size_bytes = None;
         self.error_kind = Some("timeout".to_owned());
         self.error_message = Some("task deadline exceeded".to_owned());
+        self.error_retryable = Some(retryable);
+        self.retry_ready_at_ms = None;
         self.push_log("error", format!("task timed out at {now_ms}"));
     }
 
@@ -1385,6 +1598,8 @@ impl TaskStateSnapshot {
         self.result_size_bytes = None;
         self.error_kind = None;
         self.error_message = None;
+        self.error_retryable = None;
+        self.retry_ready_at_ms = None;
         self.push_log("info", "task completed");
     }
 
@@ -1394,6 +1609,7 @@ impl TaskStateSnapshot {
         attempts: usize,
         error_kind: impl Into<String>,
         error_message: impl Into<String>,
+        retryable: bool,
     ) {
         self.status = "failed".to_owned();
         self.attempts = attempts;
@@ -1401,6 +1617,8 @@ impl TaskStateSnapshot {
         self.result_size_bytes = None;
         self.error_kind = Some(error_kind.into());
         self.error_message = Some(error_message.into());
+        self.error_retryable = Some(retryable);
+        self.retry_ready_at_ms = None;
         self.push_log("error", "task failed");
     }
 
@@ -1422,6 +1640,46 @@ impl TaskStateSnapshot {
         self.result_size_bytes = None;
         self.interrupted_reason = Some(reason.clone());
         self.push_log("warning", format!("task recovering: {reason}"));
+    }
+
+    /// Clears an abandoned replay attempt so a later writer generation can claim it again.
+    pub fn mark_abandoned_replay_delivery_queued(&mut self) -> Result<(), EvaError> {
+        if self.replay_delivery.is_none()
+            || !matches!(
+                self.status.as_str(),
+                "running" | "interrupted" | "recovering"
+            )
+            || self.cancel_requested
+            || self.cancel_accepted
+            || !self.dead_letters.is_empty()
+            || self.attempts >= self.retry_max_attempts
+        {
+            return Err(EvaError::conflict(
+                "task is not an abandoned replay delivery eligible for recovery",
+            )
+            .with_context("task_id", &self.task_id)
+            .with_context("status", &self.status));
+        }
+        let previous_status = self.status.clone();
+        self.status = "queued".to_owned();
+        self.execution_owner = None;
+        self.cancel_token = None;
+        self.heartbeat_at_ms = None;
+        self.deadline_at_ms = None;
+        self.result_digest = None;
+        self.result_size_bytes = None;
+        self.interrupted_reason = None;
+        self.error_kind = None;
+        self.error_message = None;
+        self.error_retryable = None;
+        self.retry_ready_at_ms = None;
+        self.push_log(
+            "warning",
+            format!(
+                "abandoned replay delivery recovered from {previous_status} after writer turnover"
+            ),
+        );
+        self.validate()
     }
 
     /// 判断 now 是否到达或超过 deadline；无 deadline 永不超时。
@@ -1672,6 +1930,95 @@ impl FileSystemTaskStateStore {
         }
     }
 
+    /// Schedules or performs the retry transition for a retryable terminal attempt.
+    ///
+    /// A non-zero envelope backoff is first persisted as `retry_ready_at_ms`; the task remains
+    /// failed until a later observation reaches that boundary. This is the only terminal rollback
+    /// entry point, and every CAS loser reloads the authoritative record before retrying.
+    pub fn requeue_retryable(
+        &mut self,
+        task_id: &str,
+        observed_at_ms: u128,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        RequestId::parse(task_id)?;
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let current = self.read(Some(task_id))?;
+            let Some(candidate) = task_retry_transition_candidate(&current, observed_at_ms) else {
+                return Ok(current);
+            };
+            let expected_version = current.record_version;
+            match self.compare_and_set_retry_requeue(&candidate) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(task_id))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                    if task_retry_transition_candidate(&observed, observed_at_ms).is_none() {
+                        return Ok(observed);
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("task retry requeue exceeded the CAS retry limit")
+                .with_context("task_id", task_id),
+        )
+    }
+
+    /// Requeues one abandoned internal replay delivery after writer-generation turnover.
+    ///
+    /// Operator tasks cannot enter this path because the immutable v5 replay marker is required.
+    /// A running task owned by the current writer generation is never reclaimed.
+    pub fn recover_abandoned_replay_delivery(
+        &mut self,
+        task_id: &str,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        RequestId::parse(task_id)?;
+        let writer_generation = self
+            .writer
+            .as_ref()
+            .ok_or_else(|| {
+                EvaError::conflict("replay delivery recovery requires runtime writer ownership")
+            })?
+            .generation();
+        for _ in 0..TASK_STATE_CAS_RETRY_LIMIT {
+            let current = self.read(Some(task_id))?;
+            if current.replay_delivery.is_none() {
+                return Err(
+                    EvaError::conflict("task is not a persisted replay delivery")
+                        .with_context("task_id", task_id),
+                );
+            }
+            if current.status == "running" && current.owner_generation == writer_generation {
+                return Err(EvaError::conflict(
+                    "current writer cannot reclaim its own running replay delivery",
+                )
+                .with_context("task_id", task_id));
+            }
+            let Some(candidate) = task_replay_recovery_candidate(&current) else {
+                return Ok(current);
+            };
+            let expected_version = current.record_version;
+            match self.compare_and_set_retry_requeue(&candidate) {
+                Ok(committed) => return Ok(committed),
+                Err(error) => {
+                    let observed = self.read(Some(task_id))?;
+                    if observed.record_version == expected_version {
+                        return Err(error);
+                    }
+                    if task_replay_recovery_candidate(&observed).is_none() {
+                        return Ok(observed);
+                    }
+                }
+            }
+        }
+        Err(
+            EvaError::conflict("replay delivery recovery exceeded the CAS retry limit")
+                .with_context("task_id", task_id),
+        )
+    }
+
     /// 在最新 record version 上验证完整 attempt fence，并提交结果或合并并发取消。
     pub fn finish_execution(
         &mut self,
@@ -1830,7 +2177,7 @@ impl FileSystemTaskStateStore {
             .with_context("task_id", &snapshot.task_id)
             .with_context("actual", snapshot.record_version.0.to_string()));
         }
-        self.commit_snapshot(snapshot, StateVersion::ZERO, true, false, false)
+        self.commit_snapshot(snapshot, StateVersion::ZERO, true, false, false, false)
     }
 
     /// 使用 snapshot 携带的 record version 作为 expected 值执行持久 CAS。
@@ -1838,21 +2185,35 @@ impl FileSystemTaskStateStore {
         &mut self,
         snapshot: &TaskStateSnapshot,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        self.commit_snapshot(snapshot, snapshot.record_version, false, false, false)
+        self.commit_snapshot(
+            snapshot,
+            snapshot.record_version,
+            false,
+            false,
+            false,
+            false,
+        )
     }
 
     fn compare_and_set_attempt_outcome(
         &mut self,
         snapshot: &TaskStateSnapshot,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        self.commit_snapshot(snapshot, snapshot.record_version, false, true, true)
+        self.commit_snapshot(snapshot, snapshot.record_version, false, true, true, false)
     }
 
     fn compare_and_set_heartbeat(
         &mut self,
         snapshot: &TaskStateSnapshot,
     ) -> Result<TaskStateSnapshot, EvaError> {
-        self.commit_snapshot(snapshot, snapshot.record_version, false, false, true)
+        self.commit_snapshot(snapshot, snapshot.record_version, false, false, true, false)
+    }
+
+    fn compare_and_set_retry_requeue(
+        &mut self,
+        snapshot: &TaskStateSnapshot,
+    ) -> Result<TaskStateSnapshot, EvaError> {
+        self.commit_snapshot(snapshot, snapshot.record_version, false, false, false, true)
     }
 
     /// 从权威 ID 记录原子重建 latest 派生别名，不改变 record version。
@@ -1882,6 +2243,7 @@ impl FileSystemTaskStateStore {
         create_only: bool,
         allow_attempt_outcome: bool,
         allow_heartbeat: bool,
+        allow_retry_requeue: bool,
     ) -> Result<TaskStateSnapshot, EvaError> {
         snapshot.validate()?;
         let dir = self.task_dir();
@@ -1914,9 +2276,11 @@ impl FileSystemTaskStateStore {
                     .with_context("expected", current.owner_generation.0.to_string())
                     .with_context("actual", snapshot.owner_generation.0.to_string()));
                 }
-                if current.envelope != snapshot.envelope {
+                if current.envelope != snapshot.envelope
+                    || current.replay_delivery != snapshot.replay_delivery
+                {
                     return Err(EvaError::conflict(
-                        "task lifecycle update cannot modify the immutable envelope",
+                        "task lifecycle update cannot modify immutable task identity",
                     )
                     .with_context("task_id", &snapshot.task_id));
                 }
@@ -1925,6 +2289,7 @@ impl FileSystemTaskStateStore {
                     snapshot,
                     allow_attempt_outcome,
                     allow_heartbeat,
+                    allow_retry_requeue,
                 )?;
             }
             if create_only && current.is_some() {
@@ -2110,18 +2475,24 @@ fn apply_task_attempt_outcome(
         TaskAttemptOutcome::Failed {
             error_kind,
             error_message,
+            retryable,
         } => snapshot.fail_execution(
             fence.execution_owner(),
             fence.attempt(),
             fence.cancel_token(),
             error_kind.clone(),
             error_message.clone(),
+            *retryable,
         ),
-        TaskAttemptOutcome::TimedOut { observed_at_ms } => snapshot.time_out_execution(
+        TaskAttemptOutcome::TimedOut {
+            observed_at_ms,
+            retryable,
+        } => snapshot.time_out_execution(
             fence.execution_owner(),
             fence.attempt(),
             fence.cancel_token(),
             *observed_at_ms,
+            *retryable,
         ),
     }
 }
@@ -2142,15 +2513,137 @@ fn task_attempt_outcome_is_committed(
         TaskAttemptOutcome::Failed {
             error_kind,
             error_message,
+            retryable,
         } => {
             snapshot.status == "failed"
                 && snapshot.error_kind.as_ref() == Some(error_kind)
                 && snapshot.error_message.as_ref() == Some(error_message)
+                && snapshot.error_retryable == Some(*retryable)
         }
-        TaskAttemptOutcome::TimedOut { observed_at_ms } => {
-            snapshot.status == "timed_out" && snapshot.heartbeat_at_ms == Some(*observed_at_ms)
+        TaskAttemptOutcome::TimedOut {
+            observed_at_ms,
+            retryable,
+        } => {
+            snapshot.status == "timed_out"
+                && snapshot.heartbeat_at_ms == Some(*observed_at_ms)
+                && snapshot.error_retryable == Some(*retryable)
         }
     }
+}
+
+fn task_retry_transition_candidate(
+    current: &TaskStateSnapshot,
+    observed_at_ms: u128,
+) -> Option<TaskStateSnapshot> {
+    if !task_retry_is_eligible(current) {
+        return None;
+    }
+    if let Some(ready_at_ms) = current.retry_ready_at_ms {
+        return (observed_at_ms >= ready_at_ms)
+            .then(|| task_retry_requeue_candidate(current))
+            .flatten();
+    }
+    let retry_backoff_ms = current
+        .envelope
+        .as_ref()
+        .map(|envelope| envelope.attempt_policy.retry_backoff_ms)?;
+    if retry_backoff_ms == 0 {
+        task_retry_requeue_candidate(current)
+    } else {
+        let ready_at_ms = observed_at_ms.saturating_add(u128::from(retry_backoff_ms));
+        task_retry_schedule_candidate(current, ready_at_ms)
+    }
+}
+
+fn task_retry_is_eligible(current: &TaskStateSnapshot) -> bool {
+    matches!(current.status.as_str(), "failed" | "timed_out")
+        && current.attempts < current.retry_max_attempts
+        && current.envelope.is_some()
+        && !current.cancel_requested
+        && !current.cancel_accepted
+        && stored_task_error_is_retryable(current)
+}
+
+fn stored_task_error_is_retryable(current: &TaskStateSnapshot) -> bool {
+    current.error_retryable.unwrap_or({
+        matches!(
+            current.error_kind.as_deref(),
+            Some("timeout" | "unavailable")
+        )
+    })
+}
+
+fn task_retry_schedule_candidate(
+    current: &TaskStateSnapshot,
+    ready_at_ms: u128,
+) -> Option<TaskStateSnapshot> {
+    if !task_retry_is_eligible(current) || current.retry_ready_at_ms.is_some() {
+        return None;
+    }
+    let mut candidate = current.clone();
+    candidate.retry_ready_at_ms = Some(ready_at_ms);
+    candidate.push_log(
+        "warning",
+        format!(
+            "task attempt {} retry scheduled for {ready_at_ms}",
+            current.attempts
+        ),
+    );
+    Some(candidate)
+}
+
+/// 构造专用 retry 重排候选；失败消息来自已经过 handler 边界脱敏的 durable outcome。
+fn task_retry_requeue_candidate(current: &TaskStateSnapshot) -> Option<TaskStateSnapshot> {
+    if !task_retry_is_eligible(current) {
+        return None;
+    }
+
+    let previous_status = current.status.clone();
+    let previous_error_kind = current.error_kind.as_deref().unwrap_or("unknown");
+    let previous_error_message = current
+        .error_message
+        .as_deref()
+        .unwrap_or("failure details unavailable");
+    let mut candidate = current.clone();
+    candidate.status = "queued".to_owned();
+    candidate.execution_owner = None;
+    candidate.cancel_token = None;
+    candidate.heartbeat_at_ms = None;
+    candidate.deadline_at_ms = None;
+    candidate.result_digest = None;
+    candidate.result_size_bytes = None;
+    candidate.interrupted_reason = None;
+    candidate.error_kind = None;
+    candidate.error_message = None;
+    candidate.error_retryable = None;
+    candidate.retry_ready_at_ms = None;
+    candidate.push_log(
+        "warning",
+        format!(
+            "task attempt {} queued for retry after {}: kind={}; message={}",
+            current.attempts, previous_status, previous_error_kind, previous_error_message
+        ),
+    );
+    Some(candidate)
+}
+
+fn task_replay_recovery_candidate(current: &TaskStateSnapshot) -> Option<TaskStateSnapshot> {
+    let mut candidate = current.clone();
+    candidate
+        .mark_abandoned_replay_delivery_queued()
+        .ok()
+        .map(|_| candidate)
+}
+
+fn task_retry_special_transition_matches(
+    current: &TaskStateSnapshot,
+    proposed: &TaskStateSnapshot,
+) -> bool {
+    task_retry_requeue_candidate(current).as_ref() == Some(proposed)
+        || proposed.retry_ready_at_ms.is_some_and(|ready_at_ms| {
+            task_retry_schedule_candidate(current, ready_at_ms).as_ref() == Some(proposed)
+        })
+        || task_replay_recovery_candidate(current).as_ref() == Some(proposed)
 }
 
 fn validate_task_state_transition(
@@ -2158,6 +2651,7 @@ fn validate_task_state_transition(
     proposed: &TaskStateSnapshot,
     allow_attempt_outcome: bool,
     allow_heartbeat: bool,
+    allow_retry_requeue: bool,
 ) -> Result<(), EvaError> {
     let next_attempt = current.attempts.checked_add(1);
     let claim_deadline_valid = match (
@@ -2192,11 +2686,14 @@ fn validate_task_state_transition(
         && proposed.error_kind.is_none()
         && proposed.error_message.is_none()
         && claim_deadline_valid;
+    let is_retry_requeue =
+        allow_retry_requeue && task_retry_special_transition_matches(current, proposed);
 
     if (current.attempts != proposed.attempts
         || current.execution_owner != proposed.execution_owner
         || current.cancel_token != proposed.cancel_token)
         && !is_claim
+        && !is_retry_requeue
     {
         return Err(
             EvaError::conflict("task execution fence can change only during queued claim")
@@ -2205,7 +2702,10 @@ fn validate_task_state_transition(
                 .with_context("proposed_status", &proposed.status),
         );
     }
-    if current.execution_owner.is_some() && current.deadline_at_ms != proposed.deadline_at_ms {
+    if current.execution_owner.is_some()
+        && current.deadline_at_ms != proposed.deadline_at_ms
+        && !is_retry_requeue
+    {
         return Err(
             EvaError::conflict("task attempt deadline is immutable after claim")
                 .with_context("task_id", &current.task_id),
@@ -2215,6 +2715,7 @@ fn validate_task_state_transition(
         && matches!(current.status.as_str(), "running" | "cancelling")
         && current.heartbeat_at_ms != proposed.heartbeat_at_ms
         && !allow_heartbeat
+        && !is_retry_requeue
     {
         return Err(
             EvaError::conflict("claimed task heartbeat requires the fenced heartbeat API")
@@ -2237,10 +2738,13 @@ fn validate_task_state_transition(
         );
     }
     if current.is_terminal()
+        && !is_retry_requeue
         && (current.result_digest != proposed.result_digest
             || current.result_size_bytes != proposed.result_size_bytes
             || current.error_kind != proposed.error_kind
             || current.error_message != proposed.error_message
+            || current.error_retryable != proposed.error_retryable
+            || current.retry_ready_at_ms != proposed.retry_ready_at_ms
             || current.interrupted_reason != proposed.interrupted_reason
             || current.heartbeat_at_ms != proposed.heartbeat_at_ms)
     {
@@ -2280,7 +2784,9 @@ fn validate_task_state_transition(
         }
         _ => proposed.status == current.status,
     };
-    if !allowed || (proposed.status == "running" && !is_claim && current.status != "running") {
+    if (!allowed && !is_retry_requeue)
+        || (proposed.status == "running" && !is_claim && current.status != "running")
+    {
         return Err(
             EvaError::conflict("task lifecycle transition is not allowed")
                 .with_context("task_id", &current.task_id)
@@ -2312,6 +2818,10 @@ fn is_single_task_field(field: &str) -> bool {
             | "envelope_max_attempts"
             | "envelope_retry_backoff_ms"
             | "envelope_attempt_timeout_ms"
+            | "replay_event_id"
+            | "replay_delivery_index"
+            | "error_retryable"
+            | "retry_ready_at_ms"
             | "cancel_requested"
             | "cancel_accepted"
             | "cancel_reason"
@@ -2354,6 +2864,17 @@ fn validate_task_kind(value: &str) -> Result<(), EvaError> {
         }
     }
     Ok(())
+}
+
+fn is_replay_delivery_task_id(task_id: &str) -> bool {
+    task_id
+        .strip_prefix(REPLAY_DELIVERY_TASK_PREFIX)
+        .is_some_and(|suffix| {
+            suffix.len() == 64
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        })
 }
 
 fn validate_execution_owner(value: &str) -> Result<(), EvaError> {
@@ -2511,6 +3032,19 @@ fn parse_optional_stored_u128(name: &'static str, value: &str) -> Result<Option<
     })
 }
 
+fn parse_optional_stored_bool(name: &'static str, value: &str) -> Result<Option<bool>, EvaError> {
+    match value {
+        "" => Ok(None),
+        "true" => Ok(Some(true)),
+        "false" => Ok(Some(false)),
+        _ => Err(
+            EvaError::invalid_argument("task state contains an invalid optional boolean")
+                .with_context("field", name)
+                .with_context("value", value),
+        ),
+    }
+}
+
 /// 将磁盘空串恢复为 None，非空值百分号解码。
 fn decode_optional_field(value: &str) -> Option<String> {
     if value.is_empty() {
@@ -2569,7 +3103,7 @@ mod tests {
     }
 
     #[test]
-    /// 新 v4 任务在 writer 释放并只读重开后仍完整恢复二进制 inline payload 与执行策略。
+    /// 新 v5 任务在 writer 释放并只读重开后仍完整恢复二进制 inline payload 与执行策略。
     fn task_envelope_reopens_with_exact_inline_payload() {
         let root = test_root("envelope-inline-round-trip");
         let input = vec![0, b'\n', b'%', b'|', b'=', 0xff];
@@ -2725,8 +3259,8 @@ mod tests {
     }
 
     #[test]
-    /// v4 磁盘记录缺字段、摘要篡改、重复标量、未知 discriminator 或 policy 漂移均失败。
-    fn task_envelope_v4_rejects_corrupt_persisted_fields() {
+    /// v5 磁盘记录缺字段、摘要篡改、重复标量、未知 discriminator 或 policy 漂移均失败。
+    fn task_envelope_v5_rejects_corrupt_persisted_fields() {
         let envelope = TaskEnvelopeSnapshot::inline(
             "runtime.echo",
             "root-agent",
@@ -2759,7 +3293,7 @@ mod tests {
                 1,
             ),
             stored.replace("result_size_bytes=\n", "result_size_bytes=1\n"),
-            stored.replace(TASK_STATE_FORMAT_V4, TASK_STATE_FORMAT_V3),
+            stored.replace(TASK_STATE_FORMAT_V5, TASK_STATE_FORMAT_V4),
         ];
 
         for corrupted in cases {
@@ -2770,7 +3304,7 @@ mod tests {
 
     #[test]
     /// claim/finish 持久绑定 owner、attempt、cancel token 和结果摘要，Debug 不泄露 fencing token。
-    fn task_execution_claim_and_finish_round_trip_v4() {
+    fn task_execution_claim_and_finish_round_trip_v5() {
         let root = test_root("execution-claim-finish");
         let backend = crate::FileSystemDurableBackend::open(
             crate::DurableBackendOptions::read_write(root.path()),
@@ -2868,7 +3402,7 @@ mod tests {
         assert!(
             fs::read_to_string(store.task_path("req-task-execution-claim").unwrap())
                 .unwrap()
-                .starts_with("format=eva.task-state.v4\n")
+                .starts_with("format=eva.task-state.v5\n")
         );
     }
 
@@ -3176,6 +3710,7 @@ mod tests {
                 &TaskAttemptOutcome::Failed {
                     error_kind: "unavailable".to_owned(),
                     error_message: "handler unavailable".to_owned(),
+                    retryable: true,
                 },
             )
             .unwrap();
@@ -3194,6 +3729,7 @@ mod tests {
                 timed_out_claim.fence(),
                 &TaskAttemptOutcome::TimedOut {
                     observed_at_ms: 200,
+                    retryable: true,
                 },
             )
             .unwrap();
@@ -3202,6 +3738,7 @@ mod tests {
                 timed_out_claim.fence(),
                 &TaskAttemptOutcome::TimedOut {
                     observed_at_ms: 201,
+                    retryable: true,
                 },
             )
             .unwrap_err();
@@ -3254,7 +3791,372 @@ mod tests {
     }
 
     #[test]
-    /// 旧 v3 queued 记录仍可读取，并在首次成功 claim 时惰性升级为 v4。
+    /// retry 重排只接受仍有配额的 failed/timed_out；普通 CAS 和其他状态均不能回退。
+    fn task_retry_requeue_enforces_state_gates_and_preserves_failure_history() {
+        let root = test_root("retry-requeue-gates");
+        let mut store = FileSystemTaskStateStore::new(root.path());
+        for (task_id, max_attempts) in [
+            ("req-requeue-queued", 2),
+            ("req-requeue-running", 2),
+            ("req-requeue-completed", 2),
+            ("req-requeue-cancelled", 2),
+            ("req-requeue-exhausted", 1),
+            ("req-requeue-cancel-requested", 2),
+            ("req-requeue-failed", 2),
+            ("req-requeue-timed-out", 2),
+        ] {
+            create_retry_test_task(&mut store, task_id, max_attempts, b"private-payload");
+        }
+
+        let running = store
+            .try_claim_queued(
+                "req-requeue-running",
+                "daemon.requeue.running",
+                "cancel.requeue.running",
+                100,
+            )
+            .unwrap()
+            .unwrap()
+            .snapshot()
+            .clone();
+        let completed = finish_retry_test_task(
+            &mut store,
+            "req-requeue-completed",
+            &TaskAttemptOutcome::Completed {
+                result_digest: sha256_digest(b"done"),
+                result_size_bytes: 4,
+            },
+        );
+        let cancelled = store
+            .request_cancellation("req-requeue-cancelled", "operator stop")
+            .unwrap();
+        let exhausted = finish_retry_test_task(
+            &mut store,
+            "req-requeue-exhausted",
+            &TaskAttemptOutcome::Failed {
+                error_kind: "unavailable".to_owned(),
+                error_message: "retry budget exhausted".to_owned(),
+                retryable: true,
+            },
+        );
+        finish_retry_test_task(
+            &mut store,
+            "req-requeue-cancel-requested",
+            &TaskAttemptOutcome::Failed {
+                error_kind: "unavailable".to_owned(),
+                error_message: "handler unavailable".to_owned(),
+                retryable: true,
+            },
+        );
+        let cancel_requested = store
+            .request_cancellation("req-requeue-cancel-requested", "operator stop")
+            .unwrap();
+        let failed = finish_retry_test_task(
+            &mut store,
+            "req-requeue-failed",
+            &TaskAttemptOutcome::Failed {
+                error_kind: "unavailable".to_owned(),
+                error_message: "handler unavailable".to_owned(),
+                retryable: true,
+            },
+        );
+        let timed_out = finish_retry_test_task(
+            &mut store,
+            "req-requeue-timed-out",
+            &TaskAttemptOutcome::TimedOut {
+                observed_at_ms: 250,
+                retryable: true,
+            },
+        );
+
+        let queued = store.read(Some("req-requeue-queued")).unwrap();
+        for (task_id, expected) in [
+            ("req-requeue-queued", queued),
+            ("req-requeue-running", running),
+            ("req-requeue-completed", completed),
+            ("req-requeue-cancelled", cancelled),
+            ("req-requeue-exhausted", exhausted),
+            ("req-requeue-cancel-requested", cancel_requested),
+        ] {
+            assert_eq!(store.requeue_retryable(task_id, 0).unwrap(), expected);
+            assert_eq!(store.read(Some(task_id)).unwrap(), expected);
+        }
+
+        let forged_requeue = task_retry_requeue_candidate(&failed).unwrap();
+        let plain_cas_error = store.compare_and_set(&forged_requeue).unwrap_err();
+        assert_eq!(plain_cas_error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(store.read(Some("req-requeue-failed")).unwrap(), failed);
+
+        let failed_envelope = failed.envelope.clone();
+        let requeued_failed = store.requeue_retryable("req-requeue-failed", 0).unwrap();
+        assert_eq!(requeued_failed.status, "queued");
+        assert_eq!(requeued_failed.attempts, failed.attempts);
+        assert_eq!(requeued_failed.envelope, failed_envelope);
+        assert!(requeued_failed.execution_owner.is_none());
+        assert!(requeued_failed.cancel_token.is_none());
+        assert!(requeued_failed.heartbeat_at_ms.is_none());
+        assert!(requeued_failed.deadline_at_ms.is_none());
+        assert!(requeued_failed.result_digest.is_none());
+        assert!(requeued_failed.result_size_bytes.is_none());
+        assert!(requeued_failed.interrupted_reason.is_none());
+        assert!(requeued_failed.error_kind.is_none());
+        assert!(requeued_failed.error_message.is_none());
+        let history = &requeued_failed.logs.last().unwrap().message;
+        assert!(history.contains("kind=unavailable"));
+        assert!(history.contains("message=handler unavailable"));
+        assert!(!history.contains("private-payload"));
+        assert_eq!(
+            store.requeue_retryable("req-requeue-failed", 0).unwrap(),
+            requeued_failed
+        );
+
+        let timed_out_envelope = timed_out.envelope.clone();
+        let requeued_timed_out = store.requeue_retryable("req-requeue-timed-out", 0).unwrap();
+        assert_eq!(requeued_timed_out.status, "queued");
+        assert_eq!(requeued_timed_out.attempts, timed_out.attempts);
+        assert_eq!(requeued_timed_out.envelope, timed_out_envelope);
+        assert!(requeued_timed_out.heartbeat_at_ms.is_none());
+        assert!(requeued_timed_out.error_kind.is_none());
+        assert!(requeued_timed_out.error_message.is_none());
+        assert!(requeued_timed_out
+            .logs
+            .last()
+            .unwrap()
+            .message
+            .contains("queued for retry after timed_out: kind=timeout"));
+    }
+
+    #[test]
+    /// 两个 store 同时重排同一失败 attempt 时只有一个版本和一条历史日志被提交。
+    fn task_retry_requeue_is_idempotent_across_competing_store_instances() {
+        let root = test_root("retry-requeue-race");
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        create_retry_test_task(&mut store, "req-requeue-race", 3, b"race-payload");
+        let failed = finish_retry_test_task(
+            &mut store,
+            "req-requeue-race",
+            &TaskAttemptOutcome::Failed {
+                error_kind: "unavailable".to_owned(),
+                error_message: "transient handler failure".to_owned(),
+                retryable: true,
+            },
+        );
+        let writer_generation = store.writer.as_ref().unwrap().generation();
+        let mut first = store.clone();
+        let mut second = store.clone();
+        let start = Arc::new(Barrier::new(3));
+        let first_start = Arc::clone(&start);
+        let first_result = thread::spawn(move || {
+            first_start.wait();
+            first.requeue_retryable("req-requeue-race", 0)
+        });
+        let second_start = Arc::clone(&start);
+        let second_result = thread::spawn(move || {
+            second_start.wait();
+            second.requeue_retryable("req-requeue-race", 0)
+        });
+        start.wait();
+
+        let first = first_result.join().unwrap().unwrap();
+        let second = second_result.join().unwrap().unwrap();
+        let authoritative = store.read(Some("req-requeue-race")).unwrap();
+        assert_eq!(first, authoritative);
+        assert_eq!(second, authoritative);
+        assert_eq!(authoritative.status, "queued");
+        assert_eq!(authoritative.attempts, failed.attempts);
+        assert_eq!(
+            authoritative.record_version,
+            StateVersion(failed.record_version.0 + 1)
+        );
+        assert_eq!(authoritative.owner_generation, writer_generation);
+        assert_eq!(
+            authoritative
+                .logs
+                .iter()
+                .filter(|entry| entry.message.contains("queued for retry after failed"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn explicit_non_retryable_handler_failure_survives_reopen_and_never_requeues() {
+        let root = test_root("retryable-override");
+        {
+            let backend = crate::FileSystemDurableBackend::open(
+                crate::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            let envelope = TaskEnvelopeSnapshot::inline(
+                "runtime.echo",
+                "root-agent",
+                b"non-retryable".to_vec(),
+                "idem-non-retryable",
+                TaskAttemptPolicySnapshot::new(3, 500, None).unwrap(),
+            )
+            .unwrap();
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope("req-non-retryable", envelope)
+                        .unwrap(),
+                )
+                .unwrap();
+            let failed = finish_retry_test_task(
+                &mut store,
+                "req-non-retryable",
+                &TaskAttemptOutcome::Failed {
+                    error_kind: "unavailable".to_owned(),
+                    error_message: "provider permanently disabled".to_owned(),
+                    retryable: false,
+                },
+            );
+            assert_eq!(failed.error_retryable, Some(false));
+        }
+
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let reopened = store.read(Some("req-non-retryable")).unwrap();
+        assert_eq!(reopened.status, "failed");
+        assert_eq!(reopened.error_retryable, Some(false));
+        assert_eq!(
+            store
+                .requeue_retryable("req-non-retryable", 10_000)
+                .unwrap(),
+            reopened
+        );
+        assert!(store
+            .read(Some("req-non-retryable"))
+            .unwrap()
+            .retry_ready_at_ms
+            .is_none());
+    }
+
+    #[test]
+    /// 失败记录释放 writer 后可由新 generation 重排，并在重开 store 中领取下一 attempt。
+    fn task_retry_requeue_survives_reopen_and_can_be_claimed_again() {
+        let root = test_root("retry-requeue-reopen");
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"reopen-payload".to_vec(),
+            "idem-requeue-reopen",
+            TaskAttemptPolicySnapshot::new(3, 10, Some(500)).unwrap(),
+        )
+        .unwrap();
+        let first_generation = {
+            let backend = crate::FileSystemDurableBackend::open(
+                crate::DurableBackendOptions::read_write(root.path()),
+            )
+            .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            store
+                .create(
+                    &TaskStateSnapshot::queued_with_envelope(
+                        "req-requeue-reopen",
+                        envelope.clone(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let failed = finish_retry_test_task(
+                &mut store,
+                "req-requeue-reopen",
+                &TaskAttemptOutcome::Failed {
+                    error_kind: "unavailable".to_owned(),
+                    error_message: "transient handler failure".to_owned(),
+                    retryable: true,
+                },
+            );
+            failed.owner_generation
+        };
+
+        let backend = crate::FileSystemDurableBackend::open(
+            crate::DurableBackendOptions::read_write(root.path()),
+        )
+        .unwrap();
+        let mut reopened = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let second_generation = reopened.writer.as_ref().unwrap().generation();
+        let scheduled = reopened
+            .requeue_retryable("req-requeue-reopen", 100)
+            .unwrap();
+        assert_eq!(scheduled.status, "failed");
+        assert_eq!(scheduled.retry_ready_at_ms, Some(110));
+        assert_eq!(
+            reopened
+                .requeue_retryable("req-requeue-reopen", 109)
+                .unwrap(),
+            scheduled
+        );
+        let requeued = reopened
+            .requeue_retryable("req-requeue-reopen", 110)
+            .unwrap();
+        assert_eq!(requeued.status, "queued");
+        assert_eq!(requeued.attempts, 1);
+        assert_eq!(requeued.envelope.as_ref(), Some(&envelope));
+        assert_eq!(requeued.owner_generation, second_generation);
+        assert_ne!(second_generation, first_generation);
+
+        let claim = reopened
+            .try_claim_queued(
+                "req-requeue-reopen",
+                "daemon.requeue.reopened",
+                "cancel.requeue.reopened",
+                1_000,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.snapshot().status, "running");
+        assert_eq!(claim.snapshot().attempts, 2);
+        assert_eq!(claim.snapshot().envelope.as_ref(), Some(&envelope));
+        assert_eq!(claim.fence().owner_generation(), second_generation);
+    }
+
+    #[test]
+    fn v4_task_state_without_replay_retry_fields_remains_readable() {
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            b"legacy-v4".to_vec(),
+            "idem-v4-compatible",
+            TaskAttemptPolicySnapshot::new(2, 100, None).unwrap(),
+        )
+        .unwrap();
+        let v4 =
+            TaskStateSnapshot::queued_with_envelope("req-task-v4-compatible", envelope.clone())
+                .unwrap()
+                .to_storage()
+                .replace(TASK_STATE_FORMAT_V5, TASK_STATE_FORMAT_V4)
+                .lines()
+                .filter(|line| {
+                    !line.starts_with("replay_event_id=")
+                        && !line.starts_with("replay_delivery_index=")
+                        && !line.starts_with("error_retryable=")
+                        && !line.starts_with("retry_ready_at_ms=")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+
+        let parsed = TaskStateSnapshot::from_storage(&v4).unwrap();
+        assert_eq!(parsed.envelope, Some(envelope));
+        assert!(parsed.replay_delivery.is_none());
+        assert!(parsed.error_retryable.is_none());
+        assert!(parsed.retry_ready_at_ms.is_none());
+        assert!(parsed
+            .to_storage()
+            .starts_with("format=eva.task-state.v5\n"));
+    }
+
+    #[test]
+    /// 旧 v3 queued 记录仍可读取，并在首次成功 claim 时惰性升级为 v5。
     fn task_envelope_v3_is_lazily_upgraded_on_claim() {
         let root = test_root("v3-lazy-claim");
         let mut store = FileSystemTaskStateStore::new(root.path());
@@ -3277,12 +4179,16 @@ mod tests {
             .unwrap();
         let v3 = committed
             .to_storage()
-            .replace(TASK_STATE_FORMAT_V4, TASK_STATE_FORMAT_V3)
+            .replace(TASK_STATE_FORMAT_V5, TASK_STATE_FORMAT_V3)
             .lines()
             .filter(|line| {
                 !line.starts_with("execution_owner=")
                     && !line.starts_with("result_digest=")
                     && !line.starts_with("result_size_bytes=")
+                    && !line.starts_with("replay_event_id=")
+                    && !line.starts_with("replay_delivery_index=")
+                    && !line.starts_with("error_retryable=")
+                    && !line.starts_with("retry_ready_at_ms=")
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -3305,7 +4211,7 @@ mod tests {
         assert!(
             fs::read_to_string(store.task_path("req-task-v3-lazy-claim").unwrap())
                 .unwrap()
-                .starts_with("format=eva.task-state.v4\n")
+                .starts_with("format=eva.task-state.v5\n")
         );
     }
 
@@ -3599,7 +4505,7 @@ mod tests {
         assert!(!snapshot.deadline_expired(199));
         assert!(snapshot.deadline_expired(200));
 
-        snapshot.mark_timed_out(250);
+        snapshot.mark_timed_out(250, true);
 
         assert_eq!(snapshot.status, "timed_out");
         assert!(snapshot.is_terminal());
@@ -3637,6 +4543,7 @@ mod tests {
             owner_generation: WriterGeneration::ZERO,
             task_id: task_id.to_owned(),
             envelope: None,
+            replay_delivery: None,
             status: "completed".to_owned(),
             attempts: 1,
             execution_owner: None,
@@ -3652,6 +4559,8 @@ mod tests {
             interrupted_reason: None,
             error_kind: None,
             error_message: None,
+            error_retryable: None,
+            retry_ready_at_ms: None,
             logs: vec![TaskStateLogSnapshot {
                 sequence: 1,
                 level: "info".to_owned(),
@@ -3664,6 +4573,42 @@ mod tests {
                 topic: "/input/user".to_owned(),
             }],
         }
+    }
+
+    fn create_retry_test_task(
+        store: &mut FileSystemTaskStateStore,
+        task_id: &str,
+        max_attempts: u32,
+        payload: &[u8],
+    ) {
+        let envelope = TaskEnvelopeSnapshot::inline(
+            "runtime.echo",
+            "root-agent",
+            payload.to_vec(),
+            format!("idem-{task_id}"),
+            TaskAttemptPolicySnapshot::new(max_attempts, 0, None).unwrap(),
+        )
+        .unwrap();
+        store
+            .create(&TaskStateSnapshot::queued_with_envelope(task_id, envelope).unwrap())
+            .unwrap();
+    }
+
+    fn finish_retry_test_task(
+        store: &mut FileSystemTaskStateStore,
+        task_id: &str,
+        outcome: &TaskAttemptOutcome,
+    ) -> TaskStateSnapshot {
+        let claim = store
+            .try_claim_queued(
+                task_id,
+                &format!("daemon.retry.{task_id}"),
+                &format!("cancel.retry.{task_id}"),
+                100,
+            )
+            .unwrap()
+            .unwrap();
+        store.finish_execution(claim.fence(), outcome).unwrap()
     }
 
     /// 测试临时项目根所有者。

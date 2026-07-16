@@ -8,6 +8,6 @@ pub mod in_memory;
 pub mod recoverable;
 
 pub use bus::{EventBus, EventReceipt};
-pub use dead_letter::{DeadLetterQueue, DeadLetterRecord, RedrivePolicy};
+pub use dead_letter::{DeadLetterQueue, DeadLetterRecord, RedrivePolicy, ReplayHandlerBinding};
 pub use durable::{DurableEventBus, FileSystemDeadLetterStore};
 pub use in_memory::InMemoryEventBus;

@@ -35,7 +35,7 @@ pub use state_store::{
 pub use task_state::{
     FileSystemTaskStateStore, TaskAttemptFence, TaskAttemptOutcome, TaskAttemptPolicySnapshot,
     TaskEnvelopeSnapshot, TaskExecutionClaim, TaskFreshness, TaskInputSnapshot,
-    TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateReplaySnapshot, TaskStateSnapshot,
-    TaskStateStore, DEFAULT_TASK_HEARTBEAT_DEGRADED_AFTER_MS,
-    DEFAULT_TASK_HEARTBEAT_STALE_AFTER_MS,
+    TaskReplayDeliverySnapshot, TaskStateDeadLetterSnapshot, TaskStateLogSnapshot,
+    TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
+    DEFAULT_TASK_HEARTBEAT_DEGRADED_AFTER_MS, DEFAULT_TASK_HEARTBEAT_STALE_AFTER_MS,
 };
