@@ -330,7 +330,7 @@
       {
         "id": "v1.x-real-runtime-implementation-plan",
         "title": "V1.x Real Runtime Implementation Plan",
-        "description": "Breaks W0-W10 into logic-level changes with stable IDs, prerequisites, progress states, owning boundaries, and testable evidence."
+        "description": "Tracks 123 W0-W10 logic-level changes with stable IDs, prerequisites, owning boundaries, and testable evidence; the current snapshot is 15 Done, 2 Ready, and 106 Blocked."
       },
       {
         "id": "project-release-plan",

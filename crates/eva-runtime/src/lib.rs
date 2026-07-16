@@ -11,6 +11,7 @@ pub mod scheduler_retry;
 pub mod services;
 pub mod shutdown;
 pub mod task;
+pub mod task_worker;
 
 pub use basic::{BasicRunOptions, BasicRunReport};
 pub use builder::{RuntimeBuilder, RuntimeMode, RuntimeOptions};
@@ -43,4 +44,9 @@ pub use task::{
     CancellationRecord, DeadLetterSummary, IdempotencyKey, ReplaySummary, RetryPolicy,
     TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind, TaskLogEntry,
     TaskLogLevel, TaskReport, TaskStatus,
+};
+pub use task_worker::{
+    FileSystemTaskArtifactResolver, TaskArtifactResolver, TaskHandler, TaskHandlerInvocation,
+    TaskHandlerRegistry, TaskHandlerResult, DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES,
+    TASK_HANDLER_NOT_REGISTERED_MESSAGE,
 };

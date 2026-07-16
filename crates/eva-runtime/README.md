@@ -18,6 +18,7 @@
 | V1.12.2 | daemon control mailbox | `send_daemon_control_request` 和 foreground control loop 定义受控 filesystem mailbox 协议，支持 status、shutdown、submit task、cancel task、drain 和 reload plan；request/response 均带 trace id，不暴露远程网络监听。 |
 | V1.12.3 | durable task lifecycle | daemon submit/cancel 使用 `TaskStateSnapshot` lifecycle API：submit 写 `queued`，cancel 将非终态任务推进到 `cancelling` 并追加日志；recovery 会把 `queued`/`running`/`cancelling` 恢复为 `interrupted` 或 `recovering`。 |
 | W1-L02 | persisted TaskEnvelope | `TaskEnvelope` 固定 kind、Agent、inline bytes/artifact ref、idempotency key 和 attempt policy；daemon mailbox v2 无损传递，task state v3 跨重开恢复，legacy mailbox v1 在 mutation/observability 前显式映射为 `legacy.submit`；inline Debug 全链路脱敏。 |
+| W1-L05 | task handler registry | `TaskHandlerRegistry` 以稳定 kind 注册同步 handler；dispatch 在调用前重验 inline/artifact 原始字节与摘要，unknown kind 固定失败且不访问 artifact，默认只注册无副作用 `runtime.echo`，`legacy.submit` 不可执行。 |
 | V1.13.5 | provider execution recovery | daemon start 扫描 durable provider process table 和 task store；残留 active provider session 标记为 `interrupted`，关联 task 保留为 interrupted/recovering，只有显式 retryable restart policy 才生成 scheduler backoff 证据。 |
 | V1.15.4 | hardware hotplug subscriber | daemon start 运行 manifest snapshot hotplug subscriber，把逻辑设备状态写入 durable EventBus 和 `hardware-hotplug.state`，并在 report 中输出 `raw_handles_exposed:false`。 |
 | V1.15.6 | memory/knowledge maintenance smoke | daemon start 对 durable memory/knowledge store 执行一次 `index.lock` 保护的 TTL GC 和 knowledge rebuild checkpoint，输出 `memory_maintenance` report，并写 `memory.maintenance` audit。 |
@@ -41,7 +42,7 @@
 ## 公开入口
 
 ```rust
-use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, RuntimeBuilder, TaskEnvelope, TaskReport};
+use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, RuntimeBuilder, TaskEnvelope, TaskHandlerRegistry, TaskReport};
 ```
 
 关键类型：
@@ -53,6 +54,7 @@ use eva_runtime::{BasicRunOptions, DaemonControlRequest, DaemonStartOptions, Run
 | `BasicRunOptions` | 配置 event id、request/task id、topic、payload、timeout、cancel、retry、dead-letter replay。 |
 | `BasicRunReport` | CLI `run` 的完整机器可读报告。 |
 | `TaskReport` | `task status/logs/cancel` 使用的状态、日志、取消、retry、dead-letter 摘要。 |
+| `TaskHandlerRegistry` | daemon-owned task kind→handler 映射；只在 payload 完整性重验和 handler 成功后返回 `TaskHandlerResult`，worker lifecycle/CAS 由 W1-L06 承接。 |
 | `RuntimeRecoveryCoordinator` | V1.6.4/V1.13.5 recovery coordinator；读取 task snapshots 和 provider process snapshots，持久化 interrupted/recovering 状态，可通过 durable EventBus 执行受控 redrive checkpoint，并可记录 `runtime.recovered` audit。 |
 | `DaemonStartOptions` | V1.12.1 daemon foreground/dev smoke 的 durable backend、state、lock、pid 和 observability 路径配置。 |
 | `DaemonMemoryMaintenanceReport` | V1.15.6 daemon start 中 memory TTL GC 与 knowledge rebuild checkpoint 的维护证据。 |

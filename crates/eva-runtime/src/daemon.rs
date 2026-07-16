@@ -6,9 +6,10 @@
 //! Local daemon process-boundary and control-plane contracts for V1.12.
 
 use crate::{
-    run_scheduler_retry_tick, IdempotencyKey, RuntimeBuilder, RuntimeRecoveryCoordinator,
-    RuntimeRecoveryReport, SchedulerRetryTickOptions, SchedulerRetryTickReport, ShutdownReport,
-    TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind,
+    run_scheduler_retry_tick, FileSystemTaskArtifactResolver, IdempotencyKey, RuntimeBuilder,
+    RuntimeRecoveryCoordinator, RuntimeRecoveryReport, SchedulerRetryTickOptions,
+    SchedulerRetryTickReport, ShutdownReport, TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope,
+    TaskHandlerRegistry, TaskInput, TaskKind,
 };
 use eva_config::ProjectConfig;
 use eva_core::{AgentId, EvaError, GenerationId, RequestId};
@@ -43,6 +44,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -2337,6 +2339,10 @@ fn start_daemon_inner(
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
     let mut runtime = RuntimeBuilder::new().build(project)?;
+    let task_handlers = Arc::new(TaskHandlerRegistry::with_runtime_defaults()?);
+    let task_artifacts = Arc::new(FileSystemTaskArtifactResolver::with_default_limit(
+        &durable_backend.layout().artifact_dir,
+    ));
     // All startup work must finish before publishing ready state, and the lease is renewed at that boundary.
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
@@ -2373,7 +2379,7 @@ fn start_daemon_inner(
                 hardware_hotplug: hardware_hotplug.clone(),
                 memory_maintenance: memory_maintenance.clone(),
                 shutdown: None,
-                audit: daemon_start_audit(),
+                audit: daemon_start_audit(task_handlers.as_ref(), task_artifacts.as_ref()),
             };
             let report_digest = (hooks.publish_report)(&ready_report)?;
             ensure_startup_not_aborted(&options, Some(hooks.handshake))?;
@@ -2434,11 +2440,14 @@ fn start_daemon_inner(
         hardware_hotplug,
         memory_maintenance,
         shutdown,
-        audit: daemon_start_audit(),
+        audit: daemon_start_audit(task_handlers.as_ref(), task_artifacts.as_ref()),
     })
 }
 
-fn daemon_start_audit() -> Vec<String> {
+fn daemon_start_audit(
+    task_handlers: &TaskHandlerRegistry,
+    task_artifacts: &FileSystemTaskArtifactResolver,
+) -> Vec<String> {
     vec![
         "daemon:v1.12.1:lock_acquired".to_owned(),
         "daemon:v1.12.1:durable_backend_verified".to_owned(),
@@ -2450,6 +2459,14 @@ fn daemon_start_audit() -> Vec<String> {
         "daemon:v1.13.5:provider_recovery_scanned".to_owned(),
         "daemon:v1.15.4:hardware_hotplug_subscriber_ready".to_owned(),
         "daemon:v1.15.6:memory_maintenance_ready".to_owned(),
+        format!(
+            "daemon:w1-l05:task_handler_registry_ready:{}",
+            task_handlers.registered_kinds().join(",")
+        ),
+        format!(
+            "daemon:w1-l05:task_artifact_input_limit_bytes:{}",
+            task_artifacts.max_size_bytes()
+        ),
     ]
 }
 
@@ -5064,6 +5081,17 @@ mod tests {
             .audit
             .iter()
             .any(|entry| entry == "daemon:v1.15.6:memory_maintenance_ready"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| { entry == "daemon:w1-l05:task_handler_registry_ready:runtime.echo" }));
+        assert!(report.audit.iter().any(|entry| {
+            entry
+                == &format!(
+                    "daemon:w1-l05:task_artifact_input_limit_bytes:{}",
+                    crate::DEFAULT_TASK_ARTIFACT_INPUT_LIMIT_BYTES
+                )
+        }));
         assert!(hardware_hotplug_state_file(&options).is_file());
         assert!(options
             .durable_backend

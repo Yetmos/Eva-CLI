@@ -6,11 +6,14 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// 本模块的架构职责：持久化不透明产物字节，并在读取边界校验 key、大小和 SHA-256。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "artifact store interfaces and integrity boundaries";
+
+const MAX_ARTIFACT_METADATA_BYTES: usize = 64 * 1024;
 
 /// 已存产物字节及确定性 SHA-256、内容类型和保留策略 metadata。
 /// Stored artifact bytes and deterministic SHA-256 digest metadata.
@@ -105,24 +108,54 @@ impl FileSystemArtifactStore {
     /// 对象文件缺失返回 `Ok(None)`；metadata 缺失、字段损坏、摘要不匹配或其他 I/O 故障
     /// 返回结构化错误。这样半写文件或外部篡改不会被误报为有效产物。
     pub fn try_get_bytes(&self, key: &str) -> Result<Option<ArtifactRecord>, EvaError> {
+        self.try_get_bytes_inner(key, None)
+    }
+
+    /// 在分配和读取前执行普通文件检查及显式大小门禁，再完成严格完整性校验。
+    ///
+    /// 此入口供会把 artifact 交给执行器的边界使用。读取通过 `take(max + 1)` 约束，即使
+    /// 对象在 metadata 检查后增长，也不会无界分配。路径逐段拒绝 symlink/reparse，final
+    /// entry 以 no-follow/nonblocking 语义打开并从同一 handle 校验和读取。零上限只允许空
+    /// artifact。配置根及其父目录仍是同权限可信边界，不承诺抵抗并发替换父目录的本地主体。
+    pub fn try_get_bytes_with_limit(
+        &self,
+        key: &str,
+        max_size_bytes: usize,
+    ) -> Result<Option<ArtifactRecord>, EvaError> {
+        if max_size_bytes.checked_add(1).is_none() {
+            return Err(EvaError::invalid_argument(
+                "artifact read limit must leave room for an overflow sentinel byte",
+            )
+            .with_context("max_size_bytes", max_size_bytes.to_string()));
+        }
+        self.try_get_bytes_inner(key, Some(max_size_bytes))
+    }
+
+    fn try_get_bytes_inner(
+        &self,
+        key: &str,
+        max_size_bytes: Option<usize>,
+    ) -> Result<Option<ArtifactRecord>, EvaError> {
         let key = validate_filesystem_artifact_key(key.to_owned())?;
         let artifact_path = keyed_path(&self.root.join("objects"), &key, "artifact");
         let metadata_path = keyed_path(&self.root.join("metadata"), &key, "metadata");
 
-        let bytes = match fs::read(&artifact_path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(filesystem_error(
-                    "failed to read artifact bytes",
-                    &key,
-                    &artifact_path,
-                    error,
-                ));
-            }
+        let Some((object_file, object_metadata)) =
+            open_regular_artifact_entry(&self.root, &artifact_path, &key, "object")?
+        else {
+            return Ok(None);
         };
+        if let Some(max_size_bytes) = max_size_bytes {
+            ensure_artifact_size_limit(
+                object_metadata.len(),
+                max_size_bytes,
+                &key,
+                &artifact_path,
+            )?;
+        }
+        let bytes = read_artifact_bytes(object_file, &artifact_path, &key, max_size_bytes)?;
 
-        let metadata = read_metadata(&metadata_path, &key)?;
+        let metadata = read_metadata(&self.root, &metadata_path, &key)?;
         let actual_digest = sha256_digest(&bytes);
         if metadata.key != key {
             return Err(EvaError::conflict("artifact metadata key mismatch")
@@ -171,6 +204,23 @@ impl FileSystemArtifactStore {
         let retention_policy = validate_retention_policy(retention_policy)?;
         let digest = sha256_digest(&bytes);
         let size_bytes = bytes.len();
+        let metadata = ArtifactMetadata {
+            key: key.clone(),
+            digest: digest.clone(),
+            size_bytes,
+            content_type: content_type.clone(),
+            retention_policy: retention_policy.clone(),
+            retain_until_ms,
+        };
+        let metadata_storage = metadata.to_storage();
+        if metadata_storage.len() > MAX_ARTIFACT_METADATA_BYTES {
+            return Err(
+                EvaError::invalid_argument("artifact metadata exceeds durable size limit")
+                    .with_context("artifact_key", &key)
+                    .with_context("actual_size_bytes", metadata_storage.len().to_string())
+                    .with_context("max_size_bytes", MAX_ARTIFACT_METADATA_BYTES.to_string()),
+            );
+        }
         let artifact_path = keyed_path(&self.root.join("objects"), &key, "artifact");
         let metadata_path = keyed_path(&self.root.join("metadata"), &key, "metadata");
 
@@ -198,15 +248,7 @@ impl FileSystemArtifactStore {
                 error,
             )
         })?;
-        let metadata = ArtifactMetadata {
-            key: key.clone(),
-            digest: digest.clone(),
-            size_bytes,
-            content_type: content_type.clone(),
-            retention_policy: retention_policy.clone(),
-            retain_until_ms,
-        };
-        fs::write(&metadata_path, metadata.to_storage()).map_err(|error| {
+        fs::write(&metadata_path, metadata_storage).map_err(|error| {
             filesystem_error(
                 "failed to write artifact metadata",
                 &key,
@@ -408,15 +450,242 @@ fn validate_retention_policy(value: String) -> Result<String, EvaError> {
     Ok(value)
 }
 
-/// 读取并解析 metadata；缺失与其他 I/O 错误保留不同消息，同时附加 key/path 上下文。
-fn read_metadata(path: &Path, key: &str) -> Result<ArtifactMetadata, EvaError> {
-    let data = fs::read_to_string(path).map_err(|error| {
-        let message = if error.kind() == std::io::ErrorKind::NotFound {
-            "artifact metadata is missing"
-        } else {
-            "failed to read artifact metadata"
+fn ensure_regular_artifact_entry(
+    metadata: &fs::Metadata,
+    key: &str,
+    path: &Path,
+    entry: &str,
+) -> Result<(), EvaError> {
+    if !metadata_is_link_or_reparse(metadata) && metadata.file_type().is_file() {
+        return Ok(());
+    }
+    let file_type = metadata.file_type();
+    let entry_kind = if metadata_is_link_or_reparse(metadata) {
+        "symlink_or_reparse"
+    } else if file_type.is_dir() {
+        "directory"
+    } else {
+        "other"
+    };
+    Err(
+        EvaError::permission_denied("artifact store entry must be a regular file")
+            .with_context("artifact_key", key)
+            .with_context("entry", entry)
+            .with_context("entry_kind", entry_kind)
+            .with_context("path", path.display().to_string()),
+    )
+}
+
+#[cfg(windows)]
+fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+fn ensure_artifact_path_ancestors(root: &Path, path: &Path, key: &str) -> Result<(), EvaError> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        EvaError::internal("artifact path escaped its configured root")
+            .with_context("artifact_key", key)
+            .with_context("root", root.display().to_string())
+            .with_context("path", path.display().to_string())
+    })?;
+    let components = relative.components().collect::<Vec<_>>();
+    let mut cursor = if root.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        root.to_path_buf()
+    };
+    let mut directories = Vec::with_capacity(components.len());
+    directories.push(cursor.clone());
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        cursor.push(component.as_os_str());
+        directories.push(cursor.clone());
+    }
+
+    for directory in directories {
+        let metadata = match fs::symlink_metadata(&directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(filesystem_error(
+                    "failed to inspect artifact path ancestor",
+                    key,
+                    &directory,
+                    error,
+                ));
+            }
         };
-        filesystem_error(message, key, path, error)
+        if metadata_is_link_or_reparse(&metadata) || !metadata.file_type().is_dir() {
+            return Err(EvaError::permission_denied(
+                "artifact path ancestors must be regular directories",
+            )
+            .with_context("artifact_key", key)
+            .with_context("path", directory.display().to_string()));
+        }
+    }
+    Ok(())
+}
+
+fn open_regular_artifact_entry(
+    root: &Path,
+    path: &Path,
+    key: &str,
+    entry: &str,
+) -> Result<Option<(fs::File, fs::Metadata)>, EvaError> {
+    ensure_artifact_path_ancestors(root, path, key)?;
+    let path_metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(filesystem_error(
+                "failed to inspect artifact store entry",
+                key,
+                path,
+                error,
+            ));
+        }
+    };
+    ensure_regular_artifact_entry(&path_metadata, key, path, entry)?;
+
+    let file = match open_artifact_file_no_follow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(filesystem_error(
+                "failed to open artifact store entry",
+                key,
+                path,
+                error,
+            ));
+        }
+    };
+    let handle_metadata = file.metadata().map_err(|error| {
+        filesystem_error(
+            "failed to inspect opened artifact store entry",
+            key,
+            path,
+            error,
+        )
+    })?;
+    ensure_regular_artifact_entry(&handle_metadata, key, path, entry)?;
+    Ok(Some((file, handle_metadata)))
+}
+
+fn open_artifact_file_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        const O_NOFOLLOW: i32 = 0x0002_0000;
+        const O_NONBLOCK: i32 = 0x0000_0800;
+        options.custom_flags(O_NOFOLLOW | O_NONBLOCK);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        const O_NOFOLLOW: i32 = 0x0000_0100;
+        const O_NONBLOCK: i32 = 0x0000_0004;
+        options.custom_flags(O_NOFOLLOW | O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+
+    options.open(path)
+}
+
+fn ensure_artifact_size_limit(
+    actual_size_bytes: u64,
+    max_size_bytes: usize,
+    key: &str,
+    path: &Path,
+) -> Result<(), EvaError> {
+    let max_size_u64 = u64::try_from(max_size_bytes).unwrap_or(u64::MAX);
+    if actual_size_bytes <= max_size_u64 {
+        return Ok(());
+    }
+    Err(EvaError::conflict("artifact exceeds configured read limit")
+        .with_context("artifact_key", key)
+        .with_context("actual_size_bytes", actual_size_bytes.to_string())
+        .with_context("max_size_bytes", max_size_bytes.to_string())
+        .with_context("path", path.display().to_string()))
+}
+
+fn read_artifact_bytes(
+    file: fs::File,
+    path: &Path,
+    key: &str,
+    max_size_bytes: Option<usize>,
+) -> Result<Vec<u8>, EvaError> {
+    let mut bytes = Vec::new();
+    match max_size_bytes {
+        Some(max_size_bytes) => {
+            let sentinel_size = max_size_bytes.checked_add(1).ok_or_else(|| {
+                EvaError::invalid_argument(
+                    "artifact read limit must leave room for an overflow sentinel byte",
+                )
+                .with_context("max_size_bytes", max_size_bytes.to_string())
+            })?;
+            let read_limit = u64::try_from(sentinel_size).unwrap_or(u64::MAX);
+            file.take(read_limit)
+                .read_to_end(&mut bytes)
+                .map_err(|error| {
+                    filesystem_error("failed to read artifact bytes", key, path, error)
+                })?;
+            ensure_artifact_size_limit(bytes.len() as u64, max_size_bytes, key, path)?;
+        }
+        None => {
+            let mut file = file;
+            file.read_to_end(&mut bytes).map_err(|error| {
+                filesystem_error("failed to read artifact bytes", key, path, error)
+            })?;
+        }
+    }
+    Ok(bytes)
+}
+
+/// 读取并解析 metadata；缺失与其他 I/O 错误保留不同消息，同时附加 key/path 上下文。
+fn read_metadata(root: &Path, path: &Path, key: &str) -> Result<ArtifactMetadata, EvaError> {
+    let (file, _) = open_regular_artifact_entry(root, path, key, "metadata")?.ok_or_else(|| {
+        EvaError::internal("artifact metadata is missing")
+            .with_context("artifact_key", key)
+            .with_context("path", path.display().to_string())
+    })?;
+    let mut bytes = Vec::new();
+    file.take((MAX_ARTIFACT_METADATA_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| filesystem_error("failed to read artifact metadata", key, path, error))?;
+    if bytes.len() > MAX_ARTIFACT_METADATA_BYTES {
+        return Err(EvaError::conflict("artifact metadata exceeds size limit")
+            .with_context("artifact_key", key)
+            .with_context("actual_size_bytes", bytes.len().to_string())
+            .with_context("max_size_bytes", MAX_ARTIFACT_METADATA_BYTES.to_string())
+            .with_context("path", path.display().to_string()));
+    }
+    let data = String::from_utf8(bytes).map_err(|error| {
+        EvaError::conflict("artifact metadata is not utf-8")
+            .with_context("artifact_key", key)
+            .with_context("path", path.display().to_string())
+            .with_context("utf8_error", error.utf8_error().to_string())
     })?;
     parse_metadata(&data).map_err(|error| {
         error
@@ -425,10 +694,22 @@ fn read_metadata(path: &Path, key: &str) -> Result<ArtifactMetadata, EvaError> {
     })
 }
 
+/// 单个 metadata scalar 只能出现一次，canonical writer 从不产生重复字段。
+fn set_metadata_field<T>(slot: &mut Option<T>, field: &str, value: T) -> Result<(), EvaError> {
+    if slot.is_some() {
+        return Err(
+            EvaError::conflict("artifact metadata contains a duplicate field")
+                .with_context("field", field),
+        );
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
 /// 解析 `name=value` metadata 磁盘格式并执行版本兼容。
 ///
 /// 无 version 的旧格式及 v1/v2 均可读；旧记录缺少的新字段回退默认值。未知字段、未知版本、
-/// 缺必填 key/digest/size 或字段格式损坏均返回 Conflict，表示磁盘事实不可信而非用户输入错误。
+/// 缺必填 key/digest/size、重复字段或字段格式损坏均返回 Conflict，表示磁盘事实不可信。
 fn parse_metadata(data: &str) -> Result<ArtifactMetadata, EvaError> {
     let mut version = None;
     let mut key = None;
@@ -442,20 +723,23 @@ fn parse_metadata(data: &str) -> Result<ArtifactMetadata, EvaError> {
             return Err(EvaError::conflict("artifact metadata is invalid"));
         };
         match name {
-            "version" => version = Some(value.to_owned()),
-            "key" => key = Some(value.to_owned()),
-            "digest" => digest = Some(value.to_owned()),
+            "version" => set_metadata_field(&mut version, name, value.to_owned())?,
+            "key" => set_metadata_field(&mut key, name, value.to_owned())?,
+            "digest" => set_metadata_field(&mut digest, name, value.to_owned())?,
             "size_bytes" => {
-                size_bytes = Some(
-                    value
-                        .parse::<usize>()
-                        .map_err(|_| EvaError::conflict("artifact metadata is invalid"))?,
-                );
+                let parsed = value
+                    .parse::<usize>()
+                    .map_err(|_| EvaError::conflict("artifact metadata is invalid"))?;
+                set_metadata_field(&mut size_bytes, name, parsed)?;
             }
-            "content_type" => content_type = Some(value.to_owned()),
-            "retention_policy" => retention_policy = Some(value.to_owned()),
+            "content_type" => {
+                set_metadata_field(&mut content_type, name, value.to_owned())?;
+            }
+            "retention_policy" => {
+                set_metadata_field(&mut retention_policy, name, value.to_owned())?;
+            }
             "retain_until_ms" => {
-                retain_until_ms = if value.is_empty() {
+                let parsed = if value.is_empty() {
                     None
                 } else {
                     Some(
@@ -464,6 +748,7 @@ fn parse_metadata(data: &str) -> Result<ArtifactMetadata, EvaError> {
                             .map_err(|_| EvaError::conflict("artifact metadata is invalid"))?,
                     )
                 };
+                set_metadata_field(&mut retain_until_ms, name, parsed)?;
             }
             _ => return Err(EvaError::conflict("artifact metadata is invalid")),
         }
@@ -489,7 +774,7 @@ fn parse_metadata(data: &str) -> Result<ArtifactMetadata, EvaError> {
         size_bytes: size_bytes.ok_or_else(|| EvaError::conflict("artifact metadata is invalid"))?,
         content_type,
         retention_policy,
-        retain_until_ms,
+        retain_until_ms: retain_until_ms.flatten(),
     })
 }
 
@@ -586,6 +871,45 @@ mod tests {
     }
 
     #[test]
+    /// 验证公开写入 API 不会成功发布超过读取上限且无法自重读的 metadata。
+    fn filesystem_artifact_store_rejects_oversized_metadata_before_mutation() {
+        let root = test_root("oversized-write-metadata");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        let cases = [
+            (
+                "tasks/large-content-type",
+                format!("application/{}", "x".repeat(MAX_ARTIFACT_METADATA_BYTES)),
+                "retain".to_owned(),
+            ),
+            (
+                "tasks/large-retention-policy",
+                "application/octet-stream".to_owned(),
+                "r".repeat(MAX_ARTIFACT_METADATA_BYTES),
+            ),
+        ];
+
+        for (key, content_type, retention_policy) in cases {
+            let error = store
+                .put_bytes_with_metadata(
+                    key,
+                    b"must-not-persist".as_slice(),
+                    content_type,
+                    retention_policy,
+                    None,
+                )
+                .unwrap_err();
+
+            assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+            assert_eq!(
+                error.message(),
+                "artifact metadata exceeds durable size limit"
+            );
+            assert!(!keyed_path(&root.path().join("objects"), key, "artifact").exists());
+            assert!(!keyed_path(&root.path().join("metadata"), key, "metadata").exists());
+        }
+    }
+
+    #[test]
     /// 验证无版本旧 metadata 可读，并为新增字段应用兼容默认值。
     fn filesystem_artifact_store_reads_legacy_metadata_defaults() {
         let root = test_root("legacy-metadata");
@@ -620,6 +944,82 @@ mod tests {
         let error = store.try_get_bytes("backup/tamper").unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+    }
+
+    #[test]
+    /// 验证恶意放大的 metadata 在有限读取后失败，不会被整体载入或进入解析器。
+    fn filesystem_artifact_store_rejects_oversized_metadata() {
+        let root = test_root("oversized-metadata");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        store
+            .put_bytes("tasks/metadata-limit", b"ok".as_slice())
+            .unwrap();
+        let metadata_path = keyed_path(
+            &root.path().join("metadata"),
+            "tasks/metadata-limit",
+            "metadata",
+        );
+        fs::write(metadata_path, vec![b'x'; MAX_ARTIFACT_METADATA_BYTES + 1]).unwrap();
+
+        let error = store
+            .try_get_bytes_with_limit("tasks/metadata-limit", 1024)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(error.message(), "artifact metadata exceeds size limit");
+    }
+
+    #[test]
+    /// 验证每个 metadata scalar 都是 set-once，重复值也不能以 last-write-wins 解析。
+    fn filesystem_artifact_store_rejects_every_duplicate_metadata_field() {
+        let root = test_root("duplicate-metadata-fields");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        store
+            .put_bytes_with_metadata(
+                "tasks/duplicate-fields",
+                b"ok".as_slice(),
+                "application/octet-stream",
+                "retain",
+                Some(1_789_000_000_000),
+            )
+            .unwrap();
+        let metadata_path = keyed_path(
+            &root.path().join("metadata"),
+            "tasks/duplicate-fields",
+            "metadata",
+        );
+        let canonical = fs::read_to_string(&metadata_path).unwrap();
+
+        for field in [
+            "version",
+            "key",
+            "digest",
+            "size_bytes",
+            "content_type",
+            "retention_policy",
+            "retain_until_ms",
+        ] {
+            let original_line = canonical
+                .lines()
+                .find(|line| line.starts_with(&format!("{field}=")))
+                .unwrap();
+            fs::write(&metadata_path, format!("{canonical}{original_line}\n")).unwrap();
+
+            let error = store
+                .try_get_bytes_with_limit("tasks/duplicate-fields", 1024)
+                .unwrap_err();
+
+            assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+            assert_eq!(
+                error.message(),
+                "artifact metadata contains a duplicate field"
+            );
+            assert!(error
+                .context()
+                .entries()
+                .iter()
+                .any(|(name, value)| name == "field" && value == field));
+        }
     }
 
     #[test]
@@ -687,6 +1087,193 @@ mod tests {
     }
 
     #[test]
+    /// 验证执行边界的受限读取在分配前拒绝超限对象，恰好等于上限时仍可读取。
+    fn filesystem_artifact_store_enforces_bounded_read() {
+        let root = test_root("bounded-read");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        store
+            .put_bytes("tasks/bounded", b"1234".as_slice())
+            .unwrap();
+        store.put_bytes("tasks/empty", Vec::<u8>::new()).unwrap();
+
+        let error = store
+            .try_get_bytes_with_limit("tasks/bounded", 3)
+            .unwrap_err();
+        let loaded = store
+            .try_get_bytes_with_limit("tasks/bounded", 4)
+            .unwrap()
+            .unwrap();
+        let zero_limit_empty = store
+            .try_get_bytes_with_limit("tasks/empty", 0)
+            .unwrap()
+            .unwrap();
+        let zero_limit_nonempty = store
+            .try_get_bytes_with_limit("tasks/bounded", 0)
+            .unwrap_err();
+        let sentinel_error = store
+            .try_get_bytes_with_limit("tasks/bounded", usize::MAX)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(error.message(), "artifact exceeds configured read limit");
+        assert_eq!(loaded.bytes, b"1234");
+        assert!(zero_limit_empty.bytes.is_empty());
+        assert_eq!(zero_limit_nonempty.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(sentinel_error.kind(), eva_core::ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    /// 验证 object 目录项即使 key 合法也不能冒充普通 artifact 文件。
+    fn filesystem_artifact_store_rejects_non_regular_object_entry() {
+        let root = test_root("object-directory");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        store
+            .put_bytes("tasks/not-file", b"payload".as_slice())
+            .unwrap();
+        let artifact_path = keyed_path(&root.path().join("objects"), "tasks/not-file", "artifact");
+        fs::remove_file(&artifact_path).unwrap();
+        fs::create_dir(&artifact_path).unwrap();
+
+        let error = store
+            .try_get_bytes_with_limit("tasks/not-file", 1024)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.message(),
+            "artifact store entry must be a regular file"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    /// 验证严格读取不跟随 object symlink/reparse，也不会读取或修改链接目标。
+    fn filesystem_artifact_store_rejects_symlink_object_entry() {
+        let root = test_root("object-symlink");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        store
+            .put_bytes("tasks/symlink", b"original".as_slice())
+            .unwrap();
+        let artifact_path = keyed_path(&root.path().join("objects"), "tasks/symlink", "artifact");
+        let target = root.path().join("external-target");
+        fs::write(&target, b"external-secret").unwrap();
+        fs::remove_file(&artifact_path).unwrap();
+        if !create_file_symlink_for_test(&target, &artifact_path) {
+            return;
+        }
+
+        let error = store
+            .try_get_bytes_with_limit("tasks/symlink", 1024)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(target).unwrap(), b"external-secret");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    /// 验证 metadata final symlink/reparse 在解析前被拒绝，链接目标保持不变。
+    fn filesystem_artifact_store_rejects_symlink_metadata_entry() {
+        let root = test_root("metadata-symlink");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        store
+            .put_bytes("tasks/metadata-symlink", b"payload".as_slice())
+            .unwrap();
+        let metadata_path = keyed_path(
+            &root.path().join("metadata"),
+            "tasks/metadata-symlink",
+            "metadata",
+        );
+        let target = root.path().join("external-metadata");
+        fs::rename(&metadata_path, &target).unwrap();
+        if !create_file_symlink_for_test(&target, &metadata_path) {
+            return;
+        }
+        let expected = fs::read(&target).unwrap();
+
+        let error = store
+            .try_get_bytes_with_limit("tasks/metadata-symlink", 1024)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(target).unwrap(), expected);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    /// 验证 object 中间目录 symlink/junction 不能把合法 key 重定向到其他目录。
+    fn filesystem_artifact_store_rejects_symlink_object_ancestor() {
+        let root = test_root("object-ancestor-symlink");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        store
+            .put_bytes("linked/object", b"payload".as_slice())
+            .unwrap();
+        let linked_directory = root.path().join("objects").join("linked");
+        let target_directory = root.path().join("object-directory-target");
+        fs::rename(&linked_directory, &target_directory).unwrap();
+        if !create_directory_symlink_for_test(&target_directory, &linked_directory) {
+            return;
+        }
+
+        let error = store
+            .try_get_bytes_with_limit("linked/object", 1024)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        remove_directory_symlink_for_test(&linked_directory);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    /// 验证 metadata 中间目录 symlink/junction 在 metadata 读取前被拒绝。
+    fn filesystem_artifact_store_rejects_symlink_metadata_ancestor() {
+        let root = test_root("metadata-ancestor-symlink");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        store
+            .put_bytes("linked/metadata", b"payload".as_slice())
+            .unwrap();
+        let linked_directory = root.path().join("metadata").join("linked");
+        let target_directory = root.path().join("metadata-directory-target");
+        fs::rename(&linked_directory, &target_directory).unwrap();
+        if !create_directory_symlink_for_test(&target_directory, &linked_directory) {
+            return;
+        }
+
+        let error = store
+            .try_get_bytes_with_limit("linked/metadata", 1024)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        remove_directory_symlink_for_test(&linked_directory);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    /// 验证 FIFO 被普通文件门禁立即拒绝，严格读取不会因打开命名管道而阻塞。
+    fn filesystem_artifact_store_rejects_fifo_without_blocking() {
+        let root = test_root("object-fifo");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        store
+            .put_bytes("tasks/fifo", b"payload".as_slice())
+            .unwrap();
+        let artifact_path = keyed_path(&root.path().join("objects"), "tasks/fifo", "artifact");
+        fs::remove_file(&artifact_path).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(&artifact_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let started = std::time::Instant::now();
+        let error = store
+            .try_get_bytes_with_limit("tasks/fifo", 1024)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
     /// 验证目录穿越 key 在创建任何文件前被拒绝。
     fn filesystem_artifact_store_rejects_unsafe_keys() {
         let root = test_root("unsafe-key");
@@ -697,6 +1284,46 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink_for_test(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).unwrap();
+        true
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink_for_test(target: &Path, link: &Path) -> bool {
+        match std::os::windows::fs::symlink_file(target, link) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("failed to create test file symlink: {error}"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn create_directory_symlink_for_test(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).unwrap();
+        true
+    }
+
+    #[cfg(windows)]
+    fn create_directory_symlink_for_test(target: &Path, link: &Path) -> bool {
+        match std::os::windows::fs::symlink_dir(target, link) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("failed to create test directory symlink: {error}"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn remove_directory_symlink_for_test(link: &Path) {
+        fs::remove_file(link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn remove_directory_symlink_for_test(link: &Path) {
+        fs::remove_dir(link).unwrap();
     }
 
     /// 测试专用临时根目录，Drop 时尽力清理。
