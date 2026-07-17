@@ -98,6 +98,10 @@ jobs:
         shell: pwsh
         run: ./scripts/test-capture-release-evidence.ps1
 
+      - name: Package manager metadata validator contract
+        shell: pwsh
+        run: ./scripts/test-package-manager-metadata.ps1
+
       - name: Release platform evidence contract
         shell: pwsh
         run: ./scripts/test-release-platform-evidence.ps1
