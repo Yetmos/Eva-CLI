@@ -102,6 +102,63 @@ jobs:
         shell: pwsh
         run: ./scripts/test-package-manager-metadata.ps1
 
+      - name: Install Apt metadata validator
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes apt-utils
+
+      - name: Generate package manager metadata
+        shell: pwsh
+        run: |
+          $root = Join-Path (Get-Location) ".eva/package-metadata"
+          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $manifest = Join-Path $root "canonical.metadata"
+          $version = "1.11.5-alpha"
+          $targets = @(
+            @{ Target = "aarch64-apple-darwin"; Suffix = "tar.gz"; Digest = "$('a' * 64)" },
+            @{ Target = "x86_64-pc-windows-msvc"; Suffix = "zip"; Digest = "$('b' * 64)" },
+            @{ Target = "x86_64-unknown-linux-gnu"; Suffix = "tar.gz"; Digest = "$('c' * 64)" }
+          )
+          $lines = [System.Collections.Generic.List[string]]::new()
+          $lines.Add("format=eva.package-metadata.v1")
+          $lines.Add("version=$version")
+          $lines.Add("source_tag=v$version")
+          $lines.Add("source_commit=${{ github.sha }}")
+          for ($index = 0; $index -lt $targets.Count; $index++) {
+            $item = $targets[$index]
+            $name = "eva-cli-$version-$($item.Target).$($item.Suffix)"
+            $lines.Add("artifact.$index.target=$($item.Target)")
+            $lines.Add("artifact.$index.name=$name")
+            $lines.Add("artifact.$index.format=$($item.Suffix)")
+            $lines.Add("artifact.$index.url=https://github.com/Yetmos/Eva-CLI/releases/download/v$version/$name")
+            $lines.Add("artifact.$index.sha256=$($item.Digest)")
+          }
+          [System.IO.File]::WriteAllText($manifest, (($lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+          cargo run --quiet -- release package-metadata generate --manifest $manifest --output-root (Join-Path $root "generated") --installed-size-kib 4096 --output json
+
+      - name: Validate native package manager metadata
+        shell: pwsh
+        run: |
+          $generated = Join-Path (Get-Location) ".eva/package-metadata/generated"
+          if ($env:RUNNER_OS -eq "macOS") {
+            ./scripts/validate-package-manager-metadata.ps1 -Manager homebrew -MetadataPath (Join-Path $generated "homebrew/eva-cli.rb") -RequireNativeTool
+          } elseif ($env:RUNNER_OS -eq "Windows") {
+            ./scripts/validate-package-manager-metadata.ps1 -Manager winget -MetadataPath (Join-Path $generated "winget") -RequireNativeTool
+          } else {
+            ./scripts/validate-package-manager-metadata.ps1 -Manager apt -MetadataPath (Join-Path $generated "apt/Packages") -RequireNativeTool
+          }
+
+      - name: Upload package manager validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-manager-validation-${{ matrix.evidence_os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .eva/package-metadata
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Release platform evidence contract
         shell: pwsh
         run: ./scripts/test-release-platform-evidence.ps1
