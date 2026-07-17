@@ -8,7 +8,7 @@
 use crate::memory_worker::{
     ensure_retrieval_schedule, run_scheduled_retrieval, DaemonRetrievalWorker,
 };
-use crate::ConfigWatcher;
+use crate::{preflight_config_reload, ConfigReloadPreflightOutcome, ConfigWatcher};
 use crate::{
     run_scheduler_retry_tick_with_handler, FileSystemTaskArtifactResolver, IdempotencyKey,
     RuntimeBuilder, RuntimeRecoveryCoordinator, RuntimeRecoveryReport, SchedulerRetryTickOptions,
@@ -3298,7 +3298,19 @@ fn run_control_loop(
             now_ms(),
         )?;
         if let Some(watcher) = context.config_watcher {
-            let _changes = watcher.recv_timeout(Duration::ZERO)?;
+            if let Some(changes) = watcher.recv_timeout(Duration::ZERO)? {
+                let changed_paths = changes
+                    .paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().replace('\\', "/"))
+                    .collect();
+                let report = preflight_config_reload(
+                    context.runtime.generation(),
+                    &context.project.project_root,
+                    changed_paths,
+                );
+                record_config_reload_preflight(context.observability, &report);
+            }
         }
         context.task_worker.check_health()?;
         renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
@@ -3353,6 +3365,52 @@ fn run_control_loop(
         context.task_worker.check_health()?;
         thread::sleep(Duration::from_millis(CONTROL_POLL_INTERVAL_MS));
     }
+}
+
+fn record_config_reload_preflight(
+    pipeline: &mut BestEffortObservabilityPipeline,
+    report: &crate::ConfigReloadPreflight,
+) {
+    let _ = AuditSink::record(pipeline, config_reload_preflight_audit(report));
+}
+
+fn config_reload_preflight_audit(report: &crate::ConfigReloadPreflight) -> AuditEvent {
+    let (outcome, message) = match &report.outcome {
+        ConfigReloadPreflightOutcome::Ready => {
+            (AuditOutcome::Ok, "config reload candidate passed preflight")
+        }
+        ConfigReloadPreflightOutcome::Rejected { .. } => (
+            AuditOutcome::Blocked,
+            "config reload candidate rejected; active generation retained",
+        ),
+    };
+    let mut event = AuditEvent::new(
+        AuditAction::ConfigValidated,
+        outcome,
+        TraceFields::default(),
+    )
+    .with_message(message)
+    .with_field("old_digest", &report.old_digest)
+    .with_field(
+        "candidate_digest",
+        report.candidate_digest.as_deref().unwrap_or("unavailable"),
+    )
+    .with_field("changed_paths", report.changed_paths.join(","))
+    .with_field("active_generation_changed", "false");
+    if let ConfigReloadPreflightOutcome::Rejected {
+        error_kind,
+        error_field,
+        error_message,
+        remediation,
+    } = &report.outcome
+    {
+        event = event
+            .with_field("error_kind", error_kind)
+            .with_field("error_field", error_field)
+            .with_field("error_message", error_message)
+            .with_field("remediation", remediation);
+    }
+    event
 }
 
 /// 以单调时钟节流 heartbeat，持久记录只使用 epoch 时间；续租失败会终止 control loop。
@@ -5651,6 +5709,41 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn rejected_config_preflight_audit_contains_digest_field_and_remediation() {
+        let report = crate::ConfigReloadPreflight {
+            old_digest: "sha256:old".to_owned(),
+            candidate_digest: None,
+            changed_paths: vec!["config/routes/topics.yaml".to_owned()],
+            outcome: ConfigReloadPreflightOutcome::Rejected {
+                error_kind: "invalid_argument".to_owned(),
+                error_field: "routes".to_owned(),
+                error_message: "route references an unknown agent".to_owned(),
+                remediation: "correct the reported configuration field".to_owned(),
+            },
+        };
+
+        let event = config_reload_preflight_audit(&report);
+        assert_eq!(event.action, AuditAction::ConfigValidated);
+        assert_eq!(event.outcome, AuditOutcome::Blocked);
+        assert!(event
+            .fields
+            .contains(&("old_digest".to_owned(), "sha256:old".to_owned())));
+        assert!(event
+            .fields
+            .contains(&("candidate_digest".to_owned(), "unavailable".to_owned())));
+        assert!(event
+            .fields
+            .contains(&("error_field".to_owned(), "routes".to_owned())));
+        assert!(event
+            .fields
+            .iter()
+            .any(|(key, value)| { key == "remediation" && value.contains("correct") }));
+        assert!(event
+            .fields
+            .contains(&("active_generation_changed".to_owned(), "false".to_owned())));
     }
 
     /// 执行 `workspace_root` 对应的处理逻辑。
