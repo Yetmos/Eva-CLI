@@ -3,6 +3,8 @@ use eva_core::EvaError;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduleRecord {
@@ -26,6 +28,7 @@ impl FileSystemScheduleStore {
     }
     pub fn upsert(&self, id: &str, next_run_at_ms: u128) -> Result<ScheduleRecord, EvaError> {
         validate_id(id)?;
+        let _lock = self.lock(id)?;
         let generation = self
             .read(id)
             .map(|r| r.generation.saturating_add(1))
@@ -51,6 +54,7 @@ impl FileSystemScheduleStore {
         if owner.is_empty() {
             return Err(EvaError::invalid_argument("schedule owner cannot be empty"));
         }
+        let _lock = self.lock(id)?;
         let mut r = self.read(id)?;
         if r.next_run_at_ms > now_ms {
             return Err(EvaError::unavailable("schedule is not due").with_retryable(true));
@@ -72,6 +76,7 @@ impl FileSystemScheduleStore {
         owner: &str,
         next_run_at_ms: u128,
     ) -> Result<ScheduleRecord, EvaError> {
+        let _lock = self.lock(id)?;
         let mut r = self.read(id)?;
         if r.lease_owner.as_deref() != Some(owner) {
             return Err(EvaError::conflict(
@@ -94,6 +99,31 @@ impl FileSystemScheduleStore {
     fn path(&self, id: &str) -> PathBuf {
         self.root.join(format!("{id}.schedule"))
     }
+    fn lock(&self, id: &str) -> Result<ScheduleLock, EvaError> {
+        let path = self.root.join(format!("{id}.schedule.lock"));
+        for _ in 0..200 {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok(ScheduleLock { file, path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| SystemTime::now().duration_since(t).ok())
+                        .is_some_and(|age| age > Duration::from_secs(60))
+                    {
+                        let _ = fs::remove_file(&path);
+                    } else {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                }
+                Err(error) => {
+                    return Err(EvaError::internal("acquire schedule lock")
+                        .with_context("error", error.to_string()))
+                }
+            }
+        }
+        Err(EvaError::timeout("schedule lock acquisition timed out"))
+    }
     fn write(&self, r: &ScheduleRecord) -> Result<(), EvaError> {
         let p = self.path(&r.id);
         let t = p.with_extension("schedule.tmp");
@@ -113,6 +143,17 @@ impl FileSystemScheduleStore {
         fs::rename(t, p).map_err(|e| {
             EvaError::internal("publish schedule record").with_context("error", e.to_string())
         })
+    }
+}
+#[derive(Debug)]
+struct ScheduleLock {
+    file: std::fs::File,
+    path: PathBuf,
+}
+impl Drop for ScheduleLock {
+    fn drop(&mut self) {
+        let _ = self.file.sync_all();
+        let _ = fs::remove_file(&self.path);
     }
 }
 fn validate_id(id: &str) -> Result<(), EvaError> {
@@ -170,6 +211,7 @@ fn decode(t: &str) -> Result<ScheduleRecord, EvaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
     #[test]
     fn claim_reclaims_expired_lease() {
         let root = std::env::temp_dir().join(format!("eva-schedule-{}", std::process::id()));
@@ -180,6 +222,32 @@ mod tests {
         assert!(s.claim("memory-gc", "b", 15, 10).is_err());
         assert!(s.claim("memory-gc", "b", 21, 10).is_ok());
         s.complete("memory-gc", "b", 100).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_claim_has_one_owner() {
+        let root = std::env::temp_dir().join(format!("eva-schedule-race-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store = Arc::new(FileSystemScheduleStore::new(&root).unwrap());
+        store.upsert("knowledge-rebuild", 1).unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let mut joins = Vec::new();
+        for owner in ["first", "second"] {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            joins.push(thread::spawn(move || {
+                barrier.wait();
+                store.claim("knowledge-rebuild", owner, 1, 1_000).is_ok()
+            }));
+        }
+        barrier.wait();
+        let winners = joins
+            .into_iter()
+            .map(|join| join.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(winners, 1);
         let _ = fs::remove_dir_all(root);
     }
 }
