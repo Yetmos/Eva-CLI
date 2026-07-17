@@ -98,9 +98,9 @@ jobs:
           $manifest = Join-Path $root "canonical.metadata"
           $version = "1.11.5-alpha"
           $targets = @(
-            @{ Target = "aarch64-apple-darwin"; Suffix = "tar.gz"; Digest = "$('a' * 64)" },
-            @{ Target = "x86_64-unknown-linux-gnu"; Suffix = "tar.gz"; Digest = "$('c' * 64)" },
-            @{ Target = "x86_64-pc-windows-msvc"; Suffix = "zip"; Digest = "$('b' * 64)" }
+            @{ Target = "aarch64-apple-darwin"; Suffix = "tar.gz"; Digest = ('a' * 64 -join '') },
+            @{ Target = "x86_64-unknown-linux-gnu"; Suffix = "tar.gz"; Digest = ('c' * 64 -join '') },
+            @{ Target = "x86_64-pc-windows-msvc"; Suffix = "zip"; Digest = ('b' * 64 -join '') }
           )
           $lines = [System.Collections.Generic.List[string]]::new()
           $lines.Add("format=eva.package-metadata.v1")
