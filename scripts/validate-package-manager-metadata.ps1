@@ -29,6 +29,13 @@ switch ($Manager) {
 if (-not $staticValid) { throw "metadata_static_validation_failed:$Manager" }
 if ($StaticOnly) { [ordered]@{ manager=$Manager; status='static_passed'; static_valid=$true; native_tool=$null; metadata_path=$path; size_bytes=$bytes.Length } | ConvertTo-Json -Compress; exit 0 }
 if ($null -eq $tool) { [ordered]@{ manager=$Manager; status='unavailable'; static_valid=$true; native_tool=$null; metadata_path=$path; size_bytes=$bytes.Length } | ConvertTo-Json -Compress; if ($RequireNativeTool) { exit 3 }; exit 0 }
-& $tool.Source @arguments | Out-Host
-if ($LASTEXITCODE -ne 0) { throw ('native_validator_failed:' + $Manager + ':' + $LASTEXITCODE) }
+$nativeOutput = @(& $tool.Source @arguments 2>&1)
+$nativeOutput | ForEach-Object { Write-Host $_ }
+if ($LASTEXITCODE -ne 0) {
+  if ($env:GITHUB_ACTIONS -eq 'true') {
+    $annotation = (($nativeOutput | Select-Object -Last 40) -join "`n").Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+    Write-Output "::error title=$Manager native validator failed::$annotation"
+  }
+  throw ('native_validator_failed:' + $Manager + ':' + $LASTEXITCODE)
+}
 [ordered]@{ manager=$Manager; status='passed'; static_valid=$true; native_tool=$tool.Source; metadata_path=$path; size_bytes=$bytes.Length } | ConvertTo-Json -Compress

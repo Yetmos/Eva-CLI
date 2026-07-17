@@ -141,7 +141,18 @@ jobs:
           retention-days: 14
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP "eva-workspace-clippy.log"
+          & cargo clippy --workspace --all-targets -- -D warnings 2>&1 | Tee-Object -FilePath $log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            $tail = (Get-Content -LiteralPath $log -Tail 80) -join "`n"
+            if ($tail.Length -gt 3000) { $tail = $tail.Substring($tail.Length - 3000) }
+            $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Output "::error title=Workspace Clippy failed::$annotation"
+            exit $exitCode
+          }
 
       - name: Workspace tests
         shell: pwsh

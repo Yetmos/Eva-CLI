@@ -17,7 +17,7 @@ pub fn generate_winget_manifests(
         .find(|a| a.target == "x86_64-pc-windows-msvc")
         .ok_or_else(|| EvaError::not_found("Windows package metadata is missing"))?;
     let version=format!("PackageIdentifier: Yetmos.EvaCLI\nPackageVersion: {}\nDefaultLocale: en-US\nManifestType: version\nManifestVersion: 1.6.0\n",metadata.version);
-    let installer=format!("PackageIdentifier: Yetmos.EvaCLI\nPackageVersion: {}\nInstallerType: portable\nCommands:\n  - eva\nInstallers:\n  - Architecture: x64\n    InstallerUrl: {}\n    InstallerSha256: {}\n    Scope: user\nUpgradeBehavior: install\nManifestType: installer\nManifestVersion: 1.6.0\n",metadata.version,a.download_url,a.sha256.to_ascii_uppercase());
+    let installer=format!("PackageIdentifier: Yetmos.EvaCLI\nPackageVersion: {}\nInstallerType: portable\nCommands:\n  - eva\nInstallers:\n  - Architecture: x64\n    InstallerUrl: {}\n    InstallerSha256: {}\nUpgradeBehavior: install\nManifestType: installer\nManifestVersion: 1.6.0\n",metadata.version,a.download_url,a.sha256.to_ascii_uppercase());
     let locale=format!("PackageIdentifier: Yetmos.EvaCLI\nPackageVersion: {}\nPackageLocale: en-US\nPublisher: Yetmos\nPackageName: Eva CLI\nShortDescription: Local-first agent runtime CLI\nLicense: NOASSERTION\nManifestType: defaultLocale\nManifestVersion: 1.6.0\n",metadata.version);
     Ok(WingetManifestSet {
         version,
