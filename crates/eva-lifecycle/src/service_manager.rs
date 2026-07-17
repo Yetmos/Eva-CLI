@@ -2,25 +2,16 @@
 //! OS service-manager abstraction boundary.
 
 use crate::{RuntimeHealth, UpgradeApplyPlan};
+use eva_config::ServiceManagerConfig;
 use eva_core::EvaError;
+use std::path::PathBuf;
+
+pub use eva_config::ServiceManagerKind;
 
 /// 本模块的架构职责：定义服务管理器适配器、模拟交接及回滚证据边界。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
-    "OS service-manager adapter trait, fake handoff, and rollback evidence boundary";
-
-/// 支持的操作系统服务管理器类别。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceManagerKind {
-    /// 只修改内存状态的开发与测试适配器。
-    Fake,
-    /// Windows 服务控制管理器。
-    WindowsService,
-    /// Linux systemd 服务管理器。
-    Systemd,
-    /// macOS launchd 服务管理器。
-    Launchd,
-}
+    "OS service-manager typed lifecycle, fake state, handoff, and rollback evidence boundary";
 
 /// 项目中声明的服务管理器配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,13 +25,58 @@ pub struct ServiceManagerDefinition {
     /// systemd、launchd 等平台使用的可选单元名称。
     pub unit_name: Option<String>,
     /// 当前活动运行时二进制路径。
-    pub runtime_binary: Option<String>,
+    pub runtime_binary: Option<PathBuf>,
     /// 候选运行时二进制路径。
-    pub candidate_runtime_binary: Option<String>,
+    pub candidate_runtime_binary: Option<PathBuf>,
     /// 是否配置为随系统启动。
     pub start_on_boot: bool,
     /// 交接时是否重启 Supervisor。
     pub restart_supervisor: bool,
+}
+
+/// Typed service state shared by status and mutation reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceManagerState {
+    /// No service definition is installed.
+    NotInstalled,
+    /// The service is installed but not running.
+    Stopped,
+    /// The service is installed and running.
+    Running,
+}
+
+/// Mutating operations supported by every service-manager adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceManagerOperation {
+    /// Install the service definition.
+    Install,
+    /// Remove the service definition.
+    Uninstall,
+    /// Start an installed service.
+    Start,
+    /// Stop an installed service.
+    Stop,
+    /// Restart an installed service.
+    Restart,
+}
+
+/// Stable evidence returned by one service-manager mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceManagerMutationReport {
+    /// Adapter kind that evaluated the request.
+    pub kind: ServiceManagerKind,
+    /// Stable service name from the validated definition.
+    pub service_name: String,
+    /// Requested mutation.
+    pub operation: ServiceManagerOperation,
+    /// State after the operation completed or was found to be unnecessary.
+    pub state: ServiceManagerState,
+    /// Whether this call changed adapter state.
+    pub mutation_executed: bool,
+    /// Whether the report came from a real host adapter.
+    pub production_adapter: bool,
+    /// Ordered, secret-free operation evidence.
+    pub audit: Vec<String>,
 }
 
 /// 服务管理器当前配置和代际状态的检查报告。
@@ -54,6 +90,8 @@ pub struct ServiceManagerStatusReport {
     pub configured: bool,
     /// 是否为真实平台适配器而非模拟实现。
     pub production_adapter: bool,
+    /// Typed installed/running state observed by the adapter.
+    pub state: ServiceManagerState,
     /// 当前活动代际标识。
     pub active_generation: Option<String>,
     /// 当前活动发布引用。
@@ -112,9 +150,18 @@ pub struct ServiceManagerRollbackReport {
     pub audit: Vec<String>,
 }
 
-/// 服务管理器状态检查请求。
-pub struct ServiceManagerInspectRequest<'a> {
+/// Read-only service status request.
+pub struct ServiceManagerStatusRequest<'a> {
     /// 待检查的只读服务配置。
+    pub definition: &'a ServiceManagerDefinition,
+}
+
+/// Backward-compatible name for the original read-only inspection request.
+pub type ServiceManagerInspectRequest<'a> = ServiceManagerStatusRequest<'a>;
+
+/// Request shared by all typed service mutations.
+pub struct ServiceManagerMutationRequest<'a> {
+    /// Validated service definition that constrains the mutation.
     pub definition: &'a ServiceManagerDefinition,
 }
 
@@ -143,11 +190,49 @@ pub trait ServiceManagerAdapter {
     /// 返回适配器实际实现的服务管理器类别。
     fn kind(&self) -> ServiceManagerKind;
 
+    /// Installs the service definition if it is not already installed.
+    fn install(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError>;
+
+    /// Removes the service definition if it is installed.
+    fn uninstall(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError>;
+
+    /// Reads the current typed service state without mutation.
+    fn status(
+        &self,
+        request: ServiceManagerStatusRequest<'_>,
+    ) -> Result<ServiceManagerStatusReport, EvaError>;
+
+    /// Starts an installed service.
+    fn start(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError>;
+
+    /// Stops the service when it is currently running.
+    fn stop(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError>;
+
+    /// Restarts an installed service, starting it when currently stopped.
+    fn restart(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError>;
+
     /// 读取服务配置与当前代际状态，不执行交接。
     fn inspect(
         &self,
         request: ServiceManagerInspectRequest<'_>,
-    ) -> Result<ServiceManagerStatusReport, EvaError>;
+    ) -> Result<ServiceManagerStatusReport, EvaError> {
+        self.status(request)
+    }
 
     /// 在候选健康门禁通过后执行代际交接。
     fn handoff(
@@ -167,6 +252,10 @@ pub trait ServiceManagerAdapter {
 /// 它拒绝所有真实平台类别，避免测试实现被误当成生产控制面。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FakeServiceManagerAdapter {
+    /// Whether a fake service definition has been installed.
+    installed: bool,
+    /// Whether the installed fake service is running.
+    running: bool,
     /// 模拟的当前活动代际。
     active_generation: Option<String>,
     /// 模拟的当前活动发布引用。
@@ -175,34 +264,27 @@ pub struct FakeServiceManagerAdapter {
     candidate_generation: Option<String>,
 }
 
-impl ServiceManagerKind {
-    /// 解析配置中的服务管理器类别及其兼容别名。
-    pub fn parse(value: &str) -> Result<Self, EvaError> {
-        match value {
-            "fake" => Ok(Self::Fake),
-            "windows_service" | "windows-service" | "windows" => Ok(Self::WindowsService),
-            "systemd" => Ok(Self::Systemd),
-            "launchd" => Ok(Self::Launchd),
-            _ => Err(
-                EvaError::invalid_argument("unsupported service manager kind")
-                    .with_context("kind", value),
-            ),
-        }
-    }
-
-    /// 返回用于配置和审计的稳定类别字符串。
-    pub fn as_str(self) -> &'static str {
+impl ServiceManagerState {
+    /// Returns the stable state spelling used in audit evidence.
+    pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Fake => "fake",
-            Self::WindowsService => "windows_service",
-            Self::Systemd => "systemd",
-            Self::Launchd => "launchd",
+            Self::NotInstalled => "not_installed",
+            Self::Stopped => "stopped",
+            Self::Running => "running",
         }
     }
+}
 
-    /// 判断该类别是否应由真实平台适配器实现。
-    pub fn production_adapter(self) -> bool {
-        !matches!(self, Self::Fake)
+impl ServiceManagerOperation {
+    /// Returns the stable operation spelling used in audit evidence.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Uninstall => "uninstall",
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+        }
     }
 }
 
@@ -232,6 +314,29 @@ impl ServiceManagerDefinition {
     }
 }
 
+impl From<ServiceManagerConfig> for ServiceManagerDefinition {
+    /// Moves an already validated config into the lifecycle boundary without path conversion.
+    fn from(config: ServiceManagerConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            kind: config.kind,
+            service_name: config.service_name,
+            unit_name: config.unit_name,
+            runtime_binary: config.runtime_binary,
+            candidate_runtime_binary: config.candidate_runtime_binary,
+            start_on_boot: config.start_on_boot,
+            restart_supervisor: config.restart_supervisor,
+        }
+    }
+}
+
+impl From<&ServiceManagerConfig> for ServiceManagerDefinition {
+    /// Clones a validated config while preserving both path values byte-for-byte.
+    fn from(config: &ServiceManagerConfig) -> Self {
+        config.clone().into()
+    }
+}
+
 impl FakeServiceManagerAdapter {
     /// 创建尚无活动代际的模拟适配器。
     pub fn new() -> Self {
@@ -244,6 +349,8 @@ impl FakeServiceManagerAdapter {
         release: impl Into<String>,
     ) -> Self {
         Self {
+            installed: true,
+            running: true,
             active_generation: Some(generation.into()),
             active_release: Some(release.into()),
             candidate_generation: None,
@@ -272,6 +379,53 @@ impl FakeServiceManagerAdapter {
                 .with_context("service_name", &definition.service_name))
         }
     }
+
+    /// Returns the single state source used by status and every mutation report.
+    fn service_state(&self) -> ServiceManagerState {
+        if !self.installed {
+            ServiceManagerState::NotInstalled
+        } else if self.running {
+            ServiceManagerState::Running
+        } else {
+            ServiceManagerState::Stopped
+        }
+    }
+
+    /// Requires an installed service before start/restart operations.
+    fn ensure_installed(&self, definition: &ServiceManagerDefinition) -> Result<(), EvaError> {
+        if self.installed {
+            Ok(())
+        } else {
+            Err(
+                EvaError::not_found("service manager service is not installed")
+                    .with_context("service_name", &definition.service_name),
+            )
+        }
+    }
+
+    /// Builds stable, secret-free evidence from the authoritative fake state.
+    fn mutation_report(
+        &self,
+        definition: &ServiceManagerDefinition,
+        operation: ServiceManagerOperation,
+        mutation_executed: bool,
+    ) -> ServiceManagerMutationReport {
+        let state = self.service_state();
+        ServiceManagerMutationReport {
+            kind: ServiceManagerKind::Fake,
+            service_name: definition.service_name.clone(),
+            operation,
+            state,
+            mutation_executed,
+            production_adapter: false,
+            audit: vec![
+                format!("service_manager.fake:{}", operation.as_str()),
+                format!("service_manager.mutation_executed:{mutation_executed}"),
+                format!("service_manager.state:{}", state.as_str()),
+                format!("service_manager.service:{}", definition.service_name),
+            ],
+        }
+    }
 }
 
 impl ServiceManagerAdapter for FakeServiceManagerAdapter {
@@ -280,10 +434,44 @@ impl ServiceManagerAdapter for FakeServiceManagerAdapter {
         ServiceManagerKind::Fake
     }
 
+    fn install(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError> {
+        Self::ensure_fake(request.definition)?;
+        Self::ensure_enabled(request.definition)?;
+        let mutation_executed = !self.installed;
+        if mutation_executed {
+            self.installed = true;
+            self.running = false;
+        }
+        Ok(self.mutation_report(
+            request.definition,
+            ServiceManagerOperation::Install,
+            mutation_executed,
+        ))
+    }
+
+    fn uninstall(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError> {
+        Self::ensure_fake(request.definition)?;
+        Self::ensure_enabled(request.definition)?;
+        let mutation_executed = self.installed;
+        self.installed = false;
+        self.running = false;
+        Ok(self.mutation_report(
+            request.definition,
+            ServiceManagerOperation::Uninstall,
+            mutation_executed,
+        ))
+    }
+
     /// 返回当前模拟状态，不修改代际。
-    fn inspect(
+    fn status(
         &self,
-        request: ServiceManagerInspectRequest<'_>,
+        request: ServiceManagerStatusRequest<'_>,
     ) -> Result<ServiceManagerStatusReport, EvaError> {
         Self::ensure_fake(request.definition)?;
         Ok(ServiceManagerStatusReport {
@@ -291,6 +479,7 @@ impl ServiceManagerAdapter for FakeServiceManagerAdapter {
             service_name: request.definition.service_name.clone(),
             configured: request.definition.enabled,
             production_adapter: false,
+            state: self.service_state(),
             active_generation: self.active_generation.clone(),
             active_release: self.active_release.clone(),
             candidate_generation: self.candidate_generation.clone(),
@@ -302,6 +491,48 @@ impl ServiceManagerAdapter for FakeServiceManagerAdapter {
                 ),
             ],
         })
+    }
+
+    fn start(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError> {
+        Self::ensure_fake(request.definition)?;
+        Self::ensure_enabled(request.definition)?;
+        self.ensure_installed(request.definition)?;
+        let mutation_executed = !self.running;
+        self.running = true;
+        Ok(self.mutation_report(
+            request.definition,
+            ServiceManagerOperation::Start,
+            mutation_executed,
+        ))
+    }
+
+    fn stop(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError> {
+        Self::ensure_fake(request.definition)?;
+        Self::ensure_enabled(request.definition)?;
+        let mutation_executed = self.installed && self.running;
+        self.running = false;
+        Ok(self.mutation_report(
+            request.definition,
+            ServiceManagerOperation::Stop,
+            mutation_executed,
+        ))
+    }
+
+    fn restart(
+        &mut self,
+        request: ServiceManagerMutationRequest<'_>,
+    ) -> Result<ServiceManagerMutationReport, EvaError> {
+        Self::ensure_fake(request.definition)?;
+        Self::ensure_enabled(request.definition)?;
+        self.ensure_installed(request.definition)?;
+        self.running = true;
+        Ok(self.mutation_report(request.definition, ServiceManagerOperation::Restart, true))
     }
 
     /// 模拟候选启动、健康门禁及活动代际切换。
@@ -413,6 +644,7 @@ fn stable_non_empty(value: String, field: &'static str) -> Result<String, EvaErr
 /// 模拟服务管理器的交接、失败门禁与类别隔离测试。
 mod tests {
     use super::*;
+    use eva_config::ServiceManagerConfig;
     use eva_core::GenerationId;
 
     /// 构造服务管理器测试使用的固定升级计划。
@@ -425,6 +657,203 @@ mod tests {
             "1.15.0",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn config_conversion_preserves_canonical_kind_and_paths() {
+        #[cfg(unix)]
+        let runtime_binary = {
+            use std::ffi::OsString;
+            use std::os::unix::ffi::OsStringExt;
+
+            PathBuf::from(OsString::from_vec(b"runtime/eva-\xff".to_vec()))
+        };
+        #[cfg(not(unix))]
+        let runtime_binary = PathBuf::from("runtime dir/eva-current");
+        let candidate_runtime_binary = PathBuf::from("candidate dir/eva-next");
+        let config = ServiceManagerConfig {
+            enabled: true,
+            kind: eva_config::ServiceManagerKind::Systemd,
+            service_name: "eva-service".to_owned(),
+            unit_name: Some("eva.service".to_owned()),
+            runtime_binary: Some(runtime_binary.clone()),
+            candidate_runtime_binary: Some(candidate_runtime_binary.clone()),
+            start_on_boot: true,
+            restart_supervisor: true,
+        };
+
+        let borrowed = ServiceManagerDefinition::from(&config);
+        let owned = ServiceManagerDefinition::from(config);
+        let canonical_kind: eva_config::ServiceManagerKind = borrowed.kind;
+
+        assert_eq!(canonical_kind, ServiceManagerKind::Systemd);
+        assert_eq!(borrowed, owned);
+        assert_eq!(borrowed.runtime_binary, Some(runtime_binary));
+        assert_eq!(
+            borrowed.candidate_runtime_binary,
+            Some(candidate_runtime_binary)
+        );
+        assert!(borrowed.production_adapter_enabled());
+    }
+
+    #[test]
+    fn fake_service_manager_typed_operations_are_idempotent() {
+        let definition =
+            ServiceManagerDefinition::new(true, ServiceManagerKind::Fake, "eva-dev").unwrap();
+        let mut adapter = FakeServiceManagerAdapter::new();
+
+        let initial = adapter
+            .status(ServiceManagerStatusRequest {
+                definition: &definition,
+            })
+            .unwrap();
+        assert_eq!(initial.state, ServiceManagerState::NotInstalled);
+        assert!(!initial.production_adapter);
+
+        let installed = adapter
+            .install(ServiceManagerMutationRequest {
+                definition: &definition,
+            })
+            .unwrap();
+        assert_eq!(installed.operation, ServiceManagerOperation::Install);
+        assert_eq!(installed.state, ServiceManagerState::Stopped);
+        assert!(installed.mutation_executed);
+        assert!(!installed.production_adapter);
+        assert!(
+            !adapter
+                .install(ServiceManagerMutationRequest {
+                    definition: &definition,
+                })
+                .unwrap()
+                .mutation_executed
+        );
+
+        let started = adapter
+            .start(ServiceManagerMutationRequest {
+                definition: &definition,
+            })
+            .unwrap();
+        assert_eq!(started.state, ServiceManagerState::Running);
+        assert!(started.mutation_executed);
+        assert!(
+            !adapter
+                .start(ServiceManagerMutationRequest {
+                    definition: &definition,
+                })
+                .unwrap()
+                .mutation_executed
+        );
+
+        let stopped = adapter
+            .stop(ServiceManagerMutationRequest {
+                definition: &definition,
+            })
+            .unwrap();
+        assert_eq!(stopped.state, ServiceManagerState::Stopped);
+        assert!(stopped.mutation_executed);
+        assert!(
+            !adapter
+                .stop(ServiceManagerMutationRequest {
+                    definition: &definition,
+                })
+                .unwrap()
+                .mutation_executed
+        );
+
+        let restarted = adapter
+            .restart(ServiceManagerMutationRequest {
+                definition: &definition,
+            })
+            .unwrap();
+        assert_eq!(restarted.operation, ServiceManagerOperation::Restart);
+        assert_eq!(restarted.state, ServiceManagerState::Running);
+        assert!(restarted.mutation_executed);
+
+        let uninstalled = adapter
+            .uninstall(ServiceManagerMutationRequest {
+                definition: &definition,
+            })
+            .unwrap();
+        assert_eq!(uninstalled.state, ServiceManagerState::NotInstalled);
+        assert!(uninstalled.mutation_executed);
+        assert!(
+            !adapter
+                .uninstall(ServiceManagerMutationRequest {
+                    definition: &definition,
+                })
+                .unwrap()
+                .mutation_executed
+        );
+        for report in [&installed, &started, &stopped, &restarted, &uninstalled] {
+            assert!(!report.production_adapter);
+            assert!(report
+                .audit
+                .iter()
+                .any(|entry| entry == "service_manager.mutation_executed:true"));
+        }
+
+        let object: &mut dyn ServiceManagerAdapter = &mut adapter;
+        assert_eq!(object.kind(), ServiceManagerKind::Fake);
+        assert_eq!(
+            object
+                .inspect(ServiceManagerInspectRequest {
+                    definition: &definition,
+                })
+                .unwrap()
+                .state,
+            ServiceManagerState::NotInstalled
+        );
+    }
+
+    #[test]
+    fn fake_service_manager_requires_installation_for_start_and_restart() {
+        let definition =
+            ServiceManagerDefinition::new(true, ServiceManagerKind::Fake, "eva-dev").unwrap();
+        let mut adapter = FakeServiceManagerAdapter::new();
+
+        for error in [
+            adapter
+                .start(ServiceManagerMutationRequest {
+                    definition: &definition,
+                })
+                .unwrap_err(),
+            adapter
+                .restart(ServiceManagerMutationRequest {
+                    definition: &definition,
+                })
+                .unwrap_err(),
+        ] {
+            assert_eq!(error.kind(), eva_core::ErrorKind::NotFound);
+        }
+        let stopped = adapter
+            .stop(ServiceManagerMutationRequest {
+                definition: &definition,
+            })
+            .unwrap();
+        assert_eq!(stopped.state, ServiceManagerState::NotInstalled);
+        assert!(!stopped.mutation_executed);
+    }
+
+    #[test]
+    fn fake_service_manager_rejects_disabled_mutation() {
+        let definition =
+            ServiceManagerDefinition::new(false, ServiceManagerKind::Fake, "eva-disabled").unwrap();
+        let mut adapter = FakeServiceManagerAdapter::new();
+
+        let error = adapter
+            .install(ServiceManagerMutationRequest {
+                definition: &definition,
+            })
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+        let status = adapter
+            .status(ServiceManagerStatusRequest {
+                definition: &definition,
+            })
+            .unwrap();
+        assert!(!status.configured);
+        assert_eq!(status.state, ServiceManagerState::NotInstalled);
     }
 
     #[test]
@@ -500,7 +929,7 @@ mod tests {
     fn fake_adapter_rejects_platform_service_manager_kind() {
         let definition =
             ServiceManagerDefinition::new(true, ServiceManagerKind::Systemd, "eva-prod").unwrap();
-        let adapter = FakeServiceManagerAdapter::new();
+        let mut adapter = FakeServiceManagerAdapter::new();
 
         let error = adapter
             .inspect(ServiceManagerInspectRequest {
@@ -509,5 +938,11 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::Unsupported);
+        let mutation_error = adapter
+            .install(ServiceManagerMutationRequest {
+                definition: &definition,
+            })
+            .unwrap_err();
+        assert_eq!(mutation_error.kind(), eva_core::ErrorKind::Unsupported);
     }
 }

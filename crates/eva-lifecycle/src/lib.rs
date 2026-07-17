@@ -31,7 +31,8 @@ pub use rollback::{RollbackCoordinator, RollbackPlan};
 pub use service_manager::{
     FakeServiceManagerAdapter, ServiceManagerAdapter, ServiceManagerDefinition,
     ServiceManagerHandoffReport, ServiceManagerHandoffRequest, ServiceManagerInspectRequest,
-    ServiceManagerKind, ServiceManagerRollbackReport, ServiceManagerRollbackRequest,
-    ServiceManagerStatusReport,
+    ServiceManagerKind, ServiceManagerMutationReport, ServiceManagerMutationRequest,
+    ServiceManagerOperation, ServiceManagerRollbackReport, ServiceManagerRollbackRequest,
+    ServiceManagerState, ServiceManagerStatusReport, ServiceManagerStatusRequest,
 };
 pub use supervisor::{InMemorySupervisor, RuntimeHealth, SupervisorReport};

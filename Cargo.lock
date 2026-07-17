@@ -284,6 +284,7 @@ name = "eva-lifecycle"
 version = "1.11.5-alpha"
 dependencies = [
  "eva-backup",
+ "eva-config",
  "eva-core",
  "eva-observability",
  "eva-policy",
