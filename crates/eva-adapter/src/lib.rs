@@ -7,6 +7,8 @@ pub mod capability_host;
 pub mod error;
 /// 声明 `manifest` 子模块。
 pub mod manifest;
+/// Central OS-owned provider process spawning and supervision boundary.
+pub mod process_backend;
 /// 声明 `registry` 子模块。
 pub mod registry;
 /// 声明 `router` 子模块。
@@ -25,6 +27,9 @@ pub use capability_host::{
 };
 pub use manifest::{
     AdapterCapabilityBinding, AdapterCircuitBreaker, AdapterHandle, AdapterHealth, AdapterRateLimit,
+};
+pub use process_backend::{
+    OsProcessBackend, ProcessBackend, ProcessIdentity, ProviderProcessHandle,
 };
 pub use registry::AdapterRegistry;
 pub use router::{AdapterRoute, AdapterRouteRequest, AdapterRouter};
