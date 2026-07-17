@@ -14,13 +14,13 @@ pub mod routes;
 /// 配置文件 Schema 验证器。
 pub mod schema;
 
-use crate::eva_yaml::{ConfigRoots, EvaConfig};
+use crate::eva_yaml::{load_eva_config_value, ConfigRoots, EvaConfig};
 use crate::manifest::adapter::{load_adapter_manifest, AdapterManifest};
 use crate::manifest::agent::{load_agent_manifest, AgentManifest};
 use crate::manifest::capability::{load_capability_manifest, CapabilityManifest};
 use crate::policy::{load_policy_document, PolicyDocument};
 use crate::routes::{load_routes, RouteConfig};
-use crate::schema::validate_config_files_with_schemas;
+use crate::schema::{validate_config_files_with_schemas, validate_yaml_value_with_schema};
 use eva_core::EvaError;
 use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, BTreeSet};
@@ -90,7 +90,44 @@ pub struct ProjectConfig {
 pub fn load_project_config(project_root: impl AsRef<Path>) -> Result<ProjectConfig, EvaError> {
     let project_root = normalize_existing_dir(project_root.as_ref(), "project root")?;
     let eva_config_path = project_root.join("config").join("eva.yaml");
-    let eva = load_eva_config(&eva_config_path)?;
+    let base_eva = load_eva_config(&eva_config_path)?;
+    let base_value: serde_yaml::Value = read_yaml_file(&eva_config_path, "eva.yaml")?;
+    let config_dir = project_root.join("config");
+    let environment = base_eva.runtime.env.clone();
+    let candidates = [
+        (
+            ConfigLayerKind::Profile,
+            config_dir
+                .join("profiles")
+                .join(format!("{environment}.yaml")),
+        ),
+        (ConfigLayerKind::User, config_dir.join("eva.user.yaml")),
+        (
+            ConfigLayerKind::Environment,
+            config_dir
+                .join("environments")
+                .join(format!("{environment}.yaml")),
+        ),
+    ];
+    let mut layers = vec![(ConfigLayerKind::Base, eva_config_path.clone(), base_value)];
+    for (kind, path) in candidates {
+        if path.exists() {
+            layers.push((
+                kind,
+                path.clone(),
+                read_yaml_file(&path, "eva.yaml override")?,
+            ));
+        }
+    }
+    let layered = merge_config_layers(layers)?;
+    let base_roots = base_eva.config.resolve_against(&project_root);
+    validate_yaml_value_with_schema(
+        &layered.value,
+        &eva_config_path,
+        &schema_paths(&base_roots).eva,
+        "eva.yaml",
+    )?;
+    let eva = load_eva_config_value(&eva_config_path, layered.value)?;
     let roots = eva.config.resolve_against(&project_root);
 
     let agent_paths = find_named_files(&roots.agent_dir, "agent.yaml")?;

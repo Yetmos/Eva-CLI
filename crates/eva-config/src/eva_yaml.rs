@@ -209,6 +209,18 @@ pub fn load_eva_config(path: impl AsRef<Path>) -> Result<EvaConfig, EvaError> {
     EvaConfig::try_from_raw(path.to_path_buf(), raw)
 }
 
+pub(crate) fn load_eva_config_value(path: &Path, value: Value) -> Result<EvaConfig, EvaError> {
+    let raw: RawEvaConfig = serde_yaml::from_value(value).map_err(|error| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "$",
+            format!("failed to parse merged configuration: {error}"),
+        )
+    })?;
+    EvaConfig::try_from_raw(path.to_path_buf(), raw)
+}
+
 impl EvaConfig {
     /// 按 runtime、observability、service_manager、config 顺序规范化原始配置。
     ///

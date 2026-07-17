@@ -88,6 +88,21 @@ pub fn validate_yaml_file_with_schema(
     validate_schema_node(&data, &schema, &context, &FieldPath::root())
 }
 
+pub(crate) fn validate_yaml_value_with_schema(
+    data: &Value,
+    data_path: &Path,
+    schema_path: &Path,
+    config_type: &'static str,
+) -> Result<(), EvaError> {
+    let schema = read_schema(schema_path, config_type)?;
+    let context = SchemaValidationContext {
+        config_type,
+        data_path,
+        schema_path,
+    };
+    validate_schema_node(data, &schema, &context, &FieldPath::root())
+}
+
 /// `eva-config` 当前接受的 Adapter 传输值。
 /// Adapter transport values currently accepted by `eva-config`.
 pub const ADAPTER_TRANSPORT_VALUES: &[&str] = &[
