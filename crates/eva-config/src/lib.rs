@@ -4,6 +4,7 @@
 /// 主 `eva.yaml` 强类型配置。
 pub mod eva_yaml;
 pub mod generation;
+pub mod layering;
 /// Agent、Adapter 和 Capability 清单模型。
 pub mod manifest;
 /// 策略文档加载模型。
@@ -33,6 +34,7 @@ pub use eva_yaml::{
     ServiceManagerKind,
 };
 pub use generation::ConfigGeneration;
+pub use layering::{merge_config_layers, ConfigLayer, ConfigLayerKind, LayeredConfig};
 pub use manifest::adapter::{
     AdapterTransport, HardwareAdapterConfig, HardwareBusKind, HardwareClaimMode,
     HardwareDriverConfig, HardwareDriverKind, HardwareHotplugConfig, HardwareIdentityConfig,
