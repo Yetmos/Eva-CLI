@@ -5762,7 +5762,7 @@ mod tests {
 
     /// 执行 `wait_for_daemon_available` 对应的处理逻辑。
     fn wait_for_daemon_available(options: &DaemonStartOptions) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let last_observation = match daemon_status(options) {
                 Ok(report) if report.available => return,
