@@ -90,6 +90,25 @@ impl FileSystemProviderAdmissionTable {
         self.write(adapter_id, &state)
     }
 
+    pub fn release_owned(
+        &self,
+        adapter_id: &AdapterId,
+        reservation_id: &str,
+        session_id: &str,
+    ) -> Result<(), EvaError> {
+        let _lock = self.lock(adapter_id)?;
+        let mut state = self.read(adapter_id)?;
+        let index = state
+            .reservations
+            .iter()
+            .position(|entry| {
+                entry.reservation_id == reservation_id && entry.session_id == session_id
+            })
+            .ok_or_else(|| EvaError::conflict("provider admission reservation is not owned"))?;
+        state.reservations.remove(index);
+        self.write(adapter_id, &state)
+    }
+
     pub fn renew(
         &self,
         adapter_id: &AdapterId,
@@ -308,6 +327,32 @@ mod tests {
         assert!(table
             .renew(&adapter, &reservation.reservation_id, "owner", 250, 200)
             .is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn release_owned_cannot_remove_a_successor_reservation() {
+        let root = root();
+        let table = FileSystemProviderAdmissionTable::new(&root).unwrap();
+        let adapter = AdapterId::parse("provider-admission-release-fence").unwrap();
+        let first = table.reserve(&adapter, 1, "owner", 10, 10).unwrap();
+        let successor = table.reserve(&adapter, 1, "owner", 20, 100).unwrap();
+        assert_ne!(first.reservation_id, successor.reservation_id);
+        assert!(table
+            .release_owned(&adapter, &first.reservation_id, "owner")
+            .is_err());
+        assert_eq!(
+            table.snapshot(&adapter, 21).unwrap().reservations,
+            vec![successor.clone()]
+        );
+        table
+            .release_owned(&adapter, &successor.reservation_id, "owner")
+            .unwrap();
+        assert!(table
+            .snapshot(&adapter, 21)
+            .unwrap()
+            .reservations
+            .is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

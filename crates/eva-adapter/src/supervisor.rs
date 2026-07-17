@@ -67,6 +67,8 @@ pub struct ProviderExecutionSlot {
     pub request_id: RequestId,
     /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
+    /// Durable admission identity; absent for supervisors without a durable admission table.
+    pub admission_reservation_id: Option<String>,
     /// 标记该槽是否是熔断恢复窗口后的唯一半开探测。
     pub half_open_probe: bool,
 }
@@ -108,6 +110,16 @@ pub trait ProviderSupervisor {
         slot: &ProviderExecutionSlot,
         outcome: ProviderExecutionOutcome,
     ) -> Result<ProviderProcessSnapshot, EvaError>;
+    /// Extend a durable admission lease. Implementations fail closed when ownership is stale.
+    fn renew_admission(
+        &mut self,
+        _slot: &ProviderExecutionSlot,
+        _now_ms: u128,
+    ) -> Result<(), EvaError> {
+        Err(EvaError::unsupported(
+            "provider supervisor does not support durable admission renewal",
+        ))
+    }
     /// Attach the real OS identity immediately after a transport spawn.
     /// Implementations that do not persist process identities fail closed.
     fn register_process_identity(
@@ -460,11 +472,35 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
                 ensure_request_matches_snapshot(&request, &existing)?;
                 existing.prepare_for_restart(now)?;
                 let committed = self.upsert_process(existing)?;
+                let admission_reservation_id = if let Some(table) = &self.admission_table {
+                    let matches = table
+                        .snapshot(&committed.adapter_id, now)?
+                        .reservations
+                        .into_iter()
+                        .filter(|reservation| reservation.session_id == committed.session_id)
+                        .collect::<Vec<_>>();
+                    match matches.as_slice() {
+                        [reservation] => Some(reservation.reservation_id.clone()),
+                        [] => {
+                            return Err(EvaError::conflict(
+                                "provider restart lacks an active admission reservation",
+                            ))
+                        }
+                        _ => {
+                            return Err(EvaError::conflict(
+                                "provider restart has conflicting admission reservations",
+                            ))
+                        }
+                    }
+                } else {
+                    None
+                };
                 return Ok(ProviderExecutionSlot {
                     session_id: committed.session_id,
                     provider_process_id: committed.provider_process_id,
                     request_id: committed.request_id,
                     adapter_id: committed.adapter_id,
+                    admission_reservation_id,
                     half_open_probe: false,
                 });
             }
@@ -494,15 +530,17 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
             request.provider.restart.max_attempts,
             request.provider.restart.backoff_ms,
         )?;
-        if let Some(table) = &self.admission_table {
-            table.reserve(
+        let admission_reservation = if let Some(table) = &self.admission_table {
+            Some(table.reserve(
                 &request.adapter_id,
                 request.max_concurrency.unwrap_or(usize::MAX),
                 &session_id,
                 now,
                 eva_storage::DEFAULT_RESERVATION_TTL_MS,
-            )?;
-        }
+            )?)
+        } else {
+            None
+        };
         if let Err(error) = self.upsert_process(snapshot) {
             if let Some(table) = &self.admission_table {
                 let _ = table.release(&request.adapter_id, &session_id);
@@ -514,6 +552,8 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
             provider_process_id,
             request_id: request.request_id,
             adapter_id: request.adapter_id,
+            admission_reservation_id: admission_reservation
+                .map(|reservation| reservation.reservation_id),
             half_open_probe,
         })
     }
@@ -537,10 +577,34 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         let result = self.upsert_process(snapshot);
         if result.is_ok() {
             if let Some(table) = &self.admission_table {
-                let _ = table.release(&slot.adapter_id, &slot.session_id);
+                let reservation_id = slot.admission_reservation_id.as_deref().ok_or_else(|| {
+                    EvaError::conflict("provider execution slot lacks admission identity")
+                })?;
+                table.release_owned(&slot.adapter_id, reservation_id, &slot.session_id)?;
             }
         }
         result
+    }
+
+    fn renew_admission(
+        &mut self,
+        slot: &ProviderExecutionSlot,
+        now_ms: u128,
+    ) -> Result<(), EvaError> {
+        let table = self.admission_table.as_ref().ok_or_else(|| {
+            EvaError::unsupported("provider supervisor has no durable admission table")
+        })?;
+        let reservation_id = slot.admission_reservation_id.as_deref().ok_or_else(|| {
+            EvaError::conflict("provider execution slot lacks admission identity")
+        })?;
+        table.renew(
+            &slot.adapter_id,
+            reservation_id,
+            &slot.session_id,
+            now_ms,
+            eva_storage::DEFAULT_RESERVATION_TTL_MS,
+        )?;
+        Ok(())
     }
 
     fn register_process_identity(
