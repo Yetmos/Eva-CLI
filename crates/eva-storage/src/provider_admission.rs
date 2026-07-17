@@ -90,6 +90,32 @@ impl FileSystemProviderAdmissionTable {
         self.write(adapter_id, &state)
     }
 
+    pub fn renew(
+        &self,
+        adapter_id: &AdapterId,
+        reservation_id: &str,
+        session_id: &str,
+        now_ms: u128,
+        ttl_ms: u128,
+    ) -> Result<ProviderAdmissionReservation, EvaError> {
+        let _lock = self.lock(adapter_id)?;
+        let mut state = self.read(adapter_id)?;
+        let reservation = state
+            .reservations
+            .iter_mut()
+            .find(|entry| entry.reservation_id == reservation_id && entry.session_id == session_id)
+            .ok_or_else(|| EvaError::conflict("provider admission reservation is not owned"))?;
+        if reservation.expires_at_ms <= now_ms {
+            return Err(EvaError::conflict(
+                "provider admission reservation has expired",
+            ));
+        }
+        reservation.expires_at_ms = now_ms.saturating_add(ttl_ms.max(1));
+        let renewed = reservation.clone();
+        self.write(adapter_id, &state)?;
+        Ok(renewed)
+    }
+
     pub fn snapshot(
         &self,
         adapter_id: &AdapterId,
@@ -263,6 +289,25 @@ mod tests {
         let first = table.reserve(&adapter, 1, "s1", 10, 100).unwrap();
         let second = table.reserve(&adapter, 1, "s1", 11, 100).unwrap();
         assert_eq!(first, second);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renew_is_fenced_by_reservation_and_session_identity() {
+        let root = root();
+        let table = FileSystemProviderAdmissionTable::new(&root).unwrap();
+        let adapter = AdapterId::parse("provider-admission-renew").unwrap();
+        let reservation = table.reserve(&adapter, 1, "owner", 10, 100).unwrap();
+        let renewed = table
+            .renew(&adapter, &reservation.reservation_id, "owner", 50, 200)
+            .unwrap();
+        assert_eq!(renewed.expires_at_ms, 250);
+        assert!(table
+            .renew(&adapter, &reservation.reservation_id, "other", 60, 200)
+            .is_err());
+        assert!(table
+            .renew(&adapter, &reservation.reservation_id, "owner", 250, 200)
+            .is_err());
         let _ = fs::remove_dir_all(root);
     }
 
