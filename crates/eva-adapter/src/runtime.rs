@@ -796,6 +796,14 @@ mod tests {
     };
     use eva_config::load_project_config;
     use eva_config::AdapterTransport;
+    use std::sync::{Mutex, OnceLock};
+
+    fn process_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
     use eva_core::ErrorKind;
     use eva_storage::{
         DurableBackendOptions, FileSystemDurableBackend, FileSystemProviderProcessTable,
@@ -915,6 +923,7 @@ mod tests {
 
     #[test]
     fn runtime_crash_loop_never_exceeds_durable_restart_budget() {
+        let _env_guard = process_env_lock();
         let counter = temp_root("restart-counter").join("attempts");
         std::fs::create_dir_all(counter.parent().unwrap()).unwrap();
         std::env::set_var("EVA_RESTART_COUNTER_FILE", &counter);
@@ -969,6 +978,7 @@ mod tests {
 
     #[test]
     fn runtime_output_limit_is_terminal_without_restart() {
+        let _env_guard = process_env_lock();
         let counter = temp_root("output-limit-counter").join("attempts");
         std::fs::create_dir_all(counter.parent().unwrap()).unwrap();
         std::env::set_var("EVA_OUTPUT_LIMIT_COUNTER_FILE", &counter);
@@ -986,7 +996,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        handle.output_limit_bytes = Some(8);
+        handle.output_limit_bytes = Some(256);
         handle.provider.restart = eva_config::ProviderRestartConfig {
             mode: eva_config::ProviderRestartMode::OnFailure,
             max_attempts: 2,
@@ -1163,7 +1173,7 @@ mod tests {
             .and_then(|value| value.trim().parse::<u32>().ok())
             .unwrap_or(0);
         std::fs::write(path, (current + 1).to_string()).unwrap();
-        print!("0123456789abcdef");
+        print!("{}", "x".repeat(512));
         std::io::stdout().flush().unwrap();
     }
 
