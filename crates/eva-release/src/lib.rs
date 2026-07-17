@@ -21,6 +21,7 @@ pub mod performance;
 pub mod scanner;
 /// 内置安全审查发现。
 pub mod security;
+pub mod winget;
 
 pub use artifact::{
     ReleaseArtifactEvidence, ReleaseArtifactSignature, ReleaseArtifactSigningKey,
@@ -62,6 +63,7 @@ pub use scanner::{
     ReleaseSecurityScanEvidence, ReleaseSecurityScanFinding, ReleaseSecurityScanVerificationReport,
 };
 pub use security::{SecurityFinding, SecurityReviewReport, SecuritySeverity};
+pub use winget::{generate_winget_manifests, WingetManifestSet};
 
 /// 本模块的架构职责：收集发布加固证据并暴露稳定的就绪度契约。
 /// Architectural responsibility for this module.
