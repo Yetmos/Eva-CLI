@@ -9,6 +9,8 @@ pub mod drain;
 pub mod generation;
 /// 蓝绿 Supervisor 交接与发布指针写入。
 pub mod handoff;
+/// macOS launchd production adapter.
+pub mod launchd;
 /// 失败交接后的回滚规划。
 pub mod rollback;
 /// Non-shell service-manager command execution and bounded evidence.
@@ -35,6 +37,7 @@ pub use handoff::{
     RuntimeBinaryProbe, SupervisorHandoffCoordinator, SupervisorHandoffReport,
     SupervisorHandoffRequest, SupervisorStateStore,
 };
+pub use launchd::LaunchdAdapter;
 pub use rollback::{RollbackCoordinator, RollbackPlan};
 pub use service_command::{
     ProcessServiceCommandExecutor, ServiceCommand, ServiceCommandArg, ServiceCommandArgVisibility,

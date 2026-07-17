@@ -80,6 +80,12 @@ project root
 | `SchemaPaths` | `src/schema.rs` | `eva`、`agent`、`adapter`、`capability`、`policy`、`routes` | schema 文件位置入口 |
 | Schema validator | `src/schema.rs` | `type`、`required`、`properties`、`additionalProperties`、`items`、`enum`、`pattern`、`minProperties` | V1.9.1 启动前结构校验和错误定位 |
 
+### launchd 配置契约
+
+`kind: launchd` 要求 `unit_name` 使用严格的 `system/<label>` 或 `gui/<label>` 语法。运行时不会从 EUID、plist 路径、`start_on_boot` 或其他字段推断 domain。system domain 写入 `/Library/LaunchDaemons`，并要求 canonical runtime binary 及其祖先链均由 root 所有且不可被 group/other 写入；GUI domain 绑定构造 adapter 时捕获的非 root EUID，通过 passwd 记录解析 home，并写入该用户的 `Library/LaunchAgents`。
+
+`start_on_boot` 精确映射 plist `RunAtLoad`，`restart_supervisor` 精确映射 `KeepAlive`。`start_on_boot: false` 与 `restart_supervisor: true` 的组合会被拒绝，因为 KeepAlive 会破坏显式关闭 RunAtLoad 的语义。
+
 ### eva-core 契约复用
 
 | 配置字段 | 目标类型 | 校验来源 |
@@ -225,6 +231,12 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | Schema helpers | Done | Exposes standard schema paths and supported enum values, including route delivery |
 | JSON Schema validator | Done in V1.9.1 | Supports the schema subset currently used by project schemas and reports file, field, schema rule, and suggestion context |
 | CLI `eva config validate` | Done in V1.9.1 | `eva-cli` reports validation results in text and JSON formats, including schema rule context on errors |
+
+### launchd Configuration Contract
+
+`kind: launchd` requires `unit_name` to use the strict `system/<label>` or `gui/<label>` form. Runtime code never infers the domain from EUID, plist paths, `start_on_boot`, or other fields. The system domain writes to `/Library/LaunchDaemons` and requires the canonical runtime binary and every ancestor to be root-owned and not group/other writable. The GUI domain binds the non-root EUID captured when the adapter is constructed, resolves its home from the passwd record, and writes to that user's `Library/LaunchAgents` directory.
+
+`start_on_boot` maps exactly to plist `RunAtLoad`, while `restart_supervisor` maps exactly to `KeepAlive`. The combination `start_on_boot: false` plus `restart_supervisor: true` is rejected because KeepAlive would defeat the explicit RunAtLoad choice.
 
 ### Public API
 
