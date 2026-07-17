@@ -13,6 +13,7 @@ pub mod distribution;
 pub mod evidence;
 /// 迁移指南和兼容性政策。
 pub mod migration;
+pub mod package_metadata;
 /// 性能预算与基线报告。
 pub mod performance;
 /// 外部安全扫描证据及其验证。
@@ -49,6 +50,7 @@ pub use evidence::{
     RELEASE_PLATFORM_EVIDENCE_FORMAT, RELEASE_PLATFORM_INDEX_FORMAT,
 };
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
+pub use package_metadata::{CanonicalPackageMetadata, PackageArtifactMetadata};
 pub use performance::{
     release_benchmark_budget_ms, PerformanceBaselineReport, PerformanceBudget,
     PerformanceObservation, PerformanceObservationKind, ReleaseBenchmarkBudgetPolicy,
