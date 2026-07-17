@@ -3,6 +3,7 @@
 
 pub mod audit;
 pub mod backend;
+pub mod lifecycle;
 pub mod metrics;
 pub mod opentelemetry_exporter;
 pub mod retention;
@@ -13,6 +14,7 @@ pub use audit::{AuditAction, AuditEvent, AuditOutcome, AuditSink, InMemoryAuditS
 pub use backend::{
     BestEffortObservabilityPipeline, FileObservabilitySink, ObservabilitySmokeReport,
 };
+pub use lifecycle::RuntimeObservabilityLifecycle;
 pub use metrics::{
     InMemoryMetricSink, MetricKind, MetricLabels, MetricName, MetricPoint, MetricSink,
 };
