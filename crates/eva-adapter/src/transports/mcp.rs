@@ -6,6 +6,7 @@
 //! MCP transport backed by eva-mcp JSON-RPC allowlist checks.
 
 use crate::manifest::AdapterHandle;
+use crate::process_backend::{OsProcessBackend, ProviderProcessHandle, ProviderProcessSpawner};
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
 use crate::stream::{
     capture_provider_bytes, default_provider_artifact_root, provider_stream_audit,
@@ -13,17 +14,49 @@ use crate::stream::{
 };
 use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::EvaError;
-use eva_mcp::{McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig, McpServerTransport};
+use eva_mcp::{
+    McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig, McpServerTransport, McpStdioProcess,
+};
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
 
 /// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "MCP transport with tool, resource, and prompt allowlists";
 
+impl McpStdioProcess for ProviderProcessHandle {
+    fn process_id(&self) -> u32 {
+        self.pid()
+    }
+
+    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+        ProviderProcessHandle::take_stdin(self).map(|pipe| Box::new(pipe) as _)
+    }
+
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        ProviderProcessHandle::take_stdout(self).map(|pipe| Box::new(pipe) as _)
+    }
+
+    fn terminate(&mut self) -> Result<(), EvaError> {
+        ProviderProcessHandle::terminate(self)
+    }
+}
+
 /// 执行 `invoke` 对应的受控流程。
 pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
+) -> Result<AdapterInvokeReport, EvaError> {
+    invoke_with_spawner(handle, invocation, None)
+}
+
+/// Invoke MCP while optionally supplying the runtime's central process
+/// registrar. HTTP remains process-free; only MCP stdio consumes the hook.
+pub fn invoke_with_spawner(
+    handle: &AdapterHandle,
+    invocation: AdapterInvocation,
+    process_spawner: Option<&dyn ProviderProcessSpawner>,
 ) -> Result<AdapterInvokeReport, EvaError> {
     let tool = handle.mcp_tool_for(&invocation.capability).ok_or_else(|| {
         EvaError::unsupported("MCP adapter has no allowlisted tool for capability")
@@ -62,8 +95,23 @@ pub fn invoke(
         McpServerTransport::Stdio => {
             let session_config = handle.mcp_session_config()?;
             transport_audit.push(format!("mcp.command:{}", session_config.process.command));
-            client.call_stdio(
+            let mut command = Command::new(&session_config.process.command);
+            command
+                .args(&session_config.process.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            let process = match process_spawner {
+                Some(spawner) => spawner
+                    .spawn_provider(command)
+                    .map_err(|error| map_mcp_spawn_error(error, handle))?,
+                None => OsProcessBackend::new()
+                    .spawn_provider(command)
+                    .map_err(|error| map_mcp_spawn_error(error, handle))?,
+            };
+            client.call_stdio_with_process(
                 &session_config,
+                Box::new(process),
                 invocation.request_id,
                 tool,
                 &invocation.input,
@@ -132,6 +180,25 @@ pub fn invoke(
         audit,
         trace,
     })
+}
+
+/// Preserve the historical MCP startup message while retaining the backend's
+/// stable error kind, provider code, and non-sensitive context.
+fn map_mcp_spawn_error(error: EvaError, handle: &AdapterHandle) -> EvaError {
+    if error.message() != "failed to spawn provider process boundary" {
+        return error
+            .with_context("adapter_id", handle.id.as_str())
+            .with_context("command", handle.mcp_command.as_deref().unwrap_or(""));
+    }
+    let mut mapped = EvaError::new(error.kind(), "failed to start MCP stdio server")
+        .with_retryable(error.is_retryable())
+        .with_error_context(error.context().clone());
+    if let Some(code) = error.provider_code() {
+        mapped = mapped.with_provider_code(code.as_str());
+    }
+    mapped
+        .with_context("adapter_id", handle.id.as_str())
+        .with_context("command", handle.mcp_command.as_deref().unwrap_or(""))
 }
 
 /// 校验 `validate_input_size` 对应的约束，不满足时返回明确错误。

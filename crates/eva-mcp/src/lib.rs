@@ -28,7 +28,7 @@ pub use compatibility::{
 };
 pub use json_rpc::{
     McpHttpJsonRpcTransport, McpJsonRpcCallReport, McpJsonRpcClient, McpJsonRpcClientConfig,
-    McpJsonRpcTool, McpJsonRpcTransport, McpStdioJsonRpcTransport,
+    McpJsonRpcTool, McpJsonRpcTransport, McpStdioJsonRpcTransport, McpStdioProcess,
 };
 pub use lifecycle::{
     McpOrphanCleanupReport, McpProcessInspector, McpRegisteredSession, McpSessionHealthReport,

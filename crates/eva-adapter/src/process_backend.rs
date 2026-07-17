@@ -20,6 +20,14 @@ pub struct OsProcessBackend;
 /// Stable public name used by the adapter runtime and later spawn/register work.
 pub type ProcessBackend = OsProcessBackend;
 
+/// Abstracts the OS spawn boundary so a caller can attach durable registration
+/// immediately after the child is created. Implementations must return an
+/// owned handle; callers own cleanup if a later registration step fails.
+pub trait ProviderProcessSpawner {
+    /// Spawn a provider command inside the implementation's OS boundary.
+    fn spawn_provider(&self, command: Command) -> Result<ProviderProcessHandle, EvaError>;
+}
+
 impl OsProcessBackend {
     /// Creates a backend with no mutable process-global state.
     pub const fn new() -> Self {
@@ -53,6 +61,12 @@ impl OsProcessBackend {
 
     /// Alias kept explicit for callers that want to emphasize the command boundary.
     pub fn spawn_command(&self, command: Command) -> Result<ProviderProcessHandle, EvaError> {
+        self.spawn(command)
+    }
+}
+
+impl ProviderProcessSpawner for OsProcessBackend {
+    fn spawn_provider(&self, command: Command) -> Result<ProviderProcessHandle, EvaError> {
         self.spawn(command)
     }
 }

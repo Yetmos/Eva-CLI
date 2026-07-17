@@ -30,6 +30,7 @@ pub use manifest::{
 };
 pub use process_backend::{
     OsProcessBackend, ProcessBackend, ProcessIdentity, ProviderProcessHandle,
+    ProviderProcessSpawner,
 };
 pub use registry::AdapterRegistry;
 pub use router::{AdapterRoute, AdapterRouteRequest, AdapterRouter};

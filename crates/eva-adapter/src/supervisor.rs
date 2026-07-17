@@ -6,6 +6,7 @@
 //! Provider supervisor slots and process table integration.
 
 use crate::manifest::{AdapterCircuitBreaker, AdapterHandle, AdapterRateLimit};
+use crate::process_backend::ProcessIdentity;
 use crate::runtime::AdapterInvocation;
 use eva_config::{AdapterTransport, ProviderConfig, ProviderRunAsIdentity};
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
@@ -107,6 +108,17 @@ pub trait ProviderSupervisor {
         slot: &ProviderExecutionSlot,
         outcome: ProviderExecutionOutcome,
     ) -> Result<ProviderProcessSnapshot, EvaError>;
+    /// Attach the real OS identity immediately after a transport spawn.
+    /// Implementations that do not persist process identities fail closed.
+    fn register_process_identity(
+        &mut self,
+        _slot: &ProviderExecutionSlot,
+        _identity: &ProcessIdentity,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        Err(EvaError::unsupported(
+            "provider supervisor does not support OS process registration",
+        ))
+    }
     /// 执行 `processes` 对应的处理逻辑。
     fn processes(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError>;
 }
@@ -435,6 +447,14 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         self.upsert_process(snapshot)
     }
 
+    fn register_process_identity(
+        &mut self,
+        slot: &ProviderExecutionSlot,
+        identity: &ProcessIdentity,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        InMemoryProviderSupervisor::register_process_identity(self, slot, identity)
+    }
+
     /// 执行 `processes` 对应的处理逻辑。
     fn processes(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError> {
         if let Some(table) = &self.durable_table {
@@ -445,6 +465,61 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
 }
 
 impl InMemoryProviderSupervisor {
+    /// Attach a real OS identity to an already admitted provider slot.
+    ///
+    /// The slot is created before transport spawn so admission limits remain
+    /// authoritative. This method performs the second, fenced CAS immediately
+    /// after spawn; callers must terminate the returned handle if this method
+    /// fails, ensuring a failed registration cannot leave an orphan.
+    pub(crate) fn register_process_identity(
+        &mut self,
+        slot: &ProviderExecutionSlot,
+        identity: &ProcessIdentity,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        let mut snapshot = if let Some(table) = &self.durable_table {
+            table.read(&slot.session_id)?
+        } else {
+            self.table.read(&slot.session_id)?
+        };
+        if snapshot.provider_process_id != slot.provider_process_id
+            || snapshot.request_id != slot.request_id
+            || snapshot.adapter_id != slot.adapter_id
+        {
+            return Err(EvaError::conflict(
+                "provider process registration slot identity does not match snapshot",
+            )
+            .with_context("session_id", &slot.session_id));
+        }
+        if !snapshot.active || snapshot.health != "running" {
+            return Err(EvaError::conflict(
+                "provider process registration requires an active running slot",
+            )
+            .with_context("session_id", &slot.session_id));
+        }
+        if snapshot.has_process_identity() {
+            return Err(
+                EvaError::conflict("provider process slot already has an OS identity")
+                    .with_context("session_id", &slot.session_id),
+            );
+        }
+        identity.stamp_snapshot(&mut snapshot, 1)?;
+        snapshot
+            .audit
+            .push("provider.process:registered".to_owned());
+        snapshot
+            .audit
+            .push(format!("provider.pid:{}", identity.pid));
+        snapshot.audit.push(format!(
+            "provider.process_boundary:{}",
+            if identity.process_group_id.is_some() {
+                "unix_group"
+            } else {
+                "windows_job"
+            }
+        ));
+        self.upsert_process(snapshot)
+    }
+
     /// 执行 `upsert_process` 对应的处理逻辑。
     fn upsert_process(
         &mut self,

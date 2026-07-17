@@ -10,6 +10,7 @@
 pub const RESPONSIBILITY: &str = "stdio command transport with separated command and args";
 
 use crate::manifest::AdapterHandle;
+use crate::process_backend::{OsProcessBackend, ProviderProcessHandle, ProviderProcessSpawner};
 use crate::runtime::{AdapterInvocation as RuntimeAdapterInvocation, AdapterInvokeReport};
 use crate::stream::{
     collect_provider_stream, default_provider_artifact_root, provider_stream_audit,
@@ -66,6 +67,9 @@ pub struct StdioRunReport {
     pub command: String,
     /// 记录 `args` 字段对应的值。
     pub args: Vec<String>,
+    /// OS PID captured at spawn time; the durable supervisor record carries
+    /// the matching start token and group/job identity.
+    pub process_id: u32,
     /// 记录 `status` 字段对应的值。
     pub status: StdioRunStatus,
     /// 记录 `exit_code` 字段对应的值。
@@ -171,39 +175,62 @@ impl StdioRunStatus {
 }
 
 impl StdioRunner {
-    /// 校验命令与输出上限后直接启动子进程，并保证异常路径执行终止与回收。
+    /// Validate limits, spawn through the default OS backend, and reap the
+    /// complete provider boundary on every error path.
     pub fn run(
         &self,
         config: &StdioRunnerConfig,
         invocation: StdioInvocation,
+    ) -> Result<StdioRunReport, EvaError> {
+        let backend = OsProcessBackend::new();
+        self.run_with_spawner(config, invocation, &backend)
+    }
+
+    /// Run with an injected process spawner. Runtime callers pass a wrapper
+    /// that performs durable process-record registration before returning the
+    /// handle; a registration error therefore drops/terminates the handle.
+    pub fn run_with_spawner<S: ProviderProcessSpawner + ?Sized>(
+        &self,
+        config: &StdioRunnerConfig,
+        invocation: StdioInvocation,
+        spawner: &S,
     ) -> Result<StdioRunReport, EvaError> {
         validate_invocation(config, &invocation)?;
 
         let started_at = Instant::now();
         let sensitive_values = sensitive_values(invocation.env.values());
         // 命令与参数分别传递，不拼接 shell 字符串，从边界上禁止 shell 注入语义。
-        let mut child = Command::new(&invocation.command)
+        let mut command = Command::new(&invocation.command);
+        command
             .args(&invocation.args)
             .envs(&invocation.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                EvaError::unavailable("failed to start stdio provider")
-                    .with_context("command", &invocation.command)
-                    .with_context("io_error", error.to_string())
-            })?;
+            .stderr(Stdio::piped());
+        let mut child = spawner.spawn_provider(command).map_err(|error| {
+            if error.message() == "failed to spawn provider process boundary" {
+                let mut mapped = EvaError::new(error.kind(), "failed to start stdio provider")
+                    .with_retryable(error.is_retryable())
+                    .with_error_context(error.context().clone());
+                if let Some(code) = error.provider_code() {
+                    mapped = mapped.with_provider_code(code.as_str());
+                }
+                mapped.with_context("command", &invocation.command)
+            } else {
+                error.with_context("command", &invocation.command)
+            }
+        })?;
+        let process_id = child.pid();
 
         if !invocation.input.is_empty() {
-            let Some(mut stdin) = child.stdin.take() else {
-                kill_child(&mut child);
+            let Some(mut stdin) = child.take_stdin() else {
+                terminate_process(&mut child);
                 return Err(EvaError::internal("stdio provider stdin was not available")
                     .with_context("command", &invocation.command));
             };
             if let Err(error) = stdin.write_all(&invocation.input) {
                 drop(stdin);
-                kill_child(&mut child);
+                terminate_process(&mut child);
                 return Err(
                     EvaError::unavailable("failed to write stdio provider input")
                         .with_context("command", &invocation.command)
@@ -211,16 +238,22 @@ impl StdioRunner {
                 );
             }
         }
-        drop(child.stdin.take());
+        drop(child.take_stdin());
 
-        let stdout = child.stdout.take().ok_or_else(|| {
-            EvaError::internal("stdio provider stdout was not available")
-                .with_context("command", &invocation.command)
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            EvaError::internal("stdio provider stderr was not available")
-                .with_context("command", &invocation.command)
-        })?;
+        let Some(stdout) = child.take_stdout() else {
+            terminate_process(&mut child);
+            return Err(
+                EvaError::internal("stdio provider stdout was not available")
+                    .with_context("command", &invocation.command),
+            );
+        };
+        let Some(stderr) = child.take_stderr() else {
+            terminate_process(&mut child);
+            return Err(
+                EvaError::internal("stdio provider stderr was not available")
+                    .with_context("command", &invocation.command),
+            );
+        };
         // 两路管道必须并发排空，避免子进程因任一路缓冲区写满而与父进程互相等待。
         let (sender, receiver) = mpsc::channel();
         spawn_reader(
@@ -249,7 +282,7 @@ impl StdioRunner {
                 Some(deadline) => {
                     let now = Instant::now();
                     if now >= deadline {
-                        kill_child(&mut child);
+                        terminate_process(&mut child);
                         return Err(EvaError::timeout("stdio provider timed out")
                             .with_context("command", &invocation.command)
                             .with_context("timeout_ms", config.timeout_ms.to_string()));
@@ -259,7 +292,7 @@ impl StdioRunner {
                 None => receiver.recv().map_err(mpsc::RecvTimeoutError::from),
             }
             .map_err(|_| {
-                kill_child(&mut child);
+                terminate_process(&mut child);
                 EvaError::timeout("stdio provider timed out")
                     .with_context("command", &invocation.command)
                     .with_context("timeout_ms", config.timeout_ms.to_string())
@@ -276,12 +309,14 @@ impl StdioRunner {
                     }
                     if truncated {
                         // 任一路触限都终止整个子进程；另一流可能只包含触限前已收到的证据。
-                        kill_child(&mut child);
-                        let audit =
+                        terminate_process(&mut child);
+                        let mut audit =
                             stdio_audit(config, &stdout_capture, &stderr_capture, Some(&stream));
+                        audit.push(format!("process_id:{process_id}"));
                         return Ok(StdioRunReport {
                             command: invocation.command,
                             args: invocation.args,
+                            process_id,
                             status: StdioRunStatus::OutputLimitExceeded,
                             exit_code: None,
                             stdout: stdout_capture.preview.clone(),
@@ -294,7 +329,7 @@ impl StdioRunner {
                     }
                 }
                 ReaderMessage::ReadError { stream, error } => {
-                    kill_child(&mut child);
+                    terminate_process(&mut child);
                     return Err(
                         EvaError::unavailable("failed to read stdio provider output")
                             .with_context("command", &invocation.command)
@@ -314,6 +349,7 @@ impl StdioRunner {
                 return Ok(StdioRunReport {
                     command: invocation.command,
                     args: invocation.args,
+                    process_id,
                     status: StdioRunStatus::Completed,
                     exit_code: status.code(),
                     stdout: stdout_capture.preview.clone(),
@@ -326,6 +362,7 @@ impl StdioRunner {
                             "transport:stdio".to_owned(),
                             "shell:false".to_owned(),
                             "stdio:completed".to_owned(),
+                            format!("process_id:{process_id}"),
                         ];
                         audit.extend(provider_stream_audit(&stdout_capture));
                         audit.extend(provider_stream_audit(&stderr_capture));
@@ -334,7 +371,7 @@ impl StdioRunner {
                 });
             }
             if !timeout.is_zero() && started_at.elapsed() >= timeout {
-                kill_child(&mut child);
+                terminate_process(&mut child);
                 return Err(EvaError::timeout("stdio provider timed out")
                     .with_context("command", &invocation.command)
                     .with_context("timeout_ms", config.timeout_ms.to_string()));
@@ -348,6 +385,16 @@ impl StdioRunner {
 pub fn invoke(
     handle: &AdapterHandle,
     invocation: RuntimeAdapterInvocation,
+) -> Result<AdapterInvokeReport, EvaError> {
+    invoke_with_spawner(handle, invocation, None)
+}
+
+/// Invoke stdio with an optional central process registrar. The supervised
+/// runtime supplies one; standalone callers retain the default backend.
+pub fn invoke_with_spawner(
+    handle: &AdapterHandle,
+    invocation: RuntimeAdapterInvocation,
+    process_spawner: Option<&dyn ProviderProcessSpawner>,
 ) -> Result<AdapterInvokeReport, EvaError> {
     let command = handle.command.as_deref().ok_or_else(|| {
         EvaError::invalid_argument("stdio adapter is missing command")
@@ -379,13 +426,14 @@ pub fn invoke(
         output_limit_bytes(handle),
     )
     .with_artifact_sink(artifact_root, artifact_key_prefix);
-    let run = StdioRunner.run(
-        &config,
-        StdioInvocation::new(command)
-            .with_args(handle.args.clone())
-            .with_env(credential_env.values.clone())
-            .with_input(invocation.input.into_bytes()),
-    )?;
+    let stdio_invocation = StdioInvocation::new(command)
+        .with_args(handle.args.clone())
+        .with_env(credential_env.values.clone())
+        .with_input(invocation.input.into_bytes());
+    let run = match process_spawner {
+        Some(spawner) => StdioRunner.run_with_spawner(&config, stdio_invocation, spawner)?,
+        None => StdioRunner.run(&config, stdio_invocation)?,
+    };
     let status = match (run.status, run.exit_code) {
         (StdioRunStatus::Completed, Some(0)) => "completed",
         (StdioRunStatus::Completed, _) => "failed",
@@ -412,8 +460,9 @@ pub fn invoke(
         capability,
         status,
         output: format!(
-            "{{\"transport\":\"stdio\",\"command\":{},\"exit_code\":{},\"stdout\":{},\"stderr\":{},\"duration_ms\":{}}}",
+            "{{\"transport\":\"stdio\",\"command\":{},\"process_id\":{},\"exit_code\":{},\"stdout\":{},\"stderr\":{},\"duration_ms\":{}}}",
             escape_json(&run.command),
+            run.process_id,
             run.exit_code
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "null".to_owned()),
@@ -521,10 +570,9 @@ fn stdio_audit(
     audit
 }
 
-/// 尽力终止并等待子进程，确保超时和输出触限路径不会留下后台进程。
-fn kill_child(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+/// 尽力终止并等待完整 provider 边界，确保异常路径不会留下后台进程。
+fn terminate_process(process: &mut ProviderProcessHandle) {
+    let _ = process.terminate();
 }
 
 /// 表示 `CredentialEnvValues` 数据结构。

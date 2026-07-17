@@ -6,11 +6,12 @@
 //! Authorized Adapter runtime probes and controlled invocation envelopes.
 
 use crate::manifest::AdapterHandle;
+use crate::process_backend::{OsProcessBackend, ProviderProcessHandle, ProviderProcessSpawner};
 use crate::registry::AdapterRegistry;
 use crate::router::{AdapterRouteRequest, AdapterRouter};
 use crate::supervisor::{
     InMemoryProviderSupervisor, ProviderCredentialScope, ProviderExecutionOutcome,
-    ProviderExecutionRequest, ProviderSupervisor,
+    ProviderExecutionRequest, ProviderExecutionSlot, ProviderSupervisor,
 };
 use crate::transports;
 use eva_config::{AdapterTransport, ProjectConfig};
@@ -23,10 +24,37 @@ use eva_policy::{HighRiskAction, PolicyDomainSet, RuntimePolicyGate, RuntimePoli
 use eva_storage::{FileSystemProviderProcessTable, ProviderProcessSnapshot};
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::process::Command;
 
 /// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "authorized transport execution with timeout and audit";
+
+/// Spawns a provider through the OS backend and immediately fences its real
+/// identity into the already-admitted durable process record.
+struct RegisteredProviderSpawner<'a> {
+    backend: OsProcessBackend,
+    supervisor: &'a RefCell<InMemoryProviderSupervisor>,
+    slot: &'a ProviderExecutionSlot,
+}
+
+impl ProviderProcessSpawner for RegisteredProviderSpawner<'_> {
+    fn spawn_provider(&self, command: Command) -> Result<ProviderProcessHandle, EvaError> {
+        let mut process = self.backend.spawn_provider(command)?;
+        let identity = process.identity().clone();
+        let registration = self
+            .supervisor
+            .borrow_mut()
+            .register_process_identity(self.slot, &identity);
+        if let Err(error) = registration {
+            let _ = process.terminate();
+            return Err(error
+                .with_context("session_id", &self.slot.session_id)
+                .with_context("pid", identity.pid.to_string()));
+        }
+        Ok(process)
+    }
+}
 
 /// 描述一次尚未路由的能力调用及其调用方可设置参数。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,8 +397,16 @@ impl AdapterRuntime {
             );
             return Err(error);
         }
-        let result =
-            dispatch_transport(&handle, invocation.with_credential_scope(credential_scope));
+        let process_spawner = RegisteredProviderSpawner {
+            backend: OsProcessBackend::new(),
+            supervisor: &self.supervisor,
+            slot: &slot,
+        };
+        let result = dispatch_transport_with_spawner(
+            &handle,
+            invocation.with_credential_scope(credential_scope),
+            Some(&process_spawner),
+        );
         // 两个终态分支都释放同一个槽；任何新分支都必须维持这一对称性。
         match result {
             Ok(mut report) => {
@@ -505,14 +541,29 @@ fn dispatch_transport(
     handle: &crate::manifest::AdapterHandle,
     invocation: AdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
+    dispatch_transport_with_spawner(handle, invocation, None)
+}
+
+/// Dispatch a transport while optionally supplying the central provider
+/// process registrar. Direct callers retain the old default OS backend; the
+/// supervised runtime passes a slot-bound registrar.
+fn dispatch_transport_with_spawner(
+    handle: &crate::manifest::AdapterHandle,
+    invocation: AdapterInvocation,
+    process_spawner: Option<&dyn ProviderProcessSpawner>,
+) -> Result<AdapterInvokeReport, EvaError> {
     match handle.transport {
-        AdapterTransport::Mcp => transports::mcp::invoke(handle, invocation),
+        AdapterTransport::Mcp => {
+            transports::mcp::invoke_with_spawner(handle, invocation, process_spawner)
+        }
         AdapterTransport::Skill => transports::skill::invoke(handle, invocation),
         AdapterTransport::Builtin
         | AdapterTransport::LuaCapability
         | AdapterTransport::Eventbus => transports::builtin::invoke(handle, invocation),
         AdapterTransport::Hardware => transports::hardware::invoke(handle, invocation),
-        AdapterTransport::Stdio => transports::stdio::invoke(handle, invocation),
+        AdapterTransport::Stdio => {
+            transports::stdio::invoke_with_spawner(handle, invocation, process_spawner)
+        }
         AdapterTransport::Http => transports::http::invoke(handle, invocation),
     }
 }
@@ -558,7 +609,7 @@ mod tests {
         ProviderProcessTable,
     };
     use std::collections::BTreeMap;
-    use std::io::{Read, Write};
+    use std::io::{BufRead, Read, Write};
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::thread;
@@ -654,6 +705,137 @@ mod tests {
             .audit
             .contains(&"policy.action:provider.credential_session".to_owned()));
         assert!(report.audit.contains(&"shell:false".to_owned()));
+        assert!(report.output.contains("\"process_id\":"));
+        let processes = runtime.provider_processes().unwrap();
+        assert_eq!(processes.len(), 1);
+        let process = &processes[0];
+        assert!(!process.active);
+        assert!(process.record_version.0 >= 3);
+        assert_eq!(process.attempt, 1);
+        assert!(process.pid.is_some());
+        assert!(process
+            .process_start_token
+            .as_deref()
+            .is_some_and(|token| !token.is_empty()));
+        assert!(process.process_group_id.is_some() || process.job_id.is_some());
+    }
+
+    /// Verify MCP stdio uses the same central spawn/register path as plain
+    /// stdio and leaves a completed, identity-bearing process record.
+    #[test]
+    fn runtime_invokes_mcp_stdio_with_registered_process_identity() {
+        let runtime = runtime_with_handle(mcp_stdio_handle());
+        let report = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-mcp-stdio-runtime").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("mcp-stdio-test").unwrap())
+                .with_input("{\"message\":\"hello\"}"),
+            )
+            .unwrap();
+
+        assert_eq!(report.status, "completed");
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "mcp.stdio:started"));
+        let processes = runtime.provider_processes().unwrap();
+        assert_eq!(processes.len(), 1);
+        let process = &processes[0];
+        assert!(!process.active);
+        assert!(process.record_version.0 >= 3);
+        assert_eq!(process.attempt, 1);
+        assert!(process.pid.is_some());
+        assert!(process
+            .process_start_token
+            .as_deref()
+            .is_some_and(|token| !token.is_empty()));
+        assert!(process.process_group_id.is_some() || process.job_id.is_some());
+    }
+
+    /// A registration CAS failure must terminate the just-spawned process
+    /// before the error reaches the transport/runtime completion path.
+    #[test]
+    fn registered_spawner_terminates_process_when_record_registration_fails() {
+        let handle = stdio_handle(true, "registration-helper", Vec::new(), Vec::new());
+        let invocation = AdapterInvocation::new(
+            RequestId::parse("req-registration-failure").unwrap(),
+            CapabilityName::parse("repo.analyze").unwrap(),
+        );
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        let slot = supervisor
+            .acquire(ProviderExecutionRequest::from_handle(&handle, &invocation))
+            .unwrap();
+        supervisor
+            .complete(
+                &slot,
+                ProviderExecutionOutcome {
+                    health: "failed".to_owned(),
+                    last_error: Some("forced registration failure".to_owned()),
+                },
+            )
+            .unwrap();
+        let supervisor = RefCell::new(supervisor);
+        let registrar = RegisteredProviderSpawner {
+            backend: OsProcessBackend::new(),
+            supervisor: &supervisor,
+            slot: &slot,
+        };
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "runtime::tests::registration_failure_server_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let error = registrar.spawn_provider(command).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Conflict);
+        let pid = error
+            .context()
+            .entries()
+            .iter()
+            .find(|(key, _)| key == "pid")
+            .and_then(|(_, value)| value.parse::<u32>().ok())
+            .expect("registration error carries spawned PID");
+        wait_until_process_is_gone(pid);
+    }
+
+    /// Helper process used by the real MCP stdio registration test.
+    #[test]
+    #[ignore = "spawned by runtime_invokes_mcp_stdio_with_registered_process_identity"]
+    fn mcp_stdio_server_helper() {
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let line = line.unwrap();
+            let response = if line.contains("\"method\":\"initialize\"") {
+                Some("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake-stdio\",\"version\":\"1\"}}}".to_owned())
+            } else if line.contains("\"method\":\"tools/list\"") {
+                Some("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"analyze\",\"inputSchema\":{\"type\":\"object\"}}]}}".to_owned())
+            } else if line.contains("\"method\":\"tools/call\"") {
+                Some("{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"isError\":false}}".to_owned())
+            } else {
+                None
+            };
+            if let Some(response) = response {
+                println!("{response}");
+                std::io::stdout().flush().unwrap();
+            }
+        }
+    }
+
+    /// Helper that remains alive until the registrar's failure path kills it.
+    #[test]
+    #[ignore = "spawned by registered_spawner_terminates_process_when_record_registration_fails"]
+    fn registration_failure_server_helper() {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
     }
 
     /// 验证 `runtime_writes_provider_observability_when_backend_is_configured` 场景下的预期行为。
@@ -1110,6 +1292,45 @@ mod tests {
         root
     }
 
+    fn wait_until_process_is_gone(pid: u32) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while process_is_alive(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "process {pid} survived registration cleanup"
+            );
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: u32) -> bool {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        let result = unsafe { libc::kill(pid, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[cfg(windows)]
+    fn process_is_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return false;
+        }
+        unsafe { CloseHandle(process) };
+        true
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn process_is_alive(_pid: u32) -> bool {
+        false
+    }
+
     /// 执行 `stdio_handle` 对应的处理逻辑。
     fn stdio_handle(
         enabled: bool,
@@ -1249,6 +1470,30 @@ mod tests {
             hardware_driver_kind: None,
             bindings: Vec::new(),
         }
+    }
+
+    /// Build an MCP stdio handle whose command is this test binary, avoiding
+    /// any dependency on an installed external server.
+    fn mcp_stdio_handle() -> AdapterHandle {
+        let mut handle = mcp_http_handle("http://127.0.0.1:1/mcp".to_owned(), BTreeMap::new());
+        let command = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        handle.id = AdapterId::parse("mcp-stdio-test").unwrap();
+        handle.name = "MCP Stdio Test".to_owned();
+        handle.endpoint = None;
+        handle.capabilities = vec![CapabilityName::parse("repo.analyze").unwrap()];
+        handle.mcp_server_transport = Some("stdio".to_owned());
+        handle.mcp_command = Some(command);
+        handle.mcp_args = vec![
+            "--exact".to_owned(),
+            "runtime::tests::mcp_stdio_server_helper".to_owned(),
+            "--ignored".to_owned(),
+            "--nocapture".to_owned(),
+        ];
+        handle.mcp_tools = vec!["analyze".to_owned()];
+        handle
     }
 
     /// 执行 `test_command` 对应的处理逻辑。

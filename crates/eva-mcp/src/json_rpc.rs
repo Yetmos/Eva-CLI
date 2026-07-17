@@ -9,9 +9,10 @@ use crate::policy::McpAllowlist;
 use crate::session::{McpServerTransport, McpSessionConfig};
 use eva_core::{AdapterId, EvaError, InvokeOutput, RequestId};
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,6 +27,49 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 /// 定义 `DEFAULT_OUTPUT_LIMIT_BYTES` 常量。
 const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+
+/// A process boundary supplied by an external supervisor.
+///
+/// The MCP crate deliberately owns only this small capability surface so it
+/// does not depend on `eva-adapter`; the adapter can inject its OS-backed
+/// handle after durable provider registration has succeeded.
+pub trait McpStdioProcess: Debug {
+    /// Return the OS PID captured at spawn time.
+    fn process_id(&self) -> u32;
+    /// Transfer the child's stdin pipe to the JSON-RPC transport.
+    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>>;
+    /// Transfer the child's stdout pipe to the JSON-RPC reader.
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>>;
+    /// Terminate and reap the complete process boundary.
+    fn terminate(&mut self) -> Result<(), EvaError>;
+}
+
+impl McpStdioProcess for Child {
+    fn process_id(&self) -> u32 {
+        self.id()
+    }
+
+    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+        self.stdin.take().map(|pipe| Box::new(pipe) as _)
+    }
+
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.stdout.take().map(|pipe| Box::new(pipe) as _)
+    }
+
+    fn terminate(&mut self) -> Result<(), EvaError> {
+        let _ = self.kill();
+        match self.wait() {
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
+            Err(error) => Err(
+                EvaError::unavailable("failed to terminate MCP stdio process")
+                    .with_context("process_id", self.id().to_string())
+                    .with_context("io_error", error.to_string()),
+            ),
+        }
+    }
+}
 
 /// 表示 `McpJsonRpcClientConfig` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,16 +145,28 @@ pub trait McpJsonRpcTransport {
 }
 
 /// 表示 `McpStdioJsonRpcTransport` 数据结构。
-#[derive(Debug)]
 pub struct McpStdioJsonRpcTransport {
-    /// 记录 `child` 字段对应的值。
-    child: Option<Child>,
+    /// Central-supervisor-owned process boundary.
+    process: Option<Box<dyn McpStdioProcess>>,
     /// 记录 `stdin` 字段对应的值。
-    stdin: ChildStdin,
+    stdin: Box<dyn Write + Send>,
     /// 记录 `receiver` 字段对应的值。
     receiver: mpsc::Receiver<ReaderMessage>,
     /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
+}
+
+impl Debug for McpStdioJsonRpcTransport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpStdioJsonRpcTransport")
+            .field(
+                "process_id",
+                &self.process.as_ref().map(|process| process.process_id()),
+            )
+            .field("audit", &self.audit)
+            .finish_non_exhaustive()
+    }
 }
 
 /// 表示 `McpHttpJsonRpcTransport` 数据结构。
@@ -217,10 +273,25 @@ impl McpJsonRpcClient {
         self.allowlist.require_tool(tool)?;
         match session_config.server_transport {
             McpServerTransport::Stdio => {
-                let mut transport = McpStdioJsonRpcTransport::start(session_config)?;
-                let mut report =
-                    self.call_tool_with_transport(&mut transport, request_id, tool, input)?;
-                report.audit.extend(transport.shutdown());
+                validate_stdio_config(session_config)?;
+                let child = Command::new(&session_config.process.command)
+                    .args(&session_config.process.args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|error| {
+                        EvaError::unavailable("failed to start MCP stdio server")
+                            .with_context("adapter_id", session_config.adapter_id.as_str())
+                            .with_context("command", &session_config.process.command)
+                            .with_context("io_error", error.to_string())
+                    })?;
+                let mut transport =
+                    McpStdioJsonRpcTransport::start_with_process(session_config, Box::new(child))?;
+                let call = self.call_tool_with_transport(&mut transport, request_id, tool, input);
+                let shutdown_audit = transport.shutdown();
+                let mut report = call?;
+                report.audit.extend(shutdown_audit);
                 Ok(report)
             }
             McpServerTransport::Http => Err(EvaError::unsupported(
@@ -229,6 +300,36 @@ impl McpJsonRpcClient {
             .with_context("adapter_id", session_config.adapter_id.as_str())
             .with_context("server_transport", session_config.server_transport.as_str())),
         }
+    }
+
+    /// Call an MCP stdio server around a process owned by an external
+    /// supervisor. The transport always shuts the supplied process down before
+    /// returning, including protocol and timeout failures.
+    pub fn call_stdio_with_process(
+        &self,
+        session_config: &McpSessionConfig,
+        mut process: Box<dyn McpStdioProcess>,
+        request_id: RequestId,
+        tool: &str,
+        input: &str,
+    ) -> Result<McpJsonRpcCallReport, EvaError> {
+        if let Err(error) = self.allowlist.require_tool(tool) {
+            let _ = process.terminate();
+            return Err(error);
+        }
+        if session_config.server_transport != McpServerTransport::Stdio {
+            let error = EvaError::unsupported("MCP process handle requires stdio server transport")
+                .with_context("adapter_id", session_config.adapter_id.as_str())
+                .with_context("server_transport", session_config.server_transport.as_str());
+            let _ = process.terminate();
+            return Err(error);
+        }
+        let mut transport = McpStdioJsonRpcTransport::start_with_process(session_config, process)?;
+        let call = self.call_tool_with_transport(&mut transport, request_id, tool, input);
+        let shutdown_audit = transport.shutdown();
+        let mut report = call?;
+        report.audit.extend(shutdown_audit);
+        Ok(report)
     }
 
     /// 执行 `call_http` 对应的受控流程。
@@ -337,8 +438,7 @@ impl McpStdioJsonRpcTransport {
     /// 执行 `start` 对应的受控流程。
     pub fn start(config: &McpSessionConfig) -> Result<Self, EvaError> {
         validate_stdio_config(config)?;
-        let started_at = Instant::now();
-        let mut child = Command::new(&config.process.command)
+        let child = Command::new(&config.process.command)
             .args(&config.process.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -350,29 +450,47 @@ impl McpStdioJsonRpcTransport {
                     .with_context("command", &config.process.command)
                     .with_context("io_error", error.to_string())
             })?;
+        Self::start_with_process(config, Box::new(child))
+    }
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            EvaError::internal("MCP stdio stdin was not available")
-                .with_context("adapter_id", config.adapter_id.as_str())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            EvaError::internal("MCP stdio stdout was not available")
-                .with_context("adapter_id", config.adapter_id.as_str())
-        })?;
+    /// Start a JSON-RPC transport around a process already spawned by the
+    /// central supervisor. Any pipe transfer failure terminates the supplied
+    /// process before returning the error.
+    pub fn start_with_process(
+        config: &McpSessionConfig,
+        mut process: Box<dyn McpStdioProcess>,
+    ) -> Result<Self, EvaError> {
+        if let Err(error) = validate_stdio_config(config) {
+            let _ = process.terminate();
+            return Err(error);
+        }
+        let started_at = Instant::now();
+        let process_id = process.process_id();
+
+        let Some(stdin) = process.take_stdin() else {
+            let _ = process.terminate();
+            return Err(EvaError::internal("MCP stdio stdin was not available")
+                .with_context("adapter_id", config.adapter_id.as_str()));
+        };
+        let Some(stdout) = process.take_stdout() else {
+            let _ = process.terminate();
+            return Err(EvaError::internal("MCP stdio stdout was not available")
+                .with_context("adapter_id", config.adapter_id.as_str()));
+        };
         let (sender, receiver) = mpsc::channel();
         spawn_stdout_reader(stdout, sender);
 
-        let mut audit = vec![
+        let audit = vec![
             "mcp.stdio:started".to_owned(),
             "shell:false".to_owned(),
             "command_allowlist:passed".to_owned(),
             format!("startup_timeout_ms:{}", config.process.startup_timeout_ms),
             format!("startup_duration_ms:{}", started_at.elapsed().as_millis()),
+            format!("process_id:{process_id}"),
         ];
-        audit.push(format!("process_id:{}", child.id()));
 
         Ok(Self {
-            child: Some(child),
+            process: Some(process),
             stdin,
             receiver,
             audit,
@@ -382,10 +500,11 @@ impl McpStdioJsonRpcTransport {
     /// 停止或释放 `shutdown` 管理的资源。
     pub fn shutdown(&mut self) -> Vec<String> {
         let mut audit = Vec::new();
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-            audit.push("mcp.stdio:stopped".to_owned());
+        if let Some(mut process) = self.process.take() {
+            match process.terminate() {
+                Ok(()) => audit.push("mcp.stdio:stopped".to_owned()),
+                Err(_) => audit.push("mcp.stdio:termination_failed".to_owned()),
+            }
         }
         audit
     }
