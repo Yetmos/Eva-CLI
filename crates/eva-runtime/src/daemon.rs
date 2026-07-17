@@ -2751,7 +2751,6 @@ fn start_daemon_inner(
                 .as_mut()
                 .ok_or_else(|| EvaError::internal("daemon task worker was not created"))?;
             let loop_result = run_control_loop(DaemonControlLoopContext {
-                project,
                 options: &options,
                 runtime: &mut runtime,
                 running_state: running_state.clone(),
@@ -3249,7 +3248,6 @@ struct DaemonControlContext<'a> {
 }
 
 struct DaemonControlLoopContext<'a> {
-    project: &'a ProjectConfig,
     options: &'a DaemonStartOptions,
     runtime: &'a mut crate::Runtime,
     running_state: DaemonStateRecord,
@@ -3273,11 +3271,13 @@ fn run_control_loop(
     let heartbeat_interval = daemon_runtime_heartbeat_interval(context.options)?;
     let mut next_heartbeat = Instant::now() + heartbeat_interval;
     loop {
+        let loop_generation = context.runtime.generation();
+        let loop_project = loop_generation.project.as_ref();
         context.task_worker.check_health()?;
         renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
         // 每轮先推进到期的调度重试，保证控制流量不会无限饿死恢复任务。
         let _tick = run_daemon_scheduler_tick(
-            context.project,
+            loop_project,
             context.options,
             context.lease.writer(),
             context.task_worker,
@@ -3304,17 +3304,21 @@ fn run_control_loop(
                     .iter()
                     .map(|path| path.to_string_lossy().replace('\\', "/"))
                     .collect();
-                let report = preflight_config_reload(
-                    context.runtime.generation(),
-                    &context.project.project_root,
+                let mut report = preflight_config_reload(
+                    &context.runtime.generation(),
+                    &loop_project.project_root,
                     changed_paths,
                 );
+                if let Some(candidate) = report.candidate.take() {
+                    let _previous = context.runtime.promote_generation(candidate)?;
+                }
                 record_config_reload_preflight(context.observability, &report);
             }
         }
         context.task_worker.check_health()?;
         renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
         for request_path in pending_control_requests(context.options)? {
+            let request_generation = context.runtime.generation();
             renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
             let request = match read_control_request(&request_path) {
                 Ok(request) => request,
@@ -3326,7 +3330,7 @@ fn run_control_loop(
             let response_path = control_response_file(context.options, &request.request_id);
             let operation = request.operation;
             let mut context = DaemonControlContext {
-                project: context.project,
+                project: request_generation.project.as_ref(),
                 options: context.options,
                 runtime: context.runtime,
                 running_state: &context.running_state,
@@ -5723,6 +5727,7 @@ mod tests {
                 error_message: "route references an unknown agent".to_owned(),
                 remediation: "correct the reported configuration field".to_owned(),
             },
+            candidate: None,
         };
 
         let event = config_reload_preflight_audit(&report);

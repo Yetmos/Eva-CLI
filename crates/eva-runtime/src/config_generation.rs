@@ -8,12 +8,13 @@ use eva_policy::{EffectivePolicy, PolicyDomainSet};
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConfigReloadPreflight {
     pub old_digest: String,
     pub candidate_digest: Option<String>,
     pub changed_paths: Vec<String>,
     pub outcome: ConfigReloadPreflightOutcome,
+    pub candidate: Option<RuntimeConfigGeneration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,26 +87,30 @@ pub fn preflight_config_reload(
         .map(|identity| identity.digest);
     let result =
         loaded.and_then(|project| RuntimeConfigGeneration::build(project, next_generation));
-    let outcome = match result {
-        Ok(_) => ConfigReloadPreflightOutcome::Ready,
-        Err(error) => ConfigReloadPreflightOutcome::Rejected {
-            error_kind: error.kind().as_str().to_owned(),
-            error_field: error
-                .context()
-                .entries()
-                .first()
-                .map(|(key, _)| key.clone())
-                .unwrap_or_else(|| "config".to_owned()),
-            error_message: error.message().to_owned(),
-            remediation: "correct the reported configuration field and save the source again"
-                .to_owned(),
-        },
+    let (outcome, candidate) = match result {
+        Ok(candidate) => (ConfigReloadPreflightOutcome::Ready, Some(candidate)),
+        Err(error) => (
+            ConfigReloadPreflightOutcome::Rejected {
+                error_kind: error.kind().as_str().to_owned(),
+                error_field: error
+                    .context()
+                    .entries()
+                    .first()
+                    .map(|(key, _)| key.clone())
+                    .unwrap_or_else(|| "config".to_owned()),
+                error_message: error.message().to_owned(),
+                remediation: "correct the reported configuration field and save the source again"
+                    .to_owned(),
+            },
+            None,
+        ),
     };
     ConfigReloadPreflight {
         old_digest: active.identity.digest.clone(),
         candidate_digest,
         changed_paths,
         outcome,
+        candidate,
     }
 }
 

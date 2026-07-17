@@ -8,6 +8,7 @@ use crate::services::{RuntimeServices, ServiceSummary};
 use crate::shutdown::{ShutdownReport, ShutdownState};
 use eva_config::ProjectConfig;
 use eva_core::EvaError;
+use std::sync::{Arc, RwLock};
 
 /// 中文：本模块拥有一个已装配代际的服务句柄、只读摘要和关闭标记。
 /// Architectural responsibility for this module.
@@ -59,9 +60,9 @@ pub struct RuntimeSummary {
 
 /// 中文：当前代际的 Runtime 所有者，保持摘要、服务表和关闭状态一致。
 /// Runtime owner for the current generation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Runtime {
-    generation: RuntimeConfigGeneration,
+    generation: Arc<RwLock<Arc<RuntimeConfigGeneration>>>,
     /// 中文：对 CLI 和诊断层公开的当前代际摘要。
     summary: RuntimeSummary,
     /// 中文：本代际已装配服务的状态容器。
@@ -122,15 +123,36 @@ impl Runtime {
         services: RuntimeServices,
     ) -> Self {
         Self {
-            generation,
+            generation: Arc::new(RwLock::new(Arc::new(generation))),
             summary,
             services,
             shutdown: ShutdownState::default(),
         }
     }
 
-    pub fn generation(&self) -> &RuntimeConfigGeneration {
-        &self.generation
+    pub fn generation(&self) -> Arc<RuntimeConfigGeneration> {
+        self.generation
+            .read()
+            .expect("runtime generation lock poisoned")
+            .clone()
+    }
+
+    pub fn promote_generation(
+        &self,
+        candidate: RuntimeConfigGeneration,
+    ) -> Result<Arc<RuntimeConfigGeneration>, EvaError> {
+        let mut active = self
+            .generation
+            .write()
+            .map_err(|_| EvaError::internal("runtime generation lock poisoned"))?;
+        if candidate.identity.generation <= active.identity.generation {
+            return Err(EvaError::conflict(
+                "runtime config generation must advance monotonically",
+            ));
+        }
+        let previous = active.clone();
+        *active = Arc::new(candidate);
+        Ok(previous)
     }
 
     /// 中文：返回当前代际摘要的只读视图。
@@ -147,10 +169,11 @@ impl Runtime {
     /// Runs the V1.0 basic in-memory event loop with task diagnostics.
     pub fn run_basic(
         &self,
-        project: &ProjectConfig,
+        _project: &ProjectConfig,
         options: BasicRunOptions,
     ) -> Result<BasicRunReport, EvaError> {
-        crate::basic::run_basic(&self.summary, project, options)
+        let generation = self.generation();
+        crate::basic::run_basic(&self.summary, generation.project.as_ref(), options)
     }
 
     /// 中文：记录幂等关闭请求，并同步把公开摘要状态推进为 `Shutdown`。
@@ -186,5 +209,42 @@ mod tests {
         assert!(!first.already_shutdown);
         assert!(second.already_shutdown);
         assert_eq!(runtime.summary().status, RuntimeStatus::Shutdown);
+    }
+
+    #[test]
+    fn promotion_swaps_one_snapshot_and_old_requests_keep_their_generation() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let runtime = RuntimeBuilder::new().build(&project).unwrap();
+        let old_request = runtime.generation();
+        let mut changed = project;
+        changed.eva.runtime.hot_reload = !changed.eva.runtime.hot_reload;
+        let candidate = RuntimeConfigGeneration::build(changed, 2).unwrap();
+        let candidate_digest = candidate.identity.digest.clone();
+
+        let retired = runtime.promote_generation(candidate).unwrap();
+        let new_request = runtime.generation();
+
+        assert!(Arc::ptr_eq(&old_request, &retired));
+        assert_eq!(old_request.identity.generation, 1);
+        assert_eq!(retired.identity.digest, old_request.identity.digest);
+        assert_eq!(new_request.identity.generation, 2);
+        assert_eq!(new_request.identity.digest, candidate_digest);
+        assert_ne!(
+            old_request.project.eva.runtime.hot_reload,
+            new_request.project.eva.runtime.hot_reload
+        );
+        assert_eq!(new_request.routes, new_request.project.routes);
+        assert_eq!(retired.routes, retired.project.routes);
+    }
+
+    #[test]
+    fn promotion_rejects_non_advancing_candidate_without_changing_pointer() {
+        let project = load_project_config(workspace_root()).unwrap();
+        let runtime = RuntimeBuilder::new().build(&project).unwrap();
+        let before = runtime.generation();
+        let candidate = RuntimeConfigGeneration::build(project, 1).unwrap();
+
+        assert!(runtime.promote_generation(candidate).is_err());
+        assert!(Arc::ptr_eq(&before, &runtime.generation()));
     }
 }
