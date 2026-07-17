@@ -9,3 +9,4 @@ eva-config = { path = "../eva-config" }
 eva-core = { path = "../eva-core" }
 eva-observability = { path = "../eva-observability" }
 eva-policy = { path = "../eva-policy" }
+eva-storage = { path = "../eva-storage" }

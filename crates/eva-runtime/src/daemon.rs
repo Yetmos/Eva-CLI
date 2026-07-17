@@ -9,7 +9,7 @@ use crate::config_generation_store::ConfigGenerationStore;
 use crate::memory_worker::{
     ensure_retrieval_schedule, run_scheduled_retrieval, DaemonRetrievalWorker,
 };
-use crate::{preflight_config_reload, ConfigReloadPreflightOutcome, ConfigWatcher};
+use crate::{preflight_config_reload_with_layout, ConfigReloadPreflightOutcome, ConfigWatcher};
 use crate::{
     run_scheduler_retry_tick_with_handler, FileSystemTaskArtifactResolver, IdempotencyKey,
     RuntimeBuilder, RuntimeRecoveryCoordinator, RuntimeRecoveryReport, SchedulerRetryTickOptions,
@@ -2647,7 +2647,8 @@ fn start_daemon_inner(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
-    let mut runtime = RuntimeBuilder::new().build(project)?;
+    let mut runtime = RuntimeBuilder::new()
+        .build_with_durable_discovery(project, Some(durable_backend.layout()))?;
     let config_generation_store = ConfigGenerationStore::new(durable_backend.layout());
     let recovered_generation =
         config_generation_store.initialize(&runtime.generation().identity)?;
@@ -3317,10 +3318,11 @@ fn run_control_loop(
                     .iter()
                     .map(|path| path.to_string_lossy().replace('\\', "/"))
                     .collect();
-                let mut report = preflight_config_reload(
+                let mut report = preflight_config_reload_with_layout(
                     &context.runtime.generation(),
                     &loop_project.project_root,
                     changed_paths,
+                    Some(context.durable_layout),
                 );
                 if let Some(candidate) = report.candidate.take() {
                     context

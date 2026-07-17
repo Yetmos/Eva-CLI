@@ -6,6 +6,7 @@ use crate::services::RuntimeServices;
 use crate::RuntimeConfigGeneration;
 use eva_config::ProjectConfig;
 use eva_core::{EvaError, GenerationId};
+use eva_storage::DurableBackendLayout;
 use std::fmt;
 
 /// 中文：本模块是运行时组合根，负责选择服务集合并建立代际摘要。
@@ -169,6 +170,14 @@ impl RuntimeBuilder {
     /// 只有在所有前置校验通过后才创建，因此错误路径不会暴露半装配实例。
     /// Builds a no-op runtime summary from validated configuration.
     pub fn build(&self, project: &ProjectConfig) -> Result<Runtime, EvaError> {
+        self.build_with_durable_discovery(project, None)
+    }
+
+    pub fn build_with_durable_discovery(
+        &self,
+        project: &ProjectConfig,
+        layout: Option<&DurableBackendLayout>,
+    ) -> Result<Runtime, EvaError> {
         if project.agents.is_empty() {
             return Err(
                 EvaError::invalid_argument("runtime requires at least one Agent manifest")
@@ -182,7 +191,8 @@ impl RuntimeBuilder {
             );
         }
 
-        let generation = RuntimeConfigGeneration::build(project.clone(), 1)?;
+        let generation =
+            RuntimeConfigGeneration::build_with_discovery_layout(project.clone(), 1, layout)?;
         let project = generation.project.as_ref();
         let services = match self.options.mode {
             RuntimeMode::Noop => RuntimeServices::noop(project),

@@ -20,8 +20,8 @@ pub mod task_worker;
 pub use basic::{BasicRunOptions, BasicRunReport};
 pub use builder::{RuntimeBuilder, RuntimeMode, RuntimeOptions};
 pub use config_generation::{
-    preflight_config_reload, ConfigReloadPreflight, ConfigReloadPreflightOutcome,
-    RuntimeConfigGeneration,
+    preflight_config_reload, preflight_config_reload_with_layout, ConfigReloadPreflight,
+    ConfigReloadPreflightOutcome, RuntimeConfigGeneration,
 };
 pub use config_watcher::{ConfigChangeBatch, ConfigWatcher};
 pub use daemon::{

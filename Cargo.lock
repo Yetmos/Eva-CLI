@@ -258,6 +258,7 @@ dependencies = [
  "eva-core",
  "eva-observability",
  "eva-policy",
+ "eva-storage",
 ]
 
 [[package]]

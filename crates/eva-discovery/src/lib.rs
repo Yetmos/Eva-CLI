@@ -14,7 +14,7 @@ pub mod service;
 /// 内置的可信发现来源适配器。
 pub mod sources;
 
-pub use cache::DiscoveryCache;
+pub use cache::{DiscoveryCache, DiscoveryCachePartition, DEFAULT_TTL};
 pub use health::{DiscoveryHealth, DiscoveryHealthStatus};
 pub use normalizer::{DiscoveryCandidate, DiscoveryCandidateKind, DiscoveryTrust};
 pub use scanner::{

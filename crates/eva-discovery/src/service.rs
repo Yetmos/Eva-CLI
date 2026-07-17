@@ -11,6 +11,9 @@ use crate::sources::omx::OmxDiscoverySource;
 use crate::sources::path_commands::PathCommandDiscoverySource;
 use crate::sources::registry::ExternalRegistryDiscoverySource;
 use eva_config::ProjectConfig;
+use eva_core::EvaError;
+use eva_storage::DurableBackendLayout;
+use std::time::Duration;
 
 /// 本模块的架构职责：协调可信来源发现，但不执行授权。
 /// Architectural responsibility for this module.
@@ -32,11 +35,31 @@ impl DiscoveryService {
         Self::default()
     }
 
+    /// Opens a cache whose successful source partitions survive process restarts.
+    pub fn open_durable(layout: &DurableBackendLayout, ttl: Duration) -> Result<Self, EvaError> {
+        Ok(Self {
+            cache: DiscoveryCache::open(layout, ttl)?,
+        })
+    }
+
     /// 执行所有项目来源的完整扫描，并以本轮聚合结果替换缓存。
     pub fn scan_project(&mut self, project: &ProjectConfig) -> DiscoveryScanReport {
-        let report = scan_project_sources(project);
-        self.cache
-            .replace(report.candidates.clone(), "project multi-source scan");
+        let mut report = scan_project_sources(project);
+        if let Err(error) = self.merge_successful_sources(&report) {
+            report
+                .source_reports
+                .push(crate::scanner::DiscoverySourceReport {
+                    source_id: "durable_cache".to_owned(),
+                    cache_key: "durable_cache".to_owned(),
+                    timeout_ms: 0,
+                    elapsed_ms: 0,
+                    status: "error".to_owned(),
+                    candidates: Vec::new(),
+                    error: Some(error.message().to_owned()),
+                    rejected_reason: Some(error.message().to_owned()),
+                });
+        }
+        report.candidates = self.cache.snapshot().to_vec();
         report
     }
 
@@ -49,7 +72,7 @@ impl DiscoveryService {
         let mut report = scan_project_sources(project);
         for source_report in &report.source_reports {
             if source_report.error.is_none() {
-                self.cache.merge_source(
+                let _ = self.cache.merge_source(
                     &source_report.cache_key,
                     source_report.candidates.clone(),
                     format!("incremental scan: {}", source_report.cache_key),
@@ -58,6 +81,19 @@ impl DiscoveryService {
         }
         report.candidates = self.cache.snapshot().to_vec();
         report
+    }
+
+    fn merge_successful_sources(&mut self, report: &DiscoveryScanReport) -> Result<(), EvaError> {
+        for source_report in &report.source_reports {
+            if source_report.error.is_none() {
+                self.cache.merge_source(
+                    &source_report.cache_key,
+                    source_report.candidates.clone(),
+                    format!("full scan: {}", source_report.cache_key),
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// 借用底层缓存以读取快照元数据。

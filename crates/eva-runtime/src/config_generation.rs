@@ -5,8 +5,10 @@ use eva_config::{load_project_config, validate_project_config, ConfigGeneration,
 use eva_core::EvaError;
 use eva_discovery::{DiscoveryScanReport, DiscoveryService};
 use eva_policy::{EffectivePolicy, PolicyDomainSet};
+use eva_storage::DurableBackendLayout;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigReloadPreflight {
@@ -40,11 +42,22 @@ pub struct RuntimeConfigGeneration {
 
 impl RuntimeConfigGeneration {
     pub fn build(project: ProjectConfig, generation: u64) -> Result<Self, EvaError> {
+        Self::build_with_discovery_layout(project, generation, None)
+    }
+
+    pub fn build_with_discovery_layout(
+        project: ProjectConfig,
+        generation: u64,
+        layout: Option<&DurableBackendLayout>,
+    ) -> Result<Self, EvaError> {
         validate_project_config(&project)?;
         let identity = ConfigGeneration::from_project(&project, generation)?;
         let policy_domains = PolicyDomainSet::from_project(&project)?;
         let effective_policy = policy_domains.effective_policy()?;
-        let mut discovery_service = DiscoveryService::new();
+        let mut discovery_service = match layout {
+            Some(layout) => DiscoveryService::open_durable(layout, Duration::from_secs(300))?,
+            None => DiscoveryService::new(),
+        };
         let discovery = discovery_service.scan_project(&project);
         if let Some(failed) = discovery
             .source_reports
@@ -78,6 +91,15 @@ pub fn preflight_config_reload(
     project_root: &Path,
     changed_paths: Vec<String>,
 ) -> ConfigReloadPreflight {
+    preflight_config_reload_with_layout(active, project_root, changed_paths, None)
+}
+
+pub fn preflight_config_reload_with_layout(
+    active: &RuntimeConfigGeneration,
+    project_root: &Path,
+    changed_paths: Vec<String>,
+    layout: Option<&DurableBackendLayout>,
+) -> ConfigReloadPreflight {
     let next_generation = active.identity.generation.saturating_add(1);
     let loaded = load_project_config(project_root);
     let candidate_digest = loaded
@@ -85,8 +107,9 @@ pub fn preflight_config_reload(
         .ok()
         .and_then(|project| ConfigGeneration::from_project(project, next_generation).ok())
         .map(|identity| identity.digest);
-    let result =
-        loaded.and_then(|project| RuntimeConfigGeneration::build(project, next_generation));
+    let result = loaded.and_then(|project| {
+        RuntimeConfigGeneration::build_with_discovery_layout(project, next_generation, layout)
+    });
     let (outcome, candidate) = match result {
         Ok(candidate) => (ConfigReloadPreflightOutcome::Ready, Some(candidate)),
         Err(error) => (
