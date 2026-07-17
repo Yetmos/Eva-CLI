@@ -145,7 +145,8 @@ impl CanonicalPackageMetadata {
                 "package metadata source tag does not match version",
             ));
         }
-        if metadata.to_manifest() != data.trim_start_matches('\u{feff}') {
+        let normalized_input = data.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+        if metadata.to_manifest() != normalized_input {
             return Err(EvaError::invalid_argument(
                 "package metadata manifest is not canonical",
             ));
