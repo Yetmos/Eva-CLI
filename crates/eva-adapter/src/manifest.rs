@@ -3,7 +3,7 @@
 
 use eva_config::manifest::adapter::AdapterManifest;
 use eva_config::manifest::capability::CapabilityManifest;
-use eva_config::{AdapterTransport, CapabilityKind};
+use eva_config::{AdapterTransport, CapabilityKind, ProviderConfig};
 use eva_core::{AdapterId, CapabilityId, CapabilityName, EvaError};
 use eva_mcp::{McpProcessSpec, McpServerTransport, McpSessionConfig};
 use std::collections::BTreeMap;
@@ -104,6 +104,8 @@ pub struct AdapterHandle {
     pub method: Option<String>,
     /// 记录 `credential_env` 字段对应的值。
     pub credential_env: Vec<String>,
+    /// Canonical provider restart, identity, and vault-reference configuration.
+    pub provider: ProviderConfig,
     /// 记录 `timeout_ms` 字段对应的值。
     pub timeout_ms: Option<u64>,
     /// 记录 `max_concurrency` 字段对应的值。
@@ -186,6 +188,7 @@ impl AdapterHandle {
                 .map(str::to_owned),
             method: manifest.extra_string("method").map(str::to_owned),
             credential_env: manifest.nested_extra_string_list("permissions", "env"),
+            provider: manifest.provider.clone(),
             timeout_ms: manifest.nested_extra_u64("limits", "timeout_ms"),
             max_concurrency: nonzero_usize(
                 manifest.nested_extra_usize("limits", "max_concurrency"),
@@ -399,6 +402,7 @@ mod tests {
     use super::*;
     use eva_config::load_project_config;
     use eva_config::manifest::adapter::load_adapter_manifest;
+    use eva_config::{ProviderRestartMode, ProviderRunAsIdentity};
     use std::path::{Path, PathBuf};
 
     /// 执行 `workspace_root` 对应的处理逻辑。
@@ -571,5 +575,72 @@ routing: {}
         assert!(http_handle
             .credential_env
             .contains(&"ANTHROPIC_API_KEY".to_owned()));
+    }
+
+    #[test]
+    fn provider_config_survives_manifest_handle_and_execution_request() {
+        let root = temp_root("provider-projection");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("provider.yaml");
+        std::fs::write(
+            &path,
+            r#"id: projected-provider
+name: Projected Provider
+version: 1.0.0
+enabled: true
+transport: stdio
+command: provider
+permissions:
+  env:
+    - API_TOKEN
+capabilities:
+  - repo.analyze
+supervision:
+  restart:
+    mode: on_failure
+    max_attempts: 3
+    backoff_ms: 1000
+  run_as:
+    kind: unix
+    uid: 1000
+    gid: 1001
+credentials:
+  vault:
+    - env: API_TOKEN
+      ref: vault://providers/projected/token#value
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+
+        let manifest = load_adapter_manifest(&path).unwrap();
+        let handle = AdapterHandle::from_manifest(&manifest);
+        let invocation = crate::runtime::AdapterInvocation::new(
+            eva_core::RequestId::parse("req-provider-projection").unwrap(),
+            eva_core::CapabilityName::parse("repo.analyze").unwrap(),
+        );
+        let request =
+            crate::supervisor::ProviderExecutionRequest::from_handle(&handle, &invocation);
+
+        assert_eq!(manifest.provider, handle.provider);
+        assert_eq!(handle.provider, request.provider);
+        assert_eq!(
+            request.provider.restart.mode,
+            ProviderRestartMode::OnFailure
+        );
+        assert_eq!(
+            request.provider.run_as,
+            ProviderRunAsIdentity::Unix {
+                uid: 1000,
+                gid: 1001
+            }
+        );
+        assert_eq!(
+            request.provider.vault_secrets[0].secret_ref,
+            "vault://providers/projected/token#value"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

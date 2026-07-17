@@ -293,6 +293,7 @@ mod tests {
             endpoint: Some("http://127.0.0.1:1/mcp".to_owned()),
             method: None,
             credential_env: Vec::new(),
+            provider: eva_config::ProviderConfig::default(),
             timeout_ms: Some(1_000),
             max_concurrency: None,
             output_limit_bytes: Some(4096),

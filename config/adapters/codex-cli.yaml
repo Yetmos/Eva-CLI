@@ -15,6 +15,15 @@ enabled: true
 # Stdio transport starts a local command with structured I/O. / stdio transport 启动本地命令并使用结构化输入输出。
 transport: stdio
 
+# Explicit legacy-compatible provider supervision defaults. / 显式声明与旧清单等价的 provider 默认值。
+supervision:
+  restart:
+    mode: none
+    max_attempts: 0
+    backoff_ms: 0
+  run_as:
+    kind: current
+
 # Executable name resolved by the host environment. / 由宿主环境解析的可执行文件名称。
 command: codex
 # Command arguments passed without shell interpolation. / 不经过 shell 插值的命令参数。

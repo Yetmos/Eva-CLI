@@ -7,7 +7,7 @@
 
 use crate::manifest::{AdapterCircuitBreaker, AdapterHandle, AdapterRateLimit};
 use crate::runtime::AdapterInvocation;
-use eva_config::AdapterTransport;
+use eva_config::{AdapterTransport, ProviderConfig, ProviderRunAsIdentity};
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
 use eva_storage::{
     FileSystemProviderProcessTable, InMemoryProviderProcessTable, ProviderProcessSnapshot,
@@ -43,8 +43,8 @@ pub struct ProviderExecutionRequest {
     pub manifest_digest: String,
     /// 记录 `start_command` 字段对应的值。
     pub start_command: String,
-    /// 记录 `restart_policy` 字段对应的值。
-    pub restart_policy: String,
+    /// Canonical provider restart, run-as, and vault-reference declaration.
+    pub provider: ProviderConfig,
     /// 限制该适配器同时处于运行状态的快照数量；`None` 表示不设此项限制。
     pub max_concurrency: Option<usize>,
     /// 定义按适配器隔离的固定窗口请求上限。
@@ -156,7 +156,7 @@ impl ProviderExecutionRequest {
             transport: handle.transport,
             manifest_digest: manifest_digest(handle),
             start_command: start_command(handle),
-            restart_policy: "none".to_owned(),
+            provider: handle.provider.clone(),
             max_concurrency: handle.max_concurrency,
             rate_limit: handle.rate_limit,
             circuit_breaker: handle.circuit_breaker,
@@ -388,6 +388,7 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         let session_id = session_id(&request.request_id, &request.adapter_id);
         let provider_process_id = provider_process_id(&request.request_id, &request.adapter_id);
         let limit_audit = limit_audit_entries(&request, half_open_probe);
+        let restart_policy = request.provider.restart.mode.as_str().to_owned();
         let mut snapshot = ProviderProcessSnapshot::running(
             session_id.clone(),
             provider_process_id.clone(),
@@ -397,7 +398,7 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
             request.transport.as_str(),
             request.manifest_digest,
             request.start_command,
-            request.restart_policy,
+            restart_policy,
         );
         snapshot.audit.extend(limit_audit);
         snapshot.retry_backoff_ms = request.retry_backoff_ms;
@@ -594,7 +595,25 @@ fn admission_error(
 
 /// 执行 `limit_audit_entries` 对应的处理逻辑。
 fn limit_audit_entries(request: &ProviderExecutionRequest, half_open_probe: bool) -> Vec<String> {
-    let mut audit = Vec::new();
+    let mut audit = vec![
+        format!(
+            "provider.restart.mode:{}",
+            request.provider.restart.mode.as_str()
+        ),
+        format!(
+            "provider.restart.max_attempts:{}",
+            request.provider.restart.max_attempts
+        ),
+        format!(
+            "provider.restart.backoff_ms:{}",
+            request.provider.restart.backoff_ms
+        ),
+        format!("provider.run_as.kind:{}", request.provider.run_as.kind()),
+        format!(
+            "provider.vault_secret_refs:{}",
+            request.provider.vault_secrets.len()
+        ),
+    ];
     if let Some(max_concurrency) = request.max_concurrency {
         audit.push(format!("provider.concurrency.max:{max_concurrency}"));
     }
@@ -685,24 +704,121 @@ fn command_with_args(command: Option<&str>, args: &[String]) -> String {
 
 /// 执行 `manifest_digest` 对应的处理逻辑。
 fn manifest_digest(handle: &AdapterHandle) -> String {
-    let material = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        handle.id.as_str(),
-        handle.version,
-        handle.transport.as_str(),
-        handle.source_path,
+    let mut material = Vec::new();
+    push_digest_field(&mut material, "format", "eva.adapter.manifest.v2");
+    push_digest_field(&mut material, "id", handle.id.as_str());
+    push_digest_field(&mut material, "version", &handle.version);
+    push_digest_field(&mut material, "transport", handle.transport.as_str());
+    push_digest_field(&mut material, "source_path", &handle.source_path);
+    push_digest_field(
+        &mut material,
+        "command",
         handle.command.as_deref().unwrap_or(""),
-        handle.endpoint.as_deref().unwrap_or(""),
-        handle.mcp_command.as_deref().unwrap_or(""),
-        handle.skill_name().unwrap_or(""),
-        handle
-            .capabilities
-            .iter()
-            .map(|capability| capability.as_str())
-            .collect::<Vec<_>>()
-            .join(",")
     );
-    format!("fnv64:{:016x}", fnv1a64(material.as_bytes()))
+    push_digest_field(
+        &mut material,
+        "endpoint",
+        handle.endpoint.as_deref().unwrap_or(""),
+    );
+    push_digest_field(
+        &mut material,
+        "mcp_command",
+        handle.mcp_command.as_deref().unwrap_or(""),
+    );
+    push_digest_field(
+        &mut material,
+        "skill_name",
+        handle.skill_name().unwrap_or(""),
+    );
+
+    let mut capabilities = handle
+        .capabilities
+        .iter()
+        .map(|capability| capability.as_str())
+        .collect::<Vec<_>>();
+    capabilities.sort_unstable();
+    push_digest_collection(&mut material, "capability", capabilities);
+
+    let mut credential_env = handle
+        .credential_env
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    credential_env.sort_unstable();
+    push_digest_collection(&mut material, "credential_env", credential_env);
+
+    push_digest_field(
+        &mut material,
+        "restart_mode",
+        handle.provider.restart.mode.as_str(),
+    );
+    push_digest_field(
+        &mut material,
+        "restart_max_attempts",
+        &handle.provider.restart.max_attempts.to_string(),
+    );
+    push_digest_field(
+        &mut material,
+        "restart_backoff_ms",
+        &handle.provider.restart.backoff_ms.to_string(),
+    );
+    match &handle.provider.run_as {
+        ProviderRunAsIdentity::Current => {
+            push_digest_field(&mut material, "run_as_kind", "current");
+        }
+        ProviderRunAsIdentity::Unix { uid, gid } => {
+            push_digest_field(&mut material, "run_as_kind", "unix");
+            push_digest_field(&mut material, "run_as_uid", &uid.to_string());
+            push_digest_field(&mut material, "run_as_gid", &gid.to_string());
+        }
+        ProviderRunAsIdentity::Windows { account } => {
+            push_digest_field(&mut material, "run_as_kind", "windows");
+            push_digest_field(&mut material, "run_as_account", account);
+        }
+    }
+
+    let mut vault_secrets = handle.provider.vault_secrets.iter().collect::<Vec<_>>();
+    vault_secrets.sort_unstable();
+    push_digest_field(
+        &mut material,
+        "vault_secret_count",
+        &vault_secrets.len().to_string(),
+    );
+    for secret in vault_secrets {
+        push_digest_field(&mut material, "vault_env", &secret.env);
+        push_digest_field(&mut material, "vault_ref", &secret.secret_ref);
+    }
+
+    format!("fnv64:{:016x}", fnv1a64(&material))
+}
+
+/// Appends one labeled, length-prefixed field to canonical digest material.
+fn push_digest_field(material: &mut Vec<u8>, label: &str, value: &str) {
+    push_digest_bytes(material, label.as_bytes());
+    push_digest_bytes(material, value.as_bytes());
+}
+
+/// Appends an ordered collection with an explicit count and repeated field label.
+fn push_digest_collection<'a>(
+    material: &mut Vec<u8>,
+    label: &str,
+    values: impl IntoIterator<Item = &'a str>,
+) {
+    let values = values.into_iter().collect::<Vec<_>>();
+    push_digest_field(
+        material,
+        &format!("{label}_count"),
+        &values.len().to_string(),
+    );
+    for value in values {
+        push_digest_field(material, label, value);
+    }
+}
+
+/// Uses a platform-independent u64 byte length before every digest component.
+fn push_digest_bytes(material: &mut Vec<u8>, value: &[u8]) {
+    material.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    material.extend_from_slice(value);
 }
 
 /// 执行 `credential_token_digest` 对应的处理逻辑。
@@ -775,6 +891,7 @@ mod tests {
             endpoint: None,
             method: None,
             credential_env: Vec::new(),
+            provider: ProviderConfig::default(),
             timeout_ms: Some(5_000),
             max_concurrency: None,
             output_limit_bytes: Some(4096),
@@ -1085,5 +1202,138 @@ mod tests {
         );
 
         assert_eq!(redacted, "before [REDACTED] after");
+    }
+
+    #[test]
+    fn manifest_digest_binds_provider_restart_identity_env_and_vault_refs() {
+        let mut baseline = handle();
+        baseline.credential_env = vec!["API_TOKEN".to_owned()];
+        let baseline_digest =
+            ProviderExecutionRequest::from_handle(&baseline, &invocation("req-provider-digest"))
+                .manifest_digest;
+
+        let mut restart_changed = baseline.clone();
+        restart_changed.provider.restart = eva_config::ProviderRestartConfig {
+            mode: eva_config::ProviderRestartMode::OnFailure,
+            max_attempts: 2,
+            backoff_ms: 100,
+        };
+        assert_ne!(
+            baseline_digest,
+            ProviderExecutionRequest::from_handle(
+                &restart_changed,
+                &invocation("req-provider-digest"),
+            )
+            .manifest_digest
+        );
+
+        let mut identity_changed = baseline.clone();
+        identity_changed.provider.run_as = eva_config::ProviderRunAsIdentity::Unix {
+            uid: 1000,
+            gid: 1001,
+        };
+        assert_ne!(
+            baseline_digest,
+            ProviderExecutionRequest::from_handle(
+                &identity_changed,
+                &invocation("req-provider-digest"),
+            )
+            .manifest_digest
+        );
+
+        let mut env_changed = baseline.clone();
+        env_changed.credential_env.push("SECOND_TOKEN".to_owned());
+        assert_ne!(
+            baseline_digest,
+            ProviderExecutionRequest::from_handle(
+                &env_changed,
+                &invocation("req-provider-digest"),
+            )
+            .manifest_digest
+        );
+
+        let mut vault_changed = baseline;
+        vault_changed
+            .provider
+            .vault_secrets
+            .push(eva_config::ProviderVaultSecretRef {
+                env: "API_TOKEN".to_owned(),
+                secret_ref: "vault://providers/digest/token#value".to_owned(),
+            });
+        let vault_digest = ProviderExecutionRequest::from_handle(
+            &vault_changed,
+            &invocation("req-provider-digest"),
+        )
+        .manifest_digest;
+        assert_ne!(baseline_digest, vault_digest);
+    }
+
+    #[test]
+    fn provider_audit_contains_only_identity_kind_and_vault_count() {
+        let mut configured = handle();
+        configured.provider.run_as = eva_config::ProviderRunAsIdentity::Windows {
+            account: "SecretAccountName".to_owned(),
+        };
+        configured.provider.vault_secrets = vec![eva_config::ProviderVaultSecretRef {
+            env: "API_TOKEN".to_owned(),
+            secret_ref: "vault://providers/audit/token#value".to_owned(),
+        }];
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        let slot = supervisor
+            .acquire(ProviderExecutionRequest::from_handle(
+                &configured,
+                &invocation("req-provider-audit"),
+            ))
+            .unwrap();
+        let snapshot = supervisor.processes().unwrap().pop().unwrap();
+
+        assert!(snapshot
+            .audit
+            .iter()
+            .any(|entry| entry == "provider.run_as.kind:windows"));
+        assert!(snapshot
+            .audit
+            .iter()
+            .any(|entry| entry == "provider.vault_secret_refs:1"));
+        assert!(!snapshot
+            .audit
+            .iter()
+            .any(|entry| entry.contains("SecretAccountName") || entry.contains("vault://")));
+        assert!(!snapshot.manifest_digest.contains("SecretAccountName"));
+        assert!(!snapshot
+            .manifest_digest
+            .contains("vault://providers/audit/token"));
+
+        supervisor
+            .complete(&slot, ProviderExecutionOutcome::completed("completed"))
+            .unwrap();
+    }
+
+    #[test]
+    fn manifest_digest_canonicalizes_unordered_provider_sets() {
+        let mut first = handle();
+        first.credential_env = vec!["SECOND_TOKEN".to_owned(), "API_TOKEN".to_owned()];
+        first.provider.vault_secrets = vec![
+            eva_config::ProviderVaultSecretRef {
+                env: "SECOND_TOKEN".to_owned(),
+                secret_ref: "vault://providers/z/token".to_owned(),
+            },
+            eva_config::ProviderVaultSecretRef {
+                env: "API_TOKEN".to_owned(),
+                secret_ref: "vault://providers/a/token".to_owned(),
+            },
+        ];
+        let mut second = first.clone();
+        second.credential_env.reverse();
+        second.provider.vault_secrets.reverse();
+
+        let first_digest =
+            ProviderExecutionRequest::from_handle(&first, &invocation("req-provider-canonical-a"))
+                .manifest_digest;
+        let second_digest =
+            ProviderExecutionRequest::from_handle(&second, &invocation("req-provider-canonical-b"))
+                .manifest_digest;
+
+        assert_eq!(first_digest, second_digest);
     }
 }

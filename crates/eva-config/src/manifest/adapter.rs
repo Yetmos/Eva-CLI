@@ -5,7 +5,7 @@ use crate::{invalid_config, read_yaml_file, require_non_empty, with_field_contex
 use eva_core::{AdapterId, CapabilityName};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// 本模块的架构职责：加载 Adapter 清单并把传输、能力及硬件扩展规范化为强类型。
@@ -40,9 +40,107 @@ pub struct AdapterManifest {
     /// 该 Adapter 暴露的能力集合。
     /// Capabilities exposed through this adapter.
     pub capabilities: Vec<CapabilityName>,
+    /// Provider process restart, identity, and credential-reference configuration.
+    pub provider: ProviderConfig,
     /// 由 Adapter、运行时或策略 crate 解释的扩展字段。
     /// Additional fields owned by adapter/runtime/policy crates.
     pub extra: Mapping,
+}
+
+/// Provider process configuration normalized before runtime registration.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProviderConfig {
+    /// Restart behavior reserved for the durable restart controller.
+    pub restart: ProviderRestartConfig,
+    /// Requested process identity; enforcement belongs to the OS process backend.
+    pub run_as: ProviderRunAsIdentity,
+    /// Vault references mapped to environment-variable injection targets.
+    pub vault_secrets: Vec<ProviderVaultSecretRef>,
+}
+
+/// Stable provider restart modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum ProviderRestartMode {
+    /// Never restart automatically; legacy manifests use this default.
+    #[default]
+    None,
+    /// Restart only after an unsuccessful provider exit.
+    OnFailure,
+    /// Restart after every provider exit while budget remains.
+    Always,
+}
+
+/// Bounded restart declaration consumed later by the durable restart controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProviderRestartConfig {
+    /// Restart decision mode.
+    pub mode: ProviderRestartMode,
+    /// Maximum automatic restart attempts after the initial process start.
+    pub max_attempts: u32,
+    /// Base delay between restart attempts in milliseconds.
+    pub backoff_ms: u64,
+}
+
+/// Explicit process identity requested by an Adapter manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ProviderRunAsIdentity {
+    /// Inherit the daemon identity; legacy manifests use this default.
+    #[default]
+    Current,
+    /// Run under one Unix numeric user/group pair.
+    Unix {
+        /// Numeric Unix user id.
+        uid: u32,
+        /// Numeric Unix primary group id.
+        gid: u32,
+    },
+    /// Run with a Windows account token resolved by the process backend.
+    Windows {
+        /// Stable Windows account name; no credential material is stored here.
+        account: String,
+    },
+}
+
+/// One secret reference whose value may later be injected into an allowed env target.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProviderVaultSecretRef {
+    /// Environment variable receiving the fetched secret for one provider session.
+    pub env: String,
+    /// Opaque vault location; this is a reference, never secret bytes.
+    pub secret_ref: String,
+}
+
+impl ProviderRestartMode {
+    /// Parses the stable manifest spelling.
+    pub fn parse(value: &str) -> Result<Self, EvaError> {
+        match value {
+            "none" => Ok(Self::None),
+            "on_failure" => Ok(Self::OnFailure),
+            "always" => Ok(Self::Always),
+            _ => Err(EvaError::unsupported("unsupported provider restart mode")
+                .with_context("restart_mode", value)),
+        }
+    }
+
+    /// Returns the stable manifest/storage spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::OnFailure => "on_failure",
+            Self::Always => "always",
+        }
+    }
+}
+
+impl ProviderRunAsIdentity {
+    /// Returns the stable identity kind without exposing account details.
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Unix { .. } => "unix",
+            Self::Windows { .. } => "windows",
+        }
+    }
 }
 
 /// 从扩展字段保留的类 JSON Schema 对象子集。
@@ -254,6 +352,15 @@ impl AdapterManifest {
             .map(|capability| CapabilityName::parse(capability))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| with_field_context(error, CONFIG_TYPE, &path, "capabilities"))?;
+        let credential_env = validated_credential_env(&raw.extra, &path)?;
+        let provider = parse_provider_config(
+            &path,
+            transport,
+            raw.supervision,
+            raw.credentials,
+            &credential_env,
+            &raw.extra,
+        )?;
 
         Ok(Self {
             path,
@@ -263,6 +370,7 @@ impl AdapterManifest {
             enabled: raw.enabled,
             transport,
             capabilities,
+            provider,
             extra: raw.extra,
         })
     }
@@ -468,6 +576,17 @@ impl AdapterManifest {
         Some(value)
     }
 
+    /// Rejects plaintext credential-bearing fields for production environments.
+    pub fn validate_for_environment(&self, environment: &str) -> Result<(), EvaError> {
+        if matches!(
+            environment.to_ascii_lowercase().as_str(),
+            "prod" | "production"
+        ) {
+            validate_production_manifest_secrets(self, &self.extra, "")?;
+        }
+        Ok(())
+    }
+
     /// 仅对 Hardware 传输解析 `hardware` 扩展区的强类型配置。
     /// Parses the typed hardware adapter config preserved under `hardware`.
     pub fn hardware_config(&self) -> Result<Option<HardwareAdapterConfig>, EvaError> {
@@ -476,6 +595,623 @@ impl AdapterManifest {
         }
         HardwareAdapterConfig::from_manifest(self).map(Some)
     }
+}
+
+fn parse_provider_config(
+    path: &Path,
+    transport: AdapterTransport,
+    supervision: RawProviderSupervision,
+    credentials: RawProviderCredentials,
+    credential_env: &[String],
+    extra: &Mapping,
+) -> Result<ProviderConfig, EvaError> {
+    reject_unknown_fields(path, "supervision", &supervision.extra)?;
+    reject_unknown_fields(path, "credentials", &credentials.extra)?;
+    let process_backed = provider_transport_supports_process(transport, extra);
+    let restart = parse_provider_restart(path, supervision.restart, process_backed)?;
+    let run_as = parse_provider_run_as(path, supervision.run_as, process_backed)?;
+    let vault_secrets = parse_provider_vault_refs(path, credentials.vault, credential_env)?;
+    Ok(ProviderConfig {
+        restart,
+        run_as,
+        vault_secrets,
+    })
+}
+
+fn parse_provider_restart(
+    path: &Path,
+    raw: Option<RawProviderRestart>,
+    process_backed: bool,
+) -> Result<ProviderRestartConfig, EvaError> {
+    let Some(raw) = raw else {
+        return Ok(ProviderRestartConfig::default());
+    };
+    reject_unknown_fields(path, "supervision.restart", &raw.extra)?;
+    let mode_text = raw.mode.ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "supervision.restart.mode",
+            "explicit provider restart config requires mode",
+        )
+    })?;
+    let mode = ProviderRestartMode::parse(&mode_text).map_err(|error| {
+        with_field_context(error, CONFIG_TYPE, path, "supervision.restart.mode")
+    })?;
+    let max_attempts = u32::try_from(raw.max_attempts.unwrap_or(0)).map_err(|_| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "supervision.restart.max_attempts",
+            "provider restart max_attempts exceeds u32",
+        )
+    })?;
+    let backoff_ms = raw.backoff_ms.unwrap_or(0);
+    match mode {
+        ProviderRestartMode::None if max_attempts != 0 || backoff_ms != 0 => {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "supervision.restart",
+                "restart mode none requires zero max_attempts and backoff_ms",
+            ));
+        }
+        ProviderRestartMode::OnFailure | ProviderRestartMode::Always
+            if max_attempts == 0 || backoff_ms == 0 =>
+        {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "supervision.restart",
+                "automatic restart requires positive max_attempts and backoff_ms",
+            ));
+        }
+        _ => {}
+    }
+    if mode != ProviderRestartMode::None && !process_backed {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            "supervision.restart.mode",
+            "automatic restart requires a process-backed Adapter transport",
+        ));
+    }
+    Ok(ProviderRestartConfig {
+        mode,
+        max_attempts,
+        backoff_ms,
+    })
+}
+
+fn parse_provider_run_as(
+    path: &Path,
+    raw: Option<RawProviderRunAs>,
+    process_backed: bool,
+) -> Result<ProviderRunAsIdentity, EvaError> {
+    let Some(raw) = raw else {
+        return Ok(ProviderRunAsIdentity::Current);
+    };
+    reject_unknown_fields(path, "supervision.run_as", &raw.extra)?;
+    let kind = raw.kind.as_deref().ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "supervision.run_as.kind",
+            "explicit run_as config requires kind",
+        )
+    })?;
+    let identity = match kind {
+        "current" => {
+            if raw.uid.is_some() || raw.gid.is_some() || raw.account.is_some() {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    "supervision.run_as",
+                    "current identity cannot declare uid, gid, or account",
+                ));
+            }
+            ProviderRunAsIdentity::Current
+        }
+        "unix" => {
+            if raw.account.is_some() {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    "supervision.run_as.account",
+                    "Unix identity cannot declare a Windows account",
+                ));
+            }
+            let uid = required_u32(path, "supervision.run_as.uid", raw.uid)?;
+            let gid = required_u32(path, "supervision.run_as.gid", raw.gid)?;
+            ProviderRunAsIdentity::Unix { uid, gid }
+        }
+        "windows" => {
+            if raw.uid.is_some() || raw.gid.is_some() {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    "supervision.run_as",
+                    "Windows identity cannot declare Unix uid or gid",
+                ));
+            }
+            let account = raw.account.ok_or_else(|| {
+                invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    "supervision.run_as.account",
+                    "Windows identity requires an account",
+                )
+            })?;
+            if account.trim().is_empty()
+                || account.trim() != account
+                || account.len() > 256
+                || account.chars().any(char::is_control)
+            {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    "supervision.run_as.account",
+                    "Windows account is empty, untrimmed, oversized, or contains controls",
+                ));
+            }
+            ProviderRunAsIdentity::Windows { account }
+        }
+        _ => {
+            return Err(EvaError::unsupported("unsupported provider run_as kind")
+                .with_context("run_as_kind", kind)
+                .with_context("config_type", CONFIG_TYPE)
+                .with_context("path", path.display().to_string())
+                .with_context("field", "supervision.run_as.kind"));
+        }
+    };
+    if identity != ProviderRunAsIdentity::Current && !process_backed {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            "supervision.run_as.kind",
+            "non-current identity requires a process-backed Adapter transport",
+        ));
+    }
+    Ok(identity)
+}
+
+fn parse_provider_vault_refs(
+    path: &Path,
+    raw: Vec<RawProviderVaultSecretRef>,
+    credential_env: &[String],
+) -> Result<Vec<ProviderVaultSecretRef>, EvaError> {
+    let allowed = credential_env
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    let mut parsed = Vec::with_capacity(raw.len());
+    for (index, entry) in raw.into_iter().enumerate() {
+        let prefix = format!("credentials.vault[{index}]");
+        reject_unknown_fields(path, &prefix, &entry.extra)?;
+        let env = entry.env.ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                format!("{prefix}.env"),
+                "vault secret reference requires an env target",
+            )
+        })?;
+        validate_env_name(path, &format!("{prefix}.env"), &env)?;
+        if !allowed.contains(env.as_str()) {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                format!("{prefix}.env"),
+                "vault secret env target is not allowed by permissions.env",
+            ));
+        }
+        if !seen.insert(env.clone()) {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                format!("{prefix}.env"),
+                "vault secret env target is duplicated",
+            ));
+        }
+        let secret_ref = entry.secret_ref.ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                format!("{prefix}.ref"),
+                "vault secret reference requires ref",
+            )
+        })?;
+        validate_vault_secret_ref(path, &format!("{prefix}.ref"), &secret_ref)?;
+        parsed.push(ProviderVaultSecretRef { env, secret_ref });
+    }
+    parsed.sort();
+    Ok(parsed)
+}
+
+fn validated_credential_env(extra: &Mapping, path: &Path) -> Result<Vec<String>, EvaError> {
+    let Some(permissions) = extra.get(Value::String("permissions".to_owned())) else {
+        return Ok(Vec::new());
+    };
+    let permissions = permissions.as_mapping().ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "permissions",
+            "permissions must be an object",
+        )
+    })?;
+    let Some(env) = permissions.get(Value::String("env".to_owned())) else {
+        return Ok(Vec::new());
+    };
+    let env = env.as_sequence().ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "permissions.env",
+            "permissions.env must be a string list",
+        )
+    })?;
+    let mut seen = BTreeSet::new();
+    let mut names = Vec::with_capacity(env.len());
+    for (index, value) in env.iter().enumerate() {
+        let field = format!("permissions.env[{index}]");
+        let name = value.as_str().ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                &field,
+                "credential env target must be a string",
+            )
+        })?;
+        validate_env_name(path, &field, name)?;
+        if !seen.insert(name.to_owned()) {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                field,
+                "credential env target is duplicated",
+            ));
+        }
+        names.push(name.to_owned());
+    }
+    Ok(names)
+}
+
+fn validate_env_name(path: &Path, field: &str, value: &str) -> Result<(), EvaError> {
+    let mut bytes = value.bytes();
+    let valid = value.len() <= 128
+        && bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if valid
+        && !matches!(
+            value,
+            "EVA_PROVIDER_SESSION_ID" | "EVA_PROVIDER_SESSION_TOKEN"
+        )
+    {
+        Ok(())
+    } else {
+        Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            field,
+            "credential env target is invalid or reserved by the provider supervisor",
+        ))
+    }
+}
+
+fn validate_vault_secret_ref(path: &Path, field: &str, value: &str) -> Result<(), EvaError> {
+    let Some(body) = value.strip_prefix("vault://") else {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            field,
+            "vault reference must start with vault://",
+        ));
+    };
+    let mut parts = body.split('#');
+    let secret_path = parts.next().unwrap_or_default();
+    let key = parts.next();
+    let has_extra_fragment = parts.next().is_some();
+    let path_valid = !secret_path.is_empty()
+        && secret_path.len() <= 384
+        && secret_path.split('/').all(is_valid_vault_segment);
+    let key_valid = key.is_none_or(is_valid_vault_key);
+    if value.len() <= 512 && path_valid && key_valid && !has_extra_fragment {
+        Ok(())
+    } else {
+        Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            field,
+            "vault reference path or key is invalid",
+        ))
+    }
+}
+
+fn is_valid_vault_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn is_valid_vault_key(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn required_u32(path: &Path, field: &str, value: Option<u64>) -> Result<u32, EvaError> {
+    value
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                field,
+                "run_as numeric identity is required and must fit u32",
+            )
+        })
+}
+
+fn reject_unknown_fields(path: &Path, prefix: &str, extra: &Mapping) -> Result<(), EvaError> {
+    if let Some((key, _)) = extra.iter().next() {
+        let key = key.as_str().unwrap_or("<non-string>");
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            format!("{prefix}.{key}"),
+            "provider config contains an unsupported field",
+        ));
+    }
+    Ok(())
+}
+
+fn provider_transport_supports_process(transport: AdapterTransport, extra: &Mapping) -> bool {
+    match transport {
+        AdapterTransport::Stdio | AdapterTransport::Skill => true,
+        AdapterTransport::Mcp => extra
+            .get(Value::String("mcp".to_owned()))
+            .and_then(Value::as_mapping)
+            .and_then(|mcp| mcp.get(Value::String("server_transport".to_owned())))
+            .and_then(Value::as_str)
+            .is_none_or(|value| value == "stdio"),
+        _ => false,
+    }
+}
+
+fn validate_production_manifest_secrets(
+    manifest: &AdapterManifest,
+    mapping: &Mapping,
+    prefix: &str,
+) -> Result<(), EvaError> {
+    for (key, value) in mapping {
+        let Some(key) = key.as_str() else {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                &manifest.path,
+                prefix,
+                "production manifest contains a non-string field name",
+            ));
+        };
+        let field = if prefix.is_empty() {
+            key.to_owned()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        if matches!(key, "input_schema" | "output_schema" | "schema") {
+            continue;
+        }
+        if matches!(key, "args" | "endpoint") {
+            validate_no_embedded_production_secret(manifest, value, &field)?;
+        }
+        if key.eq_ignore_ascii_case("headers") {
+            validate_production_headers(manifest, value, &field)?;
+            continue;
+        }
+        if is_secret_field_name(key) {
+            let Some(reference) = value.as_str() else {
+                return Err(production_plaintext_error(manifest, &field));
+            };
+            validate_env_credential_reference(manifest, &field, reference)?;
+            continue;
+        }
+        match value {
+            Value::Mapping(nested) => {
+                validate_production_manifest_secrets(manifest, nested, &field)?;
+            }
+            Value::Sequence(values) => {
+                for (index, value) in values.iter().enumerate() {
+                    if let Value::Mapping(nested) = value {
+                        validate_production_manifest_secrets(
+                            manifest,
+                            nested,
+                            &format!("{field}[{index}]"),
+                        )?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_production_headers(
+    manifest: &AdapterManifest,
+    value: &Value,
+    field: &str,
+) -> Result<(), EvaError> {
+    let headers = value.as_mapping().ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            &manifest.path,
+            field,
+            "production headers must be an object",
+        )
+    })?;
+    for (name, value) in headers {
+        let Some(name) = name.as_str() else {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                &manifest.path,
+                field,
+                "production header name must be a string",
+            ));
+        };
+        if is_sensitive_header(name) {
+            let header_field = format!("{field}.{name}");
+            let Some(reference) = value.as_str() else {
+                return Err(production_plaintext_error(manifest, &header_field));
+            };
+            validate_env_credential_reference(manifest, &header_field, reference)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_env_credential_reference(
+    manifest: &AdapterManifest,
+    field: &str,
+    value: &str,
+) -> Result<(), EvaError> {
+    if let Some(env) = value.strip_prefix("env:") {
+        validate_env_name(&manifest.path, field, env)?;
+        if !manifest
+            .nested_extra_string_list("permissions", "env")
+            .iter()
+            .any(|allowed| allowed == env)
+        {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                &manifest.path,
+                field,
+                "production credential env reference is not allowed by permissions.env",
+            ));
+        }
+        return Ok(());
+    }
+    Err(production_plaintext_error(manifest, field))
+}
+
+fn validate_no_embedded_production_secret(
+    manifest: &AdapterManifest,
+    value: &Value,
+    field: &str,
+) -> Result<(), EvaError> {
+    let mut values = Vec::new();
+    match value {
+        Value::String(value) => values.push(value.as_str()),
+        Value::Sequence(sequence) => {
+            values.extend(sequence.iter().filter_map(Value::as_str));
+        }
+        _ => return Ok(()),
+    }
+    for value in values {
+        let normalized = value.to_ascii_lowercase();
+        let exact_flag = matches!(
+            normalized.as_str(),
+            "--token"
+                | "--password"
+                | "--secret"
+                | "--api-key"
+                | "--api_key"
+                | "--access-token"
+                | "--client-secret"
+        );
+        let assignment = [
+            "--token=",
+            "--password=",
+            "--secret=",
+            "--api-key=",
+            "--api_key=",
+            "--access-token=",
+            "--client-secret=",
+            "?token=",
+            "&token=",
+            "?password=",
+            "&password=",
+            "?secret=",
+            "&secret=",
+            "?api_key=",
+            "&api_key=",
+            "?api-key=",
+            "&api-key=",
+            "?apikey=",
+            "&apikey=",
+            "?access_token=",
+            "&access_token=",
+            "?auth_token=",
+            "&auth_token=",
+            "?client_secret=",
+            "&client_secret=",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker));
+        if exact_flag || assignment || contains_url_userinfo_secret(&normalized) {
+            return Err(production_plaintext_error(manifest, field));
+        }
+    }
+    Ok(())
+}
+
+fn contains_url_userinfo_secret(value: &str) -> bool {
+    let Some((_, remainder)) = value.split_once("://") else {
+        return false;
+    };
+    let authority = remainder.split(['/', '?', '#']).next().unwrap_or_default();
+    authority
+        .rsplit_once('@')
+        .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+}
+
+fn is_secret_field_name(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase().replace('-', "_");
+    matches!(
+        normalized.as_str(),
+        "secret"
+            | "token"
+            | "password"
+            | "api_key"
+            | "apikey"
+            | "access_token"
+            | "accesstoken"
+            | "auth_token"
+            | "authtoken"
+            | "client_secret"
+            | "clientsecret"
+            | "private_key"
+            | "privatekey"
+    )
+}
+
+fn is_sensitive_header(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "x-api-key"
+            | "api-key"
+            | "x-auth-token"
+            | "x-access-token"
+            | "cookie"
+    )
+}
+
+fn production_plaintext_error(manifest: &AdapterManifest, field: &str) -> EvaError {
+    invalid_config(
+        CONFIG_TYPE,
+        &manifest.path,
+        field,
+        "production Adapter manifests must use allowlisted env: references or credentials.vault",
+    )
 }
 
 impl HardwareAdapterConfig {
@@ -787,7 +1523,67 @@ struct RawAdapterManifest {
     /// 原始能力名列表。
     #[serde(default)]
     capabilities: Vec<String>,
+    /// Provider supervision settings owned by W3.
+    #[serde(default)]
+    supervision: RawProviderSupervision,
+    /// Provider credential references owned by W3.
+    #[serde(default)]
+    credentials: RawProviderCredentials,
     /// 未由核心模型占用的顶层扩展字段。
+    #[serde(flatten)]
+    extra: Mapping,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawProviderSupervision {
+    #[serde(default)]
+    restart: Option<RawProviderRestart>,
+    #[serde(default)]
+    run_as: Option<RawProviderRunAs>,
+    #[serde(flatten)]
+    extra: Mapping,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawProviderRestart {
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    max_attempts: Option<u64>,
+    #[serde(default)]
+    backoff_ms: Option<u64>,
+    #[serde(flatten)]
+    extra: Mapping,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawProviderRunAs {
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    uid: Option<u64>,
+    #[serde(default)]
+    gid: Option<u64>,
+    #[serde(default)]
+    account: Option<String>,
+    #[serde(flatten)]
+    extra: Mapping,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawProviderCredentials {
+    #[serde(default)]
+    vault: Vec<RawProviderVaultSecretRef>,
+    #[serde(flatten)]
+    extra: Mapping,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawProviderVaultSecretRef {
+    #[serde(default)]
+    env: Option<String>,
+    #[serde(default, rename = "ref")]
+    secret_ref: Option<String>,
     #[serde(flatten)]
     extra: Mapping,
 }
@@ -1007,5 +1803,464 @@ capabilities:
             schema.properties["scope"].enum_values,
             vec!["current_diff".to_owned(), "workspace".to_owned()]
         );
+    }
+
+    fn parse_test_manifest(yaml: &str) -> Result<AdapterManifest, EvaError> {
+        AdapterManifest::try_from(serde_yaml::from_str::<Value>(yaml).unwrap())
+    }
+
+    fn provider_manifest_yaml(transport: &str, provider: &str) -> String {
+        format!(
+            r#"id: provider-test
+name: Provider Test
+version: 1.0.0
+enabled: true
+transport: {transport}
+capabilities:
+  - repo.analyze
+permissions:
+  env:
+    - API_TOKEN
+    - SECOND_TOKEN
+limits: {{}}
+routing: {{}}
+{provider}
+"#
+        )
+    }
+
+    #[test]
+    fn legacy_manifest_defaults_provider_config() {
+        let manifest = parse_test_manifest(
+            r#"
+id: legacy-provider
+name: Legacy Provider
+version: 1.0.0
+enabled: true
+transport: stdio
+capabilities:
+  - repo.analyze
+permissions: {}
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(manifest.provider, ProviderConfig::default());
+    }
+
+    #[test]
+    fn adapter_schema_provider_enums_match_canonical_parser() {
+        let schema_path = workspace_root().join("config/schemas/adapter.schema.json");
+        let schema: Value =
+            serde_yaml::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
+        let schema_value = |path: &[&str]| {
+            path.iter().fold(&schema, |value, key| {
+                value
+                    .as_mapping()
+                    .and_then(|mapping| mapping.get(Value::String((*key).to_owned())))
+                    .unwrap()
+            })
+        };
+        let restart_modes = schema_value(&[
+            "properties",
+            "supervision",
+            "properties",
+            "restart",
+            "properties",
+            "mode",
+            "enum",
+        ])
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+        assert_eq!(restart_modes, vec!["none", "on_failure", "always"]);
+        for mode in restart_modes {
+            assert_eq!(ProviderRestartMode::parse(mode).unwrap().as_str(), mode);
+        }
+
+        let run_as_kinds = schema_value(&[
+            "properties",
+            "supervision",
+            "properties",
+            "run_as",
+            "properties",
+            "kind",
+            "enum",
+        ])
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+        assert_eq!(run_as_kinds, vec!["current", "unix", "windows"]);
+    }
+
+    #[test]
+    fn provider_restart_modes_and_identities_parse() {
+        let none = parse_test_manifest(&provider_manifest_yaml(
+            "stdio",
+            "supervision:\n  restart:\n    mode: none\n    max_attempts: 0\n    backoff_ms: 0\n  run_as:\n    kind: current\n",
+        ))
+        .unwrap();
+        assert_eq!(none.provider.restart.mode, ProviderRestartMode::None);
+        assert_eq!(none.provider.run_as, ProviderRunAsIdentity::Current);
+
+        let on_failure = parse_test_manifest(&provider_manifest_yaml(
+            "stdio",
+            "supervision:\n  restart:\n    mode: on_failure\n    max_attempts: 3\n    backoff_ms: 1000\n  run_as:\n    kind: unix\n    uid: 1000\n    gid: 1001\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            on_failure.provider.restart,
+            ProviderRestartConfig {
+                mode: ProviderRestartMode::OnFailure,
+                max_attempts: 3,
+                backoff_ms: 1000,
+            }
+        );
+        assert_eq!(
+            on_failure.provider.run_as,
+            ProviderRunAsIdentity::Unix {
+                uid: 1000,
+                gid: 1001
+            }
+        );
+
+        let always = parse_test_manifest(&provider_manifest_yaml(
+            "stdio",
+            "supervision:\n  restart:\n    mode: always\n    max_attempts: 2\n    backoff_ms: 250\n  run_as:\n    kind: windows\n    account: LocalService\n",
+        ))
+        .unwrap();
+        assert_eq!(always.provider.restart.mode, ProviderRestartMode::Always);
+        assert_eq!(
+            always.provider.run_as,
+            ProviderRunAsIdentity::Windows {
+                account: "LocalService".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn provider_restart_and_identity_invalid_combinations_fail_closed() {
+        let invalid = [
+            provider_manifest_yaml(
+                "stdio",
+                "supervision:\n  restart:\n    mode: none\n    max_attempts: 1\n",
+            ),
+            provider_manifest_yaml(
+                "stdio",
+                "supervision:\n  restart:\n    mode: on_failure\n    max_attempts: 1\n",
+            ),
+            provider_manifest_yaml(
+                "http",
+                "supervision:\n  restart:\n    mode: always\n    max_attempts: 1\n    backoff_ms: 1\n",
+            ),
+            provider_manifest_yaml(
+                "http",
+                "supervision:\n  run_as:\n    kind: unix\n    uid: 1\n    gid: 1\n",
+            ),
+            provider_manifest_yaml(
+                "stdio",
+                "supervision:\n  run_as:\n    kind: current\n    uid: 1\n",
+            ),
+            provider_manifest_yaml(
+                "stdio",
+                "supervision:\n  run_as:\n    kind: unix\n    account: LocalService\n    uid: 1\n    gid: 1\n",
+            ),
+            provider_manifest_yaml(
+                "stdio",
+                "supervision:\n  run_as:\n    kind: windows\n    uid: 1\n    gid: 1\n    account: LocalService\n",
+            ),
+            provider_manifest_yaml(
+                "stdio",
+                "supervision:\n  run_as:\n    kind: unix\n    uid: 1\n",
+            ),
+            provider_manifest_yaml(
+                "stdio",
+                "supervision:\n  run_as:\n    kind: windows\n",
+            ),
+            provider_manifest_yaml(
+                "stdio",
+                "supervision:\n  run_as:\n    kind: windows\n    account: ' LocalService'\n",
+            ),
+            provider_manifest_yaml(
+                "stdio",
+                "supervision:\n  run_as:\n    kind: unix\n    uid: 4294967296\n    gid: 1\n",
+            ),
+        ];
+
+        for yaml in invalid {
+            let error = parse_test_manifest(&yaml).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidArgument, "{yaml}");
+        }
+
+        let unknown = parse_test_manifest(&provider_manifest_yaml(
+            "stdio",
+            "supervision:\n  run_as:\n    kind: container\n",
+        ))
+        .unwrap_err();
+        assert_eq!(unknown.kind(), ErrorKind::Unsupported);
+
+        let duplicate_env =
+            provider_manifest_yaml("stdio", "").replace("    - SECOND_TOKEN", "    - API_TOKEN");
+        assert_eq!(
+            parse_test_manifest(&duplicate_env).unwrap_err().kind(),
+            ErrorKind::InvalidArgument
+        );
+
+        let reserved_env = provider_manifest_yaml("stdio", "")
+            .replace("    - API_TOKEN", "    - EVA_PROVIDER_SESSION_ID");
+        assert_eq!(
+            parse_test_manifest(&reserved_env).unwrap_err().kind(),
+            ErrorKind::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn mcp_http_rejects_process_supervision() {
+        let stdio = parse_test_manifest(&provider_manifest_yaml(
+            "mcp",
+            "mcp:\n  server_transport: stdio\n  command: provider\nsupervision:\n  restart:\n    mode: on_failure\n    max_attempts: 1\n    backoff_ms: 1\n  run_as:\n    kind: unix\n    uid: 1\n    gid: 1\n",
+        ))
+        .unwrap();
+        assert_eq!(stdio.provider.restart.mode, ProviderRestartMode::OnFailure);
+
+        let yaml = provider_manifest_yaml(
+            "mcp",
+            "mcp:\n  server_transport: http\n  endpoint: https://example.test/mcp\nsupervision:\n  restart:\n    mode: on_failure\n    max_attempts: 1\n    backoff_ms: 1\n",
+        );
+        let error = parse_test_manifest(&yaml).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+
+        let yaml = provider_manifest_yaml(
+            "mcp",
+            "mcp:\n  server_transport: http\n  endpoint: https://example.test/mcp\nsupervision:\n  run_as:\n    kind: unix\n    uid: 1\n    gid: 1\n",
+        );
+        let error = parse_test_manifest(&yaml).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn vault_refs_are_allowlisted_sorted_and_strict() {
+        let manifest = parse_test_manifest(&provider_manifest_yaml(
+            "stdio",
+            "credentials:\n  vault:\n    - env: SECOND_TOKEN\n      ref: vault://providers/z/token#value\n    - env: API_TOKEN\n      ref: vault://providers/a/token\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            manifest.provider.vault_secrets,
+            vec![
+                ProviderVaultSecretRef {
+                    env: "API_TOKEN".to_owned(),
+                    secret_ref: "vault://providers/a/token".to_owned(),
+                },
+                ProviderVaultSecretRef {
+                    env: "SECOND_TOKEN".to_owned(),
+                    secret_ref: "vault://providers/z/token#value".to_owned(),
+                },
+            ]
+        );
+
+        let invalid = [
+            "credentials:\n  vault:\n    - env: API_TOKEN\n      ref: vault://providers/a/token\n    - env: API_TOKEN\n      ref: vault://providers/b/token\n",
+            "credentials:\n  vault:\n    - env: UNKNOWN_TOKEN\n      ref: vault://providers/a/token\n",
+            "credentials:\n  vault:\n    - env: EVA_PROVIDER_SESSION_TOKEN\n      ref: vault://providers/a/token\n",
+            "credentials:\n  vault:\n    - env: API_TOKEN\n      ref: https://providers/a/token\n",
+            "credentials:\n  vault:\n    - env: API_TOKEN\n      ref: vault://providers/../token\n",
+            "credentials:\n  vault:\n    - env: API_TOKEN\n      ref: vault://providers/a/token#one#two\n",
+            "credentials:\n  vault:\n    - env: API_TOKEN\n      ref: vault://\n",
+            "credentials:\n  vault:\n    - env: API_TOKEN\n      ref: vault://providers//token\n",
+            "credentials:\n  vault:\n    - env: API_TOKEN\n      ref: vault://providers/a/token#\n",
+        ];
+        for provider in invalid {
+            let error =
+                parse_test_manifest(&provider_manifest_yaml("stdio", provider)).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidArgument, "{provider}");
+        }
+    }
+
+    #[test]
+    fn production_secret_validation_rejects_literals_but_dev_remains_compatible() {
+        let literal_header = parse_test_manifest(
+            r#"
+id: production-header
+name: Production Header
+version: 1.0.0
+enabled: true
+transport: http
+endpoint: https://example.test/api
+headers:
+  Authorization: Bearer plaintext-token
+permissions:
+  env:
+    - API_TOKEN
+capabilities:
+  - chat.reply
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(literal_header
+            .validate_for_environment("production")
+            .is_err());
+        assert!(literal_header.validate_for_environment("dev").is_ok());
+
+        let allowlisted_env = parse_test_manifest(
+            r#"
+id: production-allowed-env
+name: Production Allowed Env
+version: 1.0.0
+enabled: true
+transport: http
+endpoint: https://example.test/api
+headers:
+  Authorization: env:API_TOKEN
+permissions:
+  env: [API_TOKEN]
+capabilities:
+  - chat.reply
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(allowlisted_env
+            .validate_for_environment("production")
+            .is_ok());
+
+        let unallowlisted_env = parse_test_manifest(
+            r#"
+id: production-env
+name: Production Env
+version: 1.0.0
+enabled: true
+transport: http
+endpoint: https://example.test/api
+headers:
+  Authorization: env:NOT_ALLOWLISTED
+permissions:
+  env: [API_TOKEN]
+capabilities:
+  - chat.reply
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(unallowlisted_env.validate_for_environment("prod").is_err());
+
+        let direct_vault_header = parse_test_manifest(
+            r#"
+id: production-vault-header
+name: Production Vault Header
+version: 1.0.0
+enabled: true
+transport: http
+endpoint: https://example.test/api
+headers:
+  Authorization: vault://providers/api/token
+permissions:
+  env: [API_TOKEN]
+capabilities:
+  - chat.reply
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(direct_vault_header
+            .validate_for_environment("production")
+            .is_err());
+
+        let embedded_secret = parse_test_manifest(
+            r#"
+id: production-args
+name: Production Args
+version: 1.0.0
+enabled: true
+transport: stdio
+command: provider
+args: ["--token=plaintext-token"]
+permissions: {}
+capabilities:
+  - repo.analyze
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(embedded_secret
+            .validate_for_environment("production")
+            .is_err());
+
+        let endpoint_secret = parse_test_manifest(
+            r#"
+id: production-endpoint
+name: Production Endpoint
+version: 1.0.0
+enabled: true
+transport: http
+endpoint: https://example.test/api?password=plaintext-password
+permissions: {}
+capabilities:
+  - chat.reply
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(endpoint_secret
+            .validate_for_environment("production")
+            .is_err());
+
+        let userinfo_secret = parse_test_manifest(
+            r#"
+id: production-userinfo
+name: Production Userinfo
+version: 1.0.0
+enabled: true
+transport: http
+endpoint: https://user:plaintext-password@example.test/api
+permissions: {}
+capabilities:
+  - chat.reply
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(userinfo_secret
+            .validate_for_environment("production")
+            .is_err());
+
+        let schema_password = parse_test_manifest(
+            r#"
+id: production-schema
+name: Production Schema
+version: 1.0.0
+enabled: true
+transport: skill
+skill:
+  input_schema:
+    type: object
+    properties:
+      password:
+        type: string
+permissions: {}
+capabilities:
+  - code.review
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(schema_password
+            .validate_for_environment("production")
+            .is_ok());
     }
 }

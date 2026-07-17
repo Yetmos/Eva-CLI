@@ -33,7 +33,9 @@ pub use eva_yaml::{
 pub use manifest::adapter::{
     AdapterTransport, HardwareAdapterConfig, HardwareBusKind, HardwareClaimMode,
     HardwareDriverConfig, HardwareDriverKind, HardwareHotplugConfig, HardwareIdentityConfig,
-    HardwareMatchConfig, HardwareProtocolConfig, HardwareProtocolKind, RawAdapterTransport,
+    HardwareMatchConfig, HardwareProtocolConfig, HardwareProtocolKind, ProviderConfig,
+    ProviderRestartConfig, ProviderRestartMode, ProviderRunAsIdentity, ProviderVaultSecretRef,
+    RawAdapterTransport,
 };
 pub use manifest::agent::AgentManifestPermissions;
 pub use manifest::capability::{CapabilityKind, RawCapabilityKind};
@@ -147,8 +149,17 @@ pub fn validate_project_config(project: &ProjectConfig) -> Result<(), EvaError> 
     validate_agent_permission_references(project)?;
     validate_agent_scripts(&project.agents)?;
     validate_hardware_adapter_configs(&project.adapters)?;
+    validate_adapter_environments(project)?;
     validate_capability_providers(project)?;
     validate_route_agents(project)?;
+    Ok(())
+}
+
+/// Applies environment-sensitive Adapter secret rules after eva.yaml and manifests are joined.
+fn validate_adapter_environments(project: &ProjectConfig) -> Result<(), EvaError> {
+    for adapter in &project.adapters {
+        adapter.validate_for_environment(&project.eva.runtime.env)?;
+    }
     Ok(())
 }
 
@@ -697,6 +708,90 @@ routing: {}
 
         assert_eq!(error.kind(), ErrorKind::Unsupported);
         assert_context(&error, "field", "hardware.driver.kind");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    /// 验证项目级 production 环境会拒绝 Adapter 中的明文敏感 Header。
+    fn load_project_config_rejects_production_plaintext_secret() {
+        let root = minimal_project("production-plaintext-secret", "codex-cli");
+        let eva_path = root.join("config/eva.yaml");
+        let eva = fs::read_to_string(&eva_path).unwrap();
+        fs::write(&eva_path, eva.replace("env: dev", "env: production")).unwrap();
+        fs::write(
+            root.join("config/adapters/codex-cli.yaml"),
+            r#"id: codex-cli
+name: Codex CLI
+version: 1.0.0
+enabled: true
+transport: builtin
+command: codex
+headers:
+  Authorization: Bearer plaintext-token
+capabilities:
+  - repo.analyze
+permissions: {}
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+
+        let error = load_project_config(&root).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+        assert_context(&error, "field", "headers.Authorization");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    /// 验证 dev 保持兼容且 production allowlisted env 引用可通过项目级校验。
+    fn load_project_config_preserves_dev_and_allowlisted_production_compatibility() {
+        let root = minimal_project("production-allowlisted-secret", "codex-cli");
+        let adapter_path = root.join("config/adapters/codex-cli.yaml");
+        fs::write(
+            &adapter_path,
+            r#"id: codex-cli
+name: Codex CLI
+version: 1.0.0
+enabled: true
+transport: builtin
+headers:
+  Authorization: Bearer development-token
+capabilities:
+  - repo.analyze
+permissions: {}
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(load_project_config(&root).is_ok());
+
+        let eva_path = root.join("config/eva.yaml");
+        let eva = fs::read_to_string(&eva_path).unwrap();
+        fs::write(&eva_path, eva.replace("env: dev", "env: production")).unwrap();
+        fs::write(
+            &adapter_path,
+            r#"id: codex-cli
+name: Codex CLI
+version: 1.0.0
+enabled: true
+transport: builtin
+headers:
+  Authorization: env:API_TOKEN
+capabilities:
+  - repo.analyze
+permissions:
+  env:
+    - API_TOKEN
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+        assert!(load_project_config(&root).is_ok());
 
         fs::remove_dir_all(root).unwrap();
     }

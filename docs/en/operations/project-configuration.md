@@ -6,7 +6,7 @@
 >
 > Translation: [Simplified Chinese](../../zh-CN/operations/项目配置方案.md)
 
-Updated: 2026-07-14
+Updated: 2026-07-17
 
 ## Scope
 
@@ -40,7 +40,7 @@ Not every accepted YAML field is strongly typed by `eva-config`.
 | --- | --- | --- |
 | `eva.yaml` | `runtime`, `observability`, optional `service_manager`, and `config` roots | Other top-level mappings are stored in `EvaConfig.extra` |
 | Agent | `id`, `enabled`, `parent`, `children`, `script`, `script_version`, `subscriptions`, emit/tools/Adapter permissions | Inbox, timeout, state, constraints, memory, knowledge, and other fields remain extensions |
-| Adapter | `id`, `name`, `version`, `enabled`, `transport`, capabilities | Transport-specific data remains an extension; hardware has an additional typed parser |
+| Adapter | `id`, `name`, `version`, `enabled`, `transport`, capabilities, `ProviderConfig` | Transport-specific data remains an extension; hardware has an additional typed parser; W3-L01 normalizes restart/run-as/vault references |
 | Capability | Identity, kind, public capability, default/provider IDs, Adapter permission references | Input/output schemas and execution details remain extensions |
 | Policy | Non-empty mapping with non-empty string domain keys | `eva-policy` parses supported domains when a policy-gated operation runs |
 | Routes | Pattern, delivery mode, and target Agent IDs | No extension fields; the route schema rejects unknown properties |
@@ -48,6 +48,26 @@ Not every accepted YAML field is strongly typed by `eva-config`.
 The presence of an extension field does not prove that the current runtime consumes it. For example, `process`, `eventbus`, and `upgrade` remain main-config extensions, while `runtime.hot_reload` is currently a parsed and reported flag rather than a file-watcher switch.
 
 `constraints.md` is not loaded by `eva-config`; a `constraints.file` field is only preserved as Agent extension data unless a downstream consumer explicitly reads it.
+
+## Provider Configuration Contract
+
+An Adapter manifest may declare provider supervision, identity, and credential references:
+
+```yaml
+supervision:
+  restart:
+    mode: on_failure
+    max_attempts: 3
+    backoff_ms: 1000
+  run_as:
+    kind: current
+credentials:
+  vault:
+    - env: GITHUB_TOKEN
+      ref: vault://providers/github/token#value
+```
+
+`restart.mode` supports `none`, `on_failure`, and `always`; `max_attempts` counts automatic restarts after the initial start and `backoff_ms` must be positive. Missing `supervision` or `credentials` preserves the legacy `none/current/empty` defaults. Automatic restart and a non-`current` identity are accepted only for process-backed `stdio`, Skill, and MCP stdio; HTTP and MCP HTTP fail during loading. Vault targets must also be listed in `permissions.env`. References are sorted and included in the provider manifest digest, but W3-L01 does not contact a vault, switch OS identities, or restart a process; those behaviors belong to later W3-L03/W3-L06/W3-L08/W3-L09 work.
 
 ## Validation Pipeline
 
@@ -70,6 +90,8 @@ Cross-file validation currently checks:
 - Agent scripts exist;
 - Agent Adapter permissions reference declared providers/capabilities;
 - hardware Adapter typed fields are valid;
+- provider restart/run-as unions, restart budgets, vault URI syntax, env allowlists, and reserved supervisor env names are valid;
+- production rejects plaintext sensitive fields, non-allowlisted `env:` references, common secret forms in args/endpoints, and direct `vault://` headers; dev remains compatible;
 - Capability providers reference declared Adapters.
 
 It does not currently prove parent/child symmetry, validate environment variable availability, constrain every path to `runtime.workspace`, measure MCP allowlist breadth, enforce every Skill extension, or compare timeout/concurrency values with every policy domain.
@@ -102,6 +124,7 @@ There is no configuration file watcher and no automatic route-table replacement.
 ## Security Rules
 
 - Store credential environment-variable names, never plaintext API keys or tokens.
+- Production Adapter sensitive headers/fields may only use `env:NAME` references listed in `permissions.env`; `credentials.vault` stores only `vault://` URIs and does not fetch secret bytes in the current runtime.
 - Keep executable plus arguments as structured fields; do not embed shell fragments.
 - Treat `permissions`, allowlists, endpoints, and hardware match data as security-sensitive changes.
 - Validate before running external Adapter, MCP, Skill, hardware, restore, or upgrade paths.

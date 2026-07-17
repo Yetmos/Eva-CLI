@@ -16,7 +16,7 @@
 
 ### 当前实现状态
 
-第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。V0.3 起 `eva-cli` 已通过 `eva config validate` 暴露文本/JSON 校验报告，V0.5 task diagnostics basic loop 也复用同一份 `ProjectConfig` 作为组合输入。V1.9.1 起，加载项目配置会先按 schema 文件验证 `eva.yaml`、Agent/Adapter/Capability manifest、policy 和 routes，错误上下文包含文件、字段 path、schema rule 和修复建议。V1.10.1 起，hardware Adapter manifest 会额外解析为 typed hardware config，预留 USB、串口、BLE、socket 和 vendor SDK driver 配置。V1.14.5 起，顶层 `service_manager` 会解析为 typed config；启用时必须显式声明 kind 和 service name，防止把 fake/local 配置误读成生产 service-manager handoff。
+第一阶段最小配置加载链路已经完成。当前模块可以加载仓库内示例配置，生成 `ProjectConfig`，并对跨文件引用做基础一致性检查。V0.3 起 `eva-cli` 已通过 `eva config validate` 暴露文本/JSON 校验报告，V0.5 task diagnostics basic loop 也复用同一份 `ProjectConfig` 作为组合输入。V1.9.1 起，加载项目配置会先按 schema 文件验证 `eva.yaml`、Agent/Adapter/Capability manifest、policy 和 routes，错误上下文包含文件、字段 path、schema rule 和修复建议。V1.10.1 起，hardware Adapter manifest 会额外解析为 typed hardware config，预留 USB、串口、BLE、socket 和 vendor SDK driver 配置。V1.14.5 起，顶层 `service_manager` 会解析为 typed config；启用时必须显式声明 kind 和 service name，防止把 fake/local 配置误读成生产 service-manager handoff。W3-L01 现在也把 provider 的 restart、run-as 和 vault reference 归一化为 canonical 配置，并在 production 项目级校验中拒绝明文敏感字段；缺省清单保持旧行为。
 
 ```text
 project root
@@ -34,7 +34,7 @@ project root
 | 主配置加载 | 已完成 | `load_eva_config` 读取 `eva.yaml` 并解析 `runtime`、`config` 稳定字段 |
 | 配置根路径 | 已完成 | `ConfigRoots::resolve_against` 将相对路径按项目根目录解析 |
 | Agent manifest | 已完成 | 校验 `AgentId`、`parent`、`children`、`script`、`subscriptions`、部分权限字段 |
-| Adapter manifest | 已完成 V1.10.1 | 校验 `AdapterId`、`transport` 和 `capabilities`；hardware Adapter 解析 typed bus/match/identity/protocol/hotplug/driver config |
+| Adapter manifest | 已完成 V1.10.1；W3-L01 配置契约已完成 | 校验 `AdapterId`、`transport`、`capabilities`，并归一化可选 provider restart/run-as/vault references；hardware Adapter 解析 typed bus/match/identity/protocol/hotplug/driver config |
 | Capability manifest | 已完成 | 校验 `CapabilityId`、`kind`、runtime `CapabilityName` 和 provider 引用格式 |
 | Policy document | 已完成 | 加载 `config/policies/*.yaml` 为 extensible domain map，最终解释留给 `eva-policy` |
 | Routes 配置 | 已完成 | 加载 `config/routes/topics.yaml`，校验 `TopicPattern`、delivery 和目标 Agent ID |
@@ -52,6 +52,7 @@ project root
 | `load_eva_config` | `impl AsRef<Path>` | `Result<EvaConfig, EvaError>` | 读取并校验主配置 |
 | `load_agent_manifest` | `impl AsRef<Path>` | `Result<AgentManifest, EvaError>` | 读取单个 Agent manifest |
 | `load_adapter_manifest` | `impl AsRef<Path>` | `Result<AdapterManifest, EvaError>` | 读取单个 Adapter manifest |
+| `AdapterManifest::validate_for_environment` | `&self`, environment | `Result<(), EvaError>` | production 拒绝明文 secret、未 allowlist 的 env 引用和嵌入式 token/password |
 | `AdapterManifest::hardware_config` | `&self` | `Result<Option<HardwareAdapterConfig>, EvaError>` | 解析 hardware Adapter 的 bus/match/identity/protocol/hotplug/driver typed config |
 | `load_capability_manifest` | `impl AsRef<Path>` | `Result<CapabilityManifest, EvaError>` | 读取单个 Capability manifest |
 | `load_policy_document` | `impl AsRef<Path>` | `Result<PolicyDocument, EvaError>` | 读取单个 policy YAML 文档 |
@@ -70,7 +71,8 @@ project root
 | `ServiceManagerConfig` | `src/eva_yaml.rs` | `enabled`、`kind`、`service_name`、`unit_name`、`runtime_binary`、`candidate_runtime_binary`、`start_on_boot`、`restart_supervisor` | V1.14.5 OS service-manager 抽象层的显式配置输入 |
 | `ConfigRoots` | `src/eva_yaml.rs` | `agent_dir`、`adapter_dir`、`capability_dir`、`policy_dir`、`route_file`、`schema_dir` | 拆分配置发现入口 |
 | `AgentManifest` | `src/manifest/agent.rs` | `id`、`enabled`、`parent`、`children`、`script`、`subscriptions`、`permissions` | Agent 注册前配置契约 |
-| `AdapterManifest` | `src/manifest/adapter.rs` | `id`、`name`、`version`、`enabled`、`transport`、`capabilities` | Adapter 注册前配置契约 |
+| `AdapterManifest` | `src/manifest/adapter.rs` | 基础身份、transport、capabilities、`ProviderConfig` | Adapter 注册前配置契约；旧清单默认 `restart=none`、`run_as=current` |
+| `ProviderConfig` | `src/manifest/adapter.rs` | restart mode/budget、run-as identity、vault env/ref | W3-L01 canonical provider 配置；不执行真实 restart、身份切换或 vault fetch |
 | `HardwareAdapterConfig` | `src/manifest/adapter.rs` | `bus`、`match_rule`、`identity`、`protocol`、`hotplug`、`driver` | V1.10.1 hardware driver registry 和 simulator/real driver 共用 typed 配置 |
 | `CapabilityManifest` | `src/manifest/capability.rs` | `id`、`name`、`version`、`enabled`、`kind`、`capability`、`provider` | Capability 注册前配置契约 |
 | `PolicyDocument` | `src/policy.rs` | `path`、`domains` | policy 文件加载结果，领域解释不在 `eva-config` |
@@ -128,7 +130,7 @@ project root
 | 命令 | 当前结果 |
 | --- | --- |
 | `cargo fmt -p eva-config --check` | 通过 |
-| `cargo test -p eva-config` | 通过，42 个测试 |
+| `cargo test -p eva-config` | 通过，54 个测试 |
 | `cargo check -p eva-config` | 通过 |
 | `cargo check --workspace` | 通过 |
 | `cargo test --workspace` | 通过 |
@@ -158,6 +160,12 @@ project root
 | `project_config_loads_all_config_roots` | 项目级加载能汇总主配置和 manifest |
 | `validate_project_config_rejects_duplicate_agent_id` | 重复 Agent ID 会失败 |
 | `validate_project_config_rejects_unknown_route_agent` | routes 指向未知 Agent 会失败 |
+| `legacy_manifest_defaults_provider_config` | 旧 Adapter manifest 默认 `restart=none/run_as=current/vault=[]` |
+| `provider_restart_modes_and_identities_parse` | 三种 restart mode 与 Unix/Windows/current identity 正向解析 |
+| `provider_restart_and_identity_invalid_combinations_fail_closed` | restart budget、transport 和 identity union 非法组合失败 |
+| `vault_refs_are_allowlisted_sorted_and_strict` | vault env allowlist、排序、重复、保留变量和 URI 语法校验 |
+| `production_secret_validation_rejects_literals_but_dev_remains_compatible` | production secret 负向规则与 dev 兼容性 |
+| `load_project_config_rejects_production_plaintext_secret` | 项目级 production 环境拒绝明文敏感 Header |
 
 ### 详细开发实施步骤
 
@@ -179,7 +187,7 @@ project root
 | `src/lib.rs` | `ProjectConfig` 聚合、加载入口、跨文件校验 | 已完成 | V0.3 输出 CLI 诊断模型。 |
 | `src/eva_yaml.rs` | `config/eva.yaml`、`ConfigRoots` 和 `service_manager` typed config | 已完成 V1.14.5 | 后续随平台 adapter 增加更严格的 service-manager runtime binary 校验。 |
 | `src/manifest/agent.rs` | Agent manifest 解析和基础校验 | 已完成 | 扩展 permission 字段解释。 |
-| `src/manifest/adapter.rs` | Adapter manifest 解析、基础校验、hardware typed config | 已完成 V1.10.1 | 后续随真实 driver lifecycle 增加 OS 权限配置。 |
+| `src/manifest/adapter.rs` | Adapter manifest 解析、provider config、production secret 校验、hardware typed config | W3-L01 已完成 | 后续由 W3-L06/W3-L08/W3-L09 执行 restart、身份切换和 vault session。 |
 | `src/manifest/capability.rs` | Capability manifest 解析和 provider 引用校验 | 已完成 | 接 CapabilityRegistry descriptor。 |
 | `src/policy.rs` | policy YAML document 加载 | 已完成 | 与 `eva-policy` 协作解释 policy domain。 |
 | `src/routes.rs` | routes YAML 加载和 delivery 校验 | 已完成 | 接 `eva-scheduler` route registry。 |
@@ -212,7 +220,7 @@ project root
 
 ### Current Status
 
-The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`. Since V0.3, `eva-cli` exposes this path through `eva config validate`; the V0.5 task diagnostics basic loop reuses the same `ProjectConfig` as its composition input. V1.14.5 also parses explicit top-level `service_manager` settings into typed config for the service-manager abstraction without claiming platform handoff support. V1.16.4 parses `observability.retention` into typed JSONL/durable-audit/database policy config for observability sink retention and rotation.
+The first milestone is complete. `eva-config` now loads the sample project configuration, validates stable manifest fields through `eva-core`, and assembles a typed `ProjectConfig`. Since V0.3, `eva-cli` exposes this path through `eva config validate`; the V0.5 task diagnostics basic loop reuses the same `ProjectConfig` as its composition input. V1.14.5 also parses explicit top-level `service_manager` settings into typed config for the service-manager abstraction without claiming platform handoff support. V1.16.4 parses `observability.retention` into typed JSONL/durable-audit/database policy config for observability sink retention and rotation. W3-L01 now normalizes optional provider restart, run-as, and vault references into a canonical configuration and rejects plaintext sensitive fields for production projects; legacy manifests retain their defaults.
 
 | Area | Status | Notes |
 | --- | --- | --- |
@@ -220,7 +228,7 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | Main config loading | Done | `load_eva_config` parses stable `runtime` and `config` fields |
 | Config roots | Done | `ConfigRoots::resolve_against` resolves relative roots from the project root |
 | Agent manifest | Done | Validates `AgentId`, parent/child ids, scripts, subscriptions, and selected permission fields |
-| Adapter manifest | Done | Validates `AdapterId`, supported transport, and capability names |
+| Adapter manifest | Done for the W3-L01 configuration contract | Validates identity/transport/capabilities and normalizes optional restart/run-as/vault references; real enforcement remains in later runtime tasks |
 | Capability manifest | Done | Validates `CapabilityId`, kind, runtime capability name, and provider id syntax |
 | Policy documents | Done | Loads extensible policy YAML documents while domain interpretation stays outside `eva-config` |
 | Routes config | Done | Loads topic route tables and validates topic patterns, delivery mode, and target Agent IDs |
@@ -246,6 +254,7 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | `ObservabilityRetentionConfig` | `observability.retention` YAML | typed struct | Configure JSONL/durable-audit/database retention policy boundaries |
 | `load_agent_manifest` | `impl AsRef<Path>` | `Result<AgentManifest, EvaError>` | Load one Agent manifest |
 | `load_adapter_manifest` | `impl AsRef<Path>` | `Result<AdapterManifest, EvaError>` | Load one Adapter manifest |
+| `AdapterManifest::validate_for_environment` | `&self`, environment | `Result<(), EvaError>` | Reject production plaintext secrets and unallowlisted credential references |
 | `load_capability_manifest` | `impl AsRef<Path>` | `Result<CapabilityManifest, EvaError>` | Load one Capability manifest |
 | `load_policy_document` | `impl AsRef<Path>` | `Result<PolicyDocument, EvaError>` | Load one policy YAML document |
 | `load_routes` | `impl AsRef<Path>` | `Result<RouteConfig, EvaError>` | Load the topic route table |
@@ -258,7 +267,7 @@ The first milestone is complete. `eva-config` now loads the sample project confi
 | Command | Result |
 | --- | --- |
 | `cargo fmt -p eva-config --check` | Passed |
-| `cargo test -p eva-config` | Passed, 42 tests |
+| `cargo test -p eva-config` | Passed, 54 tests |
 | `cargo check -p eva-config` | Passed |
 | `cargo check --workspace` | Passed |
 | `cargo test --workspace` | Passed |

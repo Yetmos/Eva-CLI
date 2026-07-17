@@ -17,6 +17,53 @@
     },
     "capabilities": { "$comment": "Capabilities exposed through this adapter. / 通过此 Adapter 暴露的能力。", "type": "array", "items": { "type": "string" } },
     "permissions": { "$comment": "Permission boundary for adapter execution. / Adapter 执行权限边界。", "type": "object" },
+    "supervision": {
+      "$comment": "Provider restart and run-as declaration; enforcement is owned by later W3 runtime stages. / Provider 重启与运行身份声明；实际执行由后续 W3 runtime 阶段负责。",
+      "type": "object",
+      "properties": {
+        "restart": {
+          "type": "object",
+          "required": ["mode"],
+          "properties": {
+            "mode": { "type": "string", "enum": ["none", "on_failure", "always"] },
+            "max_attempts": { "type": "integer" },
+            "backoff_ms": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        "run_as": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["current", "unix", "windows"] },
+            "uid": { "type": "integer" },
+            "gid": { "type": "integer" },
+            "account": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "credentials": {
+      "$comment": "Vault references mapped to explicitly allowed provider environment targets. / 映射到显式允许环境变量目标的 Vault 引用。",
+      "type": "object",
+      "properties": {
+        "vault": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["env", "ref"],
+            "properties": {
+              "env": { "type": "string" },
+              "ref": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "mcp": {
       "$comment": "MCP server launch or HTTP endpoint settings. / MCP server 启动或 HTTP endpoint 设置。",
       "type": "object",

@@ -1664,6 +1664,7 @@ mod tests {
             endpoint: None,
             method: None,
             credential_env: Vec::new(),
+            provider: eva_config::ProviderConfig::default(),
             timeout_ms: Some(5_000),
             max_concurrency: None,
             output_limit_bytes: Some(4096),
