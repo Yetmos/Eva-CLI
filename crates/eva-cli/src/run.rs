@@ -3094,6 +3094,63 @@ mod tests {
     }
 
     #[test]
+    fn release_package_metadata_generates_controlled_files() {
+        let root = test_temp_dir("release-package-metadata");
+        let manifest = root.join("package.metadata");
+        let output = root.join("output");
+        let targets = [
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu",
+        ];
+        let metadata = eva_release::CanonicalPackageMetadata::new(
+            "1.11.5-alpha",
+            "0123456789abcdef0123456789abcdef01234567",
+            targets
+                .into_iter()
+                .map(|target| {
+                    let suffix = if target.contains("windows") {
+                        "zip"
+                    } else {
+                        "tar.gz"
+                    };
+                    let name = format!("eva-cli-1.11.5-alpha-{target}.{suffix}");
+                    eva_release::PackageArtifactMetadata::new(
+                        target,
+                        name.clone(),
+                        suffix,
+                        format!("https://example.test/{name}"),
+                        "a".repeat(64),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&manifest, metadata.to_manifest()).unwrap();
+        let (exit, stdout, stderr) = run_cli(&[
+            "release",
+            "package-metadata",
+            "generate",
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "--output-root",
+            output.to_str().unwrap(),
+            "--installed-size-kib",
+            "2048",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(exit, EXIT_OK, "{stderr}");
+        assert!(stdout.contains("release.package-metadata.generate"));
+        assert!(output.join("homebrew/eva-cli.rb").is_file());
+        assert!(output.join("winget/Yetmos.EvaCLI.installer.yaml").is_file());
+        assert!(output.join("apt/Packages").is_file());
+        assert!(!stdout.contains(&root.display().to_string()));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     /// 验证 production 缺统一 manifest 时走 release.check JSON 错误信封并非零退出。
     fn production_release_check_requires_evidence_manifest() {
         let (exit_code, stdout, stderr) = run_cli(&[

@@ -9,8 +9,9 @@ use super::{
 use eva_core::{ErrorKind, EvaError};
 use eva_observability::TraceFields;
 use eva_release::{
-    verify_evidence_bundle, CompatibilityPolicy, EvidenceEnvelope, EvidenceKind, EvidenceSubject,
-    MigrationGuide, MigrationStep, PerformanceBaselineReport, PerformanceBudget, PlatformReadiness,
+    verify_evidence_bundle, write_package_manager_metadata, CanonicalPackageMetadata,
+    CompatibilityPolicy, EvidenceEnvelope, EvidenceKind, EvidenceSubject, MigrationGuide,
+    MigrationStep, PerformanceBaselineReport, PerformanceBudget, PlatformReadiness,
     ProductionEvidenceBlocker, ProductionEvidencePolicy, ReleaseArtifactEvidence,
     ReleaseArtifactEvidenceCandidate, ReleaseBenchmarkEvidence, ReleaseDistributionEvidence,
     ReleaseDocumentEvidenceCandidate, ReleaseEvidenceManifest, ReleaseEvidenceScope,
@@ -52,6 +53,7 @@ pub(super) enum ReleaseCommand {
         /// 已解析的起始版本、目标版本与公共选项。
         ReleaseMigrationOptions,
     ),
+    PackageMetadata(ReleasePackageMetadataOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +107,13 @@ pub(super) struct ReleaseMigrationOptions {
     from_version: String,
     /// 目标版本文本。
     to_version: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ReleasePackageMetadataOptions {
+    common: CommonOptions,
+    manifest: PathBuf,
+    output_root: PathBuf,
+    installed_size_kib: u64,
 }
 
 /// 不暴露本地路径或 subject 内容的 evidence 输入摘要。
@@ -303,11 +312,61 @@ pub(super) fn parse_release_command(args: &[String]) -> Result<ReleaseCommand, E
         "migration" => Ok(ReleaseCommand::Migration(parse_release_migration_options(
             rest,
         )?)),
+        "package-metadata" => Ok(ReleaseCommand::PackageMetadata(
+            parse_release_package_metadata_options(rest)?,
+        )),
         value => {
             Err(EvaError::unsupported("unknown release subcommand")
                 .with_context("subcommand", value))
         }
     }
+}
+fn parse_release_package_metadata_options(
+    args: &[String],
+) -> Result<ReleasePackageMetadataOptions, EvaError> {
+    let mut passthrough = Vec::new();
+    let mut manifest = None;
+    let mut output_root = None;
+    let mut installed_size_kib = 1u64;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "generate" => {}
+            "--manifest" => {
+                index += 1;
+                manifest = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "package metadata manifest",
+                )?));
+            }
+            "--output-root" => {
+                index += 1;
+                output_root = Some(PathBuf::from(required_option(
+                    args,
+                    index,
+                    "package metadata output root",
+                )?));
+            }
+            "--installed-size-kib" => {
+                index += 1;
+                installed_size_kib = required_option(args, index, "installed size")?
+                    .parse()
+                    .map_err(|_| EvaError::invalid_argument("installed size must be an integer"))?;
+            }
+            _ => passthrough.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    Ok(ReleasePackageMetadataOptions {
+        common: parse_common_options(&passthrough)?,
+        manifest: manifest
+            .ok_or_else(|| EvaError::invalid_argument("package metadata manifest is required"))?,
+        output_root: output_root.ok_or_else(|| {
+            EvaError::invalid_argument("package metadata output root is required")
+        })?,
+        installed_size_kib,
+    })
 }
 
 /// 解析发布目标和四类外部证据路径；空目标在读取证据前即失败。
@@ -547,6 +606,57 @@ where
 {
     let service = ReleaseHardeningService::v15();
     match command {
+        ReleaseCommand::PackageMetadata(options) => {
+            let trace = trace_for("cli.release.package_metadata");
+            let result = (|| {
+                let bytes = fs::read(&options.manifest).map_err(|e| {
+                    EvaError::not_found("package metadata manifest cannot be read")
+                        .with_context("io_error", e.to_string())
+                })?;
+                if bytes.len() > 1024 * 1024 {
+                    return Err(EvaError::invalid_argument(
+                        "package metadata manifest is too large",
+                    ));
+                }
+                let text = std::str::from_utf8(&bytes).map_err(|_| {
+                    EvaError::invalid_argument("package metadata manifest must be UTF-8")
+                })?;
+                let metadata = CanonicalPackageMetadata::parse_manifest(text)?;
+                write_package_manager_metadata(
+                    &metadata,
+                    &options.output_root,
+                    options.installed_size_kib,
+                )
+            })();
+            match result {
+                Ok(report) => {
+                    let files = report
+                        .files
+                        .iter()
+                        .filter_map(|p| p.strip_prefix(&options.output_root).ok())
+                        .map(|p| json_string(&p.to_string_lossy().replace('\\', "/")));
+                    writeln!(
+                        stdout,
+                        "{}",
+                        success_envelope(
+                            "release.package-metadata.generate",
+                            EXIT_OK,
+                            &format!("{{\"files\":{}}}", json_array(files)),
+                            &trace
+                        )
+                    )
+                    .map_err(write_error_kind)?;
+                    Ok(EXIT_OK)
+                }
+                Err(error) => write_command_error(
+                    stderr,
+                    options.common.output,
+                    "release.package-metadata.generate",
+                    &error,
+                    &trace,
+                ),
+            }
+        }
         ReleaseCommand::Check(options) => {
             let trace = trace_for("cli.release.check");
             let report = (|| {
