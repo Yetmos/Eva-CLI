@@ -13,7 +13,7 @@ use eva_scheduler::{decide_retry_backoff, RetryBackoffPolicy};
 use eva_storage::{
     EffectLedgerState, EffectOperationIdentity, EventLogStatus, FileSystemEffectLedger,
     FileSystemTaskStateStore, ProviderProcessSnapshot, ProviderProcessTable,
-    TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore,
+    TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore, WriterGeneration,
 };
 
 /// 说明本模块承担的架构职责。
@@ -801,6 +801,18 @@ fn recover_provider_processes(
             continue;
         }
 
+        if let Some(current_generation) = process_table.writer_generation() {
+            if current_generation != WriterGeneration::ZERO
+                && process.owner_generation == current_generation
+            {
+                return Err(EvaError::conflict(
+                    "recovery cannot reclaim a provider process owned by the current writer",
+                )
+                .with_context("session_id", &process.session_id)
+                .with_context("owner_generation", process.owner_generation.0.to_string()));
+            }
+        }
+
         let previous_health = process.health.clone();
         let task_id = process.request_id.as_str().to_owned();
         let task_status = recover_provider_task(report, &process);
@@ -822,17 +834,17 @@ fn recover_provider_processes(
         }
         process
             .mark_interrupted_after_restart("daemon restart interrupted active provider session");
-        process_table.upsert(process.clone())?;
+        let committed = process_table.compare_and_set(process)?;
 
         report
             .recovered_provider_processes
             .push(RecoveredProviderProcess {
-                session_id: process.session_id,
-                provider_process_id: process.provider_process_id,
-                request_id: process.request_id.as_str().to_owned(),
-                adapter_id: process.adapter_id.as_str().to_owned(),
+                session_id: committed.session_id,
+                provider_process_id: committed.provider_process_id,
+                request_id: committed.request_id.as_str().to_owned(),
+                adapter_id: committed.adapter_id.as_str().to_owned(),
                 previous_health,
-                health: process.health,
+                health: committed.health,
                 task_id,
                 task_status,
                 retry_scheduled,
@@ -1201,8 +1213,11 @@ mod tests {
                 )
                 .unwrap();
 
-            let mut processes =
-                FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+            let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+                backend.layout(),
+                store.runtime_writer().unwrap(),
+            )
+            .unwrap();
             processes
                 .upsert(provider_process(
                     "session-effect-committed",
@@ -1221,7 +1236,11 @@ mod tests {
                 .unwrap();
         let mut ledger =
             FileSystemEffectLedger::open_with_writer(backend.layout(), writer.clone()).unwrap();
-        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            store.runtime_writer().unwrap(),
+        )
+        .unwrap();
         let effect_calls = Arc::new(AtomicUsize::new(0));
         let registry = Arc::new(recovery_handler_registry(Arc::clone(&effect_calls)));
 
@@ -1323,7 +1342,11 @@ mod tests {
                 2,
             ),
         );
-        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            store.runtime_writer().unwrap(),
+        )
+        .unwrap();
         let registry = TaskHandlerRegistry::with_runtime_defaults().unwrap();
 
         let error = RuntimeRecoveryCoordinator
@@ -1420,7 +1443,11 @@ mod tests {
         let mut ledger =
             FileSystemEffectLedger::open_with_writer(backend.layout(), writer).unwrap();
         let registry = recovery_handler_registry(Arc::new(AtomicUsize::new(0)));
-        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            store.runtime_writer().unwrap(),
+        )
+        .unwrap();
 
         let error = RuntimeRecoveryCoordinator
             .recover_task_store_with_effects_and_provider_processes(
@@ -1526,7 +1553,11 @@ mod tests {
         let mut ledger =
             FileSystemEffectLedger::open_with_writer(backend.layout(), writer).unwrap();
         let registry = TaskHandlerRegistry::with_runtime_defaults().unwrap();
-        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            store.runtime_writer().unwrap(),
+        )
+        .unwrap();
 
         RuntimeRecoveryCoordinator
             .recover_task_store_with_effects_and_provider_processes(
@@ -1937,21 +1968,38 @@ mod tests {
     #[test]
     fn recovery_interrupts_active_provider_process_and_preserves_task() {
         let root = test_root("provider-interrupted");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+                backend.layout(),
+                store.runtime_writer().unwrap(),
+            )
+            .unwrap();
+            let mut task = snapshot("req-provider-recovery-interrupted", "running");
+            task.retry_max_attempts = 3;
+            store.write(&task).unwrap();
+            processes
+                .upsert(provider_process(
+                    "session-provider-recovery-interrupted",
+                    "req-provider-recovery-interrupted",
+                    "none",
+                    None,
+                ))
+                .unwrap();
+        }
+
+        // Recovery must observe a record owned by the previous runtime writer.
         let backend =
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
         let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
-        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
-        let mut task = snapshot("req-provider-recovery-interrupted", "running");
-        task.retry_max_attempts = 3;
-        store.write(&task).unwrap();
-        processes
-            .upsert(provider_process(
-                "session-provider-recovery-interrupted",
-                "req-provider-recovery-interrupted",
-                "none",
-                None,
-            ))
-            .unwrap();
+        let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            store.runtime_writer().unwrap(),
+        )
+        .unwrap();
 
         let report = RuntimeRecoveryCoordinator
             .recover_task_store_with_provider_processes(&mut store, &mut processes)
@@ -1989,22 +2037,38 @@ mod tests {
     #[test]
     fn recovery_schedules_provider_backoff_only_when_restart_policy_allows_it() {
         let root = test_root("provider-backoff");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+                backend.layout(),
+                store.runtime_writer().unwrap(),
+            )
+            .unwrap();
+            let mut task = snapshot("req-provider-recovery-backoff", "running");
+            task.attempts = 1;
+            task.retry_max_attempts = 3;
+            store.write(&task).unwrap();
+            processes
+                .upsert(provider_process(
+                    "session-provider-recovery-backoff",
+                    "req-provider-recovery-backoff",
+                    "scheduler_backoff",
+                    Some(2500),
+                ))
+                .unwrap();
+        }
+
         let backend =
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
         let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
-        let mut processes = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
-        let mut task = snapshot("req-provider-recovery-backoff", "running");
-        task.attempts = 1;
-        task.retry_max_attempts = 3;
-        store.write(&task).unwrap();
-        processes
-            .upsert(provider_process(
-                "session-provider-recovery-backoff",
-                "req-provider-recovery-backoff",
-                "scheduler_backoff",
-                Some(2500),
-            ))
-            .unwrap();
+        let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            store.runtime_writer().unwrap(),
+        )
+        .unwrap();
 
         let report = RuntimeRecoveryCoordinator
             .recover_task_store_with_provider_processes(&mut store, &mut processes)

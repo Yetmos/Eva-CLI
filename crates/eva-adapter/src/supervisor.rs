@@ -370,6 +370,13 @@ impl InMemoryProviderSupervisor {
         &self,
         adapter_id: &AdapterId,
     ) -> Result<Vec<ProviderProcessSnapshot>, EvaError> {
+        if let Some(table) = &self.durable_table {
+            return Ok(table
+                .list()?
+                .into_iter()
+                .filter(|snapshot| snapshot.active && &snapshot.adapter_id == adapter_id)
+                .collect());
+        }
         self.table.active_for_adapter(adapter_id)
     }
 }
@@ -418,27 +425,39 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         slot: &ProviderExecutionSlot,
         outcome: ProviderExecutionOutcome,
     ) -> Result<ProviderProcessSnapshot, EvaError> {
-        let mut snapshot = self.table.read(&slot.session_id)?;
+        let mut snapshot = if let Some(table) = &self.durable_table {
+            table.read(&slot.session_id)?
+        } else {
+            self.table.read(&slot.session_id)?
+        };
         snapshot.release(outcome.health, outcome.last_error)?;
         self.record_circuit_outcome(slot, &mut snapshot);
-        self.upsert_process(snapshot.clone())?;
-        Ok(snapshot)
+        self.upsert_process(snapshot)
     }
 
     /// 执行 `processes` 对应的处理逻辑。
     fn processes(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError> {
+        if let Some(table) = &self.durable_table {
+            return table.list();
+        }
         self.table.list()
     }
 }
 
 impl InMemoryProviderSupervisor {
     /// 执行 `upsert_process` 对应的处理逻辑。
-    fn upsert_process(&mut self, snapshot: ProviderProcessSnapshot) -> Result<(), EvaError> {
-        self.table.upsert(snapshot.clone())?;
+    fn upsert_process(
+        &mut self,
+        snapshot: ProviderProcessSnapshot,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
         if let Some(table) = &mut self.durable_table {
-            table.upsert(snapshot)?;
+            // The durable table is authoritative whenever configured; all
+            // reads and completion paths use it, so no second mirror CAS can
+            // create a partial-commit failure after this write succeeds.
+            table.compare_and_set(snapshot)
+        } else {
+            self.table.compare_and_set(snapshot)
         }
-        Ok(())
     }
 
     /// 对当前进程表中的活动快照计数，达到上限时返回可重试的稳定准入错误。

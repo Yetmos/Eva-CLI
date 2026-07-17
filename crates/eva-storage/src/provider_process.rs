@@ -1,8 +1,13 @@
 //! Provider 进程/会话快照、文件表和 daemon 重启恢复契约。
 //! Provider process/session table contracts.
 
+use crate::durable_backend::{
+    acquire_record_write_lock, atomic_write, DurableWriterGuard, WriterGeneration,
+};
+use crate::state_store::StateVersion;
 use crate::DurableBackendLayout;
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +25,14 @@ pub struct ProviderProcessSnapshot {
     pub session_id: String,
     /// 实际 provider 进程/槽位 ID。
     pub provider_process_id: String,
+    /// OS 分配的真实进程 ID；中央 process backend 接线前可以为空。
+    pub pid: Option<u32>,
+    /// 与 PID 配对的进程 incarnation/start token，防止 PID 复用误认。
+    pub process_start_token: Option<String>,
+    /// Unix process group ID；与 Windows job_id 互斥。
+    pub process_group_id: Option<u32>,
+    /// Windows Job Object stable identity；与 Unix process_group_id 互斥。
+    pub job_id: Option<String>,
     /// 触发 provider 执行的请求 ID。
     pub request_id: RequestId,
     /// Provider 所属 Adapter ID。
@@ -38,6 +51,12 @@ pub struct ProviderProcessSnapshot {
     pub restart_policy: String,
     /// 可选重试退避毫秒数。
     pub retry_backoff_ms: Option<u64>,
+    /// Provider 自动重启 attempt，首次启动从 1 开始；未接中央 spawn 时为 0。
+    pub attempt: u32,
+    /// Provider record 的单调 CAS 版本；零只表示尚未持久化的候选或 legacy v1。
+    pub record_version: StateVersion,
+    /// 最后提交该记录的 durable writer generation；内存表使用零。
+    pub owner_generation: WriterGeneration,
     /// 会话是否仍被视为活动；重启扫描会关闭遗留活动会话。
     pub active: bool,
     /// 最近一次 provider 错误；重启中断不会覆盖已有根因。
@@ -53,8 +72,21 @@ pub struct ProviderProcessSnapshot {
 /// V1.13 supervisor 所需的 provider 会话表行为。
 /// Provider process/session table behavior required by V1.13 supervision.
 pub trait ProviderProcessTable {
-    /// 按 session ID 插入或覆盖快照；不提供跨写者 CAS。
-    fn upsert(&mut self, snapshot: ProviderProcessSnapshot) -> Result<(), EvaError>;
+    /// 按 session ID 以 candidate.record_version 执行 fenced compare-and-set。
+    /// 成功返回带新 record_version/owner_generation 的权威记录。
+    fn compare_and_set(
+        &mut self,
+        candidate: ProviderProcessSnapshot,
+    ) -> Result<ProviderProcessSnapshot, EvaError>;
+    /// Returns the writer generation fencing mutations, when this table is
+    /// backed by a runtime writer. In-memory tables have no owner fence.
+    fn writer_generation(&self) -> Option<WriterGeneration> {
+        None
+    }
+    /// 兼容旧调用方的 CAS 别名；不会绕过版本检查或 writer ownership。
+    fn upsert(&mut self, snapshot: ProviderProcessSnapshot) -> Result<(), EvaError> {
+        self.compare_and_set(snapshot).map(|_| ())
+    }
     /// 精确读取一个 session；缺失返回 NotFound。
     fn read(&self, session_id: &str) -> Result<ProviderProcessSnapshot, EvaError>;
     /// 返回所有可解析快照；文件实现遇到任一损坏文件会整体失败。
@@ -71,11 +103,30 @@ pub struct InMemoryProviderProcessTable {
 
 /// Daemon 重启恢复使用的文件系统进程表。
 /// Filesystem-backed process table used by restart recovery.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct FileSystemProviderProcessTable {
     /// `.provider` 单快照文件目录。
     process_dir: PathBuf,
+    /// Runtime writer ownership required for all mutations.
+    writer: Option<DurableWriterGuard>,
 }
+
+impl Clone for FileSystemProviderProcessTable {
+    fn clone(&self) -> Self {
+        Self {
+            process_dir: self.process_dir.clone(),
+            writer: self.writer.clone(),
+        }
+    }
+}
+
+impl PartialEq for FileSystemProviderProcessTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.process_dir == other.process_dir
+    }
+}
+
+impl Eq for FileSystemProviderProcessTable {}
 
 impl ProviderProcessSnapshot {
     #[allow(clippy::too_many_arguments)]
@@ -103,6 +154,10 @@ impl ProviderProcessSnapshot {
             ],
             session_id,
             provider_process_id,
+            pid: None,
+            process_start_token: None,
+            process_group_id: None,
+            job_id: None,
             request_id,
             adapter_id,
             capability,
@@ -112,11 +167,108 @@ impl ProviderProcessSnapshot {
             health: "running".to_owned(),
             restart_policy: restart_policy.into(),
             retry_backoff_ms: None,
+            attempt: 0,
+            record_version: StateVersion::ZERO,
+            owner_generation: WriterGeneration::ZERO,
             active: true,
             last_error: None,
             started_at_ms: now,
             updated_at_ms: now,
         }
+    }
+
+    /// Attaches a real OS process identity supplied by a later process backend.
+    pub fn set_process_identity(
+        &mut self,
+        pid: u32,
+        process_start_token: impl Into<String>,
+        process_group_id: Option<u32>,
+        job_id: Option<String>,
+        attempt: u32,
+    ) -> Result<(), EvaError> {
+        let mut candidate = self.clone();
+        candidate.pid = Some(pid);
+        candidate.process_start_token = Some(process_start_token.into());
+        candidate.process_group_id = process_group_id;
+        candidate.job_id = job_id;
+        candidate.attempt = attempt;
+        candidate.validate_identity()?;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Returns whether this snapshot carries a real OS process identity.
+    pub fn has_process_identity(&self) -> bool {
+        self.pid.is_some()
+    }
+
+    fn validate_identity(&self) -> Result<(), EvaError> {
+        if let Some(pid) = self.pid {
+            if pid == 0 || self.attempt == 0 {
+                return Err(EvaError::invalid_argument(
+                    "provider process identity requires positive pid and attempt",
+                ));
+            }
+            let token = self.process_start_token.as_deref().ok_or_else(|| {
+                EvaError::invalid_argument("provider process identity requires start token")
+            })?;
+            if token.trim().is_empty() || token.len() > 256 || token.chars().any(char::is_control) {
+                return Err(EvaError::invalid_argument(
+                    "provider process start token is empty, oversized, or contains controls",
+                ));
+            }
+            if self.process_group_id.is_none() && self.job_id.is_none() {
+                return Err(EvaError::invalid_argument(
+                    "provider process identity requires a process group or Windows job id",
+                ));
+            }
+        } else if self.process_start_token.is_some()
+            || self.process_group_id.is_some()
+            || self.job_id.is_some()
+            || self.attempt != 0
+        {
+            return Err(EvaError::invalid_argument(
+                "provider process identity fields require a pid",
+            ));
+        }
+        if self.process_group_id.is_some() && self.job_id.is_some() {
+            return Err(EvaError::invalid_argument(
+                "provider process group and Windows job identities are mutually exclusive",
+            ));
+        }
+        if self.process_group_id.is_some_and(|group| group == 0) {
+            return Err(EvaError::invalid_argument(
+                "provider process group id must be positive",
+            ));
+        }
+        if self.job_id.as_deref().is_some_and(|job| {
+            job.trim().is_empty() || job.len() > 256 || job.chars().any(char::is_control)
+        }) {
+            return Err(EvaError::invalid_argument(
+                "provider Windows job id is empty, oversized, or contains controls",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_record(&self, persisted: bool) -> Result<(), EvaError> {
+        if self.session_id.trim().is_empty() || self.provider_process_id.trim().is_empty() {
+            return Err(EvaError::invalid_argument(
+                "provider process identity fields cannot be empty",
+            ));
+        }
+        if self.transport.trim().is_empty() || self.health.trim().is_empty() {
+            return Err(EvaError::invalid_argument(
+                "provider process transport and health cannot be empty",
+            ));
+        }
+        self.validate_identity()?;
+        if persisted && self.record_version == StateVersion::ZERO {
+            return Err(EvaError::conflict(
+                "persisted provider process record must have a positive version",
+            ));
+        }
+        Ok(())
     }
 
     /// 释放 provider 槽位并转换为非活动终态。
@@ -171,14 +323,38 @@ impl ProviderProcessSnapshot {
         self.audit.push("provider.health:interrupted".to_owned());
     }
 
-    /// 序列化为 version=1 逐行格式；可选值为空串，重复 audit 行保留顺序。
+    /// 序列化为 version=2 逐行格式；可选值为空串，重复 audit 行保留顺序。
     pub fn to_storage(&self) -> String {
         let mut lines = vec![
-            "version=1".to_owned(),
+            "version=2".to_owned(),
+            format!("record_version={}", self.record_version.0),
+            format!("owner_generation={}", self.owner_generation.0),
+            format!("attempt={}", self.attempt),
             format!("session_id={}", encode_field(&self.session_id)),
             format!(
                 "provider_process_id={}",
                 encode_field(&self.provider_process_id)
+            ),
+            format!(
+                "pid={}",
+                self.pid.map(|value| value.to_string()).unwrap_or_default()
+            ),
+            format!(
+                "process_start_token={}",
+                self.process_start_token
+                    .as_deref()
+                    .map(encode_field)
+                    .unwrap_or_default()
+            ),
+            format!(
+                "process_group_id={}",
+                self.process_group_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            ),
+            format!(
+                "job_id={}",
+                self.job_id.as_deref().map(encode_field).unwrap_or_default()
             ),
             format!("request_id={}", encode_field(self.request_id.as_str())),
             format!("adapter_id={}", encode_field(self.adapter_id.as_str())),
@@ -214,12 +390,21 @@ impl ProviderProcessSnapshot {
         lines.join("\n")
     }
 
-    /// 严格解析 version=1 快照并重新验证 RequestId、AdapterId 和 CapabilityName。
-    /// 未知字段/版本、数值/布尔损坏或任一核心字段缺失均返回 InvalidArgument；恢复不得跳过
-    /// 不完整进程状态后继续当作健康会话。
+    /// 严格解析 version=1/2 快照并重新验证 RequestId、AdapterId 和 CapabilityName。
+    /// v1 缺少的 CAS/OS identity 字段按零/None 兼容读取；首次 v2 CAS 会升级它。
     pub fn from_storage(data: &str) -> Result<Self, EvaError> {
+        use std::collections::BTreeSet;
+
+        let mut version = None;
+        let mut record_version = None;
+        let mut owner_generation = None;
+        let mut attempt = None;
         let mut session_id = None;
         let mut provider_process_id = None;
+        let mut pid = None;
+        let mut process_start_token = None;
+        let mut process_group_id = None;
+        let mut job_id = None;
         let mut request_id = None;
         let mut adapter_id = None;
         let mut capability = None;
@@ -234,6 +419,7 @@ impl ProviderProcessSnapshot {
         let mut started_at_ms = None;
         let mut updated_at_ms = None;
         let mut audit = Vec::new();
+        let mut seen_scalars = BTreeSet::new();
 
         for line in data.lines().filter(|line| !line.trim().is_empty()) {
             let Some((key, value)) = line.split_once('=') else {
@@ -241,17 +427,42 @@ impl ProviderProcessSnapshot {
                     "provider process snapshot is invalid",
                 ));
             };
+            if key != "audit" && !seen_scalars.insert(key.to_owned()) {
+                return Err(EvaError::invalid_argument(
+                    "provider process snapshot contains a duplicate scalar field",
+                )
+                .with_context("field", key));
+            }
             match key {
                 "version" => {
-                    if value != "1" {
-                        return Err(EvaError::invalid_argument(
-                            "provider process version mismatch",
-                        )
-                        .with_context("version", value));
-                    }
+                    version = Some(value.parse::<u32>().map_err(|_| {
+                        EvaError::invalid_argument("provider process version is invalid")
+                    })?);
+                }
+                "record_version" => {
+                    record_version = Some(value.parse::<u64>().map_err(|_| {
+                        EvaError::invalid_argument("provider process record_version is invalid")
+                    })?);
+                }
+                "owner_generation" => {
+                    owner_generation = Some(value.parse::<u64>().map_err(|_| {
+                        EvaError::invalid_argument("provider process owner_generation is invalid")
+                    })?);
+                }
+                "attempt" => {
+                    attempt = Some(value.parse::<u32>().map_err(|_| {
+                        EvaError::invalid_argument("provider process attempt is invalid")
+                    })?);
                 }
                 "session_id" => session_id = Some(decode_field(value)),
                 "provider_process_id" => provider_process_id = Some(decode_field(value)),
+                "pid" => pid = parse_optional_u32(value, "provider process pid is invalid")?,
+                "process_start_token" => process_start_token = decode_optional_field(value),
+                "process_group_id" => {
+                    process_group_id =
+                        parse_optional_u32(value, "provider process group id is invalid")?
+                }
+                "job_id" => job_id = decode_optional_field(value),
                 "request_id" => request_id = Some(RequestId::parse(&decode_field(value))?),
                 "adapter_id" => adapter_id = Some(AdapterId::parse(&decode_field(value))?),
                 "capability" => capability = Some(CapabilityName::parse(&decode_field(value))?),
@@ -286,12 +497,46 @@ impl ProviderProcessSnapshot {
             }
         }
 
-        Ok(Self {
+        let version = version.ok_or_else(|| {
+            EvaError::invalid_argument("provider process snapshot is missing version")
+        })?;
+        if !matches!(version, 1 | 2) {
+            return Err(
+                EvaError::invalid_argument("provider process version mismatch")
+                    .with_context("version", version.to_string()),
+            );
+        }
+        if version == 2
+            && (!seen_scalars.contains("record_version")
+                || !seen_scalars.contains("owner_generation")
+                || !seen_scalars.contains("attempt")
+                || !seen_scalars.contains("pid")
+                || !seen_scalars.contains("process_start_token")
+                || !seen_scalars.contains("process_group_id")
+                || !seen_scalars.contains("job_id"))
+        {
+            return Err(EvaError::invalid_argument(
+                "provider process v2 snapshot is missing identity or CAS fields",
+            ));
+        }
+        if version == 2 && owner_generation.unwrap_or(0) == 0 {
+            return Err(EvaError::conflict(
+                "provider process v2 snapshot requires a positive owner generation",
+            ));
+        }
+        let snapshot = Self {
+            record_version: StateVersion(record_version.unwrap_or(0)),
+            owner_generation: WriterGeneration(owner_generation.unwrap_or(0)),
+            attempt: attempt.unwrap_or(0),
             session_id: session_id
                 .ok_or_else(|| EvaError::invalid_argument("provider process missing session_id"))?,
             provider_process_id: provider_process_id.ok_or_else(|| {
                 EvaError::invalid_argument("provider process missing provider_process_id")
             })?,
+            pid,
+            process_start_token,
+            process_group_id,
+            job_id,
             request_id: request_id
                 .ok_or_else(|| EvaError::invalid_argument("provider process missing request_id"))?,
             adapter_id: adapter_id
@@ -322,7 +567,9 @@ impl ProviderProcessSnapshot {
                 EvaError::invalid_argument("provider process missing updated_at_ms")
             })?,
             audit,
-        })
+        };
+        snapshot.validate_record(version == 2)?;
+        Ok(snapshot)
     }
 }
 
@@ -350,14 +597,35 @@ impl FileSystemProviderProcessTable {
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             process_dir: root.as_ref().join(".eva").join("provider-processes"),
+            writer: None,
         }
     }
 
-    /// 使用 durable backend state 子树创建表句柄。
+    /// 使用 durable backend state 子树创建只读表句柄；所有 mutation 都会 fail closed。
     pub fn from_durable_layout(layout: &DurableBackendLayout) -> Self {
         Self {
             process_dir: layout.state_dir.join("provider-processes"),
+            writer: None,
         }
+    }
+
+    /// Creates a writable table fenced by the supplied durable runtime writer.
+    pub fn from_runtime_writer(
+        layout: &DurableBackendLayout,
+        writer: DurableWriterGuard,
+    ) -> Result<Self, EvaError> {
+        if writer.root() != layout.root {
+            return Err(EvaError::conflict(
+                "provider process writer belongs to a different durable backend",
+            )
+            .with_context("layout_root", layout.root.display().to_string())
+            .with_context("writer_root", writer.root().display().to_string()));
+        }
+        writer.verify_current()?;
+        Ok(Self {
+            process_dir: layout.state_dir.join("provider-processes"),
+            writer: Some(writer),
+        })
     }
 
     /// 返回 provider 快照目录。
@@ -365,10 +633,20 @@ impl FileSystemProviderProcessTable {
         &self.process_dir
     }
 
-    /// 将非空 session ID 映射为 `.provider` 文件名。
-    /// 不安全字符被 `-` 替换以阻止目录穿越；该编码不是一一映射，不同原值可能碰撞，
-    /// 因此调用方应使用稳定 slug，并不能把此路径映射视为强 CAS key。
+    /// 将 session ID 映射为 collision-free `.provider` 文件名。
     fn snapshot_path(&self, session_id: &str) -> Result<PathBuf, EvaError> {
+        if session_id.trim().is_empty() {
+            return Err(EvaError::invalid_argument(
+                "provider process session id cannot be empty",
+            ));
+        }
+        let digest = Sha256::digest(session_id.as_bytes());
+        Ok(self
+            .process_dir
+            .join(format!("{}.provider", bytes_to_hex(digest.as_slice()))))
+    }
+
+    fn legacy_snapshot_path(&self, session_id: &str) -> Result<PathBuf, EvaError> {
         if session_id.trim().is_empty() {
             return Err(EvaError::invalid_argument(
                 "provider process session id cannot be empty",
@@ -376,20 +654,85 @@ impl FileSystemProviderProcessTable {
         }
         Ok(self
             .process_dir
-            .join(format!("{}.provider", safe_file_segment(session_id))))
+            .join(format!("{}.provider", legacy_safe_file_segment(session_id))))
+    }
+
+    fn record_lock_path(&self, session_id: &str) -> Result<PathBuf, EvaError> {
+        Ok(self
+            .snapshot_path(session_id)?
+            .with_extension("provider.lock"))
     }
 }
 
-impl ProviderProcessTable for InMemoryProviderProcessTable {
-    /// 按 session ID 覆盖内存快照；空 ID 在修改 map 前拒绝。
-    fn upsert(&mut self, snapshot: ProviderProcessSnapshot) -> Result<(), EvaError> {
-        if snapshot.session_id.trim().is_empty() {
-            return Err(EvaError::invalid_argument(
-                "provider process session id cannot be empty",
-            ));
+fn read_provider_snapshot(path: &Path) -> Result<Option<ProviderProcessSnapshot>, EvaError> {
+    let data = match fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(
+                EvaError::internal("failed to read provider process snapshot")
+                    .with_context("path", path.display().to_string())
+                    .with_context("io_error", error.to_string()),
+            )
         }
-        self.snapshots.insert(snapshot.session_id.clone(), snapshot);
-        Ok(())
+    };
+    ProviderProcessSnapshot::from_storage(&data)
+        .map(Some)
+        .map_err(|error| error.with_context("path", path.display().to_string()))
+}
+
+fn ensure_immutable_identity(
+    current: &ProviderProcessSnapshot,
+    candidate: &ProviderProcessSnapshot,
+) -> Result<(), EvaError> {
+    let same = current.provider_process_id == candidate.provider_process_id
+        && current.request_id == candidate.request_id
+        && current.adapter_id == candidate.adapter_id
+        && current.capability == candidate.capability
+        && current.transport == candidate.transport
+        && current.manifest_digest == candidate.manifest_digest
+        && current.start_command == candidate.start_command
+        && current.restart_policy == candidate.restart_policy
+        && current.retry_backoff_ms == candidate.retry_backoff_ms
+        && current.started_at_ms == candidate.started_at_ms;
+    if same {
+        return Ok(());
+    }
+    Err(
+        EvaError::conflict("provider process immutable identity changed")
+            .with_context("session_id", &candidate.session_id),
+    )
+}
+
+impl ProviderProcessTable for InMemoryProviderProcessTable {
+    /// 按 session ID 执行进程内 CAS，并返回递增版本的权威快照。
+    fn compare_and_set(
+        &mut self,
+        candidate: ProviderProcessSnapshot,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        candidate.validate_record(false)?;
+        if let Some(current) = self.snapshots.get(&candidate.session_id) {
+            ensure_immutable_identity(current, &candidate)?;
+        }
+        let actual = self
+            .snapshots
+            .get(&candidate.session_id)
+            .map(|snapshot| snapshot.record_version)
+            .unwrap_or(StateVersion::ZERO);
+        if actual != candidate.record_version {
+            return Err(
+                EvaError::conflict("provider process record version conflict")
+                    .with_context("session_id", &candidate.session_id)
+                    .with_context("expected", candidate.record_version.0.to_string())
+                    .with_context("actual", actual.0.to_string()),
+            );
+        }
+        let mut committed = candidate;
+        committed.record_version = actual.checked_next()?;
+        committed.validate_record(true)?;
+        self.snapshots
+            .insert(committed.session_id.clone(), committed.clone());
+        Ok(committed)
     }
 
     /// 克隆读取指定会话，缺失返回带 session ID 的 NotFound。
@@ -407,41 +750,121 @@ impl ProviderProcessTable for InMemoryProviderProcessTable {
 }
 
 impl ProviderProcessTable for FileSystemProviderProcessTable {
-    /// 创建目录并直接覆盖 session 的最终快照文件。
-    /// 当前无临时文件 rename、generation CAS 或文件锁；调用方必须保证单写者，崩溃半写会在
-    /// 后续 read/list 中作为解析错误暴露，不能被当作可恢复健康快照。
-    fn upsert(&mut self, snapshot: ProviderProcessSnapshot) -> Result<(), EvaError> {
-        if snapshot.session_id.trim().is_empty() {
-            return Err(EvaError::invalid_argument(
-                "provider process session id cannot be empty",
-            ));
-        }
+    /// 在 durable writer/process/record 三重边界内执行 provider 快照 CAS。
+    fn compare_and_set(
+        &mut self,
+        candidate: ProviderProcessSnapshot,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        candidate.validate_record(false)?;
+        let writer = self.writer.clone().ok_or_else(|| {
+            EvaError::conflict("provider process mutation requires runtime writer ownership")
+                .with_context("path", self.process_dir.display().to_string())
+        })?;
         fs::create_dir_all(&self.process_dir).map_err(|error| {
             EvaError::internal("failed to create provider process directory")
                 .with_context("path", self.process_dir.display().to_string())
                 .with_context("io_error", error.to_string())
         })?;
-        fs::write(
-            self.snapshot_path(&snapshot.session_id)?,
-            snapshot.to_storage().as_bytes(),
-        )
-        .map_err(|error| {
-            EvaError::internal("failed to write provider process snapshot")
-                .with_context("session_id", snapshot.session_id.as_str())
-                .with_context("io_error", error.to_string())
+        let path = self.snapshot_path(&candidate.session_id)?;
+        let legacy_path = self.legacy_snapshot_path(&candidate.session_id)?;
+        let lock_path = self.record_lock_path(&candidate.session_id)?;
+        writer.with_write_lock(|generation| {
+            let _record_lock = acquire_record_write_lock(&lock_path)?;
+            writer.verify_current()?;
+            let current_path = if path.exists() {
+                path.clone()
+            } else if legacy_path.exists() {
+                legacy_path.clone()
+            } else {
+                path.clone()
+            };
+            let current = read_provider_snapshot(&current_path)?;
+            let actual = current
+                .as_ref()
+                .map(|snapshot| snapshot.record_version)
+                .unwrap_or(StateVersion::ZERO);
+            if let Some(current) = &current {
+                if current.session_id != candidate.session_id {
+                    return Err(
+                        EvaError::conflict("provider process snapshot key collision")
+                            .with_context("path", current_path.display().to_string())
+                            .with_context("expected_session_id", &candidate.session_id)
+                            .with_context("actual_session_id", &current.session_id),
+                    );
+                }
+                if candidate.owner_generation != current.owner_generation {
+                    return Err(
+                        EvaError::conflict("provider process owner generation conflict")
+                            .with_context("session_id", &candidate.session_id)
+                            .with_context(
+                                "expected_generation",
+                                candidate.owner_generation.0.to_string(),
+                            )
+                            .with_context(
+                                "actual_generation",
+                                current.owner_generation.0.to_string(),
+                            ),
+                    );
+                }
+                ensure_immutable_identity(current, &candidate)?;
+            } else if candidate.owner_generation != WriterGeneration::ZERO {
+                return Err(EvaError::conflict(
+                    "new provider process record cannot claim an existing owner generation",
+                )
+                .with_context("session_id", &candidate.session_id)
+                .with_context("generation", candidate.owner_generation.0.to_string()));
+            }
+            if actual != candidate.record_version {
+                return Err(
+                    EvaError::conflict("provider process record version conflict")
+                        .with_context("session_id", &candidate.session_id)
+                        .with_context("expected", candidate.record_version.0.to_string())
+                        .with_context("actual", actual.0.to_string()),
+                );
+            }
+            let mut committed = candidate.clone();
+            committed.record_version = actual.checked_next()?;
+            committed.owner_generation = generation;
+            committed.validate_record(true)?;
+            atomic_write(&path, committed.to_storage().as_bytes()).map_err(|error| {
+                EvaError::internal("failed to atomically write provider process snapshot")
+                    .with_context("session_id", &committed.session_id)
+                    .with_context("path", path.display().to_string())
+                    .with_context("io_error", error.to_string())
+            })?;
+            if legacy_path != path && legacy_path.exists() {
+                fs::remove_file(&legacy_path).map_err(|error| {
+                    EvaError::internal("failed to remove migrated provider process snapshot")
+                        .with_context("path", legacy_path.display().to_string())
+                        .with_context("io_error", error.to_string())
+                })?;
+            }
+            Ok(committed)
         })
+    }
+
+    fn writer_generation(&self) -> Option<WriterGeneration> {
+        self.writer.as_ref().map(DurableWriterGuard::generation)
     }
 
     /// 读取并严格解析指定 session 文件；任何 I/O 缺失映射为 NotFound，格式错误附加路径。
     fn read(&self, session_id: &str) -> Result<ProviderProcessSnapshot, EvaError> {
         let path = self.snapshot_path(session_id)?;
-        let data = fs::read_to_string(&path).map_err(|error| {
+        let legacy_path = self.legacy_snapshot_path(session_id)?;
+        let read_path = if path.exists() { path } else { legacy_path };
+        let snapshot = read_provider_snapshot(&read_path)?.ok_or_else(|| {
             EvaError::not_found("provider process session does not exist")
-                .with_context("path", path.display().to_string())
-                .with_context("io_error", error.to_string())
+                .with_context("path", read_path.display().to_string())
         })?;
-        ProviderProcessSnapshot::from_storage(&data)
-            .map_err(|error| error.with_context("path", path.display().to_string()))
+        if snapshot.session_id != session_id {
+            return Err(
+                EvaError::conflict("provider process snapshot key collision")
+                    .with_context("path", read_path.display().to_string())
+                    .with_context("expected_session_id", session_id)
+                    .with_context("actual_session_id", snapshot.session_id),
+            );
+        }
+        Ok(snapshot)
     }
 
     /// 按文件路径排序加载所有 `.provider` 快照。
@@ -473,18 +896,45 @@ impl ProviderProcessTable for FileSystemProviderProcessTable {
         }
         paths.sort();
 
-        paths
-            .into_iter()
-            .map(|path| {
-                let data = fs::read_to_string(&path).map_err(|error| {
-                    EvaError::internal("failed to read provider process snapshot")
-                        .with_context("path", path.display().to_string())
-                        .with_context("io_error", error.to_string())
-                })?;
-                ProviderProcessSnapshot::from_storage(&data)
-                    .map_err(|error| error.with_context("path", path.display().to_string()))
-            })
-            .collect()
+        let mut snapshots: BTreeMap<String, (bool, PathBuf, ProviderProcessSnapshot)> =
+            BTreeMap::new();
+        for path in paths {
+            let snapshot = read_provider_snapshot(&path)?.ok_or_else(|| {
+                EvaError::internal("provider process snapshot disappeared while listing")
+                    .with_context("path", path.display().to_string())
+            })?;
+            let canonical_path = self.snapshot_path(&snapshot.session_id)?;
+            let is_canonical = path == canonical_path;
+            if let Some((existing_canonical, existing_path, existing)) =
+                snapshots.get(&snapshot.session_id)
+            {
+                if *existing_canonical && !is_canonical {
+                    // A crash after the hashed rename but before legacy cleanup
+                    // leaves both files. The hashed record is authoritative.
+                    continue;
+                }
+                if !*existing_canonical && is_canonical {
+                    snapshots.insert(snapshot.session_id.clone(), (true, path, snapshot));
+                    continue;
+                }
+                return Err(EvaError::conflict(
+                    "duplicate provider process snapshots share a session id",
+                )
+                .with_context("session_id", &snapshot.session_id)
+                .with_context("first_path", existing_path.display().to_string())
+                .with_context("second_path", path.display().to_string())
+                .with_context("first_version", existing.record_version.0.to_string())
+                .with_context("second_version", snapshot.record_version.0.to_string()));
+            }
+            snapshots.insert(snapshot.session_id.clone(), (is_canonical, path, snapshot));
+        }
+
+        let mut values: Vec<_> = snapshots
+            .into_values()
+            .map(|(_, path, snapshot)| (path, snapshot))
+            .collect();
+        values.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(values.into_iter().map(|(_, snapshot)| snapshot).collect())
     }
 }
 
@@ -521,6 +971,41 @@ fn parse_optional_u64(value: &str, message: &'static str) -> Result<Option<u64>,
     }
 }
 
+fn parse_optional_u32(value: &str, message: &'static str) -> Result<Option<u32>, EvaError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        value
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|_| EvaError::invalid_argument(message).with_context("value", value))
+    }
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+/// Reproduces the pre-CAS v1 filename mapping for backward-compatible reads.
+fn legacy_safe_file_segment(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 /// 将磁盘空串恢复为 None，非空值百分号解码。
 fn decode_optional_field(value: &str) -> Option<String> {
     if value.is_empty() {
@@ -550,20 +1035,6 @@ fn decode_field(value: &str) -> String {
         .replace("%7C", "|")
         .replace("%3D", "=")
         .replace("%25", "%")
-}
-
-/// 将 session ID 转为单文件名安全段；保留 ASCII slug 字符，其余逐字符替换为 `-`。
-fn safe_file_segment(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 /// 将审计原因中的 CR/LF 替换为空格，保证一条原因不会伪造多条日志。
@@ -642,20 +1113,24 @@ mod tests {
         let root = test_root("filesystem-round-trip");
         let backend =
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
-        let mut writer = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let mut writer = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            backend.acquire_runtime_writer().unwrap(),
+        )
+        .unwrap();
         let mut stored = snapshot("session-filesystem-1");
         stored.retry_backoff_ms = Some(1500);
 
-        writer.upsert(stored.clone()).unwrap();
+        let committed = writer.compare_and_set(stored).unwrap();
         let reader = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
         let by_id = reader.read("session-filesystem-1").unwrap();
         let listed = reader.list().unwrap();
 
-        assert_eq!(by_id, stored);
-        assert_eq!(listed, vec![stored]);
+        assert_eq!(by_id, committed);
+        assert_eq!(listed, vec![committed.clone()]);
         assert!(reader
-            .process_dir()
-            .join("session-filesystem-1.provider")
+            .snapshot_path("session-filesystem-1")
+            .unwrap()
             .is_file());
     }
 
@@ -702,6 +1177,210 @@ mod tests {
         let error = table.list().unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn process_identity_round_trips_for_unix_and_windows_shapes() {
+        let mut unix = snapshot("identity-unix");
+        unix.set_process_identity(4242, "unix-start-1", Some(4242), None, 1)
+            .unwrap();
+        unix.record_version = StateVersion(1);
+        unix.owner_generation = WriterGeneration(7);
+        let unix_reopened = ProviderProcessSnapshot::from_storage(&unix.to_storage()).unwrap();
+        assert_eq!(unix_reopened.pid, Some(4242));
+        assert_eq!(
+            unix_reopened.process_start_token.as_deref(),
+            Some("unix-start-1")
+        );
+        assert_eq!(unix_reopened.process_group_id, Some(4242));
+        assert_eq!(unix_reopened.job_id, None);
+        assert_eq!(unix_reopened.attempt, 1);
+        assert_eq!(unix_reopened.record_version, StateVersion(1));
+        assert_eq!(unix_reopened.owner_generation, WriterGeneration(7));
+
+        let mut windows = snapshot("identity-windows");
+        windows
+            .set_process_identity(
+                4343,
+                "windows-start-1",
+                None,
+                Some("job-4343".to_owned()),
+                2,
+            )
+            .unwrap();
+        windows.record_version = StateVersion(3);
+        windows.owner_generation = WriterGeneration(8);
+        let windows_reopened =
+            ProviderProcessSnapshot::from_storage(&windows.to_storage()).unwrap();
+        assert_eq!(windows_reopened.pid, Some(4343));
+        assert_eq!(
+            windows_reopened.process_start_token.as_deref(),
+            Some("windows-start-1")
+        );
+        assert_eq!(windows_reopened.process_group_id, None);
+        assert_eq!(windows_reopened.job_id.as_deref(), Some("job-4343"));
+        assert_eq!(windows_reopened.attempt, 2);
+    }
+
+    #[test]
+    fn invalid_process_identity_does_not_partially_update_snapshot() {
+        let mut snapshot = snapshot("identity-invalid");
+        let original = snapshot.clone();
+
+        assert!(snapshot
+            .set_process_identity(0, "bad", Some(1), None, 1)
+            .is_err());
+        assert_eq!(snapshot, original);
+
+        assert!(snapshot
+            .set_process_identity(42, "bad", Some(1), Some("job".to_owned()), 1)
+            .is_err());
+        assert_eq!(snapshot, original);
+
+        assert!(snapshot
+            .set_process_identity(42, "bad", Some(1), None, 0)
+            .is_err());
+        assert_eq!(snapshot, original);
+    }
+
+    #[test]
+    fn legacy_provider_record_is_readable_and_upgraded_once() {
+        let root = test_root("legacy-upgrade");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut stored = snapshot("legacy-session");
+        stored.retry_backoff_ms = Some(250);
+        let legacy_bytes = legacy_storage(&stored);
+        let legacy_table = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        fs::create_dir_all(legacy_table.process_dir()).unwrap();
+        let legacy_path = legacy_table
+            .legacy_snapshot_path(&stored.session_id)
+            .unwrap();
+        fs::write(&legacy_path, &legacy_bytes).unwrap();
+
+        let legacy = legacy_table.read(&stored.session_id).unwrap();
+        assert_eq!(legacy.record_version, StateVersion::ZERO);
+        assert_eq!(legacy.owner_generation, WriterGeneration::ZERO);
+        assert_eq!(legacy.attempt, 0);
+        assert!(!legacy.has_process_identity());
+
+        let mut writer = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            backend.acquire_runtime_writer().unwrap(),
+        )
+        .unwrap();
+        let committed = writer.compare_and_set(legacy.clone()).unwrap();
+        assert_eq!(committed.record_version, StateVersion(1));
+        assert!(committed.owner_generation > WriterGeneration::ZERO);
+        assert!(!legacy_path.exists());
+        let hashed_path = writer.snapshot_path(&stored.session_id).unwrap();
+        assert!(hashed_path.is_file());
+        let bytes_after_upgrade = fs::read(&hashed_path).unwrap();
+
+        // A stale v1 candidate cannot overwrite the upgraded record.
+        let error = writer.compare_and_set(legacy).unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(fs::read(&hashed_path).unwrap(), bytes_after_upgrade);
+
+        // Simulate a crash between hashed rename and legacy cleanup: list keeps
+        // the canonical hashed record and does not return a duplicate.
+        fs::write(&legacy_path, &legacy_bytes).unwrap();
+        let listed = FileSystemProviderProcessTable::from_durable_layout(backend.layout())
+            .list()
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].record_version, StateVersion(1));
+    }
+
+    #[test]
+    fn filesystem_process_table_fences_versions_owner_and_writer_root() {
+        let root = test_root("cas-fences");
+        let other_root = test_root("cas-fences-other");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let other_backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(other_root.path()))
+                .unwrap();
+        let writer_guard = backend.acquire_runtime_writer().unwrap();
+        let wrong_root = FileSystemProviderProcessTable::from_runtime_writer(
+            other_backend.layout(),
+            writer_guard.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(wrong_root.kind(), eva_core::ErrorKind::Conflict);
+
+        let mut first = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            writer_guard.clone(),
+        )
+        .unwrap();
+        let mut second = first.clone();
+        let candidate = snapshot("cas-session");
+        let committed = first.compare_and_set(candidate.clone()).unwrap();
+        assert_eq!(committed.record_version, StateVersion(1));
+        let stale_version = second.compare_and_set(candidate).unwrap_err();
+        assert_eq!(stale_version.kind(), eva_core::ErrorKind::Conflict);
+
+        let mut stale_owner = committed.clone();
+        stale_owner.owner_generation = WriterGeneration(999);
+        let owner_error = first.compare_and_set(stale_owner).unwrap_err();
+        assert_eq!(owner_error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(first.read("cas-session").unwrap(), committed);
+
+        let readonly = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let readonly_error = readonly
+            .clone()
+            .compare_and_set(snapshot("readonly-session"))
+            .unwrap_err();
+        assert_eq!(readonly_error.kind(), eva_core::ErrorKind::Conflict);
+    }
+
+    fn legacy_storage(snapshot: &ProviderProcessSnapshot) -> String {
+        let mut lines = vec![
+            "version=1".to_owned(),
+            format!("session_id={}", encode_field(&snapshot.session_id)),
+            format!(
+                "provider_process_id={}",
+                encode_field(&snapshot.provider_process_id)
+            ),
+            format!("request_id={}", encode_field(snapshot.request_id.as_str())),
+            format!("adapter_id={}", encode_field(snapshot.adapter_id.as_str())),
+            format!("capability={}", encode_field(snapshot.capability.as_str())),
+            format!("transport={}", encode_field(&snapshot.transport)),
+            format!(
+                "manifest_digest={}",
+                encode_field(&snapshot.manifest_digest)
+            ),
+            format!("start_command={}", encode_field(&snapshot.start_command)),
+            format!("health={}", encode_field(&snapshot.health)),
+            format!("restart_policy={}", encode_field(&snapshot.restart_policy)),
+            format!(
+                "retry_backoff_ms={}",
+                snapshot
+                    .retry_backoff_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            ),
+            format!("active={}", snapshot.active),
+            format!(
+                "last_error={}",
+                snapshot
+                    .last_error
+                    .as_ref()
+                    .map(|value| encode_field(value))
+                    .unwrap_or_default()
+            ),
+            format!("started_at_ms={}", snapshot.started_at_ms),
+            format!("updated_at_ms={}", snapshot.updated_at_ms),
+        ];
+        lines.extend(
+            snapshot
+                .audit
+                .iter()
+                .map(|entry| format!("audit={}", encode_field(entry))),
+        );
+        lines.push(String::new());
+        lines.join("\n")
     }
 
     /// 测试临时 durable root 所有者。

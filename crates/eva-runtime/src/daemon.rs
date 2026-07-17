@@ -2550,8 +2550,10 @@ fn start_daemon_inner(
         FileSystemTaskStateStore::from_runtime_writer(durable_backend.layout(), lease.writer())?;
     let mut effect_ledger =
         FileSystemEffectLedger::open_with_writer(durable_backend.layout(), lease.writer())?;
-    let mut provider_process_table =
-        FileSystemProviderProcessTable::from_durable_layout(durable_backend.layout());
+    let mut provider_process_table = FileSystemProviderProcessTable::from_runtime_writer(
+        durable_backend.layout(),
+        lease.writer(),
+    )?;
     // Handler/effect facts must classify abandoned tasks before provider recovery or worker startup.
     let recovery = RuntimeRecoveryCoordinator
         .recover_task_store_with_effects_and_provider_processes(
@@ -5903,8 +5905,11 @@ mod tests {
             ))
             .unwrap();
             let mut task_store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
-            let mut process_table =
-                FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+            let mut process_table = FileSystemProviderProcessTable::from_runtime_writer(
+                backend.layout(),
+                task_store.runtime_writer().unwrap(),
+            )
+            .unwrap();
             let mut task = TaskStateSnapshot::queued("req-daemon-provider-recovery").unwrap();
             task.mark_running(100, None, "cancel-token-provider-recovery");
             task_store.write(&task).unwrap();

@@ -783,7 +783,11 @@ mod tests {
         let root = temp_root("durable-provider-table");
         let backend =
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(&root)).unwrap();
-        let process_table = FileSystemProviderProcessTable::from_durable_layout(backend.layout());
+        let process_table = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            backend.acquire_runtime_writer().unwrap(),
+        )
+        .unwrap();
         let runtime = AdapterRuntime::from_registry_with_provider_process_table(
             registry_with_handle(stdio_handle(
                 true,

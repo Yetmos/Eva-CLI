@@ -2038,6 +2038,12 @@ impl FileSystemTaskStateStore {
         self.writer.as_ref().map(DurableWriterGuard::generation)
     }
 
+    /// Returns a clone of the runtime writer so sibling durable tables can
+    /// participate in the same ownership fence.
+    pub fn runtime_writer(&self) -> Option<DurableWriterGuard> {
+        self.writer.clone()
+    }
+
     /// 克隆返回任务目录，供调用方检查或传递路径所有权。
     pub fn task_dir(&self) -> PathBuf {
         self.task_dir.clone()
