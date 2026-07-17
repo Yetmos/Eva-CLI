@@ -28,8 +28,8 @@ use eva_memory::{
 };
 use eva_observability::{
     AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
-    MetricLabels, MetricName, MetricPoint, MetricSink, ObservabilitySmokeReport, SpanId,
-    TraceFields,
+    MetricLabels, MetricName, MetricPoint, MetricSink, ObservabilitySmokeReport,
+    RuntimeObservabilityLifecycle, SpanId, TraceFields,
 };
 use eva_policy::PolicyDomainSet;
 use eva_scheduler::GenerationRouteGate;
@@ -2511,6 +2511,8 @@ fn start_daemon_inner(
         &options.durable_backend,
     ))?;
     let durable_report = durable_backend.verify()?;
+    let mut observability_lifecycle =
+        RuntimeObservabilityLifecycle::start(&options.observability_backend);
     // 固定 anchor 必须先于 durable writer 取得；guard 同时持有两层 ownership 到 daemon 退出。
     let lease_ttl_ms = daemon_runtime_lease_ttl_ms(&options)?;
     let mut lease = if let Some(handshake) = startup_hooks.as_deref().map(|hooks| hooks.handshake) {
@@ -2568,14 +2570,14 @@ fn start_daemon_inner(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
-    record_daemon_recovery_observability(&options, trace, &recovery);
+    record_daemon_recovery_observability(observability_lifecycle.pipeline_mut(), trace, &recovery);
     let policy = verify_policy(project)?;
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
-    let observability = verify_observability(&options, trace)?;
+    let observability = verify_observability(&mut observability_lifecycle, trace)?;
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
         &options,
@@ -2735,10 +2737,15 @@ fn start_daemon_inner(
             }
             let _ = write_state(&options, &running_state.clone().stopped());
             let _ = remove_matching_pid(&options, lease.record());
+            if let Err(shutdown_error) = observability_lifecycle.shutdown(trace) {
+                error =
+                    error.with_context("observability_shutdown_error", shutdown_error.to_string());
+            }
             let _ = lease.release_at(now_ms());
             return Err(error);
         }
     };
+    observability_lifecycle.shutdown(trace)?;
     let released = lease.release_at(now_ms())?.clone();
     let lease_report = DaemonLeaseReport::from_record(&released, false, false);
 
@@ -2778,6 +2785,7 @@ fn daemon_start_audit(
         "daemon:v1.12.1:durable_backend_verified".to_owned(),
         "daemon:v1.12.1:policy_verified".to_owned(),
         "daemon:v1.12.1:observability_verified".to_owned(),
+        "daemon:w8-l07:observability_lifecycle_owned_until_shutdown".to_owned(),
         "daemon:v1.12.1:provider_processes_not_started".to_owned(),
         "daemon:v1.12.2:control_mailbox_ready".to_owned(),
         "daemon:v1.12.4:scheduler_retry_tick_ready".to_owned(),
@@ -3344,23 +3352,19 @@ fn run_memory_maintenance(
 
 /// 登记 `record_daemon_recovery_observability` 对应的数据或状态。
 fn record_daemon_recovery_observability(
-    options: &DaemonStartOptions,
+    pipeline: &mut BestEffortObservabilityPipeline,
     trace: &TraceFields,
     report: &RuntimeRecoveryReport,
 ) {
     let Ok(span_id) = SpanId::parse("runtime.daemon.recovery") else {
         return;
     };
-    let mut pipeline = BestEffortObservabilityPipeline::open(&options.observability_backend);
     let recovery_trace = trace.child_span(span_id);
-    let _ = RuntimeRecoveryCoordinator.record_recovery_audit(
-        &mut pipeline,
-        recovery_trace.clone(),
-        report,
-    );
+    let _ =
+        RuntimeRecoveryCoordinator.record_recovery_audit(pipeline, recovery_trace.clone(), report);
     if let Ok(name) = MetricName::parse("runtime.daemon.recovery") {
         let _ = MetricSink::record(
-            &mut pipeline,
+            pipeline,
             MetricPoint::new(name, MetricKind::Counter, 1.0).with_labels(
                 MetricLabels::runtime("daemon_v1.16.1", DAEMON_GENERATION)
                     .with("recovered_tasks", report.recovered_tasks.len().to_string())
@@ -4064,14 +4068,12 @@ fn verify_policy(project: &ProjectConfig) -> Result<DaemonPolicyReport, EvaError
 
 /// 校验 `verify_observability` 对应的约束，不满足时返回明确错误。
 fn verify_observability(
-    options: &DaemonStartOptions,
+    lifecycle: &mut RuntimeObservabilityLifecycle,
     trace: &TraceFields,
 ) -> Result<ObservabilitySmokeReport, EvaError> {
-    let backend_root = options.observability_backend.display().to_string();
-    let mut pipeline = BestEffortObservabilityPipeline::open(&options.observability_backend);
     let runtime_trace = trace.child_span(SpanId::parse("runtime.daemon.start")?);
     AuditSink::record(
-        &mut pipeline,
+        lifecycle.pipeline_mut(),
         AuditEvent::new(
             AuditAction::RuntimeStarted,
             AuditOutcome::Planned,
@@ -4081,7 +4083,7 @@ fn verify_observability(
         .with_field("generation_id", DAEMON_GENERATION),
     )?;
     MetricSink::record(
-        &mut pipeline,
+        lifecycle.pipeline_mut(),
         MetricPoint::new(
             MetricName::parse("runtime.daemon.start")?,
             MetricKind::Counter,
@@ -4089,12 +4091,12 @@ fn verify_observability(
         )
         .with_labels(MetricLabels::runtime("daemon_v1.12.1", DAEMON_GENERATION)),
     )?;
-    pipeline.export_span(
+    lifecycle.pipeline_mut().export_span(
         "runtime.daemon.start",
         &runtime_trace,
         &[("component", "runtime"), ("mode", "foreground_dev")],
     )?;
-    Ok(pipeline.smoke_report(backend_root, trace.continuity_key()))
+    lifecycle.flush(trace)
 }
 
 /// 校验 `ensure_control_dirs` 对应的约束，不满足时返回明确错误。
