@@ -98,7 +98,7 @@ where
     }
 
     #[cfg(test)]
-    const fn for_host(host: ServiceHostPlatform, executor: E) -> Self {
+    pub(crate) const fn for_host(host: ServiceHostPlatform, executor: E) -> Self {
         Self { host, executor }
     }
 }

@@ -19,6 +19,8 @@ pub mod service_factory;
 pub mod service_manager;
 /// 进程内 Supervisor 所有权模型。
 pub mod supervisor;
+/// Windows Service Control Manager production adapter.
+pub mod windows_service;
 
 pub use apply_lock::{
     FileSystemUpgradeApplyLockStore, InMemoryUpgradeApplyLockStore, UpgradeApplyCoordinator,
@@ -49,3 +51,4 @@ pub use service_manager::{
     ServiceManagerState, ServiceManagerStatusReport, ServiceManagerStatusRequest,
 };
 pub use supervisor::{InMemorySupervisor, RuntimeHealth, SupervisorReport};
+pub use windows_service::WindowsServiceAdapter;
