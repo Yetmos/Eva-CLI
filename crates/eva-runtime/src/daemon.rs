@@ -36,7 +36,7 @@ use eva_observability::{
     MetricLabels, MetricName, MetricPoint, MetricSink, ObservabilitySmokeReport,
     RuntimeObservabilityLifecycle, SpanId, TraceFields,
 };
-use eva_policy::PolicyDomainSet;
+use eva_policy::{MutationDecision, MutationOperation, PolicyDomainSet};
 use eva_scheduler::GenerationRouteGate;
 use eva_storage::{
     artifact_store::sha256_digest, atomic_write as atomic_storage_write, probe_runtime_lease,
@@ -3866,6 +3866,15 @@ fn handle_control_request(
     )];
     let mut task_lifecycle_status = None;
 
+    if let Some(operation) = daemon_mutation_operation(request.operation) {
+        let decision = MutationDecision::authenticated_daemon(
+            operation,
+            context.lease.record().state() == DurableRuntimeLeaseState::Active,
+        );
+        audit.extend(decision.audit.iter().cloned());
+        decision.ensure_allowed()?;
+    }
+
     // 所有持久化变更均在响应构造前完成，因此 `mutation_executed` 只描述已成功分支。
     match request.operation {
         DaemonControlOperation::Status => {
@@ -3973,6 +3982,17 @@ fn handle_control_request(
         task_lifecycle_status.as_deref(),
     );
     Ok(response)
+}
+
+fn daemon_mutation_operation(operation: DaemonControlOperation) -> Option<MutationOperation> {
+    match operation {
+        DaemonControlOperation::Status => None,
+        DaemonControlOperation::Shutdown => Some(MutationOperation::DaemonShutdown),
+        DaemonControlOperation::SubmitTask => Some(MutationOperation::DaemonTaskSubmit),
+        DaemonControlOperation::CancelTask => Some(MutationOperation::DaemonTaskCancel),
+        DaemonControlOperation::Drain => Some(MutationOperation::DaemonAgentDrain),
+        DaemonControlOperation::ReloadPlan => Some(MutationOperation::DaemonAgentReload),
+    }
 }
 
 /// 创建 queued 任务快照；任务标识默认沿用请求标识，作为持久化关联键。
@@ -5769,6 +5789,42 @@ mod tests {
         assert!(event
             .fields
             .contains(&("active_generation_changed".to_owned(), "false".to_owned())));
+    }
+
+    #[test]
+    fn daemon_mutation_operations_match_authenticated_inventory_both_ways() {
+        let mapped = [
+            DaemonControlOperation::Shutdown,
+            DaemonControlOperation::SubmitTask,
+            DaemonControlOperation::CancelTask,
+            DaemonControlOperation::Drain,
+            DaemonControlOperation::ReloadPlan,
+        ]
+        .into_iter()
+        .filter_map(daemon_mutation_operation)
+        .collect::<BTreeSet<_>>();
+        let inventoried = eva_policy::MUTATION_INVENTORY
+            .iter()
+            .filter(|entry| entry.gate == eva_policy::MutationGate::AuthenticatedDaemon)
+            .map(|entry| entry.operation)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(mapped, inventoried);
+        assert_eq!(
+            daemon_mutation_operation(DaemonControlOperation::Status),
+            None
+        );
+    }
+
+    #[test]
+    fn denied_daemon_mutation_leaves_state_unmodified() {
+        let root = temp_root("daemon-mutation-policy-denied");
+        let options = daemon_options(&root, false);
+        let decision =
+            MutationDecision::authenticated_daemon(MutationOperation::DaemonTaskSubmit, false);
+        assert!(decision.ensure_allowed().is_err());
+        assert!(!state_file(&options).exists());
+        assert!(!options.durable_backend.exists());
+        fs::remove_dir_all(root).ok();
     }
 
     /// 执行 `workspace_root` 对应的处理逻辑。

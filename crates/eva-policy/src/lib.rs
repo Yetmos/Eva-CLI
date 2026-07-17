@@ -3,6 +3,7 @@
 
 pub mod domains;
 pub mod effective;
+pub mod mutation_inventory;
 pub mod permissions;
 pub mod sandbox;
 
@@ -13,5 +14,8 @@ pub use domains::{
     RuntimePolicyGate, RuntimePolicyRequest, SkillPolicy,
 };
 pub use effective::{EffectivePolicy, PolicyLayer};
+pub use mutation_inventory::{
+    MutationDecision, MutationGate, MutationInventoryEntry, MutationOperation, MUTATION_INVENTORY,
+};
 pub use permissions::{PermissionSet, PermissionSetDiff};
 pub use sandbox::SandboxPolicy;

@@ -1509,14 +1509,18 @@ fn write_daemon_start<W: Write>(
                 report.hardware_hotplug.raw_handles_exposed
             )
             .map_err(write_error_kind)?;
-            writeln!(
-                writer,
-                "memory_maintenance: status={} expired_removed={} knowledge_items_indexed={}",
-                report.memory_maintenance.status,
-                report.memory_maintenance.memory_gc.expired_removed,
-                report.memory_maintenance.knowledge_rebuild.items_indexed
-            )
-            .map_err(write_error_kind)
+            if let Some(maintenance) = &report.memory_maintenance {
+                writeln!(
+                    writer,
+                    "memory_maintenance: status={} expired_removed={} knowledge_items_indexed={}",
+                    maintenance.status,
+                    maintenance.memory_gc.expired_removed,
+                    maintenance.knowledge_rebuild.items_indexed
+                )
+                .map_err(write_error_kind)
+            } else {
+                writeln!(writer, "memory_maintenance: not_run").map_err(write_error_kind)
+            }
         }
         OutputFormat::Json => writeln!(
             writer,
@@ -1596,7 +1600,7 @@ fn daemon_start_json(report: &DaemonStartReport) -> String {
         daemon_policy_json(&report.policy),
         observability_json(&report.observability),
         hardware_hotplug_json(&report.hardware_hotplug),
-        memory_maintenance_json(&report.memory_maintenance),
+        report.memory_maintenance.as_ref().map(memory_maintenance_json).unwrap_or_else(||"null".to_owned()),
         shutdown,
         json_array(report.audit.iter().map(|entry| json_string(entry)))
     )
