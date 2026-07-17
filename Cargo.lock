@@ -288,6 +288,9 @@ dependencies = [
  "eva-core",
  "eva-observability",
  "eva-policy",
+ "libc",
+ "sha2",
+ "windows-sys",
 ]
 
 [[package]]

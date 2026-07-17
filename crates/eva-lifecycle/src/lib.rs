@@ -11,6 +11,10 @@ pub mod generation;
 pub mod handoff;
 /// 失败交接后的回滚规划。
 pub mod rollback;
+/// Non-shell service-manager command execution and bounded evidence.
+pub mod service_command;
+/// Host-kind validation and bound service command execution.
+pub mod service_factory;
 /// 操作系统服务管理器抽象与测试适配器。
 pub mod service_manager;
 /// 进程内 Supervisor 所有权模型。
@@ -28,6 +32,15 @@ pub use handoff::{
     SupervisorHandoffRequest, SupervisorStateStore,
 };
 pub use rollback::{RollbackCoordinator, RollbackPlan};
+pub use service_command::{
+    ProcessServiceCommandExecutor, ServiceCommand, ServiceCommandArg, ServiceCommandArgVisibility,
+    ServiceCommandExecution, ServiceCommandExecutor, ServiceCommandLimits, ServiceCommandReport,
+    ServiceCommandStream, ServiceCommandTermination, ValidatedServiceCommandTarget,
+    DEFAULT_SERVICE_COMMAND_OUTPUT_LIMIT_BYTES, DEFAULT_SERVICE_COMMAND_TIMEOUT,
+};
+pub use service_factory::{
+    HostBoundServiceCommandExecutor, ServiceHostPlatform, ServiceManagerFactory,
+};
 pub use service_manager::{
     FakeServiceManagerAdapter, ServiceManagerAdapter, ServiceManagerDefinition,
     ServiceManagerHandoffReport, ServiceManagerHandoffRequest, ServiceManagerInspectRequest,
