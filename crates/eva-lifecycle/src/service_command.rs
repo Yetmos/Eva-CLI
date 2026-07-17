@@ -760,6 +760,12 @@ impl ProcessTreeGuard {
         let _ = child.kill();
         let wait_result = child.wait().map(|_| ());
         if let Some(error) = group_error {
+            if error.raw_os_error() == Some(libc::EPERM) && wait_result.is_ok() {
+                let probe = unsafe { libc::kill(-self.process_group_id, 0) };
+                if probe < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                    return Ok(());
+                }
+            }
             Err(error)
         } else {
             wait_result
