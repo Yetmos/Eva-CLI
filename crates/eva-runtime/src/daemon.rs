@@ -23,8 +23,8 @@ use eva_lifecycle::{
     DrainCoordinator, DrainPlan, GenerationController, GenerationState, RuntimeGeneration,
 };
 use eva_memory::{
-    FileSystemKnowledgeStore, FileSystemMemoryStore, KnowledgeRebuildCheckpointReport,
-    MemoryCompactionReport,
+    FileSystemKnowledgeStore, FileSystemMemoryStore, FileSystemScheduleStore,
+    KnowledgeRebuildCheckpointReport, MemoryCompactionReport,
 };
 use eva_observability::{
     AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
@@ -86,6 +86,9 @@ const CONTROL_REJECTED_EXT: &str = "rejected";
 const CONTROL_RESPONSE_EXT: &str = "response";
 /// 定义 `CONTROL_POLL_INTERVAL_MS` 常量。
 const CONTROL_POLL_INTERVAL_MS: u64 = 50;
+const MEMORY_MAINTENANCE_SCHEDULE_ID: &str = "memory-maintenance";
+const MEMORY_MAINTENANCE_INTERVAL_MS: u128 = 60_000;
+const MEMORY_MAINTENANCE_LEASE_MS: u128 = 30_000;
 /// Lease heartbeat 的单调调度间隔；墙上时钟仅写入持久记录。
 pub const DAEMON_LEASE_HEARTBEAT_INTERVAL_MS: u64 = 10_000;
 /// A daemon lease remains live for two missed scheduler ticks before status
@@ -441,7 +444,7 @@ pub struct DaemonStartReport {
     /// 记录 `hardware_hotplug` 字段对应的值。
     pub hardware_hotplug: HardwareHotplugSubscriberReport,
     /// 记录 `memory_maintenance` 字段对应的值。
-    pub memory_maintenance: DaemonMemoryMaintenanceReport,
+    pub memory_maintenance: Option<DaemonMemoryMaintenanceReport>,
     /// 记录 `shutdown` 字段对应的值。
     pub shutdown: Option<ShutdownReport>,
     /// 记录 `audit` 字段对应的值。
@@ -2610,8 +2613,21 @@ fn start_daemon_inner(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
-    let memory_maintenance =
-        run_memory_maintenance(&options, observability_lifecycle.pipeline_mut(), trace)?;
+    let memory_schedule = FileSystemScheduleStore::new(options.state_dir.join("schedules"))?;
+    if memory_schedule
+        .read(MEMORY_MAINTENANCE_SCHEDULE_ID)
+        .is_err()
+    {
+        memory_schedule.upsert(MEMORY_MAINTENANCE_SCHEDULE_ID, 0)?;
+    }
+    let memory_schedule_owner = schedule_owner(&lease);
+    let memory_maintenance = run_scheduled_memory_maintenance(
+        &memory_schedule,
+        &memory_schedule_owner,
+        &options,
+        observability_lifecycle.pipeline_mut(),
+        trace,
+    )?;
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
         &options,
@@ -2718,6 +2734,8 @@ fn start_daemon_inner(
                 lease: &mut lease,
                 task_worker: worker,
                 observability: observability_lifecycle.pipeline_mut(),
+                memory_schedule: &memory_schedule,
+                memory_schedule_owner: &memory_schedule_owner,
             });
             let join_result = worker.stop_and_join();
             let loop_report = match (loop_result, join_result) {
@@ -3204,6 +3222,8 @@ struct DaemonControlLoopContext<'a> {
     lease: &'a mut DurableRuntimeLeaseGuard,
     task_worker: &'a mut TaskWorkerRuntime,
     observability: &'a mut BestEffortObservabilityPipeline,
+    memory_schedule: &'a FileSystemScheduleStore,
+    memory_schedule_owner: &'a str,
 }
 
 /// 串行执行调度重试 tick 和按文件名排序的控制请求，直到处理到关闭操作。
@@ -3225,6 +3245,14 @@ fn run_control_loop(
             context.lease.writer(),
             context.task_worker,
             context.observability,
+        )?;
+        let trace = TraceFields::default();
+        let _maintenance = run_scheduled_memory_maintenance(
+            context.memory_schedule,
+            context.memory_schedule_owner,
+            context.options,
+            context.observability,
+            &trace,
         )?;
         context.task_worker.check_health()?;
         renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
@@ -3368,6 +3396,42 @@ fn run_memory_maintenance(
         memory_gc,
         knowledge_rebuild,
     })
+}
+
+fn schedule_owner(lease: &DurableRuntimeLeaseGuard) -> String {
+    format!(
+        "daemon:{}:{}",
+        lease.record().pid(),
+        lease.record().generation().0
+    )
+}
+
+fn run_scheduled_memory_maintenance(
+    schedule: &FileSystemScheduleStore,
+    owner: &str,
+    options: &DaemonStartOptions,
+    observability: &mut BestEffortObservabilityPipeline,
+    trace: &TraceFields,
+) -> Result<Option<DaemonMemoryMaintenanceReport>, EvaError> {
+    let observed_at = now_ms();
+    let claim = match schedule.claim(
+        MEMORY_MAINTENANCE_SCHEDULE_ID,
+        owner,
+        observed_at,
+        MEMORY_MAINTENANCE_LEASE_MS,
+    ) {
+        Ok(claim) => claim,
+        Err(error) if matches!(error.kind(), eva_core::ErrorKind::Unavailable) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let report = run_memory_maintenance(options, observability, trace)?;
+    schedule.complete(
+        MEMORY_MAINTENANCE_SCHEDULE_ID,
+        owner,
+        claim.generation,
+        observed_at.saturating_add(MEMORY_MAINTENANCE_INTERVAL_MS),
+    )?;
+    Ok(Some(report))
 }
 
 /// 登记 `record_daemon_recovery_observability` 对应的数据或状态。
@@ -5876,9 +5940,10 @@ mod tests {
         assert!(!report.hardware_hotplug.raw_handles_exposed);
         assert_eq!(report.hardware_hotplug.devices_seen, 1);
         assert_eq!(report.hardware_hotplug.events_published.len(), 1);
-        assert_eq!(report.memory_maintenance.status, "ready");
-        assert_eq!(report.memory_maintenance.memory_gc.expired_removed, 0);
-        assert_eq!(report.memory_maintenance.knowledge_rebuild.items_indexed, 0);
+        let maintenance = report.memory_maintenance.as_ref().unwrap();
+        assert_eq!(maintenance.status, "ready");
+        assert_eq!(maintenance.memory_gc.expired_removed, 0);
+        assert_eq!(maintenance.knowledge_rebuild.items_indexed, 0);
         assert!(report
             .audit
             .iter()
@@ -5932,11 +5997,20 @@ mod tests {
 
         let first = start_daemon(&project, options.clone(), &TraceFields::default()).unwrap();
         assert_eq!(first.hardware_hotplug.events_published.len(), 1);
+        assert!(first.memory_maintenance.is_some());
+        let schedule_store =
+            FileSystemScheduleStore::new(options.state_dir.join("schedules")).unwrap();
+        let scheduled = schedule_store.read(MEMORY_MAINTENANCE_SCHEDULE_ID).unwrap();
         let state = read_hardware_hotplug_state(&options).unwrap();
         assert_eq!(state.len(), 1);
 
         let second = start_daemon(&project, options.clone(), &TraceFields::default()).unwrap();
         assert!(second.hardware_hotplug.events_published.is_empty());
+        assert!(second.memory_maintenance.is_none());
+        assert_eq!(
+            schedule_store.read(MEMORY_MAINTENANCE_SCHEDULE_ID).unwrap(),
+            scheduled
+        );
         let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_only(
             &options.durable_backend,
         ))
