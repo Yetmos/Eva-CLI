@@ -72,6 +72,46 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Capture W3 provider admission evidence
+        shell: pwsh
+        env:
+          EVA_W3_SOURCE_COMMIT: ${{ github.sha }}
+          EVA_W3_RUN_ID: ${{ github.run_id }}
+          EVA_W3_RUN_ATTEMPT: ${{ github.run_attempt }}
+          EVA_W3_JOB: ${{ github.job }}
+          EVA_W3_OS: ${{ matrix.evidence_os }}
+        run: |
+          $evidence = Join-Path (Get-Location) ".eva/w3-provider-admission-evidence"
+          Remove-Item -LiteralPath $evidence -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $env:EVA_W3_ARCH = $env:RUNNER_ARCH.ToLowerInvariant()
+          $env:EVA_W3_EXECUTOR = "github-actions:$env:EVA_W3_RUN_ID`:$env:EVA_W3_RUN_ATTEMPT`:$env:EVA_W3_JOB`:$env:EVA_W3_OS`:$env:EVA_W3_ARCH"
+          ./scripts/capture-release-evidence.ps1 `
+            -Executable cargo `
+            -ArgumentList @("test", "-p", "eva-storage", "provider_admission::tests::", "--", "--test-threads=1") `
+            -ManifestPath (Join-Path $evidence "suite.capture.json") `
+            -StdoutPath (Join-Path $evidence "suite.stdout") `
+            -StderrPath (Join-Path $evidence "suite.stderr") `
+            -TimeoutMilliseconds 300000 `
+            -CaptureId provider-admission
+          ./scripts/write-provider-admission-evidence.ps1 `
+            -EvidencePath $evidence `
+            -SourceCommit $env:EVA_W3_SOURCE_COMMIT `
+            -RunId $env:EVA_W3_RUN_ID `
+            -RunAttempt $env:EVA_W3_RUN_ATTEMPT `
+            -Executor $env:EVA_W3_EXECUTOR `
+            -OperatingSystem $env:EVA_W3_OS `
+            -Architecture $env:EVA_W3_ARCH
+
+      - name: Upload W3 provider admission evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w3-provider-admission-${{ matrix.evidence_os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .eva/w3-provider-admission-evidence
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Format check
         run: cargo fmt --check
 
