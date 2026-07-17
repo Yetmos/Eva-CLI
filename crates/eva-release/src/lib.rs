@@ -1,6 +1,7 @@
 //! 发布加固、就绪度、安全、性能和迁移契约。
 //! Release hardening, readiness, security, performance, and migration contracts.
 
+pub mod apt;
 /// 发布工件签名和来源证明证据。
 pub mod artifact;
 /// 生产基准测量证据及其验证。
@@ -23,6 +24,7 @@ pub mod scanner;
 pub mod security;
 pub mod winget;
 
+pub use apt::{generate_apt_metadata, AptMetadata};
 pub use artifact::{
     ReleaseArtifactEvidence, ReleaseArtifactSignature, ReleaseArtifactSigningKey,
     ReleaseArtifactSubject, ReleaseArtifactVerificationReport, ReleaseProvenanceEvidence,
