@@ -404,4 +404,40 @@ mod tests {
         assert_eq!(snapshot.reservations.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn crashed_process_reservation_is_reclaimed_only_after_expiry() {
+        if let Ok(root) = std::env::var("EVA_ADMISSION_CRASH_CHILD_ROOT") {
+            let table = FileSystemProviderAdmissionTable::new(root).unwrap();
+            let adapter = AdapterId::parse("provider-admission-crash").unwrap();
+            table
+                .reserve(&adapter, 1, "crashed-owner", 10, 100)
+                .unwrap();
+            std::process::exit(0);
+        }
+
+        let root = root();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .arg("provider_admission::tests::crashed_process_reservation_is_reclaimed_only_after_expiry")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env("EVA_ADMISSION_CRASH_CHILD_ROOT", &root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let table = FileSystemProviderAdmissionTable::new(&root).unwrap();
+        let adapter = AdapterId::parse("provider-admission-crash").unwrap();
+        let crashed = table.snapshot(&adapter, 50).unwrap().reservations[0].clone();
+        assert!(table.reserve(&adapter, 1, "successor", 109, 100).is_err());
+        let successor = table.reserve(&adapter, 1, "successor", 110, 100).unwrap();
+        assert!(table
+            .release_owned(&adapter, &crashed.reservation_id, "crashed-owner")
+            .is_err());
+        assert_eq!(
+            table.snapshot(&adapter, 111).unwrap().reservations,
+            vec![successor]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
