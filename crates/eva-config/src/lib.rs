@@ -651,6 +651,61 @@ mod tests {
     }
 
     #[test]
+    fn project_loader_applies_profile_user_and_environment_precedence() {
+        let root = minimal_project("layer-precedence", "codex-cli");
+        let config = root.join("config");
+        fs::create_dir_all(config.join("profiles")).unwrap();
+        fs::create_dir_all(config.join("environments")).unwrap();
+        fs::write(
+            config.join("profiles/dev.yaml"),
+            "runtime:\n  hot_reload: false\nobservability:\n  log_level: profile\n",
+        )
+        .unwrap();
+        fs::write(
+            config.join("eva.user.yaml"),
+            "observability:\n  log_level: user\n",
+        )
+        .unwrap();
+        fs::write(
+            config.join("environments/dev.yaml"),
+            "observability:\n  log_level: environment\n",
+        )
+        .unwrap();
+
+        let project = load_project_config(&root).unwrap();
+        assert!(!project.eva.runtime.hot_reload);
+        assert_eq!(project.eva.observability.log_level, "environment");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_loader_rejects_layer_type_drift_and_post_merge_schema_failure() {
+        let root = minimal_project("layer-negative", "codex-cli");
+        let config = root.join("config");
+        fs::create_dir_all(config.join("profiles")).unwrap();
+        let profile = config.join("profiles/dev.yaml");
+        fs::write(&profile, "runtime:\n  hot_reload:\n    enabled: false\n").unwrap();
+        let drift = load_project_config(&root).unwrap_err();
+        assert_context(&drift, "field", "runtime.hot_reload");
+
+        let schema_path = config.join("schemas/eva.schema.json");
+        let schema_text = fs::read_to_string(&schema_path).unwrap();
+        fs::write(
+            &schema_path,
+            schema_text.replace(
+                "\"env\":{\"type\":\"string\"}",
+                "\"env\":{\"type\":\"string\",\"enum\":[\"dev\"]}",
+            ),
+        )
+        .unwrap();
+        fs::write(&profile, "runtime:\n  env: production\n").unwrap();
+        let schema = load_project_config(&root).unwrap_err();
+        assert_context(&schema, "field", "runtime.env");
+        assert_context(&schema, "schema_rule", "enum");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     /// 验证重复 Agent 标识在项目级校验中被拒绝。
     fn validate_project_config_rejects_duplicate_agent_id() {
         let mut project = load_project_config(workspace_root()).unwrap();
