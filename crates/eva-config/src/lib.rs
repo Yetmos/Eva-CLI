@@ -3,6 +3,7 @@
 
 /// 主 `eva.yaml` 强类型配置。
 pub mod eva_yaml;
+pub mod generation;
 /// Agent、Adapter 和 Capability 清单模型。
 pub mod manifest;
 /// 策略文档加载模型。
@@ -30,6 +31,7 @@ pub use eva_yaml::{
     ObservabilityRetentionConfig, ObservabilityRetentionSink, OpenTelemetryDropPolicy,
     OpenTelemetryExporterConfig, RuntimeConfig, ServiceManagerConfig, ServiceManagerKind,
 };
+pub use generation::ConfigGeneration;
 pub use manifest::adapter::{
     AdapterTransport, HardwareAdapterConfig, HardwareBusKind, HardwareClaimMode,
     HardwareDriverConfig, HardwareDriverKind, HardwareHotplugConfig, HardwareIdentityConfig,
