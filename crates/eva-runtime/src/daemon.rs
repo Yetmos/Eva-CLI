@@ -8,6 +8,7 @@
 use crate::memory_worker::{
     ensure_retrieval_schedule, run_scheduled_retrieval, DaemonRetrievalWorker,
 };
+use crate::ConfigWatcher;
 use crate::{
     run_scheduler_retry_tick_with_handler, FileSystemTaskArtifactResolver, IdempotencyKey,
     RuntimeBuilder, RuntimeRecoveryCoordinator, RuntimeRecoveryReport, SchedulerRetryTickOptions,
@@ -2646,6 +2647,15 @@ fn start_daemon_inner(
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
     let mut runtime = RuntimeBuilder::new().build(project)?;
+    let mut config_watcher = if project.eva.runtime.hot_reload && !options.shutdown_after_smoke {
+        Some(ConfigWatcher::start(
+            &project.project_root,
+            Duration::from_millis(100),
+            Duration::from_millis(250),
+        )?)
+    } else {
+        None
+    };
     let task_artifacts = Arc::new(FileSystemTaskArtifactResolver::with_default_limit(
         &durable_backend.layout().artifact_dir,
     ));
@@ -2681,6 +2691,9 @@ fn start_daemon_inner(
     let running_state = DaemonStateRecord::running(project, run_mode);
     write_state(&options, &running_state)?;
     if let Err(error) = write_pid_projection(&options, lease.record()) {
+        if let Some(watcher) = config_watcher.as_mut() {
+            let _ = watcher.stop_and_join();
+        }
         if let Some(worker) = task_worker.as_mut() {
             let _ = worker.stop_and_join();
         }
@@ -2749,6 +2762,7 @@ fn start_daemon_inner(
                 memory_schedule: &memory_schedule,
                 memory_schedule_owner: &memory_schedule_owner,
                 retrieval_worker: retrieval_worker.as_ref(),
+                config_watcher: config_watcher.as_ref(),
             });
             let join_result = worker.stop_and_join();
             let loop_report = match (loop_result, join_result) {
@@ -2772,6 +2786,11 @@ fn start_daemon_inner(
                     error = error.with_context("task_worker_join_error", join_error.to_string());
                 }
             }
+            if let Some(watcher) = config_watcher.as_mut() {
+                if let Err(join_error) = watcher.stop_and_join() {
+                    error = error.with_context("config_watcher_join_error", join_error.to_string());
+                }
+            }
             let _ = write_state(&options, &running_state.clone().stopped());
             let _ = remove_matching_pid(&options, lease.record());
             if let Err(shutdown_error) = observability_lifecycle.shutdown(trace) {
@@ -2782,6 +2801,9 @@ fn start_daemon_inner(
             return Err(error);
         }
     };
+    if let Some(watcher) = config_watcher.as_mut() {
+        watcher.stop_and_join()?;
+    }
     observability_lifecycle.shutdown(trace)?;
     let released = lease.release_at(now_ms())?.clone();
     let lease_report = DaemonLeaseReport::from_record(&released, false, false);
@@ -3238,6 +3260,7 @@ struct DaemonControlLoopContext<'a> {
     memory_schedule: &'a FileSystemScheduleStore,
     memory_schedule_owner: &'a str,
     retrieval_worker: Option<&'a DaemonRetrievalWorker>,
+    config_watcher: Option<&'a ConfigWatcher>,
 }
 
 /// 串行执行调度重试 tick 和按文件名排序的控制请求，直到处理到关闭操作。
@@ -3274,6 +3297,9 @@ fn run_control_loop(
             context.retrieval_worker,
             now_ms(),
         )?;
+        if let Some(watcher) = context.config_watcher {
+            let _changes = watcher.recv_timeout(Duration::ZERO)?;
+        }
         context.task_worker.check_health()?;
         renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
         for request_path in pending_control_requests(context.options)? {
