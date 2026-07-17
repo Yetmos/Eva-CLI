@@ -3,6 +3,7 @@
 
 use crate::runtime::{Runtime, RuntimeSummary};
 use crate::services::RuntimeServices;
+use crate::RuntimeConfigGeneration;
 use eva_config::ProjectConfig;
 use eva_core::{EvaError, GenerationId};
 use std::fmt;
@@ -181,6 +182,8 @@ impl RuntimeBuilder {
             );
         }
 
+        let generation = RuntimeConfigGeneration::build(project.clone(), 1)?;
+        let project = generation.project.as_ref();
         let services = match self.options.mode {
             RuntimeMode::Noop => RuntimeServices::noop(project),
             RuntimeMode::InMemoryV04 => RuntimeServices::in_memory_v04(project),
@@ -188,7 +191,7 @@ impl RuntimeBuilder {
             RuntimeMode::InMemoryV10 => RuntimeServices::in_memory_v10(project),
         };
         let summary = RuntimeSummary::from_project(project, &self.options, &services);
-        Ok(Runtime::new(summary, services))
+        Ok(Runtime::new(generation, summary, services))
     }
 }
 

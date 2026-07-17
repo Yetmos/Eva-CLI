@@ -3,6 +3,7 @@
 
 use crate::basic::{BasicRunOptions, BasicRunReport};
 use crate::builder::{RuntimeMode, RuntimeOptions};
+use crate::config_generation::RuntimeConfigGeneration;
 use crate::services::{RuntimeServices, ServiceSummary};
 use crate::shutdown::{ShutdownReport, ShutdownState};
 use eva_config::ProjectConfig;
@@ -58,8 +59,9 @@ pub struct RuntimeSummary {
 
 /// 中文：当前代际的 Runtime 所有者，保持摘要、服务表和关闭状态一致。
 /// Runtime owner for the current generation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Runtime {
+    generation: RuntimeConfigGeneration,
     /// 中文：对 CLI 和诊断层公开的当前代际摘要。
     summary: RuntimeSummary,
     /// 中文：本代际已装配服务的状态容器。
@@ -114,12 +116,21 @@ impl RuntimeSummary {
 
 impl Runtime {
     /// 中文：从已一致构建的摘要和服务表创建 Runtime，关闭状态从未请求开始。
-    pub fn new(summary: RuntimeSummary, services: RuntimeServices) -> Self {
+    pub fn new(
+        generation: RuntimeConfigGeneration,
+        summary: RuntimeSummary,
+        services: RuntimeServices,
+    ) -> Self {
         Self {
+            generation,
             summary,
             services,
             shutdown: ShutdownState::default(),
         }
+    }
+
+    pub fn generation(&self) -> &RuntimeConfigGeneration {
+        &self.generation
     }
 
     /// 中文：返回当前代际摘要的只读视图。
