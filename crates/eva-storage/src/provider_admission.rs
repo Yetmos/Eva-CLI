@@ -225,6 +225,7 @@ fn decode(adapter: &AdapterId, text: &str) -> Result<ProviderAdmissionSnapshot, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn root() -> PathBuf {
@@ -262,6 +263,55 @@ mod tests {
         let first = table.reserve(&adapter, 1, "s1", 10, 100).unwrap();
         let second = table.reserve(&adapter, 1, "s1", 11, 100).unwrap();
         assert_eq!(first, second);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn two_processes_have_one_winner_for_capacity_one() {
+        if let Ok(root) = std::env::var("EVA_ADMISSION_CHILD_ROOT") {
+            let table = FileSystemProviderAdmissionTable::new(root).unwrap();
+            let adapter = AdapterId::parse("provider-admission-process").unwrap();
+            let result = table.reserve(
+                &adapter,
+                1,
+                &format!("child-{}", std::process::id()),
+                10,
+                30_000,
+            );
+            std::process::exit(if result.is_ok() { 0 } else { 7 });
+        }
+
+        let root = root();
+        let exe = std::env::current_exe().unwrap();
+        let mut children = Vec::new();
+        for _ in 0..2 {
+            children.push(
+                Command::new(&exe)
+                    .arg(
+                        "provider_admission::tests::two_processes_have_one_winner_for_capacity_one",
+                    )
+                    .arg("--exact")
+                    .arg("--nocapture")
+                    .env("EVA_ADMISSION_CHILD_ROOT", &root)
+                    .spawn()
+                    .unwrap(),
+            );
+        }
+        let mut successes = 0;
+        for mut child in children {
+            let status = child.wait().unwrap();
+            if status.success() {
+                successes += 1;
+            } else {
+                assert_eq!(status.code(), Some(7));
+            }
+        }
+        assert_eq!(successes, 1);
+        let table = FileSystemProviderAdmissionTable::new(&root).unwrap();
+        let snapshot = table
+            .snapshot(&AdapterId::parse("provider-admission-process").unwrap(), 20)
+            .unwrap();
+        assert_eq!(snapshot.reservations.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }
