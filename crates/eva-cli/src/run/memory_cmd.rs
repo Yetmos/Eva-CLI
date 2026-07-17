@@ -196,14 +196,10 @@ fn build_memory_context(
     let knowledge_items = seeded_knowledge_items(request_id.clone())?;
     let (memory, knowledge) = if let Some(root) = &options.durable_backend {
         let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(root))?;
-        let mut memory_store = FileSystemMemoryStore::from_durable_layout(backend.layout());
-        for write in memory_writes {
-            memory_store.write(write)?;
-        }
-        let mut knowledge_store = FileSystemKnowledgeStore::from_durable_layout(backend.layout());
-        for item in &knowledge_items {
-            knowledge_store.write_item(item)?;
-        }
+        // Durable operator data is read-only for this command; examples must
+        // not silently seed or overwrite a user's memory store.
+        let memory_store = FileSystemMemoryStore::from_durable_layout(backend.layout());
+        let knowledge_store = FileSystemKnowledgeStore::from_durable_layout(backend.layout());
         (memory_store.load()?, knowledge_store.load_index()?)
     } else {
         let mut memory = InMemoryMemoryService::new();
