@@ -26,6 +26,67 @@ pub struct LayeredConfig {
     pub field_sources: BTreeMap<String, ConfigLayerKind>,
 }
 
+pub fn canonical_config_bytes(value: &Value) -> Result<Vec<u8>, EvaError> {
+    let mut output = Vec::new();
+    encode_value(value, None, &mut output)?;
+    Ok(output)
+}
+
+fn encode_value(value: &Value, field: Option<&str>, output: &mut Vec<u8>) -> Result<(), EvaError> {
+    if field.is_some_and(is_sensitive_field) {
+        encode_bytes(b'R', b"<redacted>", output);
+        return Ok(());
+    }
+    match value {
+        Value::Null => output.push(b'N'),
+        Value::Bool(value) => output.extend_from_slice(if *value { b"B1" } else { b"B0" }),
+        Value::Number(value) => encode_bytes(b'#', value.to_string().as_bytes(), output),
+        Value::String(value) => encode_bytes(b'S', value.as_bytes(), output),
+        Value::Sequence(values) => {
+            output.push(b'[');
+            output.extend_from_slice(&(values.len() as u64).to_be_bytes());
+            for value in values {
+                encode_value(value, None, output)?;
+            }
+        }
+        Value::Mapping(mapping) => {
+            let mut entries = mapping
+                .iter()
+                .map(|(key, value)| {
+                    key.as_str().map(|key| (key, value)).ok_or_else(|| {
+                        EvaError::invalid_argument("canonical config keys must be strings")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            entries.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+            output.push(b'{');
+            output.extend_from_slice(&(entries.len() as u64).to_be_bytes());
+            for (key, value) in entries {
+                encode_bytes(b'K', key.as_bytes(), output);
+                encode_value(value, Some(key), output)?;
+            }
+        }
+        Value::Tagged(_) => {
+            return Err(EvaError::invalid_argument(
+                "tagged YAML is not canonical configuration",
+            ))
+        }
+    }
+    Ok(())
+}
+
+fn encode_bytes(tag: u8, bytes: &[u8], output: &mut Vec<u8>) {
+    output.push(tag);
+    output.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    output.extend_from_slice(bytes);
+}
+fn is_sensitive_field(field: &str) -> bool {
+    let field = field.to_ascii_lowercase();
+    ["token", "password", "secret", "authorization", "credential"]
+        .iter()
+        .any(|part| field.contains(part))
+}
+
 pub fn merge_config_layers(
     layers: impl IntoIterator<Item = (ConfigLayerKind, PathBuf, Value)>,
 ) -> Result<LayeredConfig, EvaError> {
@@ -197,5 +258,15 @@ mod tests {
             .entries()
             .iter()
             .any(|(key, value)| key == "field" && value == "runtime.env"));
+    }
+    #[test]
+    fn canonical_bytes_sort_keys_and_redact_sensitive_values() {
+        let left = yaml("z: 1\na:\n  token: alpha\n  normal: visible\n");
+        let right = yaml("a:\n  normal: visible\n  token: beta\nz: 1\n");
+        let first = canonical_config_bytes(&left).unwrap();
+        assert_eq!(first, canonical_config_bytes(&right).unwrap());
+        assert!(!String::from_utf8_lossy(&first).contains("alpha"));
+        assert!(!String::from_utf8_lossy(&first).contains("beta"));
+        assert!(String::from_utf8_lossy(&first).contains("visible"));
     }
 }

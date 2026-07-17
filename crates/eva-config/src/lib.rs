@@ -34,7 +34,9 @@ pub use eva_yaml::{
     ServiceManagerKind,
 };
 pub use generation::ConfigGeneration;
-pub use layering::{merge_config_layers, ConfigLayer, ConfigLayerKind, LayeredConfig};
+pub use layering::{
+    canonical_config_bytes, merge_config_layers, ConfigLayer, ConfigLayerKind, LayeredConfig,
+};
 pub use manifest::adapter::{
     AdapterTransport, HardwareAdapterConfig, HardwareBusKind, HardwareClaimMode,
     HardwareDriverConfig, HardwareDriverKind, HardwareHotplugConfig, HardwareIdentityConfig,
