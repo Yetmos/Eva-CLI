@@ -8,6 +8,7 @@
 use crate::manifest::AdapterHandle;
 use crate::process_backend::{OsProcessBackend, ProviderProcessHandle, ProviderProcessSpawner};
 use crate::registry::AdapterRegistry;
+use crate::restart::{decide_restart, due_at_ms, RestartDecision, RestartOutcome};
 use crate::router::{AdapterRouteRequest, AdapterRouter};
 use crate::supervisor::{
     InMemoryProviderSupervisor, ProviderCredentialScope, ProviderExecutionOutcome,
@@ -25,6 +26,7 @@ use eva_storage::{FileSystemProviderProcessTable, ProviderProcessSnapshot};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
@@ -36,6 +38,14 @@ struct RegisteredProviderSpawner<'a> {
     backend: OsProcessBackend,
     supervisor: &'a RefCell<InMemoryProviderSupervisor>,
     slot: &'a ProviderExecutionSlot,
+}
+
+enum ProviderRestartStep {
+    Retry {
+        delay_ms: u64,
+        snapshot: ProviderProcessSnapshot,
+    },
+    Terminal(ProviderProcessSnapshot),
 }
 
 impl ProviderProcessSpawner for RegisteredProviderSpawner<'_> {
@@ -397,54 +407,163 @@ impl AdapterRuntime {
             );
             return Err(error);
         }
-        let process_spawner = RegisteredProviderSpawner {
-            backend: OsProcessBackend::new(),
-            supervisor: &self.supervisor,
-            slot: &slot,
-        };
-        let result = dispatch_transport_with_spawner(
-            &handle,
-            invocation.with_credential_scope(credential_scope),
-            Some(&process_spawner),
-        );
-        // 两个终态分支都释放同一个槽；任何新分支都必须维持这一对称性。
-        match result {
-            Ok(mut report) => {
-                let snapshot = self
-                    .supervisor
-                    .borrow_mut()
-                    .complete(&slot, ProviderExecutionOutcome::completed(&report.status))?;
-                report.audit.extend(policy_audit);
-                append_supervisor_audit(&mut report.audit, &snapshot);
-                let outcome = if report.status == "completed" {
-                    AuditOutcome::Ok
-                } else {
-                    AuditOutcome::Failed
-                };
-                self.record_provider_observability(
-                    &handle,
-                    &report.trace,
-                    &report.status,
-                    outcome,
-                    None,
-                    Some(&snapshot),
-                );
-                Ok(report)
+        let invocation = invocation.with_credential_scope(credential_scope);
+        loop {
+            let process_spawner = RegisteredProviderSpawner {
+                backend: OsProcessBackend::new(),
+                supervisor: &self.supervisor,
+                slot: &slot,
+            };
+            let result = dispatch_transport_with_spawner(
+                &handle,
+                invocation.clone(),
+                Some(&process_spawner),
+            );
+            match result {
+                Ok(mut report) if report.status == "completed" => {
+                    let snapshot = self
+                        .supervisor
+                        .borrow_mut()
+                        .complete(&slot, ProviderExecutionOutcome::completed(&report.status))?;
+                    report.audit.extend(policy_audit.clone());
+                    append_supervisor_audit(&mut report.audit, &snapshot);
+                    self.record_provider_observability(
+                        &handle,
+                        &report.trace,
+                        &report.status,
+                        AuditOutcome::Ok,
+                        None,
+                        Some(&snapshot),
+                    );
+                    return Ok(report);
+                }
+                Ok(mut report) => {
+                    let reason = format!("adapter returned status {}", report.status);
+                    let completed = self
+                        .supervisor
+                        .borrow_mut()
+                        .complete(&slot, ProviderExecutionOutcome::completed(&report.status))?;
+                    match self.restart_after_failure(
+                        &handle,
+                        &slot,
+                        &completed,
+                        &reason,
+                        report_status_restart_eligible(&report.status),
+                    )? {
+                        ProviderRestartStep::Retry { delay_ms, snapshot } => {
+                            self.record_provider_observability(
+                                &handle,
+                                &report.trace,
+                                "restart_pending",
+                                AuditOutcome::Planned,
+                                None,
+                                Some(&snapshot),
+                            );
+                            thread_sleep_restart(delay_ms);
+                            self.supervisor
+                                .borrow_mut()
+                                .prepare_restart(&slot, epoch_ms())?;
+                        }
+                        ProviderRestartStep::Terminal(snapshot) => {
+                            report.audit.extend(policy_audit.clone());
+                            append_supervisor_audit(&mut report.audit, &snapshot);
+                            self.record_provider_observability(
+                                &handle,
+                                &report.trace,
+                                &report.status,
+                                AuditOutcome::Failed,
+                                None,
+                                Some(&snapshot),
+                            );
+                            return Ok(report);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let completed = self
+                        .supervisor
+                        .borrow_mut()
+                        .complete(&slot, ProviderExecutionOutcome::failed(&error))?;
+                    match self.restart_after_failure(
+                        &handle,
+                        &slot,
+                        &completed,
+                        error.message(),
+                        error.is_retryable(),
+                    )? {
+                        ProviderRestartStep::Retry { delay_ms, snapshot } => {
+                            self.record_provider_observability(
+                                &handle,
+                                &provider_trace,
+                                "restart_pending",
+                                AuditOutcome::Planned,
+                                Some(&error),
+                                Some(&snapshot),
+                            );
+                            thread_sleep_restart(delay_ms);
+                            self.supervisor
+                                .borrow_mut()
+                                .prepare_restart(&slot, epoch_ms())?;
+                        }
+                        ProviderRestartStep::Terminal(snapshot) => {
+                            self.record_provider_observability(
+                                &handle,
+                                &provider_trace,
+                                "failed",
+                                AuditOutcome::Failed,
+                                Some(&error),
+                                Some(&snapshot),
+                            );
+                            return Err(error
+                                .with_context(
+                                    "restart_attempts",
+                                    snapshot.restart_attempts.to_string(),
+                                )
+                                .with_context(
+                                    "restart_max_attempts",
+                                    snapshot.restart_max_attempts.to_string(),
+                                )
+                                .with_context("restart_state", snapshot.restart_state));
+                        }
+                    }
+                }
             }
-            Err(error) => {
-                let snapshot = self
+        }
+    }
+
+    fn restart_after_failure(
+        &self,
+        handle: &AdapterHandle,
+        slot: &ProviderExecutionSlot,
+        snapshot: &ProviderProcessSnapshot,
+        reason: &str,
+        eligible: bool,
+    ) -> Result<ProviderRestartStep, EvaError> {
+        if !eligible {
+            let failed = self.supervisor.borrow_mut().fail_restart(slot, reason)?;
+            return Ok(ProviderRestartStep::Terminal(failed));
+        }
+        match decide_restart(
+            handle.provider.restart,
+            snapshot.restart_attempts,
+            RestartOutcome::Failure,
+            &slot.session_id,
+        ) {
+            RestartDecision::NoRestart => Ok(ProviderRestartStep::Terminal(snapshot.clone())),
+            RestartDecision::BudgetExhausted => {
+                let exhausted = self.supervisor.borrow_mut().exhaust_restart(slot, reason)?;
+                Ok(ProviderRestartStep::Terminal(exhausted))
+            }
+            RestartDecision::Restart { attempt, delay_ms } => {
+                let due_at_ms = due_at_ms(epoch_ms(), delay_ms);
+                let pending = self
                     .supervisor
                     .borrow_mut()
-                    .complete(&slot, ProviderExecutionOutcome::failed(&error))?;
-                self.record_provider_observability(
-                    &handle,
-                    &provider_trace,
-                    "failed",
-                    AuditOutcome::Failed,
-                    Some(&error),
-                    Some(&snapshot),
-                );
-                Err(error)
+                    .schedule_restart(slot, attempt, due_at_ms, reason)?;
+                Ok(ProviderRestartStep::Retry {
+                    delay_ms,
+                    snapshot: pending,
+                })
             }
         }
     }
@@ -521,6 +640,14 @@ impl AdapterRuntime {
     }
 }
 
+/// Only transport statuses that represent a transient provider execution
+/// failure may consume the durable restart budget. Deterministic protocol
+/// conflicts, such as an output limit breach, are terminal and must not
+/// launch the provider a second time.
+fn report_status_restart_eligible(status: &str) -> bool {
+    matches!(status, "failed" | "timeout")
+}
+
 /// 执行 `default_observability_backend` 对应的处理逻辑。
 fn default_observability_backend(project: &ProjectConfig) -> PathBuf {
     let data_dir = project
@@ -556,7 +683,9 @@ fn dispatch_transport_with_spawner(
         AdapterTransport::Mcp => {
             transports::mcp::invoke_with_spawner(handle, invocation, process_spawner)
         }
-        AdapterTransport::Skill => transports::skill::invoke(handle, invocation),
+        AdapterTransport::Skill => {
+            transports::skill::invoke_with_spawner(handle, invocation, process_spawner)
+        }
         AdapterTransport::Builtin
         | AdapterTransport::LuaCapability
         | AdapterTransport::Eventbus => transports::builtin::invoke(handle, invocation),
@@ -588,7 +717,29 @@ fn append_supervisor_audit(audit: &mut Vec<String>, snapshot: &ProviderProcessSn
         snapshot.manifest_digest
     ));
     audit.push(format!("provider.health:{}", snapshot.health));
+    audit.push(format!(
+        "provider.restart.attempts:{}",
+        snapshot.restart_attempts
+    ));
+    audit.push(format!(
+        "provider.restart.max_attempts:{}",
+        snapshot.restart_max_attempts
+    ));
+    audit.push(format!("provider.restart.state:{}", snapshot.restart_state));
     audit.push("provider.slot:released".to_owned());
+}
+
+fn epoch_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn thread_sleep_restart(delay_ms: u64) {
+    if delay_ms > 0 {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
 }
 
 /// 声明 `tests` 子模块。
@@ -720,6 +871,117 @@ mod tests {
         assert!(process.process_group_id.is_some() || process.job_id.is_some());
     }
 
+    #[test]
+    fn runtime_crash_loop_never_exceeds_durable_restart_budget() {
+        let counter = temp_root("restart-counter").join("attempts");
+        std::fs::create_dir_all(counter.parent().unwrap()).unwrap();
+        std::env::set_var("EVA_RESTART_COUNTER_FILE", &counter);
+        let mut handle = stdio_handle(
+            true,
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            vec![
+                "--exact".to_owned(),
+                "runtime::tests::restart_failure_server_helper".to_owned(),
+                "--ignored".to_owned(),
+                "--nocapture".to_owned(),
+            ],
+            Vec::new(),
+        );
+        handle.provider.restart = eva_config::ProviderRestartConfig {
+            mode: eva_config::ProviderRestartMode::OnFailure,
+            max_attempts: 2,
+            backoff_ms: 1,
+        };
+        let runtime = runtime_with_handle(handle);
+        let report = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-provider-crash-loop").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap();
+        std::env::remove_var("EVA_RESTART_COUNTER_FILE");
+
+        assert_eq!(report.status, "failed");
+        let attempts = std::fs::read_to_string(&counter)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        assert_eq!(attempts, 3, "initial spawn plus two durable restarts");
+        let process = &runtime.provider_processes().unwrap()[0];
+        assert_eq!(process.restart_attempts, 2);
+        assert_eq!(process.restart_max_attempts, 2);
+        assert_eq!(process.restart_state, "exhausted");
+        assert!(!process.active);
+        assert!(process
+            .audit
+            .iter()
+            .any(|entry| entry == "provider.restart:budget_exhausted"));
+    }
+
+    #[test]
+    fn runtime_output_limit_is_terminal_without_restart() {
+        let counter = temp_root("output-limit-counter").join("attempts");
+        std::fs::create_dir_all(counter.parent().unwrap()).unwrap();
+        std::env::set_var("EVA_OUTPUT_LIMIT_COUNTER_FILE", &counter);
+        let mut handle = stdio_handle(
+            true,
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            vec![
+                "--exact".to_owned(),
+                "runtime::tests::output_limit_server_helper".to_owned(),
+                "--ignored".to_owned(),
+                "--nocapture".to_owned(),
+            ],
+            Vec::new(),
+        );
+        handle.output_limit_bytes = Some(8);
+        handle.provider.restart = eva_config::ProviderRestartConfig {
+            mode: eva_config::ProviderRestartMode::OnFailure,
+            max_attempts: 2,
+            backoff_ms: 1,
+        };
+        let runtime = runtime_with_handle(handle);
+        let report = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-provider-output-limit").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap();
+        std::env::remove_var("EVA_OUTPUT_LIMIT_COUNTER_FILE");
+
+        assert_eq!(report.status, "output_limit_exceeded");
+        let attempts = std::fs::read_to_string(&counter)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        assert_eq!(
+            attempts, 1,
+            "deterministic output overflow must not restart"
+        );
+        let process = &runtime.provider_processes().unwrap()[0];
+        assert_eq!(process.restart_attempts, 0);
+        assert_eq!(process.restart_state, "failed");
+        assert!(!process.active);
+        assert!(process
+            .audit
+            .iter()
+            .any(|entry| entry == "provider.restart:non_retryable"));
+    }
+
     /// Verify MCP stdio uses the same central spawn/register path as plain
     /// stdio and leaves a completed, identity-bearing process record.
     #[test]
@@ -836,6 +1098,31 @@ mod tests {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(30));
         }
+    }
+
+    #[test]
+    #[ignore = "spawned by runtime_crash_loop_never_exceeds_durable_restart_budget"]
+    fn restart_failure_server_helper() {
+        let path = std::env::var("EVA_RESTART_COUNTER_FILE").unwrap();
+        let current = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        std::fs::write(path, (current + 1).to_string()).unwrap();
+        std::process::exit(1);
+    }
+
+    #[test]
+    #[ignore = "spawned by runtime_output_limit_is_terminal_without_restart"]
+    fn output_limit_server_helper() {
+        let path = std::env::var("EVA_OUTPUT_LIMIT_COUNTER_FILE").unwrap();
+        let current = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        std::fs::write(path, (current + 1).to_string()).unwrap();
+        print!("0123456789abcdef");
+        std::io::stdout().flush().unwrap();
     }
 
     /// 验证 `runtime_writes_provider_observability_when_backend_is_configured` 场景下的预期行为。

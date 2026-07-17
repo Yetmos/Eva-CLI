@@ -17,7 +17,7 @@
 | TaskStateStore | `TaskStateStore`、`FileSystemTaskStateStore` | 默认保存 `.eva/tasks` task snapshot，也可使用 durable backend 的 `tasks/` 目录；权威 ID 文件携带 record version/generation，既有任务必须 CAS，latest 是原子刷新但不与 ID 文件组成跨文件事务的派生别名。v3 TaskEnvelope 在 create 后不可被 lifecycle CAS 修改。 |
 | AuditSink | `FileSystemAuditSink`、`AuditRecord` | 将 `AuditEvent` 写入 durable backend `audit/` 目录，保存 action/outcome/trace/message/fields，并支持按 trace id 查询。 |
 | ArtifactStore | `ArtifactStore`、`ArtifactRecord`、`InMemoryArtifactStore`、`FileSystemArtifactStore` | 保存 bytes，并生成可重复 SHA-256 digest；filesystem backend 会落盘 bytes 和 v2 metadata，记录 size、content type、retention policy 和 retain-until timestamp，并在读取时重新校验 key、size 和 digest。 |
-| ProviderProcessTable | `ProviderProcessTable`、`ProviderProcessSnapshot`、`InMemoryProviderProcessTable`、`FileSystemProviderProcessTable` | 记录 provider session/process id、manifest digest、start command、health、last error、restart policy、retry backoff hint 和 audit；filesystem backend 写入 durable `state/provider-processes/`，供 daemon restart recovery 扫描。 |
+| ProviderProcessTable | `ProviderProcessTable`、`ProviderProcessSnapshot`、`InMemoryProviderProcessTable`、`FileSystemProviderProcessTable` | 记录 provider session、真实 PID/group-or-Job/start token、manifest digest、health、restart budget/attempt/due/state、record version、writer generation 和 audit；filesystem backend 以 fenced CAS 写入 `state/provider-processes/`，供 daemon restart recovery 扫描。 |
 | SQLite | `sqlite.rs` | 仍是 durable backend 边界占位，V0.4 不引入 SQLite 依赖。 |
 
 ## 模块边界
@@ -169,21 +169,24 @@ provider supervisor baseline:
 supports querying active sessions by adapter and gives `eva-adapter` a stable
 contract before later persistent recovery work.
 
-## V1.13.5 Provider Process Recovery Store
+## W3-L06 Provider Process Restart Store
 
-`FileSystemProviderProcessTable::from_durable_layout(layout)` stores provider
-process snapshots under `state/provider-processes/` in the durable backend.
-Each snapshot keeps request/adapter/capability identity, session/process id,
-manifest digest, start command, health, active flag, retry backoff hint, last
-safe error, and append-only audit entries. `mark_interrupted_after_restart()`
-marks stale active sessions inactive with `health=interrupted` while preserving
-any existing `last_error` and appending recovery audit evidence.
+`FileSystemProviderProcessTable::from_durable_layout(layout)` provides the
+read-only restart view under `state/provider-processes/`; mutations require
+`from_runtime_writer(layout, writer)`. Provider-process v3 preserves real OS
+identity, monotonic process/restart attempts, immutable restart budget, absolute
+restart due time, restart state, record version, and writer generation. Every
+transition is fenced by the same runtime-writer and per-record CAS contract.
+Legacy v1/v2 records remain readable and are upgraded exactly once by a current
+writer. Pending/starting records are recoverable across daemon generations,
+while stable, exhausted, and non-retryable terminal states fail closed.
 
 ## 后续计划
 
 | 版本 | 计划 |
 | --- | --- |
 | V0.5 | 为 dead-letter 和任务日志增加查询索引。 |
+| W3-L06 | provider process v3 已持久化 restart attempt/budget/due/state，并支持 daemon generation 变化后的 fenced recovery。 |
 | V1.13.5 | 已新增 filesystem provider process table，daemon recovery 可扫描并中断残留 active session。 |
 | V1.13.1 | 已新增 provider process table baseline，覆盖 supervisor slot acquire/release evidence。 |
 | V1.12.3 | 已将 task snapshot 升级为 durable task lifecycle，覆盖 heartbeat、deadline、cancel token 和 task log append。 |

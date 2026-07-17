@@ -11,6 +11,8 @@ pub mod manifest;
 pub mod process_backend;
 /// 声明 `registry` 子模块。
 pub mod registry;
+/// Durable provider restart policy and backoff calculation.
+pub mod restart;
 /// 声明 `router` 子模块。
 pub mod router;
 /// 声明 `runtime` 子模块。
@@ -33,6 +35,10 @@ pub use process_backend::{
     ProcessTerminationReport, ProviderProcessHandle, ProviderProcessSpawner,
 };
 pub use registry::AdapterRegistry;
+pub use restart::{
+    decide_restart, due_at_ms as restart_due_at_ms, RestartDecision, RestartOutcome,
+    DEFAULT_STABLE_RUN_WINDOW_MS, MAX_RESTART_BACKOFF_MS,
+};
 pub use router::{AdapterRoute, AdapterRouteRequest, AdapterRouter};
 pub use runtime::{AdapterInvocation, AdapterInvokeReport, AdapterProbeReport, AdapterRuntime};
 pub use stream::{

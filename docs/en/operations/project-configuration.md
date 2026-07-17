@@ -67,7 +67,7 @@ credentials:
       ref: vault://providers/github/token#value
 ```
 
-`restart.mode` supports `none`, `on_failure`, and `always`; `max_attempts` counts automatic restarts after the initial start and `backoff_ms` must be positive. Missing `supervision` or `credentials` preserves the legacy `none/current/empty` defaults. Automatic restart and a non-`current` identity are accepted only for process-backed `stdio`, Skill, and MCP stdio; HTTP and MCP HTTP fail during loading. Vault targets must also be listed in `permissions.env`. References are sorted and included in the provider manifest digest, but W3-L01 does not contact a vault, switch OS identities, or restart a process; those behaviors belong to later W3-L03/W3-L06/W3-L08/W3-L09 work.
+`restart.mode` supports `none`, `on_failure`, and `always`; `max_attempts` counts automatic restarts after the initial start and `backoff_ms` must be positive. Missing `supervision` or `credentials` preserves the legacy `none/current/empty` defaults. Automatic restart and a non-`current` identity are accepted only for process-backed `stdio`, Skill, and MCP stdio; HTTP and MCP HTTP fail during loading. W3-L06 now executes bounded durable restart with exponential backoff/jitter, absolute due times, and stable-window reset for process providers; `always` does not replay an already successful one-shot request. Vault targets must also be listed in `permissions.env` and remain references only; identity switching and vault fetch remain W3-L08/W3-L09.
 
 ## Validation Pipeline
 

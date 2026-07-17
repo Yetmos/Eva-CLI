@@ -9,7 +9,7 @@ use crate::manifest::{AdapterCircuitBreaker, AdapterHandle, AdapterRateLimit};
 use crate::process_backend::ProcessIdentity;
 use crate::runtime::AdapterInvocation;
 use eva_config::{AdapterTransport, ProviderConfig, ProviderRunAsIdentity};
-use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
+use eva_core::{AdapterId, CapabilityName, ErrorKind, EvaError, RequestId};
 use eva_storage::{
     FileSystemProviderProcessTable, InMemoryProviderProcessTable, ProviderProcessSnapshot,
     ProviderProcessTable,
@@ -117,6 +117,54 @@ pub trait ProviderSupervisor {
     ) -> Result<ProviderProcessSnapshot, EvaError> {
         Err(EvaError::unsupported(
             "provider supervisor does not support OS process registration",
+        ))
+    }
+    /// Persist a consumed restart attempt and its next due time.
+    fn schedule_restart(
+        &mut self,
+        _slot: &ProviderExecutionSlot,
+        _attempt: u32,
+        _due_at_ms: u128,
+        _reason: &str,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        Err(EvaError::unsupported(
+            "provider supervisor does not support durable restart scheduling",
+        ))
+    }
+    /// Move a due durable restart into its pre-spawn state.
+    fn prepare_restart(
+        &mut self,
+        _slot: &ProviderExecutionSlot,
+        _now_ms: u128,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        Err(EvaError::unsupported(
+            "provider supervisor does not support durable restart preparation",
+        ))
+    }
+    /// Persist terminal budget exhaustion.
+    fn exhaust_restart(
+        &mut self,
+        _slot: &ProviderExecutionSlot,
+        _reason: &str,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        Err(EvaError::unsupported(
+            "provider supervisor does not support durable restart exhaustion",
+        ))
+    }
+    /// Persist a terminal failure that must not consume restart budget.
+    fn fail_restart(
+        &mut self,
+        _slot: &ProviderExecutionSlot,
+        _reason: &str,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        Err(EvaError::unsupported(
+            "provider supervisor does not support terminal restart failure",
+        ))
+    }
+    /// Read the authoritative durable snapshot for a slot.
+    fn snapshot(&self, _slot: &ProviderExecutionSlot) -> Result<ProviderProcessSnapshot, EvaError> {
+        Err(EvaError::unsupported(
+            "provider supervisor does not expose durable restart state",
         ))
     }
     /// 执行 `processes` 对应的处理逻辑。
@@ -400,12 +448,28 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         request: ProviderExecutionRequest,
     ) -> Result<ProviderExecutionSlot, EvaError> {
         let now = now_ms();
+        let session_id = session_id(&request.request_id, &request.adapter_id);
+        let provider_process_id = provider_process_id(&request.request_id, &request.adapter_id);
+        match self.read_process(&session_id) {
+            Ok(mut existing) => {
+                ensure_request_matches_snapshot(&request, &existing)?;
+                existing.prepare_for_restart(now)?;
+                let committed = self.upsert_process(existing)?;
+                return Ok(ProviderExecutionSlot {
+                    session_id: committed.session_id,
+                    provider_process_id: committed.provider_process_id,
+                    request_id: committed.request_id,
+                    adapter_id: committed.adapter_id,
+                    half_open_probe: false,
+                });
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         // 熔断检查会占用半开探测权，因此其后任何检查失败都不能产生进程快照。
         let half_open_probe = self.admit_circuit(&request, now)?;
         self.admit_concurrency(&request)?;
         self.admit_rate_limit(&request, now)?;
-        let session_id = session_id(&request.request_id, &request.adapter_id);
-        let provider_process_id = provider_process_id(&request.request_id, &request.adapter_id);
         let limit_audit = limit_audit_entries(&request, half_open_probe);
         let restart_policy = request.provider.restart.mode.as_str().to_owned();
         let mut snapshot = ProviderProcessSnapshot::running(
@@ -421,6 +485,10 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         );
         snapshot.audit.extend(limit_audit);
         snapshot.retry_backoff_ms = request.retry_backoff_ms;
+        snapshot.configure_restart_budget(
+            request.provider.restart.max_attempts,
+            request.provider.restart.backoff_ms,
+        )?;
         self.upsert_process(snapshot)?;
         Ok(ProviderExecutionSlot {
             session_id,
@@ -443,6 +511,9 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
             self.table.read(&slot.session_id)?
         };
         snapshot.release(outcome.health, outcome.last_error)?;
+        if snapshot.last_error.is_none() && snapshot.health == "completed" {
+            snapshot.mark_stable_success()?;
+        }
         self.record_circuit_outcome(slot, &mut snapshot);
         self.upsert_process(snapshot)
     }
@@ -453,6 +524,58 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         identity: &ProcessIdentity,
     ) -> Result<ProviderProcessSnapshot, EvaError> {
         InMemoryProviderSupervisor::register_process_identity(self, slot, identity)
+    }
+
+    fn schedule_restart(
+        &mut self,
+        slot: &ProviderExecutionSlot,
+        attempt: u32,
+        due_at_ms: u128,
+        reason: &str,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        let mut snapshot = self.read_process(&slot.session_id)?;
+        ensure_slot_matches_snapshot(slot, &snapshot)?;
+        snapshot.mark_restart_pending(attempt, due_at_ms, reason)?;
+        self.upsert_process(snapshot)
+    }
+
+    fn prepare_restart(
+        &mut self,
+        slot: &ProviderExecutionSlot,
+        now_ms: u128,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        let mut snapshot = self.read_process(&slot.session_id)?;
+        ensure_slot_matches_snapshot(slot, &snapshot)?;
+        snapshot.prepare_for_restart(now_ms)?;
+        self.upsert_process(snapshot)
+    }
+
+    fn exhaust_restart(
+        &mut self,
+        slot: &ProviderExecutionSlot,
+        reason: &str,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        let mut snapshot = self.read_process(&slot.session_id)?;
+        ensure_slot_matches_snapshot(slot, &snapshot)?;
+        snapshot.mark_restart_exhausted(reason)?;
+        self.upsert_process(snapshot)
+    }
+
+    fn fail_restart(
+        &mut self,
+        slot: &ProviderExecutionSlot,
+        reason: &str,
+    ) -> Result<ProviderProcessSnapshot, EvaError> {
+        let mut snapshot = self.read_process(&slot.session_id)?;
+        ensure_slot_matches_snapshot(slot, &snapshot)?;
+        snapshot.mark_restart_failed(reason)?;
+        self.upsert_process(snapshot)
+    }
+
+    fn snapshot(&self, slot: &ProviderExecutionSlot) -> Result<ProviderProcessSnapshot, EvaError> {
+        let snapshot = self.read_process(&slot.session_id)?;
+        ensure_slot_matches_snapshot(slot, &snapshot)?;
+        Ok(snapshot)
     }
 
     /// 执行 `processes` 对应的处理逻辑。
@@ -476,21 +599,10 @@ impl InMemoryProviderSupervisor {
         slot: &ProviderExecutionSlot,
         identity: &ProcessIdentity,
     ) -> Result<ProviderProcessSnapshot, EvaError> {
-        let mut snapshot = if let Some(table) = &self.durable_table {
-            table.read(&slot.session_id)?
-        } else {
-            self.table.read(&slot.session_id)?
-        };
-        if snapshot.provider_process_id != slot.provider_process_id
-            || snapshot.request_id != slot.request_id
-            || snapshot.adapter_id != slot.adapter_id
-        {
-            return Err(EvaError::conflict(
-                "provider process registration slot identity does not match snapshot",
-            )
-            .with_context("session_id", &slot.session_id));
-        }
-        if !snapshot.active || snapshot.health != "running" {
+        let mut snapshot = self.read_process(&slot.session_id)?;
+        ensure_slot_matches_snapshot(slot, &snapshot)?;
+        let restarting = snapshot.restart_state == "starting";
+        if (!snapshot.active || snapshot.health != "running") && !restarting {
             return Err(EvaError::conflict(
                 "provider process registration requires an active running slot",
             )
@@ -502,7 +614,11 @@ impl InMemoryProviderSupervisor {
                     .with_context("session_id", &slot.session_id),
             );
         }
-        identity.stamp_snapshot(&mut snapshot, 1)?;
+        let process_attempt = snapshot.next_process_attempt();
+        identity.stamp_snapshot(&mut snapshot, process_attempt)?;
+        if restarting {
+            snapshot.mark_restart_running()?;
+        }
         snapshot
             .audit
             .push("provider.process:registered".to_owned());
@@ -518,6 +634,14 @@ impl InMemoryProviderSupervisor {
             }
         ));
         self.upsert_process(snapshot)
+    }
+
+    fn read_process(&self, session_id: &str) -> Result<ProviderProcessSnapshot, EvaError> {
+        if let Some(table) = &self.durable_table {
+            table.read(session_id)
+        } else {
+            self.table.read(session_id)
+        }
     }
 
     /// 执行 `upsert_process` 对应的处理逻辑。
@@ -685,6 +809,46 @@ fn admission_error(
         error = error.with_context("retry_after_ms", retry_after_ms.to_string());
     }
     error
+}
+
+fn ensure_slot_matches_snapshot(
+    slot: &ProviderExecutionSlot,
+    snapshot: &ProviderProcessSnapshot,
+) -> Result<(), EvaError> {
+    if snapshot.provider_process_id == slot.provider_process_id
+        && snapshot.request_id == slot.request_id
+        && snapshot.adapter_id == slot.adapter_id
+    {
+        return Ok(());
+    }
+    Err(
+        EvaError::conflict("provider execution slot identity does not match durable snapshot")
+            .with_context("session_id", &slot.session_id),
+    )
+}
+
+fn ensure_request_matches_snapshot(
+    request: &ProviderExecutionRequest,
+    snapshot: &ProviderProcessSnapshot,
+) -> Result<(), EvaError> {
+    let matches = snapshot.request_id == request.request_id
+        && snapshot.adapter_id == request.adapter_id
+        && snapshot.capability == request.capability
+        && snapshot.transport == request.transport.as_str()
+        && snapshot.manifest_digest == request.manifest_digest
+        && snapshot.start_command == request.start_command
+        && snapshot.restart_policy == request.provider.restart.mode.as_str()
+        && snapshot.restart_max_attempts == request.provider.restart.max_attempts
+        && snapshot.restart_backoff_ms == request.provider.restart.backoff_ms;
+    if matches {
+        return Ok(());
+    }
+    Err(
+        EvaError::conflict("provider restart request does not match its durable session identity")
+            .with_context("session_id", &snapshot.session_id)
+            .with_context("adapter_id", request.adapter_id.as_str())
+            .with_context("request_id", request.request_id.as_str()),
+    )
 }
 
 /// 执行 `limit_audit_entries` 对应的处理逻辑。

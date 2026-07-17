@@ -6,6 +6,7 @@
 //! Workflow skill Adapter transport runner.
 
 use crate::manifest::{AdapterHandle, SkillInputSchema};
+use crate::process_backend::{ProviderProcessHandle, ProviderProcessSpawner};
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
 use crate::stream::{
     capture_provider_bytes, collect_provider_stream, provider_stream_audit, provider_stream_key,
@@ -164,6 +165,75 @@ struct RawSkillRunReport {
     audit: Vec<String>,
 }
 
+enum SkillChild {
+    Direct(std::process::Child),
+    Supervised(ProviderProcessHandle),
+}
+
+impl SkillChild {
+    fn pid(&self) -> u32 {
+        match self {
+            Self::Direct(child) => child.id(),
+            Self::Supervised(handle) => handle.pid(),
+        }
+    }
+
+    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+        match self {
+            Self::Direct(child) => child
+                .stdin
+                .take()
+                .map(|stdin| Box::new(stdin) as Box<dyn Write + Send>),
+            Self::Supervised(handle) => handle
+                .take_stdin()
+                .map(|stdin| Box::new(stdin) as Box<dyn Write + Send>),
+        }
+    }
+
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        match self {
+            Self::Direct(child) => child
+                .stdout
+                .take()
+                .map(|stdout| Box::new(stdout) as Box<dyn Read + Send>),
+            Self::Supervised(handle) => handle
+                .take_stdout()
+                .map(|stdout| Box::new(stdout) as Box<dyn Read + Send>),
+        }
+    }
+
+    fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
+        match self {
+            Self::Direct(child) => child
+                .stderr
+                .take()
+                .map(|stderr| Box::new(stderr) as Box<dyn Read + Send>),
+            Self::Supervised(handle) => handle
+                .take_stderr()
+                .map(|stderr| Box::new(stderr) as Box<dyn Read + Send>),
+        }
+    }
+
+    fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, EvaError> {
+        match self {
+            Self::Direct(child) => child.try_wait().map_err(|error| {
+                EvaError::unavailable("failed to read skill runner process status")
+                    .with_context("io_error", error.to_string())
+            }),
+            Self::Supervised(handle) => handle.try_wait(),
+        }
+    }
+}
+
+fn terminate_skill_child(child: &mut SkillChild) {
+    match child {
+        SkillChild::Direct(child) => kill_child(child),
+        SkillChild::Supervised(handle) => {
+            let _ = handle.force_terminate();
+        }
+    }
+}
+
 /// 表示 `CredentialEnvValues` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CredentialEnvValues {
@@ -228,11 +298,28 @@ impl SkillRunner {
         config: &SkillRunnerConfig,
         invocation: SkillRunnerInvocation,
     ) -> Result<SkillRunReport, EvaError> {
+        self.run_with_spawner(config, invocation, None)
+    }
+
+    /// Runs a process-backed skill through an optional central process owner.
+    pub fn run_with_spawner(
+        &self,
+        config: &SkillRunnerConfig,
+        invocation: SkillRunnerInvocation,
+        process_spawner: Option<&dyn ProviderProcessSpawner>,
+    ) -> Result<SkillRunReport, EvaError> {
         validate_runner_config(config, &invocation)?;
         let paths = prepare_run_paths(config, &invocation)?;
         let sensitive_values = sensitive_values(invocation.env.values());
         let raw = if let Some(command) = &invocation.command {
-            run_process(config, &paths, &invocation, command, &sensitive_values)?
+            run_process(
+                config,
+                &paths,
+                &invocation,
+                command,
+                &sensitive_values,
+                process_spawner,
+            )?
         } else if invocation.entry_type == "codex_skill" {
             run_builtin_codex_skill(&paths, &invocation)?
         } else {
@@ -279,6 +366,15 @@ impl SkillRunner {
 pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
+) -> Result<AdapterInvokeReport, EvaError> {
+    invoke_with_spawner(handle, invocation, None)
+}
+
+/// Invokes a skill while optionally attaching the central process registrar.
+pub fn invoke_with_spawner(
+    handle: &AdapterHandle,
+    invocation: AdapterInvocation,
+    process_spawner: Option<&dyn ProviderProcessSpawner>,
 ) -> Result<AdapterInvokeReport, EvaError> {
     let skill = handle.skill_name().ok_or_else(|| {
         EvaError::invalid_argument("Skill adapter is missing skill.id")
@@ -345,7 +441,7 @@ pub fn invoke(
         artifact_root,
         work_root,
     );
-    let run = SkillRunner.run(
+    let run = SkillRunner.run_with_spawner(
         &config,
         SkillRunnerInvocation {
             adapter_id: handle.id.clone(),
@@ -357,6 +453,7 @@ pub fn invoke(
             env: credential_env.values.clone(),
             input: invocation.input,
         },
+        process_spawner,
     )?;
 
     let mut audit = vec![format!("adapter.invoked:{}", handle.id.as_str())];
@@ -494,6 +591,7 @@ fn run_process(
     invocation: &SkillRunnerInvocation,
     command: &str,
     sensitive_values: &[String],
+    process_spawner: Option<&dyn ProviderProcessSpawner>,
 ) -> Result<RawSkillRunReport, EvaError> {
     let started_at = Instant::now();
     let mut env_values = invocation.env.clone();
@@ -515,42 +613,50 @@ fn run_process(
         invocation.request_id.as_str().to_owned(),
     );
     // `command` 已命中白名单，参数按独立 argv 传递，不解释管道、重定向或变量展开。
-    let mut child = Command::new(command)
+    let mut command_line = Command::new(command);
+    command_line
         .args(&invocation.args)
         .envs(env_values)
         .current_dir(&paths.working_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
+        .stderr(Stdio::piped());
+    let mut child = match process_spawner {
+        Some(spawner) => SkillChild::Supervised(spawner.spawn_provider(command_line)?),
+        None => SkillChild::Direct(command_line.spawn().map_err(|error| {
             EvaError::unavailable("failed to start skill runner process")
                 .with_context("command", command)
                 .with_context("io_error", error.to_string())
-        })?;
+        })?),
+    };
+    let process_id = child.pid();
 
     if !invocation.input.is_empty() {
-        let Some(mut stdin) = child.stdin.take() else {
-            kill_child(&mut child);
+        let Some(mut stdin) = child.take_stdin() else {
+            terminate_skill_child(&mut child);
             return Err(EvaError::internal("skill runner stdin was not available")
                 .with_context("command", command));
         };
         if let Err(error) = stdin.write_all(invocation.input.as_bytes()) {
             drop(stdin);
-            kill_child(&mut child);
+            terminate_skill_child(&mut child);
             return Err(EvaError::unavailable("failed to write skill runner input")
                 .with_context("command", command)
                 .with_context("io_error", error.to_string()));
         }
     }
-    drop(child.stdin.take());
+    drop(child.take_stdin());
 
-    let stdout = child.stdout.take().ok_or_else(|| {
-        EvaError::internal("skill runner stdout was not available").with_context("command", command)
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        EvaError::internal("skill runner stderr was not available").with_context("command", command)
-    })?;
+    let Some(stdout) = child.take_stdout() else {
+        terminate_skill_child(&mut child);
+        return Err(EvaError::internal("skill runner stdout was not available")
+            .with_context("command", command));
+    };
+    let Some(stderr) = child.take_stderr() else {
+        terminate_skill_child(&mut child);
+        return Err(EvaError::internal("skill runner stderr was not available")
+            .with_context("command", command));
+    };
     let (sender, receiver) = mpsc::channel();
     spawn_reader(
         skill_stream_config(config, invocation, "stdout"),
@@ -575,9 +681,10 @@ fn run_process(
         } else {
             let elapsed = started_at.elapsed();
             if elapsed >= timeout {
-                kill_child(&mut child);
+                terminate_skill_child(&mut child);
                 return Ok(raw_process_report(
                     command,
+                    process_id,
                     SkillRunStatus::Timeout,
                     None,
                     stdout_capture,
@@ -597,9 +704,10 @@ fn run_process(
                     stderr_capture = capture;
                 }
                 if truncated {
-                    kill_child(&mut child);
+                    terminate_skill_child(&mut child);
                     return Ok(raw_process_report(
                         command,
+                        process_id,
                         SkillRunStatus::OutputLimitExceeded,
                         None,
                         stdout_capture,
@@ -609,16 +717,17 @@ fn run_process(
                 }
             }
             Ok(ReaderMessage::ReadError { stream, error }) => {
-                kill_child(&mut child);
+                terminate_skill_child(&mut child);
                 return Err(EvaError::unavailable("failed to read skill runner output")
                     .with_context("command", command)
                     .with_context("stream", stream)
                     .with_context("io_error", error));
             }
             Err(_) => {
-                kill_child(&mut child);
+                terminate_skill_child(&mut child);
                 return Ok(raw_process_report(
                     command,
+                    process_id,
                     SkillRunStatus::Timeout,
                     None,
                     stdout_capture,
@@ -630,11 +739,7 @@ fn run_process(
     }
 
     loop {
-        if let Some(status) = child.try_wait().map_err(|error| {
-            EvaError::unavailable("failed to read skill runner process status")
-                .with_context("command", command)
-                .with_context("io_error", error.to_string())
-        })? {
+        if let Some(status) = child.try_wait()? {
             let exit_code = status.code();
             let run_status = if exit_code == Some(0) {
                 SkillRunStatus::Completed
@@ -643,6 +748,7 @@ fn run_process(
             };
             return Ok(raw_process_report(
                 command,
+                process_id,
                 run_status,
                 exit_code,
                 stdout_capture,
@@ -651,9 +757,10 @@ fn run_process(
             ));
         }
         if !timeout.is_zero() && started_at.elapsed() >= timeout {
-            kill_child(&mut child);
+            terminate_skill_child(&mut child);
             return Ok(raw_process_report(
                 command,
+                process_id,
                 SkillRunStatus::Timeout,
                 None,
                 stdout_capture,
@@ -668,6 +775,7 @@ fn run_process(
 /// 执行 `raw_process_report` 对应的处理逻辑。
 fn raw_process_report(
     command: &str,
+    process_id: u32,
     status: SkillRunStatus,
     exit_code: Option<i32>,
     stdout_stream: ProviderStreamCapture,
@@ -681,6 +789,7 @@ fn raw_process_report(
         "skill.runner:process".to_owned(),
         "shell:false".to_owned(),
         format!("skill.command:{command}"),
+        format!("process_id:{process_id}"),
     ];
     audit.extend(provider_stream_audit(&stdout_stream));
     audit.extend(provider_stream_audit(&stderr_stream));

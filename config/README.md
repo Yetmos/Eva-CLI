@@ -22,7 +22,7 @@
 - Topic route 只描述事件投递，不承载业务逻辑。显式 `target` 优先于路由匹配，`**` 只能出现在 Topic pattern 的最后一段。
 - Schema 必须与 Rust 强类型配置保持同步，并在启动前校验 YAML 解析结果。
 - Hardware Adapter 使用 `transport: hardware`，声明 bus、match、identity、protocol、hotplug、driver 和 limits。支持的 driver kind 包括 `simulated`、`usb`、`serial`、`ble`、`socket` 和 `vendor_sdk`；仓库示例保持禁用并使用 simulator，全局边界由 `policies/hardware.yaml` 定义。
-- Adapter 可选声明 `supervision.restart`（`none`、`on_failure`、`always`）和 `supervision.run_as`（`current`、`unix`、`windows`）；缺失时兼容旧清单并默认为 `none/current`。`max_attempts` 表示首次启动后的自动重启次数，真实重启与身份执行属于后续 runtime 任务。
+- Adapter 可选声明 `supervision.restart`（`none`、`on_failure`、`always`）和 `supervision.run_as`（`current`、`unix`、`windows`）；缺失时兼容旧清单并默认为 `none/current`。`max_attempts` 表示首次启动后的自动重启次数；W3-L06 已对 stdio、MCP stdio 和进程型 Skill 执行有界 durable restart，run-as 身份执行与跨进程准入仍待后续任务。
 - `credentials.vault` 只保存 `vault://...` 引用，并且目标环境变量必须同时出现在 `permissions.env`；当前 W3-L01 只校验、排序和传播引用，不执行取密。生产环境拒绝明文敏感字段、未白名单的 `env:` 引用和直接发送的 `vault://` header。
 - 这里只保存环境变量名、权限边界和连接声明，不保存 API key、token 或用户密钥明文。
 
@@ -49,5 +49,5 @@ Configuration invariants:
 - Schemas stay aligned with the strongly typed Rust configuration and validate parsed YAML before startup.
 - Hardware Adapters use `transport: hardware` and declare bus, match, identity, protocol, hotplug, driver, and limits. Supported driver kinds include `simulated`, `usb`, `serial`, `ble`, `socket`, and `vendor_sdk`; the repository sample remains disabled and simulated, while `policies/hardware.yaml` defines the global boundary.
 - Store environment variable names, permissions, and connection declarations here, never plaintext API keys, tokens, or user secrets.
-- Adapters may declare `supervision.restart` (`none`, `on_failure`, or `always`) and `supervision.run_as` (`current`, `unix`, or `windows`); missing sections preserve legacy `none/current` defaults. `max_attempts` counts automatic restarts after the initial start; real restart and identity enforcement belong to later runtime tasks.
+- Adapters may declare `supervision.restart` (`none`, `on_failure`, or `always`) and `supervision.run_as` (`current`, `unix`, or `windows`); missing sections preserve legacy `none/current` defaults. `max_attempts` counts automatic restarts after the initial start; W3-L06 now provides bounded durable restart for stdio, MCP stdio, and process-backed Skill, while run-as enforcement and cross-process admission remain later tasks.
 - `credentials.vault` stores only `vault://...` references, and each target environment variable must also be listed in `permissions.env`. W3-L01 validates, sorts, and propagates references but does not fetch secrets; production rejects plaintext sensitive fields, non-allowlisted `env:` references, and direct `vault://` headers.

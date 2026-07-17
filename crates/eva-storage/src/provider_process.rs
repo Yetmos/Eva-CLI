@@ -53,6 +53,16 @@ pub struct ProviderProcessSnapshot {
     pub retry_backoff_ms: Option<u64>,
     /// Provider 自动重启 attempt，首次启动从 1 开始；未接中央 spawn 时为 0。
     pub attempt: u32,
+    /// Provider manifest 允许消耗的自动重启次数；初始进程不计入预算。
+    pub restart_max_attempts: u32,
+    /// Provider manifest 声明的指数退避基准毫秒数。
+    pub restart_backoff_ms: u64,
+    /// 已经 durable 提交、且不可回收的自动重启次数。
+    pub restart_attempts: u32,
+    /// 下一次自动重启允许开始的 epoch 毫秒。
+    pub restart_due_at_ms: Option<u128>,
+    /// disabled、stable、pending 或 exhausted。
+    pub restart_state: String,
     /// Provider record 的单调 CAS 版本；零只表示尚未持久化的候选或 legacy v1。
     pub record_version: StateVersion,
     /// 最后提交该记录的 durable writer generation；内存表使用零。
@@ -146,6 +156,12 @@ impl ProviderProcessSnapshot {
         let now = now_ms();
         let session_id = session_id.into();
         let provider_process_id = provider_process_id.into();
+        let restart_policy = restart_policy.into();
+        let restart_state = if restart_policy == "none" {
+            "disabled"
+        } else {
+            "stable"
+        };
         Self {
             audit: vec![
                 "provider.supervisor.acquired".to_owned(),
@@ -165,9 +181,14 @@ impl ProviderProcessSnapshot {
             manifest_digest: manifest_digest.into(),
             start_command: start_command.into(),
             health: "running".to_owned(),
-            restart_policy: restart_policy.into(),
+            restart_policy,
             retry_backoff_ms: None,
             attempt: 0,
+            restart_max_attempts: 0,
+            restart_backoff_ms: 0,
+            restart_attempts: 0,
+            restart_due_at_ms: None,
+            restart_state: restart_state.to_owned(),
             record_version: StateVersion::ZERO,
             owner_generation: WriterGeneration::ZERO,
             active: true,
@@ -200,6 +221,246 @@ impl ProviderProcessSnapshot {
     /// Returns whether this snapshot carries a real OS process identity.
     pub fn has_process_identity(&self) -> bool {
         self.pid.is_some()
+    }
+
+    /// Configure the immutable restart budget on a newly admitted session.
+    pub fn configure_restart_budget(
+        &mut self,
+        max_attempts: u32,
+        backoff_ms: u64,
+    ) -> Result<(), EvaError> {
+        let mut candidate = self.clone();
+        candidate.restart_max_attempts = max_attempts;
+        candidate.restart_backoff_ms = backoff_ms;
+        candidate.restart_attempts = 0;
+        candidate.restart_due_at_ms = None;
+        candidate.restart_state = if max_attempts == 0 {
+            "disabled".to_owned()
+        } else {
+            "running".to_owned()
+        };
+        candidate.validate_restart_state()?;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Returns the process incarnation number for the next registered spawn.
+    pub fn next_process_attempt(&self) -> u32 {
+        self.restart_attempts.saturating_add(1).max(1)
+    }
+
+    /// Move a due inactive restart into the pre-spawn state. The record stays
+    /// inactive until a real OS identity is registered atomically.
+    pub fn prepare_for_restart(&mut self, now_ms: u128) -> Result<(), EvaError> {
+        if self.active || self.restart_state != "pending" {
+            return Err(EvaError::conflict(
+                "provider restart preparation requires an inactive pending session",
+            )
+            .with_context("session_id", &self.session_id)
+            .with_context("restart_state", &self.restart_state));
+        }
+        let due_at_ms = self.restart_due_at_ms.ok_or_else(|| {
+            EvaError::conflict("pending provider restart has no durable due time")
+                .with_context("session_id", &self.session_id)
+        })?;
+        if now_ms < due_at_ms {
+            return Err(
+                EvaError::unavailable("provider restart backoff has not elapsed")
+                    .with_retryable(true)
+                    .with_context("session_id", &self.session_id)
+                    .with_context("restart_due_at_ms", due_at_ms.to_string())
+                    .with_context("retry_after_ms", (due_at_ms - now_ms).to_string()),
+            );
+        }
+        self.pid = None;
+        self.process_start_token = None;
+        self.process_group_id = None;
+        self.job_id = None;
+        self.attempt = 0;
+        self.restart_due_at_ms = None;
+        self.restart_state = "starting".to_owned();
+        self.health = "restart_starting".to_owned();
+        self.updated_at_ms = now_ms;
+        self.audit
+            .push("provider.restart:spawn_requested".to_owned());
+        self.validate_record(false)
+    }
+
+    /// Promote a registered restart process to the active running state.
+    pub fn mark_restart_running(&mut self) -> Result<(), EvaError> {
+        if self.restart_state != "starting" || !self.has_process_identity() {
+            return Err(EvaError::conflict(
+                "provider restart requires a starting record and real process identity",
+            )
+            .with_context("session_id", &self.session_id));
+        }
+        self.active = true;
+        self.health = "running".to_owned();
+        self.last_error = None;
+        self.updated_at_ms = now_ms();
+        self.restart_state = "running".to_owned();
+        self.audit
+            .push("provider.restart:process_registered".to_owned());
+        self.validate_record(false)
+    }
+
+    /// Persist one consumed automatic restart and its deterministic due time.
+    pub fn mark_restart_pending(
+        &mut self,
+        attempt: u32,
+        due_at_ms: u128,
+        reason: impl Into<String>,
+    ) -> Result<(), EvaError> {
+        if attempt == 0 || attempt <= self.restart_attempts || attempt > self.restart_max_attempts {
+            return Err(
+                EvaError::conflict("provider restart attempt is outside budget")
+                    .with_context("attempt", attempt.to_string())
+                    .with_context("max_attempts", self.restart_max_attempts.to_string()),
+            );
+        }
+        self.restart_attempts = attempt;
+        self.pid = None;
+        self.process_start_token = None;
+        self.process_group_id = None;
+        self.job_id = None;
+        self.attempt = 0;
+        self.restart_due_at_ms = Some(due_at_ms);
+        self.restart_state = "pending".to_owned();
+        self.active = false;
+        self.health = "restart_pending".to_owned();
+        self.updated_at_ms = now_ms();
+        self.audit
+            .push(format!("provider.restart:attempt:{attempt}"));
+        self.audit
+            .push(format!("provider.restart:due_at_ms:{due_at_ms}"));
+        self.audit.push(format!(
+            "provider.restart:pending_reason:{}",
+            sanitize_audit_value(&reason.into())
+        ));
+        self.validate_record(false)
+    }
+
+    /// Recover a daemon crash that happened after restart budget commit but
+    /// before the new process identity was registered.
+    pub fn recover_starting_restart(&mut self, now_ms: u128) -> Result<(), EvaError> {
+        if self.active || self.restart_state != "starting" {
+            return Err(EvaError::conflict(
+                "starting provider restart is not recoverable from its current state",
+            )
+            .with_context("session_id", &self.session_id));
+        }
+        self.pid = None;
+        self.process_start_token = None;
+        self.process_group_id = None;
+        self.job_id = None;
+        self.attempt = 0;
+        self.restart_due_at_ms = Some(now_ms);
+        self.restart_state = "pending".to_owned();
+        self.health = "restart_pending".to_owned();
+        self.updated_at_ms = now_ms;
+        self.audit
+            .push("provider.restart:starting_recovered".to_owned());
+        self.validate_record(false)
+    }
+
+    /// Persist terminal budget exhaustion after a failed attempt.
+    pub fn mark_restart_exhausted(&mut self, reason: impl Into<String>) -> Result<(), EvaError> {
+        self.restart_state = "exhausted".to_owned();
+        self.restart_due_at_ms = None;
+        self.pid = None;
+        self.process_start_token = None;
+        self.process_group_id = None;
+        self.job_id = None;
+        self.attempt = 0;
+        self.active = false;
+        self.health = "restart_exhausted".to_owned();
+        self.updated_at_ms = now_ms();
+        self.audit
+            .push("provider.restart:budget_exhausted".to_owned());
+        self.audit.push(format!(
+            "provider.restart:exhausted_reason:{}",
+            sanitize_audit_value(&reason.into())
+        ));
+        self.validate_record(false)
+    }
+
+    /// Persist a non-retryable terminal failure without pretending that the
+    /// configured restart budget was consumed.
+    pub fn mark_restart_failed(&mut self, reason: impl Into<String>) -> Result<(), EvaError> {
+        self.restart_state = "failed".to_owned();
+        self.restart_due_at_ms = None;
+        self.pid = None;
+        self.process_start_token = None;
+        self.process_group_id = None;
+        self.job_id = None;
+        self.attempt = 0;
+        self.active = false;
+        self.health = "failed".to_owned();
+        self.updated_at_ms = now_ms();
+        self.audit.push("provider.restart:non_retryable".to_owned());
+        self.audit.push(format!(
+            "provider.restart:failure_reason:{}",
+            sanitize_audit_value(&reason.into())
+        ));
+        self.validate_record(false)
+    }
+
+    /// Reset the crash-loop budget after a successful stable invocation.
+    pub fn mark_stable_success(&mut self) -> Result<(), EvaError> {
+        self.restart_attempts = 0;
+        self.restart_due_at_ms = None;
+        self.restart_state = if self.restart_max_attempts == 0 {
+            "disabled".to_owned()
+        } else {
+            "stable".to_owned()
+        };
+        self.audit.push("provider.restart:stable_reset".to_owned());
+        self.validate_record(false)
+    }
+
+    fn validate_restart_state(&self) -> Result<(), EvaError> {
+        if !matches!(
+            self.restart_state.as_str(),
+            "disabled"
+                | "unconfigured"
+                | "stable"
+                | "running"
+                | "pending"
+                | "starting"
+                | "exhausted"
+                | "failed"
+        ) {
+            return Err(
+                EvaError::invalid_argument("provider restart state is invalid")
+                    .with_context("restart_state", &self.restart_state),
+            );
+        }
+        if self.restart_attempts > self.restart_max_attempts {
+            return Err(EvaError::conflict(
+                "provider restart attempts exceed configured budget",
+            ));
+        }
+        if self.restart_state == "pending" && self.restart_due_at_ms.is_none() {
+            return Err(EvaError::invalid_argument(
+                "pending provider restart requires a due timestamp",
+            ));
+        }
+        if self.restart_state != "pending" && self.restart_due_at_ms.is_some() {
+            return Err(EvaError::invalid_argument(
+                "non-pending provider restart cannot carry a due timestamp",
+            ));
+        }
+        if self.restart_max_attempts == 0 && self.restart_backoff_ms != 0 {
+            return Err(EvaError::invalid_argument(
+                "disabled provider restart requires zero backoff",
+            ));
+        }
+        if self.restart_max_attempts > 0 && self.restart_backoff_ms == 0 {
+            return Err(EvaError::invalid_argument(
+                "automatic provider restart requires positive backoff",
+            ));
+        }
+        Ok(())
     }
 
     fn validate_identity(&self) -> Result<(), EvaError> {
@@ -263,6 +524,7 @@ impl ProviderProcessSnapshot {
             ));
         }
         self.validate_identity()?;
+        self.validate_restart_state()?;
         if persisted && self.record_version == StateVersion::ZERO {
             return Err(EvaError::conflict(
                 "persisted provider process record must have a positive version",
@@ -323,13 +585,23 @@ impl ProviderProcessSnapshot {
         self.audit.push("provider.health:interrupted".to_owned());
     }
 
-    /// 序列化为 version=2 逐行格式；可选值为空串，重复 audit 行保留顺序。
+    /// 序列化为 version=3 逐行格式；可选值为空串，重复 audit 行保留顺序。
     pub fn to_storage(&self) -> String {
         let mut lines = vec![
-            "version=2".to_owned(),
+            "version=3".to_owned(),
             format!("record_version={}", self.record_version.0),
             format!("owner_generation={}", self.owner_generation.0),
             format!("attempt={}", self.attempt),
+            format!("restart_max_attempts={}", self.restart_max_attempts),
+            format!("restart_backoff_ms={}", self.restart_backoff_ms),
+            format!("restart_attempts={}", self.restart_attempts),
+            format!(
+                "restart_due_at_ms={}",
+                self.restart_due_at_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            ),
+            format!("restart_state={}", encode_field(&self.restart_state)),
             format!("session_id={}", encode_field(&self.session_id)),
             format!(
                 "provider_process_id={}",
@@ -390,8 +662,8 @@ impl ProviderProcessSnapshot {
         lines.join("\n")
     }
 
-    /// 严格解析 version=1/2 快照并重新验证 RequestId、AdapterId 和 CapabilityName。
-    /// v1 缺少的 CAS/OS identity 字段按零/None 兼容读取；首次 v2 CAS 会升级它。
+    /// 严格解析 version=1/2/3 快照并重新验证 RequestId、AdapterId 和 CapabilityName。
+    /// 旧版本缺少的 restart controller 字段按未配置状态兼容读取；首次 CAS 会升级它。
     pub fn from_storage(data: &str) -> Result<Self, EvaError> {
         use std::collections::BTreeSet;
 
@@ -399,6 +671,11 @@ impl ProviderProcessSnapshot {
         let mut record_version = None;
         let mut owner_generation = None;
         let mut attempt = None;
+        let mut restart_max_attempts = None;
+        let mut restart_backoff_ms = None;
+        let mut restart_attempts = None;
+        let mut restart_due_at_ms = None;
+        let mut restart_state = None;
         let mut session_id = None;
         let mut provider_process_id = None;
         let mut pid = None;
@@ -454,6 +731,28 @@ impl ProviderProcessSnapshot {
                         EvaError::invalid_argument("provider process attempt is invalid")
                     })?);
                 }
+                "restart_max_attempts" => {
+                    restart_max_attempts = Some(value.parse::<u32>().map_err(|_| {
+                        EvaError::invalid_argument(
+                            "provider process restart_max_attempts is invalid",
+                        )
+                    })?);
+                }
+                "restart_backoff_ms" => {
+                    restart_backoff_ms = Some(value.parse::<u64>().map_err(|_| {
+                        EvaError::invalid_argument("provider process restart_backoff_ms is invalid")
+                    })?);
+                }
+                "restart_attempts" => {
+                    restart_attempts = Some(value.parse::<u32>().map_err(|_| {
+                        EvaError::invalid_argument("provider process restart_attempts is invalid")
+                    })?);
+                }
+                "restart_due_at_ms" => {
+                    restart_due_at_ms =
+                        parse_optional_u128(value, "provider process restart_due_at_ms is invalid")?
+                }
+                "restart_state" => restart_state = Some(decode_field(value)),
                 "session_id" => session_id = Some(decode_field(value)),
                 "provider_process_id" => provider_process_id = Some(decode_field(value)),
                 "pid" => pid = parse_optional_u32(value, "provider process pid is invalid")?,
@@ -500,13 +799,13 @@ impl ProviderProcessSnapshot {
         let version = version.ok_or_else(|| {
             EvaError::invalid_argument("provider process snapshot is missing version")
         })?;
-        if !matches!(version, 1 | 2) {
+        if !matches!(version, 1..=3) {
             return Err(
                 EvaError::invalid_argument("provider process version mismatch")
                     .with_context("version", version.to_string()),
             );
         }
-        if version == 2
+        if version >= 2
             && (!seen_scalars.contains("record_version")
                 || !seen_scalars.contains("owner_generation")
                 || !seen_scalars.contains("attempt")
@@ -519,7 +818,18 @@ impl ProviderProcessSnapshot {
                 "provider process v2 snapshot is missing identity or CAS fields",
             ));
         }
-        if version == 2 && owner_generation.unwrap_or(0) == 0 {
+        if version == 3
+            && (!seen_scalars.contains("restart_max_attempts")
+                || !seen_scalars.contains("restart_backoff_ms")
+                || !seen_scalars.contains("restart_attempts")
+                || !seen_scalars.contains("restart_due_at_ms")
+                || !seen_scalars.contains("restart_state"))
+        {
+            return Err(EvaError::invalid_argument(
+                "provider process v3 snapshot is missing restart controller fields",
+            ));
+        }
+        if version >= 2 && owner_generation.unwrap_or(0) == 0 {
             return Err(EvaError::conflict(
                 "provider process v2 snapshot requires a positive owner generation",
             ));
@@ -528,6 +838,17 @@ impl ProviderProcessSnapshot {
             record_version: StateVersion(record_version.unwrap_or(0)),
             owner_generation: WriterGeneration(owner_generation.unwrap_or(0)),
             attempt: attempt.unwrap_or(0),
+            restart_max_attempts: restart_max_attempts.unwrap_or(0),
+            restart_backoff_ms: restart_backoff_ms.unwrap_or(0),
+            restart_attempts: restart_attempts.unwrap_or(0),
+            restart_due_at_ms,
+            restart_state: restart_state.unwrap_or_else(|| {
+                if version < 3 {
+                    "unconfigured".to_owned()
+                } else {
+                    String::new()
+                }
+            }),
             session_id: session_id
                 .ok_or_else(|| EvaError::invalid_argument("provider process missing session_id"))?,
             provider_process_id: provider_process_id.ok_or_else(|| {
@@ -568,7 +889,7 @@ impl ProviderProcessSnapshot {
             })?,
             audit,
         };
-        snapshot.validate_record(version == 2)?;
+        snapshot.validate_record(version >= 2)?;
         Ok(snapshot)
     }
 }
@@ -694,6 +1015,8 @@ fn ensure_immutable_identity(
         && current.start_command == candidate.start_command
         && current.restart_policy == candidate.restart_policy
         && current.retry_backoff_ms == candidate.retry_backoff_ms
+        && current.restart_max_attempts == candidate.restart_max_attempts
+        && current.restart_backoff_ms == candidate.restart_backoff_ms
         && current.started_at_ms == candidate.started_at_ms;
     if same {
         return Ok(());
@@ -971,6 +1294,17 @@ fn parse_optional_u64(value: &str, message: &'static str) -> Result<Option<u64>,
     }
 }
 
+fn parse_optional_u128(value: &str, message: &'static str) -> Result<Option<u128>, EvaError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        value
+            .parse::<u128>()
+            .map(Some)
+            .map_err(|_| EvaError::invalid_argument(message).with_context("value", value))
+    }
+}
+
 fn parse_optional_u32(value: &str, message: &'static str) -> Result<Option<u32>, EvaError> {
     if value.is_empty() {
         Ok(None)
@@ -1220,6 +1554,50 @@ mod tests {
         assert_eq!(windows_reopened.process_group_id, None);
         assert_eq!(windows_reopened.job_id.as_deref(), Some("job-4343"));
         assert_eq!(windows_reopened.attempt, 2);
+    }
+
+    #[test]
+    fn restart_budget_and_pending_due_time_survive_writer_generation_change() {
+        let root = test_root("restart-budget-round-trip");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut writer = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            backend.acquire_runtime_writer().unwrap(),
+        )
+        .unwrap();
+        let mut pending = snapshot("restart-budget");
+        pending.restart_policy = "on_failure".to_owned();
+        pending.configure_restart_budget(3, 25).unwrap();
+        pending
+            .mark_restart_pending(1, 9_999_999, "first crash")
+            .unwrap();
+        let committed = writer.compare_and_set(pending).unwrap();
+        assert_eq!(committed.restart_attempts, 1);
+        assert_eq!(committed.restart_state, "pending");
+        assert_eq!(committed.restart_due_at_ms, Some(9_999_999));
+
+        let reopened = FileSystemProviderProcessTable::from_durable_layout(backend.layout())
+            .read("restart-budget")
+            .unwrap();
+        assert_eq!(reopened.restart_max_attempts, 3);
+        assert_eq!(reopened.restart_backoff_ms, 25);
+        assert_eq!(reopened.restart_attempts, 1);
+        assert_eq!(reopened.restart_state, "pending");
+
+        drop(writer);
+        let mut next_writer = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            backend.acquire_runtime_writer().unwrap(),
+        )
+        .unwrap();
+        let mut stable = reopened.clone();
+        stable.active = false;
+        stable.mark_stable_success().unwrap();
+        let reset = next_writer.compare_and_set(stable).unwrap();
+        assert_eq!(reset.restart_attempts, 0);
+        assert_eq!(reset.restart_state, "stable");
+        assert_eq!(reset.restart_due_at_ms, None);
     }
 
     #[test]

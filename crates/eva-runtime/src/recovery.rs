@@ -6,7 +6,11 @@
 //! V1.6.4 runtime crash recovery coordinator.
 
 use crate::{TaskHandlerRegistry, TaskKind};
-use eva_adapter::{OsProcessBackend, ProcessTerminationOutcome, ProcessTerminationReport};
+use eva_adapter::{
+    decide_restart, restart_due_at_ms, OsProcessBackend, ProcessTerminationOutcome,
+    ProcessTerminationReport, RestartDecision, RestartOutcome, DEFAULT_STABLE_RUN_WINDOW_MS,
+};
+use eva_config::{ProviderRestartConfig, ProviderRestartMode};
 use eva_core::{EvaError, EventId};
 use eva_eventbus::DurableEventBus;
 use eva_observability::{AuditAction, AuditEvent, AuditOutcome, AuditSink, TraceFields};
@@ -906,12 +910,70 @@ fn recover_provider_processes(
 
     for mut process in processes {
         if !process.active {
+            if matches!(process.restart_state.as_str(), "starting" | "pending") {
+                let previous_health = process.health.clone();
+                if process.restart_state == "starting" {
+                    process.recover_starting_restart(epoch_millis_now())?;
+                }
+                let task_id = process.request_id.as_str().to_owned();
+                let task_status = recover_provider_task(report, &process);
+                let retry_scheduled = task_status
+                    .as_ref()
+                    .map(|status| status == "recovering")
+                    .unwrap_or(false)
+                    && report
+                        .provider_backoff_tasks
+                        .iter()
+                        .any(|entry| entry.session_id == process.session_id);
+                if let Some(store) = task_store.as_deref_mut() {
+                    let persisted = persist_provider_task_recovery(store, report, &task_id)?;
+                    if persisted {
+                        report.audit.push(format!(
+                            "runtime.recovery:provider_task_persisted:{task_id}"
+                        ));
+                    }
+                }
+                let committed = process_table.compare_and_set(process)?;
+                report
+                    .recovered_provider_processes
+                    .push(RecoveredProviderProcess {
+                        session_id: committed.session_id,
+                        provider_process_id: committed.provider_process_id,
+                        request_id: committed.request_id.as_str().to_owned(),
+                        adapter_id: committed.adapter_id.as_str().to_owned(),
+                        previous_health,
+                        health: committed.health,
+                        task_id,
+                        task_status,
+                        retry_scheduled,
+                    });
+                continue;
+            }
             report.unchanged_provider_processes.push(process.session_id);
             continue;
         }
 
         let previous_health = process.health.clone();
         let task_id = process.request_id.as_str().to_owned();
+        reset_restart_budget_after_stable_run(&mut process, epoch_millis_now())?;
+        let restart_decision = recovery_restart_decision(&process);
+        match restart_decision {
+            RestartDecision::Restart { attempt, delay_ms } => {
+                process.mark_restart_pending(
+                    attempt,
+                    restart_due_at_ms(epoch_millis_now(), delay_ms),
+                    "daemon restart recovered provider crash",
+                )?;
+            }
+            RestartDecision::BudgetExhausted => {
+                process.mark_restart_exhausted("daemon restart found exhausted provider budget")?;
+            }
+            RestartDecision::NoRestart => {
+                process.mark_interrupted_after_restart(
+                    "daemon restart interrupted active provider session",
+                );
+            }
+        }
         let task_status = recover_provider_task(report, &process);
         let retry_scheduled = task_status
             .as_ref()
@@ -929,8 +991,6 @@ fn recover_provider_processes(
                 ));
             }
         }
-        process
-            .mark_interrupted_after_restart("daemon restart interrupted active provider session");
         let committed = process_table.compare_and_set(process)?;
 
         report
@@ -1059,6 +1119,18 @@ fn provider_backoff_decision(
     process: &ProviderProcessSnapshot,
     snapshot: &TaskStateSnapshot,
 ) -> Option<ProviderBackoffTask> {
+    if process.restart_state == "pending" {
+        let due_at_ms = process.restart_due_at_ms?;
+        let now = epoch_millis_now();
+        let due_after_ms = due_at_ms.saturating_sub(now).try_into().unwrap_or(u64::MAX);
+        return Some(ProviderBackoffTask {
+            task_id: snapshot.task_id.clone(),
+            session_id: process.session_id.clone(),
+            next_attempt: process.restart_attempts,
+            due_after_ms,
+            reason: "provider_restart_backoff".to_owned(),
+        });
+    }
     if !provider_restart_policy_allows_backoff(&process.restart_policy) {
         return None;
     }
@@ -1087,7 +1159,50 @@ fn provider_backoff_decision(
 
 /// 执行 `provider_restart_policy_allows_backoff` 对应的处理逻辑。
 fn provider_restart_policy_allows_backoff(policy: &str) -> bool {
-    matches!(policy, "scheduler_backoff" | "retry_backoff" | "retryable")
+    matches!(
+        policy,
+        "scheduler_backoff" | "retry_backoff" | "retryable" | "on_failure" | "always"
+    )
+}
+
+fn recovery_restart_decision(process: &ProviderProcessSnapshot) -> RestartDecision {
+    let mode = ProviderRestartMode::parse(&process.restart_policy).unwrap_or_default();
+    decide_restart(
+        ProviderRestartConfig {
+            mode,
+            max_attempts: process.restart_max_attempts,
+            backoff_ms: process.restart_backoff_ms,
+        },
+        process.restart_attempts,
+        RestartOutcome::Failure,
+        &process.session_id,
+    )
+}
+
+fn reset_restart_budget_after_stable_run(
+    process: &mut ProviderProcessSnapshot,
+    now_ms: u128,
+) -> Result<(), EvaError> {
+    if process.restart_attempts == 0 || process.restart_state != "running" {
+        return Ok(());
+    }
+    let elapsed_ms = now_ms.saturating_sub(process.updated_at_ms);
+    if elapsed_ms < u128::from(DEFAULT_STABLE_RUN_WINDOW_MS) {
+        return Ok(());
+    }
+
+    process.mark_stable_success()?;
+    process.audit.push(format!(
+        "provider.restart:stable_window_elapsed_ms:{elapsed_ms}"
+    ));
+    Ok(())
+}
+
+fn epoch_millis_now() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 /// 声明 `tests` 子模块。
@@ -2200,6 +2315,128 @@ mod tests {
             recovered_task.interrupted_reason.as_deref(),
             Some("provider restart recovery scheduled scheduler backoff")
         );
+    }
+
+    #[test]
+    fn recovery_preserves_auto_restart_attempt_after_orphan_cleanup_and_generation_change() {
+        let root = test_root("provider-auto-restart-generation");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+                backend.layout(),
+                store.runtime_writer().unwrap(),
+            )
+            .unwrap();
+            let mut task = snapshot("req-provider-auto-restart-generation", "running");
+            task.retry_max_attempts = 3;
+            store.write(&task).unwrap();
+
+            let mut process = terminated_provider_process(
+                "session-provider-auto-restart-generation",
+                "req-provider-auto-restart-generation",
+                "on_failure",
+                None,
+            );
+            process.configure_restart_budget(3, 1).unwrap();
+            process.restart_attempts = 1;
+            process.restart_state = "running".to_owned();
+            processes.upsert(process).unwrap();
+        }
+
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            store.runtime_writer().unwrap(),
+        )
+        .unwrap();
+        let report = RuntimeRecoveryCoordinator
+            .recover_task_store_with_provider_processes(&mut store, &mut processes)
+            .unwrap();
+        let recovered_process = processes
+            .read("session-provider-auto-restart-generation")
+            .unwrap();
+        let recovered_task = store
+            .read(Some("req-provider-auto-restart-generation"))
+            .unwrap();
+
+        assert_eq!(recovered_process.restart_state, "pending");
+        assert_eq!(recovered_process.restart_attempts, 2);
+        assert!(recovered_process.restart_due_at_ms.is_some());
+        assert_eq!(recovered_task.status, "recovering");
+        assert_eq!(report.provider_backoff_tasks.len(), 1);
+        assert_eq!(report.provider_backoff_tasks[0].next_attempt, 2);
+        assert!(report.audit.iter().any(|entry| {
+            entry
+                == "runtime.recovery:provider_orphan:session-provider-auto-restart-generation:already_exited"
+        }));
+    }
+
+    #[test]
+    fn recovery_resets_auto_restart_budget_only_after_stable_window() {
+        let root = test_root("provider-auto-restart-stable-window");
+        {
+            let backend =
+                FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
+                    .unwrap();
+            let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+            let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+                backend.layout(),
+                store.runtime_writer().unwrap(),
+            )
+            .unwrap();
+            let task_id = "req-provider-auto-restart-stable-window";
+            store.write(&snapshot(task_id, "running")).unwrap();
+
+            let mut process = terminated_provider_process(
+                "session-provider-auto-restart-stable-window",
+                task_id,
+                "on_failure",
+                None,
+            );
+            process.configure_restart_budget(3, 1).unwrap();
+            process.restart_attempts = 1;
+            process.restart_state = "running".to_owned();
+            process.updated_at_ms = epoch_millis()
+                .saturating_sub(u128::from(eva_adapter::DEFAULT_STABLE_RUN_WINDOW_MS))
+                .saturating_sub(1);
+            processes.upsert(process).unwrap();
+        }
+
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut store = FileSystemTaskStateStore::from_runtime_writer(
+            backend.layout(),
+            backend.acquire_runtime_writer().unwrap(),
+        )
+        .unwrap();
+        let mut processes = FileSystemProviderProcessTable::from_runtime_writer(
+            backend.layout(),
+            store.runtime_writer().unwrap(),
+        )
+        .unwrap();
+        let report = RuntimeRecoveryCoordinator
+            .recover_task_store_with_provider_processes(&mut store, &mut processes)
+            .unwrap();
+        let recovered_process = processes
+            .read("session-provider-auto-restart-stable-window")
+            .unwrap();
+
+        assert_eq!(recovered_process.restart_state, "pending");
+        assert_eq!(recovered_process.restart_attempts, 1);
+        assert!(recovered_process
+            .audit
+            .iter()
+            .any(|entry| entry == "provider.restart:stable_reset"));
+        assert!(recovered_process
+            .audit
+            .iter()
+            .any(|entry| { entry.starts_with("provider.restart:stable_window_elapsed_ms:") }));
+        assert_eq!(report.provider_backoff_tasks[0].next_attempt, 1);
     }
 
     #[test]

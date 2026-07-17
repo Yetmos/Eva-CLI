@@ -22,7 +22,7 @@ credentials:
       ref: vault://providers/github/token#value
 ```
 
-旧 manifest 缺少这些区块时等价于 `restart: none` 和 `run_as: current`。自动 restart 或非 `current` identity 只允许进程型 `stdio`、Skill 和 MCP stdio；HTTP、MCP HTTP 等 transport 会在加载时拒绝。vault 目标必须出现在同一 manifest 的 `permissions.env` 中，引用会排序并进入运行时摘要，但当前任务不会访问 vault 或注入 secret；真实取密、身份切换和 restart controller 由后续 W3 任务负责。生产环境只接受 allowlisted `env:NAME` 敏感引用，不能把 `vault://` 直接放进 HTTP header。
+旧 manifest 缺少这些区块时等价于 `restart: none` 和 `run_as: current`。自动 restart 或非 `current` identity 只允许进程型 `stdio`、Skill 和 MCP stdio；HTTP、MCP HTTP 等 transport 会在加载时拒绝。W3-L06 已为这些进程型 transport 执行有界 durable restart、backoff/jitter 和稳定窗口重置；vault 目标必须出现在同一 manifest 的 `permissions.env` 中，当前仍不会访问 vault 或注入 secret，run-as 身份切换与跨进程 admission 由后续 W3 任务负责。生产环境只接受 allowlisted `env:NAME` 敏感引用，不能把 `vault://` 直接放进 HTTP header。
 
 ## English
 
@@ -46,7 +46,7 @@ credentials:
       ref: vault://providers/github/token#value
 ```
 
-Legacy manifests default to `restart: none` and `run_as: current`. Automatic restart or a non-`current` identity is accepted only for process-backed `stdio`, Skill, and MCP stdio transports; HTTP and MCP HTTP fail during loading. Vault targets must also appear in `permissions.env`; references are sorted and included in the runtime digest, but this task does not contact a vault or inject secret bytes. Real secret retrieval, identity switching, and restart control belong to later W3 tasks. Production accepts only allowlisted `env:NAME` sensitive references and rejects direct `vault://` HTTP headers.
+Legacy manifests default to `restart: none` and `run_as: current`. Automatic restart or a non-`current` identity is accepted only for process-backed `stdio`, Skill, and MCP stdio transports; HTTP and MCP HTTP fail during loading. W3-L06 provides bounded durable restart, backoff/jitter, and stable-window reset for those process transports; vault targets must also appear in `permissions.env`, and this task still does not contact a vault or inject secret bytes. Run-as identity switching and cross-process admission belong to later W3 tasks. Production accepts only allowlisted `env:NAME` sensitive references and rejects direct `vault://` HTTP headers.
 
 For MCP adapters, `mcp.server_transport: stdio` continues to use `mcp.command`
 and `mcp.args`. V1.13.6 also supports `mcp.server_transport: http` with
