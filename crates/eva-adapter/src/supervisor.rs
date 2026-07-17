@@ -73,6 +73,27 @@ pub struct ProviderExecutionSlot {
     pub half_open_probe: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderAdmissionLease {
+    table: FileSystemProviderAdmissionTable,
+    adapter_id: AdapterId,
+    reservation_id: String,
+    session_id: String,
+}
+
+impl ProviderAdmissionLease {
+    pub(crate) fn renew_at(&self, now_ms: u128) -> Result<(), EvaError> {
+        self.table.renew(
+            &self.adapter_id,
+            &self.reservation_id,
+            &self.session_id,
+            now_ms,
+            eva_storage::DEFAULT_RESERVATION_TTL_MS,
+        )?;
+        Ok(())
+    }
+}
+
 /// 绑定到单一会话、提供者、请求和能力的短生命周期凭据作用域。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderCredentialScope {
@@ -440,6 +461,24 @@ impl InMemoryProviderSupervisor {
             rate_windows: BTreeMap::new(),
             circuit_states: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn admission_lease(
+        &self,
+        slot: &ProviderExecutionSlot,
+    ) -> Result<Option<ProviderAdmissionLease>, EvaError> {
+        let Some(table) = self.admission_table.clone() else {
+            return Ok(None);
+        };
+        let reservation_id = slot.admission_reservation_id.clone().ok_or_else(|| {
+            EvaError::conflict("provider execution slot lacks admission identity")
+        })?;
+        Ok(Some(ProviderAdmissionLease {
+            table,
+            adapter_id: slot.adapter_id.clone(),
+            reservation_id,
+            session_id: slot.session_id.clone(),
+        }))
     }
 
     /// 执行 `active_for_adapter` 对应的处理逻辑。

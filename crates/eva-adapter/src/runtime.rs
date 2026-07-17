@@ -11,8 +11,8 @@ use crate::registry::AdapterRegistry;
 use crate::restart::{decide_restart, due_at_ms, RestartDecision, RestartOutcome};
 use crate::router::{AdapterRouteRequest, AdapterRouter};
 use crate::supervisor::{
-    InMemoryProviderSupervisor, ProviderCredentialScope, ProviderExecutionOutcome,
-    ProviderExecutionRequest, ProviderExecutionSlot, ProviderSupervisor,
+    InMemoryProviderSupervisor, ProviderAdmissionLease, ProviderCredentialScope,
+    ProviderExecutionOutcome, ProviderExecutionRequest, ProviderExecutionSlot, ProviderSupervisor,
 };
 use crate::transports;
 use eva_config::{AdapterTransport, ProjectConfig};
@@ -26,11 +26,47 @@ use eva_storage::{FileSystemProviderProcessTable, ProviderProcessSnapshot};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "authorized transport execution with timeout and audit";
+const ADMISSION_RENEW_INTERVAL_MS: u64 = (eva_storage::DEFAULT_RESERVATION_TTL_MS as u64) / 3;
+
+struct AdmissionRenewal {
+    stop: mpsc::Sender<()>,
+    join: thread::JoinHandle<Result<(), EvaError>>,
+}
+
+impl AdmissionRenewal {
+    fn start(lease: Option<ProviderAdmissionLease>) -> Option<Self> {
+        Self::start_with_interval(lease, Duration::from_millis(ADMISSION_RENEW_INTERVAL_MS))
+    }
+
+    fn start_with_interval(
+        lease: Option<ProviderAdmissionLease>,
+        interval: Duration,
+    ) -> Option<Self> {
+        let lease = lease?;
+        let (stop, receiver) = mpsc::channel();
+        let join = thread::spawn(move || loop {
+            match receiver.recv_timeout(interval) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+                Err(mpsc::RecvTimeoutError::Timeout) => lease.renew_at(epoch_ms())?,
+            }
+        });
+        Some(Self { stop, join })
+    }
+
+    fn stop(self) -> Result<(), EvaError> {
+        let _ = self.stop.send(());
+        self.join
+            .join()
+            .map_err(|_| EvaError::internal("provider admission renewal thread panicked"))?
+    }
+}
 
 /// Spawns a provider through the OS backend and immediately fences its real
 /// identity into the already-admitted durable process record.
@@ -414,11 +450,17 @@ impl AdapterRuntime {
                 supervisor: &self.supervisor,
                 slot: &slot,
             };
-            let result = dispatch_transport_with_spawner(
+            let renewal = AdmissionRenewal::start(self.supervisor.borrow().admission_lease(&slot)?);
+            let mut result = dispatch_transport_with_spawner(
                 &handle,
                 invocation.clone(),
                 Some(&process_spawner),
             );
+            if let Some(renewal) = renewal {
+                if let Err(error) = renewal.stop() {
+                    result = Err(error);
+                }
+            }
             match result {
                 Ok(mut report) if report.status == "completed" => {
                     let snapshot = self
