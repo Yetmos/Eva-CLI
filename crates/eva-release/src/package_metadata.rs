@@ -147,12 +147,29 @@ impl CanonicalPackageMetadata {
         }
         let normalized_input = data.trim_start_matches('\u{feff}').replace("\r\n", "\n");
         if metadata.to_manifest() != normalized_input {
-            return Err(EvaError::invalid_argument(
-                "package metadata manifest is not canonical",
-            ));
+            return Err(
+                EvaError::invalid_argument("package metadata manifest is not canonical")
+                    .with_context("expected_len", metadata.to_manifest().len().to_string())
+                    .with_context("actual_len", normalized_input.len().to_string())
+                    .with_context(
+                        "first_mismatch",
+                        first_mismatch(
+                            metadata.to_manifest().as_bytes(),
+                            normalized_input.as_bytes(),
+                        )
+                        .to_string(),
+                    ),
+            );
         }
         Ok(metadata)
     }
+}
+fn first_mismatch(expected: &[u8], actual: &[u8]) -> usize {
+    expected
+        .iter()
+        .zip(actual.iter())
+        .position(|(left, right)| left != right)
+        .unwrap_or(expected.len().min(actual.len()))
 }
 impl PackageArtifactMetadata {
     pub fn new(
