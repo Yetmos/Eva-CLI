@@ -61,6 +61,9 @@ pub struct DiscoveryCandidate {
     pub handle_granted: bool,
     /// 候选项仅可见但不可接受时的具体原因。
     pub rejected_reason: Option<String>,
+    pub resolved_path_digest: Option<String>,
+    pub version: Option<String>,
+    pub shadowed_path_digests: Vec<String>,
 }
 
 impl DiscoveryCandidateKind {
@@ -102,6 +105,9 @@ impl DiscoveryCandidate {
             capability: None,
             handle_granted: false,
             rejected_reason: None,
+            resolved_path_digest: None,
+            version: None,
+            shadowed_path_digests: Vec::new(),
         }
     }
 
@@ -132,6 +138,9 @@ impl DiscoveryCandidate {
             capability: Some(capability),
             handle_granted: false,
             rejected_reason: None,
+            resolved_path_digest: None,
+            version: None,
+            shadowed_path_digests: Vec::new(),
         }
     }
 
@@ -159,12 +168,27 @@ impl DiscoveryCandidate {
             capability: None,
             handle_granted: false,
             rejected_reason: None,
+            resolved_path_digest: None,
+            version: None,
+            shadowed_path_digests: Vec::new(),
         }
     }
 
     /// 为候选项附加拒绝原因，同时保留候选项供诊断和健康展示。
     pub fn rejected(mut self, reason: impl Into<String>) -> Self {
         self.rejected_reason = Some(reason.into());
+        self
+    }
+
+    pub fn with_path_probe(
+        mut self,
+        digest: String,
+        version: Option<String>,
+        shadows: Vec<String>,
+    ) -> Self {
+        self.resolved_path_digest = Some(digest);
+        self.version = version;
+        self.shadowed_path_digests = shadows;
         self
     }
 }
