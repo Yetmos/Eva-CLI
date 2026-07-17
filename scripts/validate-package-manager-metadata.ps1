@@ -3,7 +3,8 @@ param(
   [Parameter(Mandatory = $true)][ValidateSet('homebrew','winget','apt')][string]$Manager,
   [Parameter(Mandatory = $true)][string]$MetadataPath,
   [switch]$RequireNativeTool,
-  [switch]$StaticOnly
+  [switch]$StaticOnly,
+  [string]$NativePackageName
 )
 $ErrorActionPreference = 'Stop'
 $path = [System.IO.Path]::GetFullPath($MetadataPath)
@@ -22,7 +23,7 @@ $text = [System.Text.UTF8Encoding]::new($false,$true).GetString($bytes)
 if ($text.Contains([char]0) -or $text.Contains([char]13)) { throw 'metadata_encoding_invalid' }
 $tool = $null; $arguments = @(); $staticValid = $false
 switch ($Manager) {
-  'homebrew' { $staticValid = $text -match '^class EvaCli < Formula' -and $text -match '(?m)^  url "https://' -and $text -match '(?m)^  sha256 "[0-9a-f]{64}"$'; $tool = Get-Command brew -ErrorAction SilentlyContinue; $arguments = @('audit','--strict','--formula',$path) }
+  'homebrew' { $staticValid = $text -match '^class EvaCli < Formula' -and $text -match '(?m)^  url "https://' -and $text -match '(?m)^  sha256 "[0-9a-f]{64}"$'; $tool = Get-Command brew -ErrorAction SilentlyContinue; $arguments = @('audit','--strict','--formula',$(if ($NativePackageName) { $NativePackageName } else { $path })) }
   'winget' { $staticValid = ([regex]::Matches($text, '(?m)^PackageIdentifier: Yetmos\.EvaCLI$').Count -eq 3) -and ([regex]::Matches($text, '(?m)^ManifestVersion: 1\.6\.0$').Count -eq 3); $tool = Get-Command winget -ErrorAction SilentlyContinue; $arguments = @('validate','--manifest',$validationPath,'--disable-interactivity') }
   'apt' { $staticValid = $text -match '(?m)^Package: eva-cli$' -and $text -match '(?m)^Version: ' -and $text -match '(?m)^Architecture: amd64$'; $tool = Get-Command apt-ftparchive -ErrorAction SilentlyContinue; $arguments = @('packages',(Split-Path -Parent $path)) }
 }

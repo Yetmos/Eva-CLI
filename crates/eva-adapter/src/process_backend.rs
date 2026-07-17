@@ -492,8 +492,7 @@ mod platform {
         if observed_group < 0 || observed_group != pid {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "child did not become its own Unix process group",
             ));
         }

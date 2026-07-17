@@ -124,7 +124,15 @@ jobs:
         run: |
           $generated = Join-Path (Get-Location) ".eva/package-metadata/generated"
           if ($env:RUNNER_OS -eq "macOS") {
-            ./scripts/validate-package-manager-metadata.ps1 -Manager homebrew -MetadataPath (Join-Path $generated "homebrew/eva-cli.rb") -RequireNativeTool
+            $tap = "yetmos/eva-validation"
+            brew tap-new $tap
+            try {
+              $tapRoot = brew --repository $tap
+              Copy-Item -LiteralPath (Join-Path $generated "homebrew/eva-cli.rb") -Destination (Join-Path $tapRoot "Formula/eva-cli.rb") -Force
+              ./scripts/validate-package-manager-metadata.ps1 -Manager homebrew -MetadataPath (Join-Path $generated "homebrew/eva-cli.rb") -NativePackageName "$tap/eva-cli" -RequireNativeTool
+            } finally {
+              brew untap $tap
+            }
           } elseif ($env:RUNNER_OS -eq "Windows") {
             ./scripts/validate-package-manager-metadata.ps1 -Manager winget -MetadataPath (Join-Path $generated "winget") -RequireNativeTool
           } else {
