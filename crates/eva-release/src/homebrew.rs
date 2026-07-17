@@ -8,7 +8,7 @@ pub fn generate_homebrew_formula(metadata: &CanonicalPackageMetadata) -> Result<
         .iter()
         .find(|a| a.target == "aarch64-apple-darwin")
         .ok_or_else(|| EvaError::not_found("macOS package metadata is missing"))?;
-    Ok(format!("class EvaCli < Formula\n  desc \"Local-first agent runtime CLI\"\n  homepage \"https://github.com/Yetmos/Eva-CLI\"\n  url \"{}\"\n  version \"{}\"\n  sha256 \"{}\"\n  license \"NOASSERTION\"\n\n  def install\n    bin.install \"eva\"\n  end\n\n  test do\n    assert_match version.to_s, shell_output(\"#{{bin}}/eva version\")\n  end\nend\n",artifact.download_url,metadata.version,artifact.sha256))
+    Ok(format!("class EvaCli < Formula\n  desc \"Local-first agent runtime CLI\"\n  homepage \"https://github.com/Yetmos/Eva-CLI\"\n  url \"{}\"\n  sha256 \"{}\"\n  license :cannot_represent\n\n  def install\n    bin.install \"eva\"\n  end\n\n  test do\n    assert_match version.to_s, shell_output(\"#{{bin}}/eva version\")\n  end\nend\n",artifact.download_url,artifact.sha256))
 }
 #[cfg(test)]
 mod tests {
