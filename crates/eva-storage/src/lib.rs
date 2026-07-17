@@ -6,6 +6,7 @@ pub mod audit_store;
 pub mod durable_backend;
 pub mod effect_ledger;
 pub mod event_log;
+pub mod provider_admission;
 pub mod provider_process;
 pub mod sqlite;
 pub mod state_store;
@@ -29,6 +30,10 @@ pub use effect_ledger::{
 };
 pub use event_log::{
     EventLog, EventLogRecord, EventLogStatus, FileSystemEventLog, InMemoryEventLog,
+};
+pub use provider_admission::{
+    FileSystemProviderAdmissionTable, ProviderAdmissionReservation, ProviderAdmissionSnapshot,
+    DEFAULT_RESERVATION_TTL_MS,
 };
 pub use provider_process::{
     FileSystemProviderProcessTable, InMemoryProviderProcessTable, ProviderProcessSnapshot,

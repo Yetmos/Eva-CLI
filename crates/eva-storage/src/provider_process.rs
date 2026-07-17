@@ -914,6 +914,10 @@ impl InMemoryProviderProcessTable {
 }
 
 impl FileSystemProviderProcessTable {
+    /// Returns the directory containing durable provider records.
+    pub fn root_path(&self) -> &Path {
+        &self.process_dir
+    }
     /// 使用传统项目布局 `<root>/.eva/provider-processes` 创建表句柄。
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {

@@ -11,8 +11,8 @@ use crate::runtime::AdapterInvocation;
 use eva_config::{AdapterTransport, ProviderConfig, ProviderRunAsIdentity};
 use eva_core::{AdapterId, CapabilityName, ErrorKind, EvaError, RequestId};
 use eva_storage::{
-    FileSystemProviderProcessTable, InMemoryProviderProcessTable, ProviderProcessSnapshot,
-    ProviderProcessTable,
+    FileSystemProviderAdmissionTable, FileSystemProviderProcessTable, InMemoryProviderProcessTable,
+    ProviderProcessSnapshot, ProviderProcessTable,
 };
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -178,6 +178,7 @@ pub struct InMemoryProviderSupervisor {
     table: InMemoryProviderProcessTable,
     /// 可选的持久化镜像；写入失败会阻止报告准入或完成成功。
     durable_table: Option<FileSystemProviderProcessTable>,
+    admission_table: Option<FileSystemProviderAdmissionTable>,
     /// 按适配器隔离的固定窗口计数器。
     rate_windows: BTreeMap<AdapterId, ProviderRateWindow>,
     /// 按适配器隔离的连续失败、开启时间和半开探测状态。
@@ -410,6 +411,7 @@ impl InMemoryProviderSupervisor {
         Self {
             table: InMemoryProviderProcessTable::new(),
             durable_table: None,
+            admission_table: None,
             rate_windows: BTreeMap::new(),
             circuit_states: BTreeMap::new(),
         }
@@ -417,9 +419,12 @@ impl InMemoryProviderSupervisor {
 
     /// 设置 `process_table` 并返回更新后的实例。
     pub fn with_process_table(durable_table: FileSystemProviderProcessTable) -> Self {
+        let admission_root = durable_table.root_path().join("admission");
+        let admission_table = FileSystemProviderAdmissionTable::new(admission_root).ok();
         Self {
             table: InMemoryProviderProcessTable::new(),
             durable_table: Some(durable_table),
+            admission_table,
             rate_windows: BTreeMap::new(),
             circuit_states: BTreeMap::new(),
         }
@@ -489,7 +494,21 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
             request.provider.restart.max_attempts,
             request.provider.restart.backoff_ms,
         )?;
-        self.upsert_process(snapshot)?;
+        if let Some(table) = &self.admission_table {
+            table.reserve(
+                &request.adapter_id,
+                request.max_concurrency.unwrap_or(usize::MAX),
+                &session_id,
+                now,
+                eva_storage::DEFAULT_RESERVATION_TTL_MS,
+            )?;
+        }
+        if let Err(error) = self.upsert_process(snapshot) {
+            if let Some(table) = &self.admission_table {
+                let _ = table.release(&request.adapter_id, &session_id);
+            }
+            return Err(error);
+        }
         Ok(ProviderExecutionSlot {
             session_id,
             provider_process_id,
@@ -515,7 +534,13 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
             snapshot.mark_stable_success()?;
         }
         self.record_circuit_outcome(slot, &mut snapshot);
-        self.upsert_process(snapshot)
+        let result = self.upsert_process(snapshot);
+        if result.is_ok() {
+            if let Some(table) = &self.admission_table {
+                let _ = table.release(&slot.adapter_id, &slot.session_id);
+            }
+        }
+        result
     }
 
     fn register_process_identity(
