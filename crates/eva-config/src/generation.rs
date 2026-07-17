@@ -54,4 +54,22 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a.digest.len(), 64);
     }
+
+    #[test]
+    fn digest_changes_when_runtime_environment_changes() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let project = load_project_config(root).unwrap();
+        let baseline = ConfigGeneration::from_project(&project, 1).unwrap();
+        let mut changed = project.clone();
+        changed.eva.runtime.env.push_str("-override");
+        let overridden = ConfigGeneration::from_project(&changed, 1).unwrap();
+        assert_ne!(baseline.environment, overridden.environment);
+        assert_ne!(baseline.digest, overridden.digest);
+    }
 }
