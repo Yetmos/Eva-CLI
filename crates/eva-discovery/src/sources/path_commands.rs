@@ -121,7 +121,7 @@ fn resolve_path_from(command: &str, path_value: std::ffi::OsString) -> Vec<PathB
         vec![command.to_owned()]
     };
     #[cfg(not(windows))]
-    let names = vec![command.to_owned()];
+    let names = [command.to_owned()];
     env::split_paths(&path_value)
         .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
         .filter(|p| p.is_file())
