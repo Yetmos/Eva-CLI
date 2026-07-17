@@ -2600,13 +2600,18 @@ fn start_daemon_inner(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
-    let hardware_hotplug = start_hardware_hotplug_subscriber(project, &options)?;
+    let hardware_hotplug = start_hardware_hotplug_subscriber(
+        project,
+        &options,
+        observability_lifecycle.pipeline_mut(),
+    )?;
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
-    let memory_maintenance = run_memory_maintenance(&options, trace)?;
+    let memory_maintenance =
+        run_memory_maintenance(&options, observability_lifecycle.pipeline_mut(), trace)?;
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
         &options,
@@ -2704,15 +2709,16 @@ fn start_daemon_inner(
             let worker = task_worker
                 .as_mut()
                 .ok_or_else(|| EvaError::internal("daemon task worker was not created"))?;
-            let loop_result = run_control_loop(
+            let loop_result = run_control_loop(DaemonControlLoopContext {
                 project,
-                &options,
-                &mut runtime,
-                running_state.clone(),
-                durable_backend.layout(),
-                &mut lease,
-                worker,
-            );
+                options: &options,
+                runtime: &mut runtime,
+                running_state: running_state.clone(),
+                durable_layout: durable_backend.layout(),
+                lease: &mut lease,
+                task_worker: worker,
+                observability: observability_lifecycle.pipeline_mut(),
+            });
             let join_result = worker.stop_and_join();
             let loop_report = match (loop_result, join_result) {
                 (Ok(report), Ok(())) => report,
@@ -3186,6 +3192,18 @@ struct DaemonControlContext<'a> {
     durable_layout: &'a DurableBackendLayout,
     lease: &'a mut DurableRuntimeLeaseGuard,
     task_worker: &'a mut TaskWorkerRuntime,
+    observability: &'a mut BestEffortObservabilityPipeline,
+}
+
+struct DaemonControlLoopContext<'a> {
+    project: &'a ProjectConfig,
+    options: &'a DaemonStartOptions,
+    runtime: &'a mut crate::Runtime,
+    running_state: DaemonStateRecord,
+    durable_layout: &'a DurableBackendLayout,
+    lease: &'a mut DurableRuntimeLeaseGuard,
+    task_worker: &'a mut TaskWorkerRuntime,
+    observability: &'a mut BestEffortObservabilityPipeline,
 }
 
 /// 串行执行调度重试 tick 和按文件名排序的控制请求，直到处理到关闭操作。
@@ -3193,25 +3211,25 @@ struct DaemonControlContext<'a> {
 /// 每个请求先执行状态变更，再原子写响应，最后删除请求。响应写入失败时请求会保留以便诊断
 /// 或重试，但变更可能已经发生，因此调用方必须依据响应或状态确认结果，不能只观察请求文件。
 fn run_control_loop(
-    project: &ProjectConfig,
-    options: &DaemonStartOptions,
-    runtime: &mut crate::Runtime,
-    running_state: DaemonStateRecord,
-    durable_layout: &DurableBackendLayout,
-    lease: &mut DurableRuntimeLeaseGuard,
-    task_worker: &mut TaskWorkerRuntime,
+    context: DaemonControlLoopContext<'_>,
 ) -> Result<DaemonControlLoopReport, EvaError> {
-    let heartbeat_interval = daemon_runtime_heartbeat_interval(options)?;
+    let heartbeat_interval = daemon_runtime_heartbeat_interval(context.options)?;
     let mut next_heartbeat = Instant::now() + heartbeat_interval;
     loop {
-        task_worker.check_health()?;
-        renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
+        context.task_worker.check_health()?;
+        renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
         // 每轮先推进到期的调度重试，保证控制流量不会无限饿死恢复任务。
-        let _tick = run_daemon_scheduler_tick(project, options, lease.writer(), task_worker)?;
-        task_worker.check_health()?;
-        renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
-        for request_path in pending_control_requests(options)? {
-            renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
+        let _tick = run_daemon_scheduler_tick(
+            context.project,
+            context.options,
+            context.lease.writer(),
+            context.task_worker,
+            context.observability,
+        )?;
+        context.task_worker.check_health()?;
+        renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
+        for request_path in pending_control_requests(context.options)? {
+            renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
             let request = match read_control_request(&request_path) {
                 Ok(request) => request,
                 Err(error) => {
@@ -3219,16 +3237,17 @@ fn run_control_loop(
                     continue;
                 }
             };
-            let response_path = control_response_file(options, &request.request_id);
+            let response_path = control_response_file(context.options, &request.request_id);
             let operation = request.operation;
             let mut context = DaemonControlContext {
-                project,
-                options,
-                runtime,
-                running_state: &running_state,
-                durable_layout,
-                lease,
-                task_worker,
+                project: context.project,
+                options: context.options,
+                runtime: context.runtime,
+                running_state: &context.running_state,
+                durable_layout: context.durable_layout,
+                lease: context.lease,
+                task_worker: context.task_worker,
+                observability: context.observability,
             };
             let mut response = match handle_control_request(
                 &mut context,
@@ -3243,8 +3262,8 @@ fn run_control_loop(
                     continue;
                 }
             };
-            renew_daemon_lease_if_due(lease, &mut next_heartbeat, heartbeat_interval)?;
-            response.lease = Some(DaemonLeaseReport::from_guard(lease, now_ms()));
+            renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;
+            response.lease = Some(DaemonLeaseReport::from_guard(context.lease, now_ms()));
             let shutdown = response.shutdown.clone();
             let is_shutdown = response.operation == DaemonControlOperation::Shutdown;
             // 响应必须先原子发布；仅发布成功后才能删除请求这一恢复证据。
@@ -3257,7 +3276,7 @@ fn run_control_loop(
                 });
             }
         }
-        task_worker.check_health()?;
+        context.task_worker.check_health()?;
         thread::sleep(Duration::from_millis(CONTROL_POLL_INTERVAL_MS));
     }
 }
@@ -3283,6 +3302,7 @@ fn run_daemon_scheduler_tick(
     options: &DaemonStartOptions,
     writer: DurableWriterGuard,
     task_worker: &TaskWorkerRuntime,
+    observability: &mut BestEffortObservabilityPipeline,
 ) -> Result<SchedulerRetryTickReport, EvaError> {
     let durable_backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
         &options.durable_backend,
@@ -3297,7 +3317,7 @@ fn run_daemon_scheduler_tick(
             ..SchedulerRetryTickOptions::default()
         },
     )?;
-    record_scheduler_retry_observability(options, &report);
+    record_scheduler_retry_observability(observability, &report);
     Ok(report)
 }
 
@@ -3305,6 +3325,7 @@ fn run_daemon_scheduler_tick(
 fn start_hardware_hotplug_subscriber(
     project: &ProjectConfig,
     options: &DaemonStartOptions,
+    observability: &mut BestEffortObservabilityPipeline,
 ) -> Result<HardwareHotplugSubscriberReport, EvaError> {
     let previous_state = read_hardware_hotplug_state(options)?;
     let discovery = discover_project_devices(project)?;
@@ -3312,14 +3333,13 @@ fn start_hardware_hotplug_subscriber(
         &options.durable_backend,
     ))?;
     let mut bus = DurableEventBus::open(durable_backend.layout())?;
-    let mut audit_sink = BestEffortObservabilityPipeline::open(&options.observability_backend);
     let request_id_prefix = format!("req-daemon-hotplug-{}", now_ms());
     let report = run_hotplug_subscriber_once(
         &discovery.candidates,
         &previous_state,
         &mut bus,
         &request_id_prefix,
-        &mut audit_sink,
+        observability,
     )?;
     write_hardware_hotplug_state(options, &report.state)?;
     Ok(report)
@@ -3328,17 +3348,17 @@ fn start_hardware_hotplug_subscriber(
 /// 执行 `run_memory_maintenance` 对应的受控流程。
 fn run_memory_maintenance(
     options: &DaemonStartOptions,
+    observability: &mut BestEffortObservabilityPipeline,
     trace: &TraceFields,
 ) -> Result<DaemonMemoryMaintenanceReport, EvaError> {
     let durable_backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
         &options.durable_backend,
     ))?;
-    let mut audit_sink = BestEffortObservabilityPipeline::open(&options.observability_backend);
     let mut memory_store = FileSystemMemoryStore::from_durable_layout(durable_backend.layout());
     let mut knowledge_store =
         FileSystemKnowledgeStore::from_durable_layout(durable_backend.layout());
-    let memory_gc = memory_store.compact_expired_at(now_ms(), &mut audit_sink, trace)?;
-    let knowledge_rebuild = knowledge_store.rebuild_checkpoint(&mut audit_sink, trace)?;
+    let memory_gc = memory_store.compact_expired_at(now_ms(), observability, trace)?;
+    let knowledge_rebuild = knowledge_store.rebuild_checkpoint(observability, trace)?;
     Ok(DaemonMemoryMaintenanceReport {
         status: "ready".to_owned(),
         audit: vec![
@@ -3412,7 +3432,7 @@ fn record_daemon_recovery_observability(
 
 /// 登记 `record_scheduler_retry_observability` 对应的数据或状态。
 fn record_scheduler_retry_observability(
-    options: &DaemonStartOptions,
+    pipeline: &mut BestEffortObservabilityPipeline,
     report: &SchedulerRetryTickReport,
 ) {
     if report.dispatched_events.is_empty() && report.failed_events.is_empty() {
@@ -3422,14 +3442,13 @@ fn record_scheduler_retry_observability(
         return;
     };
     let trace = TraceFields::default().with_span_id(span_id);
-    let mut pipeline = BestEffortObservabilityPipeline::open(&options.observability_backend);
     let outcome = if report.failed_events.is_empty() {
         AuditOutcome::Ok
     } else {
         AuditOutcome::Failed
     };
     let _ = AuditSink::record(
-        &mut pipeline,
+        pipeline,
         AuditEvent::new(AuditAction::SchedulerRetry, outcome, trace.clone())
             .with_message("daemon scheduler retry tick observed")
             .with_field(
@@ -3446,7 +3465,7 @@ fn record_scheduler_retry_observability(
     );
     if let Ok(name) = MetricName::parse("runtime.scheduler.retry") {
         let _ = MetricSink::record(
-            &mut pipeline,
+            pipeline,
             MetricPoint::new(name, MetricKind::Counter, 1.0).with_labels(
                 MetricLabels::runtime("daemon_v1.16.1", DAEMON_GENERATION)
                     .with(
@@ -3472,7 +3491,7 @@ fn record_scheduler_retry_observability(
 
 /// 登记 `record_daemon_control_observability` 对应的数据或状态。
 fn record_daemon_control_observability(
-    options: &DaemonStartOptions,
+    pipeline: &mut BestEffortObservabilityPipeline,
     request: &DaemonControlRequest,
     response: &DaemonControlResponse,
     task_lifecycle_status: Option<&str>,
@@ -3503,7 +3522,6 @@ fn record_daemon_control_observability(
         trace.generation_id = Some(generation_id);
     }
 
-    let mut pipeline = BestEffortObservabilityPipeline::open(&options.observability_backend);
     let outcome = if response.accepted {
         AuditOutcome::Ok
     } else {
@@ -3521,11 +3539,11 @@ fn record_daemon_control_observability(
     if let Some(plan_id) = response.plan_id.as_deref() {
         event = event.with_field("plan_id", plan_id);
     }
-    let _ = AuditSink::record(&mut pipeline, event);
+    let _ = AuditSink::record(pipeline, event);
 
     if let Ok(name) = MetricName::parse("runtime.daemon.control") {
         let _ = MetricSink::record(
-            &mut pipeline,
+            pipeline,
             MetricPoint::new(name, MetricKind::Counter, 1.0).with_labels(
                 MetricLabels::runtime("daemon_v1.16.1", DAEMON_GENERATION)
                     .with("operation", request.operation.as_str())
@@ -3544,13 +3562,7 @@ fn record_daemon_control_observability(
         ],
     );
 
-    record_task_lifecycle_observability(
-        &mut pipeline,
-        request,
-        response,
-        &trace,
-        task_lifecycle_status,
-    );
+    record_task_lifecycle_observability(pipeline, request, response, &trace, task_lifecycle_status);
 }
 
 /// 登记 `record_task_lifecycle_observability` 对应的数据或状态。
@@ -3763,7 +3775,7 @@ fn handle_control_request(
         audit,
     };
     record_daemon_control_observability(
-        context.options,
+        context.observability,
         &request,
         &response,
         task_lifecycle_status.as_deref(),
