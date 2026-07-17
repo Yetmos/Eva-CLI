@@ -1,6 +1,6 @@
 //! Credential-free canonical package metadata.
 use eva_core::EvaError;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PackageArtifactMetadata {
@@ -81,6 +81,76 @@ impl CanonicalPackageMetadata {
             ]);
         }
         format!("{}\n", lines.join("\n"))
+    }
+    pub fn parse_manifest(data: &str) -> Result<Self, EvaError> {
+        let mut fields = BTreeMap::new();
+        for line in data.lines() {
+            let line = line.trim_start_matches('\u{feff}');
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(EvaError::invalid_argument(
+                    "package metadata line must use key=value",
+                ));
+            };
+            if fields.insert(key.to_owned(), value.to_owned()).is_some() {
+                return Err(
+                    EvaError::invalid_argument("package metadata field is duplicated")
+                        .with_context("field", key),
+                );
+            }
+        }
+        if fields.remove("format").as_deref() != Some("eva.package-metadata.v1") {
+            return Err(EvaError::invalid_argument(
+                "package metadata format is invalid",
+            ));
+        }
+        let version = fields
+            .remove("version")
+            .ok_or_else(|| EvaError::invalid_argument("package metadata version is missing"))?;
+        let tag = fields
+            .remove("source_tag")
+            .ok_or_else(|| EvaError::invalid_argument("package metadata source tag is missing"))?;
+        let commit = fields.remove("source_commit").ok_or_else(|| {
+            EvaError::invalid_argument("package metadata source commit is missing")
+        })?;
+        let mut artifacts = Vec::new();
+        for index in 0..3 {
+            let take = |fields: &mut BTreeMap<String, String>, name: &str| {
+                fields
+                    .remove(&format!("artifact.{index}.{name}"))
+                    .ok_or_else(|| {
+                        EvaError::invalid_argument("package metadata artifact field is missing")
+                            .with_context("field", format!("artifact.{index}.{name}"))
+                    })
+            };
+            artifacts.push(PackageArtifactMetadata::new(
+                take(&mut fields, "target")?,
+                take(&mut fields, "name")?,
+                take(&mut fields, "format")?,
+                take(&mut fields, "url")?,
+                take(&mut fields, "sha256")?,
+            ));
+        }
+        if !fields.is_empty() {
+            return Err(
+                EvaError::invalid_argument("package metadata contains unknown field")
+                    .with_context("field", fields.keys().next().unwrap()),
+            );
+        }
+        let metadata = Self::new(version, commit, artifacts)?;
+        if metadata.source_tag != tag {
+            return Err(EvaError::invalid_argument(
+                "package metadata source tag does not match version",
+            ));
+        }
+        if metadata.to_manifest() != data.trim_start_matches('\u{feff}') {
+            return Err(EvaError::invalid_argument(
+                "package metadata manifest is not canonical",
+            ));
+        }
+        Ok(metadata)
     }
 }
 impl PackageArtifactMetadata {
@@ -179,5 +249,24 @@ mod tests {
         let mut bad = artifact("x86_64-pc-windows-msvc");
         bad.sha256 = "ABC".to_owned();
         assert!(bad.validate("1.11.5-alpha").is_err());
+    }
+    #[test]
+    fn canonical_manifest_round_trips_and_rejects_unknown_fields() {
+        let metadata = CanonicalPackageMetadata::new(
+            "1.11.5-alpha",
+            "0123456789abcdef0123456789abcdef01234567",
+            vec![
+                artifact("x86_64-unknown-linux-gnu"),
+                artifact("x86_64-pc-windows-msvc"),
+                artifact("aarch64-apple-darwin"),
+            ],
+        )
+        .unwrap();
+        let manifest = metadata.to_manifest();
+        assert_eq!(
+            CanonicalPackageMetadata::parse_manifest(&manifest).unwrap(),
+            metadata
+        );
+        assert!(CanonicalPackageMetadata::parse_manifest(&(manifest + "unknown=value\n")).is_err());
     }
 }
