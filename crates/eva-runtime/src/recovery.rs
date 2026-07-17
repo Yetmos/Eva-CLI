@@ -1894,7 +1894,11 @@ mod tests {
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
             let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
-            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let mut bus = DurableEventBus::open_with_writer(
+                backend.layout(),
+                store.runtime_writer().unwrap().clone(),
+            )
+            .unwrap();
             let event = event("evt-recovery-redrive-1");
 
             bus.publish(event.clone()).unwrap();
@@ -1912,7 +1916,11 @@ mod tests {
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
             let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
-            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let mut bus = DurableEventBus::open_with_writer(
+                backend.layout(),
+                store.runtime_writer().unwrap().clone(),
+            )
+            .unwrap();
 
             let report = RuntimeRecoveryCoordinator
                 .recover_task_store_with_redrive(
@@ -2113,7 +2121,11 @@ mod tests {
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
             let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
-            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let mut bus = DurableEventBus::open_with_writer(
+                backend.layout(),
+                store.runtime_writer().unwrap().clone(),
+            )
+            .unwrap();
             let event = event("evt-recovery-already-redriven");
 
             bus.publish(event.clone()).unwrap();
@@ -2137,7 +2149,11 @@ mod tests {
                 FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path()))
                     .unwrap();
             let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
-            let mut bus = DurableEventBus::open(backend.layout()).unwrap();
+            let mut bus = DurableEventBus::open_with_writer(
+                backend.layout(),
+                store.runtime_writer().unwrap().clone(),
+            )
+            .unwrap();
 
             let report = RuntimeRecoveryCoordinator
                 .recover_task_store_with_redrive(
