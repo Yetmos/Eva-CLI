@@ -74,13 +74,14 @@ impl FileSystemScheduleStore {
         &self,
         id: &str,
         owner: &str,
+        generation: u64,
         next_run_at_ms: u128,
     ) -> Result<ScheduleRecord, EvaError> {
         let _lock = self.lock(id)?;
         let mut r = self.read(id)?;
-        if r.lease_owner.as_deref() != Some(owner) {
+        if r.generation != generation || r.lease_owner.as_deref() != Some(owner) {
             return Err(EvaError::conflict(
-                "schedule completion owner does not match lease",
+                "schedule completion fence does not match active lease",
             ));
         }
         r.next_run_at_ms = next_run_at_ms;
@@ -246,8 +247,8 @@ mod tests {
         s.upsert("memory-gc", 10).unwrap();
         assert!(s.claim("memory-gc", "a", 10, 10).is_ok());
         assert!(s.claim("memory-gc", "b", 15, 10).is_err());
-        assert!(s.claim("memory-gc", "b", 21, 10).is_ok());
-        s.complete("memory-gc", "b", 100).unwrap();
+        let b = s.claim("memory-gc", "b", 21, 10).unwrap();
+        s.complete("memory-gc", "b", b.generation, 100).unwrap();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -294,6 +295,26 @@ mod tests {
         assert!(store
             .renew("memory-gc", "owner-b", renewed.generation, 60, 100)
             .is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completion_cannot_overwrite_a_successor_with_the_same_owner() {
+        let root = std::env::temp_dir().join(format!(
+            "eva-schedule-complete-fence-{}",
+            std::process::id()
+        ));
+        let store = FileSystemScheduleStore::new(&root).unwrap();
+        store.upsert("memory-gc", 0).unwrap();
+        let stale = store.claim("memory-gc", "owner", 10, 10).unwrap();
+        let successor = store.claim("memory-gc", "owner", 20, 100).unwrap();
+        assert!(store
+            .complete("memory-gc", "owner", stale.generation, 500)
+            .is_err());
+        assert_eq!(store.read("memory-gc").unwrap(), successor);
+        store
+            .complete("memory-gc", "owner", successor.generation, 500)
+            .unwrap();
         let _ = fs::remove_dir_all(root);
     }
 }
