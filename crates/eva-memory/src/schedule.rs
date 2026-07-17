@@ -90,6 +90,32 @@ impl FileSystemScheduleStore {
         self.write(&r)?;
         Ok(r)
     }
+    pub fn renew(
+        &self,
+        id: &str,
+        owner: &str,
+        generation: u64,
+        now_ms: u128,
+        lease_ms: u128,
+    ) -> Result<ScheduleRecord, EvaError> {
+        let _lock = self.lock(id)?;
+        let mut record = self.read(id)?;
+        if record.generation != generation || record.lease_owner.as_deref() != Some(owner) {
+            return Err(EvaError::conflict(
+                "schedule renewal fence does not match active lease",
+            ));
+        }
+        if record
+            .lease_expires_at_ms
+            .is_none_or(|expiry| expiry <= now_ms)
+        {
+            return Err(EvaError::conflict("schedule lease expired before renewal"));
+        }
+        record.lease_expires_at_ms = Some(now_ms.saturating_add(lease_ms.max(1)));
+        record.generation = record.generation.saturating_add(1);
+        self.write(&record)?;
+        Ok(record)
+    }
     pub fn read(&self, id: &str) -> Result<ScheduleRecord, EvaError> {
         validate_id(id)?;
         decode(&fs::read_to_string(self.path(id)).map_err(|e| {
@@ -248,6 +274,26 @@ mod tests {
             .filter(|won| *won)
             .count();
         assert_eq!(winners, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renew_fences_stale_owner_and_generation() {
+        let root = std::env::temp_dir().join(format!("eva-schedule-renew-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store = FileSystemScheduleStore::new(&root).unwrap();
+        store.upsert("memory-gc", 1).unwrap();
+        let claimed = store.claim("memory-gc", "owner-a", 1, 100).unwrap();
+        let renewed = store
+            .renew("memory-gc", "owner-a", claimed.generation, 50, 100)
+            .unwrap();
+        assert_eq!(renewed.lease_expires_at_ms, Some(150));
+        assert!(store
+            .renew("memory-gc", "owner-a", claimed.generation, 60, 100)
+            .is_err());
+        assert!(store
+            .renew("memory-gc", "owner-b", renewed.generation, 60, 100)
+            .is_err());
         let _ = fs::remove_dir_all(root);
     }
 }
