@@ -110,17 +110,18 @@ fn resolve_path(command: &str) -> Vec<PathBuf> {
     resolve_path_from(command, env::var_os("PATH").unwrap_or_default())
 }
 fn resolve_path_from(command: &str, path_value: std::ffi::OsString) -> Vec<PathBuf> {
-    let mut names = vec![command.to_owned()];
     #[cfg(windows)]
-    {
-        if Path::new(command).extension().is_none() {
-            names = env::var("PATHEXT")
-                .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into())
-                .split(';')
-                .map(|e| format!("{command}{}", e.to_ascii_lowercase()))
-                .collect();
-        }
-    }
+    let names = if Path::new(command).extension().is_none() {
+        env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into())
+            .split(';')
+            .map(|e| format!("{command}{}", e.to_ascii_lowercase()))
+            .collect()
+    } else {
+        vec![command.to_owned()]
+    };
+    #[cfg(not(windows))]
+    let names = vec![command.to_owned()];
     env::split_paths(&path_value)
         .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
         .filter(|p| p.is_file())
