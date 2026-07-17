@@ -2,7 +2,7 @@
 //! OMX workflow discovery from local workspace state.
 
 use crate::normalizer::{DiscoveryCandidate, DiscoveryCandidateKind, DiscoveryTrust};
-use crate::scanner::DiscoverySource;
+use crate::scanner::{DiscoveryScanContext, DiscoverySource};
 use eva_config::ProjectConfig;
 use eva_core::EvaError;
 
@@ -37,7 +37,8 @@ impl DiscoverySource for OmxDiscoverySource<'_> {
     ///
     /// 目录不存在时仍返回展示级候选项及拒绝原因，目录存在也只提升来源信任等级，
     /// 不读取 OMX 状态、不恢复会话，也不授予执行权限。
-    fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+    fn scan(&self, context: &DiscoveryScanContext) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+        context.check()?;
         let omx_root = self.project.project_root.join(".omx");
         let trust = if omx_root.is_dir() {
             DiscoveryTrust::ConfiguredAllowlist

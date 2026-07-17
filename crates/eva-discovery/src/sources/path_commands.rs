@@ -2,7 +2,7 @@
 //! PATH command discovery from trusted Adapter manifests.
 
 use crate::normalizer::{DiscoveryCandidate, DiscoveryCandidateKind, DiscoveryTrust};
-use crate::scanner::DiscoverySource;
+use crate::scanner::{DiscoveryScanContext, DiscoverySource};
 use eva_config::{AdapterTransport, ProjectConfig};
 use eva_core::EvaError;
 
@@ -37,7 +37,8 @@ impl DiscoverySource for PathCommandDiscoverySource<'_> {
     ///
     /// 包含路径分隔符的值被保留为拒绝候选项，因为本来源只记录应由后续受控 PATH
     /// 解析处理的命令名，不能借此接受任意文件路径。禁用适配器同样不会获得信任。
-    fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+    fn scan(&self, context: &DiscoveryScanContext) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+        context.check()?;
         let mut candidates = Vec::new();
         for adapter in &self.project.adapters {
             if adapter.transport != AdapterTransport::Stdio {
@@ -81,7 +82,11 @@ mod tests {
     fn path_command_source_reads_manifest_commands_without_handles() {
         let project = load_project_config(workspace_root()).unwrap();
         let source = PathCommandDiscoverySource::new(&project);
-        let candidates = source.scan().unwrap();
+        let candidates = source
+            .scan(&DiscoveryScanContext::with_timeout(
+                std::time::Duration::from_secs(1),
+            ))
+            .unwrap();
 
         assert!(candidates.iter().any(|candidate| {
             candidate.kind == DiscoveryCandidateKind::PathCommand

@@ -2,7 +2,7 @@
 //! External registry discovery boundary.
 
 use crate::normalizer::{DiscoveryCandidate, DiscoveryCandidateKind, DiscoveryTrust};
-use crate::scanner::DiscoverySource;
+use crate::scanner::{DiscoveryScanContext, DiscoverySource};
 use eva_config::ProjectConfig;
 use eva_core::EvaError;
 
@@ -37,7 +37,8 @@ impl DiscoverySource for ExternalRegistryDiscoverySource<'_> {
     ///
     /// 本边界不会访问网络，也不会把目录存在视为授权；未配置时保留拒绝候选项，
     /// 使调用方可以区分“未配置”和“扫描未运行”。
-    fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+    fn scan(&self, context: &DiscoveryScanContext) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+        context.check()?;
         let registry_marker = self.project.project_root.join("config/registries");
         let mut candidate = DiscoveryCandidate::named(
             self.source_id(),

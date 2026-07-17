@@ -5,7 +5,40 @@ use crate::normalizer::{dedupe, DiscoveryCandidate, DiscoveryCandidateKind, Disc
 use eva_config::{AdapterTransport, CapabilityKind, ProjectConfig};
 use eva_core::EvaError;
 use std::collections::BTreeSet;
-use std::time::Instant;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Condvar, Mutex,
+};
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[derive(Clone)]
+pub struct DiscoveryScanContext {
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl DiscoveryScanContext {
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            deadline: Instant::now() + timeout,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline
+    }
+    pub fn check(&self) -> Result<(), EvaError> {
+        if self.is_cancelled() {
+            Err(EvaError::timeout("discovery source deadline expired"))
+        } else {
+            Ok(())
+        }
+    }
+    pub fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+}
 
 /// 本模块的架构职责：扫描可信来源并产出候选能力及逐来源诊断。
 /// Architectural responsibility for this module.
@@ -27,7 +60,7 @@ pub trait DiscoverySource {
         1_000
     }
     /// 扫描来源并返回不携带运行时授权的候选项。
-    fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError>;
+    fn scan(&self, context: &DiscoveryScanContext) -> Result<Vec<DiscoveryCandidate>, EvaError>;
 }
 
 /// 单个发现来源的一次扫描报告。
@@ -83,7 +116,8 @@ impl DiscoverySource for ProjectDiscoverySource<'_> {
     ///
     /// 适配器能力依据传输类型细分为 MCP 工具、技能或通用能力；禁用适配器仍会
     /// 作为展示级拒绝项出现。顶层能力来自显式配置允许列表，但同样不获得句柄。
-    fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+    fn scan(&self, context: &DiscoveryScanContext) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+        context.check()?;
         let mut candidates = Vec::new();
         for adapter in &self.project.adapters {
             candidates.push(DiscoveryCandidate::adapter(
@@ -162,11 +196,39 @@ pub fn scan_sources(sources: &[&dyn DiscoverySource]) -> DiscoveryScanReport {
             continue;
         }
         let started = Instant::now();
-        match source.scan() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let wake = Arc::new((Mutex::new(false), Condvar::new()));
+        let timer_cancelled = cancelled.clone();
+        let timer_wake = wake.clone();
+        let timer = thread::spawn(move || {
+            let (lock, cv) = &*timer_wake;
+            let stopped = lock.lock().expect("deadline lock poisoned");
+            if *stopped {
+                return;
+            }
+            let (stopped, _) = cv
+                .wait_timeout(stopped, Duration::from_millis(timeout_ms))
+                .expect("deadline wait poisoned");
+            if !*stopped {
+                timer_cancelled.store(true, Ordering::Release);
+            }
+        });
+        let context = DiscoveryScanContext {
+            deadline: started + Duration::from_millis(timeout_ms),
+            cancelled,
+        };
+        let result = source.scan(&context);
+        {
+            let (lock, cv) = &*wake;
+            *lock.lock().expect("deadline lock poisoned") = true;
+            cv.notify_one();
+        }
+        let _ = timer.join();
+        match result {
             Ok(candidates) => {
                 let elapsed_ms = elapsed_ms(started);
                 // 同步接口无法抢占扫描，因此返回后再执行预算检查；超时结果不可合入。
-                if elapsed_ms > timeout_ms {
+                if context.is_cancelled() || elapsed_ms > timeout_ms {
                     source_reports.push(DiscoverySourceReport {
                         source_id: source.source_id().to_owned(),
                         cache_key,
@@ -200,7 +262,12 @@ pub fn scan_sources(sources: &[&dyn DiscoverySource]) -> DiscoveryScanReport {
                 cache_key,
                 timeout_ms,
                 elapsed_ms: elapsed_ms(started),
-                status: "error".to_owned(),
+                status: if matches!(error.kind(), eva_core::ErrorKind::Timeout) {
+                    "timeout"
+                } else {
+                    "error"
+                }
+                .to_owned(),
                 candidates: Vec::new(),
                 error: Some(error.message().to_owned()),
                 rejected_reason: Some(error.message().to_owned()),
@@ -263,7 +330,9 @@ mod tests {
     fn project_source_finds_mcp_and_skill_candidates() {
         let project = load_project_config(workspace_root()).unwrap();
         let source = ProjectDiscoverySource::new(&project);
-        let candidates = source.scan().unwrap();
+        let candidates = source
+            .scan(&DiscoveryScanContext::with_timeout(Duration::from_secs(1)))
+            .unwrap();
 
         assert!(candidates
             .iter()
@@ -289,7 +358,10 @@ mod tests {
         }
 
         /// 若被误调用则返回可识别候选项，用于暴露短路失效。
-        fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+        fn scan(
+            &self,
+            _context: &DiscoveryScanContext,
+        ) -> Result<Vec<DiscoveryCandidate>, EvaError> {
             Ok(vec![DiscoveryCandidate::named(
                 self.source_id(),
                 DiscoveryCandidateKind::Workflow,
@@ -314,6 +386,48 @@ mod tests {
         );
     }
 
+    struct HangingSource;
+    impl DiscoverySource for HangingSource {
+        fn source_id(&self) -> &str {
+            "hanging"
+        }
+        fn timeout_ms(&self) -> u64 {
+            20
+        }
+        fn scan(
+            &self,
+            context: &DiscoveryScanContext,
+        ) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+            while !context.is_cancelled() {
+                thread::sleep(Duration::from_millis(1));
+            }
+            context.check()?;
+            unreachable!()
+        }
+    }
+
+    struct FollowingSource;
+    impl DiscoverySource for FollowingSource {
+        fn source_id(&self) -> &str {
+            "following"
+        }
+        fn scan(
+            &self,
+            context: &DiscoveryScanContext,
+        ) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+            context.check()?;
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn hanging_source_cancels_at_deadline_and_following_source_runs() {
+        let report = scan_sources(&[&HangingSource, &FollowingSource]);
+        assert_eq!(report.source_reports[0].status, "timeout");
+        assert!(report.source_reports[0].elapsed_ms < 200);
+        assert_eq!(report.source_reports[1].status, "ok");
+    }
+
     /// 始终返回被拒绝候选项的测试来源。
     struct RejectedSource;
 
@@ -324,7 +438,10 @@ mod tests {
         }
 
         /// 返回带明确拒绝原因的候选项。
-        fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+        fn scan(
+            &self,
+            _context: &DiscoveryScanContext,
+        ) -> Result<Vec<DiscoveryCandidate>, EvaError> {
             Ok(vec![DiscoveryCandidate::named(
                 self.source_id(),
                 DiscoveryCandidateKind::Workflow,

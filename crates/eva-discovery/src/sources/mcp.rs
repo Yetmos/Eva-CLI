@@ -2,7 +2,7 @@
 //! MCP tool discovery from configured Adapter manifests.
 
 use crate::normalizer::{DiscoveryCandidate, DiscoveryCandidateKind, DiscoveryTrust};
-use crate::scanner::DiscoverySource;
+use crate::scanner::{DiscoveryScanContext, DiscoverySource};
 use eva_config::{AdapterTransport, ProjectConfig};
 use eva_core::EvaError;
 
@@ -37,7 +37,8 @@ impl DiscoverySource for McpDiscoverySource<'_> {
     ///
     /// 空允许列表和禁用适配器都会产生带拒绝原因的可见候选项；本方法不会向服务
     /// 请求工具列表，因此配置扫描不会意外扩大网络或执行边界。
-    fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+    fn scan(&self, context: &DiscoveryScanContext) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+        context.check()?;
         let mut candidates = Vec::new();
         for adapter in &self.project.adapters {
             if adapter.transport != AdapterTransport::Mcp {

@@ -18,6 +18,7 @@ pub use cache::DiscoveryCache;
 pub use health::{DiscoveryHealth, DiscoveryHealthStatus};
 pub use normalizer::{DiscoveryCandidate, DiscoveryCandidateKind, DiscoveryTrust};
 pub use scanner::{
-    DiscoveryScanReport, DiscoverySource, DiscoverySourceReport, ProjectDiscoverySource,
+    DiscoveryScanContext, DiscoveryScanReport, DiscoverySource, DiscoverySourceReport,
+    ProjectDiscoverySource,
 };
 pub use service::DiscoveryService;

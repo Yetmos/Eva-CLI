@@ -2,7 +2,7 @@
 //! Codex workflow surface discovery from trusted local Adapter manifests.
 
 use crate::normalizer::{DiscoveryCandidate, DiscoveryCandidateKind, DiscoveryTrust};
-use crate::scanner::DiscoverySource;
+use crate::scanner::{DiscoveryScanContext, DiscoverySource};
 use eva_config::ProjectConfig;
 use eva_core::EvaError;
 
@@ -37,7 +37,8 @@ impl DiscoverySource for CodexDiscoverySource<'_> {
     ///
     /// 禁用的适配器仍作为被拒绝候选项返回，以便诊断配置；扫描只读取元数据，
     /// 不验证或执行命令。
-    fn scan(&self) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+    fn scan(&self, context: &DiscoveryScanContext) -> Result<Vec<DiscoveryCandidate>, EvaError> {
+        context.check()?;
         let mut candidates = Vec::new();
         for adapter in &self.project.adapters {
             let command = adapter.extra_string("command");
