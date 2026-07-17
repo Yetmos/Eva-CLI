@@ -7,6 +7,7 @@ pub mod knowledge_service;
 pub mod memory_service;
 pub mod observability;
 pub mod redaction;
+pub mod schedule;
 
 pub use context_builder::{
     BuiltContext, ContextBudget, ContextBuilder, ContextRequest, LuaContextSnapshot,
@@ -29,3 +30,4 @@ pub use observability::{
     RESPONSIBILITY as OBSERVABILITY_RESPONSIBILITY,
 };
 pub use redaction::{redact_sensitive_text, RedactedText};
+pub use schedule::{FileSystemScheduleStore, ScheduleRecord};
