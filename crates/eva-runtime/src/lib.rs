@@ -4,6 +4,7 @@
 pub mod basic;
 pub mod builder;
 pub mod config_generation;
+pub mod config_watcher;
 pub mod daemon;
 pub mod diagnostics;
 mod memory_worker;
@@ -18,6 +19,7 @@ pub mod task_worker;
 pub use basic::{BasicRunOptions, BasicRunReport};
 pub use builder::{RuntimeBuilder, RuntimeMode, RuntimeOptions};
 pub use config_generation::RuntimeConfigGeneration;
+pub use config_watcher::{ConfigChangeBatch, ConfigWatcher};
 pub use daemon::{
     cleanup_failed_daemon_start, clear_daemon_startup_handshake, daemon_startup_report_path,
     daemon_status, read_daemon_startup_frame, read_daemon_startup_report,
