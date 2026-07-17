@@ -27,9 +27,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub use eva_yaml::{
-    load_eva_config, ObservabilityConfig, ObservabilityCorruptRecordPolicy,
-    ObservabilityRetentionConfig, ObservabilityRetentionSink, OpenTelemetryDropPolicy,
-    OpenTelemetryExporterConfig, RuntimeConfig, ServiceManagerConfig, ServiceManagerKind,
+    load_eva_config, KnowledgeRetrievalWorkerConfig, ObservabilityConfig,
+    ObservabilityCorruptRecordPolicy, ObservabilityRetentionConfig, ObservabilityRetentionSink,
+    OpenTelemetryDropPolicy, OpenTelemetryExporterConfig, RuntimeConfig, ServiceManagerConfig,
+    ServiceManagerKind,
 };
 pub use generation::ConfigGeneration;
 pub use manifest::adapter::{

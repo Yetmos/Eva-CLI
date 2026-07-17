@@ -56,6 +56,17 @@ pub struct RuntimeConfig {
     pub adapter_dir: Option<PathBuf>,
     /// 是否允许配置热重载。
     pub hot_reload: bool,
+    /// Optional daemon-owned external knowledge retrieval worker.
+    pub retrieval_worker: Option<KnowledgeRetrievalWorkerConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeRetrievalWorkerConfig {
+    pub agent: String,
+    pub capability: String,
+    pub provider: String,
+    pub query: String,
+    pub interval_ms: u64,
 }
 
 /// 操作系统服务管理器的可选项目配置。
@@ -229,6 +240,11 @@ impl RuntimeConfig {
         let workspace =
             require_non_empty_path(raw.workspace, CONFIG_TYPE, path, "runtime.workspace")?;
 
+        let retrieval_worker = raw
+            .retrieval_worker
+            .map(|config| KnowledgeRetrievalWorkerConfig::try_from_raw(path, config))
+            .transpose()?
+            .flatten();
         Ok(Self {
             env,
             workspace,
@@ -236,7 +252,52 @@ impl RuntimeConfig {
             script_dir: raw.script_dir,
             adapter_dir: raw.adapter_dir,
             hot_reload: raw.hot_reload,
+            retrieval_worker,
         })
+    }
+}
+
+impl KnowledgeRetrievalWorkerConfig {
+    fn try_from_raw(
+        path: &Path,
+        raw: RawKnowledgeRetrievalWorkerConfig,
+    ) -> Result<Option<Self>, EvaError> {
+        if !raw.enabled {
+            if raw.agent.is_some()
+                || raw.capability.is_some()
+                || raw.provider.is_some()
+                || raw.query.is_some()
+                || raw.interval_ms.is_some()
+            {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    "runtime.retrieval_worker",
+                    "disabled retrieval worker cannot carry execution configuration",
+                ));
+            }
+            return Ok(None);
+        }
+        let required = |value: Option<String>, field: &'static str| {
+            value
+                .ok_or_else(|| invalid_config(CONFIG_TYPE, path, field, "field is required"))
+                .and_then(|value| require_non_empty(value, CONFIG_TYPE, path, field))
+        };
+        let interval_ms = raw.interval_ms.filter(|value| *value > 0).ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                "runtime.retrieval_worker.interval_ms",
+                "interval must be positive",
+            )
+        })?;
+        Ok(Some(Self {
+            agent: required(raw.agent, "runtime.retrieval_worker.agent")?,
+            capability: required(raw.capability, "runtime.retrieval_worker.capability")?,
+            provider: required(raw.provider, "runtime.retrieval_worker.provider")?,
+            query: required(raw.query, "runtime.retrieval_worker.query")?,
+            interval_ms,
+        }))
     }
 }
 
@@ -683,6 +744,19 @@ struct RawRuntimeConfig {
     adapter_dir: Option<PathBuf>,
     /// 热重载开关。
     hot_reload: bool,
+    #[serde(default)]
+    retrieval_worker: Option<RawKnowledgeRetrievalWorkerConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawKnowledgeRetrievalWorkerConfig {
+    #[serde(default)]
+    enabled: bool,
+    agent: Option<String>,
+    capability: Option<String>,
+    provider: Option<String>,
+    query: Option<String>,
+    interval_ms: Option<u64>,
 }
 
 /// 原始服务管理器分区。
@@ -838,6 +912,59 @@ mod tests {
         assert!(config
             .extra
             .contains_key(Value::String("eventbus".to_owned())));
+        assert!(config.runtime.retrieval_worker.is_none());
+    }
+
+    #[test]
+    fn retrieval_worker_requires_complete_enabled_configuration() {
+        let value = serde_yaml::from_str::<Value>(
+            r#"
+runtime:
+  env: dev
+  workspace: .
+  hot_reload: true
+  retrieval_worker:
+    enabled: true
+    agent: root-agent
+    capability: knowledge.retrieve
+    provider: retrieval-provider
+    query: refresh project knowledge
+    interval_ms: 60000
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas
+"#,
+        )
+        .unwrap();
+        let config = EvaConfig::try_from(value).unwrap();
+        let worker = config.runtime.retrieval_worker.unwrap();
+        assert_eq!(worker.agent, "root-agent");
+        assert_eq!(worker.interval_ms, 60_000);
+
+        let invalid = serde_yaml::from_str::<Value>(
+            r#"
+runtime:
+  env: dev
+  workspace: .
+  hot_reload: true
+  retrieval_worker:
+    enabled: true
+    agent: root-agent
+config:
+  agent_dir: config/agents
+  adapter_dir: config/adapters
+  capability_dir: config/capabilities
+  policy_dir: config/policies
+  route_file: config/routes/topics.yaml
+  schema_dir: config/schemas
+"#,
+        )
+        .unwrap();
+        assert!(EvaConfig::try_from(invalid).is_err());
     }
 
     #[test]
