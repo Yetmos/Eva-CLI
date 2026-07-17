@@ -7,15 +7,23 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $path = [System.IO.Path]::GetFullPath($MetadataPath)
-if (-not [System.IO.File]::Exists($path)) { throw "metadata_missing:$path" }
-$bytes = [System.IO.File]::ReadAllBytes($path)
+$validationPath = $path
+if ($Manager -eq 'winget' -and [System.IO.Directory]::Exists($path)) {
+  $files = @([System.IO.Directory]::GetFiles($path, '*.yaml'))
+  if ($files.Count -ne 3) { throw "winget_manifest_count_invalid:$($files.Count)" }
+  [System.Array]::Sort($files, [System.StringComparer]::Ordinal)
+  $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes((($files | ForEach-Object { [System.IO.File]::ReadAllText($_) }) -join "`n"))
+} else {
+  if (-not [System.IO.File]::Exists($path)) { throw "metadata_missing:$path" }
+  $bytes = [System.IO.File]::ReadAllBytes($path)
+}
 if ($bytes.Length -eq 0 -or $bytes.Length -gt 1048576) { throw "metadata_size_invalid:$($bytes.Length)" }
 $text = [System.Text.UTF8Encoding]::new($false,$true).GetString($bytes)
 if ($text.Contains([char]0) -or $text.Contains([char]13)) { throw 'metadata_encoding_invalid' }
 $tool = $null; $arguments = @(); $staticValid = $false
 switch ($Manager) {
   'homebrew' { $staticValid = $text -match '^class EvaCli < Formula' -and $text -match '(?m)^  url "https://' -and $text -match '(?m)^  sha256 "[0-9a-f]{64}"$'; $tool = Get-Command brew -ErrorAction SilentlyContinue; $arguments = @('audit','--strict','--formula',$path) }
-  'winget' { $staticValid = $text -match '(?m)^PackageIdentifier: Yetmos\.EvaCLI$' -and $text -match '(?m)^ManifestVersion: 1\.6\.0$'; $tool = Get-Command winget -ErrorAction SilentlyContinue; $arguments = @('validate','--manifest',$path,'--disable-interactivity') }
+  'winget' { $staticValid = ([regex]::Matches($text, '(?m)^PackageIdentifier: Yetmos\.EvaCLI$').Count -eq 3) -and ([regex]::Matches($text, '(?m)^ManifestVersion: 1\.6\.0$').Count -eq 3); $tool = Get-Command winget -ErrorAction SilentlyContinue; $arguments = @('validate','--manifest',$validationPath,'--disable-interactivity') }
   'apt' { $staticValid = $text -match '(?m)^Package: eva-cli$' -and $text -match '(?m)^Version: ' -and $text -match '(?m)^Architecture: amd64$'; $tool = Get-Command apt-ftparchive -ErrorAction SilentlyContinue; $arguments = @('packages',(Split-Path -Parent $path)) }
 }
 if (-not $staticValid) { throw "metadata_static_validation_failed:$Manager" }

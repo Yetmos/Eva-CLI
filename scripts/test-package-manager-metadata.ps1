@@ -3,11 +3,12 @@ $root = Join-Path ([System.IO.Path]::GetTempPath()) ('eva-package-validator-' + 
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
   $formula = Join-Path $root 'eva-cli.rb'
-  $winget = Join-Path $root 'Yetmos.EvaCLI.yaml'
+  $winget = Join-Path $root 'winget'
   $apt = Join-Path $root 'Packages'
   $lf = [char]10
   [System.IO.File]::WriteAllText($formula, ('class EvaCli < Formula' + $lf + '  url "https://example.test/eva.tar.gz"' + $lf + '  sha256 "' + ('a' * 64) + '"' + $lf + 'end' + $lf), [System.Text.UTF8Encoding]::new($false))
-  [System.IO.File]::WriteAllText($winget, ('PackageIdentifier: Yetmos.EvaCLI' + $lf + 'ManifestVersion: 1.6.0' + $lf), [System.Text.UTF8Encoding]::new($false))
+  New-Item -ItemType Directory -Path $winget | Out-Null
+  foreach ($name in @('Yetmos.EvaCLI.yaml','Yetmos.EvaCLI.installer.yaml','Yetmos.EvaCLI.locale.en-US.yaml')) { [System.IO.File]::WriteAllText((Join-Path $winget $name), ('PackageIdentifier: Yetmos.EvaCLI' + $lf + 'ManifestVersion: 1.6.0' + $lf), [System.Text.UTF8Encoding]::new($false)) }
   [System.IO.File]::WriteAllText($apt, ('Package: eva-cli' + $lf + 'Version: 1.11.5-alpha' + $lf + 'Architecture: amd64' + $lf), [System.Text.UTF8Encoding]::new($false))
   foreach ($case in @(@('homebrew',$formula),@('winget',$winget),@('apt',$apt))) {
     $output = & (Join-Path $PSScriptRoot 'validate-package-manager-metadata.ps1') -Manager $case[0] -MetadataPath $case[1] -StaticOnly
