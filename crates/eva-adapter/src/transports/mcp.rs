@@ -20,6 +20,7 @@ use eva_mcp::{
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
@@ -40,6 +41,10 @@ impl McpStdioProcess for ProviderProcessHandle {
 
     fn terminate(&mut self) -> Result<(), EvaError> {
         ProviderProcessHandle::terminate(self)
+    }
+
+    fn terminate_gracefully(&mut self, timeout: Duration) -> Result<(), EvaError> {
+        ProviderProcessHandle::terminate_gracefully(self, timeout).map(|_| ())
     }
 }
 

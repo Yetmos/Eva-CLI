@@ -572,7 +572,14 @@ fn stdio_audit(
 
 /// 尽力终止并等待完整 provider 边界，确保异常路径不会留下后台进程。
 fn terminate_process(process: &mut ProviderProcessHandle) {
-    let _ = process.terminate();
+    // Give cooperative providers a short window to close their pipes before
+    // the backend force-kills the complete process group/Job Object.
+    if process
+        .terminate_gracefully(Duration::from_millis(250))
+        .is_err()
+    {
+        let _ = process.terminate();
+    }
 }
 
 /// 表示 `CredentialEnvValues` 数据结构。

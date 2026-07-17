@@ -10,7 +10,7 @@ use crate::session::{McpServerTransport, McpSessionConfig};
 use eva_core::{AdapterId, EvaError, InvokeOutput, RequestId};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -42,6 +42,15 @@ pub trait McpStdioProcess: Debug {
     fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>>;
     /// Terminate and reap the complete process boundary.
     fn terminate(&mut self) -> Result<(), EvaError>;
+
+    /// Ask the process boundary to exit cleanly, falling back to the
+    /// implementation's forceful termination when graceful shutdown is not
+    /// available.  The default keeps third-party process adapters source
+    /// compatible while allowing the central provider handle to implement a
+    /// real timeout/fallback sequence.
+    fn terminate_gracefully(&mut self, _timeout: Duration) -> Result<(), EvaError> {
+        self.terminate()
+    }
 }
 
 impl McpStdioProcess for Child {
@@ -500,8 +509,13 @@ impl McpStdioJsonRpcTransport {
     /// 停止或释放 `shutdown` 管理的资源。
     pub fn shutdown(&mut self) -> Vec<String> {
         let mut audit = Vec::new();
+        // Closing stdin is the portable cooperative shutdown signal for
+        // stdio servers. Replace the field before waiting so a blocked writer
+        // cannot keep the child alive while the process boundary is reaped.
+        let stdin = std::mem::replace(&mut self.stdin, Box::new(io::sink()));
+        drop(stdin);
         if let Some(mut process) = self.process.take() {
-            match process.terminate() {
+            match process.terminate_gracefully(Duration::from_millis(250)) {
                 Ok(()) => audit.push("mcp.stdio:stopped".to_owned()),
                 Err(_) => audit.push("mcp.stdio:termination_failed".to_owned()),
             }

@@ -32,7 +32,7 @@ pub use diagnostics::{
 pub use recovery::{
     ProviderBackoffTask, RecoveredEvent, RecoveredProviderProcess, RecoveredTask,
     RuntimeRecoveryCoordinator, RuntimeRecoveryOptions, RuntimeRecoveryReport, SkippedProviderTask,
-    SkippedRedriveEvent,
+    SkippedRedriveEvent, DEFAULT_PROVIDER_GRACEFUL_TERMINATION_TIMEOUT_MS,
 };
 pub use runtime::{Runtime, RuntimeStatus, RuntimeSummary};
 pub use scheduler_retry::{

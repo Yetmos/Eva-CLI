@@ -2782,6 +2782,7 @@ fn daemon_start_audit(
         "daemon:v1.12.2:control_mailbox_ready".to_owned(),
         "daemon:v1.12.4:scheduler_retry_tick_ready".to_owned(),
         "daemon:v1.13.5:provider_recovery_scanned".to_owned(),
+        "daemon:v1.13.5:provider_orphan_scan_completed".to_owned(),
         "daemon:v1.15.4:hardware_hotplug_subscriber_ready".to_owned(),
         "daemon:v1.15.6:memory_maintenance_ready".to_owned(),
         "daemon:w1-l10:effect_aware_recovery_ready".to_owned(),
@@ -3366,12 +3367,27 @@ fn record_daemon_recovery_observability(
                     .with(
                         "recovered_provider_processes",
                         report.recovered_provider_processes.len().to_string(),
+                    )
+                    .with(
+                        "provider_orphan_cleanup_outcomes",
+                        report
+                            .audit
+                            .iter()
+                            .filter(|entry| entry.starts_with("runtime.recovery:provider_orphan:"))
+                            .count()
+                            .to_string(),
                     ),
             ),
         );
     }
     let recovered_tasks = report.recovered_tasks.len().to_string();
     let recovered_provider_processes = report.recovered_provider_processes.len().to_string();
+    let provider_orphan_cleanup_outcomes = report
+        .audit
+        .iter()
+        .filter(|entry| entry.starts_with("runtime.recovery:provider_orphan:"))
+        .count()
+        .to_string();
     let _ = pipeline.export_span(
         "runtime.daemon.recovery",
         &recovery_trace,
@@ -3381,6 +3397,10 @@ fn record_daemon_recovery_observability(
             (
                 "recovered_provider_processes",
                 recovered_provider_processes.as_str(),
+            ),
+            (
+                "provider_orphan_cleanup_outcomes",
+                provider_orphan_cleanup_outcomes.as_str(),
             ),
         ],
     );
@@ -5490,12 +5510,14 @@ fn decode_field(value: &str) -> Result<String, EvaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eva_adapter::OsProcessBackend;
     use eva_config::load_project_config;
     use eva_core::{Event, EventId, EventPayload, Topic};
     use eva_eventbus::{EventBus, ReplayHandlerBinding};
     use eva_storage::{
         FileSystemProviderProcessTable, ProviderProcessSnapshot, ProviderProcessTable,
     };
+    use std::process::{Command, Stdio};
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -5783,7 +5805,7 @@ mod tests {
 
     /// 执行 `daemon_provider_process` 对应的处理逻辑。
     fn daemon_provider_process(session_id: &str, request_id: &str) -> ProviderProcessSnapshot {
-        ProviderProcessSnapshot::running(
+        let mut snapshot = ProviderProcessSnapshot::running(
             session_id,
             format!("proc-{session_id}"),
             RequestId::parse(request_id).unwrap(),
@@ -5793,7 +5815,35 @@ mod tests {
             "fnv64:0123456789abcdef",
             "stdio-runner --once",
             "none",
-        )
+        );
+        let mut command = daemon_provider_sleep_command();
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut handle = OsProcessBackend::new().spawn(command).unwrap();
+        handle.identity().stamp_snapshot(&mut snapshot, 1).unwrap();
+        handle.force_terminate().unwrap();
+        snapshot
+    }
+
+    #[cfg(unix)]
+    fn daemon_provider_sleep_command() -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30"]);
+        command
+    }
+
+    #[cfg(windows)]
+    fn daemon_provider_sleep_command() -> Command {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/C", "ping", "127.0.0.1", "-n", "31"]);
+        command
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn daemon_provider_sleep_command() -> Command {
+        Command::new("unsupported")
     }
 
     /// 验证 `daemon_start_smoke_verifies_boundaries_and_stops` 场景下的预期行为。
@@ -5941,6 +5991,14 @@ mod tests {
             .audit
             .iter()
             .any(|entry| entry == "daemon:v1.13.5:provider_recovery_scanned"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "daemon:v1.13.5:provider_orphan_scan_completed"));
+        assert!(report.recovery.audit.iter().any(|entry| {
+            entry
+                == "runtime.recovery:provider_orphan:session-daemon-provider-recovery:already_exited"
+        }));
         assert_eq!(task.status, "interrupted");
         assert!(!process.active);
         assert_eq!(process.health, "interrupted");

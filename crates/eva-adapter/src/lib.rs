@@ -29,8 +29,8 @@ pub use manifest::{
     AdapterCapabilityBinding, AdapterCircuitBreaker, AdapterHandle, AdapterHealth, AdapterRateLimit,
 };
 pub use process_backend::{
-    OsProcessBackend, ProcessBackend, ProcessIdentity, ProviderProcessHandle,
-    ProviderProcessSpawner,
+    OsProcessBackend, ProcessBackend, ProcessIdentity, ProcessTerminationOutcome,
+    ProcessTerminationReport, ProviderProcessHandle, ProviderProcessSpawner,
 };
 pub use registry::AdapterRegistry;
 pub use router::{AdapterRoute, AdapterRouteRequest, AdapterRouter};

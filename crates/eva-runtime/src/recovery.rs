@@ -6,6 +6,7 @@
 //! V1.6.4 runtime crash recovery coordinator.
 
 use crate::{TaskHandlerRegistry, TaskKind};
+use eva_adapter::{OsProcessBackend, ProcessTerminationOutcome, ProcessTerminationReport};
 use eva_core::{EvaError, EventId};
 use eva_eventbus::DurableEventBus;
 use eva_observability::{AuditAction, AuditEvent, AuditOutcome, AuditSink, TraceFields};
@@ -15,10 +16,17 @@ use eva_storage::{
     FileSystemTaskStateStore, ProviderProcessSnapshot, ProviderProcessTable,
     TaskStateReplaySnapshot, TaskStateSnapshot, TaskStateStore, WriterGeneration,
 };
+use std::collections::BTreeMap;
+use std::time::Duration;
 
 /// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "runtime restart recovery over durable task evidence";
+
+/// Grace period used while reclaiming a provider left behind by a crashed
+/// adapter/daemon. The process backend force-kills the complete group or Job
+/// after this window and reports the decision in the recovery audit chain.
+pub const DEFAULT_PROVIDER_GRACEFUL_TERMINATION_TIMEOUT_MS: u64 = 250;
 
 /// 无状态恢复协调器；所有恢复事实均来自调用方提供的持久化存储。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -227,7 +235,9 @@ impl RuntimeRecoveryCoordinator {
         store: &mut FileSystemTaskStateStore,
         process_table: &mut impl ProviderProcessTable,
     ) -> Result<RuntimeRecoveryReport, EvaError> {
+        let orphan_scan = cleanup_provider_orphans(process_table)?;
         let mut report = self.recover_snapshots(store.list_snapshots()?);
+        append_provider_orphan_audit(&mut report, orphan_scan);
         recover_provider_processes(&mut report, process_table, Some(store))?;
         persist_recovered_snapshots(store, &mut report)?;
         Ok(report)
@@ -245,7 +255,9 @@ impl RuntimeRecoveryCoordinator {
         effect_ledger: &mut FileSystemEffectLedger,
         process_table: &mut impl ProviderProcessTable,
     ) -> Result<RuntimeRecoveryReport, EvaError> {
+        let orphan_scan = cleanup_provider_orphans(process_table)?;
         let mut report = recover_effect_aware_tasks(store, handlers, effect_ledger)?;
+        append_provider_orphan_audit(&mut report, orphan_scan);
         recover_provider_processes(&mut report, process_table, Some(store))?;
         Ok(report)
     }
@@ -787,6 +799,103 @@ fn recovery_audit_event(trace: TraceFields, report: &RuntimeRecoveryReport) -> A
 ///
 /// 非活动进程保持不变；每个活动进程在报告成功前必须完成进程表 upsert，避免仍被误判为
 /// 运行中。任务退避计划只描述调度决定，本模块不会直接重启提供者。
+#[derive(Debug)]
+struct ProviderOrphanScan {
+    scanned: usize,
+    outcomes: BTreeMap<String, ProcessTerminationReport>,
+}
+
+/// Fence and clean every active provider boundary before task-state recovery
+/// is allowed to mutate or requeue work. This ordering prevents an abandoned
+/// provider from racing a newly recovered attempt.
+fn cleanup_provider_orphans(
+    process_table: &impl ProviderProcessTable,
+) -> Result<ProviderOrphanScan, EvaError> {
+    let processes = process_table.list()?;
+    let current_generation = process_table.writer_generation();
+    let mut outcomes = BTreeMap::new();
+
+    for process in processes.iter().filter(|process| process.active) {
+        if current_generation.is_some_and(|generation| {
+            generation != WriterGeneration::ZERO && process.owner_generation == generation
+        }) {
+            return Err(EvaError::conflict(
+                "recovery cannot reclaim a provider process owned by the current writer",
+            )
+            .with_context("session_id", &process.session_id)
+            .with_context("owner_generation", process.owner_generation.0.to_string()));
+        }
+
+        let termination = OsProcessBackend::new()
+            .terminate_snapshot(
+                process,
+                Duration::from_millis(DEFAULT_PROVIDER_GRACEFUL_TERMINATION_TIMEOUT_MS),
+            )
+            .map_err(|error| {
+                error
+                    .with_context("session_id", &process.session_id)
+                    .with_context("provider_process_id", &process.provider_process_id)
+            })?;
+        if matches!(
+            termination.outcome,
+            ProcessTerminationOutcome::IdentityMismatch
+                | ProcessTerminationOutcome::MissingIdentity
+        ) {
+            return Err(EvaError::conflict(
+                "provider orphan identity cannot prove the recorded boundary is safe to reclaim",
+            )
+            .with_context("session_id", &process.session_id)
+            .with_context("pid", process.pid.unwrap_or_default().to_string())
+            .with_context("cleanup_outcome", termination.outcome.as_str())
+            .with_context("cleanup_boundary", &termination.boundary));
+        }
+        outcomes.insert(process.session_id.clone(), termination);
+    }
+
+    Ok(ProviderOrphanScan {
+        scanned: processes.len(),
+        outcomes,
+    })
+}
+
+fn append_provider_orphan_audit(report: &mut RuntimeRecoveryReport, scan: ProviderOrphanScan) {
+    let active = scan.outcomes.len();
+    let cleaned = scan
+        .outcomes
+        .values()
+        .filter(|termination| {
+            matches!(
+                termination.outcome,
+                ProcessTerminationOutcome::AlreadyExited
+                    | ProcessTerminationOutcome::Graceful
+                    | ProcessTerminationOutcome::Forced
+            )
+        })
+        .count();
+    for (session_id, termination) in scan.outcomes {
+        report.audit.extend(
+            termination
+                .audit_entries()
+                .into_iter()
+                .map(|entry| format!("runtime.recovery:{entry}")),
+        );
+        report.audit.push(format!(
+            "runtime.recovery:provider_orphan:{session_id}:{}",
+            termination.outcome.as_str()
+        ));
+    }
+    report.audit.push(format!(
+        "runtime.recovery:provider_orphan_scanned:{}",
+        scan.scanned
+    ));
+    report
+        .audit
+        .push(format!("runtime.recovery:provider_orphan_active:{active}"));
+    report.audit.push(format!(
+        "runtime.recovery:provider_orphan_cleaned:{cleaned}"
+    ));
+}
+
 fn recover_provider_processes(
     report: &mut RuntimeRecoveryReport,
     process_table: &mut impl ProviderProcessTable,
@@ -799,18 +908,6 @@ fn recover_provider_processes(
         if !process.active {
             report.unchanged_provider_processes.push(process.session_id);
             continue;
-        }
-
-        if let Some(current_generation) = process_table.writer_generation() {
-            if current_generation != WriterGeneration::ZERO
-                && process.owner_generation == current_generation
-            {
-                return Err(EvaError::conflict(
-                    "recovery cannot reclaim a provider process owned by the current writer",
-                )
-                .with_context("session_id", &process.session_id)
-                .with_context("owner_generation", process.owner_generation.0.to_string()));
-            }
         }
 
         let previous_health = process.health.clone();
@@ -1003,12 +1100,14 @@ mod tests {
     use eva_observability::{SpanId, TraceFields};
     use eva_storage::{
         DurableBackendOptions, EffectLedgerIntent, FileSystemAuditSink, FileSystemDurableBackend,
-        FileSystemProviderProcessTable, InMemoryArtifactStore, ProviderProcessTable, StateVersion,
-        TaskAttemptOutcome, TaskAttemptPolicySnapshot, TaskEnvelopeSnapshot,
-        TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateStore, WriterGeneration,
+        FileSystemProviderProcessTable, InMemoryArtifactStore, InMemoryProviderProcessTable,
+        ProviderProcessTable, StateVersion, TaskAttemptOutcome, TaskAttemptPolicySnapshot,
+        TaskEnvelopeSnapshot, TaskStateDeadLetterSnapshot, TaskStateLogSnapshot, TaskStateStore,
+        WriterGeneration,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -1103,7 +1202,6 @@ mod tests {
         let backend =
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
         let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
-
         let report = RuntimeRecoveryCoordinator
             .recover_task_store(&mut store)
             .unwrap();
@@ -1219,7 +1317,7 @@ mod tests {
             )
             .unwrap();
             processes
-                .upsert(provider_process(
+                .upsert(terminated_provider_process(
                     "session-effect-committed",
                     committed_task_id,
                     "scheduler_backoff",
@@ -1982,7 +2080,7 @@ mod tests {
             task.retry_max_attempts = 3;
             store.write(&task).unwrap();
             processes
-                .upsert(provider_process(
+                .upsert(terminated_provider_process(
                     "session-provider-recovery-interrupted",
                     "req-provider-recovery-interrupted",
                     "none",
@@ -2013,6 +2111,14 @@ mod tests {
 
         assert_eq!(report.scanned_provider_processes, 1);
         assert_eq!(report.recovered_provider_processes.len(), 1);
+        assert!(report.audit.iter().any(|entry| {
+            entry
+                == "runtime.recovery:provider_orphan:session-provider-recovery-interrupted:already_exited"
+        }));
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "runtime.recovery:provider.cleanup:forced:false"));
         assert_eq!(
             report.recovered_provider_processes[0]
                 .task_status
@@ -2052,7 +2158,7 @@ mod tests {
             task.retry_max_attempts = 3;
             store.write(&task).unwrap();
             processes
-                .upsert(provider_process(
+                .upsert(terminated_provider_process(
                     "session-provider-recovery-backoff",
                     "req-provider-recovery-backoff",
                     "scheduler_backoff",
@@ -2093,6 +2199,112 @@ mod tests {
         assert_eq!(
             recovered_task.interrupted_reason.as_deref(),
             Some("provider restart recovery scheduled scheduler backoff")
+        );
+    }
+
+    #[test]
+    fn recovery_refuses_pid_reuse_without_mutating_task_or_process_record() {
+        let root = test_root("provider-identity-mismatch");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let mut effect_ledger = FileSystemEffectLedger::open_with_writer(
+            backend.layout(),
+            store.runtime_writer().unwrap(),
+        )
+        .unwrap();
+        let handlers = TaskHandlerRegistry::with_runtime_defaults().unwrap();
+        let task_id = "req-provider-recovery-identity-mismatch";
+        store.write(&snapshot(task_id, "running")).unwrap();
+
+        let mut command = provider_sleep_command();
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let process_backend = OsProcessBackend::new();
+        let mut handle = process_backend.spawn(command).unwrap();
+        let mut process = provider_process(
+            "session-provider-recovery-identity-mismatch",
+            task_id,
+            "none",
+            None,
+        );
+        handle.identity().stamp_snapshot(&mut process, 1).unwrap();
+        process.process_start_token = Some("reused-process-incarnation".to_owned());
+        let mut processes = InMemoryProviderProcessTable::new();
+        processes.upsert(process).unwrap();
+
+        let error = RuntimeRecoveryCoordinator
+            .recover_task_store_with_effects_and_provider_processes(
+                &mut store,
+                &handlers,
+                &mut effect_ledger,
+                &mut processes,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            error
+                .context()
+                .entries()
+                .iter()
+                .find(|(key, _)| key == "cleanup_outcome")
+                .map(|(_, value)| value.as_str()),
+            Some("identity_mismatch")
+        );
+        assert_eq!(store.read(Some(task_id)).unwrap().status, "running");
+        assert!(
+            processes
+                .read("session-provider-recovery-identity-mismatch")
+                .unwrap()
+                .active
+        );
+        assert!(handle.is_running().unwrap());
+        handle.force_terminate().unwrap();
+    }
+
+    #[test]
+    fn recovery_refuses_legacy_active_process_without_mutating_task_or_record() {
+        let root = test_root("provider-missing-identity");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let mut store = FileSystemTaskStateStore::from_writable_backend(&backend).unwrap();
+        let task_id = "req-provider-recovery-missing-identity";
+        store.write(&snapshot(task_id, "running")).unwrap();
+        let process = provider_process(
+            "session-provider-recovery-missing-identity",
+            task_id,
+            "none",
+            None,
+        );
+        let mut processes = InMemoryProviderProcessTable::new();
+        processes.upsert(process).unwrap();
+        let process = processes
+            .read("session-provider-recovery-missing-identity")
+            .unwrap();
+
+        let error = RuntimeRecoveryCoordinator
+            .recover_task_store_with_provider_processes(&mut store, &mut processes)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+        assert_eq!(
+            error
+                .context()
+                .entries()
+                .iter()
+                .find(|(key, _)| key == "cleanup_outcome")
+                .map(|(_, value)| value.as_str()),
+            Some("missing_identity")
+        );
+        assert_eq!(store.read(Some(task_id)).unwrap().status, "running");
+        assert_eq!(
+            processes
+                .read("session-provider-recovery-missing-identity")
+                .unwrap(),
+            process
         );
     }
 
@@ -2283,6 +2495,44 @@ mod tests {
         );
         snapshot.retry_backoff_ms = retry_backoff_ms;
         snapshot
+    }
+
+    fn terminated_provider_process(
+        session_id: &str,
+        request_id: &str,
+        restart_policy: &str,
+        retry_backoff_ms: Option<u64>,
+    ) -> ProviderProcessSnapshot {
+        let mut snapshot =
+            provider_process(session_id, request_id, restart_policy, retry_backoff_ms);
+        let mut command = provider_sleep_command();
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut handle = OsProcessBackend::new().spawn(command).unwrap();
+        handle.identity().stamp_snapshot(&mut snapshot, 1).unwrap();
+        handle.force_terminate().unwrap();
+        snapshot
+    }
+
+    #[cfg(unix)]
+    fn provider_sleep_command() -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30"]);
+        command
+    }
+
+    #[cfg(windows)]
+    fn provider_sleep_command() -> Command {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/C", "ping", "127.0.0.1", "-n", "31"]);
+        command
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn provider_sleep_command() -> Command {
+        Command::new("unsupported")
     }
 
     /// 表示 `TestRoot` 数据结构。
