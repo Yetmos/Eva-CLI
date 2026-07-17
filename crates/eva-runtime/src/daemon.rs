@@ -5,6 +5,9 @@
 //! 先执行状态变更，再原子发布响应，最后删除请求；调用方超时不代表请求未被稍后执行。
 //! Local daemon process-boundary and control-plane contracts for V1.12.
 
+use crate::memory_worker::{
+    ensure_retrieval_schedule, run_scheduled_retrieval, DaemonRetrievalWorker,
+};
 use crate::{
     run_scheduler_retry_tick_with_handler, FileSystemTaskArtifactResolver, IdempotencyKey,
     RuntimeBuilder, RuntimeRecoveryCoordinator, RuntimeRecoveryReport, SchedulerRetryTickOptions,
@@ -2621,12 +2624,21 @@ fn start_daemon_inner(
         memory_schedule.upsert(MEMORY_MAINTENANCE_SCHEDULE_ID, 0)?;
     }
     let memory_schedule_owner = schedule_owner(&lease);
+    let retrieval_worker =
+        DaemonRetrievalWorker::from_project(project, provider_process_table.clone())?;
+    ensure_retrieval_schedule(&memory_schedule, retrieval_worker.as_ref())?;
     let memory_maintenance = run_scheduled_memory_maintenance(
         &memory_schedule,
         &memory_schedule_owner,
         &options,
         observability_lifecycle.pipeline_mut(),
         trace,
+    )?;
+    let _retrieval = run_scheduled_retrieval(
+        &memory_schedule,
+        &memory_schedule_owner,
+        retrieval_worker.as_ref(),
+        now_ms(),
     )?;
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
@@ -2736,6 +2748,7 @@ fn start_daemon_inner(
                 observability: observability_lifecycle.pipeline_mut(),
                 memory_schedule: &memory_schedule,
                 memory_schedule_owner: &memory_schedule_owner,
+                retrieval_worker: retrieval_worker.as_ref(),
             });
             let join_result = worker.stop_and_join();
             let loop_report = match (loop_result, join_result) {
@@ -3224,6 +3237,7 @@ struct DaemonControlLoopContext<'a> {
     observability: &'a mut BestEffortObservabilityPipeline,
     memory_schedule: &'a FileSystemScheduleStore,
     memory_schedule_owner: &'a str,
+    retrieval_worker: Option<&'a DaemonRetrievalWorker>,
 }
 
 /// 串行执行调度重试 tick 和按文件名排序的控制请求，直到处理到关闭操作。
@@ -3253,6 +3267,12 @@ fn run_control_loop(
             context.options,
             context.observability,
             &trace,
+        )?;
+        let _retrieval = run_scheduled_retrieval(
+            context.memory_schedule,
+            context.memory_schedule_owner,
+            context.retrieval_worker,
+            now_ms(),
         )?;
         context.task_worker.check_health()?;
         renew_daemon_lease_if_due(context.lease, &mut next_heartbeat, heartbeat_interval)?;

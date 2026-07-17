@@ -5,6 +5,7 @@ pub mod basic;
 pub mod builder;
 pub mod daemon;
 pub mod diagnostics;
+mod memory_worker;
 pub mod recovery;
 pub mod runtime;
 pub mod scheduler_retry;
