@@ -10,6 +10,7 @@
 
 /// Capability 名称、引用和 provider hint 契约。
 pub mod capability;
+pub mod digest;
 /// 结构化错误分类、上下文和 provider code 契约。
 pub mod error;
 /// 事件 payload、目标、metadata 和链路契约。
@@ -24,6 +25,7 @@ pub mod topic;
 // 中文：高频公共类型在 crate 根重新导出，作为下游的稳定入口。
 // English: Common contract types are re-exported at the crate root as the stable downstream entrypoint.
 pub use capability::{CapabilityName, CapabilityRef, ProviderHint};
+pub use digest::sha256_digest;
 pub use error::{ErrorContext, ErrorKind, EvaError, ProviderCode};
 pub use event::{Event, EventMetadata, EventPayload, EventTarget, TraceContext};
 pub use ids::{AdapterId, AgentId, CapabilityId, EventId, GenerationId, RequestId};

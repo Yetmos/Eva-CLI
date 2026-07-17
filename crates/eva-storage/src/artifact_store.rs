@@ -1,10 +1,9 @@
 //! 产物存储契约、内存实现和带完整性校验的本地文件系统实现。
 //! Artifact store contracts and the V0.4 in-memory implementation.
 
+pub use eva_core::sha256_digest;
 use eva_core::EvaError;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -348,20 +347,6 @@ struct ArtifactMetadata {
     retention_policy: String,
     /// 可选保留截止时间。
     retain_until_ms: Option<u128>,
-}
-
-/// 计算带算法前缀的稳定 SHA-256 文本；字符串写入内存不可能失败。
-pub fn sha256_digest(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-
-    let mut encoded = String::with_capacity("sha256:".len() + digest.len() * 2);
-    encoded.push_str("sha256:");
-    for byte in digest {
-        write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    encoded
 }
 
 /// 校验可安全映射到文件系统的相对 artifact key。
