@@ -5,6 +5,7 @@
 //! 先执行状态变更，再原子发布响应，最后删除请求；调用方超时不代表请求未被稍后执行。
 //! Local daemon process-boundary and control-plane contracts for V1.12.
 
+use crate::config_generation_store::ConfigGenerationStore;
 use crate::memory_worker::{
     ensure_retrieval_schedule, run_scheduled_retrieval, DaemonRetrievalWorker,
 };
@@ -2647,6 +2648,16 @@ fn start_daemon_inner(
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
     )?;
     let mut runtime = RuntimeBuilder::new().build(project)?;
+    let config_generation_store = ConfigGenerationStore::new(durable_backend.layout());
+    let recovered_generation =
+        config_generation_store.initialize(&runtime.generation().identity)?;
+    if recovered_generation.active.digest != runtime.generation().identity.digest {
+        return Err(EvaError::conflict(
+            "durable active config digest does not match loaded project",
+        )
+        .with_context("durable_digest", recovered_generation.active.digest)
+        .with_context("loaded_digest", &runtime.generation().identity.digest));
+    }
     let mut config_watcher = if project.eva.runtime.hot_reload && !options.shutdown_after_smoke {
         Some(ConfigWatcher::start(
             &project.project_root,
@@ -2762,6 +2773,7 @@ fn start_daemon_inner(
                 memory_schedule_owner: &memory_schedule_owner,
                 retrieval_worker: retrieval_worker.as_ref(),
                 config_watcher: config_watcher.as_ref(),
+                config_generation_store: &config_generation_store,
             });
             let join_result = worker.stop_and_join();
             let loop_report = match (loop_result, join_result) {
@@ -3259,6 +3271,7 @@ struct DaemonControlLoopContext<'a> {
     memory_schedule_owner: &'a str,
     retrieval_worker: Option<&'a DaemonRetrievalWorker>,
     config_watcher: Option<&'a ConfigWatcher>,
+    config_generation_store: &'a ConfigGenerationStore,
 }
 
 /// 串行执行调度重试 tick 和按文件名排序的控制请求，直到处理到关闭操作。
@@ -3310,7 +3323,12 @@ fn run_control_loop(
                     changed_paths,
                 );
                 if let Some(candidate) = report.candidate.take() {
+                    context
+                        .config_generation_store
+                        .prepare(&candidate.identity)?;
                     let _previous = context.runtime.promote_generation(candidate)?;
+                    context.config_generation_store.promote()?;
+                    context.config_generation_store.retire()?;
                 }
                 record_config_reload_preflight(context.observability, &report);
             }

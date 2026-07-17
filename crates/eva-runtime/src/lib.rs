@@ -4,6 +4,7 @@
 pub mod basic;
 pub mod builder;
 pub mod config_generation;
+pub mod config_generation_store;
 pub mod config_watcher;
 pub mod daemon;
 pub mod diagnostics;
