@@ -11,6 +11,7 @@ pub mod checklist;
 pub mod distribution;
 /// 统一发布证据分类、来源和主题身份信封。
 pub mod evidence;
+pub mod homebrew;
 /// 迁移指南和兼容性政策。
 pub mod migration;
 pub mod package_metadata;
@@ -49,6 +50,7 @@ pub use evidence::{
     RELEASE_EVIDENCE_MANIFEST_FORMAT, RELEASE_PLATFORM_BUNDLE_FORMAT,
     RELEASE_PLATFORM_EVIDENCE_FORMAT, RELEASE_PLATFORM_INDEX_FORMAT,
 };
+pub use homebrew::generate_homebrew_formula;
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 pub use package_metadata::{CanonicalPackageMetadata, PackageArtifactMetadata};
 pub use performance::{
