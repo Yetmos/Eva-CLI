@@ -6,7 +6,7 @@
 //! Provider supervisor slots and process table integration.
 
 use crate::manifest::{AdapterCircuitBreaker, AdapterHandle, AdapterRateLimit};
-use crate::process_backend::ProcessIdentity;
+use crate::process_backend::{OsProcessBackend, ProcessIdentity, ProcessTerminationOutcome};
 use crate::runtime::AdapterInvocation;
 use eva_config::{AdapterTransport, ProviderConfig, ProviderRunAsIdentity};
 use eva_core::{AdapterId, CapabilityName, ErrorKind, EvaError, RequestId};
@@ -15,7 +15,8 @@ use eva_storage::{
     ProviderProcessSnapshot, ProviderProcessTable,
 };
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
@@ -28,6 +29,79 @@ pub const PROVIDER_SESSION_TOKEN_ENV: &str = "EVA_PROVIDER_SESSION_TOKEN";
 pub const PROVIDER_SESSION_ID_HEADER: &str = "X-Eva-Provider-Session";
 /// 定义 `PROVIDER_SESSION_TOKEN_HEADER` 常量。
 pub const PROVIDER_SESSION_TOKEN_HEADER: &str = "X-Eva-Provider-Session-Token";
+const PROVIDER_ADMISSION_RESERVATION_AUDIT_PREFIX: &str = "provider.admission:reservation:";
+const PROVIDER_ADMISSION_RELEASE_PENDING_AUDIT_PREFIX: &str = "provider.admission:release_pending:";
+const PROVIDER_ADMISSION_RELEASE_RESOLVED_AUDIT_PREFIX: &str =
+    "provider.admission:release_resolved:";
+
+/// Bounded timing for closing provider admission and retiring active slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderDrainOptions {
+    total_timeout: Duration,
+    poll_interval: Duration,
+}
+
+impl ProviderDrainOptions {
+    /// Creates a provider drain budget. Both values must be non-zero so a
+    /// caller cannot accidentally skip the admission-close observation step.
+    pub fn new(total_timeout: Duration) -> Result<Self, EvaError> {
+        if total_timeout.is_zero() {
+            return Err(EvaError::invalid_argument(
+                "provider drain timeout must be greater than zero",
+            ));
+        }
+        Ok(Self {
+            total_timeout,
+            poll_interval: Duration::from_millis(10).min(total_timeout),
+        })
+    }
+
+    /// Returns the absolute wall-clock budget for the drain operation.
+    pub const fn total_timeout(self) -> Duration {
+        self.total_timeout
+    }
+
+    /// Overrides the bounded polling interval, primarily for deterministic tests.
+    pub fn with_poll_interval(mut self, poll_interval: Duration) -> Result<Self, EvaError> {
+        if poll_interval.is_zero() {
+            return Err(EvaError::invalid_argument(
+                "provider drain poll interval must be greater than zero",
+            ));
+        }
+        self.poll_interval = poll_interval.min(self.total_timeout);
+        Ok(self)
+    }
+
+    const fn poll_interval(self) -> Duration {
+        self.poll_interval
+    }
+}
+
+impl Default for ProviderDrainOptions {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(3)).expect("static provider drain budget is valid")
+    }
+}
+
+/// Stable evidence emitted after a supervisor has closed admission and retired
+/// every provider snapshot it could safely own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderDrainReport {
+    /// Whether this report is a cached result of an earlier successful drain.
+    pub already_drained: bool,
+    /// `drained` when no active provider remains, `timed_out` otherwise.
+    pub phase: String,
+    /// Number of active snapshots still present when the report was produced.
+    pub active_provider_count: usize,
+    /// Number of provider process boundaries terminated during this drain.
+    pub terminated_provider_count: usize,
+    /// Number of boundaries that required force termination.
+    pub forced_provider_count: usize,
+    /// Number of legacy snapshots without an OS identity.
+    pub missing_identity_count: usize,
+    /// Deterministic lifecycle evidence suitable for daemon audit output.
+    pub audit: Vec<String>,
+}
 
 /// 汇总一次提供者执行在准入阶段所需的不可变事实和清单限额。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +276,15 @@ pub trait ProviderSupervisor {
     }
     /// 执行 `processes` 对应的处理逻辑。
     fn processes(&self) -> Result<Vec<ProviderProcessSnapshot>, EvaError>;
+
+    /// Close admission and retire active provider slots before daemon shutdown.
+    /// Implementations that do not own process boundaries fail closed rather
+    /// than pretending that a drain completed.
+    fn drain(&mut self, _options: ProviderDrainOptions) -> Result<ProviderDrainReport, EvaError> {
+        Err(EvaError::unsupported(
+            "provider supervisor does not support bounded drain",
+        ))
+    }
 }
 
 /// 在调用线程内维护准入状态，并可镜像快照到持久化进程表的监督器。
@@ -216,6 +299,14 @@ pub struct InMemoryProviderSupervisor {
     rate_windows: BTreeMap<AdapterId, ProviderRateWindow>,
     /// 按适配器隔离的连续失败、开启时间和半开探测状态。
     circuit_states: BTreeMap<AdapterId, ProviderCircuitState>,
+    /// One-way admission gate. Once set, no new provider execution may start.
+    draining: bool,
+    /// Cached successful report makes repeated shutdown requests idempotent.
+    drain_report: Option<ProviderDrainReport>,
+    /// A failed drain is terminal for this supervisor generation. Retrying
+    /// after a partial cleanup could mistake a released snapshot for a fully
+    /// released admission reservation.
+    drain_error: Option<EvaError>,
 }
 
 /// 表示 `ProviderRateWindow` 数据结构。
@@ -447,6 +538,9 @@ impl InMemoryProviderSupervisor {
             admission_table: None,
             rate_windows: BTreeMap::new(),
             circuit_states: BTreeMap::new(),
+            draining: false,
+            drain_report: None,
+            drain_error: None,
         }
     }
 
@@ -460,6 +554,9 @@ impl InMemoryProviderSupervisor {
             admission_table,
             rate_windows: BTreeMap::new(),
             circuit_states: BTreeMap::new(),
+            draining: false,
+            drain_report: None,
+            drain_error: None,
         }
     }
 
@@ -495,6 +592,399 @@ impl InMemoryProviderSupervisor {
         }
         self.table.active_for_adapter(adapter_id)
     }
+
+    /// Returns whether this supervisor has closed provider admission.
+    pub fn is_draining(&self) -> bool {
+        self.draining
+    }
+
+    /// Close admission, wait for in-flight providers, and force-clean any
+    /// boundary that remains at the absolute deadline. The gate is one-way;
+    /// a successful report is cached so repeated daemon shutdowns cannot
+    /// accidentally reopen admission or release a successor reservation.
+    pub fn drain(
+        &mut self,
+        options: ProviderDrainOptions,
+    ) -> Result<ProviderDrainReport, EvaError> {
+        if let Some(previous) = &self.drain_report {
+            let mut repeated = previous.clone();
+            repeated.already_drained = true;
+            return Ok(repeated);
+        }
+        if let Some(previous) = &self.drain_error {
+            return Err(previous.clone());
+        }
+        self.draining = true;
+        let result = self
+            .reconcile_pending_admission_releases()
+            .and_then(|_| self.drain_once(options));
+        match result {
+            Ok(report) => {
+                self.drain_report = Some(report.clone());
+                Ok(report)
+            }
+            Err(error) => {
+                self.drain_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn drain_once(
+        &mut self,
+        options: ProviderDrainOptions,
+    ) -> Result<ProviderDrainReport, EvaError> {
+        let deadline = Instant::now()
+            .checked_add(options.total_timeout())
+            .ok_or_else(|| {
+                EvaError::invalid_argument("provider drain deadline is outside the clock range")
+            })?;
+        let backend = OsProcessBackend::new();
+        let mut terminated_provider_count = 0usize;
+        let mut forced_provider_count = 0usize;
+        let mut missing_identity_count = 0usize;
+        let mut audit = vec![
+            "provider.lifecycle:admission_closed".to_owned(),
+            format!(
+                "provider.lifecycle:drain_timeout_ms:{}",
+                options.total_timeout().as_millis()
+            ),
+        ];
+
+        loop {
+            let active = self
+                .processes()?
+                .into_iter()
+                .filter(|snapshot| snapshot.active)
+                .collect::<Vec<_>>();
+            if active.is_empty() {
+                let report = ProviderDrainReport {
+                    already_drained: false,
+                    phase: "drained".to_owned(),
+                    active_provider_count: 0,
+                    terminated_provider_count,
+                    forced_provider_count,
+                    missing_identity_count,
+                    audit: {
+                        audit.push("provider.lifecycle:drained".to_owned());
+                        audit
+                    },
+                };
+                return Ok(report);
+            }
+
+            // The supervisor is single-threaded behind AdapterRuntime's
+            // RefCell. Only a committed v3 slot that is still in the initial
+            // or restart-starting state can be the known pre-spawn window.
+            // Legacy v1/v2 records retain `restart_state=unconfigured` and
+            // must remain fail-closed when their OS identity is missing.
+            let mut retired_unregistered = false;
+            for snapshot in &active {
+                let unregistered = !snapshot.has_process_identity()
+                    && snapshot.attempt == 0
+                    && snapshot.record_version.0 > 0
+                    && snapshot.restart_state != "unconfigured"
+                    && !snapshot
+                        .audit
+                        .iter()
+                        .any(|entry| entry == "provider.process:registered");
+                if unregistered
+                    && self.retire_snapshot_after_drain(
+                        snapshot,
+                        "provider supervisor drain closed an unregistered slot",
+                    )?
+                {
+                    retired_unregistered = true;
+                    missing_identity_count += 1;
+                    audit.push(format!(
+                        "provider.lifecycle:retired_unregistered:{}",
+                        snapshot.session_id
+                    ));
+                }
+            }
+            if retired_unregistered {
+                continue;
+            }
+
+            let remaining_budget = deadline.saturating_duration_since(Instant::now());
+            if remaining_budget.is_zero() {
+                let remaining = active.len();
+                return Err(EvaError::timeout(
+                    "provider supervisor drain left active providers behind",
+                )
+                .with_context("active_provider_count", remaining.to_string())
+                .with_context(
+                    "terminated_provider_count",
+                    terminated_provider_count.to_string(),
+                )
+                .with_context("cleanup_blocked", "true"));
+            }
+
+            // Start graceful termination while there is still budget. The
+            // previous implementation waited until the deadline and passed
+            // zero, which skipped the cooperative window entirely. Divide the
+            // remaining budget across active boundaries so one provider cannot
+            // consume the entire shutdown window before its siblings are
+            // observed.
+            let per_provider_budget = remaining_budget
+                .checked_div(active.len() as u32)
+                .unwrap_or(remaining_budget);
+            let graceful_timeout = per_provider_budget / 2;
+            let force_timeout = per_provider_budget.saturating_sub(graceful_timeout);
+            let mut cleanup_blocked = false;
+            for snapshot in &active {
+                if !snapshot.has_process_identity() {
+                    missing_identity_count += 1;
+                    cleanup_blocked = true;
+                    audit.push(format!(
+                        "provider.lifecycle:missing_identity:{}",
+                        snapshot.session_id
+                    ));
+                    continue;
+                }
+                match backend.terminate_snapshot_with_force_timeout(
+                    snapshot,
+                    graceful_timeout,
+                    force_timeout,
+                ) {
+                    Ok(termination)
+                        if matches!(
+                            termination.outcome,
+                            ProcessTerminationOutcome::AlreadyExited
+                                | ProcessTerminationOutcome::Graceful
+                                | ProcessTerminationOutcome::Forced
+                        ) =>
+                    {
+                        terminated_provider_count += 1;
+                        if termination.outcome == ProcessTerminationOutcome::Forced {
+                            forced_provider_count += 1;
+                        }
+                        audit.extend(termination.audit_entries());
+                        if self.retire_snapshot_after_drain(
+                            snapshot,
+                            "provider supervisor graceful drain",
+                        )? {
+                            audit.push(format!(
+                                "provider.lifecycle:retired:{}",
+                                snapshot.session_id
+                            ));
+                        }
+                    }
+                    Ok(termination) => {
+                        cleanup_blocked = true;
+                        audit.extend(termination.audit_entries());
+                        audit.push(format!(
+                            "provider.lifecycle:cleanup_blocked:{}",
+                            snapshot.session_id
+                        ));
+                    }
+                    Err(error) => {
+                        cleanup_blocked = true;
+                        audit.push(format!(
+                            "provider.lifecycle:cleanup_error:{}",
+                            sanitize_drain_value(error.message())
+                        ));
+                    }
+                }
+            }
+
+            let remaining = self
+                .processes()?
+                .into_iter()
+                .filter(|snapshot| snapshot.active)
+                .count();
+            if remaining == 0 {
+                let report = ProviderDrainReport {
+                    already_drained: false,
+                    phase: "drained".to_owned(),
+                    active_provider_count: 0,
+                    terminated_provider_count,
+                    forced_provider_count,
+                    missing_identity_count,
+                    audit: {
+                        audit.push("provider.lifecycle:drained_after_graceful".to_owned());
+                        audit
+                    },
+                };
+                return Ok(report);
+            }
+            if Instant::now() >= deadline {
+                return Err(EvaError::timeout(
+                    "provider supervisor drain left active providers behind",
+                )
+                .with_context("active_provider_count", remaining.to_string())
+                .with_context(
+                    "terminated_provider_count",
+                    terminated_provider_count.to_string(),
+                )
+                .with_context("cleanup_blocked", cleanup_blocked.to_string()));
+            }
+            let remaining_budget = deadline.saturating_duration_since(Instant::now());
+            thread::sleep(options.poll_interval().min(remaining_budget));
+        }
+    }
+
+    fn retire_snapshot_after_drain(
+        &mut self,
+        snapshot: &ProviderProcessSnapshot,
+        reason: &str,
+    ) -> Result<bool, EvaError> {
+        let mut current = match self.read_process(&snapshot.session_id) {
+            Ok(current) => current,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if !current.active {
+            return Ok(false);
+        }
+        let admission_release = self.admission_release_for_snapshot(&current)?;
+        if let Some((_, reservation_id)) = &admission_release {
+            current.audit.push(format!(
+                "{PROVIDER_ADMISSION_RELEASE_PENDING_AUDIT_PREFIX}{reservation_id}"
+            ));
+        }
+        // A completion racing with drain is allowed to win. The process-table
+        // CAS below then either commits this terminal state or reports a
+        // version conflict, which the next list pass re-evaluates.
+        current.release("interrupted", Some(format!("provider shutdown: {reason}")))?;
+        current
+            .audit
+            .push("provider.lifecycle:shutdown_retired".to_owned());
+        let committed = match self.upsert_process(current) {
+            Ok(committed) => committed,
+            Err(error) if error.kind() == ErrorKind::Conflict => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        // Release only the reservation identity persisted with this provider
+        // incarnation. A successor may reuse the session ID, but cannot reuse
+        // the old reservation ID without violating the admission fence.
+        if let Some((table, reservation_id)) = admission_release {
+            match table.release_owned(
+                &committed.adapter_id,
+                &reservation_id,
+                &committed.session_id,
+            ) {
+                Ok(()) => {
+                    self.mark_admission_release_resolved(&committed, &reservation_id)?;
+                }
+                Err(error) if error.kind() == ErrorKind::Conflict => {
+                    // The reservation may have expired between ownership
+                    // proof and release. Reconcile immediately; a successor
+                    // with the same session but a different reservation ID is
+                    // preserved by the reconciliation fence.
+                    self.reconcile_pending_admission_releases()?;
+                    let latest = self.read_process(&committed.session_id)?;
+                    if pending_release_id(&latest).is_some_and(|id| id == reservation_id) {
+                        return Err(error
+                            .with_context("session_id", &committed.session_id)
+                            .with_context("reservation_id", reservation_id));
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(true)
+    }
+
+    fn admission_release_for_snapshot(
+        &self,
+        snapshot: &ProviderProcessSnapshot,
+    ) -> Result<Option<(FileSystemProviderAdmissionTable, String)>, EvaError> {
+        let Some(table) = self.admission_table.clone() else {
+            return Ok(None);
+        };
+        let expected_reservation_id = reservation_id_from_audit(snapshot).ok_or_else(|| {
+            EvaError::conflict("provider drain lacks durable admission reservation identity")
+                .with_context("session_id", &snapshot.session_id)
+        })?;
+        let state = table.snapshot(&snapshot.adapter_id, now_ms())?;
+        let same_session = state
+            .reservations
+            .iter()
+            .filter(|reservation| reservation.session_id == snapshot.session_id)
+            .collect::<Vec<_>>();
+        match same_session.as_slice() {
+            [reservation] if reservation.reservation_id == expected_reservation_id => {
+                Ok(Some((table, expected_reservation_id)))
+            }
+            // An expired reservation is already absent after `snapshot`'
+            // cleanup. There is nothing left to release; a successor would
+            // have appeared in this same list and is handled as a conflict.
+            [] => Ok(None),
+            _ => Err(
+                EvaError::conflict("provider drain found ambiguous admission reservations")
+                    .with_context("session_id", &snapshot.session_id),
+            ),
+        }
+    }
+
+    fn mark_admission_release_resolved(
+        &mut self,
+        snapshot: &ProviderProcessSnapshot,
+        reservation_id: &str,
+    ) -> Result<(), EvaError> {
+        let mut current = self.read_process(&snapshot.session_id)?;
+        if !current.audit.iter().any(|entry| {
+            entry == &format!("{PROVIDER_ADMISSION_RELEASE_RESOLVED_AUDIT_PREFIX}{reservation_id}")
+        }) {
+            current.audit.push(format!(
+                "{PROVIDER_ADMISSION_RELEASE_RESOLVED_AUDIT_PREFIX}{reservation_id}"
+            ));
+            match self.upsert_process(current) {
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::Conflict => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    /// Replays durable release intents left by a crash or an admission-table
+    /// I/O failure. The exact reservation ID is the fence; a successor using
+    /// the same session ID is never removed.
+    fn reconcile_pending_admission_releases(&mut self) -> Result<(), EvaError> {
+        let Some(table) = self.admission_table.clone() else {
+            return Ok(());
+        };
+        let snapshots = self.processes()?;
+        for snapshot in snapshots {
+            for reservation_id in pending_release_ids(&snapshot) {
+                let state = table.snapshot(&snapshot.adapter_id, now_ms())?;
+                let exact = state.reservations.iter().any(|reservation| {
+                    reservation.reservation_id == reservation_id
+                        && reservation.session_id == snapshot.session_id
+                });
+                let successor = state.reservations.iter().any(|reservation| {
+                    reservation.session_id == snapshot.session_id
+                        && reservation.reservation_id != reservation_id
+                });
+                if exact {
+                    table.release_owned(
+                        &snapshot.adapter_id,
+                        &reservation_id,
+                        &snapshot.session_id,
+                    )?;
+                }
+                // A successor with the same session ID is intentionally
+                // preserved: the old reservation is already absent, so
+                // resolving this intent is safe and avoids retrying forever
+                // after an expiry/restart.
+                let mut current = self.read_process(&snapshot.session_id)?;
+                if successor
+                    && !current.audit.iter().any(|entry| {
+                        entry == &format!("provider.admission:successor_preserved:{reservation_id}")
+                    })
+                {
+                    current.audit.push(format!(
+                        "provider.admission:successor_preserved:{reservation_id}"
+                    ));
+                    self.upsert_process(current)?;
+                }
+                self.mark_admission_release_resolved(&snapshot, &reservation_id)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ProviderSupervisor for InMemoryProviderSupervisor {
@@ -503,6 +993,15 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         &mut self,
         request: ProviderExecutionRequest,
     ) -> Result<ProviderExecutionSlot, EvaError> {
+        self.reconcile_pending_admission_releases()?;
+        if self.draining {
+            return Err(admission_error(
+                &request,
+                "provider supervisor is draining",
+                "provider_draining",
+                None,
+            ));
+        }
         let now = now_ms();
         let session_id = session_id(&request.request_id, &request.adapter_id);
         let provider_process_id = provider_process_id(&request.request_id, &request.adapter_id);
@@ -510,13 +1009,12 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
             Ok(mut existing) => {
                 ensure_request_matches_snapshot(&request, &existing)?;
                 existing.prepare_for_restart(now)?;
-                let committed = self.upsert_process(existing)?;
                 let admission_reservation_id = if let Some(table) = &self.admission_table {
                     let matches = table
-                        .snapshot(&committed.adapter_id, now)?
+                        .snapshot(&existing.adapter_id, now)?
                         .reservations
                         .into_iter()
-                        .filter(|reservation| reservation.session_id == committed.session_id)
+                        .filter(|reservation| reservation.session_id == existing.session_id)
                         .collect::<Vec<_>>();
                     match matches.as_slice() {
                         [reservation] => Some(reservation.reservation_id.clone()),
@@ -534,6 +1032,12 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
                 } else {
                     None
                 };
+                if let Some(reservation_id) = &admission_reservation_id {
+                    existing.audit.push(format!(
+                        "{PROVIDER_ADMISSION_RESERVATION_AUDIT_PREFIX}{reservation_id}"
+                    ));
+                }
+                let committed = self.upsert_process(existing)?;
                 return Ok(ProviderExecutionSlot {
                     session_id: committed.session_id,
                     provider_process_id: committed.provider_process_id,
@@ -580,9 +1084,19 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         } else {
             None
         };
+        let admission_reservation_id = admission_reservation
+            .as_ref()
+            .map(|reservation| reservation.reservation_id.clone());
+        if let Some(reservation_id) = &admission_reservation_id {
+            snapshot.audit.push(format!(
+                "{PROVIDER_ADMISSION_RESERVATION_AUDIT_PREFIX}{reservation_id}"
+            ));
+        }
         if let Err(error) = self.upsert_process(snapshot) {
-            if let Some(table) = &self.admission_table {
-                let _ = table.release(&request.adapter_id, &session_id);
+            if let (Some(table), Some(reservation_id)) =
+                (&self.admission_table, admission_reservation_id.as_deref())
+            {
+                let _ = table.release_owned(&request.adapter_id, reservation_id, &session_id);
             }
             return Err(error);
         }
@@ -591,8 +1105,7 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
             provider_process_id,
             request_id: request.request_id,
             adapter_id: request.adapter_id,
-            admission_reservation_id: admission_reservation
-                .map(|reservation| reservation.reservation_id),
+            admission_reservation_id,
             half_open_probe,
         })
     }
@@ -608,6 +1121,13 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         } else {
             self.table.read(&slot.session_id)?
         };
+        if !snapshot.active {
+            return Err(EvaError::conflict(
+                "provider execution slot has already reached a terminal state",
+            )
+            .with_context("session_id", &slot.session_id)
+            .with_context("health", &snapshot.health));
+        }
         snapshot.release(outcome.health, outcome.last_error)?;
         if snapshot.last_error.is_none() && snapshot.health == "completed" {
             snapshot.mark_stable_success()?;
@@ -661,6 +1181,13 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         due_at_ms: u128,
         reason: &str,
     ) -> Result<ProviderProcessSnapshot, EvaError> {
+        if self.draining {
+            return Err(EvaError::unavailable(
+                "provider supervisor is draining; restart scheduling is closed",
+            )
+            .with_provider_code("provider_draining")
+            .with_context("session_id", &slot.session_id));
+        }
         let mut snapshot = self.read_process(&slot.session_id)?;
         ensure_slot_matches_snapshot(slot, &snapshot)?;
         snapshot.mark_restart_pending(attempt, due_at_ms, reason)?;
@@ -672,6 +1199,13 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         slot: &ProviderExecutionSlot,
         now_ms: u128,
     ) -> Result<ProviderProcessSnapshot, EvaError> {
+        if self.draining {
+            return Err(EvaError::unavailable(
+                "provider supervisor is draining; restart admission is closed",
+            )
+            .with_provider_code("provider_draining")
+            .with_context("session_id", &slot.session_id));
+        }
         let mut snapshot = self.read_process(&slot.session_id)?;
         ensure_slot_matches_snapshot(slot, &snapshot)?;
         snapshot.prepare_for_restart(now_ms)?;
@@ -713,6 +1247,10 @@ impl ProviderSupervisor for InMemoryProviderSupervisor {
         }
         self.table.list()
     }
+
+    fn drain(&mut self, options: ProviderDrainOptions) -> Result<ProviderDrainReport, EvaError> {
+        InMemoryProviderSupervisor::drain(self, options)
+    }
 }
 
 impl InMemoryProviderSupervisor {
@@ -727,6 +1265,13 @@ impl InMemoryProviderSupervisor {
         slot: &ProviderExecutionSlot,
         identity: &ProcessIdentity,
     ) -> Result<ProviderProcessSnapshot, EvaError> {
+        if self.draining {
+            return Err(EvaError::unavailable(
+                "provider supervisor is draining; process registration is closed",
+            )
+            .with_provider_code("provider_draining")
+            .with_context("session_id", &slot.session_id));
+        }
         let mut snapshot = self.read_process(&slot.session_id)?;
         ensure_slot_matches_snapshot(slot, &snapshot)?;
         let restarting = snapshot.restart_state == "starting";
@@ -937,6 +1482,52 @@ fn admission_error(
         error = error.with_context("retry_after_ms", retry_after_ms.to_string());
     }
     error
+}
+
+fn sanitize_drain_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+fn reservation_id_from_audit(snapshot: &ProviderProcessSnapshot) -> Option<String> {
+    snapshot.audit.iter().rev().find_map(|entry| {
+        entry
+            .strip_prefix(PROVIDER_ADMISSION_RESERVATION_AUDIT_PREFIX)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn pending_release_id(snapshot: &ProviderProcessSnapshot) -> Option<String> {
+    pending_release_ids(snapshot).pop()
+}
+
+fn pending_release_ids(snapshot: &ProviderProcessSnapshot) -> Vec<String> {
+    let mut pending = Vec::new();
+    for entry in &snapshot.audit {
+        let Some(reservation_id) = entry
+            .strip_prefix(PROVIDER_ADMISSION_RELEASE_PENDING_AUDIT_PREFIX)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let resolved =
+            format!("{PROVIDER_ADMISSION_RELEASE_RESOLVED_AUDIT_PREFIX}{reservation_id}");
+        if !snapshot.audit.iter().any(|item| item == &resolved)
+            && !pending.iter().any(|item| item == reservation_id)
+        {
+            pending.push(reservation_id.to_owned());
+        }
+    }
+    pending
 }
 
 fn ensure_slot_matches_snapshot(
@@ -1353,6 +1944,256 @@ mod tests {
             .audit
             .iter()
             .any(|entry| entry == "provider.slot:released"));
+    }
+
+    #[test]
+    fn supervisor_drain_closes_admission_and_is_idempotent() {
+        let handle = handle();
+        let initial_invocation = invocation("req-supervisor-drain");
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        let slot = supervisor
+            .acquire(ProviderExecutionRequest::from_handle(
+                &handle,
+                &initial_invocation,
+            ))
+            .unwrap();
+
+        let options = ProviderDrainOptions::new(Duration::from_millis(50))
+            .unwrap()
+            .with_poll_interval(Duration::from_millis(1))
+            .unwrap();
+        let report = supervisor.drain(options).unwrap();
+        assert_eq!(report.phase, "drained");
+        assert_eq!(report.active_provider_count, 0);
+        assert!(!report.already_drained);
+        assert!(supervisor.is_draining());
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "provider.lifecycle:admission_closed"));
+
+        let rejected = supervisor
+            .acquire(ProviderExecutionRequest::from_handle(
+                &handle,
+                &invocation("req-supervisor-drain-after"),
+            ))
+            .unwrap_err();
+        assert_eq!(
+            rejected.provider_code().map(|code| code.as_str()),
+            Some("provider_draining")
+        );
+
+        let repeated = supervisor.drain(options).unwrap();
+        assert!(repeated.already_drained);
+        assert_eq!(repeated.phase, "drained");
+        assert!(supervisor
+            .complete(&slot, ProviderExecutionOutcome::completed("completed"))
+            .is_err());
+
+        let registration_error = supervisor
+            .register_process_identity(
+                &slot,
+                &ProcessIdentity {
+                    pid: 1,
+                    process_start_token: "drain-test".to_owned(),
+                    process_group_id: Some(1),
+                    job_id: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            registration_error.provider_code().map(|code| code.as_str()),
+            Some("provider_draining")
+        );
+    }
+
+    #[test]
+    fn supervisor_drain_keeps_legacy_identityless_snapshot_fail_closed() {
+        let handle = handle();
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        let slot = supervisor
+            .acquire(ProviderExecutionRequest::from_handle(
+                &handle,
+                &invocation("req-supervisor-legacy-drain"),
+            ))
+            .unwrap();
+
+        // A v1/v2-compatible active record has a positive CAS version after
+        // persistence but retains the legacy `unconfigured` restart state.
+        // It must not be mistaken for the known pre-spawn window.
+        let mut legacy = supervisor.table.read(&slot.session_id).unwrap();
+        legacy.restart_state = "unconfigured".to_owned();
+        supervisor.table.compare_and_set(legacy).unwrap();
+
+        let options = ProviderDrainOptions::new(Duration::from_millis(20))
+            .unwrap()
+            .with_poll_interval(Duration::from_millis(1))
+            .unwrap();
+        let first = supervisor.drain(options).unwrap_err();
+        assert_eq!(first.kind(), eva_core::ErrorKind::Timeout);
+        assert!(first
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "active_provider_count" && value == "1"));
+        assert!(supervisor.table.read(&slot.session_id).unwrap().active);
+
+        // A failed drain is terminal for this supervisor generation. The
+        // cached error prevents a later call from claiming success after a
+        // partial cleanup.
+        let repeated = supervisor.drain(options).unwrap_err();
+        assert_eq!(repeated, first);
+        assert!(supervisor.is_draining());
+    }
+
+    #[test]
+    fn supervisor_drain_never_releases_a_successor_reservation() {
+        let root = std::env::temp_dir().join(format!(
+            "eva-adapter-drain-successor-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let table = FileSystemProviderAdmissionTable::new(&root).unwrap();
+        let mut handle = handle();
+        handle.max_concurrency = Some(1);
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        supervisor.admission_table = Some(table.clone());
+        let slot = supervisor
+            .acquire(ProviderExecutionRequest::from_handle(
+                &handle,
+                &invocation("req-supervisor-successor-drain"),
+            ))
+            .unwrap();
+        let original_reservation_id = slot.admission_reservation_id.clone().unwrap();
+        let original = table
+            .snapshot(&handle.id, now_ms())
+            .unwrap()
+            .reservations
+            .into_iter()
+            .find(|reservation| reservation.reservation_id == original_reservation_id)
+            .unwrap();
+        let successor = table
+            .reserve(
+                &handle.id,
+                1,
+                &slot.session_id,
+                original.expires_at_ms,
+                eva_storage::DEFAULT_RESERVATION_TTL_MS,
+            )
+            .unwrap();
+        assert_ne!(successor.reservation_id, original_reservation_id);
+
+        let options = ProviderDrainOptions::new(Duration::from_millis(20))
+            .unwrap()
+            .with_poll_interval(Duration::from_millis(1))
+            .unwrap();
+        let first = supervisor.drain(options).unwrap_err();
+        assert_eq!(first.kind(), eva_core::ErrorKind::Conflict);
+        assert!(supervisor.table.read(&slot.session_id).unwrap().active);
+        assert_eq!(
+            table.snapshot(&handle.id, now_ms()).unwrap().reservations,
+            vec![successor.clone()]
+        );
+
+        // The failed result is cached, and a retry cannot consume the
+        // successor reservation under the old session ID.
+        assert_eq!(supervisor.drain(options).unwrap_err(), first);
+        assert_eq!(
+            table.snapshot(&handle.id, now_ms()).unwrap().reservations,
+            vec![successor]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn supervisor_reconciles_expired_release_intent_without_touching_successor() {
+        let root = std::env::temp_dir().join(format!(
+            "eva-adapter-drain-pending-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let table = FileSystemProviderAdmissionTable::new(&root).unwrap();
+        let mut handle = handle();
+        handle.max_concurrency = Some(1);
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        supervisor.admission_table = Some(table.clone());
+        let slot = supervisor
+            .acquire(ProviderExecutionRequest::from_handle(
+                &handle,
+                &invocation("req-supervisor-pending-release"),
+            ))
+            .unwrap();
+        let old_reservation_id = slot.admission_reservation_id.clone().unwrap();
+        let old_reservation = table
+            .snapshot(&handle.id, now_ms())
+            .unwrap()
+            .reservations
+            .into_iter()
+            .find(|reservation| reservation.reservation_id == old_reservation_id)
+            .unwrap();
+
+        // Simulate a crash after the provider snapshot CAS but before the
+        // admission release. Include an older unresolved intent to prove one
+        // reconciliation pass drains the complete durable backlog rather than
+        // only the newest marker.
+        let mut retired = supervisor.table.read(&slot.session_id).unwrap();
+        let older_reservation_id = "expired-before-current";
+        retired.audit.push(format!(
+            "{PROVIDER_ADMISSION_RELEASE_PENDING_AUDIT_PREFIX}{older_reservation_id}"
+        ));
+        retired.audit.push(format!(
+            "{PROVIDER_ADMISSION_RELEASE_PENDING_AUDIT_PREFIX}{old_reservation_id}"
+        ));
+        retired
+            .release("interrupted", Some("simulated drain crash".to_owned()))
+            .unwrap();
+        supervisor.table.compare_and_set(retired).unwrap();
+
+        // Expiry allows a successor reservation with the same session ID to
+        // appear. Reconciliation must preserve it and only resolve the old
+        // release intent.
+        let successor = table
+            .reserve(
+                &handle.id,
+                1,
+                &slot.session_id,
+                old_reservation.expires_at_ms,
+                eva_storage::DEFAULT_RESERVATION_TTL_MS,
+            )
+            .unwrap();
+        assert_ne!(successor.reservation_id, old_reservation_id);
+
+        let report = supervisor
+            .drain(
+                ProviderDrainOptions::new(Duration::from_millis(20))
+                    .unwrap()
+                    .with_poll_interval(Duration::from_millis(1))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(report.phase, "drained");
+        let reconciled = supervisor.table.read(&slot.session_id).unwrap();
+        assert!(pending_release_id(&reconciled).is_none());
+        assert!(reconciled.audit.iter().any(|entry| {
+            entry == &format!("provider.admission:successor_preserved:{old_reservation_id}")
+        }));
+        assert!(reconciled.audit.iter().any(|entry| {
+            entry
+                == &format!(
+                    "{PROVIDER_ADMISSION_RELEASE_RESOLVED_AUDIT_PREFIX}{old_reservation_id}"
+                )
+        }));
+        assert!(reconciled.audit.iter().any(|entry| {
+            entry
+                == &format!(
+                    "{PROVIDER_ADMISSION_RELEASE_RESOLVED_AUDIT_PREFIX}{older_reservation_id}"
+                )
+        }));
+        assert_eq!(
+            table.snapshot(&handle.id, now_ms()).unwrap().reservations,
+            vec![successor]
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// 验证 `supervisor_rejects_concurrency_limit_without_new_slot` 场景下的预期行为。

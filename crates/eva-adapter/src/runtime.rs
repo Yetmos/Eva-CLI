@@ -13,7 +13,8 @@ use crate::restart::{decide_restart, due_at_ms, RestartDecision, RestartOutcome}
 use crate::router::{AdapterRouteRequest, AdapterRouter};
 use crate::supervisor::{
     InMemoryProviderSupervisor, ProviderAdmissionLease, ProviderCredentialScope,
-    ProviderExecutionOutcome, ProviderExecutionRequest, ProviderExecutionSlot, ProviderSupervisor,
+    ProviderDrainOptions, ProviderDrainReport, ProviderExecutionOutcome, ProviderExecutionRequest,
+    ProviderExecutionSlot, ProviderSupervisor,
 };
 use crate::transports;
 use eva_config::{AdapterTransport, ProjectConfig, ProviderRunAsIdentity};
@@ -350,6 +351,21 @@ impl AdapterRuntime {
         self.supervisor.borrow().processes()
     }
 
+    /// Close provider admission and retire active provider boundaries before
+    /// the daemon releases its durable writer. The operation is idempotent;
+    /// after a successful drain this runtime cannot be used to start another
+    /// provider invocation.
+    pub fn drain_providers(&self, timeout: Duration) -> Result<ProviderDrainReport, EvaError> {
+        let options = ProviderDrainOptions::new(timeout)?;
+        self.supervisor.borrow_mut().drain(options)
+    }
+
+    /// Returns whether this runtime's daemon-owned provider supervisor has
+    /// entered its one-way shutdown state.
+    pub fn providers_draining(&self) -> bool {
+        self.supervisor.borrow().is_draining()
+    }
+
     /// 设置 `observability_backend` 并返回更新后的实例。
     pub fn with_observability_backend(mut self, root: impl Into<PathBuf>) -> Self {
         self.observability_backend = Some(root.into());
@@ -411,6 +427,11 @@ impl AdapterRuntime {
             return Err(EvaError::permission_denied(
                 "caller supplied provider credential scope is not allowed",
             ));
+        }
+        if self.providers_draining() {
+            return Err(EvaError::unavailable("provider supervisor is draining")
+                .with_provider_code("provider_draining")
+                .with_retryable(false));
         }
         let mut request = AdapterRouteRequest::new(invocation.capability.clone());
         if let Some(provider) = invocation.provider.clone() {

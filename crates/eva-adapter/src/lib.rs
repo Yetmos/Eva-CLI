@@ -53,9 +53,10 @@ pub use stream::{
     ProviderStreamArtifact, ProviderStreamCapture, ProviderStreamConfig,
 };
 pub use supervisor::{
-    InMemoryProviderSupervisor, ProviderCredentialScope, ProviderExecutionOutcome,
-    ProviderExecutionRequest, ProviderExecutionSlot, ProviderSupervisor, PROVIDER_SESSION_ID_ENV,
-    PROVIDER_SESSION_ID_HEADER, PROVIDER_SESSION_TOKEN_ENV, PROVIDER_SESSION_TOKEN_HEADER,
+    InMemoryProviderSupervisor, ProviderCredentialScope, ProviderDrainOptions, ProviderDrainReport,
+    ProviderExecutionOutcome, ProviderExecutionRequest, ProviderExecutionSlot, ProviderSupervisor,
+    PROVIDER_SESSION_ID_ENV, PROVIDER_SESSION_ID_HEADER, PROVIDER_SESSION_TOKEN_ENV,
+    PROVIDER_SESSION_TOKEN_HEADER,
 };
 pub use transports::http::{
     HttpClient, HttpClientResponse, HttpInvocation, HttpMethod, HttpRunReport, HttpRunner,

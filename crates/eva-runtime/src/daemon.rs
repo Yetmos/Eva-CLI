@@ -17,6 +17,7 @@ use crate::{
     TaskHandlerRegistry, TaskInput, TaskKind, TaskWorkerDrainOptions, TaskWorkerDrainReport,
     TaskWorkerRuntime,
 };
+use eva_adapter::AdapterRuntime;
 use eva_config::ProjectConfig;
 use eva_core::{AgentId, EvaError, GenerationId, RequestId};
 use eva_eventbus::DurableEventBus;
@@ -76,6 +77,42 @@ const STATE_FILE: &str = "daemon.state";
 /// Durable proof that one exact lease generation completed worker drain and residual scanning.
 const SHUTDOWN_DRAIN_EVIDENCE_FILE: &str = "daemon.shutdown-drain";
 const SHUTDOWN_DRAIN_EVIDENCE_FORMAT: &str = "eva.daemon-shutdown-drain.v1";
+
+/// Best-effort startup guard for the daemon-owned provider runtime. Any error
+/// after provider construction must close admission before the durable lease
+/// and writer guards are released.
+struct ProviderDrainGuard<'a> {
+    worker: Option<&'a DaemonRetrievalWorker>,
+}
+
+impl<'a> ProviderDrainGuard<'a> {
+    fn new(worker: Option<&'a DaemonRetrievalWorker>) -> Self {
+        Self { worker }
+    }
+
+    fn drain_now(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<eva_adapter::ProviderDrainReport>, EvaError> {
+        let Some(worker) = self.worker.take() else {
+            return Ok(None);
+        };
+        worker.drain_providers(timeout).map(Some)
+    }
+
+    fn disarm(&mut self) {
+        self.worker = None;
+    }
+}
+
+impl Drop for ProviderDrainGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.drain_providers(TaskWorkerDrainOptions::default().total_period());
+        }
+    }
+}
+
 /// 定义 `AGENT_CONTROL_STATE_FILE` 常量。
 const AGENT_CONTROL_STATE_FILE: &str = "agent-control.state";
 /// 定义 `HARDWARE_HOTPLUG_STATE_FILE` 常量。
@@ -2750,8 +2787,19 @@ fn start_daemon_inner(
         memory_schedule.upsert(MEMORY_MAINTENANCE_SCHEDULE_ID, 0)?;
     }
     let memory_schedule_owner = schedule_owner(&lease);
-    let retrieval_worker =
-        DaemonRetrievalWorker::from_project(project, provider_process_table.clone())?;
+    // The daemon creates one AdapterRuntime and transfers ownership to the
+    // retrieval worker. Every scheduled retrieval and the shutdown drain now
+    // address the same supervisor/admission gate.
+    let retrieval_worker = if project.eva.runtime.retrieval_worker.is_some() {
+        let adapter_runtime = AdapterRuntime::from_project_with_provider_process_table(
+            project,
+            provider_process_table.clone(),
+        )?;
+        DaemonRetrievalWorker::from_project(project, adapter_runtime)?
+    } else {
+        None
+    };
+    let mut provider_drain_guard = ProviderDrainGuard::new(retrieval_worker.as_ref());
     ensure_retrieval_schedule(&memory_schedule, retrieval_worker.as_ref())?;
     let memory_maintenance = run_scheduled_memory_maintenance(
         &memory_schedule,
@@ -2829,6 +2877,12 @@ fn start_daemon_inner(
     let running_state = DaemonStateRecord::running(project, run_mode);
     write_state(&options, &running_state)?;
     if let Err(error) = write_pid_projection(&options, lease.record()) {
+        let mut error = error;
+        if let Err(drain_error) =
+            provider_drain_guard.drain_now(TaskWorkerDrainOptions::default().total_period())
+        {
+            error = error.with_context("provider_drain_error", drain_error.to_string());
+        }
         if let Some(watcher) = config_watcher.as_mut() {
             let _ = watcher.stop_and_join();
         }
@@ -2882,6 +2936,8 @@ fn start_daemon_inner(
             worker.activate();
         }
         let (status, shutdown) = if options.shutdown_after_smoke {
+            let _provider_drain =
+                provider_drain_guard.drain_now(TaskWorkerDrainOptions::default().total_period())?;
             let shutdown_report = runtime.shutdown();
             let stopped = running_state.clone().stopped();
             write_state(&options, &stopped)?;
@@ -2923,6 +2979,11 @@ fn start_daemon_inner(
     let (status, shutdown) = match lifecycle {
         Ok(report) => report,
         Err(mut error) => {
+            if let Err(drain_error) =
+                provider_drain_guard.drain_now(TaskWorkerDrainOptions::default().total_period())
+            {
+                error = error.with_context("provider_drain_error", drain_error.to_string());
+            }
             if let Some(worker) = task_worker.as_mut() {
                 if let Err(join_error) = worker.stop_and_join() {
                     error = error.with_context("task_worker_join_error", join_error.to_string());
@@ -2943,6 +3004,7 @@ fn start_daemon_inner(
             return Err(error);
         }
     };
+    provider_drain_guard.disarm();
     if let Some(watcher) = config_watcher.as_mut() {
         watcher.stop_and_join()?;
     }
@@ -3455,6 +3517,7 @@ struct DaemonControlContext<'a> {
     lease: &'a mut DurableRuntimeLeaseGuard,
     task_worker: &'a mut TaskWorkerRuntime,
     observability: &'a mut BestEffortObservabilityPipeline,
+    retrieval_worker: Option<&'a DaemonRetrievalWorker>,
 }
 
 struct DaemonControlLoopContext<'a> {
@@ -3570,6 +3633,7 @@ fn run_control_loop(
                 lease: context.lease,
                 task_worker: context.task_worker,
                 observability: context.observability,
+                retrieval_worker: context.retrieval_worker,
             };
             let mut response = match handle_control_request(
                 &mut context,
@@ -3695,6 +3759,7 @@ fn complete_service_stop_request(
         lease: context.lease,
         task_worker: context.task_worker,
         observability: context.observability,
+        retrieval_worker: context.retrieval_worker,
     };
     let mut response =
         handle_control_request(&mut control_context, request, &request_path, &response_path)?;
@@ -4218,7 +4283,52 @@ fn handle_control_request(
         DaemonControlOperation::Shutdown => {
             context.lease.renew_at(now_ms())?;
             let drain_options = shutdown_drain_options(request.timeout_ms)?;
-            let drain = context.task_worker.drain_and_stop(drain_options)?;
+            let shutdown_deadline = Instant::now()
+                .checked_add(drain_options.total_period())
+                .ok_or_else(|| {
+                    EvaError::invalid_argument(
+                        "daemon shutdown deadline is outside the clock range",
+                    )
+                })?;
+            // Provider admission is the outer lifecycle fence: close it and
+            // retire provider boundaries before task claims are drained.
+            let provider_budget = if context.retrieval_worker.is_some() {
+                (drain_options.total_period() / 2).max(Duration::from_millis(1))
+            } else {
+                Duration::ZERO
+            };
+            let provider_drain_result = context
+                .retrieval_worker
+                .map(|worker| worker.drain_providers(provider_budget))
+                .transpose();
+            let (provider_drain, provider_drain_error) = match provider_drain_result {
+                Ok(report) => (report, None),
+                Err(error) => (None, Some(error)),
+            };
+            let remaining_task_budget = shutdown_deadline.saturating_duration_since(Instant::now());
+            let task_drain_options = TaskWorkerDrainOptions::for_total_period(
+                remaining_task_budget,
+            )
+            .map_err(|error| {
+                if let Some(provider_error) = &provider_drain_error {
+                    error.with_context("provider_drain_error", provider_error.to_string())
+                } else {
+                    error
+                }
+            })?;
+            let drain = context
+                .task_worker
+                .drain_and_stop(task_drain_options)
+                .map_err(|error| {
+                    if let Some(provider_error) = &provider_drain_error {
+                        error.with_context("provider_drain_error", provider_error.to_string())
+                    } else {
+                        error
+                    }
+                })?;
+            if let Some(provider_error) = provider_drain_error {
+                return Err(provider_error.with_context("task_drain_completed", "true"));
+            }
             context.lease.renew_at(now_ms())?;
             let shutdown_report = context.runtime.shutdown();
             let drain_evidence = DaemonShutdownDrainEvidence::completed(
@@ -4240,6 +4350,22 @@ fn handle_control_request(
                 drain.inflight_tasks, drain.cancellation_requests, drain.forced_terminal_tasks
             ));
             audit.push("daemon:w1-l11:stable_task_state_flushed".to_owned());
+            if let Some(provider_drain) = provider_drain {
+                audit.push(format!(
+                    "daemon:w3-l10:provider_drain:phase={}:active_provider_count={}:terminated={}:forced={}:missing_identity={}",
+                    provider_drain.phase,
+                    provider_drain.active_provider_count,
+                    provider_drain.terminated_provider_count,
+                    provider_drain.forced_provider_count,
+                    provider_drain.missing_identity_count,
+                ));
+                audit.extend(provider_drain.audit);
+            } else {
+                audit.push(
+                    "daemon:w3-l10:provider_drain:phase=disabled:active_provider_count=0"
+                        .to_owned(),
+                );
+            }
             shutdown = Some(shutdown_report);
         }
         DaemonControlOperation::SubmitTask => {

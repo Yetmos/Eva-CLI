@@ -236,6 +236,23 @@ impl OsProcessBackend {
         snapshot: &ProviderProcessSnapshot,
         graceful_timeout: Duration,
     ) -> Result<ProcessTerminationReport, EvaError> {
+        self.terminate_snapshot_with_force_timeout(
+            snapshot,
+            graceful_timeout,
+            FORCE_TERMINATION_WAIT,
+        )
+    }
+
+    /// Cleans up a durable process boundary with an explicit force/reap
+    /// budget. The legacy `terminate_snapshot` wrapper retains the historical
+    /// five-second force wait; daemon shutdown passes its remaining deadline
+    /// here so a force wait cannot extend the enclosing drain budget.
+    pub fn terminate_snapshot_with_force_timeout(
+        &self,
+        snapshot: &ProviderProcessSnapshot,
+        graceful_timeout: Duration,
+        force_timeout: Duration,
+    ) -> Result<ProcessTerminationReport, EvaError> {
         let Some(identity) = ProcessIdentity::from_snapshot(snapshot)? else {
             return Ok(ProcessTerminationReport::new(
                 None,
@@ -247,8 +264,8 @@ impl OsProcessBackend {
             ));
         };
         let boundary = identity.boundary_kind();
-        let result =
-            platform::terminate_snapshot(&identity, graceful_timeout).map_err(|error| {
+        let result = platform::terminate_snapshot(&identity, graceful_timeout, force_timeout)
+            .map_err(|error| {
                 EvaError::unavailable("failed to clean up durable provider process boundary")
                     .with_context("session_id", &snapshot.session_id)
                     .with_context("pid", identity.pid.to_string())
@@ -1055,6 +1072,7 @@ mod platform {
     pub(super) fn terminate_snapshot(
         identity: &ProcessIdentity,
         graceful_timeout: Duration,
+        force_timeout: Duration,
     ) -> io::Result<PlatformTerminationResult> {
         let Some(group_id) = identity.process_group_id else {
             return Ok(termination_result(
@@ -1131,7 +1149,7 @@ mod platform {
                 false,
             ));
         }
-        if !wait_for_group_exit(group_id, FORCE_TERMINATION_WAIT)? {
+        if !wait_for_group_exit(group_id, force_timeout)? {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "Unix provider process group survived SIGKILL",
@@ -1811,9 +1829,18 @@ mod tests {
         assert!(handle.wait().unwrap().success());
         assert!(process_is_alive(descendant_pid));
 
+        let started = Instant::now();
         let report = backend
-            .terminate_snapshot(&snapshot, Duration::from_millis(50))
+            .terminate_snapshot_with_force_timeout(
+                &snapshot,
+                Duration::from_millis(50),
+                Duration::from_millis(50),
+            )
             .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "snapshot force cleanup exceeded its explicit budget"
+        );
 
         assert_eq!(report.outcome, ProcessTerminationOutcome::Forced);
         assert!(report.graceful_requested);
@@ -2493,6 +2520,7 @@ mod platform {
     pub(super) fn terminate_snapshot(
         identity: &ProcessIdentity,
         graceful_timeout: Duration,
+        force_timeout: Duration,
     ) -> io::Result<PlatformTerminationResult> {
         let Some(job_id) = identity.job_id.as_deref() else {
             return Ok(termination_result(
@@ -2607,7 +2635,7 @@ mod platform {
             ));
         }
         terminate_job(job.0)?;
-        if !wait_for_job_empty(job.0, FORCE_TERMINATION_WAIT)? {
+        if !wait_for_job_empty(job.0, force_timeout)? {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "Windows provider Job survived forced termination",
@@ -2923,6 +2951,7 @@ mod platform {
     pub(super) fn terminate_snapshot(
         _identity: &ProcessIdentity,
         _graceful_timeout: Duration,
+        _force_timeout: Duration,
     ) -> io::Result<PlatformTerminationResult> {
         Ok(unsupported_result())
     }

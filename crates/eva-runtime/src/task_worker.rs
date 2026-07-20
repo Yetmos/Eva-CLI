@@ -82,6 +82,22 @@ impl TaskWorkerDrainOptions {
         self.graceful_period
             .saturating_add(self.cancellation_period)
     }
+
+    /// Repartitions this drain into a smaller absolute wall-clock budget.
+    /// Shutdown callers use this after an outer lifecycle phase has consumed
+    /// part of the request deadline.
+    pub fn for_total_period(total_period: Duration) -> Result<Self, EvaError> {
+        if total_period < Duration::from_millis(2) {
+            return Err(EvaError::timeout(
+                "task worker drain has no remaining wall-clock budget",
+            ));
+        }
+        let cancellation_period = (total_period / 3).max(Duration::from_millis(1));
+        let graceful_period = total_period
+            .saturating_sub(cancellation_period)
+            .max(Duration::from_millis(1));
+        Self::new(graceful_period, cancellation_period)
+    }
 }
 
 impl Default for TaskWorkerDrainOptions {

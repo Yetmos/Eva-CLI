@@ -11,7 +11,6 @@ use eva_memory::{
     InMemoryKnowledgeService,
 };
 use eva_policy::{PermissionSet, PolicyDomainSet, RuntimePolicyGate};
-use eva_storage::FileSystemProviderProcessTable;
 
 pub(crate) const RETRIEVAL_SCHEDULE_ID: &str = "knowledge-retrieval";
 const RETRIEVAL_LEASE_MS: u128 = 30_000;
@@ -27,7 +26,7 @@ pub(crate) struct DaemonRetrievalWorker {
 impl DaemonRetrievalWorker {
     pub(crate) fn from_project(
         project: &ProjectConfig,
-        process_table: FileSystemProviderProcessTable,
+        adapter_runtime: AdapterRuntime,
     ) -> Result<Option<Self>, EvaError> {
         let Some(config) = project.eva.runtime.retrieval_worker.clone() else {
             return Ok(None);
@@ -41,8 +40,6 @@ impl DaemonRetrievalWorker {
             .ok_or_else(|| EvaError::not_found("retrieval capability is not registered"))?
             .provider_plan(Some(provider));
         let permissions = permissions_for_plan(&plan);
-        let adapter_runtime =
-            AdapterRuntime::from_project_with_provider_process_table(project, process_table)?;
         let domains = PolicyDomainSet::from_project(project)?;
         Ok(Some(Self {
             config,
@@ -66,6 +63,16 @@ impl DaemonRetrievalWorker {
 
     pub(crate) fn interval_ms(&self) -> u128 {
         u128::from(self.config.interval_ms)
+    }
+
+    /// Drain the daemon-owned provider supervisor before task ownership is
+    /// released. The worker itself remains an immutable scheduling facade;
+    /// lifecycle authority stays with its single AdapterRuntime instance.
+    pub(crate) fn drain_providers(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<eva_adapter::ProviderDrainReport, EvaError> {
+        self.host.runtime().drain_providers(timeout)
     }
 }
 
