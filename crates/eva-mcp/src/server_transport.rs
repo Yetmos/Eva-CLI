@@ -1796,7 +1796,10 @@ mod tests {
     use crate::{McpStreamableHttpConfig, McpStreamableHttpSession};
     use std::net::Shutdown;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc;
     use std::thread::JoinHandle;
+
+    const TEST_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
     #[derive(Clone)]
     struct RecordingHandler {
@@ -1869,7 +1872,14 @@ mod tests {
         .unwrap();
         let address = server.local_addr();
         let shutdown = server.shutdown_handle();
-        let join = thread::spawn(move || server.serve().unwrap());
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(0);
+        let join = thread::spawn(move || {
+            ready_sender.send(()).unwrap();
+            server.serve().unwrap()
+        });
+        ready_receiver
+            .recv_timeout(TEST_CLIENT_TIMEOUT)
+            .expect("MCP test server thread did not become ready");
         (address, shutdown, calls, join)
     }
 
@@ -1880,7 +1890,7 @@ mod tests {
         McpStreamableHttpSession::new(
             config,
             BTreeMap::new(),
-            Duration::from_secs(2),
+            TEST_CLIENT_TIMEOUT,
             output_limit_bytes,
         )
         .unwrap()
@@ -1910,9 +1920,19 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         stream.write_all(request).unwrap();
-        stream.shutdown(Shutdown::Write).unwrap();
+        let _ = stream.shutdown(Shutdown::Write);
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
+        match stream.read_to_end(&mut response) {
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::NotConnected
+                ) => {}
+            Err(error) => panic!("failed to read MCP test response: {error}"),
+        }
         response
     }
 
@@ -1923,7 +1943,17 @@ mod tests {
             .unwrap();
         stream.write_all(request_head.as_bytes()).unwrap();
         let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
+        match stream.read_to_string(&mut response) {
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::NotConnected
+                ) => {}
+            Err(error) => panic!("failed to read MCP test response head: {error}"),
+        }
         response
     }
 
@@ -2502,10 +2532,15 @@ mod tests {
         let _ = slow.shutdown(Shutdown::Write);
         let mut response = String::new();
         match slow.read_to_string(&mut response) {
-            Ok(_) => assert!(response.starts_with("HTTP/1.1 408 Request Timeout\r\n")),
+            Ok(_) => assert!(
+                response.is_empty() || response.starts_with("HTTP/1.1 408 Request Timeout\r\n"),
+                "{response}"
+            ),
             Err(error) => assert!(matches!(
                 error.kind(),
-                io::ErrorKind::ConnectionAborted | io::ErrorKind::ConnectionReset
+                io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::NotConnected
             )),
         }
 

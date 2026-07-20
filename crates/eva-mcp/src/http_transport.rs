@@ -708,7 +708,7 @@ where
         EvaError::not_found("MCP TLS controlled project root is unavailable")
             .with_provider_code("mcp_tls_project_root_unavailable")
     })?;
-    if canonical_root != project_root {
+    if canonical_root.as_os_str() != project_root.as_os_str() {
         return Err(
             EvaError::permission_denied("MCP TLS project root must already be canonical")
                 .with_provider_code("mcp_tls_project_root_not_canonical"),
