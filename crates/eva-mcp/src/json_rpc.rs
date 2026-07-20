@@ -25,11 +25,13 @@ use std::time::{Duration, Instant};
 pub const RESPONSIBILITY: &str = "MCP JSON-RPC client transport with stdio process boundaries";
 
 /// 定义 `DEFAULT_PROTOCOL_VERSION` 常量。
-const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
+pub(crate) const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
 /// 定义 `DEFAULT_REQUEST_TIMEOUT_MS` 常量。
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 /// 定义 `DEFAULT_OUTPUT_LIMIT_BYTES` 常量。
 const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+/// Bound recursive tokenization before untrusted JSON can exhaust the thread stack.
+const MAX_JSON_NESTING_DEPTH: usize = 64;
 /// Bound opaque MCP session identifiers retained from response headers.
 const MCP_SESSION_ID_LIMIT_BYTES: usize = 4 * 1024;
 /// Bound negotiated MCP protocol version values.
@@ -3067,7 +3069,7 @@ fn json_field_value<'a>(text: &'a str, key: &str) -> Result<Option<&'a str>, Eva
 
 /// Parse only the direct members of one complete JSON object. Nested values
 /// remain borrowed slices and are parsed explicitly by their caller.
-fn parse_json_object_fields(text: &str) -> Result<BTreeMap<String, &str>, EvaError> {
+pub(crate) fn parse_json_object_fields(text: &str) -> Result<BTreeMap<String, &str>, EvaError> {
     let bytes = text.as_bytes();
     let mut offset = 0usize;
     skip_json_whitespace(bytes, &mut offset);
@@ -3101,7 +3103,7 @@ fn parse_json_object_fields(text: &str) -> Result<BTreeMap<String, &str>, EvaErr
         offset += 1;
         skip_json_whitespace(bytes, &mut offset);
         let value_start = offset;
-        let value_end = json_value_token_end(text, value_start)?;
+        let value_end = json_value_token_end_at_depth(text, value_start, 1)?;
         if fields.insert(key, &text[value_start..value_end]).is_some() {
             return Err(protocol_error(
                 "MCP JSON-RPC object contains a duplicate field",
@@ -3138,6 +3140,59 @@ fn parse_json_object_fields(text: &str) -> Result<BTreeMap<String, &str>, EvaErr
     }
 }
 
+/// Parse one complete JSON array containing only strings. This stays crate
+/// private so protocol surfaces can reuse the same strict tokenization without
+/// introducing a second JSON parser.
+pub(crate) fn parse_json_string_array(text: &str) -> Result<Vec<String>, EvaError> {
+    let bytes = text.as_bytes();
+    let mut offset = 0_usize;
+    skip_json_whitespace(bytes, &mut offset);
+    if bytes.get(offset).copied() != Some(b'[') {
+        return Err(protocol_error("MCP JSON string array is invalid"));
+    }
+    offset += 1;
+    skip_json_whitespace(bytes, &mut offset);
+    let mut values = Vec::new();
+    if bytes.get(offset).copied() == Some(b']') {
+        offset += 1;
+        skip_json_whitespace(bytes, &mut offset);
+        if offset == bytes.len() {
+            return Ok(values);
+        }
+        return Err(protocol_error("MCP JSON string array has trailing data"));
+    }
+    loop {
+        let end = json_string_token_end(text, offset)?;
+        values.push(parse_json_string(&text[offset..end])?);
+        offset = end;
+        skip_json_whitespace(bytes, &mut offset);
+        match bytes.get(offset).copied() {
+            Some(b',') => {
+                offset += 1;
+                skip_json_whitespace(bytes, &mut offset);
+                if bytes.get(offset).copied() == Some(b']') {
+                    return Err(protocol_error(
+                        "MCP JSON string array contains a trailing comma",
+                    ));
+                }
+            }
+            Some(b']') => {
+                offset += 1;
+                skip_json_whitespace(bytes, &mut offset);
+                if offset == bytes.len() {
+                    return Ok(values);
+                }
+                return Err(protocol_error("MCP JSON string array has trailing data"));
+            }
+            _ => {
+                return Err(protocol_error(
+                    "MCP JSON string array values are not comma-separated",
+                ));
+            }
+        }
+    }
+}
+
 fn skip_json_whitespace(bytes: &[u8], offset: &mut usize) {
     while bytes
         .get(*offset)
@@ -3148,11 +3203,25 @@ fn skip_json_whitespace(bytes: &[u8], offset: &mut usize) {
 }
 
 fn json_value_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
+    json_value_token_end_at_depth(text, start, 0)
+}
+
+fn json_value_token_end_at_depth(
+    text: &str,
+    start: usize,
+    depth: usize,
+) -> Result<usize, EvaError> {
     let bytes = text.as_bytes();
     match bytes.get(start).copied() {
         Some(b'"') => json_string_token_end(text, start),
-        Some(b'{') => json_object_token_end(text, start),
-        Some(b'[') => json_array_token_end(text, start),
+        Some(b'{') => {
+            let nested_depth = next_json_nesting_depth(depth)?;
+            json_object_token_end(text, start, nested_depth)
+        }
+        Some(b'[') => {
+            let nested_depth = next_json_nesting_depth(depth)?;
+            json_array_token_end(text, start, nested_depth)
+        }
         Some(_) => {
             let mut end = start;
             while bytes.get(end).is_some_and(|byte| {
@@ -3168,6 +3237,16 @@ fn json_value_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
         }
         None => Err(protocol_error("MCP JSON-RPC object value is missing")),
     }
+}
+
+fn next_json_nesting_depth(depth: usize) -> Result<usize, EvaError> {
+    let nested_depth = depth
+        .checked_add(1)
+        .ok_or_else(|| protocol_error("MCP JSON-RPC nesting limit exceeded"))?;
+    if nested_depth > MAX_JSON_NESTING_DEPTH {
+        return Err(protocol_error("MCP JSON-RPC nesting limit exceeded"));
+    }
+    Ok(nested_depth)
 }
 
 fn json_string_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
@@ -3214,7 +3293,7 @@ fn json_string_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
     Err(protocol_error("MCP JSON-RPC string field is unterminated"))
 }
 
-fn json_object_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
+fn json_object_token_end(text: &str, start: usize, depth: usize) -> Result<usize, EvaError> {
     let bytes = text.as_bytes();
     if bytes.get(start).copied() != Some(b'{') {
         return Err(protocol_error("MCP JSON-RPC object value is invalid"));
@@ -3237,7 +3316,7 @@ fn json_object_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
         }
         offset += 1;
         skip_json_whitespace(bytes, &mut offset);
-        offset = json_value_token_end(text, offset)?;
+        offset = json_value_token_end_at_depth(text, offset, depth)?;
         skip_json_whitespace(bytes, &mut offset);
         match bytes.get(offset).copied() {
             Some(b',') => {
@@ -3259,7 +3338,7 @@ fn json_object_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
     }
 }
 
-fn json_array_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
+fn json_array_token_end(text: &str, start: usize, depth: usize) -> Result<usize, EvaError> {
     let bytes = text.as_bytes();
     if bytes.get(start).copied() != Some(b'[') {
         return Err(protocol_error("MCP JSON-RPC array value is invalid"));
@@ -3270,7 +3349,7 @@ fn json_array_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
         return Ok(offset + 1);
     }
     loop {
-        offset = json_value_token_end(text, offset)?;
+        offset = json_value_token_end_at_depth(text, offset, depth)?;
         skip_json_whitespace(bytes, &mut offset);
         match bytes.get(offset).copied() {
             Some(b',') => {
@@ -3387,7 +3466,7 @@ fn json_i64_field(text: &str, key: &str) -> Result<Option<i64>, EvaError> {
 }
 
 /// 读取或解析 `parse_json_string` 所需的数据，失败时保留错误语义。
-fn parse_json_string(value: &str) -> Result<String, EvaError> {
+pub(crate) fn parse_json_string(value: &str) -> Result<String, EvaError> {
     if !value.starts_with('"') {
         return Err(protocol_error("MCP JSON-RPC string field is invalid"));
     }
@@ -3469,7 +3548,7 @@ fn parse_json_string(value: &str) -> Result<String, EvaError> {
 }
 
 /// 执行 `json_string` 对应的处理逻辑。
-fn json_string(value: &str) -> String {
+pub(crate) fn json_string(value: &str) -> String {
     format!("\"{}\"", escape_json(value))
 }
 
@@ -3480,9 +3559,14 @@ fn escape_json(value: &str) -> String {
         match character {
             '"' => escaped.push_str("\\\""),
             '\\' => escaped.push_str("\\\\"),
+            '\u{0008}' => escaped.push_str("\\b"),
+            '\u{000c}' => escaped.push_str("\\f"),
             '\n' => escaped.push_str("\\n"),
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
+            value if value.is_control() => {
+                escaped.push_str(&format!("\\u{:04x}", value as u32));
+            }
             value => escaped.push(value),
         }
     }
@@ -3505,6 +3589,23 @@ mod tests {
     const TEST_CA_PEM: &[u8] = include_bytes!("../testdata/tls/ca.pem");
     const TEST_SERVER_PEM: &[u8] = include_bytes!("../testdata/tls/server.pem");
     const TEST_SERVER_KEY: &[u8] = include_bytes!("../testdata/tls/server.key");
+
+    #[test]
+    fn direct_object_parser_enforces_json_nesting_boundary() {
+        fn nested_arrays(depth: usize) -> String {
+            format!("{}null{}", "[".repeat(depth), "]".repeat(depth))
+        }
+
+        let accepted = format!(
+            "{{\"value\":{}}}",
+            nested_arrays(MAX_JSON_NESTING_DEPTH - 1)
+        );
+        let rejected = format!("{{\"value\":{}}}", nested_arrays(MAX_JSON_NESTING_DEPTH));
+
+        assert!(parse_json_object_fields(&accepted).is_ok());
+        let error = parse_json_object_fields(&rejected).unwrap_err();
+        assert!(error.message().contains("nesting limit exceeded"));
+    }
 
     /// 表示 `FakeTransport` 数据结构。
     #[derive(Debug, Default)]

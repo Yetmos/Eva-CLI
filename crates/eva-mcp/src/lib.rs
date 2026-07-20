@@ -17,6 +17,8 @@ pub mod policy;
 pub mod schema;
 /// 声明 `server` 子模块。
 pub mod server;
+/// Controlled loopback Streamable HTTP server transport.
+pub mod server_transport;
 /// 声明 `session` 子模块。
 pub mod session;
 /// Incremental Streamable HTTP event decoding.
@@ -44,7 +46,14 @@ pub use lifecycle::{
     McpStreamStatus, McpStreamableHttpSessionRegistry,
 };
 pub use policy::McpAllowlist;
-pub use server::{EvaMcpServerSurface, McpServerTool, McpServerToolGateReport};
+pub use server::{
+    EvaMcpServerSurface, McpServerTool, McpServerToolCall, McpServerToolGateReport,
+    McpServerToolHandler, McpServerToolResult,
+};
+pub use server_transport::{
+    McpServerServeReport, McpServerShutdownHandle, McpStreamableHttpServer,
+    McpStreamableHttpServerConfig,
+};
 pub use session::{
     McpClientAuthConfig, McpEndpoint, McpHttpTransportConfig, McpProcessHandle,
     McpProcessShutdownRequest, McpProcessSpec, McpProcessStartRequest, McpRedirectPolicy,
