@@ -6,7 +6,7 @@
 //! Workflow skill Adapter transport runner.
 
 use crate::manifest::{AdapterHandle, SkillInputSchema};
-use crate::process_backend::{ProviderProcessHandle, ProviderProcessSpawner};
+use crate::process_backend::{OsProcessBackend, ProviderProcessHandle, ProviderProcessSpawner};
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
 use crate::stream::{
     capture_provider_bytes, collect_provider_stream, provider_stream_audit, provider_stream_key,
@@ -15,6 +15,7 @@ use crate::stream::{
     DEFAULT_STREAM_PREVIEW_LIMIT_BYTES,
 };
 use crate::supervisor::validate_credential_scope_for_provider;
+use eva_config::ProviderRunAsIdentity;
 use eva_core::{AdapterId, EvaError, RequestId};
 use eva_storage::{ArtifactRecord, FileSystemArtifactStore};
 use std::collections::{BTreeMap, BTreeSet};
@@ -166,24 +167,18 @@ struct RawSkillRunReport {
 }
 
 enum SkillChild {
-    Direct(std::process::Child),
     Supervised(ProviderProcessHandle),
 }
 
 impl SkillChild {
     fn pid(&self) -> u32 {
         match self {
-            Self::Direct(child) => child.id(),
             Self::Supervised(handle) => handle.pid(),
         }
     }
 
     fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
         match self {
-            Self::Direct(child) => child
-                .stdin
-                .take()
-                .map(|stdin| Box::new(stdin) as Box<dyn Write + Send>),
             Self::Supervised(handle) => handle
                 .take_stdin()
                 .map(|stdin| Box::new(stdin) as Box<dyn Write + Send>),
@@ -192,10 +187,6 @@ impl SkillChild {
 
     fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
         match self {
-            Self::Direct(child) => child
-                .stdout
-                .take()
-                .map(|stdout| Box::new(stdout) as Box<dyn Read + Send>),
             Self::Supervised(handle) => handle
                 .take_stdout()
                 .map(|stdout| Box::new(stdout) as Box<dyn Read + Send>),
@@ -204,10 +195,6 @@ impl SkillChild {
 
     fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
         match self {
-            Self::Direct(child) => child
-                .stderr
-                .take()
-                .map(|stderr| Box::new(stderr) as Box<dyn Read + Send>),
             Self::Supervised(handle) => handle
                 .take_stderr()
                 .map(|stderr| Box::new(stderr) as Box<dyn Read + Send>),
@@ -216,10 +203,6 @@ impl SkillChild {
 
     fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, EvaError> {
         match self {
-            Self::Direct(child) => child.try_wait().map_err(|error| {
-                EvaError::unavailable("failed to read skill runner process status")
-                    .with_context("io_error", error.to_string())
-            }),
             Self::Supervised(handle) => handle.try_wait(),
         }
     }
@@ -227,7 +210,6 @@ impl SkillChild {
 
 fn terminate_skill_child(child: &mut SkillChild) {
     match child {
-        SkillChild::Direct(child) => kill_child(child),
         SkillChild::Supervised(handle) => {
             let _ = handle.force_terminate();
         }
@@ -298,7 +280,7 @@ impl SkillRunner {
         config: &SkillRunnerConfig,
         invocation: SkillRunnerInvocation,
     ) -> Result<SkillRunReport, EvaError> {
-        self.run_with_spawner(config, invocation, None)
+        self.run_with_spawner_as(config, invocation, None, &ProviderRunAsIdentity::Current)
     }
 
     /// Runs a process-backed skill through an optional central process owner.
@@ -308,6 +290,41 @@ impl SkillRunner {
         invocation: SkillRunnerInvocation,
         process_spawner: Option<&dyn ProviderProcessSpawner>,
     ) -> Result<SkillRunReport, EvaError> {
+        self.run_with_spawner_as(
+            config,
+            invocation,
+            process_spawner,
+            &ProviderRunAsIdentity::Current,
+        )
+    }
+
+    /// Runs a skill with the manifest-selected provider identity. Built-in
+    /// skills are process-free and therefore reject non-current identities.
+    pub fn run_with_spawner_as(
+        &self,
+        config: &SkillRunnerConfig,
+        invocation: SkillRunnerInvocation,
+        process_spawner: Option<&dyn ProviderProcessSpawner>,
+        run_as: &ProviderRunAsIdentity,
+    ) -> Result<SkillRunReport, EvaError> {
+        let backend = OsProcessBackend::new();
+        let process_spawner = process_spawner.unwrap_or(&backend);
+        if invocation.command.is_some() {
+            if !matches!(run_as, ProviderRunAsIdentity::Current) {
+                return Err(EvaError::unsupported(
+                    "process-backed Skill run-as requires a controlled workdir handoff",
+                )
+                .with_context("run_as_kind", run_as.kind())
+                .with_context("skill_id", &invocation.skill_id));
+            }
+            process_spawner.validate_provider_run_as(run_as)?;
+        } else if !matches!(run_as, ProviderRunAsIdentity::Current) {
+            return Err(EvaError::permission_denied(
+                "process-free Skill entry cannot apply a run-as identity",
+            )
+            .with_context("run_as_kind", run_as.kind())
+            .with_context("skill_id", &invocation.skill_id));
+        }
         validate_runner_config(config, &invocation)?;
         let paths = prepare_run_paths(config, &invocation)?;
         let sensitive_values = sensitive_values(invocation.env.values());
@@ -319,6 +336,7 @@ impl SkillRunner {
                 command,
                 &sensitive_values,
                 process_spawner,
+                run_as,
             )?
         } else if invocation.entry_type == "codex_skill" {
             run_builtin_codex_skill(&paths, &invocation)?
@@ -399,18 +417,7 @@ pub fn invoke_with_spawner(
     }
     validate_input_size(handle, &invocation.input)?;
     validate_skill_input(handle, &invocation.input)?;
-    let credential_scope = validate_credential_scope_for_provider(
-        invocation.credential_scope(),
-        &handle.id,
-        &invocation.request_id,
-        &invocation.capability,
-        !handle.credential_env.is_empty(),
-    )?
-    .cloned();
 
-    let trace = invocation.trace_for_adapter(&handle.id);
-    let request_id = invocation.request_id;
-    let capability = invocation.capability;
     let entry_type = handle
         .skill_entry_type
         .clone()
@@ -424,6 +431,41 @@ pub fn invoke_with_spawner(
     } else {
         handle.args.clone()
     };
+
+    // Keep identity admission ahead of credential reads and workdir
+    // creation for direct transport callers as well as the runtime path.
+    if command.is_some() {
+        if !matches!(&handle.provider.run_as, ProviderRunAsIdentity::Current) {
+            return Err(EvaError::unsupported(
+                "process-backed Skill run-as requires a controlled workdir handoff",
+            )
+            .with_context("run_as_kind", handle.provider.run_as.kind())
+            .with_context("skill_id", skill));
+        }
+        match process_spawner {
+            Some(spawner) => spawner.validate_provider_run_as(&handle.provider.run_as)?,
+            None => OsProcessBackend::new().validate_run_as(&handle.provider.run_as)?,
+        }
+    } else if !matches!(&handle.provider.run_as, ProviderRunAsIdentity::Current) {
+        return Err(EvaError::permission_denied(
+            "process-free Skill cannot apply a run-as identity",
+        )
+        .with_context("run_as_kind", handle.provider.run_as.kind())
+        .with_context("skill_id", skill));
+    }
+
+    let credential_scope = validate_credential_scope_for_provider(
+        invocation.credential_scope(),
+        &handle.id,
+        &invocation.request_id,
+        &invocation.capability,
+        !handle.credential_env.is_empty(),
+    )?
+    .cloned();
+
+    let trace = invocation.trace_for_adapter(&handle.id);
+    let request_id = invocation.request_id;
+    let capability = invocation.capability;
     let mut credential_env = credential_env_values(&handle.credential_env);
     if let Some(scope) = &credential_scope {
         scope.apply_env(&mut credential_env.values);
@@ -441,7 +483,7 @@ pub fn invoke_with_spawner(
         artifact_root,
         work_root,
     );
-    let run = SkillRunner.run_with_spawner(
+    let run = SkillRunner.run_with_spawner_as(
         &config,
         SkillRunnerInvocation {
             adapter_id: handle.id.clone(),
@@ -454,6 +496,7 @@ pub fn invoke_with_spawner(
             input: invocation.input,
         },
         process_spawner,
+        &handle.provider.run_as,
     )?;
 
     let mut audit = vec![format!("adapter.invoked:{}", handle.id.as_str())];
@@ -591,7 +634,8 @@ fn run_process(
     invocation: &SkillRunnerInvocation,
     command: &str,
     sensitive_values: &[String],
-    process_spawner: Option<&dyn ProviderProcessSpawner>,
+    process_spawner: &dyn ProviderProcessSpawner,
+    run_as: &ProviderRunAsIdentity,
 ) -> Result<RawSkillRunReport, EvaError> {
     let started_at = Instant::now();
     let mut env_values = invocation.env.clone();
@@ -621,14 +665,11 @@ fn run_process(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = match process_spawner {
-        Some(spawner) => SkillChild::Supervised(spawner.spawn_provider(command_line)?),
-        None => SkillChild::Direct(command_line.spawn().map_err(|error| {
-            EvaError::unavailable("failed to start skill runner process")
-                .with_context("command", command)
-                .with_context("io_error", error.to_string())
-        })?),
-    };
+    let mut child = SkillChild::Supervised(
+        process_spawner
+            .spawn_provider_as(command_line, run_as)
+            .map_err(|error| error.with_context("command", command))?,
+    );
     let process_id = child.pid();
 
     if !invocation.input.is_empty() {
@@ -1317,12 +1358,6 @@ fn skill_stream_config(
             ),
             "text/plain",
         )
-}
-
-/// 执行 `kill_child` 对应的处理逻辑。
-fn kill_child(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// 执行 `credential_env_values` 对应的处理逻辑。

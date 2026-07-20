@@ -71,6 +71,20 @@ pub fn invoke_with_spawner(
     validate_input_size(handle, &invocation.input)?;
     let server_transport =
         McpServerTransport::parse(handle.mcp_server_transport.as_deref().unwrap_or("stdio"))?;
+    match (server_transport, &handle.provider.run_as) {
+        (McpServerTransport::Http, eva_config::ProviderRunAsIdentity::Current) => {}
+        (McpServerTransport::Http, run_as) => {
+            return Err(EvaError::permission_denied(
+                "process-free MCP HTTP transport cannot apply a run-as identity",
+            )
+            .with_context("run_as_kind", run_as.kind())
+            .with_context("adapter_id", handle.id.as_str()));
+        }
+        (McpServerTransport::Stdio, run_as) => match process_spawner {
+            Some(spawner) => spawner.validate_provider_run_as(run_as)?,
+            None => OsProcessBackend::new().validate_run_as(run_as)?,
+        },
+    }
     let credential_scope = validate_credential_scope_for_provider(
         invocation.credential_scope(),
         &handle.id,
@@ -108,10 +122,10 @@ pub fn invoke_with_spawner(
                 .stderr(Stdio::null());
             let process = match process_spawner {
                 Some(spawner) => spawner
-                    .spawn_provider(command)
+                    .spawn_provider_as(command, &handle.provider.run_as)
                     .map_err(|error| map_mcp_spawn_error(error, handle))?,
                 None => OsProcessBackend::new()
-                    .spawn_provider(command)
+                    .spawn_provider_as(command, &handle.provider.run_as)
                     .map_err(|error| map_mcp_spawn_error(error, handle))?,
             };
             client.call_stdio_with_process(

@@ -4,6 +4,7 @@
 //! policy, and durable process-table mutation are deliberately left to the
 //! following W3 tasks.
 
+use eva_config::ProviderRunAsIdentity;
 use eva_core::EvaError;
 use eva_storage::ProviderProcessSnapshot;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
@@ -131,8 +132,47 @@ pub type ProcessBackend = OsProcessBackend;
 /// immediately after the child is created. Implementations must return an
 /// owned handle; callers own cleanup if a later registration step fails.
 pub trait ProviderProcessSpawner {
-    /// Spawn a provider command inside the implementation's OS boundary.
+    /// Spawn a provider command as the daemon's current identity.
+    ///
+    /// This remains the compatibility entry point for low-level callers. Any
+    /// manifest-selected identity must use `spawn_provider_as` so the request
+    /// cannot silently fall back to the daemon identity.
     fn spawn_provider(&self, command: Command) -> Result<ProviderProcessHandle, EvaError>;
+
+    /// Validate an identity before callers create credential or filesystem
+    /// side effects. The spawn path repeats this check at the OS boundary.
+    fn validate_provider_run_as(&self, run_as: &ProviderRunAsIdentity) -> Result<(), EvaError> {
+        if matches!(run_as, ProviderRunAsIdentity::Current) {
+            Ok(())
+        } else {
+            Err(EvaError::permission_denied(
+                "provider run-as identity was not admitted by process spawner",
+            )
+            .with_context("run_as_kind", run_as.kind()))
+        }
+    }
+
+    /// Spawn a provider command inside the requested identity and OS boundary.
+    /// Implementations that cannot prove a non-current identity fail closed.
+    fn spawn_provider_as(
+        &self,
+        command: Command,
+        run_as: &ProviderRunAsIdentity,
+    ) -> Result<ProviderProcessHandle, EvaError> {
+        // The legacy method has no identity parameter and therefore can only
+        // be used for the daemon's current identity. Implementations that
+        // support an explicit identity must override this method and own the
+        // corresponding OS boundary; a permissive validation override alone
+        // must never turn into a silent current-identity fallback.
+        if !matches!(run_as, ProviderRunAsIdentity::Current) {
+            return Err(EvaError::permission_denied(
+                "provider run-as requires an explicit process-spawner implementation",
+            )
+            .with_context("run_as_kind", run_as.kind()));
+        }
+        self.validate_provider_run_as(run_as)?;
+        self.spawn_provider(command)
+    }
 }
 
 impl OsProcessBackend {
@@ -141,12 +181,25 @@ impl OsProcessBackend {
         Self
     }
 
-    /// Spawns a direct command inside a platform-owned process boundary.
-    pub fn spawn(&self, mut command: Command) -> Result<ProviderProcessHandle, EvaError> {
-        let (child, boundary) = platform::spawn(&mut command).map_err(|error| {
-            EvaError::unavailable("failed to spawn provider process boundary")
-                .with_context("io_error", error.to_string())
-        })?;
+    /// Spawns a direct command as the current daemon identity.
+    pub fn spawn(&self, command: Command) -> Result<ProviderProcessHandle, EvaError> {
+        self.spawn_as(command, &ProviderRunAsIdentity::Current)
+    }
+
+    /// Validate a requested identity without starting a process.
+    pub fn validate_run_as(&self, run_as: &ProviderRunAsIdentity) -> Result<(), EvaError> {
+        platform::validate_run_as(run_as)
+    }
+
+    /// Validates and applies one manifest run-as identity before spawning.
+    pub fn spawn_as(
+        &self,
+        mut command: Command,
+        run_as: &ProviderRunAsIdentity,
+    ) -> Result<ProviderProcessHandle, EvaError> {
+        platform::configure_run_as(&mut command, run_as)?;
+        let (child, boundary) =
+            platform::spawn(&mut command).map_err(|error| spawn_error(error, run_as.kind()))?;
         let identity = match platform::identity(&child, &boundary) {
             Ok(identity) => identity,
             Err(error) => {
@@ -212,9 +265,50 @@ impl OsProcessBackend {
     }
 }
 
+fn spawn_error(error: std::io::Error, run_as_kind: &str) -> EvaError {
+    let mapped = match error.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            EvaError::permission_denied("provider executable or run-as identity was denied")
+                .with_retryable(false)
+        }
+        std::io::ErrorKind::InvalidInput => {
+            EvaError::invalid_argument("provider process command is invalid for this host")
+                .with_retryable(false)
+        }
+        std::io::ErrorKind::Unsupported => {
+            EvaError::unsupported("provider process boundary is unsupported on this host")
+                .with_retryable(false)
+        }
+        // Keep the stable boundary message for transport-level mapping while
+        // retaining the native failure class in structured context. A missing
+        // executable is an unavailable provider and remains retryable; policy
+        // and restart layers already own the decision to retry it.
+        std::io::ErrorKind::NotFound => {
+            EvaError::unavailable("failed to spawn provider process boundary")
+                .with_context("spawn_error_kind", "not_found")
+        }
+        _ => EvaError::unavailable("failed to spawn provider process boundary"),
+    };
+    mapped
+        .with_context("run_as_kind", run_as_kind)
+        .with_context("io_error", error.to_string())
+}
+
 impl ProviderProcessSpawner for OsProcessBackend {
     fn spawn_provider(&self, command: Command) -> Result<ProviderProcessHandle, EvaError> {
         self.spawn(command)
+    }
+
+    fn spawn_provider_as(
+        &self,
+        command: Command,
+        run_as: &ProviderRunAsIdentity,
+    ) -> Result<ProviderProcessHandle, EvaError> {
+        self.spawn_as(command, run_as)
+    }
+
+    fn validate_provider_run_as(&self, run_as: &ProviderRunAsIdentity) -> Result<(), EvaError> {
+        self.validate_run_as(run_as)
     }
 }
 
@@ -468,6 +562,8 @@ mod platform {
         PlatformTerminationResult, ProcessBoundary, ProcessIdentity, ProcessTerminationOutcome,
         FORCE_TERMINATION_WAIT,
     };
+    use eva_config::ProviderRunAsIdentity;
+    use eva_core::EvaError;
     use std::io;
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
@@ -476,6 +572,332 @@ mod platform {
 
     #[cfg(target_os = "linux")]
     use std::fs;
+
+    pub(super) fn validate_run_as(run_as: &ProviderRunAsIdentity) -> Result<(), EvaError> {
+        #[cfg(target_os = "macos")]
+        if matches!(run_as, ProviderRunAsIdentity::Unix { .. }) {
+            return Err(EvaError::unsupported(
+                "explicit Unix provider identity is disabled on macOS until a no-suid process boundary is available",
+            )
+            .with_context("run_as_kind", run_as.kind()));
+        }
+        let (target_uid, target_gid) = match run_as {
+            ProviderRunAsIdentity::Current => return Ok(()),
+            ProviderRunAsIdentity::Windows { .. } => {
+                return Err(EvaError::unsupported(
+                    "Windows provider identity cannot be used on a Unix host",
+                )
+                .with_context("run_as_kind", run_as.kind()));
+            }
+            ProviderRunAsIdentity::Unix { uid, gid } => (*uid, *gid),
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (target_uid, target_gid);
+            return Err(EvaError::unsupported(
+                "explicit Unix provider identity is unsupported on this Unix host",
+            )
+            .with_context("run_as_kind", run_as.kind()));
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let current_uid = unsafe { libc::geteuid() };
+            let current_gid = unsafe { libc::getegid() };
+            let target_uid = libc::uid_t::try_from(target_uid).map_err(|_| {
+                EvaError::invalid_argument("provider Unix uid does not fit the host uid type")
+            })?;
+            let target_gid = libc::gid_t::try_from(target_gid).map_err(|_| {
+                EvaError::invalid_argument("provider Unix gid does not fit the host gid type")
+            })?;
+            validate_unix_daemon_identity(current_uid, current_gid, target_uid, target_gid)
+        }
+    }
+
+    pub(super) fn configure_run_as(
+        command: &mut Command,
+        run_as: &ProviderRunAsIdentity,
+    ) -> Result<(), EvaError> {
+        validate_run_as(run_as)?;
+        let ProviderRunAsIdentity::Unix { uid, gid } = run_as else {
+            return Ok(());
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (command, uid, gid);
+            Err(EvaError::unsupported(
+                "explicit Unix provider identity is unsupported on this Unix host",
+            )
+            .with_context("run_as_kind", run_as.kind()))
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let current_uid = unsafe { libc::geteuid() };
+            let target_uid = libc::uid_t::try_from(*uid).map_err(|_| {
+                EvaError::invalid_argument("provider Unix uid does not fit the host uid type")
+            })?;
+            let target_gid = libc::gid_t::try_from(*gid).map_err(|_| {
+                EvaError::invalid_argument("provider Unix gid does not fit the host gid type")
+            })?;
+            let clear_groups = current_uid == 0;
+            unsafe {
+                command.pre_exec(move || apply_unix_identity(target_uid, target_gid, clear_groups));
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn validate_unix_daemon_identity(
+        current_uid: libc::uid_t,
+        current_gid: libc::gid_t,
+        target_uid: libc::uid_t,
+        target_gid: libc::gid_t,
+    ) -> Result<(), EvaError> {
+        if current_uid != 0 && (target_uid != current_uid || target_gid != current_gid) {
+            return Err(EvaError::permission_denied(
+                "provider Unix identity would exceed the daemon identity",
+            )
+            .with_context("run_as_kind", "unix"));
+        }
+        validate_no_latent_unix_privilege(current_uid, current_gid)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn validate_no_latent_unix_privilege(
+        current_uid: libc::uid_t,
+        current_gid: libc::gid_t,
+    ) -> Result<(), EvaError> {
+        let mut real_uid = 0;
+        let mut effective_uid = 0;
+        let mut saved_uid = 0;
+        let mut real_gid = 0;
+        let mut effective_gid = 0;
+        let mut saved_gid = 0;
+        if unsafe { libc::getresuid(&mut real_uid, &mut effective_uid, &mut saved_uid) } != 0
+            || unsafe { libc::getresgid(&mut real_gid, &mut effective_gid, &mut saved_gid) } != 0
+        {
+            return Err(
+                EvaError::unavailable("failed to inspect daemon Unix credential boundary")
+                    .with_context("io_error", io::Error::last_os_error().to_string()),
+            );
+        }
+        let (filesystem_uid, filesystem_gid) = linux_fs_identity();
+        if current_uid != 0
+            && (real_uid != current_uid
+                || effective_uid != current_uid
+                || saved_uid != current_uid
+                || real_gid != current_gid
+                || effective_gid != current_gid
+                || saved_gid != current_gid
+                || filesystem_uid != current_uid
+                || filesystem_gid != current_gid)
+        {
+            return Err(EvaError::permission_denied(
+                "daemon has latent Unix credentials that cannot be delegated safely",
+            )
+            .with_context("run_as_kind", "unix"));
+        }
+        if current_uid != 0 {
+            let supplementary_groups = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+            if supplementary_groups < 0 {
+                return Err(
+                    EvaError::unavailable("failed to inspect daemon supplementary groups")
+                        .with_context("io_error", io::Error::last_os_error().to_string()),
+                );
+            }
+            if supplementary_groups > 0 {
+                return Err(EvaError::permission_denied(
+                    "daemon supplementary groups cannot be delegated safely",
+                )
+                .with_context("run_as_kind", "unix")
+                .with_context(
+                    "supplementary_group_count",
+                    supplementary_groups.to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn validate_no_latent_unix_privilege(
+        current_uid: libc::uid_t,
+        current_gid: libc::gid_t,
+    ) -> Result<(), EvaError> {
+        let real_uid = unsafe { libc::getuid() };
+        let real_gid = unsafe { libc::getgid() };
+        if current_uid != 0
+            && (real_uid != current_uid
+                || real_gid != current_gid
+                || unsafe { libc::issetugid() } != 0)
+        {
+            return Err(EvaError::permission_denied(
+                "daemon has latent Unix credentials that cannot be delegated safely",
+            )
+            .with_context("run_as_kind", "unix"));
+        }
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn apply_unix_identity(
+        target_uid: libc::uid_t,
+        target_gid: libc::gid_t,
+        clear_groups: bool,
+    ) -> io::Result<()> {
+        if clear_groups && unsafe { libc::setgroups(0, std::ptr::null()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        #[cfg(target_os = "linux")]
+        if !clear_groups {
+            let supplementary_groups = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+            if supplementary_groups < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if supplementary_groups > 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "daemon supplementary groups cannot be delegated safely",
+                ));
+            }
+        }
+        #[cfg(target_os = "linux")]
+        set_linux_fs_identity(target_uid, target_gid)?;
+        #[cfg(target_os = "linux")]
+        prepare_linux_capability_drop()?;
+        apply_unix_primary_identity(target_uid, target_gid)?;
+        #[cfg(target_os = "linux")]
+        finish_linux_capability_drop()?;
+        #[cfg(target_os = "linux")]
+        let (filesystem_uid, filesystem_gid) = linux_fs_identity();
+        #[cfg(not(target_os = "linux"))]
+        let (filesystem_uid, filesystem_gid) = (target_uid, target_gid);
+        if unsafe { libc::geteuid() } != target_uid
+            || unsafe { libc::getegid() } != target_gid
+            || filesystem_uid != target_uid
+            || filesystem_gid != target_gid
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "provider Unix identity did not take effect",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_linux_capability_drop() -> io::Result<()> {
+        if unsafe { libc::prctl(libc::PR_SET_KEEPCAPS, 0, 0, 0, 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe {
+            libc::prctl(
+                libc::PR_CAP_AMBIENT,
+                libc::PR_CAP_AMBIENT_CLEAR_ALL,
+                0,
+                0,
+                0,
+            )
+        } != 0
+        {
+            let error = io::Error::last_os_error();
+            // Linux kernels predating ambient capabilities return EINVAL and
+            // have no ambient set to clear.
+            if error.raw_os_error() != Some(libc::EINVAL) {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Linux exposes the filesystem uid/gid as separate credentials. Passing
+    /// the all-bits-one sentinel queries them without changing process state.
+    #[cfg(target_os = "linux")]
+    fn linux_fs_identity() -> (libc::uid_t, libc::gid_t) {
+        let filesystem_uid = unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t;
+        let filesystem_gid = unsafe { libc::setfsgid(libc::gid_t::MAX) } as libc::gid_t;
+        (filesystem_uid, filesystem_gid)
+    }
+
+    /// Set and immediately verify Linux filesystem credentials while the
+    /// child still has whatever privilege the daemon supplied.
+    #[cfg(target_os = "linux")]
+    fn set_linux_fs_identity(target_uid: libc::uid_t, target_gid: libc::gid_t) -> io::Result<()> {
+        unsafe {
+            libc::setfsgid(target_gid);
+            libc::setfsuid(target_uid);
+        }
+        let (filesystem_uid, filesystem_gid) = linux_fs_identity();
+        if filesystem_uid != target_uid || filesystem_gid != target_gid {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "provider Linux filesystem identity did not take effect",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn finish_linux_capability_drop() -> io::Result<()> {
+        #[repr(C)]
+        struct CapabilityHeader {
+            version: u32,
+            pid: i32,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct CapabilityData {
+            effective: u32,
+            permitted: u32,
+            inheritable: u32,
+        }
+
+        const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+        let header = CapabilityHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let data = [CapabilityData {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2];
+        if unsafe { libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_unix_primary_identity(
+        target_uid: libc::uid_t,
+        target_gid: libc::gid_t,
+    ) -> io::Result<()> {
+        if unsafe { libc::setresgid(target_gid, target_gid, target_gid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::setresuid(target_uid, target_uid, target_uid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn apply_unix_primary_identity(
+        target_uid: libc::uid_t,
+        target_gid: libc::gid_t,
+    ) -> io::Result<()> {
+        if unsafe { libc::setregid(target_gid, target_gid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::setreuid(target_uid, target_uid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
 
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, ProcessBoundary)> {
         // `process_group(0)` asks the child to become the leader of a fresh
@@ -930,6 +1352,201 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    struct CurrentOnlySpawner;
+
+    impl ProviderProcessSpawner for CurrentOnlySpawner {
+        fn spawn_provider(&self, _command: Command) -> Result<ProviderProcessHandle, EvaError> {
+            panic!("non-current identity must be rejected before spawn")
+        }
+    }
+
+    struct PermissiveValidationSpawner;
+
+    impl ProviderProcessSpawner for PermissiveValidationSpawner {
+        fn spawn_provider(&self, _command: Command) -> Result<ProviderProcessHandle, EvaError> {
+            panic!("default identity-aware spawn must reject before legacy spawn")
+        }
+
+        fn validate_provider_run_as(
+            &self,
+            _run_as: &ProviderRunAsIdentity,
+        ) -> Result<(), EvaError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn legacy_spawner_fails_closed_for_explicit_identity() {
+        let error = CurrentOnlySpawner
+            .validate_provider_run_as(&ProviderRunAsIdentity::Windows {
+                account: "example\\provider".to_owned(),
+            })
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "run_as_kind" && value == "windows"));
+    }
+
+    #[test]
+    fn permissive_validation_cannot_enable_legacy_identity_fallback() {
+        let error = PermissiveValidationSpawner
+            .spawn_provider_as(
+                Command::new("provider"),
+                &ProviderRunAsIdentity::Unix {
+                    uid: 1000,
+                    gid: 1000,
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert!(error.message().contains("explicit process-spawner"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_same_token_identity_spawns_inside_job_boundary() {
+        let marker = run_as_marker_path("windows-current");
+        let account = platform::current_account_for_test().unwrap();
+        let expected_sid = platform::current_sid_hex_for_test().unwrap();
+        let mut handle = ProcessBackend::new()
+            .spawn_as(
+                run_as_marker_command(&marker),
+                &ProviderRunAsIdentity::Windows { account },
+            )
+            .unwrap();
+
+        assert!(handle.wait().unwrap().success());
+        assert_eq!(fs::read_to_string(&marker).unwrap(), expected_sid);
+        let _ = fs::remove_file(marker);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_distinct_service_token_is_rejected_before_spawn() {
+        let marker = run_as_marker_path("windows-distinct");
+        let account = platform::different_account_for_test().unwrap();
+        let error = ProcessBackend::new()
+            .spawn_as(
+                run_as_marker_command(&marker),
+                &ProviderRunAsIdentity::Windows { account },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert!(!marker.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unknown_account_is_rejected_before_spawn() {
+        let marker = run_as_marker_path("windows-unknown");
+        let account = format!(
+            "eva-nonexistent-account-{}-{}",
+            std::process::id(),
+            unique_test_suffix()
+        );
+        let error = ProcessBackend::new()
+            .spawn_as(
+                run_as_marker_command(&marker),
+                &ProviderRunAsIdentity::Windows { account },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert!(!marker.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unix_identity_on_windows_is_rejected_before_spawn() {
+        let marker = run_as_marker_path("windows-platform-mismatch");
+        let error = ProcessBackend::new()
+            .spawn_as(
+                run_as_marker_command(&marker),
+                &ProviderRunAsIdentity::Unix { uid: 0, gid: 0 },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Unsupported);
+        assert!(!marker.exists());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn unix_current_numeric_identity_spawns_inside_group_boundary() {
+        let marker = run_as_marker_path("unix-current");
+        let expected_uid = unsafe { libc::geteuid() };
+        let expected_gid = unsafe { libc::getegid() };
+        let result = ProcessBackend::new().spawn_as(
+            run_as_marker_command(&marker),
+            &ProviderRunAsIdentity::Unix {
+                uid: unsafe { libc::geteuid() },
+                gid: unsafe { libc::getegid() },
+            },
+        );
+        #[cfg(target_os = "linux")]
+        if expected_uid != 0 && unsafe { libc::getgroups(0, std::ptr::null_mut()) } > 0 {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+            assert!(!marker.exists());
+            return;
+        }
+        let mut handle = result.unwrap();
+
+        assert!(handle.wait().unwrap().success());
+        let evidence = fs::read_to_string(&marker).unwrap();
+        assert!(evidence.contains(&format!("euid={expected_uid}")));
+        assert!(evidence.contains(&format!("egid={expected_gid}")));
+        if expected_uid == 0 {
+            assert!(evidence.contains("groups="));
+        }
+        let _ = fs::remove_file(marker);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_explicit_unix_identity_fails_closed_before_spawn() {
+        let marker = run_as_marker_path("macos-explicit-unix");
+        let error = ProcessBackend::new()
+            .spawn_as(
+                run_as_marker_command(&marker),
+                &ProviderRunAsIdentity::Unix { uid: 0, gid: 0 },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Unsupported);
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_root_unix_identity_policy_rejects_different_target() {
+        let error = platform::validate_unix_daemon_identity(1000, 1000, 1001, 1000).unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn windows_identity_on_unix_is_rejected_before_spawn() {
+        let marker = run_as_marker_path("unix-platform-mismatch");
+        let error = ProcessBackend::new()
+            .spawn_as(
+                run_as_marker_command(&marker),
+                &ProviderRunAsIdentity::Windows {
+                    account: "example\\provider".to_owned(),
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Unsupported);
+        assert!(!marker.exists());
+    }
+
     #[test]
     fn backend_spawns_real_identity_and_stamps_provider_snapshot() {
         let mut command = helper_command();
@@ -1216,6 +1833,40 @@ mod tests {
         let _ = child.wait();
     }
 
+    #[test]
+    #[ignore = "spawned by run-as boundary tests"]
+    fn run_as_spawn_marker_helper() {
+        let marker = std::env::var_os("EVA_RUN_AS_MARKER")
+            .map(PathBuf::from)
+            .expect("run-as marker path");
+        #[cfg(windows)]
+        let evidence = platform::current_sid_hex_for_test().unwrap();
+        #[cfg(unix)]
+        let evidence = {
+            let mut groups = vec![0 as libc::gid_t; 64];
+            let group_count =
+                unsafe { libc::getgroups(groups.len() as libc::c_int, groups.as_mut_ptr()) };
+            let groups = if group_count < 0 {
+                "error".to_owned()
+            } else {
+                groups.truncate(group_count as usize);
+                groups
+                    .into_iter()
+                    .map(|group| group.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            format!(
+                "euid={}\negid={}\ngroups={groups}",
+                unsafe { libc::geteuid() },
+                unsafe { libc::getegid() },
+            )
+        };
+        #[cfg(not(any(unix, windows)))]
+        let evidence = "spawned".to_owned();
+        fs::write(marker, evidence).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     #[ignore = "spawned by graceful_timeout_force_kills_an_uncooperative_group"]
@@ -1334,6 +1985,30 @@ mod tests {
         command
     }
 
+    fn run_as_marker_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "eva-run-as-{name}-{}-{}",
+            std::process::id(),
+            unique_test_suffix()
+        ))
+    }
+
+    fn run_as_marker_command(marker: &std::path::Path) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "process_backend::tests::run_as_spawn_marker_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("EVA_RUN_AS_MARKER", marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+
     #[cfg(windows)]
     fn helper_command() -> Command {
         let mut command = Command::new("cmd.exe");
@@ -1436,6 +2111,8 @@ mod platform {
         PlatformTerminationResult, ProcessBoundary, ProcessIdentity, ProcessTerminationOutcome,
         FORCE_TERMINATION_WAIT,
     };
+    use eva_config::ProviderRunAsIdentity;
+    use eva_core::EvaError;
     use std::io;
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
@@ -1445,8 +2122,14 @@ mod platform {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
-        ERROR_INVALID_PARAMETER, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED,
-        WAIT_OBJECT_0, WAIT_TIMEOUT,
+        ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
+        WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    #[cfg(test)]
+    use windows_sys::Win32::Security::LookupAccountSidW;
+    use windows_sys::Win32::Security::{
+        GetLengthSid, GetTokenInformation, IsValidSid, LookupAccountNameW, TokenUser, SID_NAME_USE,
+        TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
@@ -1460,13 +2143,217 @@ mod platform {
     };
     use windows_sys::Win32::System::SystemServices::{JOB_OBJECT_QUERY, JOB_OBJECT_TERMINATE};
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, OpenThread, ResumeThread, WaitForSingleObject,
-        CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, PROCESS_QUERY_LIMITED_INFORMATION,
-        THREAD_SUSPEND_RESUME,
+        GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken, OpenThread,
+        ResumeThread, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
+        PROCESS_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
     };
 
     static JOB_COUNTER: AtomicU64 = AtomicU64::new(1);
     const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+
+    pub(super) fn validate_run_as(run_as: &ProviderRunAsIdentity) -> Result<(), EvaError> {
+        let account = match run_as {
+            ProviderRunAsIdentity::Current => return Ok(()),
+            ProviderRunAsIdentity::Unix { .. } => {
+                return Err(EvaError::unsupported(
+                    "Unix provider identity cannot be used on a Windows host",
+                )
+                .with_context("run_as_kind", run_as.kind()));
+            }
+            ProviderRunAsIdentity::Windows { account } => account,
+        };
+        let requested_sid = lookup_account_sid(account).map_err(|error| {
+            EvaError::permission_denied("provider Windows run-as account could not be resolved")
+                .with_context("run_as_kind", run_as.kind())
+                .with_context("io_error", error.to_string())
+        })?;
+        let daemon_sid = current_process_user_sid().map_err(|error| {
+            EvaError::unavailable("failed to inspect daemon Windows service token")
+                .with_context("run_as_kind", run_as.kind())
+                .with_context("io_error", error.to_string())
+        })?;
+        if requested_sid != daemon_sid {
+            return Err(EvaError::permission_denied(
+                "provider Windows identity does not match the daemon service token",
+            )
+            .with_context("run_as_kind", run_as.kind()));
+        }
+        Ok(())
+    }
+
+    pub(super) fn configure_run_as(
+        _command: &mut Command,
+        run_as: &ProviderRunAsIdentity,
+    ) -> Result<(), EvaError> {
+        validate_run_as(run_as)
+    }
+
+    fn lookup_account_sid(account: &str) -> io::Result<Vec<u8>> {
+        let account = account
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let mut sid_size = 0;
+        let mut domain_size = 0;
+        let mut sid_use: SID_NAME_USE = 0;
+        let first = unsafe {
+            LookupAccountNameW(
+                std::ptr::null(),
+                account.as_ptr(),
+                std::ptr::null_mut(),
+                &mut sid_size,
+                std::ptr::null_mut(),
+                &mut domain_size,
+                &mut sid_use,
+            )
+        };
+        if first != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || sid_size == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut sid = aligned_buffer(sid_size as usize);
+        let mut domain = vec![0_u16; domain_size as usize];
+        if unsafe {
+            LookupAccountNameW(
+                std::ptr::null(),
+                account.as_ptr(),
+                sid.as_mut_ptr().cast(),
+                &mut sid_size,
+                domain.as_mut_ptr(),
+                &mut domain_size,
+                &mut sid_use,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        copy_sid(sid.as_mut_ptr().cast())
+    }
+
+    fn current_process_user_sid() -> io::Result<Vec<u8>> {
+        let mut token = std::ptr::null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let token = OwnedHandle(token);
+        let mut required = 0;
+        let first = unsafe {
+            GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut required)
+        };
+        if first != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || required == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut information = aligned_buffer(required as usize);
+        if unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                information.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let token_user = unsafe { &*information.as_ptr().cast::<TOKEN_USER>() };
+        copy_sid(token_user.User.Sid)
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_account_for_test() -> io::Result<String> {
+        account_name_for_sid(&current_process_user_sid()?)
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_sid_hex_for_test() -> io::Result<String> {
+        let sid = current_process_user_sid()?;
+        Ok(sid.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    #[cfg(test)]
+    pub(super) fn different_account_for_test() -> io::Result<String> {
+        let daemon_sid = current_process_user_sid()?;
+        for account in [
+            "NT AUTHORITY\\SYSTEM",
+            "NT AUTHORITY\\LOCAL SERVICE",
+            "NT AUTHORITY\\NETWORK SERVICE",
+        ] {
+            if lookup_account_sid(account).is_ok_and(|sid| sid != daemon_sid) {
+                return Ok(account.to_owned());
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no distinct well-known Windows account was available",
+        ))
+    }
+
+    #[cfg(test)]
+    fn account_name_for_sid(sid: &[u8]) -> io::Result<String> {
+        let mut name_size = 0;
+        let mut domain_size = 0;
+        let mut sid_use: SID_NAME_USE = 0;
+        let first = unsafe {
+            LookupAccountSidW(
+                std::ptr::null(),
+                sid.as_ptr().cast_mut().cast(),
+                std::ptr::null_mut(),
+                &mut name_size,
+                std::ptr::null_mut(),
+                &mut domain_size,
+                &mut sid_use,
+            )
+        };
+        if first != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || name_size == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut name = vec![0_u16; name_size as usize];
+        let mut domain = vec![0_u16; domain_size as usize];
+        if unsafe {
+            LookupAccountSidW(
+                std::ptr::null(),
+                sid.as_ptr().cast_mut().cast(),
+                name.as_mut_ptr(),
+                &mut name_size,
+                domain.as_mut_ptr(),
+                &mut domain_size,
+                &mut sid_use,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let name = String::from_utf16(&name[..name_size as usize])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        let domain = String::from_utf16(&domain[..domain_size as usize])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        if domain.is_empty() {
+            Ok(name)
+        } else {
+            Ok(format!("{domain}\\{name}"))
+        }
+    }
+
+    fn aligned_buffer(byte_len: usize) -> Vec<usize> {
+        vec![0; byte_len.div_ceil(std::mem::size_of::<usize>()).max(1)]
+    }
+
+    fn copy_sid(sid: windows_sys::Win32::Security::PSID) -> io::Result<Vec<u8>> {
+        if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows account resolved to an invalid SID",
+            ));
+        }
+        let length = unsafe { GetLengthSid(sid) } as usize;
+        if length == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Windows account resolved to an empty SID",
+            ));
+        }
+        Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), length) }.to_vec())
+    }
 
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, ProcessBoundary)> {
         let mut boundary = new_boundary()?;
@@ -1966,9 +2853,28 @@ mod platform {
     use super::{
         PlatformTerminationResult, ProcessBoundary, ProcessIdentity, ProcessTerminationOutcome,
     };
+    use eva_config::ProviderRunAsIdentity;
+    use eva_core::EvaError;
     use std::io;
     use std::process::{Child, Command};
     use std::time::Duration;
+
+    pub(super) fn validate_run_as(run_as: &ProviderRunAsIdentity) -> Result<(), EvaError> {
+        match run_as {
+            ProviderRunAsIdentity::Current => Ok(()),
+            _ => Err(EvaError::unsupported(
+                "explicit provider identity is unsupported on this host",
+            )
+            .with_context("run_as_kind", run_as.kind())),
+        }
+    }
+
+    pub(super) fn configure_run_as(
+        _command: &mut Command,
+        run_as: &ProviderRunAsIdentity,
+    ) -> Result<(), EvaError> {
+        validate_run_as(run_as)
+    }
 
     pub(super) fn spawn(_command: &mut Command) -> io::Result<(Child, ProcessBoundary)> {
         Err(io::Error::new(

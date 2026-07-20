@@ -1091,7 +1091,7 @@ fn command_with_args(command: Option<&str>, args: &[String]) -> String {
 /// 执行 `manifest_digest` 对应的处理逻辑。
 fn manifest_digest(handle: &AdapterHandle) -> String {
     let mut material = Vec::new();
-    push_digest_field(&mut material, "format", "eva.adapter.manifest.v2");
+    push_digest_field(&mut material, "format", "eva.adapter.manifest.v3");
     push_digest_field(&mut material, "id", handle.id.as_str());
     push_digest_field(&mut material, "version", &handle.version);
     push_digest_field(&mut material, "transport", handle.transport.as_str());
@@ -1101,6 +1101,7 @@ fn manifest_digest(handle: &AdapterHandle) -> String {
         "command",
         handle.command.as_deref().unwrap_or(""),
     );
+    push_digest_collection(&mut material, "arg", handle.args.iter().map(String::as_str));
     push_digest_field(
         &mut material,
         "endpoint",
@@ -1110,6 +1111,21 @@ fn manifest_digest(handle: &AdapterHandle) -> String {
         &mut material,
         "mcp_command",
         handle.mcp_command.as_deref().unwrap_or(""),
+    );
+    push_digest_collection(
+        &mut material,
+        "mcp_arg",
+        handle.mcp_args.iter().map(String::as_str),
+    );
+    push_digest_field(
+        &mut material,
+        "skill_runner_command",
+        handle.skill_runner_command.as_deref().unwrap_or(""),
+    );
+    push_digest_collection(
+        &mut material,
+        "skill_runner_arg",
+        handle.skill_runner_args.iter().map(String::as_str),
     );
     push_digest_field(
         &mut material,
@@ -1721,5 +1737,43 @@ mod tests {
                 .manifest_digest;
 
         assert_eq!(first_digest, second_digest);
+    }
+
+    #[test]
+    fn manifest_digest_preserves_native_argv_boundaries() {
+        let digest = |handle: &AdapterHandle, request_id: &str| {
+            ProviderExecutionRequest::from_handle(handle, &invocation(request_id)).manifest_digest
+        };
+
+        let mut stdio_single = handle();
+        stdio_single.args = vec!["--scope workspace".to_owned()];
+        let mut stdio_split = stdio_single.clone();
+        stdio_split.args = vec!["--scope".to_owned(), "workspace".to_owned()];
+        assert_ne!(
+            digest(&stdio_single, "req-provider-stdio-single"),
+            digest(&stdio_split, "req-provider-stdio-split")
+        );
+
+        let mut mcp_single = handle();
+        mcp_single.transport = AdapterTransport::Mcp;
+        mcp_single.mcp_command = Some("provider".to_owned());
+        mcp_single.mcp_args = vec!["--scope workspace".to_owned()];
+        let mut mcp_split = mcp_single.clone();
+        mcp_split.mcp_args = vec!["--scope".to_owned(), "workspace".to_owned()];
+        assert_ne!(
+            digest(&mcp_single, "req-provider-mcp-single"),
+            digest(&mcp_split, "req-provider-mcp-split")
+        );
+
+        let mut skill_single = handle();
+        skill_single.transport = AdapterTransport::Skill;
+        skill_single.skill_runner_command = Some("provider".to_owned());
+        skill_single.skill_runner_args = vec!["--scope workspace".to_owned()];
+        let mut skill_split = skill_single.clone();
+        skill_split.skill_runner_args = vec!["--scope".to_owned(), "workspace".to_owned()];
+        assert_ne!(
+            digest(&skill_single, "req-provider-skill-single"),
+            digest(&skill_split, "req-provider-skill-split")
+        );
     }
 }

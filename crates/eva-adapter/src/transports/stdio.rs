@@ -18,6 +18,7 @@ use crate::stream::{
     DEFAULT_STREAM_CHUNK_SIZE_BYTES, DEFAULT_STREAM_PREVIEW_LIMIT_BYTES,
 };
 use crate::supervisor::validate_credential_scope_for_provider;
+use eva_config::ProviderRunAsIdentity;
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -183,7 +184,12 @@ impl StdioRunner {
         invocation: StdioInvocation,
     ) -> Result<StdioRunReport, EvaError> {
         let backend = OsProcessBackend::new();
-        self.run_with_spawner(config, invocation, &backend)
+        self.run_with_spawner_as(
+            config,
+            invocation,
+            &backend,
+            &ProviderRunAsIdentity::Current,
+        )
     }
 
     /// Run with an injected process spawner. Runtime callers pass a wrapper
@@ -195,6 +201,20 @@ impl StdioRunner {
         invocation: StdioInvocation,
         spawner: &S,
     ) -> Result<StdioRunReport, EvaError> {
+        self.run_with_spawner_as(config, invocation, spawner, &ProviderRunAsIdentity::Current)
+    }
+
+    /// Run with an injected process spawner and an explicit provider identity.
+    /// The high-level Adapter path uses this method so a manifest identity
+    /// cannot be silently replaced with the daemon identity.
+    pub fn run_with_spawner_as<S: ProviderProcessSpawner + ?Sized>(
+        &self,
+        config: &StdioRunnerConfig,
+        invocation: StdioInvocation,
+        spawner: &S,
+        run_as: &ProviderRunAsIdentity,
+    ) -> Result<StdioRunReport, EvaError> {
+        spawner.validate_provider_run_as(run_as)?;
         validate_invocation(config, &invocation)?;
 
         let started_at = Instant::now();
@@ -207,19 +227,21 @@ impl StdioRunner {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = spawner.spawn_provider(command).map_err(|error| {
-            if error.message() == "failed to spawn provider process boundary" {
-                let mut mapped = EvaError::new(error.kind(), "failed to start stdio provider")
-                    .with_retryable(error.is_retryable())
-                    .with_error_context(error.context().clone());
-                if let Some(code) = error.provider_code() {
-                    mapped = mapped.with_provider_code(code.as_str());
+        let mut child = spawner
+            .spawn_provider_as(command, run_as)
+            .map_err(|error| {
+                if error.message() == "failed to spawn provider process boundary" {
+                    let mut mapped = EvaError::new(error.kind(), "failed to start stdio provider")
+                        .with_retryable(error.is_retryable())
+                        .with_error_context(error.context().clone());
+                    if let Some(code) = error.provider_code() {
+                        mapped = mapped.with_provider_code(code.as_str());
+                    }
+                    mapped.with_context("command", &invocation.command)
+                } else {
+                    error.with_context("command", &invocation.command)
                 }
-                mapped.with_context("command", &invocation.command)
-            } else {
-                error.with_context("command", &invocation.command)
-            }
-        })?;
+            })?;
         let process_id = child.pid();
 
         if !invocation.input.is_empty() {
@@ -402,6 +424,14 @@ pub fn invoke_with_spawner(
     })?;
     validate_input_size(handle, &invocation.input)?;
 
+    // Identity admission must precede credential-session validation and env
+    // reads. Direct transport callers do not pass through AdapterRuntime's
+    // earlier shape check, so keep this boundary local as well.
+    match process_spawner {
+        Some(spawner) => spawner.validate_provider_run_as(&handle.provider.run_as)?,
+        None => OsProcessBackend::new().validate_run_as(&handle.provider.run_as)?,
+    }
+
     let trace = invocation.trace_for_adapter(&handle.id);
     let credential_scope = validate_credential_scope_for_provider(
         invocation.credential_scope(),
@@ -431,8 +461,21 @@ pub fn invoke_with_spawner(
         .with_env(credential_env.values.clone())
         .with_input(invocation.input.into_bytes());
     let run = match process_spawner {
-        Some(spawner) => StdioRunner.run_with_spawner(&config, stdio_invocation, spawner)?,
-        None => StdioRunner.run(&config, stdio_invocation)?,
+        Some(spawner) => StdioRunner.run_with_spawner_as(
+            &config,
+            stdio_invocation,
+            spawner,
+            &handle.provider.run_as,
+        )?,
+        None => {
+            let backend = OsProcessBackend::new();
+            StdioRunner.run_with_spawner_as(
+                &config,
+                stdio_invocation,
+                &backend,
+                &handle.provider.run_as,
+            )?
+        }
     };
     let status = match (run.status, run.exit_code) {
         (StdioRunStatus::Completed, Some(0)) => "completed",

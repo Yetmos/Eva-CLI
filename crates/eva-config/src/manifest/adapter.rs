@@ -976,7 +976,21 @@ fn reject_unknown_fields(path: &Path, prefix: &str, extra: &Mapping) -> Result<(
 
 fn provider_transport_supports_process(transport: AdapterTransport, extra: &Mapping) -> bool {
     match transport {
-        AdapterTransport::Stdio | AdapterTransport::Skill => true,
+        AdapterTransport::Stdio => true,
+        AdapterTransport::Skill => {
+            extra
+                .get(Value::String("command".to_owned()))
+                .and_then(Value::as_str)
+                .is_some()
+                || extra
+                    .get(Value::String("skill".to_owned()))
+                    .and_then(Value::as_mapping)
+                    .and_then(|skill| skill.get(Value::String("runner".to_owned())))
+                    .and_then(Value::as_mapping)
+                    .and_then(|runner| runner.get(Value::String("command".to_owned())))
+                    .and_then(Value::as_str)
+                    .is_some()
+        }
         AdapterTransport::Mcp => extra
             .get(Value::String("mcp".to_owned()))
             .and_then(Value::as_mapping)
@@ -2042,6 +2056,44 @@ routing: {}
         );
         let error = parse_test_manifest(&yaml).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn builtin_skill_rejects_process_only_supervision() {
+        let builtin = provider_manifest_yaml(
+            "skill",
+            "skill:\n  id: code-review\n  entry:\n    type: codex_skill\nsupervision:\n  run_as:\n    kind: unix\n    uid: 1000\n    gid: 1000\n",
+        );
+        let error = parse_test_manifest(&builtin).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "field" && value == "supervision.run_as.kind"));
+
+        let builtin_restart = provider_manifest_yaml(
+            "skill",
+            "skill:\n  id: code-review\n  entry:\n    type: codex_skill\nsupervision:\n  restart:\n    mode: on_failure\n    max_attempts: 1\n    backoff_ms: 1\n",
+        );
+        assert_eq!(
+            parse_test_manifest(&builtin_restart).unwrap_err().kind(),
+            ErrorKind::InvalidArgument
+        );
+
+        let runner = parse_test_manifest(&provider_manifest_yaml(
+            "skill",
+            "skill:\n  id: code-review\n  entry:\n    type: command\n  runner:\n    command: provider\n    args:\n      - --stdio\nsupervision:\n  restart:\n    mode: on_failure\n    max_attempts: 1\n    backoff_ms: 1\n  run_as:\n    kind: unix\n    uid: 1000\n    gid: 1000\n",
+        ))
+        .unwrap();
+        assert_eq!(runner.provider.restart.mode, ProviderRestartMode::OnFailure);
+        assert_eq!(
+            runner.provider.run_as,
+            ProviderRunAsIdentity::Unix {
+                uid: 1000,
+                gid: 1000
+            }
+        );
     }
 
     #[test]

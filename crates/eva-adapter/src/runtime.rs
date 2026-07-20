@@ -15,7 +15,7 @@ use crate::supervisor::{
     ProviderExecutionOutcome, ProviderExecutionRequest, ProviderExecutionSlot, ProviderSupervisor,
 };
 use crate::transports;
-use eva_config::{AdapterTransport, ProjectConfig};
+use eva_config::{AdapterTransport, ProjectConfig, ProviderRunAsIdentity};
 use eva_core::{AdapterId, CapabilityName, EvaError, RequestId};
 use eva_observability::{
     AuditAction, AuditEvent, AuditOutcome, AuditSink, BestEffortObservabilityPipeline, MetricKind,
@@ -74,6 +74,7 @@ struct RegisteredProviderSpawner<'a> {
     backend: OsProcessBackend,
     supervisor: &'a RefCell<InMemoryProviderSupervisor>,
     slot: &'a ProviderExecutionSlot,
+    run_as: ProviderRunAsIdentity,
 }
 
 enum ProviderRestartStep {
@@ -86,7 +87,16 @@ enum ProviderRestartStep {
 
 impl ProviderProcessSpawner for RegisteredProviderSpawner<'_> {
     fn spawn_provider(&self, command: Command) -> Result<ProviderProcessHandle, EvaError> {
-        let mut process = self.backend.spawn_provider(command)?;
+        self.spawn_provider_as(command, &ProviderRunAsIdentity::Current)
+    }
+
+    fn spawn_provider_as(
+        &self,
+        command: Command,
+        run_as: &ProviderRunAsIdentity,
+    ) -> Result<ProviderProcessHandle, EvaError> {
+        self.validate_provider_run_as(run_as)?;
+        let mut process = self.backend.spawn_as(command, run_as)?;
         let identity = process.identity().clone();
         let registration = self
             .supervisor
@@ -99,6 +109,17 @@ impl ProviderProcessSpawner for RegisteredProviderSpawner<'_> {
                 .with_context("pid", identity.pid.to_string()));
         }
         Ok(process)
+    }
+
+    fn validate_provider_run_as(&self, run_as: &ProviderRunAsIdentity) -> Result<(), EvaError> {
+        if run_as != &self.run_as {
+            return Err(EvaError::permission_denied(
+                "provider run-as identity does not match the admitted execution slot",
+            )
+            .with_context("admitted_run_as_kind", self.run_as.kind())
+            .with_context("requested_run_as_kind", run_as.kind()));
+        }
+        self.backend.validate_run_as(run_as)
     }
 }
 
@@ -374,6 +395,7 @@ impl AdapterRuntime {
         }
         let route = self.router.route(&request)?;
         let handle = route.handle;
+        validate_provider_identity_shape(&handle)?;
 
         if should_supervise(handle.transport) {
             return self.invoke_supervised(handle, invocation);
@@ -397,6 +419,7 @@ impl AdapterRuntime {
                 self.policy_gate
                     .adapter_retry_backoff_ms(&invocation.capability),
             );
+        let run_as = execution_request.provider.run_as.clone();
         // 先占用受监督执行槽，确保后续凭据会话受并发、速率和熔断限制约束。
         let slot = match self.supervisor.borrow_mut().acquire(execution_request) {
             Ok(slot) => slot,
@@ -449,6 +472,7 @@ impl AdapterRuntime {
                 backend: OsProcessBackend::new(),
                 supervisor: &self.supervisor,
                 slot: &slot,
+                run_as: run_as.clone(),
             };
             let renewal = AdmissionRenewal::start(self.supervisor.borrow().admission_lease(&slot)?);
             let mut result = dispatch_transport_with_spawner(
@@ -736,6 +760,39 @@ fn dispatch_transport_with_spawner(
             transports::stdio::invoke_with_spawner(handle, invocation, process_spawner)
         }
         AdapterTransport::Http => transports::http::invoke(handle, invocation),
+    }
+}
+
+fn validate_provider_identity_shape(handle: &AdapterHandle) -> Result<(), EvaError> {
+    if matches!(handle.provider.run_as, ProviderRunAsIdentity::Current) {
+        return Ok(());
+    }
+    let process_backed = match handle.transport {
+        AdapterTransport::Stdio => true,
+        AdapterTransport::Mcp => {
+            handle.mcp_server_transport.as_deref().unwrap_or("stdio") == "stdio"
+        }
+        AdapterTransport::Skill => {
+            handle.skill_runner_command.is_some() || handle.command.is_some()
+        }
+        _ => false,
+    };
+    if handle.transport == AdapterTransport::Skill && process_backed {
+        return Err(EvaError::unsupported(
+            "process-backed Skill run-as requires a controlled workdir handoff",
+        )
+        .with_context("adapter_id", handle.id.as_str())
+        .with_context("run_as_kind", handle.provider.run_as.kind()));
+    }
+    if process_backed {
+        OsProcessBackend::new().validate_run_as(&handle.provider.run_as)
+    } else {
+        Err(EvaError::permission_denied(
+            "process-free Adapter transport cannot apply a run-as identity",
+        )
+        .with_context("adapter_id", handle.id.as_str())
+        .with_context("transport", handle.transport.as_str())
+        .with_context("run_as_kind", handle.provider.run_as.kind()))
     }
 }
 
@@ -1096,6 +1153,7 @@ mod tests {
             backend: OsProcessBackend::new(),
             supervisor: &supervisor,
             slot: &slot,
+            run_as: ProviderRunAsIdentity::Current,
         };
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
@@ -1259,6 +1317,32 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(runtime.provider_processes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_rejects_platform_mismatched_run_as_before_admission() {
+        let mut handle = stdio_handle(true, "definitely-not-started", Vec::new(), Vec::new());
+        handle.provider.run_as = if cfg!(windows) {
+            ProviderRunAsIdentity::Unix { uid: 0, gid: 0 }
+        } else {
+            ProviderRunAsIdentity::Windows {
+                account: "example\\provider".to_owned(),
+            }
+        };
+        let runtime = runtime_with_handle(handle);
+
+        let error = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-run-as-platform-mismatch").unwrap(),
+                    CapabilityName::parse("repo.analyze").unwrap(),
+                )
+                .with_provider(AdapterId::parse("stdio-test").unwrap()),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
         assert!(runtime.provider_processes().unwrap().is_empty());
     }
 

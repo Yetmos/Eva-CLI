@@ -369,6 +369,7 @@ pub fn invoke_with_client(
     invocation: RuntimeAdapterInvocation,
     client: &impl HttpClient,
 ) -> Result<AdapterInvokeReport, EvaError> {
+    super::validate_process_free_identity(handle)?;
     let endpoint = handle.endpoint.as_deref().ok_or_else(|| {
         EvaError::invalid_argument("HTTP adapter is missing endpoint")
             .with_context("adapter_id", handle.id.as_str())
