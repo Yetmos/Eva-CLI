@@ -3,6 +3,8 @@
 
 /// 声明 `capability_host` 子模块。
 pub mod capability_host;
+/// Per-provider vault references and short-lived credential sessions.
+pub mod credential_vault;
 /// 声明 `error` 子模块。
 pub mod error;
 /// 声明 `manifest` 子模块。
@@ -26,6 +28,10 @@ pub mod transports;
 
 pub use capability_host::{
     is_retryable_provider_failure, response_from_report, AdapterBackedCapabilityHost,
+};
+pub use credential_vault::{
+    CredentialSession, CredentialSessionLease, CredentialVault, CredentialVaultHandle,
+    FailClosedCredentialVault, MemoryCredentialVault, SecretValue,
 };
 pub use manifest::{
     AdapterCapabilityBinding, AdapterCircuitBreaker, AdapterHandle, AdapterHealth, AdapterRateLimit,

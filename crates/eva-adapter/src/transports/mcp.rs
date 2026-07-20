@@ -5,6 +5,10 @@
 //! 限额，鉴权头的原值不会进入审计输出。
 //! MCP transport backed by eva-mcp JSON-RPC allowlist checks.
 
+use crate::credential_vault::{
+    default_credential_vault, minimal_process_env, sanitize_error_with_values,
+    CredentialSessionLease, CredentialVault,
+};
 use crate::manifest::AdapterHandle;
 use crate::process_backend::{OsProcessBackend, ProviderProcessHandle, ProviderProcessSpawner};
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
@@ -53,7 +57,8 @@ pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
-    invoke_with_spawner(handle, invocation, None)
+    let vault = default_credential_vault();
+    invoke_with_spawner_and_vault(handle, invocation, None, vault.as_ref())
 }
 
 /// Invoke MCP while optionally supplying the runtime's central process
@@ -63,6 +68,17 @@ pub fn invoke_with_spawner(
     invocation: AdapterInvocation,
     process_spawner: Option<&dyn ProviderProcessSpawner>,
 ) -> Result<AdapterInvokeReport, EvaError> {
+    let vault = default_credential_vault();
+    invoke_with_spawner_and_vault(handle, invocation, process_spawner, vault.as_ref())
+}
+
+/// Invoke MCP with an explicit credential authority.
+pub fn invoke_with_spawner_and_vault(
+    handle: &AdapterHandle,
+    invocation: AdapterInvocation,
+    process_spawner: Option<&dyn ProviderProcessSpawner>,
+    vault: &dyn CredentialVault,
+) -> Result<AdapterInvokeReport, EvaError> {
     let tool = handle.mcp_tool_for(&invocation.capability).ok_or_else(|| {
         EvaError::unsupported("MCP adapter has no allowlisted tool for capability")
             .with_context("adapter_id", handle.id.as_str())
@@ -71,6 +87,17 @@ pub fn invoke_with_spawner(
     validate_input_size(handle, &invocation.input)?;
     let server_transport =
         McpServerTransport::parse(handle.mcp_server_transport.as_deref().unwrap_or("stdio"))?;
+    if server_transport == McpServerTransport::Stdio
+        && handle
+            .headers
+            .values()
+            .any(|value| value.strip_prefix("env:").is_some())
+    {
+        return Err(EvaError::unsupported(
+            "MCP stdio transport does not support credential headers",
+        )
+        .with_context("adapter_id", handle.id.as_str()));
+    }
     match (server_transport, &handle.provider.run_as) {
         (McpServerTransport::Http, eva_config::ProviderRunAsIdentity::Current) => {}
         (McpServerTransport::Http, run_as) => {
@@ -90,9 +117,33 @@ pub fn invoke_with_spawner(
         &handle.id,
         &invocation.request_id,
         &invocation.capability,
-        server_transport == McpServerTransport::Http,
+        server_transport == McpServerTransport::Http
+            || !handle.credential_env.is_empty()
+            || !handle.provider.vault_secrets.is_empty()
+            || handle
+                .headers
+                .values()
+                .any(|value| value.strip_prefix("env:").is_some()),
     )?
     .cloned();
+    let lazy_credential_env = handle
+        .headers
+        .values()
+        .filter_map(|value| value.strip_prefix("env:"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut credential_lease = CredentialSessionLease::open_with_lazy_env(
+        vault,
+        credential_scope.as_ref(),
+        &handle.provider.vault_secrets,
+        &handle.credential_env,
+        &lazy_credential_env,
+    )?;
+    let mut child_env = BTreeMap::new();
+    credential_lease.inject_env(&mut child_env);
+    if let Some(scope) = &credential_scope {
+        scope.apply_env(&mut child_env);
+    }
     let request_id = invocation.request_id.clone();
     let capability = invocation.capability.clone();
     let trace = invocation.trace_for_adapter(&handle.id);
@@ -106,45 +157,50 @@ pub fn invoke_with_spawner(
             .with_output_limit_bytes(output_limit_bytes(handle)),
     );
     let mut sensitive_values = Vec::new();
+    if let Some(scope) = &credential_scope {
+        sensitive_values.extend(scope.redaction_values());
+    }
     let mut transport_audit = vec![format!(
         "mcp.server_transport:{}",
         server_transport.as_str()
     )];
-    let call = match server_transport {
+    let call_result = match server_transport {
         McpServerTransport::Stdio => {
             let session_config = handle.mcp_session_config()?;
             transport_audit.push(format!("mcp.command:{}", session_config.process.command));
             let mut command = Command::new(&session_config.process.command);
             command
                 .args(&session_config.process.args)
+                .env_clear()
+                .envs(minimal_process_env(&child_env))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
             let process = match process_spawner {
                 Some(spawner) => spawner
                     .spawn_provider_as(command, &handle.provider.run_as)
-                    .map_err(|error| map_mcp_spawn_error(error, handle))?,
+                    .map_err(|error| map_mcp_spawn_error(error, handle)),
                 None => OsProcessBackend::new()
                     .spawn_provider_as(command, &handle.provider.run_as)
-                    .map_err(|error| map_mcp_spawn_error(error, handle))?,
+                    .map_err(|error| map_mcp_spawn_error(error, handle)),
             };
+            let process = process?;
             client.call_stdio_with_process(
                 &session_config,
                 Box::new(process),
                 invocation.request_id,
                 tool,
                 &invocation.input,
-            )?
+            )
         }
         McpServerTransport::Http => {
             let endpoint = handle.endpoint.as_deref().ok_or_else(|| {
                 EvaError::invalid_argument("MCP HTTP adapter is missing endpoint")
                     .with_context("adapter_id", handle.id.as_str())
             })?;
-            let mut header_plan = mcp_http_headers(handle)?;
+            let mut header_plan = mcp_http_headers(handle, &mut credential_lease)?;
             if let Some(scope) = &credential_scope {
                 scope.apply_headers(&mut header_plan.headers);
-                sensitive_values.extend(scope.redaction_values());
             }
             sensitive_values.extend(header_plan.sensitive_values.clone());
             transport_audit.push(format!("mcp.endpoint:{}", endpoint));
@@ -155,9 +211,20 @@ pub fn invoke_with_spawner(
                 invocation.request_id,
                 tool,
                 &invocation.input,
-            )?
+            )
         }
     };
+    sensitive_values.extend(credential_lease.redaction_values());
+    let error_redactions = sensitive_values.clone();
+    child_env.clear();
+    let call = match (call_result, credential_lease.release()) {
+        (Err(error), _) => return Err(sanitize_error_with_values(error, &error_redactions)),
+        (Ok(_), Err(error)) => {
+            return Err(sanitize_error_with_values(error, &error_redactions));
+        }
+        (Ok(call), Ok(())) => call,
+    };
+    let credential_audit = credential_lease.audit_entries();
     let output = call.output.as_text().unwrap_or_default().to_owned();
     let output_stream = capture_provider_bytes(
         ProviderStreamConfig::new("result", output_limit_bytes(handle)).with_artifact(
@@ -180,6 +247,7 @@ pub fn invoke_with_spawner(
         format!("mcp.tool.call:{tool}"),
     ];
     audit.extend(transport_audit);
+    audit.extend(credential_audit);
     if let Some(scope) = &credential_scope {
         audit.extend(scope.audit_entries());
     }
@@ -236,7 +304,7 @@ fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaErr
 }
 
 /// 表示 `McpHeaderPlan` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct McpHeaderPlan {
     /// 记录 `headers` 字段对应的值。
     headers: BTreeMap<String, String>,
@@ -247,13 +315,16 @@ struct McpHeaderPlan {
 }
 
 /// 执行 `mcp_http_headers` 对应的处理逻辑。
-fn mcp_http_headers(handle: &AdapterHandle) -> Result<McpHeaderPlan, EvaError> {
+fn mcp_http_headers(
+    handle: &AdapterHandle,
+    credentials: &mut CredentialSessionLease,
+) -> Result<McpHeaderPlan, EvaError> {
     let mut headers = BTreeMap::new();
     let mut audit = Vec::new();
     let mut sensitive_values = Vec::new();
     for (name, value) in &handle.headers {
         if let Some(env_name) = value.strip_prefix("env:") {
-            let env_value = std::env::var(env_name).map_err(|_| {
+            let env_value = credentials.resolve_env(env_name).map_err(|_| {
                 EvaError::permission_denied("MCP HTTP credential environment variable is missing")
                     .with_provider_code("missing_credential")
                     .with_context("adapter_id", handle.id.as_str())
@@ -261,7 +332,7 @@ fn mcp_http_headers(handle: &AdapterHandle) -> Result<McpHeaderPlan, EvaError> {
             })?;
             headers.insert(name.clone(), env_value.clone());
             if !env_value.is_empty() {
-                sensitive_values.push(env_value);
+                sensitive_values.push(env_value.clone());
             }
             audit.push(format!(
                 "mcp.credential_header:{name}:env:{env_name}:redacted"
@@ -337,7 +408,6 @@ mod tests {
     #[test]
     fn http_mcp_missing_auth_env_returns_policy_error() {
         let env_name = "EVA_TEST_MCP_HTTP_MISSING_AUTH";
-        std::env::remove_var(env_name);
         let handle = http_mcp_handle(BTreeMap::from([(
             "Authorization".to_owned(),
             format!("env:{env_name}"),
@@ -351,9 +421,12 @@ mod tests {
             capability.clone(),
         );
 
-        let error = invoke(
+        let vault = crate::credential_vault::MemoryCredentialVault::new();
+        let error = invoke_with_spawner_and_vault(
             &handle,
             AdapterInvocation::new(request_id, capability).with_credential_scope(scope),
+            None,
+            &vault,
         )
         .unwrap_err();
 

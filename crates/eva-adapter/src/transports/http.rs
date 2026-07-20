@@ -9,6 +9,9 @@
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "HTTP transport with env allowlist-based credentials";
 
+use crate::credential_vault::{
+    default_credential_vault, sanitize_error_with_values, CredentialSessionLease, CredentialVault,
+};
 use crate::manifest::AdapterHandle;
 use crate::runtime::{AdapterInvocation as RuntimeAdapterInvocation, AdapterInvokeReport};
 use crate::stream::{
@@ -19,12 +22,13 @@ use crate::stream::{
 use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 /// 定义 HTTP 调用允许的来源、方法、时间和响应证据边界。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpRunnerConfig {
     /// 保存规范化的 `scheme://authority`，路径差异不会扩大来源权限。
     pub allowed_origins: BTreeSet<String>,
@@ -46,8 +50,25 @@ pub struct HttpRunnerConfig {
     pub sensitive_values: Vec<String>,
 }
 
+impl fmt::Debug for HttpRunnerConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpRunnerConfig")
+            .field("allowed_origin_count", &self.allowed_origins.len())
+            .field("allowed_method_count", &self.allowed_methods.len())
+            .field("timeout_ms", &self.timeout_ms)
+            .field("output_limit_bytes", &self.output_limit_bytes)
+            .field("preview_limit_bytes", &self.preview_limit_bytes)
+            .field("stream_chunk_size_bytes", &self.stream_chunk_size_bytes)
+            .field("artifact_root", &self.artifact_root)
+            .field("artifact_key", &self.artifact_key)
+            .field("sensitive_value_count", &self.sensitive_values.len())
+            .finish()
+    }
+}
+
 /// 表示 `HttpInvocation` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpInvocation {
     /// 记录 `method` 字段对应的值。
     pub method: HttpMethod,
@@ -59,8 +80,20 @@ pub struct HttpInvocation {
     pub body: Vec<u8>,
 }
 
+impl fmt::Debug for HttpInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpInvocation")
+            .field("method", &self.method)
+            .field("url_present", &!self.url.is_empty())
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
+            .field("body_len", &self.body.len())
+            .finish()
+    }
+}
+
 /// 表示 `HttpRunReport` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpRunReport {
     /// 记录 `method` 字段对应的值。
     pub method: HttpMethod,
@@ -76,6 +109,21 @@ pub struct HttpRunReport {
     pub duration_ms: u128,
     /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
+}
+
+impl fmt::Debug for HttpRunReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpRunReport")
+            .field("method", &self.method)
+            .field("url_present", &!self.url.is_empty())
+            .field("status_code", &self.status_code)
+            .field("body_len", &self.body.len())
+            .field("body_stream", &"[REDACTED_STREAM]")
+            .field("duration_ms", &self.duration_ms)
+            .field("audit_count", &self.audit.len())
+            .finish()
+    }
 }
 
 /// 定义 `HttpMethod` 可取的状态。
@@ -105,7 +153,7 @@ pub trait HttpClient {
 }
 
 /// 表示 `HttpClientResponse` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpClientResponse {
     /// 记录 `status_code` 字段对应的值。
     pub status_code: u16,
@@ -115,6 +163,18 @@ pub struct HttpClientResponse {
     pub body_truncated: bool,
     /// 记录 `body_chunk_count` 字段对应的值。
     pub body_chunk_count: usize,
+}
+
+impl fmt::Debug for HttpClientResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpClientResponse")
+            .field("status_code", &self.status_code)
+            .field("body_len", &self.body.len())
+            .field("body_truncated", &self.body_truncated)
+            .field("body_chunk_count", &self.body_chunk_count)
+            .finish()
+    }
 }
 
 /// 表示 `HttpRunner` 数据结构。
@@ -360,7 +420,8 @@ pub fn invoke(
     handle: &AdapterHandle,
     invocation: RuntimeAdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
-    invoke_with_client(handle, invocation, &TcpHttpClient)
+    let vault = default_credential_vault();
+    invoke_with_client_and_vault(handle, invocation, &TcpHttpClient, vault.as_ref())
 }
 
 /// 构造凭据、白名单与证据配置后调用可替换客户端；任何网络 I/O 都发生在校验之后。
@@ -368,6 +429,26 @@ pub fn invoke_with_client(
     handle: &AdapterHandle,
     invocation: RuntimeAdapterInvocation,
     client: &impl HttpClient,
+) -> Result<AdapterInvokeReport, EvaError> {
+    let vault = default_credential_vault();
+    invoke_with_client_and_vault(handle, invocation, client, vault.as_ref())
+}
+
+/// Invoke HTTP with an explicit credential authority.
+pub fn invoke_with_vault(
+    handle: &AdapterHandle,
+    invocation: RuntimeAdapterInvocation,
+    vault: &dyn CredentialVault,
+) -> Result<AdapterInvokeReport, EvaError> {
+    invoke_with_client_and_vault(handle, invocation, &TcpHttpClient, vault)
+}
+
+/// Build and execute an HTTP request with an explicit client and vault.
+pub fn invoke_with_client_and_vault(
+    handle: &AdapterHandle,
+    invocation: RuntimeAdapterInvocation,
+    client: &impl HttpClient,
+    vault: &dyn CredentialVault,
 ) -> Result<AdapterInvokeReport, EvaError> {
     super::validate_process_free_identity(handle)?;
     let endpoint = handle.endpoint.as_deref().ok_or_else(|| {
@@ -386,13 +467,27 @@ pub fn invoke_with_client(
         has_scoped_http_credentials(handle),
     )?
     .cloned();
+    let lazy_credential_env = handle
+        .headers
+        .values()
+        .filter_map(|value| value.strip_prefix("env:"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut credential_lease = CredentialSessionLease::open_with_lazy_env(
+        vault,
+        credential_scope.as_ref(),
+        &handle.provider.vault_secrets,
+        &handle.credential_env,
+        &lazy_credential_env,
+    )?;
     let method = HttpMethod::parse(handle.method.as_deref().unwrap_or("POST"))?;
-    let header_plan = http_headers(handle)?;
+    let header_plan = http_headers(handle, &mut credential_lease)?;
     let mut sensitive_values = header_plan.sensitive_values.clone();
-    sensitive_values.extend(credential_env_values(&handle.credential_env).values);
+    sensitive_values.extend(credential_lease.redaction_values());
     if let Some(scope) = &credential_scope {
         sensitive_values.extend(scope.redaction_values());
     }
+    let error_redactions = sensitive_values.clone();
     let mut headers = header_plan.headers.clone();
     if let Some(scope) = &credential_scope {
         scope.apply_headers(&mut headers);
@@ -412,13 +507,19 @@ pub fn invoke_with_client(
     )
     .with_sensitive_values(sensitive_values)
     .with_artifact_sink(artifact_root, artifact_key);
-    let run = HttpRunner.run(
-        &config,
-        client,
-        HttpInvocation::new(method, endpoint)
-            .with_headers(headers)
-            .with_body(invocation.input.as_bytes().to_vec()),
-    )?;
+    let mut http_invocation = HttpInvocation::new(method, endpoint)
+        .with_headers(headers)
+        .with_body(invocation.input.as_bytes().to_vec());
+    let run_result = HttpRunner.run(&config, client, http_invocation.clone());
+    http_invocation.headers.clear();
+    http_invocation.body.clear();
+    let run = match (run_result, credential_lease.release()) {
+        (Err(error), _) => return Err(sanitize_error_with_values(error, &error_redactions)),
+        (Ok(_), Err(error)) => {
+            return Err(sanitize_error_with_values(error, &error_redactions));
+        }
+        (Ok(run), Ok(())) => run,
+    };
 
     let status = if run.body_stream.truncated {
         "output_limit_exceeded"
@@ -431,7 +532,7 @@ pub fn invoke_with_client(
     let mut audit = vec![format!("adapter.invoked:{}", handle.id.as_str())];
     audit.extend(run.audit);
     audit.extend(header_plan.audit);
-    audit.extend(credential_env_audit(&handle.credential_env));
+    audit.extend(credential_lease.audit_entries());
     if let Some(scope) = &credential_scope {
         audit.extend(scope.audit_entries());
     }
@@ -457,6 +558,7 @@ pub fn invoke_with_client(
 /// 判断 `has_scoped_http_credentials` 对应的条件是否成立。
 fn has_scoped_http_credentials(handle: &AdapterHandle) -> bool {
     !handle.credential_env.is_empty()
+        || !handle.provider.vault_secrets.is_empty()
         || handle
             .headers
             .values()
@@ -744,7 +846,7 @@ fn parse_http_status_code(head: &str) -> Result<u16, EvaError> {
 }
 
 /// 表示 `HeaderPlan` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct HeaderPlan {
     /// 记录 `headers` 字段对应的值。
     headers: BTreeMap<String, String>,
@@ -755,13 +857,16 @@ struct HeaderPlan {
 }
 
 /// 执行 `http_headers` 对应的处理逻辑。
-fn http_headers(handle: &AdapterHandle) -> Result<HeaderPlan, EvaError> {
+fn http_headers(
+    handle: &AdapterHandle,
+    credentials: &mut CredentialSessionLease,
+) -> Result<HeaderPlan, EvaError> {
     let mut headers = BTreeMap::new();
     let mut audit = Vec::new();
     let mut sensitive_values = Vec::new();
     for (name, value) in &handle.headers {
         if let Some(env_name) = value.strip_prefix("env:") {
-            let env_value = std::env::var(env_name).map_err(|_| {
+            let env_value = credentials.resolve_env(env_name).map_err(|_| {
                 EvaError::unavailable("HTTP credential environment variable is missing")
                     .with_provider_code("missing_credential")
                     .with_context("adapter_id", handle.id.as_str())
@@ -769,7 +874,7 @@ fn http_headers(handle: &AdapterHandle) -> Result<HeaderPlan, EvaError> {
             })?;
             headers.insert(name.clone(), env_value.clone());
             if !env_value.is_empty() {
-                sensitive_values.push(env_value);
+                sensitive_values.push(env_value.clone());
             }
             audit.push(format!("credential_header:{name}:env:{env_name}:redacted"));
         } else {
@@ -782,40 +887,6 @@ fn http_headers(handle: &AdapterHandle) -> Result<HeaderPlan, EvaError> {
         audit,
         sensitive_values,
     })
-}
-
-/// 执行 `credential_env_values` 对应的处理逻辑。
-fn credential_env_values(names: &[String]) -> CredentialValues {
-    let mut values = Vec::new();
-    for name in names {
-        if let Ok(value) = std::env::var(name) {
-            if !value.is_empty() {
-                values.push(value);
-            }
-        }
-    }
-    CredentialValues { values }
-}
-
-/// 执行 `credential_env_audit` 对应的处理逻辑。
-fn credential_env_audit(names: &[String]) -> Vec<String> {
-    names
-        .iter()
-        .map(|name| {
-            if std::env::var(name).is_ok() {
-                format!("credential_env:{name}:redacted")
-            } else {
-                format!("credential_env:{name}:missing")
-            }
-        })
-        .collect()
-}
-
-/// 表示 `CredentialValues` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CredentialValues {
-    /// 记录 `values` 字段对应的值。
-    values: Vec<String>,
 }
 
 /// 校验 `validate_input_size` 对应的约束，不满足时返回明确错误。

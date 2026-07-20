@@ -20,6 +20,7 @@ pub fn invoke(
     invocation: AdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
     super::validate_process_free_identity(handle)?;
+    super::validate_process_free_credentials(handle)?;
     let trace = invocation.trace_for_adapter(&handle.id);
     let logical_name = handle
         .hardware_logical_name
@@ -146,5 +147,64 @@ mod tests {
         assert_eq!(report.status, "completed");
         assert!(report.audit.contains(&"raw_io:false".to_owned()));
         assert!(report.audit.contains(&"lease:released".to_owned()));
+    }
+
+    #[test]
+    fn hardware_transport_rejects_ignored_credentials() {
+        let mut handle = AdapterHandle {
+            id: AdapterId::parse("scale-credential").unwrap(),
+            name: "Scale".to_owned(),
+            version: "1.0.0".to_owned(),
+            enabled: true,
+            transport: AdapterTransport::Hardware,
+            capabilities: vec![CapabilityName::parse("hardware.scale.read").unwrap()],
+            source_path: "test".to_owned(),
+            command: None,
+            args: Vec::new(),
+            endpoint: None,
+            method: None,
+            credential_env: vec!["API_TOKEN".to_owned()],
+            provider: eva_config::ProviderConfig::default(),
+            timeout_ms: None,
+            max_concurrency: None,
+            output_limit_bytes: None,
+            max_prompt_bytes: None,
+            rate_limit: None,
+            circuit_breaker: None,
+            headers: BTreeMap::new(),
+            mcp_server_transport: None,
+            mcp_command: None,
+            mcp_args: Vec::new(),
+            mcp_tools: Vec::new(),
+            skill_id: None,
+            skill_kind: None,
+            skill_runtime_gate: None,
+            skill_path: None,
+            skill_entry_type: None,
+            skill_runner_command: None,
+            skill_runner_args: Vec::new(),
+            skill_artifact_root: None,
+            skill_input_schema: None,
+            hardware_logical_name: Some("main-scale".to_owned()),
+            hardware_device_class: Some("scale".to_owned()),
+            hardware_driver_id: Some("scale-credential-simulated-driver".to_owned()),
+            hardware_driver_kind: Some("simulated".to_owned()),
+            bindings: Vec::new(),
+        };
+        handle.capabilities.sort();
+
+        let error = invoke(
+            &handle,
+            AdapterInvocation::new(
+                RequestId::parse("req-hardware-credential").unwrap(),
+                CapabilityName::parse("hardware.scale.read").unwrap(),
+            ),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::Unsupported);
+        assert!(error
+            .message()
+            .contains("cannot consume provider credentials"));
     }
 }

@@ -8,6 +8,7 @@ use crate::supervisor::redact_provider_session_tokens;
 use eva_core::EvaError;
 use eva_storage::{ArtifactRecord, FileSystemArtifactStore};
 use std::env;
+use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -40,7 +41,7 @@ pub struct ProviderStreamConfig {
 }
 
 /// 描述一次有界采集的脱敏预览、计数与可选持久化证据。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderStreamCapture {
     /// 记录 `stream_name` 字段对应的值。
     pub stream_name: String,
@@ -54,6 +55,20 @@ pub struct ProviderStreamCapture {
     pub truncated: bool,
     /// 记录 `artifact` 字段对应的值。
     pub artifact: Option<ProviderStreamArtifact>,
+}
+
+impl fmt::Debug for ProviderStreamCapture {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderStreamCapture")
+            .field("stream_name", &self.stream_name)
+            .field("preview_len", &self.preview.len())
+            .field("captured_bytes", &self.captured_bytes)
+            .field("chunk_count", &self.chunk_count)
+            .field("truncated", &self.truncated)
+            .field("artifact", &self.artifact)
+            .finish()
+    }
 }
 
 /// 表示 `ProviderStreamArtifact` 数据结构。

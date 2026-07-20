@@ -5,6 +5,7 @@
 //! 采用尽力而为语义，不会覆盖适配器调用本身的结果。
 //! Authorized Adapter runtime probes and controlled invocation envelopes.
 
+use crate::credential_vault::{default_credential_vault, CredentialVault, CredentialVaultHandle};
 use crate::manifest::AdapterHandle;
 use crate::process_backend::{OsProcessBackend, ProviderProcessHandle, ProviderProcessSpawner};
 use crate::registry::AdapterRegistry;
@@ -185,6 +186,9 @@ pub struct AdapterRuntime {
     supervisor: RefCell<InMemoryProviderSupervisor>,
     /// 在签发外部提供者凭据前执行高风险策略判定。
     policy_gate: RuntimePolicyGate,
+    /// Vault authority shared by all provider transports.  Constructors use
+    /// a fail-closed implementation until the daemon host wires a real vault.
+    credential_vault: CredentialVaultHandle,
     /// 指定尽力而为的审计、指标和追踪落盘目录；未配置时不产生落盘副作用。
     observability_backend: Option<PathBuf>,
 }
@@ -271,6 +275,9 @@ impl AdapterRuntime {
             router,
             supervisor: RefCell::new(supervisor),
             policy_gate,
+            credential_vault: CredentialVaultHandle::from_shared(std::sync::Arc::from(
+                default_credential_vault(),
+            )),
             observability_backend: None,
         }
     }
@@ -349,6 +356,22 @@ impl AdapterRuntime {
         self
     }
 
+    /// Attach an explicit OS/KMS-backed credential vault.  Without this call
+    /// the runtime remains fail-closed for every credential-bearing provider.
+    pub fn with_credential_vault<V: CredentialVault + 'static>(mut self, vault: V) -> Self {
+        self.credential_vault = CredentialVaultHandle::new(vault);
+        self
+    }
+
+    /// Attach a shared vault whose lifetime is owned by the daemon host.
+    pub fn with_shared_credential_vault(
+        mut self,
+        vault: std::sync::Arc<dyn CredentialVault>,
+    ) -> Self {
+        self.credential_vault = CredentialVaultHandle::from_shared(vault);
+        self
+    }
+
     /// 执行 `probe_adapter` 对应的处理逻辑。
     pub fn probe_adapter(&self, adapter_id: &AdapterId) -> Result<AdapterProbeReport, EvaError> {
         let handle = self.registry.get(adapter_id).ok_or_else(|| {
@@ -400,7 +423,7 @@ impl AdapterRuntime {
         if should_supervise(handle.transport) {
             return self.invoke_supervised(handle, invocation);
         }
-        dispatch_transport(&handle, invocation)
+        dispatch_transport_with_vault(&handle, invocation, self.credential_vault.as_ref())
     }
 
     /// 在执行槽和策略授权边界内调用外部提供者。
@@ -475,10 +498,11 @@ impl AdapterRuntime {
                 run_as: run_as.clone(),
             };
             let renewal = AdmissionRenewal::start(self.supervisor.borrow().admission_lease(&slot)?);
-            let mut result = dispatch_transport_with_spawner(
+            let mut result = dispatch_transport_with_spawner_and_vault(
                 &handle,
                 invocation.clone(),
                 Some(&process_spawner),
+                self.credential_vault.as_ref(),
             );
             if let Some(renewal) = renewal {
                 if let Err(error) = renewal.stop() {
@@ -730,36 +754,61 @@ fn default_observability_backend(project: &ProjectConfig) -> PathBuf {
 }
 
 /// 将已完成路由和授权的调用分派到唯一传输实现，不在此处重复选择提供者。
+#[cfg(test)]
 fn dispatch_transport(
     handle: &crate::manifest::AdapterHandle,
     invocation: AdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
-    dispatch_transport_with_spawner(handle, invocation, None)
+    let vault = crate::credential_vault::FailClosedCredentialVault;
+    dispatch_transport_with_vault(handle, invocation, &vault)
 }
 
-/// Dispatch a transport while optionally supplying the central provider
-/// process registrar. Direct callers retain the old default OS backend; the
-/// supervised runtime passes a slot-bound registrar.
-fn dispatch_transport_with_spawner(
+fn dispatch_transport_with_vault(
+    handle: &crate::manifest::AdapterHandle,
+    invocation: AdapterInvocation,
+    vault: &dyn CredentialVault,
+) -> Result<AdapterInvokeReport, EvaError> {
+    dispatch_transport_with_spawner_and_vault(handle, invocation, None, vault)
+}
+
+/// Dispatch a transport while supplying the central process registrar and
+/// credential authority for one admitted invocation.
+fn dispatch_transport_with_spawner_and_vault(
     handle: &crate::manifest::AdapterHandle,
     invocation: AdapterInvocation,
     process_spawner: Option<&dyn ProviderProcessSpawner>,
+    vault: &dyn CredentialVault,
 ) -> Result<AdapterInvokeReport, EvaError> {
     match handle.transport {
-        AdapterTransport::Mcp => {
-            transports::mcp::invoke_with_spawner(handle, invocation, process_spawner)
-        }
-        AdapterTransport::Skill => {
-            transports::skill::invoke_with_spawner(handle, invocation, process_spawner)
-        }
+        AdapterTransport::Mcp => transports::mcp::invoke_with_spawner_and_vault(
+            handle,
+            invocation,
+            process_spawner,
+            vault,
+        ),
+        AdapterTransport::Skill => transports::skill::invoke_with_spawner_and_vault(
+            handle,
+            invocation,
+            process_spawner,
+            vault,
+        ),
         AdapterTransport::Builtin
         | AdapterTransport::LuaCapability
-        | AdapterTransport::Eventbus => transports::builtin::invoke(handle, invocation),
-        AdapterTransport::Hardware => transports::hardware::invoke(handle, invocation),
-        AdapterTransport::Stdio => {
-            transports::stdio::invoke_with_spawner(handle, invocation, process_spawner)
+        | AdapterTransport::Eventbus
+        | AdapterTransport::Hardware => {
+            transports::validate_process_free_credentials(handle)?;
+            match handle.transport {
+                AdapterTransport::Hardware => transports::hardware::invoke(handle, invocation),
+                _ => transports::builtin::invoke(handle, invocation),
+            }
         }
-        AdapterTransport::Http => transports::http::invoke(handle, invocation),
+        AdapterTransport::Stdio => transports::stdio::invoke_with_spawner_and_vault(
+            handle,
+            invocation,
+            process_spawner,
+            vault,
+        ),
+        AdapterTransport::Http => transports::http::invoke_with_vault(handle, invocation, vault),
     }
 }
 
@@ -845,6 +894,7 @@ fn thread_sleep_restart(delay_ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_vault::MemoryCredentialVault;
     use crate::manifest::{AdapterCircuitBreaker, AdapterHandle};
     use crate::registry::AdapterRegistry;
     use crate::supervisor::{
@@ -930,13 +980,15 @@ mod tests {
     fn runtime_invokes_stdio_adapter_with_redacted_env() {
         let env_name = "EVA_TEST_STDIO_SECRET_RUNTIME";
         let secret = "stdio-runtime-secret";
-        std::env::set_var(env_name, secret);
-        let runtime = runtime_with_handle(stdio_handle(
-            true,
-            test_command(),
-            env_echo_args(env_name),
-            vec![env_name.to_owned()],
-        ));
+        let runtime = runtime_with_handle_and_vault(
+            stdio_handle(
+                true,
+                test_command(),
+                env_echo_args(env_name),
+                vec![env_name.to_owned()],
+            ),
+            MemoryCredentialVault::new().with_secret(env_name, secret),
+        );
 
         let report = runtime
             .invoke(
@@ -947,8 +999,6 @@ mod tests {
                 .with_provider(AdapterId::parse("stdio-test").unwrap()),
             )
             .unwrap();
-        std::env::remove_var(env_name);
-
         assert_eq!(report.status, "completed");
         assert!(!report.output.contains(secret));
         assert!(!report.output.contains("eva-provider-session:"));
@@ -1472,7 +1522,6 @@ mod tests {
     fn runtime_invokes_http_adapter_and_redacts_credential_header() {
         let env_name = "EVA_TEST_HTTP_SECRET_RUNTIME";
         let secret = "http-runtime-secret";
-        std::env::set_var(env_name, secret);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/v1/provider", listener.local_addr().unwrap());
         let server_secret = secret.to_owned();
@@ -1515,11 +1564,14 @@ mod tests {
             stream.write_all(response.as_bytes()).unwrap();
             stream.flush().unwrap();
         });
-        let runtime = runtime_with_handle(http_handle(
-            endpoint,
-            BTreeMap::from([("Authorization".to_owned(), format!("env:{env_name}"))]),
-            vec![env_name.to_owned()],
-        ));
+        let runtime = runtime_with_handle_and_vault(
+            http_handle(
+                endpoint,
+                BTreeMap::from([("Authorization".to_owned(), format!("env:{env_name}"))]),
+                vec![env_name.to_owned()],
+            ),
+            MemoryCredentialVault::new().with_secret(env_name, secret),
+        );
 
         let report = runtime
             .invoke(
@@ -1532,8 +1584,6 @@ mod tests {
             )
             .unwrap();
         server.join().unwrap();
-        std::env::remove_var(env_name);
-
         assert_eq!(report.status, "completed");
         assert!(!report.output.contains(secret));
         assert!(!report.output.contains("eva-provider-session:"));
@@ -1551,7 +1601,6 @@ mod tests {
     fn runtime_invokes_mcp_http_adapter_with_auth_headers() {
         let env_name = "EVA_TEST_MCP_HTTP_SECRET_RUNTIME";
         let secret = "mcp-http-runtime-secret";
-        std::env::set_var(env_name, secret);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
         let server_secret = secret.to_owned();
@@ -1595,10 +1644,13 @@ mod tests {
                 stream.flush().unwrap();
             }
         });
-        let runtime = runtime_with_handle(mcp_http_handle(
-            endpoint,
-            BTreeMap::from([("Authorization".to_owned(), format!("env:{env_name}"))]),
-        ));
+        let runtime = runtime_with_handle_and_vault(
+            mcp_http_handle(
+                endpoint,
+                BTreeMap::from([("Authorization".to_owned(), format!("env:{env_name}"))]),
+            ),
+            MemoryCredentialVault::new().with_secret(env_name, secret),
+        );
 
         let report = runtime
             .invoke(
@@ -1611,8 +1663,6 @@ mod tests {
             )
             .unwrap();
         server.join().unwrap();
-        std::env::remove_var(env_name);
-
         assert_eq!(report.status, "completed");
         assert!(!report.output.contains(secret));
         assert!(!report.output.contains("eva-provider-session:"));
@@ -1631,6 +1681,13 @@ mod tests {
     /// 执行 `runtime_with_handle` 对应的受控流程。
     fn runtime_with_handle(handle: AdapterHandle) -> AdapterRuntime {
         AdapterRuntime::from_registry(registry_with_handle(handle))
+    }
+
+    fn runtime_with_handle_and_vault(
+        handle: AdapterHandle,
+        vault: MemoryCredentialVault,
+    ) -> AdapterRuntime {
+        runtime_with_handle(handle).with_credential_vault(vault)
     }
 
     /// 执行 `registry_with_handle` 对应的处理逻辑。

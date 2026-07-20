@@ -5,6 +5,10 @@
 //! 持久化成功的制品才会进入证据报告。
 //! Workflow skill Adapter transport runner.
 
+use crate::credential_vault::minimal_process_env;
+use crate::credential_vault::{
+    default_credential_vault, sanitize_error_with_values, CredentialSessionLease, CredentialVault,
+};
 use crate::manifest::{AdapterHandle, SkillInputSchema};
 use crate::process_backend::{OsProcessBackend, ProviderProcessHandle, ProviderProcessSpawner};
 use crate::runtime::{AdapterInvocation, AdapterInvokeReport};
@@ -20,8 +24,9 @@ use eva_core::{AdapterId, EvaError, RequestId};
 use eva_storage::{ArtifactRecord, FileSystemArtifactStore};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fmt;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -53,7 +58,7 @@ pub struct SkillRunnerConfig {
 }
 
 /// 表示 `SkillRunnerInvocation` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SkillRunnerInvocation {
     /// 记录 `adapter_id` 字段对应的值。
     pub adapter_id: AdapterId,
@@ -73,8 +78,24 @@ pub struct SkillRunnerInvocation {
     pub input: String,
 }
 
+impl fmt::Debug for SkillRunnerInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SkillRunnerInvocation")
+            .field("adapter_id", &self.adapter_id)
+            .field("request_id", &self.request_id)
+            .field("skill_id", &self.skill_id)
+            .field("entry_type", &self.entry_type)
+            .field("command_present", &self.command.is_some())
+            .field("args_count", &self.args.len())
+            .field("env_names", &self.env.keys().collect::<Vec<_>>())
+            .field("input_len", &self.input.len())
+            .finish()
+    }
+}
+
 /// 表示 `SkillRunReport` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SkillRunReport {
     /// 记录 `runner` 字段对应的值。
     pub runner: String,
@@ -100,6 +121,26 @@ pub struct SkillRunReport {
     pub artifacts: Vec<SkillArtifactEvidence>,
     /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
+}
+
+impl fmt::Debug for SkillRunReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SkillRunReport")
+            .field("runner", &self.runner)
+            .field("status", &self.status)
+            .field("exit_code", &self.exit_code)
+            .field("stdout_len", &self.stdout.len())
+            .field("stderr_len", &self.stderr.len())
+            .field("stdout_stream", &"[REDACTED_STREAM]")
+            .field("stderr_stream", &"[REDACTED_STREAM]")
+            .field("duration_ms", &self.duration_ms)
+            .field("working_dir", &self.working_dir)
+            .field("artifact_root", &self.artifact_root)
+            .field("artifacts", &self.artifacts)
+            .field("audit_count", &self.audit.len())
+            .finish()
+    }
 }
 
 /// 表示 `SkillArtifactEvidence` 数据结构。
@@ -144,7 +185,7 @@ struct RunPaths {
 }
 
 /// 表示 `RawSkillRunReport` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct RawSkillRunReport {
     /// 记录 `runner` 字段对应的值。
     runner: String,
@@ -164,6 +205,23 @@ struct RawSkillRunReport {
     duration_ms: u128,
     /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
+}
+
+impl fmt::Debug for RawSkillRunReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RawSkillRunReport")
+            .field("runner", &self.runner)
+            .field("status", &self.status)
+            .field("exit_code", &self.exit_code)
+            .field("stdout_len", &self.stdout.len())
+            .field("stderr_len", &self.stderr.len())
+            .field("stdout_stream", &"[REDACTED_STREAM]")
+            .field("stderr_stream", &"[REDACTED_STREAM]")
+            .field("duration_ms", &self.duration_ms)
+            .field("audit_count", &self.audit.len())
+            .finish()
+    }
 }
 
 enum SkillChild {
@@ -214,15 +272,6 @@ fn terminate_skill_child(child: &mut SkillChild) {
             let _ = handle.force_terminate();
         }
     }
-}
-
-/// 表示 `CredentialEnvValues` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CredentialEnvValues {
-    /// 记录 `values` 字段对应的值。
-    values: BTreeMap<String, String>,
-    /// 记录 `audit` 字段对应的值。
-    audit: Vec<String>,
 }
 
 /// 定义 `ParsedJsonValue` 可取的状态。
@@ -326,8 +375,8 @@ impl SkillRunner {
             .with_context("skill_id", &invocation.skill_id));
         }
         validate_runner_config(config, &invocation)?;
-        let paths = prepare_run_paths(config, &invocation)?;
         let sensitive_values = sensitive_values(invocation.env.values());
+        let paths = prepare_run_paths(config, &invocation, &sensitive_values)?;
         let raw = if let Some(command) = &invocation.command {
             run_process(
                 config,
@@ -339,7 +388,7 @@ impl SkillRunner {
                 run_as,
             )?
         } else if invocation.entry_type == "codex_skill" {
-            run_builtin_codex_skill(&paths, &invocation)?
+            run_builtin_codex_skill(&paths, &invocation, &sensitive_values)?
         } else {
             return Err(EvaError::unsupported(
                 "skill entry type requires an explicit runner command",
@@ -385,7 +434,8 @@ pub fn invoke(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
-    invoke_with_spawner(handle, invocation, None)
+    let vault = default_credential_vault();
+    invoke_with_spawner_and_vault(handle, invocation, None, vault.as_ref())
 }
 
 /// Invokes a skill while optionally attaching the central process registrar.
@@ -393,6 +443,17 @@ pub fn invoke_with_spawner(
     handle: &AdapterHandle,
     invocation: AdapterInvocation,
     process_spawner: Option<&dyn ProviderProcessSpawner>,
+) -> Result<AdapterInvokeReport, EvaError> {
+    let vault = default_credential_vault();
+    invoke_with_spawner_and_vault(handle, invocation, process_spawner, vault.as_ref())
+}
+
+/// Invoke a Skill with an explicit credential authority.
+pub fn invoke_with_spawner_and_vault(
+    handle: &AdapterHandle,
+    invocation: AdapterInvocation,
+    process_spawner: Option<&dyn ProviderProcessSpawner>,
+    vault: &dyn CredentialVault,
 ) -> Result<AdapterInvokeReport, EvaError> {
     let skill = handle.skill_name().ok_or_else(|| {
         EvaError::invalid_argument("Skill adapter is missing skill.id")
@@ -431,6 +492,16 @@ pub fn invoke_with_spawner(
     } else {
         handle.args.clone()
     };
+    let has_credential_header = handle
+        .headers
+        .values()
+        .any(|value| value.strip_prefix("env:").is_some());
+    if has_credential_header {
+        return Err(
+            EvaError::unsupported("Skill transport does not support credential headers")
+                .with_context("skill_id", skill),
+        );
+    }
 
     // Keep identity admission ahead of credential reads and workdir
     // creation for direct transport callers as well as the runtime path.
@@ -454,21 +525,41 @@ pub fn invoke_with_spawner(
         .with_context("skill_id", skill));
     }
 
+    if command.is_none()
+        && (!handle.credential_env.is_empty() || !handle.provider.vault_secrets.is_empty())
+    {
+        return Err(EvaError::unsupported(
+            "process-free Skill cannot consume provider credentials",
+        )
+        .with_context("skill_id", skill));
+    }
+
     let credential_scope = validate_credential_scope_for_provider(
         invocation.credential_scope(),
         &handle.id,
         &invocation.request_id,
         &invocation.capability,
-        !handle.credential_env.is_empty(),
+        !handle.credential_env.is_empty() || !handle.provider.vault_secrets.is_empty(),
     )?
     .cloned();
 
     let trace = invocation.trace_for_adapter(&handle.id);
     let request_id = invocation.request_id;
     let capability = invocation.capability;
-    let mut credential_env = credential_env_values(&handle.credential_env);
+    let mut credential_env = CredentialSessionLease::open(
+        vault,
+        credential_scope.as_ref(),
+        &handle.provider.vault_secrets,
+        &handle.credential_env,
+    )?;
+    let mut child_env = BTreeMap::new();
+    credential_env.inject_env(&mut child_env);
     if let Some(scope) = &credential_scope {
-        scope.apply_env(&mut credential_env.values);
+        scope.apply_env(&mut child_env);
+    }
+    let mut error_redactions = credential_env.redaction_values();
+    if let Some(scope) = &credential_scope {
+        error_redactions.extend(scope.redaction_values());
     }
     let artifact_root = artifact_root(handle);
     let work_root = artifact_root
@@ -483,7 +574,7 @@ pub fn invoke_with_spawner(
         artifact_root,
         work_root,
     );
-    let run = SkillRunner.run_with_spawner_as(
+    let run_result = SkillRunner.run_with_spawner_as(
         &config,
         SkillRunnerInvocation {
             adapter_id: handle.id.clone(),
@@ -492,16 +583,25 @@ pub fn invoke_with_spawner(
             entry_type,
             command,
             args,
-            env: credential_env.values.clone(),
+            env: child_env.clone(),
             input: invocation.input,
         },
         process_spawner,
         &handle.provider.run_as,
-    )?;
+    );
+    child_env.clear();
+    let run = match (run_result, credential_env.release()) {
+        (Err(error), _) => return Err(sanitize_error_with_values(error, &error_redactions)),
+        (Ok(_), Err(error)) => {
+            return Err(sanitize_error_with_values(error, &error_redactions));
+        }
+        (Ok(run), Ok(())) => run,
+    };
+    let credential_audit = credential_env.audit_entries();
 
     let mut audit = vec![format!("adapter.invoked:{}", handle.id.as_str())];
     audit.extend(run.audit.clone());
-    audit.extend(credential_env.audit);
+    audit.extend(credential_audit);
     if let Some(scope) = &credential_scope {
         audit.extend(scope.audit_entries());
     }
@@ -560,17 +660,47 @@ fn validate_runner_config(
 fn prepare_run_paths(
     config: &SkillRunnerConfig,
     invocation: &SkillRunnerInvocation,
+    sensitive_values: &[String],
 ) -> Result<RunPaths, EvaError> {
+    ensure_skill_directory_tree(&config.artifact_root, "skill artifact root").map_err(|error| {
+        EvaError::permission_denied("skill artifact root is not a controlled directory")
+            .with_context("adapter_id", invocation.adapter_id.as_str())
+            .with_context("path", config.artifact_root.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+
     let working_dir = config.work_root.clone();
+    ensure_skill_path_within_root(&config.artifact_root, &working_dir, "skill work directory")
+        .map_err(|error| {
+            EvaError::permission_denied("skill work directory escaped the artifact root")
+                .with_context("adapter_id", invocation.adapter_id.as_str())
+                .with_context("path", working_dir.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+    ensure_skill_directory_tree(&working_dir, "skill work directory").map_err(|error| {
+        EvaError::permission_denied("skill work directory is not controlled")
+            .with_context("adapter_id", invocation.adapter_id.as_str())
+            .with_context("path", working_dir.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+
     let artifact_dir = working_dir.join("artifacts");
-    fs::create_dir_all(&artifact_dir).map_err(|error| {
-        EvaError::internal("failed to create skill working directory")
+    ensure_skill_directory_tree(&artifact_dir, "skill artifact directory").map_err(|error| {
+        EvaError::permission_denied("skill artifact directory is not controlled")
             .with_context("adapter_id", invocation.adapter_id.as_str())
             .with_context("path", artifact_dir.display().to_string())
             .with_context("io_error", error.to_string())
     })?;
     let input_path = working_dir.join("input.json");
-    fs::write(&input_path, invocation.input.as_bytes()).map_err(|error| {
+    let redacted_input =
+        redact_provider_stream_bytes(invocation.input.as_bytes().to_vec(), sensitive_values);
+    write_skill_file_no_follow(
+        &working_dir,
+        &input_path,
+        &redacted_input,
+        "skill input evidence",
+    )
+    .map_err(|error| {
         EvaError::internal("failed to write skill input evidence")
             .with_context("adapter_id", invocation.adapter_id.as_str())
             .with_context("path", input_path.display().to_string())
@@ -583,19 +713,322 @@ fn prepare_run_paths(
     })
 }
 
+/// Create a directory tree without following symlink/reparse-point components.
+/// Existing ancestors are checked before each create, and the final directory
+/// must be owned by the current daemon identity.
+fn ensure_skill_directory_tree(path: &Path, purpose: &str) -> io::Result<()> {
+    if path.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{purpose} path is empty"),
+        ));
+    }
+
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{purpose} path contains a parent component"),
+        ));
+    }
+
+    // Walk existing ancestors using the original PathBuf. This matters for
+    // Windows verbatim paths, whose Prefix/RootDir components must not be
+    // reconstructed by repeated push operations.
+    let mut missing = Vec::new();
+    let mut cursor = path.to_path_buf();
+    loop {
+        match fs::symlink_metadata(&cursor) {
+            Ok(metadata) => {
+                ensure_skill_directory_metadata(&metadata, &cursor, purpose)?;
+                break;
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                missing.push(cursor.clone());
+                let Some(parent) = cursor.parent() else {
+                    return Err(error);
+                };
+                if parent == cursor {
+                    return Err(error);
+                }
+                cursor = parent.to_path_buf();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    for directory in missing.iter().rev() {
+        match fs::create_dir(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        let metadata = fs::symlink_metadata(directory)?;
+        ensure_skill_directory_metadata(&metadata, directory, purpose)?;
+    }
+
+    let metadata = fs::symlink_metadata(path)?;
+    ensure_skill_directory_metadata(&metadata, path, purpose)?;
+    ensure_skill_directory_owner(&metadata, path, purpose)
+}
+
+/// Verify that a path is lexically below its configured artifact root.
+fn ensure_skill_path_within_root(root: &Path, path: &Path, purpose: &str) -> io::Result<()> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{purpose} is outside its configured root"),
+        )
+    })?;
+    if relative
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{purpose} contains a parent component"),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_skill_directory_metadata(
+    metadata: &fs::Metadata,
+    path: &Path,
+    purpose: &str,
+) -> io::Result<()> {
+    if metadata_is_skill_link_or_reparse(metadata) {
+        return Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            format!(
+                "{purpose} contains a symlink or reparse point: {}",
+                path.display()
+            ),
+        ));
+    }
+    if !metadata.file_type().is_dir() {
+        return Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            format!("{purpose} is not a directory: {}", path.display()),
+        ));
+    }
+
+    // A writable non-sticky ancestor lets another user replace a checked
+    // component between directory creation and the provider spawn.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mode = metadata.mode();
+        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "{purpose} ancestor is group/other writable: {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_skill_directory_owner(
+    metadata: &fs::Metadata,
+    path: &Path,
+    purpose: &str,
+) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let expected_uid = unsafe { libc::geteuid() } as u32;
+        let expected_gid = unsafe { libc::getegid() } as u32;
+        if metadata.uid() != expected_uid || metadata.gid() != expected_gid {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "{purpose} owner does not match the daemon identity: {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (metadata, path, purpose);
+    Ok(())
+}
+
+fn ensure_skill_path_ancestors(root: &Path, path: &Path, purpose: &str) -> io::Result<()> {
+    ensure_skill_path_within_root(root, path, purpose)?;
+    let relative = path.strip_prefix(root).map_err(|_| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{purpose} is outside its configured root"),
+        )
+    })?;
+    let mut cursor = root.to_path_buf();
+    let components = relative.components().collect::<Vec<_>>();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        let Component::Normal(segment) = component else {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("{purpose} contains an unsupported path component"),
+            ));
+        };
+        cursor.push(segment);
+        let metadata = fs::symlink_metadata(&cursor)?;
+        ensure_skill_directory_metadata(&metadata, &cursor, purpose)?;
+        ensure_skill_directory_owner(&metadata, &cursor, purpose)?;
+    }
+    let root_metadata = fs::symlink_metadata(root)?;
+    ensure_skill_directory_metadata(&root_metadata, root, purpose)?;
+    ensure_skill_directory_owner(&root_metadata, root, purpose)
+}
+
+fn write_skill_file_no_follow(
+    root: &Path,
+    path: &Path,
+    bytes: &[u8],
+    purpose: &str,
+) -> io::Result<()> {
+    ensure_skill_path_ancestors(root, path, purpose)?;
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        ensure_skill_regular_file_metadata(&metadata, path, purpose)?;
+        ensure_skill_file_owner(&metadata, path, purpose)?;
+    }
+
+    let mut options = fs::OpenOptions::new();
+    // Delay truncation until the opened handle has passed type and ownership
+    // checks; otherwise a foreign regular file could be destroyed first.
+    options.write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        options.custom_flags(0x0002_0000); // O_NOFOLLOW
+        #[cfg(target_os = "macos")]
+        options.custom_flags(0x0000_0100); // O_NOFOLLOW
+        options.mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    ensure_skill_regular_file_metadata(&metadata, path, purpose)?;
+    ensure_skill_file_owner(&metadata, path, purpose)?;
+    file.set_len(0)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+fn open_skill_file_no_follow(root: &Path, path: &Path, purpose: &str) -> io::Result<fs::File> {
+    ensure_skill_path_ancestors(root, path, purpose)?;
+    let metadata = fs::symlink_metadata(path)?;
+    ensure_skill_regular_file_metadata(&metadata, path, purpose)?;
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        options.custom_flags(0x0002_0000); // O_NOFOLLOW
+        #[cfg(target_os = "macos")]
+        options.custom_flags(0x0000_0100); // O_NOFOLLOW
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options.open(path)?;
+    let handle_metadata = file.metadata()?;
+    ensure_skill_regular_file_metadata(&handle_metadata, path, purpose)?;
+    ensure_skill_file_owner(&handle_metadata, path, purpose)?;
+    Ok(file)
+}
+
+fn ensure_skill_regular_file_metadata(
+    metadata: &fs::Metadata,
+    path: &Path,
+    purpose: &str,
+) -> io::Result<()> {
+    if metadata_is_skill_link_or_reparse(metadata) || !metadata.file_type().is_file() {
+        return Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            format!("{purpose} is not a regular file: {}", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_skill_file_owner(metadata: &fs::Metadata, path: &Path, purpose: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let expected_uid = unsafe { libc::geteuid() } as u32;
+        if metadata.uid() != expected_uid {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "{purpose} owner does not match the daemon identity: {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (metadata, path, purpose);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn metadata_is_skill_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_skill_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
 /// 执行 `run_builtin_codex_skill` 对应的受控流程。
 fn run_builtin_codex_skill(
     paths: &RunPaths,
     invocation: &SkillRunnerInvocation,
+    sensitive_values: &[String],
 ) -> Result<RawSkillRunReport, EvaError> {
     let started_at = Instant::now();
+    let redacted_input = String::from_utf8_lossy(&redact_provider_stream_bytes(
+        invocation.input.as_bytes().to_vec(),
+        sensitive_values,
+    ))
+    .into_owned();
     let result = format!(
         "{{\"summary\":\"controlled workflow skill completed\",\"findings\":[],\"skill_id\":{},\"input\":{}}}",
         json_string(&invocation.skill_id),
-        invocation.input
+        redacted_input
     );
     let result_path = paths.artifact_dir.join("result.json");
-    fs::write(&result_path, result.as_bytes()).map_err(|error| {
+    write_skill_file_no_follow(
+        &paths.artifact_dir,
+        &result_path,
+        result.as_bytes(),
+        "built-in skill result artifact",
+    )
+    .map_err(|error| {
         EvaError::internal("failed to write built-in skill result artifact")
             .with_context("skill_id", &invocation.skill_id)
             .with_context("path", result_path.display().to_string())
@@ -606,7 +1039,7 @@ fn run_builtin_codex_skill(
         result.clone().into_bytes(),
         1,
         false,
-        &[],
+        sensitive_values,
     )?;
     let stderr_stream = ProviderStreamCapture::empty("stderr");
     Ok(RawSkillRunReport {
@@ -660,7 +1093,8 @@ fn run_process(
     let mut command_line = Command::new(command);
     command_line
         .args(&invocation.args)
-        .envs(env_values)
+        .env_clear()
+        .envs(minimal_process_env(&env_values))
         .current_dir(&paths.working_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -913,6 +1347,21 @@ fn collect_artifact_dir(
     sensitive_values: &[String],
     artifacts: &mut Vec<SkillArtifactEvidence>,
 ) -> Result<(), EvaError> {
+    let directory_metadata = fs::symlink_metadata(artifact_dir).map_err(|error| {
+        EvaError::internal("failed to read skill artifact directory metadata")
+            .with_context("path", artifact_dir.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    ensure_skill_directory_metadata(
+        &directory_metadata,
+        artifact_dir,
+        "skill artifact directory",
+    )
+    .map_err(|error| {
+        EvaError::permission_denied("skill artifact directory is not controlled")
+            .with_context("path", artifact_dir.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
     for entry in fs::read_dir(artifact_dir).map_err(|error| {
         EvaError::internal("failed to read skill artifact directory")
             .with_context("path", artifact_dir.display().to_string())
@@ -923,13 +1372,23 @@ fn collect_artifact_dir(
                 .with_context("path", artifact_dir.display().to_string())
                 .with_context("io_error", error.to_string())
         })?;
+        ensure_skill_directory_owner(
+            &directory_metadata,
+            artifact_dir,
+            "skill artifact directory",
+        )
+        .map_err(|error| {
+            EvaError::permission_denied("skill artifact directory owner is not controlled")
+                .with_context("path", artifact_dir.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path).map_err(|error| {
             EvaError::internal("failed to read skill artifact metadata")
                 .with_context("path", path.display().to_string())
                 .with_context("io_error", error.to_string())
         })?;
-        if metadata.file_type().is_symlink() {
+        if metadata_is_skill_link_or_reparse(&metadata) {
             // 即使链接目标仍在目录内也统一拒绝，避免检查与读取之间的目标替换竞态。
             return Err(
                 EvaError::permission_denied("skill artifact symlink is not allowed")
@@ -952,7 +1411,26 @@ fn collect_artifact_dir(
                     .with_context("path_error", error.to_string())
             })?;
             let relative_key = relative_artifact_key(relative)?;
-            let bytes = fs::read(&path).map_err(|error| {
+            // Read through one no-follow handle so a replacement between
+            // metadata inspection and fs::read cannot redirect the read.
+            let mut file = open_skill_file_no_follow(root_dir, &path, "skill artifact file")
+                .map_err(|error| {
+                    EvaError::permission_denied("skill artifact file is not controlled")
+                        .with_context("path", path.display().to_string())
+                        .with_context("io_error", error.to_string())
+                })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(fs::Permissions::from_mode(0o600))
+                    .map_err(|error| {
+                        EvaError::permission_denied("skill artifact permissions are not controlled")
+                            .with_context("path", path.display().to_string())
+                            .with_context("io_error", error.to_string())
+                    })?;
+            }
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(|error| {
                 EvaError::internal("failed to read skill artifact")
                     .with_context("path", path.display().to_string())
                     .with_context("io_error", error.to_string())
@@ -1360,22 +1838,6 @@ fn skill_stream_config(
         )
 }
 
-/// 执行 `credential_env_values` 对应的处理逻辑。
-fn credential_env_values(names: &[String]) -> CredentialEnvValues {
-    let mut values = BTreeMap::new();
-    let mut audit = Vec::new();
-    for name in names {
-        match env::var(name) {
-            Ok(value) => {
-                values.insert(name.clone(), value);
-                audit.push(format!("credential_env:{name}:redacted"));
-            }
-            Err(_) => audit.push(format!("credential_env:{name}:missing")),
-        }
-    }
-    CredentialEnvValues { values, audit }
-}
-
 /// 校验 `validate_input_size` 对应的约束，不满足时返回明确错误。
 fn validate_input_size(handle: &AdapterHandle, input: &str) -> Result<(), EvaError> {
     if let Some(limit) = handle.max_prompt_bytes {
@@ -1591,7 +2053,6 @@ mod tests {
         let root = test_root("process");
         let env_name = "EVA_TEST_SKILL_SECRET";
         let secret = "skill-secret-redaction";
-        env::set_var(env_name, secret);
         let handle = skill_handle(
             Some(test_command().to_owned()),
             artifact_args(secret),
@@ -1607,13 +2068,16 @@ mod tests {
             capability.clone(),
         );
 
-        let report = invoke(
+        let vault =
+            crate::credential_vault::MemoryCredentialVault::new().with_secret(env_name, secret);
+        let report = invoke_with_spawner_and_vault(
             &handle,
             AdapterInvocation::new(request_id, capability)
                 .with_credential_scope(scope)
                 .with_input("{\"scope\":\"current_diff\",\"severity\":\"major\"}"),
+            None,
+            &vault,
         );
-        env::remove_var(env_name);
         let report = report.unwrap();
 
         assert_eq!(report.status, "completed");
@@ -1742,6 +2206,88 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_artifact_symlink_is_rejected_without_touching_target() {
+        let root = test_root("artifact-symlink");
+        let artifact_dir = root.path.join("artifacts");
+        ensure_skill_directory_tree(&artifact_dir, "test artifact directory").unwrap();
+        let target = root.path.join("outside.txt");
+        fs::write(&target, b"outside-content").unwrap();
+        let link = artifact_dir.join("result.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let mut store = FileSystemArtifactStore::new(root.path.join("store"));
+        let mut artifacts = Vec::new();
+        let error = collect_artifact_dir(
+            &mut store,
+            &artifact_dir,
+            &artifact_dir,
+            "skill/test",
+            &[],
+            &mut artifacts,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(&target).unwrap(), b"outside-content");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_input_symlink_is_rejected_without_truncating_target() {
+        let root = test_root("input-symlink");
+        let work_dir = root.path.join("work");
+        ensure_skill_directory_tree(&work_dir, "test work directory").unwrap();
+        let target = root.path.join("outside-input.json");
+        fs::write(&target, b"original-input").unwrap();
+        let input_path = work_dir.join("input.json");
+        std::os::unix::fs::symlink(&target, &input_path).unwrap();
+
+        let error = write_skill_file_no_follow(
+            &work_dir,
+            &input_path,
+            b"replacement-input",
+            "test input evidence",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(&target).unwrap(), b"original-input");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_artifact_ancestor_symlink_is_rejected() {
+        let root = test_root("artifact-ancestor-symlink");
+        let artifact_dir = root.path.join("artifacts");
+        ensure_skill_directory_tree(&artifact_dir, "test artifact directory").unwrap();
+        let nested = artifact_dir.join("nested");
+        fs::create_dir(&nested).unwrap();
+        let target_dir = root.path.join("outside-artifacts");
+        fs::rename(&nested, &target_dir).unwrap();
+        std::os::unix::fs::symlink(&target_dir, &nested).unwrap();
+        fs::write(target_dir.join("result.txt"), b"outside-content").unwrap();
+
+        let mut store = FileSystemArtifactStore::new(root.path.join("store"));
+        let mut artifacts = Vec::new();
+        let error = collect_artifact_dir(
+            &mut store,
+            &artifact_dir,
+            &artifact_dir,
+            "skill/test",
+            &[],
+            &mut artifacts,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(
+            fs::read(target_dir.join("result.txt")).unwrap(),
+            b"outside-content"
+        );
     }
 
     /// 表示 `TestRoot` 数据结构。

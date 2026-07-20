@@ -3,6 +3,7 @@
 
 use crate::policy::McpAllowlist;
 use eva_core::{AdapterId, EvaError, InvokeOutput, RequestId};
+use std::fmt;
 
 /// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
@@ -34,7 +35,7 @@ pub enum McpProbeStatus {
 
 /// 表示 `McpCallReport` 数据结构。
 /// Result of a controlled MCP tool call envelope.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct McpCallReport {
     /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
@@ -44,6 +45,18 @@ pub struct McpCallReport {
     pub tool: String,
     /// 记录 `output` 字段对应的值。
     pub output: InvokeOutput,
+}
+
+impl fmt::Debug for McpCallReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpCallReport")
+            .field("request_id", &self.request_id)
+            .field("adapter_id", &self.adapter_id)
+            .field("tool", &self.tool)
+            .field("output", &"[REDACTED_OUTPUT]")
+            .finish()
+    }
 }
 
 /// 表示 `InMemoryMcpClient` 数据结构。

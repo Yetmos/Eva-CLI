@@ -67,7 +67,7 @@ credentials:
       ref: vault://providers/github/token#value
 ```
 
-`restart.mode` supports `none`, `on_failure`, and `always`; `max_attempts` counts automatic restarts after the initial start and `backoff_ms` must be positive. Missing `supervision` or `credentials` preserves the legacy `none/current/empty` defaults. Automatic restart and a non-`current` identity are accepted only for process-backed `stdio`, Skill, and MCP stdio; HTTP and MCP HTTP fail during loading. W3-L06 now executes bounded durable restart with exponential backoff/jitter, absolute due times, and stable-window reset for process providers; `always` does not replay an already successful one-shot request. Vault targets must also be listed in `permissions.env` and remain references only; identity switching and vault fetch remain W3-L08/W3-L09.
+`restart.mode` supports `none`, `on_failure`, and `always`; `max_attempts` counts automatic restarts after the initial start and `backoff_ms` must be positive. Missing `supervision` or `credentials` preserves the legacy `none/current/empty` defaults. Automatic restart and a non-`current` identity are accepted only for process-backed `stdio`, Skill, and MCP stdio; HTTP and MCP HTTP fail during loading. W3-L06 now executes bounded durable restart with exponential backoff/jitter, absolute due times, and stable-window reset for process providers; `always` does not replay an already successful one-shot request. Vault targets must also be listed in `permissions.env` and remain references only; W3-L08/W3-L09 own identity and vault-session boundaries. The production default vault is fail-closed until a real OS/KMS authority is wired.
 
 ## Validation Pipeline
 
@@ -124,7 +124,7 @@ There is no configuration file watcher and no automatic route-table replacement.
 ## Security Rules
 
 - Store credential environment-variable names, never plaintext API keys or tokens.
-- Production Adapter sensitive headers/fields may only use `env:NAME` references listed in `permissions.env`; `credentials.vault` stores only `vault://` URIs and does not fetch secret bytes in the current runtime.
+- Production Adapter sensitive headers/fields may only use `env:NAME` references listed in `permissions.env`; `credentials.vault` stores only `vault://` URIs and runtime fetches them only through an explicit vault session authority. Without a real authority, the production default rejects the provider.
 - Keep executable plus arguments as structured fields; do not embed shell fragments.
 - Treat `permissions`, allowlists, endpoints, and hardware match data as security-sensitive changes.
 - Validate before running external Adapter, MCP, Skill, hardware, restore, or upgrade paths.

@@ -885,12 +885,7 @@ fn validate_env_name(path: &Path, field: &str, value: &str) -> Result<(), EvaErr
             .next()
             .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
-    if valid
-        && !matches!(
-            value,
-            "EVA_PROVIDER_SESSION_ID" | "EVA_PROVIDER_SESSION_TOKEN"
-        )
-    {
+    if valid && !is_dangerous_credential_env(value) {
         Ok(())
     } else {
         Err(invalid_config(
@@ -900,6 +895,30 @@ fn validate_env_name(path: &Path, field: &str, value: &str) -> Result<(), EvaErr
             "credential env target is invalid or reserved by the provider supervisor",
         ))
     }
+}
+
+/// Credential values are injected into a child process, so names that alter
+/// executable lookup, dynamic loading, interpreter startup, shell parsing, or
+/// the supervisor's own session boundary must never be manifest-controlled.
+/// Environment names are compared case-insensitively because Windows treats
+/// them case-insensitively even though Unix does not.
+fn is_dangerous_credential_env(value: &str) -> bool {
+    let upper = value.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "PATH"
+            | "PATHEXT"
+            | "COMSPEC"
+            | "PYTHONPATH"
+            | "NODE_OPTIONS"
+            | "BASH_ENV"
+            | "ENV"
+            | "IFS"
+            | "EVA_PROVIDER_SESSION_ID"
+            | "EVA_PROVIDER_SESSION_TOKEN"
+    ) || upper.starts_with("LD_")
+        || upper.starts_with("DYLD_")
+        || upper.starts_with("EVA_PROVIDER_SESSION_")
 }
 
 fn validate_vault_secret_ref(path: &Path, field: &str, value: &str) -> Result<(), EvaError> {
@@ -2032,6 +2051,28 @@ routing: {}
             parse_test_manifest(&reserved_env).unwrap_err().kind(),
             ErrorKind::InvalidArgument
         );
+
+        for dangerous in [
+            "PATH",
+            "pathext",
+            "COMSPEC",
+            "LD_PRELOAD",
+            "dyld_insert_libraries",
+            "PYTHONPATH",
+            "NODE_OPTIONS",
+            "BASH_ENV",
+            "ENV",
+            "IFS",
+            "EVA_PROVIDER_SESSION_CUSTOM",
+        ] {
+            let yaml = provider_manifest_yaml("stdio", "")
+                .replace("    - API_TOKEN", &format!("    - {dangerous}"));
+            assert_eq!(
+                parse_test_manifest(&yaml).unwrap_err().kind(),
+                ErrorKind::InvalidArgument,
+                "dangerous credential env should be rejected: {dangerous}"
+            );
+        }
     }
 
     #[test]

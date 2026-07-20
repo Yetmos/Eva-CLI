@@ -38,3 +38,24 @@ pub(crate) fn validate_process_free_identity(handle: &AdapterHandle) -> Result<(
         .with_context("run_as_kind", handle.provider.run_as.kind()))
     }
 }
+
+/// Process-free local transports have no child environment or vault handoff.
+/// A credential declaration is therefore a configuration error, not something
+/// the transport may silently ignore.
+pub(crate) fn validate_process_free_credentials(handle: &AdapterHandle) -> Result<(), EvaError> {
+    let declared = !handle.credential_env.is_empty()
+        || !handle.provider.vault_secrets.is_empty()
+        || handle
+            .headers
+            .values()
+            .any(|value| value.strip_prefix("env:").is_some());
+    if declared {
+        return Err(EvaError::unsupported(
+            "process-free Adapter transport cannot consume provider credentials",
+        )
+        .with_provider_code("process_free_credentials")
+        .with_context("adapter_id", handle.id.as_str())
+        .with_context("transport", handle.transport.as_str()));
+    }
+    Ok(())
+}

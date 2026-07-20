@@ -15,6 +15,7 @@ pub fn invoke(
     invocation: AdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
     super::validate_process_free_identity(handle)?;
+    super::validate_process_free_credentials(handle)?;
     let trace = invocation.trace_for_adapter(&handle.id);
     Ok(AdapterInvokeReport {
         request_id: invocation.request_id,

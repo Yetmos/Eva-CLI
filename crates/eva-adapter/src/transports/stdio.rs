@@ -9,6 +9,10 @@
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str = "stdio command transport with separated command and args";
 
+use crate::credential_vault::{
+    default_credential_vault, minimal_process_env, sanitize_error_with_values,
+    CredentialSessionLease, CredentialVault,
+};
 use crate::manifest::AdapterHandle;
 use crate::process_backend::{OsProcessBackend, ProviderProcessHandle, ProviderProcessSpawner};
 use crate::runtime::{AdapterInvocation as RuntimeAdapterInvocation, AdapterInvokeReport};
@@ -21,7 +25,7 @@ use crate::supervisor::validate_credential_scope_for_provider;
 use eva_config::ProviderRunAsIdentity;
 use eva_core::EvaError;
 use std::collections::{BTreeMap, BTreeSet};
-use std::env;
+use std::fmt;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -49,7 +53,7 @@ pub struct StdioRunnerConfig {
 }
 
 /// 表示 `StdioInvocation` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StdioInvocation {
     /// 记录 `command` 字段对应的值。
     pub command: String,
@@ -61,8 +65,20 @@ pub struct StdioInvocation {
     pub input: Vec<u8>,
 }
 
+impl fmt::Debug for StdioInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StdioInvocation")
+            .field("command_present", &!self.command.is_empty())
+            .field("args_count", &self.args.len())
+            .field("env_names", &self.env.keys().collect::<Vec<_>>())
+            .field("input_len", &self.input.len())
+            .finish()
+    }
+}
+
 /// 汇总子进程终态及 stdout、stderr 两路独立的有界采集证据。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StdioRunReport {
     /// 记录 `command` 字段对应的值。
     pub command: String,
@@ -87,6 +103,25 @@ pub struct StdioRunReport {
     pub duration_ms: u128,
     /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
+}
+
+impl fmt::Debug for StdioRunReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StdioRunReport")
+            .field("command_present", &!self.command.is_empty())
+            .field("args_count", &self.args.len())
+            .field("process_id", &self.process_id)
+            .field("status", &self.status)
+            .field("exit_code", &self.exit_code)
+            .field("stdout_len", &self.stdout.len())
+            .field("stderr_len", &self.stderr.len())
+            .field("stdout_stream", &"[REDACTED_STREAM]")
+            .field("stderr_stream", &"[REDACTED_STREAM]")
+            .field("duration_ms", &self.duration_ms)
+            .field("audit_count", &self.audit.len())
+            .finish()
+    }
 }
 
 /// 定义 `StdioRunStatus` 可取的状态。
@@ -223,7 +258,8 @@ impl StdioRunner {
         let mut command = Command::new(&invocation.command);
         command
             .args(&invocation.args)
-            .envs(&invocation.env)
+            .env_clear()
+            .envs(minimal_process_env(&invocation.env))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -408,7 +444,8 @@ pub fn invoke(
     handle: &AdapterHandle,
     invocation: RuntimeAdapterInvocation,
 ) -> Result<AdapterInvokeReport, EvaError> {
-    invoke_with_spawner(handle, invocation, None)
+    let vault = default_credential_vault();
+    invoke_with_spawner_and_vault(handle, invocation, None, vault.as_ref())
 }
 
 /// Invoke stdio with an optional central process registrar. The supervised
@@ -418,10 +455,31 @@ pub fn invoke_with_spawner(
     invocation: RuntimeAdapterInvocation,
     process_spawner: Option<&dyn ProviderProcessSpawner>,
 ) -> Result<AdapterInvokeReport, EvaError> {
+    let vault = default_credential_vault();
+    invoke_with_spawner_and_vault(handle, invocation, process_spawner, vault.as_ref())
+}
+
+/// Invoke stdio with an explicit credential authority.
+pub fn invoke_with_spawner_and_vault(
+    handle: &AdapterHandle,
+    invocation: RuntimeAdapterInvocation,
+    process_spawner: Option<&dyn ProviderProcessSpawner>,
+    vault: &dyn CredentialVault,
+) -> Result<AdapterInvokeReport, EvaError> {
     let command = handle.command.as_deref().ok_or_else(|| {
         EvaError::invalid_argument("stdio adapter is missing command")
             .with_context("adapter_id", handle.id.as_str())
     })?;
+    if handle
+        .headers
+        .values()
+        .any(|value| value.strip_prefix("env:").is_some())
+    {
+        return Err(
+            EvaError::unsupported("stdio transport does not support credential headers")
+                .with_context("adapter_id", handle.id.as_str()),
+        );
+    }
     validate_input_size(handle, &invocation.input)?;
 
     // Identity admission must precede credential-session validation and env
@@ -438,14 +496,25 @@ pub fn invoke_with_spawner(
         &handle.id,
         &invocation.request_id,
         &invocation.capability,
-        !handle.credential_env.is_empty(),
+        !handle.credential_env.is_empty() || !handle.provider.vault_secrets.is_empty(),
     )?
     .cloned();
     let request_id = invocation.request_id;
     let capability = invocation.capability;
-    let mut credential_env = credential_env_values(&handle.credential_env);
+    let mut credential_env = CredentialSessionLease::open(
+        vault,
+        credential_scope.as_ref(),
+        &handle.provider.vault_secrets,
+        &handle.credential_env,
+    )?;
+    let mut child_env = BTreeMap::new();
+    credential_env.inject_env(&mut child_env);
     if let Some(scope) = &credential_scope {
-        scope.apply_env(&mut credential_env.values);
+        scope.apply_env(&mut child_env);
+    }
+    let mut error_redactions = credential_env.redaction_values();
+    if let Some(scope) = &credential_scope {
+        error_redactions.extend(scope.redaction_values());
     }
     let artifact_root = default_provider_artifact_root(&handle.source_path);
     let artifact_key_prefix =
@@ -458,15 +527,15 @@ pub fn invoke_with_spawner(
     .with_artifact_sink(artifact_root, artifact_key_prefix);
     let stdio_invocation = StdioInvocation::new(command)
         .with_args(handle.args.clone())
-        .with_env(credential_env.values.clone())
+        .with_env(child_env.clone())
         .with_input(invocation.input.into_bytes());
-    let run = match process_spawner {
+    let run_result = match process_spawner {
         Some(spawner) => StdioRunner.run_with_spawner_as(
             &config,
             stdio_invocation,
             spawner,
             &handle.provider.run_as,
-        )?,
+        ),
         None => {
             let backend = OsProcessBackend::new();
             StdioRunner.run_with_spawner_as(
@@ -474,9 +543,18 @@ pub fn invoke_with_spawner(
                 stdio_invocation,
                 &backend,
                 &handle.provider.run_as,
-            )?
+            )
         }
     };
+    child_env.clear();
+    let run = match (run_result, credential_env.release()) {
+        (Err(error), _) => return Err(sanitize_error_with_values(error, &error_redactions)),
+        (Ok(_), Err(error)) => {
+            return Err(sanitize_error_with_values(error, &error_redactions));
+        }
+        (Ok(run), Ok(())) => run,
+    };
+    let credential_audit = credential_env.audit_entries();
     let status = match (run.status, run.exit_code) {
         (StdioRunStatus::Completed, Some(0)) => "completed",
         (StdioRunStatus::Completed, _) => "failed",
@@ -491,7 +569,7 @@ pub fn invoke_with_spawner(
             .map(|code| code.to_string())
             .unwrap_or_else(|| "none".to_owned())
     ));
-    audit.extend(credential_env.audit);
+    audit.extend(credential_audit);
     if let Some(scope) = &credential_scope {
         audit.extend(scope.audit_entries());
     }
@@ -623,31 +701,6 @@ fn terminate_process(process: &mut ProviderProcessHandle) {
     {
         let _ = process.terminate();
     }
-}
-
-/// 表示 `CredentialEnvValues` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CredentialEnvValues {
-    /// 记录 `values` 字段对应的值。
-    values: BTreeMap<String, String>,
-    /// 记录 `audit` 字段对应的值。
-    audit: Vec<String>,
-}
-
-/// 执行 `credential_env_values` 对应的处理逻辑。
-fn credential_env_values(names: &[String]) -> CredentialEnvValues {
-    let mut values = BTreeMap::new();
-    let mut audit = Vec::new();
-    for name in names {
-        match env::var(name) {
-            Ok(value) => {
-                values.insert(name.clone(), value);
-                audit.push(format!("credential_env:{name}:redacted"));
-            }
-            Err(_) => audit.push(format!("credential_env:{name}:missing")),
-        }
-    }
-    CredentialEnvValues { values, audit }
 }
 
 /// 校验 `validate_input_size` 对应的约束，不满足时返回明确错误。

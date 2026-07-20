@@ -9,7 +9,7 @@ use crate::policy::McpAllowlist;
 use crate::session::{McpServerTransport, McpSessionConfig};
 use eva_core::{AdapterId, EvaError, InvokeOutput, RequestId};
 use std::collections::BTreeMap;
-use std::fmt::Debug;
+use std::fmt::{self, Debug};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::process::{Child, Command, Stdio};
@@ -107,7 +107,7 @@ pub struct McpJsonRpcClient {
 }
 
 /// 表示 `McpJsonRpcCallReport` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct McpJsonRpcCallReport {
     /// 记录 `request_id` 字段对应的值。
     pub request_id: RequestId,
@@ -119,6 +119,19 @@ pub struct McpJsonRpcCallReport {
     pub output: InvokeOutput,
     /// 记录 `audit` 字段对应的值。
     pub audit: Vec<String>,
+}
+
+impl fmt::Debug for McpJsonRpcCallReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpJsonRpcCallReport")
+            .field("request_id", &self.request_id)
+            .field("adapter_id", &self.adapter_id)
+            .field("tool", &self.tool)
+            .field("output", &"[REDACTED_OUTPUT]")
+            .field("audit_count", &self.audit.len())
+            .finish()
+    }
 }
 
 /// 表示 `McpJsonRpcTool` 数据结构。
@@ -179,7 +192,7 @@ impl Debug for McpStdioJsonRpcTransport {
 }
 
 /// 表示 `McpHttpJsonRpcTransport` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct McpHttpJsonRpcTransport {
     /// 记录 `endpoint` 字段对应的值。
     endpoint: String,
@@ -193,11 +206,34 @@ pub struct McpHttpJsonRpcTransport {
     notification_count: usize,
 }
 
+impl fmt::Debug for McpHttpJsonRpcTransport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpHttpJsonRpcTransport")
+            .field("endpoint_present", &!self.endpoint.is_empty())
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
+            .field("header_count", &self.headers.len())
+            .field("audit_count", &self.audit.len())
+            .field("exchange_count", &self.exchange_count)
+            .field("notification_count", &self.notification_count)
+            .finish()
+    }
+}
+
 /// 表示 `JsonRpcResponse` 数据结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct JsonRpcResponse {
     /// 记录 `result` 字段对应的值。
     result: String,
+}
+
+impl fmt::Debug for JsonRpcResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("JsonRpcResponse")
+            .field("result_len", &self.result.len())
+            .finish()
+    }
 }
 
 impl Default for McpJsonRpcClientConfig {

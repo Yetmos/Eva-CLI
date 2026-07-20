@@ -5,7 +5,7 @@ pub use eva_core::sha256_digest;
 use eva_core::EvaError;
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// 本模块的架构职责：持久化不透明产物字节，并在读取边界校验 key、大小和 SHA-256。
@@ -239,22 +239,14 @@ impl FileSystemArtifactStore {
             })?;
         }
 
-        fs::write(&artifact_path, &bytes).map_err(|error| {
-            filesystem_error(
-                "failed to write artifact bytes",
-                &key,
-                &artifact_path,
-                error,
-            )
-        })?;
-        fs::write(&metadata_path, metadata_storage).map_err(|error| {
-            filesystem_error(
-                "failed to write artifact metadata",
-                &key,
-                &metadata_path,
-                error,
-            )
-        })?;
+        write_artifact_file_no_follow(&self.root, &artifact_path, &key, "object", &bytes)?;
+        write_artifact_file_no_follow(
+            &self.root,
+            &metadata_path,
+            &key,
+            "metadata",
+            metadata_storage.as_bytes(),
+        )?;
 
         Ok(ArtifactRecord {
             key,
@@ -266,6 +258,61 @@ impl FileSystemArtifactStore {
             retain_until_ms,
         })
     }
+}
+
+/// Write one artifact entry without following a pre-existing final symlink or
+/// reparse point.  The ancestor check is repeated immediately before opening
+/// because the initial directory creation can otherwise be raced by a caller.
+fn write_artifact_file_no_follow(
+    root: &Path,
+    path: &Path,
+    key: &str,
+    entry: &str,
+    bytes: &[u8],
+) -> Result<(), EvaError> {
+    ensure_artifact_path_ancestors(root, path, key)?;
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        ensure_regular_artifact_entry(&metadata, key, path, entry)?;
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        const O_NOFOLLOW: i32 = 0x0002_0000;
+        options.custom_flags(O_NOFOLLOW);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        const O_NOFOLLOW: i32 = 0x0000_0100;
+        options.custom_flags(O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+
+    let mut file = options.open(path).map_err(|error| {
+        filesystem_error(
+            "failed to open artifact entry for no-follow write",
+            key,
+            path,
+            error,
+        )
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        filesystem_error("failed to inspect opened artifact entry", key, path, error)
+    })?;
+    ensure_regular_artifact_entry(&metadata, key, path, entry)?;
+    file.write_all(bytes)
+        .map_err(|error| filesystem_error("failed to write artifact entry", key, path, error))?;
+    file.sync_all()
+        .map_err(|error| filesystem_error("failed to flush artifact entry", key, path, error))
 }
 
 impl ArtifactRecord {
@@ -1153,6 +1200,40 @@ mod tests {
 
         assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
         assert_eq!(fs::read(target).unwrap(), b"external-secret");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    /// 鍐欏叆鏃朵笉璺熼殢棰勫厛瀛樺湪鐨勫璞″拰 metadata 符号链接。
+    fn filesystem_artifact_store_rejects_symlink_targets_on_write() {
+        let root = test_root("write-symlink");
+        let mut store = FileSystemArtifactStore::new(root.path());
+        let objects_root = root.path().join("objects");
+        let metadata_root = root.path().join("metadata");
+        fs::create_dir_all(&objects_root).unwrap();
+        fs::create_dir_all(&metadata_root).unwrap();
+
+        let object_target = root.path().join("external-object");
+        let metadata_target = root.path().join("external-metadata");
+        fs::write(&object_target, b"object-untouched").unwrap();
+        fs::write(&metadata_target, b"metadata-untouched").unwrap();
+        let object_path = keyed_path(&objects_root, "write/symlink", "artifact");
+        let metadata_path = keyed_path(&metadata_root, "write/symlink", "metadata");
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(metadata_path.parent().unwrap()).unwrap();
+        if !create_file_symlink_for_test(&object_target, &object_path)
+            || !create_file_symlink_for_test(&metadata_target, &metadata_path)
+        {
+            return;
+        }
+
+        let error = store
+            .put_bytes("write/symlink", b"replacement")
+            .unwrap_err();
+
+        assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(object_target).unwrap(), b"object-untouched");
+        assert_eq!(fs::read(metadata_target).unwrap(), b"metadata-untouched");
     }
 
     #[cfg(any(unix, windows))]
