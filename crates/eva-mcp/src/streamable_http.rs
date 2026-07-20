@@ -8,6 +8,7 @@
 use crate::http_transport::McpTlsMaterial;
 use crate::json_rpc::{McpHttpJsonRpcTransport, McpJsonRpcTransport};
 use crate::session::McpStreamableHttpConfig;
+use crate::sse::McpSseEventStream;
 use eva_core::EvaError;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -106,10 +107,26 @@ impl McpStreamableHttpSession {
             .notify(notification, self.timeout, self.output_limit_bytes)
     }
 
-    /// Issue the session-bound GET used to establish the SSE data plane.
-    /// Incremental event parsing is intentionally deferred to W4-L05.
+    /// Issue a bounded compatibility GET and return its complete body.
     pub fn get(&mut self) -> Result<Vec<u8>, EvaError> {
         self.transport.get(self.timeout, self.output_limit_bytes)
+    }
+
+    /// Open the session-bound SSE data plane as a pull-based event stream.
+    pub fn open_event_stream(&mut self) -> Result<McpSseEventStream, EvaError> {
+        self.transport
+            .open_event_stream(self.timeout, self.output_limit_bytes)
+    }
+
+    /// Send one request and retain its SSE response connection so
+    /// interleaved peer messages remain available to the caller.
+    pub fn post_event_stream(
+        &mut self,
+        request_id: u64,
+        request: &str,
+    ) -> Result<McpSseEventStream, EvaError> {
+        self.transport
+            .post_event_stream(request_id, request, self.timeout, self.output_limit_bytes)
     }
 
     /// Close the application session with DELETE when the server issued an ID.

@@ -6,10 +6,11 @@
 //! MCP JSON-RPC client transport.
 
 use crate::http_transport::{
-    map_http_read_error, map_http_write_error, McpHttpConnector, McpTlsMaterial,
+    map_http_read_error, map_http_write_error, McpHttpConnector, McpHttpStream, McpTlsMaterial,
 };
 use crate::policy::McpAllowlist;
 use crate::session::{McpEndpoint, McpServerTransport, McpSessionConfig, McpStreamableHttpConfig};
+use crate::sse::{McpSseEventStream, McpSseSource};
 use eva_core::{AdapterId, EvaError, InvokeOutput, RequestId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug};
@@ -145,6 +146,117 @@ impl fmt::Debug for McpJsonRpcCallReport {
 pub struct McpJsonRpcTool {
     /// 记录 `name` 字段对应的值。
     pub name: String,
+}
+
+/// Direct JSON-RPC ID used to correlate messages carried by SSE.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum McpJsonRpcMessageId {
+    /// A non-negative integer ID used by Eva's client requests.
+    Number(u64),
+    /// An opaque string ID used by a peer request.
+    String(String),
+}
+
+impl fmt::Debug for McpJsonRpcMessageId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Number(_) => "Number(<redacted>)",
+            Self::String(_) => "String(<redacted>)",
+        })
+    }
+}
+
+impl From<u64> for McpJsonRpcMessageId {
+    fn from(value: u64) -> Self {
+        Self::Number(value)
+    }
+}
+
+impl From<String> for McpJsonRpcMessageId {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+impl From<&str> for McpJsonRpcMessageId {
+    fn from(value: &str) -> Self {
+        Self::String(value.to_owned())
+    }
+}
+
+/// JSON-RPC envelope role carried by one SSE event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpJsonRpcMessageKind {
+    /// A peer notification without an ID.
+    Notification,
+    /// A peer request that requires a response.
+    Request,
+    /// A result or error response correlated to a prior request.
+    Response,
+}
+
+/// Direct fields extracted from one SSE JSON-RPC envelope.
+pub(crate) struct ParsedSseJsonRpcEnvelope {
+    pub(crate) request_id: Option<McpJsonRpcMessageId>,
+    pub(crate) kind: McpJsonRpcMessageKind,
+}
+
+/// Classify one complete SSE payload from direct JSON-RPC envelope fields.
+/// Nested `id`, `method`, `result`, or `error` fields never participate.
+pub(crate) fn parse_sse_json_rpc_envelope(
+    message: &str,
+) -> Result<ParsedSseJsonRpcEnvelope, EvaError> {
+    let fields = parse_json_object_fields(message)?;
+    let version = fields
+        .get("jsonrpc")
+        .map(|value| parse_json_string(value))
+        .transpose()?;
+    if version.as_deref() != Some("2.0") {
+        return Err(protocol_error(
+            "MCP SSE JSON-RPC message has invalid version",
+        ));
+    }
+
+    let request_id = fields
+        .get("id")
+        .map(|value| parse_sse_json_rpc_id(value))
+        .transpose()?;
+    let method = fields
+        .get("method")
+        .map(|value| parse_json_string(value))
+        .transpose()?;
+    if method.as_ref().is_some_and(String::is_empty) {
+        return Err(protocol_error("MCP SSE JSON-RPC method is empty"));
+    }
+    let has_result = fields.contains_key("result");
+    let has_error = fields.contains_key("error");
+
+    let kind = match (
+        request_id.is_some(),
+        method.is_some(),
+        has_result,
+        has_error,
+    ) {
+        (false, true, false, false) => McpJsonRpcMessageKind::Notification,
+        (true, true, false, false) => McpJsonRpcMessageKind::Request,
+        (true, false, true, false) | (true, false, false, true) => McpJsonRpcMessageKind::Response,
+        _ => {
+            return Err(protocol_error(
+                "MCP SSE JSON-RPC envelope has conflicting message fields",
+            ));
+        }
+    };
+    Ok(ParsedSseJsonRpcEnvelope { request_id, kind })
+}
+
+fn parse_sse_json_rpc_id(value: &str) -> Result<McpJsonRpcMessageId, EvaError> {
+    if value.starts_with('"') {
+        return parse_json_string(value).map(McpJsonRpcMessageId::String);
+    }
+    value
+        .parse::<u64>()
+        .map(McpJsonRpcMessageId::Number)
+        .map_err(|_| protocol_error("MCP SSE JSON-RPC id must be a string or non-negative integer"))
 }
 
 /// 约定 `McpJsonRpcTransport` 实现需要满足的接口。
@@ -902,6 +1014,107 @@ impl McpHttpJsonRpcTransport {
         Ok(body)
     }
 
+    /// Open the session-bound SSE data plane without buffering the response
+    /// body or waiting for the server to close the connection.
+    pub fn open_event_stream(
+        &mut self,
+        timeout: Duration,
+        output_limit_bytes: usize,
+    ) -> Result<McpSseEventStream, EvaError> {
+        if output_limit_bytes == 0 {
+            return Err(EvaError::invalid_argument(
+                "MCP HTTP response output limit must be greater than zero",
+            ));
+        }
+        self.ensure_session_ready()?;
+        let extra_headers = self.session_headers()?;
+        let response = open_http_response(
+            &self.connector,
+            &self.endpoint,
+            &self.headers,
+            HttpRequestSpec {
+                extra_headers: &extra_headers,
+                method: "GET",
+                accept: "text/event-stream",
+                body: "",
+                timeout,
+                output_limit_bytes,
+                allow_bodyless_accepted: false,
+            },
+        )?;
+        let metadata = response.metadata();
+        self.reject_unknown_session(&metadata)?;
+        self.validate_response_session(&metadata)?;
+        validate_http_event_stream_metadata(&metadata)?;
+        let stream = response.into_event_stream(output_limit_bytes)?;
+        self.audit.push("mcp.http:session_stream_opened".to_owned());
+        Ok(stream)
+    }
+
+    /// Send one request whose response is explicitly consumed as SSE. The
+    /// caller retains the stream so interleaved peer requests and
+    /// notifications remain observable after the matching response.
+    pub fn post_event_stream(
+        &mut self,
+        expected_id: u64,
+        request: &str,
+        timeout: Duration,
+        output_limit_bytes: usize,
+    ) -> Result<McpSseEventStream, EvaError> {
+        if output_limit_bytes == 0 {
+            return Err(EvaError::invalid_argument(
+                "MCP HTTP response output limit must be greater than zero",
+            ));
+        }
+        self.ensure_session_ready()?;
+        let envelope = parse_sse_json_rpc_envelope(request)?;
+        if envelope.kind != McpJsonRpcMessageKind::Request
+            || envelope.request_id != Some(McpJsonRpcMessageId::Number(expected_id))
+        {
+            return Err(protocol_error(
+                "MCP HTTP streaming POST request id does not match its envelope",
+            ));
+        }
+        if json_string_field(request, "method")?.as_deref() == Some("initialize") {
+            return Err(
+                EvaError::conflict("MCP HTTP session is already initialized")
+                    .with_provider_code("mcp_http_session_already_initialized"),
+            );
+        }
+        let extra_headers = self.session_headers()?;
+        let response = open_http_response(
+            &self.connector,
+            &self.endpoint,
+            &self.headers,
+            HttpRequestSpec {
+                extra_headers: &extra_headers,
+                method: "POST",
+                accept: "application/json, text/event-stream",
+                body: request,
+                timeout,
+                output_limit_bytes,
+                allow_bodyless_accepted: false,
+            },
+        )?;
+        let metadata = response.metadata();
+        self.reject_unknown_session(&metadata)?;
+        self.validate_response_session(&metadata)?;
+        if !(200..300).contains(&metadata.status_code) {
+            return Err(
+                EvaError::unavailable("MCP HTTP server returned non-success status")
+                    .with_provider_code("mcp_http_status")
+                    .with_context("json_rpc_id", expected_id.to_string())
+                    .with_context("status_code", metadata.status_code.to_string()),
+            );
+        }
+        require_event_stream_content_type(metadata.content_type.as_deref())?;
+        let stream = response.into_event_stream(output_limit_bytes)?;
+        self.exchange_count = self.exchange_count.saturating_add(1);
+        self.audit
+            .push("mcp.http:session_post_stream_opened".to_owned());
+        Ok(stream)
+    }
+
     /// Gracefully close a server-owned MCP session with DELETE.
     ///
     /// Stateless servers do not return `Mcp-Session-Id`; in that case no
@@ -1072,20 +1285,19 @@ impl McpHttpJsonRpcTransport {
 
     fn remember_initialize(
         &mut self,
-        response: &HttpJsonRpcResponse,
+        response: HttpExchangeResponse,
         expected_id: u64,
         output_limit_bytes: usize,
         requested_protocol: &str,
     ) -> Result<String, EvaError> {
         // Preserve provisional cleanup material before validating the body.
         // It remains hidden from public accessors until initialization commits.
-        self.session_id = response.session_id.clone();
+        self.session_id = response.metadata().session_id.clone();
         if self.session_id.is_some() {
             self.protocol_version = Some(requested_protocol.to_owned());
         }
         let initialized = (|| {
-            let text =
-                decode_http_exchange_response(response.clone(), expected_id, output_limit_bytes)?;
+            let text = decode_http_exchange_payload(response, expected_id, output_limit_bytes)?;
             let parsed = parse_json_rpc_response(&text, expected_id)?;
             let negotiated = json_string_field(&parsed.result, "protocolVersion")?
                 .filter(|value| !value.trim().is_empty())
@@ -1177,7 +1389,7 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
         } else {
             self.session_headers()?
         };
-        let response = send_http_request(
+        let response = send_http_exchange_request(
             &self.connector,
             &self.endpoint,
             &self.headers,
@@ -1193,7 +1405,7 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
         )?;
         let text = if initialize {
             match self.remember_initialize(
-                &response,
+                response,
                 expected_id,
                 output_limit_bytes,
                 &requested_protocol,
@@ -1216,9 +1428,9 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
                 }
             }
         } else {
-            self.reject_unknown_session(&response)?;
-            self.validate_response_session(&response)?;
-            decode_http_exchange_response(response, expected_id, output_limit_bytes)?
+            self.reject_unknown_session(response.metadata())?;
+            self.validate_response_session(response.metadata())?;
+            decode_http_exchange_payload(response, expected_id, output_limit_bytes)?
         };
         self.exchange_count = self.exchange_count.saturating_add(1);
         Ok(text)
@@ -1413,6 +1625,200 @@ struct HttpResponseHead {
     session_id: Option<String>,
 }
 
+/// An HTTP response whose body remains attached to the live connection.
+struct HttpOpenResponse {
+    head: HttpResponseHead,
+    framing: HttpBodyFraming,
+    reader: BufReader<McpHttpStream>,
+    origin: String,
+}
+
+impl HttpOpenResponse {
+    fn metadata(&self) -> HttpJsonRpcResponse {
+        HttpJsonRpcResponse {
+            status_code: self.head.status_code,
+            content_type: self.head.content_type.clone(),
+            body: Vec::new(),
+            body_truncated: false,
+            session_id: self.head.session_id.clone(),
+        }
+    }
+
+    fn into_buffered(mut self, output_limit_bytes: usize) -> Result<HttpJsonRpcResponse, EvaError> {
+        let (body, body_truncated) = read_http_body(
+            &mut self.reader,
+            self.framing,
+            output_limit_bytes,
+            &self.origin,
+        )?;
+        Ok(HttpJsonRpcResponse {
+            status_code: self.head.status_code,
+            content_type: self.head.content_type,
+            body,
+            body_truncated,
+            session_id: self.head.session_id,
+        })
+    }
+
+    fn into_event_stream(self, output_limit_bytes: usize) -> Result<McpSseEventStream, EvaError> {
+        McpSseEventStream::from_source(
+            Box::new(HttpSseSource::new(self.reader, self.framing, self.origin)),
+            output_limit_bytes,
+        )
+    }
+}
+
+/// A JSON-RPC HTTP response may be a bounded JSON body or a live SSE stream.
+enum HttpExchangeResponse {
+    Buffered(HttpJsonRpcResponse),
+    EventStream {
+        metadata: HttpJsonRpcResponse,
+        stream: Box<McpSseEventStream>,
+    },
+}
+
+impl HttpExchangeResponse {
+    fn metadata(&self) -> &HttpJsonRpcResponse {
+        match self {
+            Self::Buffered(response) => response,
+            Self::EventStream { metadata, .. } => metadata,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpChunkReadState {
+    Size,
+    Data(usize),
+    Delimiter,
+    Trailers(usize),
+    Done,
+}
+
+/// Framing-aware pull source for a long-lived HTTP event stream.
+struct HttpSseSource<R> {
+    reader: BufReader<R>,
+    framing: HttpBodyFraming,
+    origin: String,
+    chunk_state: HttpChunkReadState,
+}
+
+impl<R> HttpSseSource<R> {
+    fn new(reader: BufReader<R>, framing: HttpBodyFraming, origin: String) -> Self {
+        Self {
+            reader,
+            framing,
+            origin,
+            chunk_state: HttpChunkReadState::Size,
+        }
+    }
+}
+
+impl<R: Read + Send> McpSseSource for HttpSseSource<R> {
+    fn read_sse(&mut self, buffer: &mut [u8]) -> Result<usize, EvaError> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        match &mut self.framing {
+            HttpBodyFraming::None => Ok(0),
+            HttpBodyFraming::ContentLength(remaining) => {
+                if *remaining == 0 {
+                    return Ok(0);
+                }
+                let target = buffer.len().min(*remaining);
+                let read = self
+                    .reader
+                    .read(&mut buffer[..target])
+                    .map_err(|error| map_http_read_error(error, &self.origin))?;
+                if read == 0 {
+                    return Err(http_body_incomplete_error(
+                        &self.origin,
+                        "content-length SSE body ended early",
+                    ));
+                }
+                *remaining -= read;
+                Ok(read)
+            }
+            HttpBodyFraming::Chunked => self.read_chunked(buffer),
+            HttpBodyFraming::CloseDelimited => self
+                .reader
+                .read(buffer)
+                .map_err(|error| map_http_read_error(error, &self.origin)),
+        }
+    }
+}
+
+impl<R: Read> HttpSseSource<R> {
+    fn read_chunked(&mut self, buffer: &mut [u8]) -> Result<usize, EvaError> {
+        loop {
+            match self.chunk_state {
+                HttpChunkReadState::Size => {
+                    // Size-line bounds reset per chunk so a healthy long-lived
+                    // stream is not rejected for cumulative metadata volume.
+                    let mut metadata_bytes = 0_usize;
+                    let line = read_http_line(
+                        &mut self.reader,
+                        &mut metadata_bytes,
+                        &self.origin,
+                        HTTP_HEADER_LIMIT_BYTES,
+                    )?;
+                    let size = parse_http_chunk_size(&line, &self.origin)?;
+                    self.chunk_state = if size == 0 {
+                        HttpChunkReadState::Trailers(0)
+                    } else {
+                        HttpChunkReadState::Data(size)
+                    };
+                }
+                HttpChunkReadState::Data(remaining) => {
+                    let target = buffer.len().min(remaining);
+                    let read = self
+                        .reader
+                        .read(&mut buffer[..target])
+                        .map_err(|error| map_http_read_error(error, &self.origin))?;
+                    if read == 0 {
+                        return Err(http_body_incomplete_error(
+                            &self.origin,
+                            "chunked SSE body ended early",
+                        ));
+                    }
+                    self.chunk_state = if read == remaining {
+                        HttpChunkReadState::Delimiter
+                    } else {
+                        HttpChunkReadState::Data(remaining - read)
+                    };
+                    return Ok(read);
+                }
+                HttpChunkReadState::Delimiter => {
+                    let mut delimiter = [0_u8; 2];
+                    read_http_exact(&mut self.reader, &mut delimiter, &self.origin)?;
+                    if delimiter != *b"\r\n" {
+                        return Err(http_framing_error(
+                            &self.origin,
+                            "chunk data is not CRLF terminated",
+                        ));
+                    }
+                    self.chunk_state = HttpChunkReadState::Size;
+                }
+                HttpChunkReadState::Trailers(mut metadata_bytes) => {
+                    let trailer = read_http_line(
+                        &mut self.reader,
+                        &mut metadata_bytes,
+                        &self.origin,
+                        HTTP_HEADER_LIMIT_BYTES,
+                    )?;
+                    if trailer.is_empty() {
+                        self.chunk_state = HttpChunkReadState::Done;
+                        return Ok(0);
+                    }
+                    validate_http_trailer(&trailer, &self.origin)?;
+                    self.chunk_state = HttpChunkReadState::Trailers(metadata_bytes);
+                }
+                HttpChunkReadState::Done => return Ok(0),
+            }
+        }
+    }
+}
+
 /// 表示 `ParsedHttpUrl` 数据结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedHttpUrl {
@@ -1540,6 +1946,42 @@ fn send_http_request(
     headers: &BTreeMap<String, String>,
     spec: HttpRequestSpec<'_>,
 ) -> Result<HttpJsonRpcResponse, EvaError> {
+    let output_limit_bytes = spec.output_limit_bytes;
+    open_http_response(connector, endpoint, headers, spec)?.into_buffered(output_limit_bytes)
+}
+
+/// Send a JSON-RPC request and preserve a successful SSE body as a pull
+/// stream instead of waiting for EOF.
+fn send_http_exchange_request(
+    connector: &McpHttpConnector,
+    endpoint: &str,
+    headers: &BTreeMap<String, String>,
+    spec: HttpRequestSpec<'_>,
+) -> Result<HttpExchangeResponse, EvaError> {
+    let output_limit_bytes = spec.output_limit_bytes;
+    let response = open_http_response(connector, endpoint, headers, spec)?;
+    let metadata = response.metadata();
+    if metadata.content_type.as_deref() == Some("text/event-stream") {
+        let stream = response.into_event_stream(output_limit_bytes)?;
+        Ok(HttpExchangeResponse::EventStream {
+            metadata,
+            stream: Box::new(stream),
+        })
+    } else {
+        response
+            .into_buffered(output_limit_bytes)
+            .map(HttpExchangeResponse::Buffered)
+    }
+}
+
+/// Write one request and return immediately after strict response-head
+/// parsing, retaining any already-buffered body bytes with the connection.
+fn open_http_response(
+    connector: &McpHttpConnector,
+    endpoint: &str,
+    headers: &BTreeMap<String, String>,
+    spec: HttpRequestSpec<'_>,
+) -> Result<HttpOpenResponse, EvaError> {
     let HttpRequestSpec {
         extra_headers,
         method,
@@ -1549,6 +1991,11 @@ fn send_http_request(
         output_limit_bytes,
         allow_bodyless_accepted,
     } = spec;
+    if output_limit_bytes == 0 {
+        return Err(EvaError::invalid_argument(
+            "MCP HTTP response output limit must be greater than zero",
+        ));
+    }
     let parsed = ParsedHttpUrl::parse(endpoint)?;
     let mut stream = connector.connect(
         &parsed.scheme,
@@ -1618,23 +2065,22 @@ fn send_http_request(
         .and_then(|_| stream.write_all(body.as_bytes()))
         .and_then(|_| stream.flush())
         .map_err(|error| map_http_write_error(error, &parsed.origin))?;
-
-    if allow_bodyless_accepted {
-        read_http_json_rpc_response_with_options(
-            &mut stream,
-            &parsed.origin,
-            output_limit_bytes,
-            true,
-        )
-    } else {
-        read_http_json_rpc_response(&mut stream, &parsed.origin, output_limit_bytes)
-    }
+    let mut reader = BufReader::new(stream);
+    let (head, framing) =
+        read_final_http_response_head(&mut reader, &parsed.origin, allow_bodyless_accepted)?;
+    Ok(HttpOpenResponse {
+        head,
+        framing,
+        reader,
+        origin: parsed.origin,
+    })
 }
 
 /// 定义 `HTTP_HEADER_LIMIT_BYTES` 常量。
 const HTTP_HEADER_LIMIT_BYTES: usize = 64 * 1024;
 
 /// 读取或解析 `read_http_json_rpc_response` 所需的数据，失败时保留错误语义。
+#[cfg(test)]
 fn read_http_json_rpc_response(
     stream: &mut impl Read,
     origin: &str,
@@ -1644,6 +2090,7 @@ fn read_http_json_rpc_response(
 }
 
 /// Read a response with the caller's notification-specific bodyless status policy.
+#[cfg(test)]
 fn read_http_json_rpc_response_with_options(
     stream: &mut impl Read,
     origin: &str,
@@ -1656,9 +2103,26 @@ fn read_http_json_rpc_response_with_options(
         ));
     }
     let mut reader = BufReader::new(stream);
+    let (head, framing) =
+        read_final_http_response_head(&mut reader, origin, allow_bodyless_accepted)?;
+    let (body, body_truncated) = read_http_body(&mut reader, framing, output_limit_bytes, origin)?;
+    Ok(HttpJsonRpcResponse {
+        status_code: head.status_code,
+        content_type: head.content_type,
+        body,
+        body_truncated,
+        session_id: head.session_id,
+    })
+}
+
+fn read_final_http_response_head(
+    reader: &mut impl BufRead,
+    origin: &str,
+    allow_bodyless_accepted: bool,
+) -> Result<(HttpResponseHead, HttpBodyFraming), EvaError> {
     let mut informational_responses = 0_u8;
     let head = loop {
-        let head = read_http_response_head(&mut reader, origin)?;
+        let head = read_http_response_head(reader, origin)?;
         if (100..200).contains(&head.status_code) && head.status_code != 101 {
             if select_http_body_framing(&head, origin, false)? != HttpBodyFraming::None {
                 return Err(http_framing_error(
@@ -1678,31 +2142,32 @@ fn read_http_json_rpc_response_with_options(
         break head;
     };
     let framing = select_http_body_framing(&head, origin, allow_bodyless_accepted)?;
-    let (body, body_truncated) = match framing {
+    Ok((head, framing))
+}
+
+fn read_http_body(
+    reader: &mut impl BufRead,
+    framing: HttpBodyFraming,
+    output_limit_bytes: usize,
+    origin: &str,
+) -> Result<(Vec<u8>, bool), EvaError> {
+    let body = match framing {
         HttpBodyFraming::None => (Vec::new(), false),
         HttpBodyFraming::ContentLength(length) => {
             if length > output_limit_bytes {
                 (Vec::new(), true)
             } else {
                 let mut body = vec![0_u8; length];
-                read_http_exact(&mut reader, &mut body, origin)?;
+                read_http_exact(reader, &mut body, origin)?;
                 (body, false)
             }
         }
-        HttpBodyFraming::Chunked => {
-            read_http_chunked_body(&mut reader, output_limit_bytes, origin)?
-        }
+        HttpBodyFraming::Chunked => read_http_chunked_body(reader, output_limit_bytes, origin)?,
         HttpBodyFraming::CloseDelimited => {
-            read_http_close_delimited_body(&mut reader, output_limit_bytes, origin)?
+            read_http_close_delimited_body(reader, output_limit_bytes, origin)?
         }
     };
-    Ok(HttpJsonRpcResponse {
-        status_code: head.status_code,
-        content_type: head.content_type,
-        body,
-        body_truncated,
-        session_id: head.session_id,
-    })
+    Ok(body)
 }
 
 /// Read one CRLF-terminated HTTP line without allowing unbounded buffering.
@@ -2006,19 +2471,7 @@ fn read_http_chunked_body(
     let mut body = Vec::new();
     loop {
         let line = read_http_line(reader, &mut metadata_bytes, origin, HTTP_HEADER_LIMIT_BYTES)?;
-        if line.iter().any(|byte| *byte < 0x20 || *byte == 0x7f) {
-            return Err(http_framing_error(origin, "invalid chunk extension"));
-        }
-        let size_text = line.split(|byte| *byte == b';').next().unwrap_or_default();
-        let size_text = std::str::from_utf8(size_text)
-            .map_err(|_| http_framing_error(origin, "chunk size is not ASCII"))?;
-        if size_text.is_empty() || !size_text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(http_framing_error(origin, "invalid chunk size"));
-        }
-        let size = u64::from_str_radix(size_text, 16)
-            .ok()
-            .and_then(|size| usize::try_from(size).ok())
-            .ok_or_else(|| http_framing_error(origin, "chunk size overflows host size"))?;
+        let size = parse_http_chunk_size(&line, origin)?;
         if size == 0 {
             loop {
                 let trailer =
@@ -2026,23 +2479,7 @@ fn read_http_chunked_body(
                 if trailer.is_empty() {
                     return Ok((body, false));
                 }
-                let (name, _) = parse_http_header_line(&trailer, origin)?;
-                if matches!(
-                    name.as_str(),
-                    "host"
-                        | "content-length"
-                        | "transfer-encoding"
-                        | "content-type"
-                        | "content-encoding"
-                        | "connection"
-                        | "trailer"
-                        | "te"
-                        | "upgrade"
-                        | "proxy-authenticate"
-                        | "proxy-authorization"
-                ) {
-                    return Err(http_framing_error(origin, "forbidden trailer field"));
-                }
+                validate_http_trailer(&trailer, origin)?;
             }
         }
         let remaining = output_limit_bytes.saturating_sub(body.len());
@@ -2061,6 +2498,43 @@ fn read_http_chunked_body(
             ));
         }
     }
+}
+
+fn parse_http_chunk_size(line: &[u8], origin: &str) -> Result<usize, EvaError> {
+    if line.iter().any(|byte| *byte < 0x20 || *byte == 0x7f) {
+        return Err(http_framing_error(origin, "invalid chunk extension"));
+    }
+    let size_text = line.split(|byte| *byte == b';').next().unwrap_or_default();
+    let size_text = std::str::from_utf8(size_text)
+        .map_err(|_| http_framing_error(origin, "chunk size is not ASCII"))?;
+    if size_text.is_empty() || !size_text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(http_framing_error(origin, "invalid chunk size"));
+    }
+    u64::from_str_radix(size_text, 16)
+        .ok()
+        .and_then(|size| usize::try_from(size).ok())
+        .ok_or_else(|| http_framing_error(origin, "chunk size overflows host size"))
+}
+
+fn validate_http_trailer(line: &[u8], origin: &str) -> Result<(), EvaError> {
+    let (name, _) = parse_http_header_line(line, origin)?;
+    if matches!(
+        name.as_str(),
+        "host"
+            | "content-length"
+            | "transfer-encoding"
+            | "content-type"
+            | "content-encoding"
+            | "connection"
+            | "trailer"
+            | "te"
+            | "upgrade"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+    ) {
+        return Err(http_framing_error(origin, "forbidden trailer field"));
+    }
+    Ok(())
 }
 
 /// Read a close-delimited body while retaining the response output bound.
@@ -2098,6 +2572,36 @@ fn read_http_close_delimited_body(
 }
 
 /// Decode a response that must carry one JSON-RPC object.
+fn decode_http_exchange_payload(
+    response: HttpExchangeResponse,
+    expected_id: u64,
+    output_limit_bytes: usize,
+) -> Result<String, EvaError> {
+    match response {
+        HttpExchangeResponse::Buffered(response) => {
+            decode_http_exchange_response(response, expected_id, output_limit_bytes)
+        }
+        HttpExchangeResponse::EventStream {
+            metadata,
+            mut stream,
+        } => {
+            if !(200..300).contains(&metadata.status_code) {
+                return Err(
+                    EvaError::unavailable("MCP HTTP server returned non-success status")
+                        .with_provider_code("mcp_http_status")
+                        .with_context("json_rpc_id", expected_id.to_string())
+                        .with_context("status_code", metadata.status_code.to_string()),
+                );
+            }
+            require_event_stream_content_type(metadata.content_type.as_deref())?;
+            let message = stream.next_response(expected_id)?;
+            enforce_response_limit(&message.data, output_limit_bytes)?;
+            Ok(message.data)
+        }
+    }
+}
+
+/// Decode a buffered response that must carry one JSON-RPC object.
 fn decode_http_exchange_response(
     response: HttpJsonRpcResponse,
     expected_id: u64,
@@ -2143,6 +2647,18 @@ fn decode_http_event_stream_response(
     response: HttpJsonRpcResponse,
     output_limit_bytes: usize,
 ) -> Result<Vec<u8>, EvaError> {
+    validate_http_event_stream_metadata(&response)?;
+    if response.body_truncated {
+        return Err(
+            EvaError::conflict("MCP HTTP GET response exceeded output limit")
+                .with_provider_code("mcp_response_too_large")
+                .with_context("output_limit_bytes", output_limit_bytes.to_string()),
+        );
+    }
+    Ok(response.body)
+}
+
+fn validate_http_event_stream_metadata(response: &HttpJsonRpcResponse) -> Result<(), EvaError> {
     if response.status_code == 405 {
         return Err(EvaError::unsupported(
             "MCP HTTP server does not provide a server event stream",
@@ -2156,15 +2672,8 @@ fn decode_http_event_stream_response(
                 .with_context("status_code", response.status_code.to_string()),
         );
     }
-    if response.body_truncated {
-        return Err(
-            EvaError::conflict("MCP HTTP GET response exceeded output limit")
-                .with_provider_code("mcp_response_too_large")
-                .with_context("output_limit_bytes", output_limit_bytes.to_string()),
-        );
-    }
     require_event_stream_content_type(response.content_type.as_deref())?;
-    Ok(response.body)
+    Ok(())
 }
 
 /// Validate the bodyless `202 Accepted` required for a notification POST.
@@ -3014,6 +3523,14 @@ mod tests {
         terminal_reads: usize,
     }
 
+    struct PanicReader;
+
+    impl Read for PanicReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            panic!("response body must not be read")
+        }
+    }
+
     impl SegmentedReader {
         fn new(chunks: impl IntoIterator<Item = Vec<u8>>) -> Self {
             Self {
@@ -3392,6 +3909,304 @@ mod tests {
     }
 
     #[test]
+    fn sse_http_body_framings_return_matching_events_without_terminal_eof() {
+        let payload = format!("data: {}\n\n", response(7, "true"));
+
+        let fixed_source = HttpSseSource::new(
+            BufReader::new(SegmentedReader::keep_alive(
+                payload.as_bytes().iter().map(|byte| vec![*byte]),
+            )),
+            HttpBodyFraming::ContentLength(payload.len()),
+            "http://sse.test".to_owned(),
+        );
+        let mut fixed = McpSseEventStream::from_source(Box::new(fixed_source), 1024).unwrap();
+        assert_eq!(
+            fixed.next_response(7_u64).unwrap().kind,
+            McpJsonRpcMessageKind::Response
+        );
+
+        let close_source = HttpSseSource::new(
+            BufReader::new(SegmentedReader::keep_alive(
+                payload.as_bytes().iter().map(|byte| vec![*byte]),
+            )),
+            HttpBodyFraming::CloseDelimited,
+            "http://sse.test".to_owned(),
+        );
+        let mut close = McpSseEventStream::from_source(Box::new(close_source), 1024).unwrap();
+        assert_eq!(
+            close.next_response(7_u64).unwrap().kind,
+            McpJsonRpcMessageKind::Response
+        );
+
+        let first = &payload[..9];
+        let second = &payload[9..payload.len() - 3];
+        let third = &payload[payload.len() - 3..];
+        let chunked = format!(
+            "{:x}\r\n{first}\r\n{:x}\r\n{second}\r\n{:x}\r\n{third}\r\n",
+            first.len(),
+            second.len(),
+            third.len()
+        );
+        let chunked_source = HttpSseSource::new(
+            BufReader::new(SegmentedReader::keep_alive(
+                chunked.as_bytes().iter().map(|byte| vec![*byte]),
+            )),
+            HttpBodyFraming::Chunked,
+            "http://sse.test".to_owned(),
+        );
+        let mut chunked_stream =
+            McpSseEventStream::from_source(Box::new(chunked_source), 1024).unwrap();
+        assert_eq!(
+            chunked_stream.next_response(7_u64).unwrap().kind,
+            McpJsonRpcMessageKind::Response
+        );
+    }
+
+    #[test]
+    fn http_exchange_payload_correlates_sse_and_rejects_status_before_body_read() {
+        let payload = [
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notice\"}\n\n".to_owned(),
+            format!("data: {}\n\n", response(8, "true")),
+        ]
+        .concat();
+        let stream = McpSseEventStream::from_reader(
+            SegmentedReader::keep_alive(payload.as_bytes().chunks(5).map(<[u8]>::to_vec)),
+            1024,
+        )
+        .unwrap();
+        let text = decode_http_exchange_payload(
+            HttpExchangeResponse::EventStream {
+                metadata: HttpJsonRpcResponse {
+                    status_code: 200,
+                    content_type: Some("text/event-stream".to_owned()),
+                    body: Vec::new(),
+                    body_truncated: false,
+                    session_id: None,
+                },
+                stream: Box::new(stream),
+            },
+            8,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(text, response(8, "true"));
+
+        let unread = McpSseEventStream::from_reader(PanicReader, 1024).unwrap();
+        let error = decode_http_exchange_payload(
+            HttpExchangeResponse::EventStream {
+                metadata: HttpJsonRpcResponse {
+                    status_code: 503,
+                    content_type: Some("text/event-stream".to_owned()),
+                    body: Vec::new(),
+                    body_truncated: false,
+                    session_id: None,
+                },
+                stream: Box::new(unread),
+            },
+            9,
+            1024,
+        )
+        .unwrap_err();
+        assert_provider_code(&error, "mcp_http_status");
+    }
+
+    #[test]
+    fn streamable_http_open_event_stream_is_chunked_and_session_bound() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let (request_sender, request_receiver) = channel();
+        let (release_sender, release_receiver) = channel();
+        let server = thread::spawn(move || {
+            for request_index in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_test_http_request(&mut stream);
+                match request_index {
+                    0 => stream
+                        .write_all(
+                            http_response_with_session(
+                                200,
+                                &response(1, "{\"protocolVersion\":\"2025-11-25\"}"),
+                                "stream-session-secret",
+                            )
+                            .as_bytes(),
+                        )
+                        .unwrap(),
+                    1 => stream
+                        .write_all(
+                            http_response_with_session(202, "", "stream-session-secret").as_bytes(),
+                        )
+                        .unwrap(),
+                    2 => {
+                        let payload = format!("data: {}\n\n", response(7, "true"));
+                        let first = &payload[..11];
+                        let second = &payload[11..];
+                        let head = "HTTP/1.1 200 OK\r\nMcp-Session-Id: stream-session-secret\r\nContent-Type: text/event-stream; charset=utf-8\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n";
+                        stream.write_all(head.as_bytes()).unwrap();
+                        stream
+                            .write_all(format!("{:x}\r\n{first}\r\n", first.len()).as_bytes())
+                            .unwrap();
+                        stream
+                            .write_all(format!("{:x}\r\n{second}\r\n", second.len()).as_bytes())
+                            .unwrap();
+                        stream.flush().unwrap();
+                        request_sender.send(request).unwrap();
+                        release_receiver
+                            .recv_timeout(Duration::from_secs(2))
+                            .unwrap();
+                        continue;
+                    }
+                    _ => unreachable!(),
+                }
+                stream.flush().unwrap();
+                request_sender.send(request).unwrap();
+            }
+        });
+
+        let mut transport = McpHttpJsonRpcTransport::new(&endpoint, BTreeMap::new()).unwrap();
+        let config = McpJsonRpcClientConfig::new();
+        transport
+            .exchange(
+                1,
+                &initialize_request(1, &config),
+                Duration::from_secs(1),
+                1024,
+            )
+            .unwrap();
+        transport
+            .notify(&initialized_notification(), Duration::from_secs(1), 1024)
+            .unwrap();
+        let mut events = transport
+            .open_event_stream(Duration::from_secs(1), 1024)
+            .unwrap();
+        assert_eq!(
+            events.next_response(7_u64).unwrap().request_id,
+            Some(McpJsonRpcMessageId::Number(7))
+        );
+        release_sender.send(()).unwrap();
+
+        let requests = (0..3)
+            .map(|_| {
+                request_receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        server.join().unwrap();
+        let get = &requests[2];
+        assert!(get.starts_with("GET /mcp HTTP/1.1\r\n"));
+        assert!(get.contains("Accept: text/event-stream\r\n"));
+        assert!(get.contains("Mcp-Session-Id: stream-session-secret\r\n"));
+        assert!(get.contains("MCP-Protocol-Version: 2025-11-25\r\n"));
+        assert!(!format!("{transport:?}").contains("stream-session-secret"));
+        assert!(!transport
+            .audit()
+            .iter()
+            .any(|entry| entry.contains("stream-session-secret")));
+    }
+
+    #[test]
+    fn streamable_http_post_event_stream_retains_interleaved_peer_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let (request_sender, request_receiver) = channel();
+        let (release_sender, release_receiver) = channel();
+        let server = thread::spawn(move || {
+            for request_index in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_test_http_request(&mut stream);
+                match request_index {
+                    0 => stream
+                        .write_all(
+                            http_response_with_session(
+                                200,
+                                &response(1, "{\"protocolVersion\":\"2025-11-25\"}"),
+                                "post-stream-session",
+                            )
+                            .as_bytes(),
+                        )
+                        .unwrap(),
+                    1 => stream
+                        .write_all(
+                            http_response_with_session(202, "", "post-stream-session").as_bytes(),
+                        )
+                        .unwrap(),
+                    2 => {
+                        let body = [
+                            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notice\"}\n\n".to_owned(),
+                            "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n\n"
+                                .to_owned(),
+                            format!("data: {}\n\n", response(2, "true")),
+                        ]
+                        .concat();
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nMcp-Session-Id: post-stream-session\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                            body.len()
+                        );
+                        stream.write_all(head.as_bytes()).unwrap();
+                        for fragment in body.as_bytes().chunks(7) {
+                            stream.write_all(fragment).unwrap();
+                            stream.flush().unwrap();
+                        }
+                        request_sender.send(request).unwrap();
+                        release_receiver
+                            .recv_timeout(Duration::from_secs(2))
+                            .unwrap();
+                        continue;
+                    }
+                    _ => unreachable!(),
+                }
+                stream.flush().unwrap();
+                request_sender.send(request).unwrap();
+            }
+        });
+
+        let mut transport = McpHttpJsonRpcTransport::new(&endpoint, BTreeMap::new()).unwrap();
+        let config = McpJsonRpcClientConfig::new();
+        transport
+            .exchange(
+                1,
+                &initialize_request(1, &config),
+                Duration::from_secs(1),
+                2048,
+            )
+            .unwrap();
+        transport
+            .notify(&initialized_notification(), Duration::from_secs(1), 2048)
+            .unwrap();
+        let request = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}";
+        let mut events = transport
+            .post_event_stream(2, request, Duration::from_secs(1), 2048)
+            .unwrap();
+        assert_eq!(
+            events.next_response(2_u64).unwrap().kind,
+            McpJsonRpcMessageKind::Response
+        );
+        assert_eq!(
+            events.take_peer_message().unwrap().kind,
+            McpJsonRpcMessageKind::Notification
+        );
+        assert_eq!(
+            events.take_peer_message().unwrap().kind,
+            McpJsonRpcMessageKind::Request
+        );
+        release_sender.send(()).unwrap();
+
+        let requests = (0..3)
+            .map(|_| {
+                request_receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        server.join().unwrap();
+        let post = &requests[2];
+        assert!(post.starts_with("POST /mcp HTTP/1.1\r\n"));
+        assert!(post.contains("Accept: application/json, text/event-stream\r\n"));
+        assert!(post.contains("Mcp-Session-Id: post-stream-session\r\n"));
+        assert!(post.contains("MCP-Protocol-Version: 2025-11-25\r\n"));
+    }
+
+    #[test]
     fn streamable_http_protocol_and_session_changes_fail_closed() {
         for (result, expected_code) in [
             ("{}", "mcp_protocol_version_missing"),
@@ -3414,7 +4229,12 @@ mod tests {
             let mut transport =
                 McpHttpJsonRpcTransport::new("http://127.0.0.1/mcp", BTreeMap::new()).unwrap();
             let error = transport
-                .remember_initialize(&response, 1, 1024, DEFAULT_PROTOCOL_VERSION)
+                .remember_initialize(
+                    HttpExchangeResponse::Buffered(response.clone()),
+                    1,
+                    1024,
+                    DEFAULT_PROTOCOL_VERSION,
+                )
                 .unwrap_err();
             assert_provider_code(&error, expected_code);
             assert!(transport.session_id().is_none());
@@ -3568,7 +4388,12 @@ mod tests {
             McpHttpJsonRpcTransport::new("http://127.0.0.1:1/mcp", BTreeMap::new()).unwrap();
         assert_provider_code(
             &transport
-                .remember_initialize(&nested_result, 1, 1024, DEFAULT_PROTOCOL_VERSION)
+                .remember_initialize(
+                    HttpExchangeResponse::Buffered(nested_result.clone()),
+                    1,
+                    1024,
+                    DEFAULT_PROTOCOL_VERSION,
+                )
                 .unwrap_err(),
             "mcp_protocol_version_missing",
         );

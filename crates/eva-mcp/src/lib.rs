@@ -19,6 +19,8 @@ pub mod schema;
 pub mod server;
 /// 声明 `session` 子模块。
 pub mod session;
+/// Incremental Streamable HTTP event decoding.
+pub mod sse;
 /// Stateful Streamable HTTP application-session boundary.
 pub mod streamable_http;
 /// 声明 `tool_mapping` 子模块。
@@ -33,7 +35,8 @@ pub use compatibility::{
 pub use http_transport::McpTlsMaterial;
 pub use json_rpc::{
     McpHttpJsonRpcTransport, McpJsonRpcCallReport, McpJsonRpcClient, McpJsonRpcClientConfig,
-    McpJsonRpcTool, McpJsonRpcTransport, McpStdioJsonRpcTransport, McpStdioProcess,
+    McpJsonRpcMessageId, McpJsonRpcMessageKind, McpJsonRpcTool, McpJsonRpcTransport,
+    McpStdioJsonRpcTransport, McpStdioProcess,
 };
 pub use lifecycle::{
     McpOrphanCleanupReport, McpProcessInspector, McpRegisteredSession, McpSessionHealthReport,
@@ -49,5 +52,6 @@ pub use session::{
     McpSessionStartReport, McpSessionStatus, McpSessionSupervisor, McpStreamableHttpConfig,
     McpTransportConfig,
 };
+pub use sse::{McpSseEventStream, McpSseItem, McpSseMessage, McpSseParser};
 pub use streamable_http::McpStreamableHttpSession;
 pub use tool_mapping::{McpToolMapping, McpToolRegistry};
