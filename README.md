@@ -14,7 +14,8 @@ EventBus/task/audit/artifact evidence, Lua execution and hot-reload lifecycle
 boundaries, controlled Adapter/MCP/Skill execution, policy/discovery/memory/
 observability hardening, hardware and high-risk apply gates, release evidence
 gates, daemon control/recovery, provider supervision readiness, destructive
-restore mutation/rollback evidence, service-manager abstraction, hardware
+restore mutation/rollback evidence, host-bound service-manager adapters and a
+direct identity-bound daemon service entrypoint contract, hardware
 permission and hotplug safety gates, durable memory/knowledge maintenance,
 provider retrieval execution, V1.16.4 observability retention/rotation policy,
 V1.17.1 `run --example basic` command module split evidence, V1.17.2 operator
@@ -80,13 +81,13 @@ release gates.
 | Rust workspace layout | Implemented | Root `Cargo.toml`, binary shim, 20 workspace crates under `crates/` | Keep dependency direction strict as behavior is added |
 | Configuration examples and schemas | Implemented first pass | `config/` contains sample `eva.yaml`, agent/adapter/capability/policy manifests, routes, and JSON schemas; `eva-config` loads and validates the project config | Add deeper schema tooling and integration checks as runtime behavior expands |
 | `eva-core` foundation contracts | Implemented first pass | Topic, ID, Capability, Event, Invoke, and Error contracts with stable re-exports | Downstream crates continue adopting these public types |
-| `eva-cli` | V1.17.6 controlled runtime closure surface | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `emit`, `daemon start/status/stop/shutdown/submit/cancel/drain/reload`, `agent status/drain/reload`, `capability list/probe/call`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `observability smoke`, `hardware list/probe/bind`, `backup create`, `snapshot create/promote`, `restore plan/apply/rollback`, `upgrade check/apply`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task/event store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, daemon/provider/hardware/memory maintenance, retrieval, redaction/audit markers evidence, V1.16.1 runtime audit sink marker, V1.16.2 tracing subscriber bridge marker, V1.16.3 OpenTelemetry SDK exporter marker, V1.16.4 observability retention policy marker, V1.17.1 run command module split marker, V1.17.2 operator execution fields marker, V1.17.3 operator apply text marker, V1.17.4 JSON contract diff marker and `REL-JSON-CONTRACT-001`, synchronized V1.17.5 docs/i18n/release notes, V1.17.6 `v1x_closure_gate_v1.17.6` marker, `REL-OBSERVABILITY-POLICY-001`, `REL-V1X-CLOSURE-001`, additive `release check` `closure` JSON, command module split coverage, and exit-code mapping | Keep public command contracts stable while adding production integrations |
-| Runtime composition | V1.16.1 daemon smoke baseline | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, idempotent shutdown, foreground daemon control mailbox, task/provider recovery, scheduler retry tick, hotplug subscriber smoke, memory/knowledge maintenance smoke, and best-effort JSONL observability for daemon control/task lifecycle/scheduler retry | Production background service manager and long-running execution remain later scope |
+| `eva-cli` | V1.17.6 controlled runtime closure surface | `version`, `doctor`, `config validate`, `inspect`, `inspect durable`, `run --example basic`, `emit`, `daemon start/status/stop/shutdown/submit/cancel/drain/reload`, `service install/status/start/stop/restart/uninstall`, `agent status/drain/reload`, `capability list/probe/call`, `task status/logs/cancel`, `adapter list/probe`, `mcp list/probe`, `skill list/run`, `discovery scan`, `memory context`, `observability smoke`, `hardware list/probe/bind`, `backup create`, `snapshot create/promote`, `restore plan/apply/rollback`, `upgrade check/apply`, `release check/security/perf/migration`, text/JSON output, trace fields, durable task/event store selection, recovery evidence, diagnostics evidence, Lua VM execution evidence, daemon/provider/hardware/memory maintenance, retrieval, redaction/audit markers evidence, V1.16.1 runtime audit sink marker, V1.16.2 tracing subscriber bridge marker, V1.16.3 OpenTelemetry SDK exporter marker, V1.16.4 observability retention policy marker, V1.17.1 run command module split marker, V1.17.2 operator execution fields marker, V1.17.3 operator apply text marker, V1.17.4 JSON contract diff marker and `REL-JSON-CONTRACT-001`, synchronized V1.17.5 docs/i18n/release notes, V1.17.6 `v1x_closure_gate_v1.17.6` marker, `REL-OBSERVABILITY-POLICY-001`, `REL-V1X-CLOSURE-001`, additive `release check` `closure` JSON, command module split coverage, and exit-code mapping | Keep public command contracts stable while adding production integrations |
+| Runtime composition | Direct service-entry code contract | No-op builder, V1.0 in-memory builder, `RuntimeSummary`, service summaries, `TaskReport`, idempotent shutdown, foreground/background daemon control mailbox, task/provider recovery, scheduler retry tick, hotplug subscriber smoke, memory/knowledge maintenance smoke, best-effort JSONL observability, and an identity-bound hidden service entrypoint that directly owns the daemon PID/lease and routes OS stop notification through the existing drain/shutdown transaction | Real-host stop/boot/reboot evidence, the destructive service harness, and production gate remain later scope |
 | EventBus and Scheduler | V1.6.4 durable recovery baseline implemented | EventBus publish/ack/fail/dead-letter/replay diagnostics; durable EventLog records; queryable dead-letter store; redrive replay attempts; ack-safe recovery redrive checkpoint; Scheduler topic routing, mailbox delivery, and daemon retry tick | Broader crash recovery and production long-running scheduling remain later scope |
 | Agent and Lua host | V1.11.4 hot-reload lifecycle implemented | Agent lifecycle, bounded queue, timeout/cancel/retry run control, Lua loading, sandbox gate, restricted `mlua` VM adapter, real `on_event` execution, read-only request/trace/memory tables, `ctx.host.log/audit`, `ctx.tools.call`, Lua wall-clock timeout, instruction budget, cancellation token, memory budget, static parser fallback, generation marker, shadow-load health checks, generation route gating, drain evidence, and rollback audit evidence | Daemon-driven hot-reload orchestration and OS-supervised provider restart remain later scope |
 | Capability and Adapter layers | Controlled execution implemented | `eva-capability` provides the registry/router; `eva-adapter` executes manifest-gated stdio/http providers, MCP JSON-RPC, and Skill workflows with allowlists, policy, timeout, output limits, credential scoping, and audit evidence | OS process supervision, OS credential vault/user isolation, and production MCP streaming/TLS/external-server certification remain later scope |
 | Policy, observability, storage | Mixed with V1.16.4 retention baseline | `eva-policy` and `eva-observability` have V0.2 contracts plus V1.15.8 `memory_policy.redaction` and memory write/read/search/context actions; `eva-storage` has in-memory stores/logs plus schema-versioned durable backend layout, migration lock, filesystem EventLog, durable task snapshot adapter, durable audit sink, runtime recovered audit records, artifact metadata hardening, read-only verification, diagnostics-friendly read-only event/dead-letter access, V1.16.1 best-effort daemon/provider/task/restore JSONL audit/metric/span wiring, V1.16.2 tracing subscriber span/event bridge with JSONL/dev-console redaction, V1.16.3 SDK-based OTLP HTTP/protobuf trace/metrics exporter smoke, and V1.16.4 JSONL/durable-audit retention, rotation, max-size, and corrupt-record policy | Task query indexes, richer audit sinks, real database sink, and production retention scheduling remain later scope |
-| Discovery, MCP, memory, hardware, backup, lifecycle, release | Mixed | Discovery and MCP have controlled candidates/probes plus MCP compatibility gates; memory has private/global records, knowledge search, ContextBuilder, Lua context snapshots, durable files, index locks, TTL GC, rebuild checkpoints, supervised provider retrieval with schema/redaction/source audit, and policy-driven memory redaction/audit metrics; hardware has discovery candidates, registry leases, simulated driver binding, OS permission evidence, hotplug subscriber smoke, and safety gates; backup/lifecycle have signed archives, staged restore mutation/rollback, generation handoff, and service-manager abstraction; release has readiness/security/performance/migration gates plus durable, Lua, provider, hardware, artifact/distribution/scanner/benchmark evidence | Real hardware drivers, production service-manager handoff, production signing credentials, and OS package repository publication remain later scope |
+| Discovery, MCP, memory, hardware, backup, lifecycle, release | Mixed | Discovery and MCP have controlled candidates/probes plus MCP compatibility gates; memory has private/global records, knowledge search, ContextBuilder, Lua context snapshots, durable files, index locks, TTL GC, rebuild checkpoints, supervised provider retrieval with schema/redaction/source audit, and policy-driven memory redaction/audit metrics; hardware has discovery candidates, registry leases, simulated driver binding, OS permission evidence, hotplug subscriber smoke, and safety gates; backup/lifecycle have signed archives, staged restore mutation/rollback, generation handoff, Windows Service/systemd/launchd adapters, canonical service argv identity, and a cooperative service-stop bridge; release has readiness/security/performance/migration gates plus durable, Lua, provider, hardware, artifact/distribution/scanner/benchmark evidence | Real-host service lifecycle/reboot evidence, destructive harness certification, blue-green handoff, production signing credentials, and OS package repository publication remain later scope |
 | Verification baseline | Passing and gated | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, CLI/runtime/provider/memory/hardware/backup/lifecycle/release smoke, public JSON contract validation, website generation, and i18n validation | Add gates as behavior expands |
 
 ## Quick Start
@@ -173,8 +174,11 @@ instead of opening USB, serial, BLE, network, or vendor SDK raw I/O.
 
 Backup and lifecycle commands preserve plan-first safety while supporting real,
 gated mutation paths. Filesystem artifact stores, snapshot promotion, staged
-restore apply/rollback, and local release-pointer upgrade apply are implemented;
-production service-manager handoff is not.
+restore apply/rollback, local release-pointer upgrade apply, host-bound platform
+service commands, and the canonical direct daemon service-entry code contract
+are implemented. The service definition binds executable, native argv, working
+directory, service kind/name, and an identity digest; the hidden entrypoint
+directly owns the daemon lease and PID instead of spawning a second process.
 
 ```powershell
 cargo run -- backup create --output json
@@ -186,8 +190,10 @@ cargo run -- upgrade check --output json
 `restore apply` and `restore rollback` require matching plan confirmation,
 artifact evidence, policy approval, locks, health checks, and staged mutation
 evidence. `upgrade apply --state-store` can mutate the local release pointer
-after policy and health gates, but does not perform production Windows Service,
-systemd, or launchd handoff.
+after policy and health gates, but does not perform a real blue-green handoff.
+Local adapter and entrypoint tests are not substitutes for controlled Windows,
+systemd, or launchd stop/boot/reboot transcripts, a destructive lifecycle
+harness, or a production release gate.
 
 ## Release Checks
 
@@ -236,7 +242,7 @@ combined `website/`, `docs/`, and `assets/` content.
 The diagram summarizes the implemented boundaries. The basic path composes a
 local EventBus, Scheduler mailboxes, AgentRuntime, and a restricted Lua 5.4
 host. External capability calls use separate policy, Adapter, provider, and
-transport gates. Foreground daemon, recovery, backup, restore, upgrade, and
+transport gates. Daemon process modes, recovery, backup, restore, upgrade, and
 release commands compose their own filesystem-backed services and evidence;
 `RuntimeBuilder` is not a container that owns every concrete service.
 
@@ -339,8 +345,9 @@ apply/rollback, snapshot promotion, local release-pointer upgrade apply, native
 release archives, checksums, and provenance bundle are implemented. Remaining
 production work is limited to these boundaries:
 
-- background daemon and OS process supervision, including production
-  service-manager handoff and blue-green runtime rollback;
+- production-certified OS service supervision: controlled real-host
+  stop/boot/reboot evidence, a destructive lifecycle harness, and a release gate;
+- real blue-green handoff, ingress switching, and runtime rollback;
 - OS credential vault/user isolation and MCP production streaming, TLS, and
   external-server compatibility certification;
 - real hardware drivers, OS hotplug watchers, and real or virtual release fixtures;

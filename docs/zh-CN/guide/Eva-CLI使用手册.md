@@ -1,16 +1,17 @@
 # Eva-CLI 使用手册
 
-更新时间：2026-07-14
+更新时间：2026-07-20
 
 适用版本：Eva-CLI `1.11.5-alpha`（源码版本）
 
-Eva-CLI 是 Eva 本地运行时的命令行入口。当前版本适合从源码进行配置校验、运行 basic 示例、检查任务和运行时边界，以及验证受控的 Adapter、MCP、Skill、备份和发布流程；它还不是可直接部署的生产守护服务。
+Eva-CLI 是 Eva 本地运行时的命令行入口。当前版本适合从源码进行配置校验、运行 basic 示例、检查任务和运行时边界，以及验证受控的 Adapter、MCP、Skill、service lifecycle、备份和发布流程；direct service entrypoint 代码已接线，但它还不是经过真实 host lifecycle 认证、可直接部署的生产守护服务。
 
 ## 使用前须知
 
 - 本手册中的命令默认从仓库根目录运行，并统一使用 `cargo run -q -- <eva 参数>`。构建后也可以把这部分替换为 `target/debug/eva`、`target/release/eva` 或 Windows 下对应的 `.exe`。
 - `run --example basic` 使用 `<项目根>/examples/basic` 中的示例配置，但任务快照默认写入 `<项目根>/.eva/tasks`。
-- `daemon` 当前提供本机前台进程、文件锁、PID、状态和控制邮箱边界，不会启动生产 provider 监督进程。
+- `daemon` 当前提供本机前台/后台进程、文件锁、PID、状态和控制邮箱边界，不会自动启动生产 provider 监督进程。
+- production `service install` 会配置绑定 identity 的隐藏 direct daemon entrypoint；不要手工调用该内部命令，也不要把本地代码测试当作真实 host stop/boot/reboot evidence。
 - `restore apply/rollback` 和带 `--state-store` 的 `upgrade apply` 可以修改本地文件或状态。执行前必须核对 plan、确认令牌、policy、artifact、lock 和 health gate。
 - 外部 Adapter、MCP 或 Skill 是否真的执行，取决于 manifest、allowlist、policy、provider 可用性和命令是否已确认。不要把 `probe` 或 dry-run 的成功当作外部操作已经完成。
 
@@ -66,6 +67,7 @@ cargo run -q -- task logs
 | `version`、`doctor`、`config validate`、`inspect` | 版本、环境、配置和运行时诊断 | 只读 |
 | `run`、`task`、`emit` | 运行 basic 示例、管理任务快照、发布 typed event | `run` 和 `task cancel` 写任务状态；`emit` 仅在指定 durable backend 时持久化 |
 | `daemon`、`agent` | 本机 daemon smoke/control 和 Agent lifecycle | 写本地 daemon 状态；连接运行中的 daemon 时 drain/reload 可写控制状态 |
+| `service` | Windows Service/systemd/launchd lifecycle；Fake 仅限显式 `--dev` | production kind 会修改 host service manager；Fake 写隔离的 `.eva/service-manager` 开发状态 |
 | `capability`、`adapter`、`mcp`、`skill`、`discovery` | 能力路由、外部 provider 和发现 | list/scan 主要只读；确认调用或 Skill runner 可能执行外部程序 |
 | `memory`、`observability` | 构造演示上下文，验证 audit/metric/trace sink | 可写 durable memory/knowledge 和 observability 文件 |
 | `hardware`、`backup`、`snapshot`、`restore`、`upgrade` | 硬件计划、备份和生命周期操作 | 从 plan-only 到受门禁保护的本地文件/状态修改 |
@@ -181,9 +183,9 @@ cargo run -q -- daemon cancel --task req-daemon-1 --reason "manual stop" --outpu
 cargo run -q -- daemon shutdown --output json
 ```
 
-`status`、`submit`、`cancel`、`drain`、`reload` 和 `shutdown` 通过文件系统 control mailbox 与前台 daemon 通信。即使是一次性 smoke，`daemon start` 也会以读写模式打开 durable backend，并执行 recovery scan、memory maintenance 和 scheduler retry 边界；但 `provider_processes_started` 仍为 `false`。
+`status`、`submit`、`cancel`、`drain`、`reload` 和 `shutdown` 通过文件系统 control mailbox 与运行中的 daemon 通信。即使是一次性 smoke，`daemon start` 也会以读写模式打开 durable backend，并执行 recovery scan、memory maintenance 和 scheduler retry 边界；但 `provider_processes_started` 仍为 `false`。
 
-默认目录由 `runtime.data_dir` 派生；示例配置使用 `.eva/data/durable`、`.eva/data/daemon/state`、`.eva/data/daemon/locks`、`.eva/data/daemon/pids` 和 `.eva/data/observability`。`--background` 虽可被解析，但当前运行时尚未实现后台模式，请保持终端 A 前台运行。
+默认目录由 `runtime.data_dir` 派生；示例配置使用 `.eva/data/durable`、`.eva/data/daemon/state`、`.eva/data/daemon/locks`、`.eva/data/daemon/pids` 和 `.eva/data/observability`。`--background` 使用独立 parent/child startup handshake；service manager 使用 direct entrypoint，不走后台 child 路径。
 
 Agent 命令可以单独查看或规划 lifecycle：
 
@@ -194,6 +196,20 @@ cargo run -q -- agent reload --agent root-agent --from-generation gen-old --to-g
 ```
 
 没有可用 daemon 时，`agent drain/reload` 返回本地计划，`mutation_executed` 为 `false`；连接到相同 state/lock/PID 目录中的运行中 daemon 后，命令才会写 daemon-side Agent 控制状态。这不等同于完整 provider 重启或生产热更新。
+
+## Service Manager 边界
+
+operator 只应使用公开的 `service install/status/start/stop/restart/uninstall`。production
+`service install` 从规范化 executable 与 project root 构造 native argv，加入配置的
+service kind/name，并用 identity digest 绑定这些值。manager 启动后，该进程直接持有
+daemon PID 与 lease，不会再启动一个 child。
+
+Windows SCM control 与 Unix service signal 只设置 cooperative stop token。daemon
+control loop 把 token 转换为既有 generation-bound `Shutdown` request，复用 task drain、
+stopped state、PID cleanup 与 lease release 事务。单元/进程测试覆盖这一代码契约，但
+不能替代受控 Windows SCM/systemd/launchd stop/boot/reboot transcript、destructive
+lifecycle harness 的 mandatory cleanup 或 production release gate。`upgrade apply` 也
+仍是本地建模 handoff，不执行真实 blue-green 切流。
 
 ## Capability、Adapter、MCP 与 Skill
 
@@ -338,7 +354,7 @@ cargo run -q -- release migration --output json
 当前源码版本尚不提供：
 
 - 签名安装器、生产 signing/attestation credential 和 Homebrew/Winget/Apt 发布；
-- 生产后台 daemon、平台 service-manager handoff 和完整 provider 进程监督；
+- production-certified service-manager stop/boot/reboot evidence、destructive lifecycle harness、真实 blue-green handoff 和完整 provider 进程监督；
 - OS credential vault 隔离、生产 MCP streaming/TLS 认证；
 - 真实硬件 driver/raw I/O 和发布 fixture；
 - 生产 observability database sink/retention scheduler，以及长驻 memory/retrieval 调度。

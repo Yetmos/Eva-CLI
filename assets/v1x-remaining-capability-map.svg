@@ -22,9 +22,9 @@
     <rect x="60" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="60" y="158" width="310" height="8" rx="4" fill="#2563eb"/>
     <text x="84" y="203" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">Controlled alpha boundary</text>
-    <text x="84" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Background daemon, workers, durable recovery</text>
-    <text x="84" y="271" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Provider process boundary and admission</text>
-    <text x="84" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Config generations, watcher, durable cache</text>
+    <text x="84" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">W2-L03-L05: validation in progress</text>
+    <text x="84" y="271" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">W2-L07: direct service entry complete</text>
+    <text x="84" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Identity, PID/lease, cooperative stop</text>
     <text x="84" y="325" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Simulator hardware safety evidence</text>
     <text x="84" y="352" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">JSONL, OTLP, and retention policy smoke</text>
     <text x="84" y="379" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Unsigned packages and alpha gates</text>
@@ -38,11 +38,11 @@
     <rect x="445" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="445" y="158" width="310" height="8" rx="4" fill="#dc2626"/>
     <text x="469" y="203" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">Production code gaps</text>
-    <text x="469" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">daemon entrypoint, boot recovery</text>
-    <text x="469" y="271" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Run-as, vault, daemon-owned supervisor</text>
-    <text x="469" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">MCP TLS, streaming, external compatibility</text>
-    <text x="469" y="325" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Real backup, KMS, service handoff</text>
-    <text x="469" y="352" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Real drivers, I/O, hardware fixtures</text>
+    <text x="469" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">W2-L08: boot/restart recovery blocked</text>
+    <text x="469" y="271" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">W2-L09-L10: harness + gate blocked</text>
+    <text x="469" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Run-as, vault, daemon-owned supervisor</text>
+    <text x="469" y="325" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">MCP TLS, streaming, external compatibility</text>
+    <text x="469" y="352" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Real backup, KMS, drivers, fixtures</text>
     <text x="469" y="379" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Registry, DB, retention, signing/publication</text>
     <rect x="469" y="414" width="262" height="34" rx="6" fill="#fee2e2"/>
     <text x="521" y="436" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#b91c1c">Implementation required</text>
@@ -65,5 +65,5 @@
   </g>
 
   <rect x="60" y="510" width="1080" height="58" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
-  <text x="84" y="545" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#9a3412">ready_with_external_blockers is an alpha checklist result, not production readiness.</text>
+  <text x="84" y="545" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#9a3412">W2-L07 code completion does not close real-host evidence or production gates.</text>
 </svg>

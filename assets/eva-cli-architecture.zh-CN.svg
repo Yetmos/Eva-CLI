@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
   <title id="title">Eva-CLI 当前总体架构</title>
-  <desc id="desc">Eva-CLI 当前架构，展示用户入口、Rust 托管的事件与 Agent 执行链、能力与 Adapter 边界，以及持久化、生命周期、备份、发布和观测服务。</desc>
+  <desc id="desc">Eva-CLI 当前架构，展示用户入口、Rust 托管的事件与 Agent 执行链、能力与 Adapter 边界，以及持久化、direct service entry、生命周期、备份、发布和观测服务。</desc>
   <defs>
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
     <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#2563eb"/></marker>
@@ -27,7 +27,7 @@
     <rect class="purple" x="512" y="154" width="190" height="62" rx="7"/><text class="label" x="607" y="181" text-anchor="middle">MCP client / probe</text><text class="small" x="607" y="202" text-anchor="middle">外部工具发现</text>
     <rect class="green" x="742" y="154" width="210" height="62" rx="7"/><text class="label" x="847" y="181" text-anchor="middle">配置与 Schema</text><text class="small" x="847" y="202" text-anchor="middle">已校验 ProjectConfig</text>
     <rect class="green" x="982" y="154" width="230" height="62" rx="7"/><text class="label" x="1097" y="181" text-anchor="middle">发现与 Policy</text><text class="small" x="1097" y="202" text-anchor="middle">候选、权限、沙箱</text>
-    <rect class="orange" x="1242" y="154" width="270" height="62" rx="7"/><text class="label" x="1377" y="181" text-anchor="middle">生命周期与发布控制</text><text class="small" x="1377" y="202" text-anchor="middle">generation、drain、回滚、产物</text>
+    <rect class="orange" x="1242" y="154" width="270" height="62" rx="7"/><text class="label" x="1377" y="181" text-anchor="middle">生命周期与 Service 控制</text><text class="small" x="1377" y="202" text-anchor="middle">generation、service identity、artifact</text>
   </g>
 
   <rect class="panel" x="42" y="268" width="1516" height="346" rx="8"/>
@@ -60,7 +60,7 @@
     <rect class="blue" x="68" y="696" width="280" height="142" rx="7"/><text class="label" x="88" y="727">Durable backend</text><text class="small" x="88" y="753">EventLog · TaskStateStore</text><text class="small" x="88" y="776">ProviderProcessTable · StateStore</text><text class="small" x="88" y="799">ArtifactStore · AuditSink</text><text class="tiny" x="88" y="823">文件系统或内存实现</text>
     <rect class="green" x="378" y="696" width="250" height="142" rx="7"/><text class="label" x="398" y="727">记忆与上下文</text><text class="small" x="398" y="753">MemoryService</text><text class="small" x="398" y="776">KnowledgeService</text><text class="small" x="398" y="799">ContextBuilder + 脱敏</text>
     <rect class="cyan" x="658" y="696" width="250" height="142" rx="7"/><text class="label" x="678" y="727">观测</text><text class="small" x="678" y="753">审计事件 · trace 字段</text><text class="small" x="678" y="776">metrics · 保留策略</text><text class="small" x="678" y="799">结构化操作证据</text>
-    <rect class="orange" x="938" y="696" width="250" height="142" rx="7"/><text class="label" x="958" y="727">生命周期</text><text class="small" x="958" y="753">generation 切换 · drain</text><text class="small" x="958" y="776">handoff · supervisor</text><text class="small" x="958" y="799">回滚 · manager 抽象</text><text class="tiny" x="958" y="820">service-manager 实现为 fake/test</text>
+    <rect class="orange" x="938" y="696" width="250" height="142" rx="7"/><text class="label" x="958" y="727">生命周期</text><text class="small" x="958" y="753">generation 切换 · drain</text><text class="small" x="958" y="776">handoff · 平台 Adapter</text><text class="small" x="958" y="799">回滚 · direct service entry</text><text class="tiny" x="958" y="820">真实 host lifecycle evidence 仍在外部</text>
     <rect class="purple" x="1218" y="696" width="300" height="142" rx="7"/><text class="label" x="1238" y="727">备份、恢复与发布</text><text class="small" x="1238" y="753">备份 · 迁移包 · snapshot</text><text class="small" x="1238" y="776">分阶段 restore + 回滚证据</text><text class="small" x="1238" y="799">发布产物与分发检查</text>
   </g>
   <path class="control" d="M363 408V696"/><path class="control" d="M993 408C993 620 503 620 503 696"/><path class="control" d="M1097 216C1097 620 783 620 783 696"/><path class="control" d="M1377 216V696"/>

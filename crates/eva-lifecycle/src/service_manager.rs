@@ -4,7 +4,9 @@
 use crate::{RuntimeHealth, UpgradeApplyPlan};
 use eva_config::ServiceManagerConfig;
 use eva_core::EvaError;
-use std::path::PathBuf;
+use sha2::{Digest, Sha256};
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 
 pub use eva_config::ServiceManagerKind;
 
@@ -12,6 +14,289 @@ pub use eva_config::ServiceManagerKind;
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
     "OS service-manager typed lifecycle, fake state, handoff, and rollback evidence boundary";
+
+/// Stable argument name used to bind a service definition to its executable
+/// argv and working directory.  The value is computed without this pair so a
+/// daemon can independently recompute the identity at startup.
+pub const SERVICE_IDENTITY_ARG: &str = "--service-identity";
+
+/// A direct, shell-free process entrypoint owned by an OS service manager.
+///
+/// `executable` and `working_directory` are absolute paths. `arguments` does
+/// not include the executable itself. `argv_digest` is a SHA-256 digest over a
+/// versioned length-prefixed tuple of executable, arguments, and working
+/// directory. The representation deliberately uses the native OS bytes for
+/// `OsStr`, so the same value that is handed to a process is what is bound by
+/// the identity marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceManagerEntryPoint {
+    /// Canonical executable path handed directly to the service manager.
+    pub executable: PathBuf,
+    /// Ordered arguments, excluding `executable`.
+    pub arguments: Vec<OsString>,
+    /// Absolute process working directory.
+    pub working_directory: PathBuf,
+    /// SHA-256 identity of executable + arguments + working directory.
+    pub argv_digest: String,
+}
+
+impl ServiceManagerEntryPoint {
+    /// Builds and validates a direct entrypoint without invoking a shell.
+    pub fn new<I, A>(
+        executable: impl Into<PathBuf>,
+        arguments: I,
+        working_directory: impl Into<PathBuf>,
+    ) -> Result<Self, EvaError>
+    where
+        I: IntoIterator<Item = A>,
+        A: Into<OsString>,
+    {
+        let executable = executable.into();
+        let working_directory = working_directory.into();
+        validate_absolute_path(&executable, "service entrypoint executable")?;
+        validate_absolute_path(&working_directory, "service entrypoint working directory")?;
+        let arguments = arguments.into_iter().map(Into::into).collect::<Vec<_>>();
+        for argument in &arguments {
+            validate_argument(argument)?;
+        }
+        let argv_digest = compute_service_argv_digest(&executable, &arguments, &working_directory);
+        Ok(Self {
+            executable,
+            arguments,
+            working_directory,
+            argv_digest,
+        })
+    }
+
+    /// Builds the canonical Eva daemon service entrypoint.
+    ///
+    /// The project root is used as both `--project` value and working
+    /// directory. The service identity argument is derived from the complete
+    /// command excluding the identity pair, which lets the daemon validate it
+    /// without trusting a value supplied by the manager.
+    pub fn for_daemon(
+        executable: impl Into<PathBuf>,
+        project_root: impl Into<PathBuf>,
+        service_name: &str,
+        kind: ServiceManagerKind,
+    ) -> Result<Self, EvaError> {
+        if !kind.production_adapter() {
+            return Err(EvaError::unsupported(
+                "daemon service entrypoint requires a production service manager kind",
+            )
+            .with_context("kind", kind.as_str()));
+        }
+        let executable = executable.into();
+        let project_root = project_root.into();
+        let service_name = stable_non_empty(service_name.to_owned(), "service_name")?;
+        let base_arguments = vec![
+            OsString::from("daemon"),
+            OsString::from("__service-entry"),
+            OsString::from("--project"),
+            project_root.as_os_str().to_os_string(),
+            OsString::from("--service-name"),
+            OsString::from(service_name),
+            OsString::from("--service-kind"),
+            OsString::from(kind.as_str()),
+        ];
+        let base = Self::new(executable, base_arguments, project_root)?;
+        let mut arguments = base.arguments.clone();
+        arguments.push(OsString::from(SERVICE_IDENTITY_ARG));
+        arguments.push(OsString::from(base.argv_digest.clone()));
+        // Keep `argv_digest` bound to the pre-identity command.  This is the
+        // value embedded in the argument and is intentionally not recursive.
+        Ok(Self {
+            executable: base.executable,
+            arguments,
+            working_directory: base.working_directory,
+            argv_digest: base.argv_digest,
+        })
+    }
+
+    /// Returns the full argv (executable followed by ordered arguments).
+    pub fn argv(&self) -> Vec<OsString> {
+        std::iter::once(self.executable.as_os_str().to_os_string())
+            .chain(self.arguments.iter().cloned())
+            .collect()
+    }
+
+    /// Recomputes the digest from the fields, rejecting tampered instances.
+    pub fn validate(&self) -> Result<(), EvaError> {
+        validate_absolute_path(&self.executable, "service entrypoint executable")?;
+        validate_absolute_path(
+            &self.working_directory,
+            "service entrypoint working directory",
+        )?;
+        for argument in &self.arguments {
+            validate_argument(argument)?;
+        }
+        let expected = digest_without_identity_argument(
+            &self.executable,
+            &self.arguments,
+            &self.working_directory,
+        );
+        if self.argv_digest != expected {
+            return Err(EvaError::conflict(
+                "service entrypoint argv digest does not match executable and arguments",
+            )
+            .with_context("expected_digest", expected)
+            .with_context("actual_digest", &self.argv_digest));
+        }
+        if self.is_daemon_entrypoint() {
+            let identity_positions = self
+                .arguments
+                .iter()
+                .enumerate()
+                .filter_map(|(index, value)| {
+                    (value == OsStr::new(SERVICE_IDENTITY_ARG)).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            if identity_positions.as_slice() != [self.arguments.len().saturating_sub(2)]
+                || self.arguments.len() < 4
+                || self.arguments[self.arguments.len() - 2] != OsStr::new(SERVICE_IDENTITY_ARG)
+            {
+                return Err(EvaError::conflict(
+                    "daemon service entrypoint requires one trailing identity argument",
+                ));
+            }
+            let provided = self.arguments[self.arguments.len() - 1]
+                .to_str()
+                .ok_or_else(|| {
+                    EvaError::invalid_argument(
+                        "service entrypoint identity argument must be valid UTF-8",
+                    )
+                })?;
+            if provided != self.argv_digest {
+                return Err(EvaError::conflict(
+                    "service entrypoint identity argument does not match argv digest",
+                )
+                .with_context("expected_digest", &self.argv_digest)
+                .with_context("provided_digest", provided));
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns whether this is the canonical daemon service entrypoint shape.
+    pub fn is_daemon_entrypoint(&self) -> bool {
+        self.arguments
+            .first()
+            .is_some_and(|value| value == OsStr::new("daemon"))
+            && self
+                .arguments
+                .get(1)
+                .is_some_and(|value| value == OsStr::new("__service-entry"))
+    }
+
+    /// Returns the digest used in the service identity marker.
+    pub fn identity_digest(&self) -> &str {
+        &self.argv_digest
+    }
+
+    /// Recomputes the digest while ignoring a trailing identity argument pair.
+    /// This is useful for validating a deserialized or externally assembled
+    /// daemon argv without accepting a self-referential digest.
+    pub fn recompute_argv_digest(&self) -> String {
+        digest_without_identity_argument(&self.executable, &self.arguments, &self.working_directory)
+    }
+}
+
+fn digest_without_identity_argument(
+    executable: &Path,
+    arguments: &[OsString],
+    working_directory: &Path,
+) -> String {
+    let mut effective_arguments = arguments;
+    if arguments.len() >= 4
+        && arguments[0] == OsStr::new("daemon")
+        && arguments[1] == OsStr::new("__service-entry")
+        && arguments[arguments.len() - 2] == OsStr::new(SERVICE_IDENTITY_ARG)
+    {
+        effective_arguments = &arguments[..arguments.len() - 2];
+    }
+    compute_service_argv_digest(executable, effective_arguments, working_directory)
+}
+
+/// Computes the stable service argv digest.  This is public within the crate
+/// so each platform adapter can include exactly the same identity marker.
+pub(crate) fn compute_service_argv_digest(
+    executable: &Path,
+    arguments: &[OsString],
+    working_directory: &Path,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"eva.service-entrypoint.v1\0");
+    append_os_field(&mut hasher, executable.as_os_str());
+    hasher.update((arguments.len() as u64).to_le_bytes());
+    for argument in arguments {
+        append_os_field(&mut hasher, argument.as_os_str());
+    }
+    append_os_field(&mut hasher, working_directory.as_os_str());
+    format!("{:x}", hasher.finalize())
+}
+
+fn append_os_field(hasher: &mut Sha256, value: &OsStr) {
+    let bytes = os_bytes(value);
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+#[cfg(unix)]
+fn os_bytes(value: &OsStr) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    value.as_bytes().to_vec()
+}
+
+#[cfg(windows)]
+fn os_bytes(value: &OsStr) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    value.encode_wide().flat_map(u16::to_le_bytes).collect()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn os_bytes(value: &OsStr) -> Vec<u8> {
+    value.to_string_lossy().as_bytes().to_vec()
+}
+
+fn validate_absolute_path(path: &Path, field: &'static str) -> Result<(), EvaError> {
+    if !path.is_absolute() || path.as_os_str().is_empty() {
+        return Err(EvaError::invalid_argument(format!(
+            "{field} must be an absolute path"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_argument(argument: &OsStr) -> Result<(), EvaError> {
+    if argument.is_empty() {
+        return Err(EvaError::invalid_argument(
+            "service entrypoint arguments cannot be empty",
+        ));
+    }
+    if contains_nul(argument) {
+        return Err(EvaError::invalid_argument(
+            "service entrypoint arguments cannot contain NUL",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn contains_nul(value: &OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    value.as_bytes().contains(&0)
+}
+
+#[cfg(windows)]
+fn contains_nul(value: &OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    value.encode_wide().any(|unit| unit == 0)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn contains_nul(value: &OsStr) -> bool {
+    value.to_string_lossy().contains('\0')
+}
 
 /// 项目中声明的服务管理器配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +317,9 @@ pub struct ServiceManagerDefinition {
     pub start_on_boot: bool,
     /// 交接时是否重启 Supervisor。
     pub restart_supervisor: bool,
+    /// Optional direct daemon process entrypoint. `None` preserves the
+    /// legacy binary-only service-manager contract.
+    pub service_entrypoint: Option<ServiceManagerEntryPoint>,
 }
 
 /// Typed service state shared by status and mutation reports.
@@ -305,7 +593,48 @@ impl ServiceManagerDefinition {
             candidate_runtime_binary: None,
             start_on_boot: false,
             restart_supervisor: false,
+            service_entrypoint: None,
         })
+    }
+
+    /// Returns a definition with a canonical direct daemon entrypoint.
+    pub fn with_daemon_entrypoint(
+        mut self,
+        executable: impl Into<PathBuf>,
+        project_root: impl Into<PathBuf>,
+    ) -> Result<Self, EvaError> {
+        self.set_daemon_entrypoint(executable, project_root)?;
+        Ok(self)
+    }
+
+    /// Installs a generic direct service entrypoint after validation.
+    pub fn set_service_entrypoint(
+        &mut self,
+        entrypoint: ServiceManagerEntryPoint,
+    ) -> Result<(), EvaError> {
+        entrypoint.validate()?;
+        self.service_entrypoint = Some(entrypoint);
+        Ok(())
+    }
+
+    /// Builds and installs the canonical daemon entrypoint for this service.
+    pub fn set_daemon_entrypoint(
+        &mut self,
+        executable: impl Into<PathBuf>,
+        project_root: impl Into<PathBuf>,
+    ) -> Result<(), EvaError> {
+        self.service_entrypoint = Some(ServiceManagerEntryPoint::for_daemon(
+            executable,
+            project_root,
+            &self.service_name,
+            self.kind,
+        )?);
+        Ok(())
+    }
+
+    /// Returns the configured direct service entrypoint, when present.
+    pub fn service_entrypoint(&self) -> Option<&ServiceManagerEntryPoint> {
+        self.service_entrypoint.as_ref()
     }
 
     /// 判断配置是否启用了真实平台服务管理器。
@@ -326,6 +655,7 @@ impl From<ServiceManagerConfig> for ServiceManagerDefinition {
             candidate_runtime_binary: config.candidate_runtime_binary,
             start_on_boot: config.start_on_boot,
             restart_supervisor: config.restart_supervisor,
+            service_entrypoint: None,
         }
     }
 }
@@ -694,6 +1024,130 @@ mod tests {
             Some(candidate_runtime_binary)
         );
         assert!(borrowed.production_adapter_enabled());
+    }
+
+    #[test]
+    fn daemon_entrypoint_preserves_exact_argv_for_paths_with_spaces_and_binds_digest() {
+        let executable = std::fs::canonicalize(std::env::current_exe().expect("current exe"))
+            .expect("canonical executable");
+        let project_root = std::env::temp_dir().join("Eva Service Project");
+        let entrypoint = ServiceManagerEntryPoint::for_daemon(
+            executable.clone(),
+            project_root.clone(),
+            "eva-prod",
+            ServiceManagerKind::Systemd,
+        )
+        .expect("daemon entrypoint");
+
+        assert_eq!(entrypoint.executable, executable);
+        assert_eq!(entrypoint.working_directory, project_root);
+        assert_eq!(
+            entrypoint.arguments,
+            vec![
+                OsString::from("daemon"),
+                OsString::from("__service-entry"),
+                OsString::from("--project"),
+                entrypoint.working_directory.as_os_str().to_os_string(),
+                OsString::from("--service-name"),
+                OsString::from("eva-prod"),
+                OsString::from("--service-kind"),
+                OsString::from("systemd"),
+                OsString::from(SERVICE_IDENTITY_ARG),
+                OsString::from(entrypoint.argv_digest.clone()),
+            ]
+        );
+        assert!(entrypoint.is_daemon_entrypoint());
+        assert_eq!(entrypoint.recompute_argv_digest(), entrypoint.argv_digest);
+        entrypoint.validate().expect("digest validates");
+
+        let mut tampered = entrypoint.clone();
+        tampered.arguments[3] = OsString::from("C:\\tampered project");
+        assert_eq!(
+            tampered
+                .validate()
+                .expect_err("argv drift must fail closed")
+                .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        let mut tampered_identity = entrypoint.clone();
+        *tampered_identity
+            .arguments
+            .last_mut()
+            .expect("identity argument") = OsString::from("deadbeef");
+        assert_eq!(
+            tampered_identity
+                .validate()
+                .expect_err("identity drift must fail closed")
+                .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn generic_entrypoint_digest_includes_identity_like_arguments() {
+        let executable = std::fs::canonicalize(std::env::current_exe().expect("current exe"))
+            .expect("canonical executable");
+        let root = std::env::temp_dir().join("Eva Generic Root");
+        let entrypoint = ServiceManagerEntryPoint::new(
+            executable,
+            [
+                OsString::from("--service-identity"),
+                OsString::from("literal-value"),
+            ],
+            root,
+        )
+        .expect("generic entrypoint");
+        entrypoint.validate().expect("generic digest validates");
+    }
+
+    #[test]
+    fn daemon_entrypoint_rejects_fake_kind_and_missing_or_duplicate_identity() {
+        let executable = std::fs::canonicalize(std::env::current_exe().expect("current exe"))
+            .expect("canonical executable");
+        let root = std::env::temp_dir().join("Eva Entry Negative Root");
+        assert_eq!(
+            ServiceManagerEntryPoint::for_daemon(
+                executable.clone(),
+                root.clone(),
+                "eva-dev",
+                ServiceManagerKind::Fake,
+            )
+            .expect_err("fake daemon service kind")
+            .kind(),
+            eva_core::ErrorKind::Unsupported
+        );
+
+        let mut entrypoint = ServiceManagerEntryPoint::for_daemon(
+            executable,
+            root,
+            "eva-prod",
+            ServiceManagerKind::Systemd,
+        )
+        .expect("production daemon entrypoint");
+        entrypoint
+            .arguments
+            .truncate(entrypoint.arguments.len() - 2);
+        entrypoint.argv_digest = entrypoint.recompute_argv_digest();
+        assert_eq!(
+            entrypoint
+                .validate()
+                .expect_err("missing identity pair")
+                .kind(),
+            eva_core::ErrorKind::Conflict
+        );
+        entrypoint.arguments.extend([
+            OsString::from(SERVICE_IDENTITY_ARG),
+            OsString::from(entrypoint.argv_digest.clone()),
+            OsString::from(SERVICE_IDENTITY_ARG),
+            OsString::from(entrypoint.argv_digest.clone()),
+        ]);
+        assert_eq!(
+            entrypoint
+                .validate()
+                .expect_err("duplicate identity pair")
+                .kind(),
+            eva_core::ErrorKind::Conflict
+        );
     }
 
     #[test]

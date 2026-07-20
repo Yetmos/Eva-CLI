@@ -4,7 +4,7 @@
 
 Eva-CLI 是一个基于 Rust 的 CLI runtime，用于受控多 Agent 工作流、发布加固、诊断、配置校验、请求级记忆/知识上下文组装、硬件绑定计划、备份/生命周期检查和源码发布运维。
 
-Eva-CLI 当前处在 V1.11.5-alpha 开发线，并已完成 V1.17.6 V1.x closure release gate。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载、V1.0 in-memory basic runtime、V1.1 外部能力诊断、V1.2 记忆/知识上下文、V1.3 硬件发现/probe/plan-first 绑定、V1.4 backup/snapshot/restore/upgrade planning、V1.5 release check/security/perf/migration、V1.6 durable runtime/storage、V1.7 受限 Lua VM 与热更新生命周期、V1.8 外部 provider/MCP/Skill runner 受控真实执行、V1.9 policy/discovery/memory/observability 基线、V1.10 硬件与高风险 apply gate、V1.11 release evidence gate、V1.11.4 CLI 命令模块拆分、V1.11.5 emit/agent/capability 命令证据、V1.12 daemon 控制/恢复、V1.13 provider supervision gate、V1.14 destructive restore mutation/rollback 与 service-manager abstraction、V1.15 hardware permission/hotplug safety gate 与 memory/knowledge maintenance/retrieval/redaction、V1.16.4 observability retention/rotation policy、V1.17.1 run command module split、V1.17.2 operator execution-state 字段、V1.17.3 高风险 text summary、V1.17.4 public JSON contract diff gate、V1.17.5 同步后的 README/手册/发布说明/官网/i18n metadata，以及 V1.17.6 `release check` closure report、`REL-OBSERVABILITY-POLICY-001`、`REL-V1X-CLOSURE-001` 和生产签名/仓库/service-manager/硬件 fixture/database sink external blockers 记录。
+Eva-CLI 当前处在 V1.11.5-alpha 开发线，并已完成 V1.17.6 V1.x closure release gate。仓库内已有可编译 workspace、配置样例、schema、基础契约 crate、项目配置加载、V1.0 in-memory basic runtime、V1.1 外部能力诊断、V1.2 记忆/知识上下文、V1.3 硬件发现/probe/plan-first 绑定、V1.4 backup/snapshot/restore/upgrade planning、V1.5 release check/security/perf/migration、V1.6 durable runtime/storage、V1.7 受限 Lua VM 与热更新生命周期、V1.8 外部 provider/MCP/Skill runner 受控真实执行、V1.9 policy/discovery/memory/observability 基线、V1.10 硬件与高风险 apply gate、V1.11 release evidence gate、V1.11.4 CLI 命令模块拆分、V1.11.5 emit/agent/capability 命令证据、V1.12 daemon 控制/恢复、V1.13 provider supervision gate、V1.14 destructive restore mutation/rollback 与 service-manager abstraction、host-bound Windows Service/systemd/launchd Adapter，以及绑定 identity 的 daemon direct service entrypoint 代码契约、V1.15 hardware permission/hotplug safety gate 与 memory/knowledge maintenance/retrieval/redaction、V1.16.4 observability retention/rotation policy、V1.17.1 run command module split、V1.17.2 operator execution-state 字段、V1.17.3 高风险 text summary、V1.17.4 public JSON contract diff gate、V1.17.5 同步后的 README/手册/发布说明/官网/i18n metadata，以及 V1.17.6 `release check` closure report、`REL-OBSERVABILITY-POLICY-001`、`REL-V1X-CLOSURE-001` 和生产签名/仓库/service-manager/硬件 fixture/database sink external blockers 记录。
 
 当前受管理项目版本：`V1.11.5-alpha`（`Cargo.toml` 版本 `1.11.5-alpha`，预发布 Git tag 形式 `v1.11.5-alpha`）。版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)。
 
@@ -22,9 +22,9 @@ Eva-CLI 已经完成 V0.1 到 V1.17.6 可执行/可验证能力与 release closu
 1. Rust workspace 和 20 个 crate 边界已创建；
 2. `eva-core`、`eva-config`、`eva-policy`、`eva-observability` 已具备基础契约；
 3. `eva-runtime` 已实现 V1.0 `in_memory_v1.0` basic runtime 和本地 task 诊断；
-4. `eva-cli` 已实现 `version`、`doctor`、`config validate`、`inspect`、`inspect durable`、`run --example basic`、`emit`、`daemon start/status/stop/shutdown/submit/cancel/drain/reload`、`agent status/drain/reload`、`capability list/probe/call`、`task status/logs/cancel`、`adapter`、`mcp`、`skill`、`discovery`、`memory context`、`hardware list/probe/bind`、`backup/snapshot/restore/upgrade` 和 `release check/security/perf/migration`；
+4. `eva-cli` 已实现 `version`、`doctor`、`config validate`、`inspect`、`inspect durable`、`run --example basic`、`emit`、`daemon start/status/stop/shutdown/submit/cancel/drain/reload`、`service install/status/start/stop/restart/uninstall`、`agent status/drain/reload`、`capability list/probe/call`、`task status/logs/cancel`、`adapter`、`mcp`、`skill`、`discovery`、`memory context`、`hardware list/probe/bind`、`backup/snapshot/restore/upgrade` 和 `release check/security/perf/migration`；
 5. `eva-hardware` 已实现 V1.3 discovery candidate、DeviceRegistry lease、simulated driver binding 和 hotplug state machine；
-6. `eva-backup` 和 `eva-lifecycle` 已实现 filesystem artifact store、release snapshot create/promote、restore plan/apply/rollback、local release pointer upgrade apply、generation handoff、drain 和 rollback evidence；
+6. `eva-backup` 和 `eva-lifecycle` 已实现 filesystem artifact store、release snapshot create/promote、restore plan/apply/rollback、local release pointer upgrade apply、generation handoff、drain、rollback evidence、三平台 service Adapter、规范化 service argv identity 与 cooperative stop bridge；
 7. `eva-release` 已实现 V1.17.6 release readiness、security review、performance baseline、migration guide、compatibility policy、durable recovery smoke gate、durable diagnostics smoke gate、Lua VM execution gate、Lua host bindings gate、Lua resource limits gate、Lua hot reload lifecycle gate、artifact/distribution/scanner/benchmark evidence gate、daemon/provider/hardware/observability readiness gate、public JSON contract diff gate 和 V1.x closure report；
 8. `eva-storage`、`eva-eventbus` 与 `eva-runtime` 已实现 V1.6 durable backend manifest、migration lock、filesystem EventLog、DurableEventBus、queryable dead-letter store、redrive 基线、durable task snapshot adapter、durable audit sink、runtime recovery scanner、runtime recovered audit evidence、durable backend diagnostics report 和 artifact metadata hardening；
 9. `eva-lua-host` 已实现 V1.7.1 `mlua` VM adapter、受限标准库、真实 `on_event` 执行、稳定错误映射、旧静态 parser compatibility fallback、V1.7.2 只读 request/trace/memory、host observability 和 `ctx.tools.call` capability binding、V1.7.3 wall-clock timeout、instruction budget、cancellation token 和 memory budget，以及 V1.7.4 shadow load health gate；
@@ -72,9 +72,10 @@ Eva-CLI/
 
 这张图概括当前已实现边界：basic 路径组合本地 EventBus、Scheduler mailbox、
 AgentRuntime 与受限 Lua 5.4 host；外部 capability 调用使用独立的 policy、Adapter、
-provider 与 transport 门禁。前台 daemon、恢复、备份、restore、upgrade 和 release
-命令分别组合文件系统服务与证据，`RuntimeBuilder` 并不是持有全部 concrete service
-的统一容器。
+provider 与 transport 门禁。daemon、恢复、service lifecycle、备份、restore、upgrade
+和 release 命令分别组合文件系统服务与证据。生产 service 定义会绑定规范化可执行文件、
+原生 argv、工作目录与 identity digest，并进入同进程隐藏 direct entrypoint；停止通知复用
+既有 drain/shutdown 事务。`RuntimeBuilder` 并不是持有全部 concrete service 的统一容器。
 
 ## 文档入口
 
@@ -141,7 +142,8 @@ provider 与 transport 门禁。前台 daemon、恢复、备份、restore、upgr
 
 受控 provider runner、capability invoke、staged restore apply/rollback、snapshot promote、本地 release pointer upgrade apply、native release archive、checksum 和 provenance bundle 已经实现。当前剩余生产边界为：
 
-- 生产后台 daemon 与 OS 进程监督，包括平台 service-manager handoff 和 blue-green rollback；
+- 经生产认证的 OS service 监督，包括真实 host stop/boot/reboot evidence、destructive lifecycle harness 与 release gate；
+- 真实 blue-green handoff、入口切流和 runtime rollback；
 - OS credential vault/用户隔离，以及 MCP 生产 streaming、TLS 和真实外部 server 兼容认证；
 - 真实硬件 driver、OS hotplug watcher 和真实/虚拟 release fixture；
 - 生产 database observability sink、retention scheduler 和长驻 memory/retrieval 调度；

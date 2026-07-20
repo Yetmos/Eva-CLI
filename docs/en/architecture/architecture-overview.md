@@ -5,7 +5,7 @@
 > Translation: [Simplified Chinese](../../zh-CN/architecture/总体架构方案.md)
 > Translation status: current
 
-Updated: 2026-07-13
+Updated: 2026-07-20
 
 ## 1. Scope And Version Semantics
 
@@ -33,7 +33,7 @@ The implementation is organized around five responsibility planes:
 | Local execution | Event publication, Topic routing, bounded mailboxes, Agent lifecycle, controlled Lua `on_event` | `eva-eventbus`, `eva-scheduler`, `eva-agent`, `eva-lua-host` |
 | Capability and integration | Capability selection and gates, Adapter transports, MCP, discovery, memory, hardware | `eva-capability`, `eva-adapter`, `eva-mcp`, `eva-discovery`, `eva-memory`, `eva-hardware` |
 | Durability and operations | Filesystem state, event/task/provider records, artifacts, backup, restore, upgrade and release evidence | `eva-storage`, `eva-backup`, `eva-lifecycle`, `eva-release` |
-| Composition and operator surface | Runtime reports, basic execution, foreground daemon control, diagnostics, stable CLI output | `eva-runtime`, `eva-cli`, root `eva` binary |
+| Composition and operator surface | Runtime reports, basic execution, foreground/background daemon control, direct service entry, diagnostics, stable CLI output | `eva-runtime`, `eva-cli`, root `eva` binary |
 
 `eva-observability` is cross-cutting: it supplies trace fields, audit and metric
 contracts, JSONL sinks, a tracing bridge, an OTLP exporter smoke path, and
@@ -145,10 +145,10 @@ Provider fallback is attempted only for failures classified as retryable. The
 supervisor records concurrency, rate, circuit, session, health, restart-policy,
 and durable process evidence; it is not an OS process manager.
 
-### 4.4 Foreground Daemon And Recovery Flow
+### 4.4 Daemon Modes And Recovery Flow
 
 ```text
-daemon start --foreground
+daemon start --foreground | --background
   -> filesystem lock and PID/state files
   -> durable backend verification
   -> task, event and provider recovery scan
@@ -160,12 +160,35 @@ daemon start --foreground
        -> status / submit / cancel / drain / reload / shutdown request
 ```
 
-Background daemon spawning is not implemented. The daemon does not start
-provider processes. A retry tick redrives and routes a due event into temporary
-Scheduler mailboxes and records a scheduler acknowledgement; it does not run an
-Agent or Lua handler for that delivery.
+Foreground mode keeps the current process; background mode uses a separate
+parent/child startup handshake and publishes success only after the child owns
+the durable PID/lease identity. Neither mode starts provider processes. A retry
+tick redrives and routes a due event into temporary Scheduler mailboxes and
+records a scheduler acknowledgement; it does not run an Agent or Lua handler
+for that delivery. The direct OS service path below is a third mode and never
+uses the background child entrypoint.
 
-### 4.5 Guarded Operations Flow
+### 4.5 Direct OS Service Entry Flow
+
+```text
+eva service install/start
+  -> canonical executable + native argv + working directory
+  -> service kind/name + stable identity digest
+  -> Windows SCM | systemd | launchd adapter
+  -> hidden daemon __service-entry
+  -> validate project, host kind, service name and identity
+  -> directly claim the daemon PID/lease; no second spawn
+  -> SCM control or Unix signal sets an atomic stop token
+  -> existing Shutdown request -> task drain -> stopped/PID cleanup/lease release
+```
+
+This is an implemented code contract, not production-host certification. The
+signal/SCM callback does not perform runtime work; it only requests cooperative
+stop, and the daemon loop owns the generation-bound drain/shutdown transaction.
+Controlled real-host stop/boot/reboot transcripts, a destructive lifecycle
+harness, and a production release gate are still required.
+
+### 4.6 Guarded Operations Flow
 
 Backup and snapshot commands write artifact-backed evidence. Restore apply uses
 an explicit plan, confirmation, policy approval, a filesystem lock,
@@ -208,8 +231,8 @@ does not sign or upload a production release.
 | Memory and knowledge records/checkpoints | `eva-memory` over `eva-storage` layout |
 | Hardware lease, permission and hotplug reconciliation | `eva-hardware` |
 | Backup/restore transaction evidence | `eva-backup` |
-| Generation, handoff, apply lock and rollback | `eva-lifecycle` |
-| Daemon control files and runtime recovery coordination | `eva-runtime` |
+| Generation, handoff, apply lock, rollback, service definition and OS-stop bridge | `eva-lifecycle` |
+| Daemon control files, direct service mode, drain/shutdown and runtime recovery coordination | `eva-runtime` |
 
 ## 7. Current Capability Boundary
 
@@ -217,11 +240,14 @@ Implemented boundaries include in-memory basic execution, filesystem durable
 event/task/provider stores, controlled stdio/plain-HTTP/MCP/Skill provider
 execution, simulator-oriented hardware safety, destructive restore with
 rollback, release-pointer mutation, JSONL observability, tracing integration,
-and explicit OTLP exporter smoke verification.
+explicit OTLP exporter smoke verification, host-bound service adapters, and an
+identity-bound hidden direct daemon entrypoint whose stop token reuses the
+existing drain/shutdown transaction.
 
 The following must not be described as implemented production capabilities:
 
-- a background or OS-managed daemon;
+- an OS-managed daemon certified by real-host stop/boot/reboot evidence, a
+  destructive lifecycle harness, and a production release gate;
 - a long-lived general task executor or automatic provider startup;
 - balanced `compete` scheduling, async actors, clustering, or a remote broker;
 - a production MCP server proxy, OS credential vault, or complete TLS boundary;
@@ -229,7 +255,8 @@ The following must not be described as implemented production capabilities:
 - real hardware certification or production hardware drivers;
 - SQLite/database state, a production observability database sink, or a
   resident retention scheduler;
-- systemd, Windows SCM, or launchd handoff;
+- verified systemd, Windows SCM, or launchd lifecycle recovery and real
+  blue-green handoff;
 - a remote backup transport or production key management;
 - production signing, attestation, package-repository publishing, or release
   upload;
@@ -243,9 +270,10 @@ observability policy, and public JSON contract gates. The current local result
 is `ready_with_external_blockers`.
 
 Production signing and attestation credentials, package repository access,
-platform service-manager test environments, real or virtual hardware fixtures,
-and a production database observability sink remain external blockers. Those
-items are recorded, not claimed complete.
+platform service-manager test environments for destructive stop/boot/reboot
+evidence, real or virtual hardware fixtures, and a production database
+observability sink remain external blockers. The direct-entry code contract is
+recorded separately and does not close those production gates.
 
 For the exact crate graph and ownership table, see
 [Module Partitioning](module-partitioning.md). For the shared contract model,

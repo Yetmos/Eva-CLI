@@ -15,6 +15,8 @@ pub mod launchd;
 pub mod rollback;
 /// Non-shell service-manager command execution and bounded evidence.
 pub mod service_command;
+/// Direct daemon service entrypoint and cooperative stop bridge.
+pub mod service_entry;
 /// Host-kind validation and bound service command execution.
 pub mod service_factory;
 /// 操作系统服务管理器抽象与测试适配器。
@@ -45,15 +47,19 @@ pub use service_command::{
     ServiceCommandStream, ServiceCommandTermination, ValidatedServiceCommandTarget,
     DEFAULT_SERVICE_COMMAND_OUTPUT_LIMIT_BYTES, DEFAULT_SERVICE_COMMAND_TIMEOUT,
 };
+pub use service_entry::{
+    run_service_entrypoint, ServiceEntryContext, ServiceEntryState, ServiceStopToken,
+};
 pub use service_factory::{
     HostBoundServiceCommandExecutor, ServiceHostPlatform, ServiceManagerFactory,
 };
 pub use service_manager::{
     FakeServiceManagerAdapter, ServiceManagerAdapter, ServiceManagerDefinition,
-    ServiceManagerHandoffReport, ServiceManagerHandoffRequest, ServiceManagerInspectRequest,
-    ServiceManagerKind, ServiceManagerMutationReport, ServiceManagerMutationRequest,
-    ServiceManagerOperation, ServiceManagerRollbackReport, ServiceManagerRollbackRequest,
-    ServiceManagerState, ServiceManagerStatusReport, ServiceManagerStatusRequest,
+    ServiceManagerEntryPoint, ServiceManagerHandoffReport, ServiceManagerHandoffRequest,
+    ServiceManagerInspectRequest, ServiceManagerKind, ServiceManagerMutationReport,
+    ServiceManagerMutationRequest, ServiceManagerOperation, ServiceManagerRollbackReport,
+    ServiceManagerRollbackRequest, ServiceManagerState, ServiceManagerStatusReport,
+    ServiceManagerStatusRequest, SERVICE_IDENTITY_ARG,
 };
 pub use supervisor::{InMemorySupervisor, RuntimeHealth, SupervisorReport};
 pub use systemd::SystemdAdapter;

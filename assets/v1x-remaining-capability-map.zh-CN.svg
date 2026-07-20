@@ -22,9 +22,9 @@
     <rect x="60" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="60" y="158" width="310" height="8" rx="4" fill="#2563eb"/>
     <text x="84" y="203" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">受控 Alpha 边界</text>
-    <text x="84" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">后台 daemon、worker 与 durable recovery</text>
-    <text x="84" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Provider process boundary 与 admission</text>
-    <text x="84" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">配置 generation、watcher 与持久 cache</text>
+    <text x="84" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">W2-L03～L05：验证中</text>
+    <text x="84" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">W2-L07：direct service entry 已完成</text>
+    <text x="84" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">identity、PID/lease 与 cooperative stop</text>
     <text x="84" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Simulator hardware safety evidence</text>
     <text x="84" y="352" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">JSONL、OTLP 与 retention policy smoke</text>
     <text x="84" y="379" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">无签名 package 与 Alpha gate</text>
@@ -38,11 +38,11 @@
     <rect x="445" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="445" y="158" width="310" height="8" rx="4" fill="#dc2626"/>
     <text x="469" y="203" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">生产代码缺口</text>
-    <text x="469" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">daemon entrypoint 与 boot recovery</text>
-    <text x="469" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">run-as、vault 与 daemon-owned supervisor</text>
-    <text x="469" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">MCP TLS、streaming 与外部兼容</text>
-    <text x="469" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">真实 backup、KMS 与 service handoff</text>
-    <text x="469" y="352" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">真实 driver、I/O 与 hardware fixture</text>
+    <text x="469" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">W2-L08：boot/restart recovery 阻塞</text>
+    <text x="469" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">W2-L09～L10：harness 与 gate 阻塞</text>
+    <text x="469" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">run-as、vault 与 daemon-owned supervisor</text>
+    <text x="469" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">MCP TLS、streaming 与外部兼容</text>
+    <text x="469" y="352" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">真实 backup、KMS、driver 与 fixture</text>
     <text x="469" y="379" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Registry、DB、retention 与 signing/publication</text>
     <rect x="469" y="414" width="262" height="34" rx="6" fill="#fee2e2"/>
     <text x="542" y="436" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#b91c1c">仍需实现</text>
@@ -65,5 +65,5 @@
   </g>
 
   <rect x="60" y="510" width="1080" height="58" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
-  <text x="84" y="545" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" font-weight="700" fill="#9a3412">ready_with_external_blockers 是 Alpha checklist 结果，不代表生产就绪。</text>
+  <text x="84" y="545" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" font-weight="700" fill="#9a3412">W2-L07 代码完成不等于真实 host evidence 或 production gate 已关闭。</text>
 </svg>

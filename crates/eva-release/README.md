@@ -1,6 +1,6 @@
 # eva-release / Release Hardening
 
-Updated: 2026-07-10
+Updated: 2026-07-20
 
 `eva-release` owns the V1.5 release-hardening boundary and later additive
 runtime-readiness gates. It turns the final 1.x readiness work into executable
@@ -23,7 +23,7 @@ that Eva-CLI and CI can prove today, then exposes that evidence to
 | Backup archive readiness | `ReleaseGate` | Records V1.10.3 signed backup archive, optional sealing, remote target contract, and pre-restore evidence as release readiness evidence. |
 | Restore apply gate readiness | `ReleaseGate` | Records V1.10.4 confirmation, policy approval, filesystem lock and health gate, V1.14.2 staged file mutation evidence, V1.14.3 rollback apply evidence, and V1.14.4 operator confirmation output. |
 | Supervisor handoff readiness | `ReleaseGate` | Records V1.10.5 blue-green handoff, release pointer mutation, persisted state, and rollback-on-health-failure evidence. |
-| Service-manager abstraction readiness | `ReleaseGate` | Records V1.14.5 `ServiceManagerAdapter`, fake handoff/rollback evidence, explicit `service_manager` config, and the warning boundary before platform adapters exist. |
+| Service-manager abstraction readiness | `ReleaseGate` | Records the original V1.14.5 `ServiceManagerAdapter`, Fake handoff/rollback evidence, and explicit `service_manager` config. Platform adapters and the identity-bound direct daemon entrypoint now exist in code, but this gate still stops before controlled real-host stop/boot/reboot evidence, a destructive harness, and production certification. |
 | Release artifact evidence | `ReleaseArtifactEvidence`, `ReleaseArtifactVerificationReport` | Parses a V1.11.1 key/value evidence manifest, verifies a SHA-256 keyed signature, source commit provenance, SBOM marker, and scan status, then exposes a blocking release gate when evidence is supplied. |
 | Distribution evidence | `ReleaseDistributionEvidence`, `ReleaseDistributionVerificationReport` | Parses a V1.11.2 key/value evidence manifest for Windows/Linux/macOS install smoke, install/upgrade/uninstall docs, and package-manager dry-run status, then exposes a blocking release gate when evidence is supplied. |
 | Security scan evidence | `ReleaseSecurityScanEvidence`, `ReleaseSecurityScanVerificationReport` | Parses a V1.11.3 external scanner evidence manifest and blocks readiness when the scanner did not pass or any high/critical finding is present. |
@@ -79,7 +79,7 @@ local gates pass.
 - define performance budgets as release-smoke contracts;
 - document the migration and compatibility policy that V1.5 promises;
 - expose signed backup archive, pre-restore evidence, restore apply/rollback/operator confirmation, and supervisor handoff evidence as readiness gates;
-- expose the V1.14.5 service-manager abstraction and fake handoff/rollback evidence as a required readiness gate;
+- expose the V1.14.5 service-manager abstraction and Fake handoff/rollback evidence as a required readiness gate, while keeping code-only platform entrypoint coverage distinct from production evidence;
 - expose V1.15.1 hardware OS permission diagnostics through `SEC-HW-001` security evidence;
 - expose V1.15.4 daemon hotplug subscriber and watcher crash lease-release evidence through `SEC-HW-001` security evidence;
 - expose V1.15.5 hardware safety evidence through the required `REL-HARDWARE-SAFETY-001` readiness gate;
@@ -97,7 +97,7 @@ local gates pass.
 - run package signing services or artifact publishing;
 - execute destructive restore;
 - replace OS service-manager supervision;
-- claim Windows Service, systemd, or launchd handoff support from the fake adapter gate;
+- claim production Windows Service, systemd, or launchd supervision from Fake, adapter-unit, or direct-entrypoint code tests;
 - run external security scanners directly;
 - execute benchmark commands directly;
 - certify external MCP servers or provide HTTPS/TLS transport;
@@ -135,7 +135,7 @@ archive entries; V1.14.4 adds operator confirmation output with confirm token,
 target root, affected count, state flags, irreversible warning, and next action.
 V1.10.5 adds a
 required supervisor handoff gate for controlled local release pointer mutation
-and persisted handoff state while production service-manager integration remains
+and persisted handoff state while real blue-green service-manager handoff remains
 future work. V1.11.1 adds an opt-in required gate for supplied signed release
 artifact evidence; unsigned artifacts, signature mismatch, or provenance/source
 commit mismatch block `release check`. V1.11.2 adds an opt-in required gate for
@@ -168,7 +168,12 @@ service-manager abstraction, hardware safety, observability policy, and JSON
 contract gates to pass, while listing production signing, repository
 publication, platform service-manager tests, real hardware fixtures, and
 production database sink as external blockers.
-V1.14.5 adds required service-manager abstraction gate
-`REL-SERVICE-MANAGER-ABSTRACTION-001` for the adapter trait, fake handoff and
-rollback evidence, explicit config parsing, and docs/progress tracking; it does
-not execute Windows Service, systemd, or launchd commands.
+V1.14.5 added required service-manager abstraction gate
+`REL-SERVICE-MANAGER-ABSTRACTION-001` for the adapter trait, Fake handoff and
+rollback evidence, explicit config parsing, and docs/progress tracking. The
+current workspace additionally contains host-bound Windows Service/systemd/
+launchd adapters and an identity-bound direct daemon entrypoint whose stop token
+reuses the runtime drain/shutdown transaction. The existing release gate does
+not yet consume controlled real-host stop/boot/reboot transcripts, a destructive
+lifecycle harness, or a production service gate, and it does not prove a real
+blue-green handoff.

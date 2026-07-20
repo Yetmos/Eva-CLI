@@ -1,6 +1,6 @@
 # Eva-CLI User Manual
 
-Last updated: 2026-07-10
+Last updated: 2026-07-20
 
 Applies to: Eva-CLI `1.11.5-alpha` with V1.17.6 V1.x closure release gate
 
@@ -15,7 +15,8 @@ execution limits, shadow-load health checks, generation route gating, drain
 evidence, rollback audit evidence, release evidence gates, and CLI command
 module split coverage, typed event emission, daemon control, daemon-backed Agent
 drain/reload mutation, daemon runtime release gate, Agent lifecycle evidence,
-and capability provider routing commands are in place. V1.17.6 adds the V1.x
+host-bound service lifecycle commands, an identity-bound hidden direct service
+entrypoint, and capability provider routing commands are in place. V1.17.6 adds the V1.x
 closure release gate/report on top of the synchronized manuals, release notes,
 website cards, generated localized HTML, and i18n manifest. High-risk mutation
 paths remain plan-first and require explicit confirmation, policy, evidence,
@@ -29,6 +30,7 @@ lock, and health gates.
 | Runtime | `run --example basic` executes the V1.0 in-memory basic runtime loop through the restricted Lua VM, host binding, resource-limit, and hot-reload lifecycle boundary. |
 | External capabilities | Declared stdio/http providers, MCP JSON-RPC tools, and Skill workflows can execute through controlled runners; Discovery remains candidate-only. Production OS process supervision is not available. |
 | Risky actions | Hardware raw I/O remains blocked. Snapshot promotion, staged restore apply/rollback, and local release-pointer upgrade apply are implemented behind plan, confirmation, policy, evidence, lock, and health gates. |
+| Service lifecycle | Windows Service/systemd/launchd adapters can install an identity-bound hidden direct daemon entrypoint. The code reuses daemon drain/shutdown for OS stop, but real-host stop/boot/reboot and destructive-harness evidence are not production-certified. |
 | Release checks | V1.17.6 adds `REL-OBSERVABILITY-POLICY-001`, `REL-V1X-CLOSURE-001`, and additive `closure` JSON to `release check`. `release check/security/perf/migration` still cover Lua VM, daemon runtime readiness, release evidence, CLI split readiness, public JSON contract readiness, and runtime command completion evidence. |
 
 ![Eva-CLI source workflow](../../assets/eva-cli-user-manual-flow.svg)
@@ -98,7 +100,8 @@ state, rollback path, and risk evidence. V1.17.4 adds
 JSON fields while allowing additive fields. V1.17.6 adds
 `v1x_closure_gate_v1.17.6`, plus `REL-OBSERVABILITY-POLICY-001`,
 `REL-V1X-CLOSURE-001`, and additive `release check` `closure` JSON; production
-signing, package repository publication, platform service-manager tests, real
+signing, package repository publication, destructive platform service-manager
+stop/boot/reboot tests, real
 hardware fixtures, and production database sink remain recorded external
 blockers.
 
@@ -115,6 +118,7 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Runtime | `run --example basic` | Execute the V1.0 in-memory basic loop through the restricted Lua VM boundary. | Writes `.eva/tasks` or durable backend `tasks/` |
 | Emit | `emit <topic>` | Publish a typed Event to in-memory or durable EventBus. | Writes durable backend `events/log/` when `--durable-backend` is set |
 | Daemon | `daemon start/status/stop/shutdown/submit/cancel/drain/reload` | Verify the local daemon lease/PID/state, durable backend, provider/task recovery, policy, observability, shutdown contract, and filesystem mailbox control plane. | Writes daemon state/observability/control directories; the default smoke releases the lease and PID but retains the fixed lock anchor |
+| Service | `service install/status/start/stop/restart/uninstall` | Apply the configured host-bound Windows Service/systemd/launchd lifecycle. Production definitions point at the hidden direct daemon entrypoint; Fake requires explicit `--dev`. | Mutates the host service manager for production kinds, or isolated `.eva/service-manager` development state for Fake |
 | Agent | `agent status/drain/reload` | Report Agent lifecycle, drain plans, and generation reload evidence. | With a running daemon, `drain/reload` write daemon mutation state; without one they report `mutation_executed:false` |
 | Capability | `capability list/probe/call` | Report provider routing and run dry-run or confirmed controlled invokes. | `call` defaults to dry-run; confirmed invokes report `invocation_executed` and keep `mutation_executed:false` |
 | Task | `task status/logs/cancel` | Read or mark task diagnostics. | Writes task cancel marker |
@@ -129,6 +133,23 @@ Use text output for human inspection and `--output json` for scripts or CI.
 | Restore | `restore plan/apply/rollback` | Plan restore, apply staged file mutations, or reverse a rollback-required transaction. | Apply/rollback can mutate the target filesystem after all gates pass |
 | Upgrade | `upgrade check/apply` | Check readiness or commit a local state-store handoff and release-pointer mutation. | `apply --state-store` writes local supervisor state after policy and health gates |
 | Release | `release check/security/perf/migration` | Run release readiness, security, performance, and migration gates; `release check` includes daemon runtime, observability policy, public JSON contract, and V1.x closure readiness. | No |
+
+## Service Manager Boundary
+
+Do not invoke the hidden `daemon __service-entry` command manually. A production
+`service install` builds its argument vector from the canonical executable and
+project root, adds the configured service kind/name, and binds those values to
+an identity digest. When the service manager starts it, that process directly
+owns the daemon PID and lease; it does not launch another child.
+
+Windows SCM controls and Unix service signals only set a cooperative stop token.
+The daemon control loop turns the token into its existing generation-bound
+`Shutdown` request, including task drain, stopped-state publication, PID cleanup,
+and lease release. Unit and process tests cover this contract. They do not
+replace controlled Windows SCM/systemd/launchd stop/boot/reboot transcripts,
+mandatory cleanup in a destructive lifecycle harness, or a production release
+gate. `upgrade apply` also remains a local modeled handoff and does not perform
+real blue-green switching.
 
 ## Emit Typed Events
 
@@ -318,8 +339,9 @@ Error JSON output uses `ok`, `command`, `exit_code`, `error`, and `trace`.
 ## Non-Goals in V1.11.5 Alpha
 
 V1.11.5-alpha does not provide signed installers, production signing or
-attestation credentials, Homebrew/Winget/Apt publication, production background
-daemon/service-manager handoff, OS provider process supervision or credential
+attestation credentials, Homebrew/Winget/Apt publication, production-certified
+service-manager stop/boot/reboot evidence, a destructive lifecycle harness,
+real blue-green handoff, OS provider process supervision or credential
 vault isolation, production MCP streaming/TLS certification, raw hardware I/O,
 real hardware fixtures, a production observability database sink/retention
 scheduler, or long-lived production memory/retrieval scheduling.

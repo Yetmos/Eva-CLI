@@ -5,7 +5,7 @@
 > Translation: [Simplified Chinese](../../zh-CN/architecture/模块划分方案.md)
 > Translation status: current
 
-Updated: 2026-07-13
+Updated: 2026-07-20
 
 ## 1. Scope
 
@@ -74,10 +74,10 @@ are authoritative.
 | `eva-memory` | private/global memory, knowledge records, context building, filesystem durability, TTL GC, rebuild checkpoint, retrieval and redaction evidence | `eva-capability`, `eva-core`, `eva-observability`, `eva-policy`, `eva-storage` | vector database or resident production retrieval scheduler |
 | `eva-hardware` | manifest-derived discovery, device/lease registry, simulator drivers, OS permission gate, lifecycle and hotplug EventBus publication | `eva-config`, `eva-core`, `eva-eventbus`, `eva-observability`, `eva-policy` | certified real hardware drivers or fixtures |
 | `eva-backup` | backup scope/manifest, artifact archives, migration package, release snapshots, restore planning, staged file mutation and rollback | `eva-core`, `eva-observability`, `eva-policy`, `eva-storage` | remote backup upload or production key management |
-| `eva-lifecycle` | generation/drain state, upgrade apply locks, supervisor handoff, release-pointer state, rollback, typed service-manager contract, and Windows Service/systemd/launchd adapters | `eva-backup`, `eva-core`, `eva-observability`, `eva-policy` | controlled real-host lifecycle transcripts, daemon service entrypoint, and boot/restart evidence; the Fake adapter remains test-only |
+| `eva-lifecycle` | generation/drain state, upgrade apply locks, supervisor handoff, release-pointer state, rollback, typed service-manager contract, Windows Service/systemd/launchd adapters, canonical direct-service argv identity, and the cooperative signal/SCM stop bridge | `eva-backup`, `eva-core`, `eva-observability`, `eva-policy` | controlled real-host stop/boot/reboot transcripts, destructive lifecycle harness certification, production gate, or blue-green traffic switching; the Fake adapter remains test-only |
 | `eva-release` | release readiness gates, artifact/distribution/scanner/benchmark verification, security/performance/migration reports, V1.x closure report | `eva-core`, `eva-mcp`, `eva-storage` | signing credentials, repository publishing or release upload |
-| `eva-runtime` | service summaries, basic run composition, foreground daemon/control mailbox, durable recovery/diagnostics, scheduler retry tick, runtime task reports | `eva-adapter`, `eva-agent`, `eva-backup`, `eva-capability`, `eva-config`, `eva-core`, `eva-discovery`, `eva-eventbus`, `eva-hardware`, `eva-lifecycle`, `eva-lua-host`, `eva-mcp`, `eva-memory`, `eva-observability`, `eva-policy`, `eva-scheduler`, `eva-storage` | release-gate aggregation; a persistent container holding every service |
-| `eva-cli` | public command parser/dispatch, text and JSON writers, trace/exit-code mapping, command-specific composition and operator gates | `eva-adapter`, `eva-agent`, `eva-backup`, `eva-capability`, `eva-config`, `eva-core`, `eva-discovery`, `eva-eventbus`, `eva-hardware`, `eva-lifecycle`, `eva-mcp`, `eva-memory`, `eva-observability`, `eva-policy`, `eva-release`, `eva-runtime`, `eva-storage` | shared domain contracts or a generic long-lived task executor |
+| `eva-runtime` | service summaries, basic run composition, foreground/background daemon control, direct service mode, durable recovery/diagnostics, scheduler retry tick, generation-bound drain/shutdown, runtime task reports | `eva-adapter`, `eva-agent`, `eva-backup`, `eva-capability`, `eva-config`, `eva-core`, `eva-discovery`, `eva-eventbus`, `eva-hardware`, `eva-lifecycle`, `eva-lua-host`, `eva-mcp`, `eva-memory`, `eva-observability`, `eva-policy`, `eva-scheduler`, `eva-storage` | release-gate aggregation; a persistent container holding every service |
+| `eva-cli` | public command parser/dispatch, service lifecycle commands, hidden identity-bound service entry validation, text and JSON writers, trace/exit-code mapping, command-specific composition and operator gates | `eva-adapter`, `eva-agent`, `eva-backup`, `eva-capability`, `eva-config`, `eva-core`, `eva-discovery`, `eva-eventbus`, `eva-hardware`, `eva-lifecycle`, `eva-mcp`, `eva-memory`, `eva-observability`, `eva-policy`, `eva-release`, `eva-runtime`, `eva-storage` | shared domain contracts or a generic long-lived task executor |
 
 ## 5. Dependency Graph
 
@@ -181,6 +181,21 @@ eva-cli
 concrete stores, buses, supervisors, and operation coordinators are opened by
 the command path that uses them.
 
+### 6.4 Direct Service Path
+
+```text
+eva-cli service install/start
+  -> eva-lifecycle platform adapter + canonical argv identity
+  -> hidden eva-cli daemon service entry
+  -> eva-runtime direct daemon lease/PID ownership
+  -> eva-lifecycle atomic OS-stop token
+  -> eva-runtime existing Shutdown drain transaction
+```
+
+The service process does not spawn a second daemon. Code tests cover identity
+drift and drain cleanup; real-host destructive lifecycle and boot/reboot
+evidence remain outside the crate graph.
+
 ## 7. Cross-Crate Invariants
 
 ### 7.1 Contract Invariant
@@ -211,16 +226,18 @@ reports.
 
 ## 8. Implemented Boundary Versus Production Blockers
 
-Implemented code includes filesystem durability, foreground daemon control,
-controlled external provider execution, MCP compatibility fixtures, simulator
-hardware safety, destructive restore/rollback, JSONL observability, and local
-release evidence gates.
+Implemented code includes filesystem durability, foreground/background daemon
+control, an identity-bound direct service entrypoint, controlled external
+provider execution, MCP compatibility fixtures, simulator hardware safety,
+destructive restore/rollback, JSONL observability, and local release evidence
+gates.
 
-The crate graph does not imply that the following are complete: background or
-OS-managed daemon startup, a live general task executor, balanced scheduling,
+The crate graph does not imply that the following are complete: production-
+certified OS service supervision with real-host stop/boot/reboot evidence and a
+destructive harness, a live general task executor, balanced scheduling,
 production MCP serving/TLS/vault isolation, real hardware integration,
-SQLite/database storage, production database observability, platform service
-managers, remote backup, production signing, package repositories, or release
+SQLite/database storage, production database observability, blue-green service
+handoff, remote backup, production signing, package repositories, or release
 upload. The V1.17.6 closure report records these as external or later production
 boundaries rather than hiding them behind module names.
 

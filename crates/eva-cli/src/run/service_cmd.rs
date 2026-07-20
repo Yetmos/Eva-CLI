@@ -228,9 +228,34 @@ fn prepare(
         EvaError::not_found("project does not configure a service manager")
             .with_context("project", project.project_root.display().to_string())
     })?;
-    let definition = ServiceManagerDefinition::from(config);
+    let mut definition = ServiceManagerDefinition::from(config);
+    bind_production_daemon_entrypoint(&mut definition, &project.project_root)?;
     let adapter = create_adapter(&definition, options.dev, &project.project_root)?;
     Ok((definition, adapter))
+}
+
+fn bind_production_daemon_entrypoint(
+    definition: &mut ServiceManagerDefinition,
+    project_root: &Path,
+) -> Result<(), EvaError> {
+    if definition.production_adapter_enabled() {
+        let executable = match definition.runtime_binary.as_ref() {
+            Some(configured) if configured.is_absolute() => configured.clone(),
+            Some(configured) => project_root.join(configured),
+            None => std::env::current_exe().map_err(|error| {
+                EvaError::internal("failed to resolve the Eva service executable")
+                    .with_context("io_error", error.to_string())
+            })?,
+        };
+        let executable = fs::canonicalize(&executable).map_err(|error| {
+            EvaError::internal("failed to canonicalize the Eva service executable")
+                .with_context("path", executable.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        definition.runtime_binary = Some(executable.clone());
+        definition.set_daemon_entrypoint(executable, project_root.to_path_buf())?;
+    }
+    Ok(())
 }
 
 fn create_adapter(
@@ -896,5 +921,27 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(host_error.kind(), eva_core::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn production_definition_binds_direct_daemon_entrypoint_but_fake_does_not() {
+        let Some(kind) = ServiceHostPlatform::current().service_manager_kind() else {
+            return;
+        };
+        let project_root =
+            fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")).unwrap();
+        let executable = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let mut production = ServiceManagerDefinition::new(true, kind, "eva-test").unwrap();
+        production.runtime_binary = Some(executable.clone());
+        bind_production_daemon_entrypoint(&mut production, &project_root).unwrap();
+        let entrypoint = production.service_entrypoint().unwrap();
+        assert_eq!(entrypoint.executable, executable);
+        assert_eq!(entrypoint.working_directory, project_root);
+        assert!(entrypoint.is_daemon_entrypoint());
+        entrypoint.validate().unwrap();
+
+        let mut fake = definition();
+        bind_production_daemon_entrypoint(&mut fake, &project_root).unwrap();
+        assert!(fake.service_entrypoint().is_none());
     }
 }

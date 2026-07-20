@@ -6,16 +6,19 @@ use super::{
 };
 use eva_config::{load_project_config, ProjectConfig};
 use eva_core::{AgentId, EvaError, RequestId};
+use eva_lifecycle::{
+    run_service_entrypoint, ServiceHostPlatform, ServiceManagerEntryPoint, ServiceManagerKind,
+};
 use eva_observability::TraceFields;
 use eva_runtime::{
     cleanup_failed_daemon_start, daemon_status, read_daemon_startup_frame,
     read_daemon_startup_report, request_daemon_startup_abort, send_daemon_control_request,
-    start_daemon, start_daemon_background_child, write_daemon_startup_report,
-    DaemonControlOperation, DaemonControlRequest, DaemonControlResponse, DaemonLeaseReport,
-    DaemonPathReport, DaemonPolicyReport, DaemonStartOptions, DaemonStartReport,
-    DaemonStartupFrame, DaemonStartupHandshake, DaemonStartupPhase, DaemonStateRecord,
-    IdempotencyKey, TaskArtifactRef, TaskAttemptPolicy, TaskEnvelope, TaskInput, TaskKind,
-    MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS,
+    start_daemon, start_daemon_background_child, start_daemon_service_with_stop_token_and_ready,
+    write_daemon_startup_report, DaemonControlOperation, DaemonControlRequest,
+    DaemonControlResponse, DaemonLeaseReport, DaemonPathReport, DaemonPolicyReport,
+    DaemonStartOptions, DaemonStartReport, DaemonStartupFrame, DaemonStartupHandshake,
+    DaemonStartupPhase, DaemonStateRecord, IdempotencyKey, TaskArtifactRef, TaskAttemptPolicy,
+    TaskEnvelope, TaskInput, TaskKind, MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS,
 };
 use eva_storage::DurableBackendReport;
 use std::env;
@@ -47,6 +50,14 @@ pub(super) enum DaemonCommand {
     BackgroundChild {
         options: DaemonCliOptions,
         handshake: DaemonStartupHandshake,
+    },
+    /// Direct service-manager entrypoint; unlike BackgroundChild it never
+    /// creates a launcher or secondary Eva process.
+    ServiceEntry {
+        options: DaemonCliOptions,
+        service_name: String,
+        service_kind: String,
+        service_identity: String,
     },
     /// 向已运行 daemon 发送一条控制请求。
     Control {
@@ -154,6 +165,7 @@ pub(super) fn parse_daemon_command(args: &[String]) -> Result<DaemonCommand, Eva
             }
             parse_background_child_command(rest)
         }
+        "__service-entry" => parse_service_entry_command(rest),
         "status" => Ok(DaemonCommand::Control {
             options: parse_daemon_options(rest)?,
             operation: DaemonControlOperation::Status,
@@ -201,6 +213,31 @@ pub(super) fn parse_daemon_command(args: &[String]) -> Result<DaemonCommand, Eva
                 .with_context("subcommand", value))
         }
     }
+}
+
+fn parse_service_entry_command(args: &[String]) -> Result<DaemonCommand, EvaError> {
+    const CANONICAL_OPTIONS: [&str; 4] = [
+        "--project",
+        "--service-name",
+        "--service-kind",
+        "--service-identity",
+    ];
+    if args.len() != CANONICAL_OPTIONS.len() * 2
+        || CANONICAL_OPTIONS
+            .iter()
+            .enumerate()
+            .any(|(index, expected)| args[index * 2] != *expected)
+    {
+        return Err(EvaError::invalid_argument(
+            "service entrypoint requires canonical --project, --service-name, --service-kind, and --service-identity argv",
+        ));
+    }
+    Ok(DaemonCommand::ServiceEntry {
+        options: parse_daemon_options(&args[..2])?,
+        service_name: args[3].clone(),
+        service_kind: args[5].clone(),
+        service_identity: args[7].clone(),
+    })
 }
 
 fn parse_background_child_command(args: &[String]) -> Result<DaemonCommand, EvaError> {
@@ -339,6 +376,54 @@ where
                 })
             })
         }
+        DaemonCommand::ServiceEntry {
+            options,
+            service_name,
+            service_kind,
+            service_identity,
+        } => {
+            let trace = trace_for("cli.daemon.service_entry")
+                .with_request_id(RequestId::parse("req-daemon-service-entry")?);
+            let output = options.common.output;
+            let kind = ServiceManagerKind::parse(&service_kind)?;
+            let handler_service_name = service_name.clone();
+            let handler_trace = trace.clone();
+            let result = run_service_entrypoint(kind, &service_name, move |context| {
+                let project = load_project_config(&options.common.project_root)?;
+                validate_service_entrypoint(
+                    &project,
+                    &handler_service_name,
+                    &service_kind,
+                    &service_identity,
+                    options.dev_mode,
+                )?;
+                env::set_current_dir(&project.project_root).map_err(|error| {
+                    EvaError::unavailable(
+                        "failed to enter the service entrypoint working directory",
+                    )
+                    .with_context("path", project.project_root.display().to_string())
+                    .with_context("io_error", error.to_string())
+                })?;
+                let daemon_options = daemon_options_from_cli(&project, &options)?;
+                let stop_token = context.stop_token().clone();
+                let ready_context = context.clone();
+                let mut report_ready = move || ready_context.report_ready();
+                start_daemon_service_with_stop_token_and_ready(
+                    &project,
+                    daemon_options,
+                    &handler_trace,
+                    &stop_token,
+                    &mut report_ready,
+                )
+                .map(|_| ())
+            });
+            match result {
+                Ok(()) => Ok(EXIT_OK),
+                Err(error) => {
+                    write_command_error(stderr, output, "daemon.service_entry", &error, &trace)
+                }
+            }
+        }
         DaemonCommand::Control {
             options,
             operation,
@@ -368,6 +453,92 @@ where
             }
         }
     }
+}
+
+fn validate_service_entrypoint(
+    project: &ProjectConfig,
+    service_name: &str,
+    service_kind: &str,
+    service_identity: &str,
+    dev_mode: bool,
+) -> Result<(), EvaError> {
+    if dev_mode {
+        return Err(EvaError::permission_denied(
+            "service daemon entrypoint cannot run in development mode",
+        ));
+    }
+    let configured = project.eva.service_manager.as_ref().ok_or_else(|| {
+        EvaError::not_found("service entrypoint requires service_manager configuration")
+    })?;
+    if !configured.enabled {
+        return Err(EvaError::permission_denied(
+            "service entrypoint requires an enabled service manager",
+        ));
+    }
+    let kind = ServiceManagerKind::parse(service_kind)?;
+    if !kind.production_adapter() || configured.kind != kind {
+        return Err(EvaError::unsupported(
+            "service entrypoint kind does not match the configured production adapter",
+        )
+        .with_context("configured_kind", configured.kind.as_str())
+        .with_context("requested_kind", kind.as_str()));
+    }
+    if ServiceHostPlatform::current().service_manager_kind() != Some(kind) {
+        return Err(EvaError::unsupported(
+            "service entrypoint kind does not match the current host platform",
+        )
+        .with_context("host_platform", ServiceHostPlatform::current().as_str())
+        .with_context("requested_kind", kind.as_str()));
+    }
+    if configured.service_name != service_name {
+        return Err(EvaError::conflict(
+            "service entrypoint service name does not match configuration",
+        )
+        .with_context("configured_service_name", &configured.service_name)
+        .with_context("requested_service_name", service_name));
+    }
+    let executable = env::current_exe().map_err(|error| {
+        EvaError::internal("failed to resolve service entrypoint executable")
+            .with_context("io_error", error.to_string())
+    })?;
+    let executable = std::fs::canonicalize(&executable).map_err(|error| {
+        EvaError::internal("failed to canonicalize service entrypoint executable")
+            .with_context("path", executable.display().to_string())
+            .with_context("io_error", error.to_string())
+    })?;
+    if let Some(configured_binary) = configured.runtime_binary.as_ref() {
+        let configured_binary = if configured_binary.is_absolute() {
+            configured_binary.clone()
+        } else {
+            project.project_root.join(configured_binary)
+        };
+        let configured_binary = std::fs::canonicalize(&configured_binary).map_err(|error| {
+            EvaError::unavailable("failed to canonicalize configured service runtime binary")
+                .with_context("path", configured_binary.display().to_string())
+                .with_context("io_error", error.to_string())
+        })?;
+        if configured_binary != executable {
+            return Err(EvaError::conflict(
+                "service entrypoint executable does not match configured runtime binary",
+            )
+            .with_context("configured_binary", configured_binary.display().to_string())
+            .with_context("running_executable", executable.display().to_string()));
+        }
+    }
+    let entrypoint = ServiceManagerEntryPoint::for_daemon(
+        executable,
+        project.project_root.clone(),
+        service_name,
+        kind,
+    )?;
+    if service_identity != entrypoint.identity_digest() {
+        return Err(
+            EvaError::conflict("service entrypoint identity digest does not match argv")
+                .with_context("expected_digest", entrypoint.identity_digest())
+                .with_context("provided_digest", service_identity),
+        );
+    }
+    entrypoint.validate()
 }
 
 /// 解析 daemon 路径、控制 payload、超时和运行模式，并预先校验显式请求 ID。
@@ -1959,6 +2130,124 @@ fn shutdown_json(report: &eva_runtime::ShutdownReport) -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn service_entry_parser_requires_each_identity_field_exactly_once() {
+        let canonical = parse_daemon_command(
+            &[
+                "__service-entry",
+                "--project",
+                ".",
+                "--service-name",
+                "eva-test",
+                "--service-kind",
+                "systemd",
+                "--service-identity",
+                "deadbeef",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(matches!(canonical, DaemonCommand::ServiceEntry { .. }));
+
+        let missing = parse_daemon_command(
+            &[
+                "__service-entry",
+                "--service-name",
+                "eva-test",
+                "--service-kind",
+                "systemd",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap_err();
+        assert_eq!(missing.kind(), eva_core::ErrorKind::InvalidArgument);
+        assert!(missing.message().contains("--service-identity"));
+
+        let duplicate = parse_daemon_command(
+            &[
+                "__service-entry",
+                "--service-name",
+                "eva-test",
+                "--service-name",
+                "eva-other",
+                "--service-kind",
+                "systemd",
+                "--service-identity",
+                "deadbeef",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap_err();
+        assert_eq!(duplicate.kind(), eva_core::ErrorKind::InvalidArgument);
+        assert!(duplicate.message().contains("canonical"));
+
+        let reordered = parse_daemon_command(
+            &[
+                "__service-entry",
+                "--service-name",
+                "eva-test",
+                "--project",
+                ".",
+                "--service-kind",
+                "systemd",
+                "--service-identity",
+                "deadbeef",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap_err();
+        assert!(reordered.message().contains("canonical"));
+    }
+
+    #[test]
+    fn service_entry_validation_binds_host_kind_name_project_and_digest() {
+        let Some(kind) = ServiceHostPlatform::current().service_manager_kind() else {
+            return;
+        };
+        let project_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let mut project = load_project_config(&project_root).unwrap();
+        let manager = project.eva.service_manager.as_mut().unwrap();
+        manager.enabled = true;
+        manager.kind = kind;
+        manager.service_name = "eva-test".to_owned();
+        let executable = std::fs::canonicalize(env::current_exe().unwrap()).unwrap();
+        manager.runtime_binary = Some(executable.clone());
+        let entrypoint = ServiceManagerEntryPoint::for_daemon(
+            executable.clone(),
+            project.project_root.clone(),
+            "eva-test",
+            kind,
+        )
+        .unwrap();
+
+        validate_service_entrypoint(
+            &project,
+            "eva-test",
+            kind.as_str(),
+            entrypoint.identity_digest(),
+            false,
+        )
+        .unwrap();
+        let mismatch =
+            validate_service_entrypoint(&project, "eva-test", kind.as_str(), "deadbeef", false)
+                .unwrap_err();
+        assert_eq!(mismatch.kind(), eva_core::ErrorKind::Conflict);
+        assert!(mismatch.message().contains("identity digest"));
+
+        project.eva.service_manager.as_mut().unwrap().runtime_binary =
+            Some(project.project_root.join("Cargo.toml"));
+        let binary_drift = validate_service_entrypoint(
+            &project,
+            "eva-test",
+            kind.as_str(),
+            entrypoint.identity_digest(),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(binary_drift.kind(), eva_core::ErrorKind::Conflict);
+        assert!(binary_drift.message().contains("runtime binary"));
+    }
 
     #[test]
     fn daemon_submit_uses_envelope_as_the_only_agent_identity() {

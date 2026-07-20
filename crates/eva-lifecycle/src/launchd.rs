@@ -6,11 +6,11 @@ use crate::service_command::{
 };
 use crate::service_factory::{ServiceHostPlatform, ServiceManagerFactory};
 use crate::service_manager::{
-    ServiceManagerAdapter, ServiceManagerDefinition, ServiceManagerHandoffReport,
-    ServiceManagerHandoffRequest, ServiceManagerKind, ServiceManagerMutationReport,
-    ServiceManagerMutationRequest, ServiceManagerOperation, ServiceManagerRollbackReport,
-    ServiceManagerRollbackRequest, ServiceManagerState, ServiceManagerStatusReport,
-    ServiceManagerStatusRequest,
+    ServiceManagerAdapter, ServiceManagerDefinition, ServiceManagerEntryPoint,
+    ServiceManagerHandoffReport, ServiceManagerHandoffRequest, ServiceManagerKind,
+    ServiceManagerMutationReport, ServiceManagerMutationRequest, ServiceManagerOperation,
+    ServiceManagerRollbackReport, ServiceManagerRollbackRequest, ServiceManagerState,
+    ServiceManagerStatusReport, ServiceManagerStatusRequest,
 };
 use eva_core::EvaError;
 use sha2::{Digest, Sha256};
@@ -224,9 +224,33 @@ where
 
     fn install_binary(&self, definition: &ServiceManagerDefinition) -> Result<PathBuf, EvaError> {
         let binary = definition
-            .runtime_binary
+            .service_entrypoint
             .as_ref()
-            .ok_or_else(|| EvaError::invalid_argument("launchd install requires runtime_binary"))?;
+            .map(|entrypoint| &entrypoint.executable)
+            .or(definition.runtime_binary.as_ref())
+            .ok_or_else(|| {
+                EvaError::invalid_argument(
+                    "launchd install requires runtime_binary or service_entrypoint",
+                )
+            })?;
+        if let Some(entrypoint) = definition.service_entrypoint.as_ref() {
+            entrypoint.validate()?;
+            validate_canonical_entrypoint(entrypoint)?;
+            if let Some(runtime_binary) = definition.runtime_binary.as_ref() {
+                let canonical_runtime = fs::canonicalize(runtime_binary).map_err(|error| {
+                    io_error(
+                        "failed to canonicalize launchd runtime_binary",
+                        "runtime_binary",
+                        error,
+                    )
+                })?;
+                if canonical_runtime != entrypoint.executable {
+                    return Err(EvaError::conflict(
+                        "launchd runtime_binary does not match service entrypoint executable",
+                    ));
+                }
+            }
+        }
         if !binary.is_absolute() {
             return Err(EvaError::invalid_argument(
                 "launchd runtime_binary must be absolute",
@@ -308,11 +332,53 @@ where
         validate_xml_text(binary, "launchd runtime_binary")?;
         let marker = self.managed_marker(definition);
         let label = xml_escape(&self.label);
-        let binary = xml_escape(binary);
+        let mut program_arguments = vec![binary.to_owned()];
+        if let Some(entrypoint) = definition.service_entrypoint.as_ref() {
+            program_arguments.extend(
+                entrypoint
+                    .arguments
+                    .iter()
+                    .map(|argument| {
+                        argument
+                            .to_str()
+                            .ok_or_else(|| {
+                                EvaError::invalid_argument(
+                                    "launchd service entrypoint arguments must be valid UTF-8",
+                                )
+                            })
+                            .map(str::to_owned)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        for argument in &program_arguments {
+            validate_xml_text(argument, "launchd service entrypoint argument")?;
+        }
+        let program_arguments = program_arguments
+            .into_iter()
+            .map(|argument| format!("    <string>{}</string>", xml_escape(&argument)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let working_directory = definition
+            .service_entrypoint
+            .as_ref()
+            .map(|entrypoint| {
+                let path = require_utf8_path(
+                    &entrypoint.working_directory,
+                    "launchd service entrypoint working directory",
+                )?;
+                validate_xml_text(path, "launchd service entrypoint working directory")?;
+                Ok(format!(
+                    "  <key>WorkingDirectory</key>\n  <string>{}</string>\n",
+                    xml_escape(path)
+                ))
+            })
+            .transpose()?
+            .unwrap_or_default();
         let run_at_load = xml_bool(definition.start_on_boot);
         let keep_alive = xml_bool(definition.restart_supervisor);
         Ok(format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{marker}\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{label}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{binary}</string>\n  </array>\n  <key>RunAtLoad</key>\n  {run_at_load}\n  <key>KeepAlive</key>\n  {keep_alive}\n  <key>ProcessType</key>\n  <string>Background</string>\n</dict>\n</plist>\n"
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{marker}\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{label}</string>\n  <key>ProgramArguments</key>\n  <array>\n{program_arguments}\n  </array>\n{working_directory}  <key>RunAtLoad</key>\n  {run_at_load}\n  <key>KeepAlive</key>\n  {keep_alive}\n  <key>ProcessType</key>\n  <string>Background</string>\n</dict>\n</plist>\n"
         )
         .into_bytes())
     }
@@ -322,6 +388,9 @@ where
         append_digest_field(&mut canonical, self.domain.target().as_bytes());
         append_digest_field(&mut canonical, self.label.as_bytes());
         append_digest_field(&mut canonical, definition.service_name.as_bytes());
+        if let Some(entrypoint) = definition.service_entrypoint.as_ref() {
+            append_digest_field(&mut canonical, entrypoint.identity_digest().as_bytes());
+        }
         format!(
             "{MANAGED_PLIST_MARKER_PREFIX}{} -->",
             digest_bytes(&canonical)
@@ -501,7 +570,7 @@ where
                 "launchd plist is not managed by this service definition",
             ));
         }
-        if definition.runtime_binary.is_some() {
+        if definition.runtime_binary.is_some() || definition.service_entrypoint.is_some() {
             let binary = self.install_binary(definition)?;
             let desired = self.desired_plist(definition, &binary)?;
             if bytes != desired {
@@ -664,15 +733,13 @@ where
         Ok(audit)
     }
 
-    fn run_kickstart(&self, restart: bool) -> Result<Vec<String>, EvaError> {
-        let mut arguments = vec![ServiceCommandArg::public("kickstart")];
-        if restart {
-            arguments.push(ServiceCommandArg::public("-k"));
-        }
-        arguments.push(ServiceCommandArg::public(self.service_target()));
-        let report = self.execute(arguments)?;
-        let audit = adapter_command_audit(&report, if restart { "restart" } else { "start" });
-        ensure_success_exit(&report, if restart { "restart" } else { "start" })?;
+    fn run_kickstart(&self, audit_action: &'static str) -> Result<Vec<String>, EvaError> {
+        let report = self.execute(vec![
+            ServiceCommandArg::public("kickstart"),
+            ServiceCommandArg::public(self.service_target()),
+        ])?;
+        let audit = adapter_command_audit(&report, audit_action);
+        ensure_success_exit(&report, audit_action)?;
         Ok(audit)
     }
 
@@ -710,7 +777,7 @@ where
         }
         match previous {
             LaunchdObservedState::Running if current != LaunchdObservedState::Running => {
-                self.run_kickstart(false)?;
+                self.run_kickstart("start")?;
                 self.wait_for_running(definition)?;
             }
             LaunchdObservedState::LoadedStopped if current == LaunchdObservedState::Running => {
@@ -848,7 +915,7 @@ where
             let state = match stable {
                 LaunchdObservedState::Running => ServiceManagerState::Running,
                 LaunchdObservedState::LoadedStopped if definition.start_on_boot => {
-                    audit.extend(self.run_kickstart(false)?);
+                    audit.extend(self.run_kickstart("start")?);
                     audit.extend(self.wait_for_running(definition)?);
                     mutation_executed = true;
                     ServiceManagerState::Running
@@ -1040,7 +1107,7 @@ where
                 ));
             }
         }
-        audit.extend(self.run_kickstart(false)?);
+        audit.extend(self.run_kickstart("start")?);
         audit.extend(self.wait_for_running(definition)?);
         Ok(self.mutation_report(
             definition,
@@ -1125,12 +1192,18 @@ where
         audit.push(format!("launchd.plist.digest:{}", digest_bytes(&plist)));
         let (observed, state_audit) = self.wait_for_stable(definition)?;
         audit.extend(state_audit);
-        if observed == LaunchdObservedState::NotLoaded {
+        if observed == LaunchdObservedState::Running {
+            audit.extend(self.run_bootout()?);
+            audit.extend(self.wait_for_not_loaded(definition)?);
+            audit.extend(self.run_bootstrap()?);
+            let (_, bootstrap_audit) = self.wait_for_stable(definition)?;
+            audit.extend(bootstrap_audit);
+        } else if observed == LaunchdObservedState::NotLoaded {
             audit.extend(self.run_bootstrap()?);
             let (_, bootstrap_audit) = self.wait_for_stable(definition)?;
             audit.extend(bootstrap_audit);
         }
-        audit.extend(self.run_kickstart(true)?);
+        audit.extend(self.run_kickstart("restart")?);
         audit.extend(self.wait_for_running(definition)?);
         Ok(self.mutation_report(
             definition,
@@ -1950,6 +2023,34 @@ fn append_digest_field(canonical: &mut Vec<u8>, value: &[u8]) {
     canonical.extend_from_slice(value);
 }
 
+fn validate_canonical_entrypoint(entrypoint: &ServiceManagerEntryPoint) -> Result<(), EvaError> {
+    let canonical = fs::canonicalize(&entrypoint.executable).map_err(|error| {
+        io_error(
+            "failed to canonicalize launchd service entrypoint executable",
+            "service_entrypoint.executable",
+            error,
+        )
+    })?;
+    if canonical != entrypoint.executable {
+        return Err(EvaError::conflict(
+            "launchd service entrypoint executable must already be canonical",
+        ));
+    }
+    let working_directory = fs::canonicalize(&entrypoint.working_directory).map_err(|error| {
+        io_error(
+            "failed to canonicalize launchd service entrypoint working directory",
+            "service_entrypoint.working_directory",
+            error,
+        )
+    })?;
+    if working_directory != entrypoint.working_directory {
+        return Err(EvaError::conflict(
+            "launchd service entrypoint working directory must already be canonical",
+        ));
+    }
+    Ok(())
+}
+
 fn digest_bytes(bytes: &[u8]) -> String {
     let mut digest = Sha256::new();
     digest.update(bytes);
@@ -2218,13 +2319,13 @@ mod tests {
         )
     }
 
-    fn kickstart_step(domain: LaunchdDomain, restart: bool) -> ScriptStep {
-        let mut arguments = vec![public("kickstart")];
-        if restart {
-            arguments.push(public("-k"));
-        }
-        arguments.push(public(service_target(domain)));
-        scripted_step(arguments, 0, Vec::new(), Vec::new())
+    fn kickstart_step(domain: LaunchdDomain) -> ScriptStep {
+        scripted_step(
+            vec![public("kickstart"), public(service_target(domain))],
+            0,
+            Vec::new(),
+            Vec::new(),
+        )
     }
 
     fn kill_step(domain: LaunchdDomain) -> ScriptStep {
@@ -2255,6 +2356,7 @@ mod tests {
             candidate_runtime_binary: None,
             start_on_boot: true,
             restart_supervisor: false,
+            service_entrypoint: None,
         }
     }
 
@@ -2458,15 +2560,79 @@ mod tests {
     }
 
     #[test]
+    fn daemon_entrypoint_plist_binds_exact_arguments_working_directory_and_marker() {
+        let root = TempRoot::new();
+        let adapter = LaunchdAdapter::for_test(
+            ScriptedExecutor::new([]),
+            LaunchdDomain::System,
+            TEST_LABEL,
+            root.path(),
+        );
+        let mut definition = definition("system");
+        let binary = definition.runtime_binary.clone().expect("runtime binary");
+        let project_root = std::env::temp_dir().join("Eva Launchd Project With Spaces");
+        let entrypoint = ServiceManagerEntryPoint::for_daemon(
+            binary.clone(),
+            project_root.clone(),
+            &definition.service_name,
+            ServiceManagerKind::Launchd,
+        )
+        .expect("daemon entrypoint");
+        definition.service_entrypoint = Some(entrypoint.clone());
+        let plist = String::from_utf8(
+            adapter
+                .desired_plist(&definition, &binary)
+                .expect("entrypoint plist"),
+        )
+        .expect("UTF-8 plist");
+
+        for value in entrypoint.argv() {
+            let value = value.to_str().expect("UTF-8 test argv");
+            assert!(plist.contains(&format!("    <string>{}</string>", xml_escape(value))));
+        }
+        assert!(plist.contains(&format!(
+            "  <key>WorkingDirectory</key>\n  <string>{}</string>",
+            xml_escape(project_root.to_str().expect("UTF-8 project path"))
+        )));
+        assert!(plist.contains(entrypoint.identity_digest()));
+        assert!(plist.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"));
+
+        let mut drifted = definition.clone();
+        drifted.service_entrypoint = Some(
+            ServiceManagerEntryPoint::for_daemon(
+                binary.clone(),
+                project_root.join("drift"),
+                &drifted.service_name,
+                ServiceManagerKind::Launchd,
+            )
+            .expect("drifted entrypoint"),
+        );
+        assert_ne!(
+            adapter.managed_marker(&definition),
+            adapter.managed_marker(&drifted)
+        );
+        assert_ne!(
+            plist.as_bytes(),
+            adapter
+                .desired_plist(&drifted, &binary)
+                .expect("drifted plist")
+        );
+    }
+
+    #[test]
     fn start_restart_and_stop_use_exact_idempotent_transitions() {
         let root = TempRoot::new();
         let domain = LaunchdDomain::System;
         let executor = ScriptedExecutor::new([
             print_step(&root.path(), domain, "waiting", None),
-            kickstart_step(domain, false),
+            kickstart_step(domain),
             print_step(&root.path(), domain, "running", Some(4201)),
             print_step(&root.path(), domain, "running", Some(4201)),
-            kickstart_step(domain, true),
+            bootout_step(domain),
+            missing_print_step(domain),
+            bootstrap_step(&root.path(), domain),
+            print_step(&root.path(), domain, "waiting", None),
+            kickstart_step(domain),
             print_step(&root.path(), domain, "running", Some(4202)),
             print_step(&root.path(), domain, "running", Some(4202)),
             bootout_step(domain),
@@ -2487,6 +2653,10 @@ mod tests {
             .expect("restart loaded service");
         assert_eq!(restarted.state, ServiceManagerState::Running);
         assert!(restarted.mutation_executed);
+        assert!(restarted
+            .audit
+            .iter()
+            .any(|entry| entry == "launchd.command:restart"));
         let stopped = adapter
             .stop(mutation_request(&definition))
             .expect("stop running service");
@@ -2500,6 +2670,66 @@ mod tests {
     }
 
     #[test]
+    fn restart_loaded_stopped_job_uses_non_forcing_kickstart() {
+        let root = TempRoot::new();
+        let domain = LaunchdDomain::System;
+        let executor = ScriptedExecutor::new([
+            print_step(&root.path(), domain, "waiting", None),
+            kickstart_step(domain),
+            print_step(&root.path(), domain, "running", Some(4251)),
+        ]);
+        let probe = executor.clone();
+        let mut adapter = LaunchdAdapter::for_test(executor, domain, TEST_LABEL, root.path());
+        let definition = definition("system");
+        write_desired_plist(&adapter, &definition);
+
+        let report = adapter
+            .restart(mutation_request(&definition))
+            .expect("restart loaded stopped service");
+
+        assert_eq!(report.state, ServiceManagerState::Running);
+        assert!(report.mutation_executed);
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "launchd.command:restart"));
+        probe.assert_drained();
+    }
+
+    #[test]
+    fn restart_not_loaded_job_bootstraps_then_uses_non_forcing_kickstart() {
+        let root = TempRoot::new();
+        let domain = LaunchdDomain::Gui { uid: TEST_GUI_UID };
+        let executor = ScriptedExecutor::new([
+            missing_print_step(domain),
+            bootstrap_step(&root.path(), domain),
+            print_step(&root.path(), domain, "waiting", None),
+            kickstart_step(domain),
+            print_step(&root.path(), domain, "running", Some(4252)),
+        ]);
+        let probe = executor.clone();
+        let mut adapter = LaunchdAdapter::for_test(executor, domain, TEST_LABEL, root.path());
+        let definition = definition("gui");
+        write_desired_plist(&adapter, &definition);
+
+        let report = adapter
+            .restart(mutation_request(&definition))
+            .expect("restart unloaded service");
+
+        assert_eq!(report.state, ServiceManagerState::Running);
+        assert!(report.mutation_executed);
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "launchd.command:bootstrap"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "launchd.command:restart"));
+        probe.assert_drained();
+    }
+
+    #[test]
     fn unloaded_start_bootstraps_before_kickstart() {
         let root = TempRoot::new();
         let domain = LaunchdDomain::Gui { uid: TEST_GUI_UID };
@@ -2507,7 +2737,7 @@ mod tests {
             missing_print_step(domain),
             bootstrap_step(&root.path(), domain),
             print_step(&root.path(), domain, "waiting", None),
-            kickstart_step(domain, false),
+            kickstart_step(domain),
             print_step(&root.path(), domain, "running", Some(4301)),
         ]);
         let probe = executor.clone();
@@ -2555,7 +2785,7 @@ mod tests {
         let executor = ScriptedExecutor::new([
             print_step(&root.path(), domain, "waiting", None),
             print_step(&root.path(), domain, "waiting", None),
-            kickstart_step(domain, false),
+            kickstart_step(domain),
             print_step(&root.path(), domain, "running", Some(4401)),
         ]);
         let probe = executor.clone();
@@ -3274,6 +3504,7 @@ mod tests {
             candidate_runtime_binary: None,
             start_on_boot: true,
             restart_supervisor,
+            service_entrypoint: None,
         };
         let mut adapter = LaunchdAdapter::native(&definition).expect("native launchd adapter");
         let remove_root_when_empty = selector == "gui" && !adapter.plist_root.exists();

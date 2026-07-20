@@ -6,11 +6,11 @@ use crate::service_command::{
 };
 use crate::service_factory::{ServiceHostPlatform, ServiceManagerFactory};
 use crate::service_manager::{
-    ServiceManagerAdapter, ServiceManagerDefinition, ServiceManagerHandoffReport,
-    ServiceManagerHandoffRequest, ServiceManagerKind, ServiceManagerMutationReport,
-    ServiceManagerMutationRequest, ServiceManagerOperation, ServiceManagerRollbackReport,
-    ServiceManagerRollbackRequest, ServiceManagerState, ServiceManagerStatusReport,
-    ServiceManagerStatusRequest,
+    ServiceManagerAdapter, ServiceManagerDefinition, ServiceManagerEntryPoint,
+    ServiceManagerHandoffReport, ServiceManagerHandoffRequest, ServiceManagerKind,
+    ServiceManagerMutationReport, ServiceManagerMutationRequest, ServiceManagerOperation,
+    ServiceManagerRollbackReport, ServiceManagerRollbackRequest, ServiceManagerState,
+    ServiceManagerStatusReport, ServiceManagerStatusRequest,
 };
 use eva_core::EvaError;
 use std::ffi::OsString;
@@ -106,9 +106,31 @@ where
     }
 
     fn install_binary(definition: &ServiceManagerDefinition) -> Result<PathBuf, EvaError> {
-        let binary = definition.runtime_binary.as_ref().ok_or_else(|| {
-            EvaError::invalid_argument("Windows service install requires runtime_binary")
-        })?;
+        let binary = definition
+            .service_entrypoint
+            .as_ref()
+            .map(|entrypoint| &entrypoint.executable)
+            .or(definition.runtime_binary.as_ref())
+            .ok_or_else(|| {
+                EvaError::invalid_argument(
+                    "Windows service install requires runtime_binary or service_entrypoint",
+                )
+            })?;
+        if let Some(entrypoint) = definition.service_entrypoint.as_ref() {
+            entrypoint.validate()?;
+            validate_canonical_entrypoint(entrypoint)?;
+            if let Some(runtime_binary) = definition.runtime_binary.as_ref() {
+                let canonical_runtime = std::fs::canonicalize(runtime_binary).map_err(|error| {
+                    EvaError::unavailable("failed to canonicalize Windows service runtime_binary")
+                        .with_context("io_error", error.to_string())
+                })?;
+                if canonical_runtime != entrypoint.executable {
+                    return Err(EvaError::conflict(
+                        "Windows runtime_binary does not match service entrypoint executable",
+                    ));
+                }
+            }
+        }
         if !binary.is_absolute() {
             return Err(EvaError::invalid_argument(
                 "Windows service runtime_binary must be absolute",
@@ -166,6 +188,37 @@ where
         Ok((parse_service_state(&report)?, audit))
     }
 
+    /// Reads SCM configuration for direct entrypoints before any operation so
+    /// a service with a foreign executable/argv cannot be controlled by name.
+    /// Legacy binary-only definitions retain their historical state-only path.
+    fn ensure_entrypoint_config(
+        &self,
+        definition: &ServiceManagerDefinition,
+    ) -> Result<Vec<String>, EvaError> {
+        if definition.service_entrypoint.is_none() {
+            return Ok(Vec::new());
+        }
+        let binary = Self::install_binary(definition)?;
+        let (existing, audit) = self.query_config(definition)?;
+        let Some(existing) = existing else {
+            return Ok(audit);
+        };
+        if !service_binary_path_matches(definition, &existing.binary_path, &binary)? {
+            return Err(EvaError::conflict(
+                "existing Windows service command does not match service entrypoint",
+            ));
+        }
+        if !existing
+            .service_account
+            .eq_ignore_ascii_case(WINDOWS_LOCAL_SERVICE_ACCOUNT)
+        {
+            return Err(EvaError::conflict(
+                "existing Windows service account is not LocalService",
+            ));
+        }
+        Ok(audit)
+    }
+
     fn wait_for_state(
         &self,
         definition: &ServiceManagerDefinition,
@@ -215,7 +268,7 @@ where
             ServiceCommandArg::public("create"),
             ServiceCommandArg::public(&definition.service_name),
             ServiceCommandArg::public("binPath="),
-            ServiceCommandArg::secret(quoted_windows_executable(binary)),
+            ServiceCommandArg::secret(service_command_line(definition, binary)?),
             ServiceCommandArg::public("start="),
             ServiceCommandArg::public(start_mode_arg(definition.start_on_boot)),
             ServiceCommandArg::public("obj="),
@@ -352,7 +405,7 @@ where
         let mut mutation_executed = false;
 
         if let Some(existing) = existing {
-            if !binary_path_matches(&existing.binary_path, &binary) {
+            if !service_binary_path_matches(definition, &existing.binary_path, &binary)? {
                 return Err(EvaError::conflict(
                     "existing Windows service binary path does not match definition",
                 ));
@@ -406,7 +459,9 @@ where
     ) -> Result<ServiceManagerMutationReport, EvaError> {
         let definition = request.definition;
         Self::validate_definition(definition, true)?;
-        let (observed, mut audit) = self.query_observed_state(definition)?;
+        let mut audit = self.ensure_entrypoint_config(definition)?;
+        let (observed, state_audit) = self.query_observed_state(definition)?;
+        audit.extend(state_audit);
         if observed == WindowsObservedState::NotInstalled {
             return Ok(Self::mutation_report(
                 definition,
@@ -456,7 +511,9 @@ where
     ) -> Result<ServiceManagerStatusReport, EvaError> {
         let definition = request.definition;
         Self::validate_definition(definition, false)?;
-        let (observed, audit) = self.query_observed_state(definition)?;
+        let mut audit = self.ensure_entrypoint_config(definition)?;
+        let (observed, state_audit) = self.query_observed_state(definition)?;
+        audit.extend(state_audit);
         let state = observed.service_state().ok_or_else(|| {
             EvaError::unavailable("Windows service is in a transitional state")
                 .with_context("scm_state", observed.as_str())
@@ -470,7 +527,9 @@ where
     ) -> Result<ServiceManagerMutationReport, EvaError> {
         let definition = request.definition;
         Self::validate_definition(definition, true)?;
-        let (state, mut audit) = self.wait_for_stable_state(definition)?;
+        let mut audit = self.ensure_entrypoint_config(definition)?;
+        let (state, state_audit) = self.wait_for_stable_state(definition)?;
+        audit.extend(state_audit);
         if state == ServiceManagerState::NotInstalled {
             return Err(EvaError::not_found("Windows service is not installed"));
         }
@@ -501,7 +560,9 @@ where
     ) -> Result<ServiceManagerMutationReport, EvaError> {
         let definition = request.definition;
         Self::validate_definition(definition, true)?;
-        let (state, mut audit) = self.wait_for_stable_state(definition)?;
+        let mut audit = self.ensure_entrypoint_config(definition)?;
+        let (state, state_audit) = self.wait_for_stable_state(definition)?;
+        audit.extend(state_audit);
         if state != ServiceManagerState::Running {
             return Ok(Self::mutation_report(
                 definition,
@@ -529,7 +590,9 @@ where
     ) -> Result<ServiceManagerMutationReport, EvaError> {
         let definition = request.definition;
         Self::validate_definition(definition, true)?;
-        let (state, mut audit) = self.wait_for_stable_state(definition)?;
+        let mut audit = self.ensure_entrypoint_config(definition)?;
+        let (state, state_audit) = self.wait_for_stable_state(definition)?;
+        audit.extend(state_audit);
         if state == ServiceManagerState::NotInstalled {
             return Err(EvaError::not_found("Windows service is not installed"));
         }
@@ -764,10 +827,169 @@ fn adapter_command_audit(report: &ServiceCommandReport, action: &'static str) ->
 }
 
 fn quoted_windows_executable(path: &Path) -> OsString {
-    let mut value = OsString::from("\"");
-    value.push(path.as_os_str());
-    value.push("\"");
-    value
+    quoted_windows_argument(path.as_os_str())
+}
+
+fn service_command_line(
+    definition: &ServiceManagerDefinition,
+    binary: &Path,
+) -> Result<OsString, EvaError> {
+    let mut values = vec![quoted_windows_executable(binary)];
+    if let Some(entrypoint) = definition.service_entrypoint.as_ref() {
+        entrypoint.validate()?;
+        values.extend(entrypoint.arguments.iter().map(|argument| {
+            if windows_argument_needs_quotes(argument) {
+                quoted_windows_argument(argument)
+            } else {
+                argument.clone()
+            }
+        }));
+    }
+    let mut command = OsString::new();
+    for (index, value) in values.into_iter().enumerate() {
+        if index != 0 {
+            command.push(" ");
+        }
+        command.push(value);
+    }
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn windows_argument_needs_quotes(value: &std::ffi::OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    let mut units = value.encode_wide().peekable();
+    units.peek().is_none() || units.any(|unit| matches!(unit, 0x09 | 0x20 | 0x22))
+}
+
+#[cfg(not(windows))]
+fn windows_argument_needs_quotes(value: &std::ffi::OsStr) -> bool {
+    let text = value.to_string_lossy();
+    text.is_empty()
+        || text
+            .chars()
+            .any(|character| matches!(character, '\t' | ' ' | '"'))
+}
+
+#[cfg(windows)]
+fn quoted_windows_argument(value: &std::ffi::OsStr) -> OsString {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let mut output = vec![u16::from(b'"')];
+    let mut backslashes = 0usize;
+    for unit in value.encode_wide() {
+        match unit {
+            value if value == u16::from(b'\\') => backslashes += 1,
+            value if value == u16::from(b'"') => {
+                output.extend(std::iter::repeat_n(u16::from(b'\\'), backslashes * 2 + 1));
+                output.push(value);
+                backslashes = 0;
+            }
+            value => {
+                output.extend(std::iter::repeat_n(u16::from(b'\\'), backslashes));
+                output.push(value);
+                backslashes = 0;
+            }
+        }
+    }
+    output.extend(std::iter::repeat_n(u16::from(b'\\'), backslashes * 2));
+    output.push(u16::from(b'"'));
+    OsString::from_wide(&output)
+}
+
+#[cfg(not(windows))]
+fn quoted_windows_argument(value: &std::ffi::OsStr) -> OsString {
+    // CommandLineToArgvW-compatible quoting. The service manager receives one
+    // command-line value, but no shell is involved and every argument remains
+    // a distinct token after Windows parsing.
+    let text = value.to_string_lossy();
+    let mut output = String::from("\"");
+    let mut backslashes = 0usize;
+    for character in text.chars() {
+        match character {
+            '\\' => backslashes += 1,
+            '"' => {
+                output.push_str(&"\\".repeat(backslashes * 2 + 1));
+                output.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                output.push_str(&"\\".repeat(backslashes));
+                output.push(character);
+                backslashes = 0;
+            }
+        }
+    }
+    output.push_str(&"\\".repeat(backslashes * 2));
+    output.push('"');
+    OsString::from(output)
+}
+
+fn service_binary_path_matches(
+    definition: &ServiceManagerDefinition,
+    observed: &str,
+    expected_binary: &Path,
+) -> Result<bool, EvaError> {
+    if definition.service_entrypoint.is_none() {
+        return Ok(binary_path_matches(observed, expected_binary));
+    }
+    let expected = service_command_line(definition, expected_binary)?;
+    let expected = expected.to_string_lossy();
+    let Some((observed_executable, observed_arguments)) = split_windows_command_head(observed)
+    else {
+        return Ok(false);
+    };
+    let Some((expected_executable, expected_arguments)) = split_windows_command_head(&expected)
+    else {
+        return Ok(false);
+    };
+    Ok(
+        observed_executable.eq_ignore_ascii_case(expected_executable)
+            && observed_arguments == expected_arguments,
+    )
+}
+
+fn split_windows_command_head(value: &str) -> Option<(&str, &str)> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let (executable, remainder) = if let Some(quoted) = value.strip_prefix('"') {
+        let closing_quote = quoted.find('"')?;
+        (&quoted[..closing_quote], &quoted[closing_quote + 1..])
+    } else {
+        let separator = value.find([' ', '\t']).unwrap_or(value.len());
+        (&value[..separator], &value[separator..])
+    };
+    if executable.is_empty() || (!remainder.is_empty() && !remainder.starts_with([' ', '\t'])) {
+        return None;
+    }
+    Some((executable, remainder.trim_start_matches([' ', '\t'])))
+}
+
+fn validate_canonical_entrypoint(entrypoint: &ServiceManagerEntryPoint) -> Result<(), EvaError> {
+    let canonical = std::fs::canonicalize(&entrypoint.executable).map_err(|error| {
+        EvaError::unavailable("failed to canonicalize Windows service entrypoint executable")
+            .with_context("io_error", error.to_string())
+    })?;
+    if canonical != entrypoint.executable {
+        return Err(EvaError::conflict(
+            "Windows service entrypoint executable must already be canonical",
+        ));
+    }
+    let working_directory =
+        std::fs::canonicalize(&entrypoint.working_directory).map_err(|error| {
+            EvaError::unavailable(
+                "failed to canonicalize Windows service entrypoint working directory",
+            )
+            .with_context("io_error", error.to_string())
+        })?;
+    if working_directory != entrypoint.working_directory {
+        return Err(EvaError::conflict(
+            "Windows service entrypoint working directory must already be canonical",
+        ));
+    }
+    Ok(())
 }
 
 fn binary_path_matches(observed: &str, expected: &Path) -> bool {
@@ -1004,6 +1226,7 @@ mod tests {
             candidate_runtime_binary: None,
             start_on_boot: true,
             restart_supervisor: false,
+            service_entrypoint: None,
         }
     }
 
@@ -1444,6 +1667,120 @@ mod tests {
         assert!(binary_path_matches(r#""C:\eva\eva.exe""#, expected));
     }
 
+    #[test]
+    fn daemon_entrypoint_bin_path_preserves_exact_argv_redaction_and_drift() {
+        let mut definition = test_definition();
+        let binary = definition.runtime_binary.clone().expect("runtime binary");
+        let project_root = std::env::temp_dir().join("Eva Windows Project With Spaces");
+        let entrypoint = ServiceManagerEntryPoint::for_daemon(
+            binary.clone(),
+            project_root.clone(),
+            &definition.service_name,
+            ServiceManagerKind::WindowsService,
+        )
+        .expect("daemon entrypoint");
+        definition.service_entrypoint = Some(entrypoint.clone());
+
+        let command_line = service_command_line(&definition, &binary).expect("SCM binPath");
+        let mut expected = quoted_windows_executable(&binary);
+        for argument in &entrypoint.arguments {
+            expected.push(" ");
+            if windows_argument_needs_quotes(argument) {
+                expected.push(quoted_windows_argument(argument));
+            } else {
+                expected.push(argument);
+            }
+        }
+        assert_eq!(command_line, expected);
+        assert!(
+            service_binary_path_matches(&definition, &command_line.to_string_lossy(), &binary,)
+                .expect("matching SCM command")
+        );
+
+        let mut drifted = command_line.to_string_lossy().into_owned();
+        drifted.push_str(" --unexpected");
+        assert!(!service_binary_path_matches(&definition, &drifted, &binary)
+            .expect("drifted SCM command"));
+        let argument_case_drift = command_line
+            .to_string_lossy()
+            .replacen(" daemon ", " DAEMON ", 1);
+        assert!(
+            !service_binary_path_matches(&definition, &argument_case_drift, &binary)
+                .expect("case-drifted SCM argument")
+        );
+        let command =
+            ServiceCommand::new("sc.exe", [ServiceCommandArg::secret(command_line.clone())])
+                .expect("redacted command");
+        let debug = format!("{command:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(&project_root.to_string_lossy().into_owned()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_entrypoint_bin_path_matches_canonical_windows_literal() {
+        let binary = PathBuf::from(r"C:\Program Files\Eva\eva.exe");
+        let project_root = PathBuf::from(r"C:\Eva Projects\demo");
+        let entrypoint = ServiceManagerEntryPoint::for_daemon(
+            binary.clone(),
+            project_root,
+            TEST_SERVICE_NAME,
+            ServiceManagerKind::WindowsService,
+        )
+        .expect("canonical daemon entrypoint");
+        let expected = format!(
+            r#""C:\Program Files\Eva\eva.exe" daemon __service-entry --project "C:\Eva Projects\demo" --service-name EvaCliServiceTest --service-kind windows_service --service-identity {}"#,
+            entrypoint.identity_digest()
+        );
+        let definition = ServiceManagerDefinition {
+            runtime_binary: Some(binary.clone()),
+            service_entrypoint: Some(entrypoint),
+            ..test_definition()
+        };
+
+        let command_line = service_command_line(&definition, &binary).expect("SCM binPath");
+        assert_eq!(command_line.to_string_lossy(), expected);
+        assert!(service_binary_path_matches(&definition, &expected, &binary)
+            .expect("canonical SCM command"));
+        let executable_case_only = expected.replacen(
+            r#"C:\Program Files\Eva\eva.exe"#,
+            r#"c:\program files\eva\EVA.EXE"#,
+            1,
+        );
+        assert!(
+            service_binary_path_matches(&definition, &executable_case_only, &binary)
+                .expect("case-insensitive executable path")
+        );
+        assert!(!service_binary_path_matches(
+            &definition,
+            &expected.replacen(" daemon ", " DAEMON ", 1),
+            &binary,
+        )
+        .expect("case-sensitive argv"));
+        assert!(!service_binary_path_matches(
+            &definition,
+            &expected.replace("--service-kind windows_service", "--service-kind systemd"),
+            &binary,
+        )
+        .expect("drifted SCM command"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_argument_quoting_preserves_unpaired_surrogates_and_backslashes() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let value = OsString::from_wide(&[0xd800, 0x20, 0x5c, 0x22, 0x5c]);
+        assert!(windows_argument_needs_quotes(&value));
+        let quoted = quoted_windows_argument(&value)
+            .encode_wide()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            quoted,
+            vec![0x22, 0xd800, 0x20, 0x5c, 0x5c, 0x5c, 0x22, 0x5c, 0x5c, 0x22,]
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn native_read_only_query_reports_event_log_running() {
@@ -1457,6 +1794,7 @@ mod tests {
             candidate_runtime_binary: None,
             start_on_boot: true,
             restart_supervisor: false,
+            service_entrypoint: None,
         };
 
         let report = adapter
@@ -1486,6 +1824,7 @@ mod tests {
             candidate_runtime_binary: None,
             start_on_boot: false,
             restart_supervisor: false,
+            service_entrypoint: None,
         };
         let mut adapter = WindowsServiceAdapter::native().expect("native Windows adapter");
 

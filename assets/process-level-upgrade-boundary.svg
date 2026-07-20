@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
   <title id="title">Eva process upgrade boundary</title>
-  <desc id="desc">Current Eva upgrade commands produce local diagnostics, filesystem coordination, and modeled handoff evidence without supervising operating system processes or switching live traffic.</desc>
+  <desc id="desc">Current Eva daemon and service-entry code provides local identity, shutdown, and modeled handoff evidence without claiming real-host lifecycle certification or live traffic switching.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
       <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
@@ -13,20 +13,21 @@
   <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
 
   <text x="60" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="700" fill="#172033">Process upgrade and recovery boundary</text>
-  <text x="60" y="108" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" fill="#5f6f82">Implemented local evidence is not an OS-managed blue-green deployment.</text>
+  <text x="60" y="108" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" fill="#5f6f82">Direct service-entry code is implemented; real-host lifecycle evidence remains separate.</text>
 
   <text x="60" y="150" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#15803d">IMPLEMENTED LOCAL PATH</text>
 
   <g filter="url(#shadow)">
     <rect x="60" y="170" width="310" height="238" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="60" y="170" width="310" height="8" rx="4" fill="#2563eb"/>
-    <text x="84" y="214" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">CLI and foreground daemon</text>
-    <text x="84" y="251" font-family="Consolas, monospace" font-size="13" fill="#172033">daemon start / status</text>
-    <text x="84" y="277" font-family="Consolas, monospace" font-size="13" fill="#172033">agent drain / reload</text>
-    <text x="84" y="303" font-family="Consolas, monospace" font-size="13" fill="#172033">upgrade check / apply</text>
-    <text x="84" y="344" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#526174">Foreground mailbox loop</text>
-    <text x="84" y="368" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#526174">One-shot smoke by default</text>
-    <text x="84" y="391" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#8a4b08">--background is unsupported</text>
+    <text x="84" y="214" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">CLI and daemon entrypoints</text>
+    <text x="84" y="245" font-family="Consolas, monospace" font-size="13" fill="#172033">daemon start / status</text>
+    <text x="84" y="270" font-family="Consolas, monospace" font-size="13" fill="#172033">service install / start</text>
+    <text x="84" y="295" font-family="Consolas, monospace" font-size="13" fill="#172033">agent drain / reload</text>
+    <text x="84" y="320" font-family="Consolas, monospace" font-size="13" fill="#172033">upgrade check / apply</text>
+    <text x="84" y="350" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">Foreground/background control loops</text>
+    <text x="84" y="374" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">Direct service owns PID/lease</text>
+    <text x="84" y="397" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12" fill="#8a4b08">Separate startup handshakes</text>
   </g>
 
   <path d="M370 289 H435" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
@@ -34,12 +35,12 @@
   <g filter="url(#shadow)">
     <rect x="440" y="170" width="320" height="238" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="440" y="170" width="320" height="8" rx="4" fill="#0f766e"/>
-    <text x="464" y="214" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">Filesystem and lifecycle model</text>
+    <text x="464" y="214" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">Identity and lifecycle model</text>
     <text x="464" y="251" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Request / response mailboxes</text>
     <text x="464" y="277" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Lock, PID, state, recovery scan</text>
-    <text x="464" y="303" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">In-memory candidate and drain</text>
+    <text x="464" y="303" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Service argv identity and drift checks</text>
     <text x="464" y="329" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Policy and confirmation gates</text>
-    <text x="464" y="368" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">Check output is diagnostic;</text>
+    <text x="464" y="368" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">Service stop reuses the drain transaction;</text>
     <text x="464" y="391" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#526174">apply reads a separate key=value plan</text>
   </g>
 
@@ -48,17 +49,17 @@
   <g filter="url(#shadow)">
     <rect x="830" y="170" width="310" height="238" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="830" y="170" width="310" height="8" rx="4" fill="#15803d"/>
-    <text x="854" y="214" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">Local evidence</text>
+    <text x="854" y="214" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">Repository evidence</text>
     <text x="854" y="251" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Agent generation/control state</text>
     <text x="854" y="277" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Prepared/committed handoff</text>
-    <text x="854" y="303" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Release pointer file</text>
-    <text x="854" y="329" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Rollback plan/report</text>
-    <text x="854" y="368" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#8a4b08">Default policy denies</text>
-    <text x="854" y="391" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#8a4b08">state-changing handoff</text>
+    <text x="854" y="303" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">PID/lease/drain cleanup evidence</text>
+    <text x="854" y="329" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Release pointer and rollback report</text>
+    <text x="854" y="368" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#8a4b08">Local tests prove the code contract;</text>
+    <text x="854" y="391" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#8a4b08">host lifecycle evidence is external</text>
   </g>
 
   <rect x="60" y="455" width="1080" height="102" rx="8" fill="#fff1f2" stroke="#fecdd3"/>
   <text x="84" y="490" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#be123c">NOT IMPLEMENTED</text>
-  <text x="84" y="521" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#881337">OS service manager  ·  persistent Supervisor  ·  live candidate Runtime  ·  ingress/canary switching</text>
-  <text x="84" y="545" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#881337">boot recovery  ·  automatic child restart  ·  production provider-process supervision</text>
+  <text x="84" y="521" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#881337">Real-host stop/boot/reboot evidence · destructive lifecycle harness · production service gate</text>
+  <text x="84" y="545" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#881337">Persistent Supervisor · live candidate Runtime · ingress/canary switching · automatic child restart</text>
 </svg>

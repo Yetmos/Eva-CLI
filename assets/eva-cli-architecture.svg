@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
   <title id="title">Eva-CLI current architecture</title>
-  <desc id="desc">Current Eva-CLI architecture showing user-facing entry surfaces, the Rust-managed event and Agent execution path, capability and adapter boundaries, durable state, lifecycle, backup, release, and observability services.</desc>
+  <desc id="desc">Current Eva-CLI architecture showing user-facing entry surfaces, the Rust-managed event and Agent execution path, capability and adapter boundaries, durable state, direct service entry, lifecycle, backup, release, and observability services.</desc>
   <defs>
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
     <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#2563eb"/></marker>
@@ -27,7 +27,7 @@
     <rect class="purple" x="512" y="154" width="190" height="62" rx="7"/><text class="label" x="607" y="181" text-anchor="middle">MCP client / probe</text><text class="small" x="607" y="202" text-anchor="middle">external tool discovery</text>
     <rect class="green" x="742" y="154" width="210" height="62" rx="7"/><text class="label" x="847" y="181" text-anchor="middle">Config and schema</text><text class="small" x="847" y="202" text-anchor="middle">validated ProjectConfig</text>
     <rect class="green" x="982" y="154" width="230" height="62" rx="7"/><text class="label" x="1097" y="181" text-anchor="middle">Discovery and policy</text><text class="small" x="1097" y="202" text-anchor="middle">candidates, permissions, sandbox</text>
-    <rect class="orange" x="1242" y="154" width="270" height="62" rx="7"/><text class="label" x="1377" y="181" text-anchor="middle">Lifecycle and release controls</text><text class="small" x="1377" y="202" text-anchor="middle">generation, drain, rollback, artifacts</text>
+    <rect class="orange" x="1242" y="154" width="270" height="62" rx="7"/><text class="label" x="1377" y="181" text-anchor="middle">Lifecycle and service controls</text><text class="small" x="1377" y="202" text-anchor="middle">generation, service identity, artifacts</text>
   </g>
 
   <rect class="panel" x="42" y="268" width="1516" height="346" rx="8"/>
@@ -60,7 +60,7 @@
     <rect class="blue" x="68" y="696" width="280" height="142" rx="7"/><text class="label" x="88" y="727">Durable backend</text><text class="small" x="88" y="753">EventLog · TaskStateStore</text><text class="small" x="88" y="776">ProviderProcessTable · StateStore</text><text class="small" x="88" y="799">ArtifactStore · AuditSink</text><text class="tiny" x="88" y="823">filesystem or in-memory implementations</text>
     <rect class="green" x="378" y="696" width="250" height="142" rx="7"/><text class="label" x="398" y="727">Memory and context</text><text class="small" x="398" y="753">MemoryService</text><text class="small" x="398" y="776">KnowledgeService</text><text class="small" x="398" y="799">ContextBuilder + redaction</text>
     <rect class="cyan" x="658" y="696" width="250" height="142" rx="7"/><text class="label" x="678" y="727">Observability</text><text class="small" x="678" y="753">audit events · trace fields</text><text class="small" x="678" y="776">metrics · retention</text><text class="small" x="678" y="799">structured operation evidence</text>
-    <rect class="orange" x="938" y="696" width="250" height="142" rx="7"/><text class="label" x="958" y="727">Lifecycle</text><text class="small" x="958" y="753">generation switch · drain</text><text class="small" x="958" y="776">handoff · supervisor</text><text class="small" x="958" y="799">rollback · manager abstraction</text><text class="tiny" x="958" y="820">service-manager implementation is fake/test</text>
+    <rect class="orange" x="938" y="696" width="250" height="142" rx="7"/><text class="label" x="958" y="727">Lifecycle</text><text class="small" x="958" y="753">generation switch · drain</text><text class="small" x="958" y="776">handoff · platform adapters</text><text class="small" x="958" y="799">rollback · direct service entry</text><text class="tiny" x="958" y="820">host lifecycle evidence remains external</text>
     <rect class="purple" x="1218" y="696" width="300" height="142" rx="7"/><text class="label" x="1238" y="727">Backup, restore, and release</text><text class="small" x="1238" y="753">backup · migration package · snapshot</text><text class="small" x="1238" y="776">staged restore + rollback evidence</text><text class="small" x="1238" y="799">release artifact and distribution checks</text>
   </g>
   <path class="control" d="M363 408V696"/><path class="control" d="M993 408C993 620 503 620 503 696"/><path class="control" d="M1097 216C1097 620 783 620 783 696"/><path class="control" d="M1377 216V696"/>

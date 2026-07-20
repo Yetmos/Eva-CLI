@@ -6,11 +6,11 @@ use crate::service_command::{
 };
 use crate::service_factory::{ServiceHostPlatform, ServiceManagerFactory};
 use crate::service_manager::{
-    ServiceManagerAdapter, ServiceManagerDefinition, ServiceManagerHandoffReport,
-    ServiceManagerHandoffRequest, ServiceManagerKind, ServiceManagerMutationReport,
-    ServiceManagerMutationRequest, ServiceManagerOperation, ServiceManagerRollbackReport,
-    ServiceManagerRollbackRequest, ServiceManagerState, ServiceManagerStatusReport,
-    ServiceManagerStatusRequest,
+    ServiceManagerAdapter, ServiceManagerDefinition, ServiceManagerEntryPoint,
+    ServiceManagerHandoffReport, ServiceManagerHandoffRequest, ServiceManagerKind,
+    ServiceManagerMutationReport, ServiceManagerMutationRequest, ServiceManagerOperation,
+    ServiceManagerRollbackReport, ServiceManagerRollbackRequest, ServiceManagerState,
+    ServiceManagerStatusReport, ServiceManagerStatusRequest,
 };
 use eva_core::EvaError;
 use sha2::{Digest, Sha256};
@@ -125,9 +125,33 @@ where
 
     fn install_binary(definition: &ServiceManagerDefinition) -> Result<PathBuf, EvaError> {
         let binary = definition
-            .runtime_binary
+            .service_entrypoint
             .as_ref()
-            .ok_or_else(|| EvaError::invalid_argument("systemd install requires runtime_binary"))?;
+            .map(|entrypoint| &entrypoint.executable)
+            .or(definition.runtime_binary.as_ref())
+            .ok_or_else(|| {
+                EvaError::invalid_argument(
+                    "systemd install requires runtime_binary or service_entrypoint",
+                )
+            })?;
+        if let Some(entrypoint) = definition.service_entrypoint.as_ref() {
+            entrypoint.validate()?;
+            validate_canonical_entrypoint(entrypoint)?;
+            if let Some(runtime_binary) = definition.runtime_binary.as_ref() {
+                let canonical_runtime = fs::canonicalize(runtime_binary).map_err(|error| {
+                    io_error(
+                        "failed to canonicalize systemd runtime_binary",
+                        "runtime_binary",
+                        error,
+                    )
+                })?;
+                if canonical_runtime != entrypoint.executable {
+                    return Err(EvaError::conflict(
+                        "systemd runtime_binary does not match service entrypoint executable",
+                    ));
+                }
+            }
+        }
         if !binary.is_absolute() {
             return Err(EvaError::invalid_argument(
                 "systemd runtime_binary must be absolute",
@@ -155,15 +179,25 @@ where
     }
 
     fn desired_unit(
-        _definition: &ServiceManagerDefinition,
-        _unit_name: &str,
+        definition: &ServiceManagerDefinition,
+        unit_name: &str,
         binary: &Path,
     ) -> Result<Vec<u8>, EvaError> {
-        let binary = systemd_exec_path(binary)?;
-        let marker = managed_marker(_unit_name);
+        let command = systemd_command_line(definition, binary)?;
+        let marker = managed_marker_for(definition, unit_name);
+        let working_directory = definition
+            .service_entrypoint
+            .as_ref()
+            .map(|entrypoint| {
+                systemd_exec_path(&entrypoint.working_directory)
+                    .map(|value| format!("WorkingDirectory={value}\n"))
+            })
+            .transpose()?
+            .unwrap_or_default();
         let content = format!(
-            "{marker}[Unit]\nDescription=Eva CLI Runtime Service\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={binary}\nRestart=on-failure\nRestartSec=5s\nKillMode=control-group\n\n[Install]\nWantedBy=multi-user.target\n",
-            binary = binary,
+            "{marker}[Unit]\nDescription=Eva CLI Runtime Service\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={command}\n{working_directory}Restart=on-failure\nRestartSec=5s\nKillMode=control-group\n\n[Install]\nWantedBy=multi-user.target\n",
+            command = command,
+            working_directory = working_directory,
         );
         Ok(content.into_bytes())
     }
@@ -227,13 +261,23 @@ where
         let bytes = self
             .read_unit(unit_name)?
             .ok_or_else(|| EvaError::not_found("systemd unit is not installed"))?;
-        let marker = managed_marker(unit_name);
+        self.validate_managed_unit_bytes(definition, unit_name, &bytes)?;
+        Ok(bytes)
+    }
+
+    fn validate_managed_unit_bytes(
+        &self,
+        definition: &ServiceManagerDefinition,
+        unit_name: &str,
+        bytes: &[u8],
+    ) -> Result<(), EvaError> {
+        let marker = managed_marker_for(definition, unit_name);
         if !bytes.starts_with(marker.as_bytes()) {
             return Err(EvaError::conflict(
                 "systemd unit is not managed by this service definition",
             ));
         }
-        if definition.runtime_binary.is_some() {
+        if definition.runtime_binary.is_some() || definition.service_entrypoint.is_some() {
             let canonical_binary = Self::install_binary(definition)?;
             let desired = Self::desired_unit(definition, unit_name, &canonical_binary)?;
             if bytes != desired {
@@ -242,7 +286,7 @@ where
                 ));
             }
         }
-        Ok(bytes)
+        Ok(())
     }
 
     fn ensure_desired_unit(
@@ -565,11 +609,7 @@ where
         let mut audit = vec![format!("systemd.unit.name:{unit_name}")];
         let local_unit = self.read_unit(&unit_name)?;
         if let Some(unit) = local_unit.as_ref() {
-            if !unit.starts_with(managed_marker(&unit_name).as_bytes()) {
-                return Err(EvaError::conflict(
-                    "systemd unit is not managed by this service definition",
-                ));
-            }
+            self.validate_managed_unit_bytes(definition, &unit_name, unit)?;
             audit.push(format!("systemd.unit.digest:{}", digest_bytes(unit)));
         }
         let (snapshot, state_audit) = self.query_snapshot(&unit_name)?;
@@ -658,11 +698,7 @@ where
         let mut audit = vec![format!("systemd.unit.name:{unit_name}")];
         let local_unit = self.read_unit(&unit_name)?;
         if let Some(unit) = local_unit.as_ref() {
-            if !unit.starts_with(managed_marker(&unit_name).as_bytes()) {
-                return Err(EvaError::conflict(
-                    "systemd unit is not managed by this service definition",
-                ));
-            }
+            self.validate_managed_unit_bytes(definition, &unit_name, unit)?;
             audit.push(format!("systemd.unit.digest:{}", digest_bytes(unit)));
         }
         let (snapshot, state_audit) = self.query_snapshot(&unit_name)?;
@@ -980,6 +1016,63 @@ fn resolve_unit_name(definition: &ServiceManagerDefinition) -> Result<String, Ev
 
 fn managed_marker(unit_name: &str) -> String {
     format!("{MANAGED_UNIT_MARKER_PREFIX}{unit_name}\n")
+}
+
+fn managed_marker_for(definition: &ServiceManagerDefinition, unit_name: &str) -> String {
+    if let Some(entrypoint) = definition.service_entrypoint.as_ref() {
+        format!(
+            "# eva-cli-managed-unit=v2; unit={unit_name}; entrypoint-sha256={}\n",
+            entrypoint.identity_digest()
+        )
+    } else {
+        managed_marker(unit_name)
+    }
+}
+
+fn validate_canonical_entrypoint(entrypoint: &ServiceManagerEntryPoint) -> Result<(), EvaError> {
+    let canonical = fs::canonicalize(&entrypoint.executable).map_err(|error| {
+        io_error(
+            "failed to canonicalize service entrypoint executable",
+            "service_entrypoint.executable",
+            error,
+        )
+    })?;
+    if canonical != entrypoint.executable {
+        return Err(EvaError::conflict(
+            "service entrypoint executable must already be canonical",
+        ));
+    }
+    let working_directory = fs::canonicalize(&entrypoint.working_directory).map_err(|error| {
+        io_error(
+            "failed to canonicalize service entrypoint working directory",
+            "service_entrypoint.working_directory",
+            error,
+        )
+    })?;
+    if working_directory != entrypoint.working_directory {
+        return Err(EvaError::conflict(
+            "service entrypoint working directory must already be canonical",
+        ));
+    }
+    Ok(())
+}
+
+fn systemd_command_line(
+    definition: &ServiceManagerDefinition,
+    binary: &Path,
+) -> Result<String, EvaError> {
+    let mut values = vec![systemd_exec_path(binary)?];
+    if let Some(entrypoint) = definition.service_entrypoint.as_ref() {
+        for argument in &entrypoint.arguments {
+            let argument = argument.to_str().ok_or_else(|| {
+                EvaError::invalid_argument(
+                    "systemd service entrypoint arguments must be valid UTF-8",
+                )
+            })?;
+            values.push(systemd_exec_path(Path::new(argument))?);
+        }
+    }
+    Ok(values.join(" "))
 }
 
 fn systemd_exec_path(binary: &Path) -> Result<String, EvaError> {
@@ -1527,6 +1620,7 @@ mod tests {
             candidate_runtime_binary: None,
             start_on_boot: true,
             restart_supervisor: false,
+            service_entrypoint: None,
         }
     }
 
@@ -1890,7 +1984,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_marker_does_not_allow_binary_drift_to_start() {
+    fn managed_marker_does_not_allow_unit_drift_to_reach_any_operation() {
         let root = TempRoot::new();
         let executor = ScriptedExecutor::new([]);
         let probe = executor.clone();
@@ -1905,11 +1999,18 @@ mod tests {
         desired.extend_from_slice(b"# retained marker with drift\n");
         atomic_create_unit(&root.path(), TEST_UNIT_NAME, &desired).expect("drifted unit");
 
+        let status_error = adapter
+            .status(status_request(&definition))
+            .expect_err("managed marker cannot hide drift from status");
+        assert_eq!(status_error.kind(), ErrorKind::Conflict);
         let error = adapter
             .start(mutation_request(&definition))
             .expect_err("managed marker cannot hide drift");
-
         assert_eq!(error.kind(), ErrorKind::Conflict);
+        let uninstall_error = adapter
+            .uninstall(mutation_request(&definition))
+            .expect_err("managed marker cannot hide drift from uninstall");
+        assert_eq!(uninstall_error.kind(), ErrorKind::Conflict);
         assert_eq!(probe.call_count(), 0);
     }
 
@@ -1987,6 +2088,54 @@ mod tests {
             r#""/opt/eva 100%%.bin""#
         );
         assert!(systemd_exec_path(Path::new("/opt/$HOME/eva")).is_err());
+    }
+
+    #[test]
+    fn daemon_entrypoint_unit_binds_exact_argv_working_directory_and_marker() {
+        let mut definition = definition();
+        let binary = definition.runtime_binary.clone().expect("runtime binary");
+        let project_root = std::env::temp_dir().join("Eva Service Project With Spaces");
+        let entrypoint = ServiceManagerEntryPoint::for_daemon(
+            binary.clone(),
+            project_root.clone(),
+            &definition.service_name,
+            ServiceManagerKind::Systemd,
+        )
+        .expect("daemon entrypoint");
+        definition.service_entrypoint = Some(entrypoint.clone());
+        let unit = String::from_utf8(
+            SystemdAdapter::<ScriptedExecutor>::desired_unit(&definition, TEST_UNIT_NAME, &binary)
+                .expect("entrypoint unit"),
+        )
+        .expect("UTF-8 unit");
+
+        let expected_command = systemd_command_line(&definition, &binary).expect("systemd argv");
+        assert!(unit.contains(&format!("ExecStart={expected_command}\n")));
+        assert!(unit.contains(&format!(
+            "WorkingDirectory={}\n",
+            systemd_exec_path(&project_root).expect("working directory")
+        )));
+        assert!(unit.starts_with(&managed_marker_for(&definition, TEST_UNIT_NAME)));
+        assert!(unit.contains(entrypoint.identity_digest()));
+
+        let mut drifted = definition.clone();
+        drifted.service_entrypoint = Some(
+            ServiceManagerEntryPoint::for_daemon(
+                binary.clone(),
+                project_root.join("drift"),
+                &drifted.service_name,
+                ServiceManagerKind::Systemd,
+            )
+            .expect("drifted entrypoint"),
+        );
+        let drifted_unit =
+            SystemdAdapter::<ScriptedExecutor>::desired_unit(&drifted, TEST_UNIT_NAME, &binary)
+                .expect("drifted unit");
+        assert_ne!(unit.as_bytes(), drifted_unit);
+        assert_ne!(
+            managed_marker_for(&definition, TEST_UNIT_NAME),
+            managed_marker_for(&drifted, TEST_UNIT_NAME)
+        );
     }
 
     #[cfg(not(target_os = "linux"))]

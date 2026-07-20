@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
   <title id="title">Eva 进程升级边界</title>
-  <desc id="desc">当前 Eva 升级命令提供本地诊断、文件系统协调和模拟交接证据，但不会监管操作系统进程或切换真实流量。</desc>
+  <desc id="desc">当前 Eva daemon 与 service-entry 代码提供本地 identity、shutdown 和建模 handoff 证据，但不宣称真实 host lifecycle 认证或真实流量切换。</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
       <path d="M1 1 L9 5 L1 9 Z" fill="#2563eb"/>
@@ -13,20 +13,21 @@
   <rect x="24" y="24" width="1152" height="572" rx="8" fill="#ffffff" stroke="#d9e2ef"/>
 
   <text x="60" y="78" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#172033">进程升级与恢复边界</text>
-  <text x="60" y="108" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" fill="#5f6f82">已实现的本地证据不等于操作系统托管的蓝绿发布。</text>
+  <text x="60" y="108" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" fill="#5f6f82">direct service-entry 代码已实现；真实 host lifecycle evidence 仍需单独取得。</text>
 
   <text x="60" y="150" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#15803d">已实现的本地路径</text>
 
   <g filter="url(#shadow)">
     <rect x="60" y="170" width="310" height="238" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="60" y="170" width="310" height="8" rx="4" fill="#2563eb"/>
-    <text x="84" y="214" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">CLI 与前台 Daemon</text>
-    <text x="84" y="251" font-family="Consolas, monospace" font-size="13" fill="#172033">daemon start / status</text>
-    <text x="84" y="277" font-family="Consolas, monospace" font-size="13" fill="#172033">agent drain / reload</text>
-    <text x="84" y="303" font-family="Consolas, monospace" font-size="13" fill="#172033">upgrade check / apply</text>
-    <text x="84" y="344" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#526174">前台文件 mailbox 循环</text>
-    <text x="84" y="368" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#526174">默认执行一次 smoke 后退出</text>
-    <text x="84" y="391" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#8a4b08">--background 尚不支持</text>
+    <text x="84" y="214" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">CLI 与 daemon entrypoint</text>
+    <text x="84" y="245" font-family="Consolas, monospace" font-size="13" fill="#172033">daemon start / status</text>
+    <text x="84" y="270" font-family="Consolas, monospace" font-size="13" fill="#172033">service install / start</text>
+    <text x="84" y="295" font-family="Consolas, monospace" font-size="13" fill="#172033">agent drain / reload</text>
+    <text x="84" y="320" font-family="Consolas, monospace" font-size="13" fill="#172033">upgrade check / apply</text>
+    <text x="84" y="350" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">前台/后台 control loop</text>
+    <text x="84" y="374" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">direct service 持有 PID/lease</text>
+    <text x="84" y="397" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="12" fill="#8a4b08">使用独立 startup handshake</text>
   </g>
 
   <path d="M370 289 H435" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow)"/>
@@ -34,12 +35,12 @@
   <g filter="url(#shadow)">
     <rect x="440" y="170" width="320" height="238" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="440" y="170" width="320" height="8" rx="4" fill="#0f766e"/>
-    <text x="464" y="214" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">文件系统与 Lifecycle 模型</text>
+    <text x="464" y="214" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">Identity 与 Lifecycle 模型</text>
     <text x="464" y="251" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">请求 / 响应 mailbox</text>
     <text x="464" y="277" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Lock、PID、State、恢复扫描</text>
-    <text x="464" y="303" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">内存 Candidate 与 Drain</text>
+    <text x="464" y="303" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Service argv identity 与 drift 校验</text>
     <text x="464" y="329" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Policy 与确认门禁</text>
-    <text x="464" y="368" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">Check 输出仅用于诊断；</text>
+    <text x="464" y="368" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">Service stop 复用 drain 事务；</text>
     <text x="464" y="391" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#526174">Apply 读取另一份 key=value 计划</text>
   </g>
 
@@ -48,17 +49,17 @@
   <g filter="url(#shadow)">
     <rect x="830" y="170" width="310" height="238" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="830" y="170" width="310" height="8" rx="4" fill="#15803d"/>
-    <text x="854" y="214" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">本地证据</text>
+    <text x="854" y="214" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">仓库内证据</text>
     <text x="854" y="251" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Agent generation/control 状态</text>
     <text x="854" y="277" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Prepared/committed handoff</text>
-    <text x="854" y="303" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Release pointer 文件</text>
-    <text x="854" y="329" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Rollback 计划 / 报告</text>
-    <text x="854" y="368" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#8a4b08">默认 Policy 拒绝</text>
-    <text x="854" y="391" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#8a4b08">改变状态的交接</text>
+    <text x="854" y="303" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">PID/lease/drain cleanup evidence</text>
+    <text x="854" y="329" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Release pointer 与 rollback report</text>
+    <text x="854" y="368" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#8a4b08">本地测试证明代码 contract；</text>
+    <text x="854" y="391" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" fill="#8a4b08">host lifecycle evidence 仍在外部</text>
   </g>
 
   <rect x="60" y="455" width="1080" height="102" rx="8" fill="#fff1f2" stroke="#fecdd3"/>
   <text x="84" y="490" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="15" font-weight="700" fill="#be123c">尚未实现</text>
-  <text x="84" y="521" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#881337">操作系统 Service Manager · 常驻 Supervisor · 真实 Candidate Runtime · Ingress/Canary 切流</text>
-  <text x="84" y="545" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#881337">开机恢复 · 子进程自动重启 · 生产级 Provider 进程监管</text>
+  <text x="84" y="521" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#881337">真实 host stop/boot/reboot evidence · destructive lifecycle harness · production service gate</text>
+  <text x="84" y="545" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#881337">常驻 Supervisor · 真实 Candidate Runtime · Ingress/Canary 切流 · 子进程自动重启</text>
 </svg>

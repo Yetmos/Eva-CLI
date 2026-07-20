@@ -24,6 +24,7 @@ use eva_hardware::{
     discover_project_devices, parse_hotplug_subscriber_state, render_hotplug_subscriber_state,
     run_hotplug_subscriber_once, HardwareHotplugDeviceState, HardwareHotplugSubscriberReport,
 };
+pub use eva_lifecycle::ServiceStopToken as DaemonStopToken;
 use eva_lifecycle::{
     DrainCoordinator, DrainPlan, GenerationController, GenerationState, RuntimeGeneration,
 };
@@ -567,6 +568,9 @@ enum DaemonPidProjection {
 enum DaemonRunMode {
     Foreground,
     BackgroundChild,
+    /// Direct entrypoint invoked by an OS service manager.  This mode never
+    /// spawns another Eva process; the current process owns the daemon lease.
+    Service,
 }
 
 struct DaemonStartupHooks<'a> {
@@ -595,8 +599,10 @@ pub enum DaemonControlOperation {
 /// 以 `request_id` 为邮箱文件名和响应关联键的版本化控制请求。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonControlRequest {
-    /// mailbox wire schema；新请求为 2，reader 继续接受旧版本 1。
+    /// mailbox wire schema；投递时升级为 generation-bound v3，reader 继续接受 v1/v2。
     wire_version: u32,
+    /// v3 请求明确绑定的 durable lease generation，防止请求跨 daemon incarnation 重放。
+    target_lease_generation: Option<u64>,
     /// 在请求和响应目录中唯一标识本次投递；复用该值会覆盖其邮箱关联语义。
     pub request_id: RequestId,
     /// 记录 `trace_id` 字段对应的值。
@@ -1070,11 +1076,12 @@ impl DaemonRunMode {
         match self {
             Self::Foreground => "foreground_dev",
             Self::BackgroundChild => "background",
+            Self::Service => "service",
         }
     }
 
     const fn foreground(self) -> bool {
-        matches!(self, Self::Foreground)
+        matches!(self, Self::Foreground | Self::Service)
     }
 }
 
@@ -1500,6 +1507,7 @@ impl DaemonControlRequest {
     ) -> Self {
         Self {
             wire_version: 2,
+            target_lease_generation: None,
             request_id,
             trace_id: trace_id(trace),
             operation,
@@ -1591,6 +1599,18 @@ impl DaemonControlRequest {
         self
     }
 
+    /// 在原子发布前把请求绑定到 status 已验证的活动 lease generation。
+    fn bind_to_lease_generation(&mut self, generation: u64) -> Result<(), EvaError> {
+        if generation == 0 {
+            return Err(EvaError::conflict(
+                "daemon control request lease generation is invalid",
+            ));
+        }
+        self.wire_version = 3;
+        self.target_lease_generation = Some(generation);
+        Ok(())
+    }
+
     /// 按稳定存储格式编码 `to_storage` 对应的数据。
     fn to_storage(&self) -> String {
         if self.wire_version == 1 {
@@ -1676,7 +1696,7 @@ impl DaemonControlRequest {
                 String::new(),
             ),
         };
-        [
+        let mut fields = vec![
             format!("version={}", self.wire_version),
             format!("request_id={}", self.request_id.as_str()),
             format!("trace_id={}", encode_field(&self.trace_id)),
@@ -1731,14 +1751,23 @@ impl DaemonControlRequest {
                     .unwrap_or_default()
             ),
             format!("created_at_ms={}", self.created_at_ms),
-            String::new(),
-        ]
-        .join("\n")
+        ];
+        if self.wire_version >= 3 {
+            fields.push(format!(
+                "lease_generation={}",
+                self.target_lease_generation
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            ));
+        }
+        fields.push(String::new());
+        fields.join("\n")
     }
 
     /// 从持久化数据或输入构造 `from_storage` 对应的值。
     fn from_storage(data: &str) -> Result<Self, EvaError> {
         let mut wire_version = None;
+        let mut target_lease_generation = None;
         let mut request_id = None;
         let mut trace_id = None;
         let mut operation = None;
@@ -1781,7 +1810,7 @@ impl DaemonControlRequest {
                     let parsed = value.parse::<u32>().map_err(|_| {
                         EvaError::conflict("daemon control request version is invalid")
                     })?;
-                    if !matches!(parsed, 1 | 2) {
+                    if !matches!(parsed, 1..=3) {
                         return Err(
                             EvaError::conflict("daemon control request version mismatch")
                                 .with_context("version", value),
@@ -1832,6 +1861,11 @@ impl DaemonControlRequest {
                 "created_at_ms" => {
                     created_at_ms = Some(value.parse::<u128>().map_err(|_| {
                         EvaError::conflict("daemon control request created_at_ms is invalid")
+                    })?)
+                }
+                "lease_generation" => {
+                    target_lease_generation = Some(value.parse::<u64>().map_err(|_| {
+                        EvaError::conflict("daemon control request lease generation is invalid")
                     })?)
                 }
                 _ => {
@@ -1945,6 +1979,7 @@ impl DaemonControlRequest {
 
         let request = Self {
             wire_version,
+            target_lease_generation,
             request_id: request_id
                 .ok_or_else(|| EvaError::conflict("daemon control request missing request_id"))?,
             trace_id: trace_id
@@ -1971,10 +2006,25 @@ impl DaemonControlRequest {
     }
 
     fn validate(&self) -> Result<(), EvaError> {
-        if !matches!(self.wire_version, 1 | 2) {
+        if !matches!(self.wire_version, 1..=3) {
             return Err(EvaError::invalid_argument(
                 "daemon control request version is unsupported",
             ));
+        }
+        match (self.wire_version, self.target_lease_generation) {
+            (3, Some(generation)) if generation > 0 => {}
+            (3, _) => {
+                return Err(EvaError::invalid_argument(
+                    "daemon control request v3 requires a lease generation",
+                ))
+            }
+            (1 | 2, None) => {}
+            (1 | 2, Some(_)) => {
+                return Err(EvaError::invalid_argument(
+                    "legacy daemon control request cannot carry a lease generation",
+                ))
+            }
+            _ => unreachable!("wire version validated above"),
         }
         if let Some(task_id) = &self.task_id {
             RequestId::parse(task_id)?;
@@ -2428,7 +2478,71 @@ pub fn start_daemon(
             "background daemon spawning must use the CLI parent/child entrypoint",
         ));
     }
-    start_daemon_inner(project, options, trace, DaemonRunMode::Foreground, None)
+    start_daemon_inner(
+        project,
+        options,
+        trace,
+        DaemonRunMode::Foreground,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Starts the daemon directly from an OS service-manager entrypoint.
+///
+/// The service manager invokes the Eva binary with a canonical `daemon
+/// __service-entry` argv.  Unlike `daemon start --background`, this path does
+/// not create a launcher or child process: the invoked process claims the
+/// durable lease and enters the normal control loop itself.
+pub fn start_daemon_service(
+    project: &ProjectConfig,
+    options: DaemonStartOptions,
+    trace: &TraceFields,
+) -> Result<DaemonStartReport, EvaError> {
+    let stop_token = DaemonStopToken::new();
+    start_daemon_service_with_stop_token(project, options, trace, &stop_token)
+}
+
+/// Starts a direct service entrypoint with an externally owned stop token.
+/// Platform signal/SCM handlers and integration tests use this form so the
+/// daemon loop remains the sole owner of shutdown mutations.
+pub fn start_daemon_service_with_stop_token(
+    project: &ProjectConfig,
+    options: DaemonStartOptions,
+    trace: &TraceFields,
+    stop_token: &DaemonStopToken,
+) -> Result<DaemonStartReport, EvaError> {
+    let mut report_ready = || Ok(());
+    start_daemon_service_with_stop_token_and_ready(
+        project,
+        options,
+        trace,
+        stop_token,
+        &mut report_ready,
+    )
+}
+
+/// Starts a direct service entrypoint and reports readiness only after the
+/// running state and versioned PID projection are durably published.
+pub fn start_daemon_service_with_stop_token_and_ready(
+    project: &ProjectConfig,
+    mut options: DaemonStartOptions,
+    trace: &TraceFields,
+    stop_token: &DaemonStopToken,
+    report_ready: &mut dyn FnMut() -> Result<(), EvaError>,
+) -> Result<DaemonStartReport, EvaError> {
+    options.foreground = true;
+    options.shutdown_after_smoke = false;
+    start_daemon_inner(
+        project,
+        options,
+        trace,
+        DaemonRunMode::Service,
+        None,
+        Some(stop_token),
+        Some(report_ready),
+    )
 }
 
 pub fn start_daemon_background_child(
@@ -2451,6 +2565,8 @@ pub fn start_daemon_background_child(
         trace,
         DaemonRunMode::BackgroundChild,
         Some(&mut hooks),
+        None,
+        None,
     );
     if let Err(error) = &result {
         if !hooks.ready_published {
@@ -2485,6 +2601,8 @@ fn start_daemon_inner(
     trace: &TraceFields,
     run_mode: DaemonRunMode,
     mut startup_hooks: Option<&mut DaemonStartupHooks<'_>>,
+    stop_token: Option<&DaemonStopToken>,
+    mut service_ready: Option<&mut dyn FnMut() -> Result<(), EvaError>>,
 ) -> Result<DaemonStartReport, EvaError> {
     fs::create_dir_all(&options.lock_dir).map_err(|error| {
         EvaError::internal("failed to create daemon lock directory")
@@ -2552,6 +2670,7 @@ fn start_daemon_inner(
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
+        stop_token,
     )?;
     let mut task_handlers = TaskHandlerRegistry::with_runtime_defaults()?;
     register_daemon_process_harness_handlers(&options, &mut task_handlers)?;
@@ -2577,6 +2696,7 @@ fn start_daemon_inner(
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
+        stop_token,
     )?;
     record_daemon_recovery_observability(observability_lifecycle.pipeline_mut(), trace, &recovery);
     let policy = verify_policy(project)?;
@@ -2584,12 +2704,14 @@ fn start_daemon_inner(
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
+        stop_token,
     )?;
     let observability = verify_observability(&mut observability_lifecycle, trace)?;
     lease.renew_at(now_ms())?;
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
+        stop_token,
     )?;
 
     fs::create_dir_all(&options.state_dir).map_err(|error| {
@@ -2607,6 +2729,7 @@ fn start_daemon_inner(
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
+        stop_token,
     )?;
     let hardware_hotplug = start_hardware_hotplug_subscriber(
         project,
@@ -2617,6 +2740,7 @@ fn start_daemon_inner(
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
+        stop_token,
     )?;
     let memory_schedule = FileSystemScheduleStore::new(options.state_dir.join("schedules"))?;
     if memory_schedule
@@ -2646,6 +2770,7 @@ fn start_daemon_inner(
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
+        stop_token,
     )?;
     let mut runtime = RuntimeBuilder::new()
         .build_with_durable_discovery(project, Some(durable_backend.layout()))?;
@@ -2697,6 +2822,7 @@ fn start_daemon_inner(
     ensure_startup_not_aborted(
         &options,
         startup_hooks.as_deref().map(|hooks| hooks.handshake),
+        stop_token,
     )?;
 
     // 状态和 PID 均成功写入后，`daemon_status` 才可能将进程判为可用。
@@ -2715,6 +2841,9 @@ fn start_daemon_inner(
     }
 
     let lifecycle = (|| {
+        if let Some(report_ready) = service_ready.as_deref_mut() {
+            report_ready()?;
+        }
         if let Some(hooks) = startup_hooks.as_deref_mut() {
             let ready_report = DaemonStartReport {
                 status: "running".to_owned(),
@@ -2741,7 +2870,7 @@ fn start_daemon_inner(
                 ),
             };
             let report_digest = (hooks.publish_report)(&ready_report)?;
-            ensure_startup_not_aborted(&options, Some(hooks.handshake))?;
+            ensure_startup_not_aborted(&options, Some(hooks.handshake), stop_token)?;
             write_daemon_startup_frame(
                 &options,
                 hooks.handshake,
@@ -2775,6 +2904,7 @@ fn start_daemon_inner(
                 retrieval_worker: retrieval_worker.as_ref(),
                 config_watcher: config_watcher.as_ref(),
                 config_generation_store: &config_generation_store,
+                stop_token,
             });
             let join_result = worker.stop_and_join();
             let loop_report = match (loop_result, join_result) {
@@ -2953,7 +3083,7 @@ pub fn daemon_status(options: &DaemonStartOptions) -> Result<DaemonStatusReport,
 /// “未发生变更”，应使用状态查询或原请求标识核对结果。
 pub fn send_daemon_control_request(
     options: &DaemonStartOptions,
-    request: DaemonControlRequest,
+    mut request: DaemonControlRequest,
     timeout_ms: u64,
 ) -> Result<DaemonControlResponse, EvaError> {
     request.validate()?;
@@ -3002,6 +3132,21 @@ pub fn send_daemon_control_request(
             ));
     }
 
+    // Explicit v1 callers retain the legacy submit envelope compatibility path. New
+    // requests (the default v2 constructor and v2 callers) are upgraded to v3 so
+    // their durable file is fenced to this exact daemon incarnation.
+    if request.wire_version >= 2 {
+        let lease_generation = status
+            .lease
+            .as_ref()
+            .map(|lease| lease.generation)
+            .ok_or_else(|| {
+                EvaError::conflict("available daemon status is missing its active lease generation")
+            })?;
+        request.bind_to_lease_generation(lease_generation)?;
+        request.validate()?;
+    }
+
     ensure_control_dirs(options)?;
     let request_path = control_request_file(options, &request.request_id);
     let response_path = control_response_file(options, &request.request_id);
@@ -3011,20 +3156,38 @@ pub fn send_daemon_control_request(
 
     let started_at = now_ms();
     loop {
+        let mut shutdown_response = None;
         if response_path.exists() {
             let data = fs::read_to_string(&response_path).map_err(|error| {
                 EvaError::internal("failed to read daemon control response")
                     .with_context("path", response_path.display().to_string())
                     .with_context("io_error", error.to_string())
             })?;
-            let mut response = DaemonControlResponse::from_storage(&data)?;
+            let response = DaemonControlResponse::from_storage(&data)?;
             if response.operation != DaemonControlOperation::Shutdown {
                 return Ok(response);
             }
+            shutdown_response = Some(response);
+        }
+        if request.operation == DaemonControlOperation::Shutdown {
             let released_status = daemon_status(options)?;
             if shutdown_is_fully_released(options, &released_status)? {
-                response.lease = released_status.lease;
-                return Ok(response);
+                if let Some(mut response) = shutdown_response {
+                    response.lease = released_status.lease;
+                    return Ok(response);
+                }
+                if let Some(response) =
+                    repeated_shutdown_response(options, &request, &released_status)?
+                {
+                    // Only remove the exact request this caller published. A reused request_id
+                    // may already refer to another delivery and must remain untouched.
+                    if read_control_request(&request_path)
+                        .is_ok_and(|persisted| persisted == request)
+                    {
+                        let _ = remove_if_exists(&request_path);
+                    }
+                    return Ok(response);
+                }
             }
         }
         if now_ms().saturating_sub(started_at) >= timeout_ms as u128 {
@@ -3088,6 +3251,40 @@ fn repeated_shutdown_response(
         }),
         audit: vec!["daemon:w1-l11:shutdown_idempotent_noop".to_owned()],
     }))
+}
+
+/// Rejects persisted work that was addressed to another daemon incarnation.
+/// Legacy v1/v2 requests remain readable, but requests older than the current
+/// running projection are fail-closed because they cannot prove ownership.
+fn validate_control_request_generation(
+    request: &DaemonControlRequest,
+    running_state: &DaemonStateRecord,
+    lease_generation: u64,
+) -> Result<(), EvaError> {
+    if request.wire_version >= 3 {
+        let target = request.target_lease_generation.ok_or_else(|| {
+            EvaError::conflict("daemon control request is missing its target lease generation")
+        })?;
+        if target != lease_generation {
+            return Err(EvaError::conflict(
+                "daemon control request targets another lease generation",
+            )
+            .with_context("target_generation", target.to_string())
+            .with_context("active_generation", lease_generation.to_string()));
+        }
+        return Ok(());
+    }
+    if request.created_at_ms < running_state.started_at_ms {
+        return Err(EvaError::conflict(
+            "legacy daemon control request predates the active daemon incarnation",
+        )
+        .with_context("request_created_at_ms", request.created_at_ms.to_string())
+        .with_context(
+            "daemon_started_at_ms",
+            running_state.started_at_ms.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// 仅在能够安全 claim ownership 时清理守护投影；活动或 dead-but-unexpired owner 均拒绝。
@@ -3273,6 +3470,7 @@ struct DaemonControlLoopContext<'a> {
     retrieval_worker: Option<&'a DaemonRetrievalWorker>,
     config_watcher: Option<&'a ConfigWatcher>,
     config_generation_store: &'a ConfigGenerationStore,
+    stop_token: Option<&'a DaemonStopToken>,
 }
 
 /// 串行执行调度重试 tick 和按文件名排序的控制请求，直到处理到关闭操作。
@@ -3280,11 +3478,17 @@ struct DaemonControlLoopContext<'a> {
 /// 每个请求先执行状态变更，再原子写响应，最后删除请求。响应写入失败时请求会保留以便诊断
 /// 或重试，但变更可能已经发生，因此调用方必须依据响应或状态确认结果，不能只观察请求文件。
 fn run_control_loop(
-    context: DaemonControlLoopContext<'_>,
+    mut context: DaemonControlLoopContext<'_>,
 ) -> Result<DaemonControlLoopReport, EvaError> {
     let heartbeat_interval = daemon_runtime_heartbeat_interval(context.options)?;
     let mut next_heartbeat = Instant::now() + heartbeat_interval;
     loop {
+        if context
+            .stop_token
+            .is_some_and(DaemonStopToken::is_requested)
+        {
+            return process_service_stop_request(&mut context, &mut next_heartbeat);
+        }
         let loop_generation = context.runtime.generation();
         let loop_project = loop_generation.project.as_ref();
         context.task_worker.check_health()?;
@@ -3347,6 +3551,14 @@ fn run_control_loop(
                     continue;
                 }
             };
+            if let Err(error) = validate_control_request_generation(
+                &request,
+                &context.running_state,
+                context.lease.record().generation().0,
+            ) {
+                let _ = quarantine_control_request(&request_path, &error);
+                continue;
+            }
             let response_path = control_response_file(context.options, &request.request_id);
             let operation = request.operation;
             let mut context = DaemonControlContext {
@@ -3389,6 +3601,129 @@ fn run_control_loop(
         context.task_worker.check_health()?;
         thread::sleep(Duration::from_millis(CONTROL_POLL_INTERVAL_MS));
     }
+}
+
+/// Converts an asynchronous service-manager stop notification into the same
+/// shutdown transaction handled by the local control mailbox. A same-generation
+/// persisted shutdown is consumed when available; otherwise the synthetic
+/// request stays in memory so a crash cannot replay it into the next generation.
+fn process_service_stop_request(
+    context: &mut DaemonControlLoopContext<'_>,
+    next_heartbeat: &mut Instant,
+) -> Result<DaemonControlLoopReport, EvaError> {
+    let generation = context.lease.record().generation().0;
+    if let Some((request_path, request)) =
+        pending_service_shutdown_request(context.options, &context.running_state, generation)?
+    {
+        let response_path = control_response_file(context.options, &request.request_id);
+        return complete_service_stop_request(
+            context,
+            next_heartbeat,
+            request,
+            request_path,
+            response_path,
+            true,
+        );
+    }
+
+    let request_id_value = format!("req-service-stop-g{generation}");
+    let request_id = RequestId::parse(&request_id_value)?;
+    let trace = TraceFields::default().with_request_id(request_id.clone());
+    let request =
+        DaemonControlRequest::new(request_id.clone(), &trace, DaemonControlOperation::Shutdown)
+            .with_generation_id(format!("service-g{generation}"))
+            .with_reason("OS service manager requested cooperative shutdown")
+            .with_timeout_ms(MAX_DAEMON_SHUTDOWN_DRAIN_TIMEOUT_MS);
+    let request_path = control_request_file(context.options, &request_id);
+    let response_path = control_response_file(context.options, &request_id);
+    remove_if_exists(&response_path)?;
+
+    complete_service_stop_request(
+        context,
+        next_heartbeat,
+        request,
+        request_path,
+        response_path,
+        false,
+    )
+}
+
+/// Selects an already-persisted shutdown addressed to this lease generation.
+/// Invalid or cross-generation entries are isolated before the stop proceeds;
+/// valid non-shutdown requests remain pending and cannot migrate to a successor.
+fn pending_service_shutdown_request(
+    options: &DaemonStartOptions,
+    running_state: &DaemonStateRecord,
+    lease_generation: u64,
+) -> Result<Option<(PathBuf, DaemonControlRequest)>, EvaError> {
+    for request_path in pending_control_requests(options)? {
+        let request = match read_control_request(&request_path) {
+            Ok(request) => request,
+            Err(error) => {
+                let _ = quarantine_control_request(&request_path, &error);
+                continue;
+            }
+        };
+        if let Err(error) =
+            validate_control_request_generation(&request, running_state, lease_generation)
+        {
+            let _ = quarantine_control_request(&request_path, &error);
+            continue;
+        }
+        if request.operation == DaemonControlOperation::Shutdown {
+            return Ok(Some((request_path, request)));
+        }
+    }
+    Ok(None)
+}
+
+fn complete_service_stop_request(
+    context: &mut DaemonControlLoopContext<'_>,
+    next_heartbeat: &mut Instant,
+    request: DaemonControlRequest,
+    request_path: PathBuf,
+    response_path: PathBuf,
+    persisted_request: bool,
+) -> Result<DaemonControlLoopReport, EvaError> {
+    let request_generation = context.runtime.generation();
+    let mut control_context = DaemonControlContext {
+        project: request_generation.project.as_ref(),
+        options: context.options,
+        runtime: context.runtime,
+        running_state: &context.running_state,
+        durable_layout: context.durable_layout,
+        lease: context.lease,
+        task_worker: context.task_worker,
+        observability: context.observability,
+    };
+    let mut response =
+        handle_control_request(&mut control_context, request, &request_path, &response_path)?;
+    response
+        .audit
+        .push("daemon:w2-l07:service_stop_token_observed".to_owned());
+    if persisted_request {
+        response
+            .audit
+            .push("daemon:w2-l07:generation_bound_shutdown_consumed".to_owned());
+    }
+    renew_daemon_lease_if_due(
+        control_context.lease,
+        next_heartbeat,
+        daemon_runtime_heartbeat_interval(context.options)?,
+    )?;
+    response.lease = Some(DaemonLeaseReport::from_guard(
+        control_context.lease,
+        now_ms(),
+    ));
+    let shutdown = response.shutdown.clone();
+    write_control_response(&response_path, &response)?;
+    if persisted_request {
+        remove_if_exists(&request_path)?;
+    }
+    Ok(DaemonControlLoopReport {
+        status: "stopped".to_owned(),
+        shutdown,
+    })
 }
 
 fn record_config_reload_preflight(
@@ -5172,7 +5507,13 @@ fn daemon_startup_abort_requested(
 fn ensure_startup_not_aborted(
     options: &DaemonStartOptions,
     handshake: Option<&DaemonStartupHandshake>,
+    stop_token: Option<&DaemonStopToken>,
 ) -> Result<(), EvaError> {
+    if stop_token.is_some_and(DaemonStopToken::is_requested) {
+        return Err(EvaError::unavailable(
+            "daemon service stop was requested during startup",
+        ));
+    }
     if let Some(handshake) = handshake {
         if daemon_startup_abort_requested(options, handshake)? {
             return Err(EvaError::conflict(
@@ -5745,7 +6086,8 @@ mod tests {
     };
     use std::process::{Command, Stdio};
     use std::sync::{Mutex, MutexGuard, OnceLock};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn daemon_test_guard() -> MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
@@ -5922,6 +6264,29 @@ mod tests {
             reopened.task_envelope.as_ref().unwrap().kind().as_str(),
             "runtime.echo"
         );
+    }
+
+    #[test]
+    /// v3 mailbox binds the persisted request to one durable lease generation.
+    fn daemon_control_request_v3_round_trips_target_lease_generation() {
+        let trace = TraceFields::default()
+            .with_request_id(RequestId::parse("req-daemon-generation-wire").unwrap());
+        let mut request = DaemonControlRequest::new(
+            RequestId::parse("req-daemon-generation-wire").unwrap(),
+            &trace,
+            DaemonControlOperation::Status,
+        );
+        request.bind_to_lease_generation(17).unwrap();
+
+        let stored = request.to_storage();
+        let reopened = DaemonControlRequest::from_storage(&stored).unwrap();
+
+        assert!(stored.starts_with("version=3\n"));
+        assert!(stored.contains("\nlease_generation=17\n"));
+        assert_eq!(reopened, request);
+
+        let missing_generation = stored.replace("lease_generation=17", "lease_generation=");
+        assert!(DaemonControlRequest::from_storage(&missing_generation).is_err());
     }
 
     #[test]
@@ -6203,6 +6568,246 @@ mod tests {
             Some(DurableRuntimeLeaseState::Released)
         );
         assert!(!pid_file(&options).exists());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn service_stop_token_reuses_shutdown_transaction_and_releases_generation() {
+        let _daemon_test_guard = daemon_test_guard();
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("service-stop-token");
+        let options = daemon_options(&root, false);
+        let worker_options = options.clone();
+        let worker_project = project.clone();
+        let stop_token = DaemonStopToken::new();
+        let worker_stop_token = stop_token.clone();
+        let ready_observation = Arc::new(Mutex::new(None));
+        let worker_ready_observation = Arc::clone(&ready_observation);
+        let ready_options = options.clone();
+        let handle = thread::spawn(move || {
+            let mut report_ready = move || {
+                let status = daemon_status(&ready_options)?;
+                if !status.available {
+                    return Err(EvaError::unavailable(
+                        "service readiness callback observed an unavailable daemon",
+                    ));
+                }
+                *worker_ready_observation
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((
+                    status.state.as_ref().map(|state| state.pid),
+                    status.lease.as_ref().map(|lease| lease.pid),
+                ));
+                Ok(())
+            };
+            start_daemon_service_with_stop_token_and_ready(
+                &worker_project,
+                worker_options,
+                &TraceFields::default(),
+                &worker_stop_token,
+                &mut report_ready,
+            )
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(status) = daemon_status(&options) {
+                if status.available {
+                    break;
+                }
+            }
+            if handle.is_finished() {
+                let early = handle.join().unwrap();
+                panic!("service daemon exited before becoming ready: {early:?}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "service daemon did not become ready"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let expected_pid = std::process::id();
+        let competing =
+            start_daemon_service(&project, options.clone(), &TraceFields::default()).unwrap_err();
+        assert_eq!(competing.kind(), eva_core::ErrorKind::Conflict);
+        assert!(competing.message().contains("lease owner is still live"));
+        stop_token.request();
+        stop_token.request();
+        let report = handle.join().unwrap().unwrap();
+
+        assert_eq!(report.status, "stopped");
+        assert_eq!(report.mode, "service");
+        assert_eq!(report.pid, expected_pid);
+        assert!(report.shutdown.is_some());
+        assert_eq!(
+            *ready_observation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            Some((Some(expected_pid), Some(expected_pid)))
+        );
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "daemon:w1-l11:bounded_shutdown_drain_ready"));
+        let state = read_state(&options).unwrap().unwrap();
+        assert_eq!(state.status, "stopped");
+        assert_eq!(state.mode, "service");
+        assert_eq!(state.pid, expected_pid);
+        assert!(!pid_file(&options).exists());
+        let lease =
+            probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms()).unwrap();
+        assert_eq!(
+            lease.record().map(DurableRuntimeLeaseRecord::state),
+            Some(DurableRuntimeLeaseState::Released)
+        );
+        let evidence = read_shutdown_drain_evidence(&options).unwrap().unwrap();
+        assert!(evidence
+            .request_id
+            .as_str()
+            .starts_with("req-service-stop-g"));
+        assert_eq!(evidence.pid, expected_pid);
+        assert_eq!(evidence.generation, report.lease.generation);
+        assert!(!control_request_file(&options, &evidence.request_id).exists());
+        assert!(control_response_file(&options, &evidence.request_id).is_file());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn disk_shutdown_and_service_stop_race_cannot_stop_successor() {
+        let _daemon_test_guard = daemon_test_guard();
+        let project = load_project_config(workspace_root()).unwrap();
+        let root = temp_root("service-stop-mailbox-race");
+        let options = daemon_options(&root, false);
+
+        let first_token = DaemonStopToken::new();
+        let worker_token = first_token.clone();
+        let worker_project = project.clone();
+        let worker_options = options.clone();
+        let first = thread::spawn(move || {
+            start_daemon_service_with_stop_token(
+                &worker_project,
+                worker_options,
+                &TraceFields::default(),
+                &worker_token,
+            )
+        });
+        wait_for_daemon_available(&options);
+
+        let first_status = daemon_status(&options).unwrap();
+        let first_generation = first_status.lease.as_ref().unwrap().generation;
+        let race_request_id = RequestId::parse("req-service-stop-mailbox-race").unwrap();
+        let race_trace = TraceFields::default().with_request_id(race_request_id.clone());
+        let mut race_request = DaemonControlRequest::new(
+            race_request_id.clone(),
+            &race_trace,
+            DaemonControlOperation::Shutdown,
+        );
+        race_request
+            .bind_to_lease_generation(first_generation)
+            .unwrap();
+        let race_request_path = control_request_file(&options, &race_request_id);
+        write_control_request(&race_request_path, &race_request).unwrap();
+        first_token.request();
+
+        let first_report = first.join().unwrap().unwrap();
+        assert_eq!(first_report.status, "stopped");
+        assert_eq!(first_report.lease.generation, first_generation);
+        assert!(
+            !probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms())
+                .unwrap()
+                .owner_live(),
+            "first service lease remained live after join"
+        );
+        assert!(!race_request_path.exists());
+        // Windows may publish the released lease before the kernel finishes closing the
+        // service thread's anchor handle; let the close become observable before takeover.
+        thread::sleep(Duration::from_millis(100));
+
+        // Recreate the exact durable residue that the token/mailbox race used to leave behind.
+        // The successor must quarantine it instead of replaying shutdown in its generation.
+        write_control_request(&race_request_path, &race_request).unwrap();
+
+        let successor_token = DaemonStopToken::new();
+        let successor_worker_token = successor_token.clone();
+        let successor_project = project.clone();
+        let successor_options = options.clone();
+        let successor = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match start_daemon_service_with_stop_token(
+                    &successor_project,
+                    successor_options.clone(),
+                    &TraceFields::default(),
+                    &successor_worker_token,
+                ) {
+                    Err(error)
+                        if error.kind() == eva_core::ErrorKind::Conflict
+                            && error.message().contains("lease owner is still live")
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    result => break result,
+                }
+            }
+        });
+        let successor_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(status) = daemon_status(&options) {
+                if status.available {
+                    break;
+                }
+            }
+            if successor.is_finished() {
+                panic!(
+                    "successor exited before becoming available: {:?}",
+                    successor.join().unwrap()
+                );
+            }
+            assert!(
+                Instant::now() < successor_deadline,
+                "successor did not become available"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let quarantine_deadline = Instant::now() + Duration::from_secs(3);
+        while race_request_path.exists() && Instant::now() < quarantine_deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!race_request_path.exists());
+        thread::sleep(Duration::from_millis(CONTROL_POLL_INTERVAL_MS * 3));
+        assert!(!successor.is_finished());
+        let successor_status = daemon_status(&options).unwrap();
+        assert!(successor_status.available);
+        assert!(successor_status.lease.as_ref().unwrap().generation > first_generation);
+        let quarantined = fs::read_dir(control_request_dir(&options))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry.path().extension().and_then(|value| value.to_str())
+                    == Some(CONTROL_REJECTED_EXT)
+            });
+        assert!(quarantined);
+
+        let shutdown_id = RequestId::parse("req-service-stop-successor-shutdown").unwrap();
+        let shutdown_trace = TraceFields::default().with_request_id(shutdown_id.clone());
+        let shutdown = send_daemon_control_request(
+            &options,
+            DaemonControlRequest::new(
+                shutdown_id,
+                &shutdown_trace,
+                DaemonControlOperation::Shutdown,
+            ),
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(shutdown.status, "stopped");
+        let successor_report = successor.join().unwrap().unwrap();
+        assert_eq!(successor_report.status, "stopped");
 
         fs::remove_dir_all(root).ok();
     }
