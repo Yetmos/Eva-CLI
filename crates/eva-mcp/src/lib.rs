@@ -19,6 +19,8 @@ pub mod schema;
 pub mod server;
 /// 声明 `session` 子模块。
 pub mod session;
+/// Stateful Streamable HTTP application-session boundary.
+pub mod streamable_http;
 /// 声明 `tool_mapping` 子模块。
 pub mod tool_mapping;
 
@@ -47,4 +49,5 @@ pub use session::{
     McpSessionStartReport, McpSessionStatus, McpSessionSupervisor, McpStreamableHttpConfig,
     McpTransportConfig,
 };
+pub use streamable_http::McpStreamableHttpSession;
 pub use tool_mapping::{McpToolMapping, McpToolRegistry};

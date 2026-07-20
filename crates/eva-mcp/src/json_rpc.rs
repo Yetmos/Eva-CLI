@@ -29,6 +29,10 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-11-25";
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 /// 定义 `DEFAULT_OUTPUT_LIMIT_BYTES` 常量。
 const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+/// Bound opaque MCP session identifiers retained from response headers.
+const MCP_SESSION_ID_LIMIT_BYTES: usize = 4 * 1024;
+/// Bound negotiated MCP protocol version values.
+const MCP_PROTOCOL_VERSION_LIMIT_BYTES: usize = 128;
 
 /// A process boundary supplied by an external supervisor.
 ///
@@ -207,6 +211,14 @@ pub struct McpHttpJsonRpcTransport {
     exchange_count: usize,
     /// 记录 `notification_count` 字段对应的值。
     notification_count: usize,
+    /// Session identifier returned by the initialize response.
+    session_id: Option<String>,
+    /// Protocol version selected by the initialize response.
+    protocol_version: Option<String>,
+    /// Whether application I/O has been closed locally by shutdown or poison.
+    session_closed: bool,
+    /// Whether `notifications/initialized` completed successfully.
+    initialized_notification_sent: bool,
 }
 
 impl fmt::Debug for McpHttpJsonRpcTransport {
@@ -219,6 +231,13 @@ impl fmt::Debug for McpHttpJsonRpcTransport {
             .field("audit_count", &self.audit.len())
             .field("exchange_count", &self.exchange_count)
             .field("notification_count", &self.notification_count)
+            .field("session_present", &self.session_id.is_some())
+            .field("protocol_version_present", &self.protocol_version.is_some())
+            .field("session_closed", &self.session_closed)
+            .field(
+                "initialized_notification_sent",
+                &self.initialized_notification_sent,
+            )
             .finish()
     }
 }
@@ -391,7 +410,8 @@ impl McpJsonRpcClient {
     ) -> Result<McpJsonRpcCallReport, EvaError> {
         self.allowlist.require_tool(tool)?;
         let mut transport = McpHttpJsonRpcTransport::new(endpoint, headers)?;
-        self.call_tool_with_transport(&mut transport, request_id, tool, input)
+        let call = self.call_tool_with_transport(&mut transport, request_id, tool, input);
+        self.finish_http_call(&mut transport, call)
     }
 
     /// 使用已验证的 Streamable HTTP 配置执行一次 MCP 调用。
@@ -430,7 +450,41 @@ impl McpJsonRpcClient {
             headers,
             tls_material,
         )?;
-        self.call_tool_with_transport(&mut transport, request_id, tool, input)
+        let call = self.call_tool_with_transport(&mut transport, request_id, tool, input);
+        self.finish_http_call(&mut transport, call)
+    }
+
+    fn finish_http_call(
+        &self,
+        transport: &mut McpHttpJsonRpcTransport,
+        call: Result<McpJsonRpcCallReport, EvaError>,
+    ) -> Result<McpJsonRpcCallReport, EvaError> {
+        let had_session = transport.session_id().is_some();
+        let shutdown = transport.shutdown_session(
+            Duration::from_millis(self.config.request_timeout_ms),
+            self.config.output_limit_bytes,
+        );
+        match call {
+            Ok(mut report) => {
+                shutdown?;
+                if had_session {
+                    report.audit.push(transport.session_shutdown_audit());
+                }
+                Ok(report)
+            }
+            Err(error) => match shutdown {
+                Ok(()) => Err(error),
+                Err(shutdown_error) => Err(error
+                    .with_context("mcp_session_cleanup", "failed")
+                    .with_context(
+                        "mcp_session_cleanup_code",
+                        shutdown_error
+                            .provider_code()
+                            .map(|code| code.as_str())
+                            .unwrap_or_else(|| shutdown_error.kind().as_str()),
+                    )),
+            },
+        }
     }
 
     /// 执行 `call_tool_with_transport` 对应的受控流程。
@@ -646,7 +700,11 @@ impl McpJsonRpcTransport for McpStdioJsonRpcTransport {
                             .with_context("utf8_error", error.to_string())
                     })?;
                     enforce_response_limit(&text, output_limit_bytes)?;
-                    match json_u64_field(&text, "id")? {
+                    let envelope = text.trim();
+                    if !envelope.starts_with('{') {
+                        continue;
+                    }
+                    match json_u64_field(envelope, "id")? {
                         Some(id) if id == expected_id => return Ok(text),
                         Some(id) => {
                             return Err(protocol_error("MCP JSON-RPC response id mismatch")
@@ -775,7 +833,291 @@ impl McpHttpJsonRpcTransport {
             audit,
             exchange_count: 0,
             notification_count: 0,
+            session_id: None,
+            protocol_version: None,
+            session_closed: false,
+            initialized_notification_sent: false,
         })
+    }
+
+    /// Return the opaque server session identifier without exposing its value
+    /// in debug or audit output.
+    pub fn session_id(&self) -> Option<&str> {
+        (!self.session_closed && self.exchange_count > 0)
+            .then_some(self.session_id.as_deref())
+            .flatten()
+    }
+
+    /// Return the protocol version selected during initialization.
+    pub fn negotiated_protocol_version(&self) -> Option<&str> {
+        (!self.session_closed && self.exchange_count > 0)
+            .then_some(self.protocol_version.as_deref())
+            .flatten()
+    }
+
+    /// Return whether the initialize notification completed and requests may
+    /// enter the operating phase.
+    pub fn is_ready(&self) -> bool {
+        !self.session_closed && self.initialized_notification_sent
+    }
+
+    /// Return whether this local session can no longer issue application I/O.
+    pub fn is_closed(&self) -> bool {
+        self.session_closed
+    }
+
+    /// Perform a session-bound GET request. SSE decoding remains owned by
+    /// W4-L05; this method enforces the ready phase, status/media type, bounded
+    /// control body, and session/protocol headers.
+    pub fn get(
+        &mut self,
+        timeout: Duration,
+        output_limit_bytes: usize,
+    ) -> Result<Vec<u8>, EvaError> {
+        if output_limit_bytes == 0 {
+            return Err(EvaError::invalid_argument(
+                "MCP HTTP response output limit must be greater than zero",
+            ));
+        }
+        self.ensure_session_ready()?;
+        let extra_headers = self.session_headers()?;
+        let response = send_http_request(
+            &self.connector,
+            &self.endpoint,
+            &self.headers,
+            HttpRequestSpec {
+                extra_headers: &extra_headers,
+                method: "GET",
+                accept: "text/event-stream",
+                body: "",
+                timeout,
+                output_limit_bytes,
+                allow_bodyless_accepted: false,
+            },
+        )?;
+        self.reject_unknown_session(&response)?;
+        self.validate_response_session(&response)?;
+        let body = decode_http_event_stream_response(response, output_limit_bytes)?;
+        self.audit.push("mcp.http:session_get".to_owned());
+        Ok(body)
+    }
+
+    /// Gracefully close a server-owned MCP session with DELETE.
+    ///
+    /// Stateless servers do not return `Mcp-Session-Id`; in that case no
+    /// DELETE is sent, but the local transport still closes. A session that
+    /// was established is never silently discarded. A 405 means the server
+    /// does not support client-initiated termination and closes local state;
+    /// a 404 invalidates local state and returns a stable unknown-session
+    /// error. Other failures retain cleanup material for an explicit retry.
+    pub fn shutdown_session(
+        &mut self,
+        timeout: Duration,
+        output_limit_bytes: usize,
+    ) -> Result<(), EvaError> {
+        if output_limit_bytes == 0 {
+            return Err(EvaError::invalid_argument(
+                "MCP HTTP response output limit must be greater than zero",
+            ));
+        }
+        if self.session_id.is_none() {
+            self.close_and_clear_session();
+            return Ok(());
+        }
+        let extra_headers = self.cleanup_headers()?;
+        let response = send_http_request(
+            &self.connector,
+            &self.endpoint,
+            &self.headers,
+            HttpRequestSpec {
+                extra_headers: &extra_headers,
+                method: "DELETE",
+                accept: "application/json",
+                body: "",
+                timeout,
+                output_limit_bytes,
+                allow_bodyless_accepted: true,
+            },
+        )?;
+        self.reject_unknown_session(&response)?;
+        self.validate_response_session(&response)?;
+        if response.status_code == 405 {
+            self.close_and_clear_session();
+            self.audit
+                .push("mcp.http:session_delete_unsupported".to_owned());
+            return Ok(());
+        }
+        if !(200..300).contains(&response.status_code) {
+            return Err(EvaError::unavailable(
+                "MCP HTTP session DELETE returned non-success status",
+            )
+            .with_provider_code("mcp_http_session_delete_failed")
+            .with_context("status_code", response.status_code.to_string()));
+        }
+        if response.body_truncated {
+            return Err(EvaError::conflict(
+                "MCP HTTP session DELETE response exceeded output limit",
+            )
+            .with_provider_code("mcp_response_too_large")
+            .with_context("output_limit_bytes", output_limit_bytes.to_string()));
+        }
+        self.close_and_clear_session();
+        self.audit.push("mcp.http:session_deleted".to_owned());
+        Ok(())
+    }
+
+    fn ensure_session_open(&self) -> Result<(), EvaError> {
+        if self.session_closed {
+            return Err(EvaError::conflict("MCP HTTP session is already closed")
+                .with_provider_code("mcp_http_session_closed"));
+        }
+        if self.exchange_count == 0 || self.protocol_version.is_none() {
+            return Err(EvaError::conflict(
+                "MCP HTTP session requires a successful initialize exchange",
+            )
+            .with_provider_code("mcp_http_session_not_initialized"));
+        }
+        Ok(())
+    }
+
+    fn ensure_session_ready(&self) -> Result<(), EvaError> {
+        self.ensure_session_open()?;
+        if !self.initialized_notification_sent {
+            return Err(EvaError::conflict(
+                "MCP HTTP session requires notifications/initialized before application I/O",
+            )
+            .with_provider_code("mcp_http_session_not_ready"));
+        }
+        Ok(())
+    }
+
+    fn ensure_not_closed(&self) -> Result<(), EvaError> {
+        if self.session_closed {
+            return Err(EvaError::conflict("MCP HTTP session is already closed")
+                .with_provider_code("mcp_http_session_closed"));
+        }
+        Ok(())
+    }
+
+    fn session_shutdown_audit(&self) -> String {
+        self.audit
+            .iter()
+            .rev()
+            .find(|entry| {
+                matches!(
+                    entry.as_str(),
+                    "mcp.http:session_deleted" | "mcp.http:session_delete_unsupported"
+                )
+            })
+            .cloned()
+            .unwrap_or_else(|| "mcp.http:session_closed".to_owned())
+    }
+
+    fn session_headers(&self) -> Result<Vec<(String, String)>, EvaError> {
+        self.ensure_session_open()?;
+        self.cleanup_headers()
+    }
+
+    fn cleanup_headers(&self) -> Result<Vec<(String, String)>, EvaError> {
+        let protocol_version = self.protocol_version.as_ref().ok_or_else(|| {
+            EvaError::conflict("MCP HTTP protocol version was not negotiated")
+                .with_provider_code("mcp_protocol_version_missing")
+        })?;
+        let mut headers = vec![("MCP-Protocol-Version".to_owned(), protocol_version.clone())];
+        if let Some(session_id) = &self.session_id {
+            headers.push(("Mcp-Session-Id".to_owned(), session_id.clone()));
+        }
+        Ok(headers)
+    }
+
+    fn validate_response_session(
+        &mut self,
+        response: &HttpJsonRpcResponse,
+    ) -> Result<(), EvaError> {
+        let error = match (&self.session_id, response.session_id.as_deref()) {
+            (Some(expected), Some(actual)) if expected != actual => Some(
+                EvaError::permission_denied("MCP HTTP response carried an unexpected session")
+                    .with_provider_code("mcp_http_session_id_mismatch"),
+            ),
+            (None, Some(_)) => Some(
+                EvaError::permission_denied("MCP HTTP response introduced an unknown session")
+                    .with_provider_code("mcp_http_session_id_unexpected"),
+            ),
+            _ => None,
+        };
+        if let Some(error) = error {
+            // Keep the trusted original ID/version for an explicit DELETE,
+            // while preventing any further application I/O.
+            self.session_closed = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn reject_unknown_session(&mut self, response: &HttpJsonRpcResponse) -> Result<(), EvaError> {
+        if response.status_code != 404 {
+            return Ok(());
+        }
+        self.close_and_clear_session();
+        Err(EvaError::not_found("MCP HTTP session is no longer known")
+            .with_provider_code("mcp_http_session_not_found"))
+    }
+
+    fn close_and_clear_session(&mut self) {
+        self.session_closed = true;
+        self.session_id = None;
+        self.protocol_version = None;
+        self.initialized_notification_sent = false;
+    }
+
+    fn remember_initialize(
+        &mut self,
+        response: &HttpJsonRpcResponse,
+        expected_id: u64,
+        output_limit_bytes: usize,
+        requested_protocol: &str,
+    ) -> Result<String, EvaError> {
+        // Preserve provisional cleanup material before validating the body.
+        // It remains hidden from public accessors until initialization commits.
+        self.session_id = response.session_id.clone();
+        if self.session_id.is_some() {
+            self.protocol_version = Some(requested_protocol.to_owned());
+        }
+        let initialized = (|| {
+            let text =
+                decode_http_exchange_response(response.clone(), expected_id, output_limit_bytes)?;
+            let parsed = parse_json_rpc_response(&text, expected_id)?;
+            let negotiated = json_string_field(&parsed.result, "protocolVersion")?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    protocol_error("MCP initialize response is missing protocolVersion")
+                        .with_provider_code("mcp_protocol_version_missing")
+                })?;
+            validate_mcp_protocol_version(&negotiated).map_err(|_| {
+                protocol_error("MCP initialize response has an invalid protocolVersion")
+                    .with_provider_code("mcp_protocol_version_invalid")
+            })?;
+            if negotiated != requested_protocol {
+                return Err(EvaError::unsupported(
+                    "MCP server negotiated an unsupported protocol version",
+                )
+                .with_provider_code("mcp_protocol_version_mismatch"));
+            }
+            Ok((text, negotiated))
+        })();
+        let (text, negotiated) = match initialized {
+            Ok(initialized) => initialized,
+            Err(error) => {
+                self.session_closed = true;
+                return Err(error);
+            }
+        };
+        self.protocol_version = Some(negotiated);
+        self.audit.push("mcp.http:session_initialized".to_owned());
+        if self.session_id.is_some() {
+            self.audit.push("mcp.http:session_id_received".to_owned());
+        }
+        Ok(text)
     }
 }
 
@@ -793,17 +1135,93 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
                 "MCP HTTP response output limit must be greater than zero",
             ));
         }
-        self.exchange_count = self.exchange_count.saturating_add(1);
-        let response = send_http_json_rpc_request(
+        self.ensure_not_closed()?;
+        let initialize = self.exchange_count == 0;
+        let method = json_string_field(request, "method")?.ok_or_else(|| {
+            protocol_error("MCP HTTP JSON-RPC request is missing a top-level method")
+        })?;
+        let requested_protocol = if initialize {
+            if method != "initialize" {
+                return Err(
+                    protocol_error("MCP HTTP session must begin with initialize")
+                        .with_provider_code("mcp_http_session_not_initialized"),
+                );
+            }
+            let params = json_field_value(request, "params")?.ok_or_else(|| {
+                protocol_error("MCP initialize request is missing params")
+                    .with_provider_code("mcp_protocol_version_missing")
+            })?;
+            let value = json_string_field(params, "protocolVersion")?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    protocol_error("MCP initialize request is missing protocolVersion")
+                        .with_provider_code("mcp_protocol_version_missing")
+                })?;
+            validate_mcp_protocol_version(&value).map_err(|_| {
+                protocol_error("MCP initialize request has an invalid protocolVersion")
+                    .with_provider_code("mcp_protocol_version_invalid")
+            })?;
+            value
+        } else {
+            if method == "initialize" {
+                return Err(
+                    EvaError::conflict("MCP HTTP session is already initialized")
+                        .with_provider_code("mcp_http_session_already_initialized"),
+                );
+            }
+            self.ensure_session_ready()?;
+            String::new()
+        };
+        let extra_headers = if initialize {
+            Vec::new()
+        } else {
+            self.session_headers()?
+        };
+        let response = send_http_request(
             &self.connector,
             &self.endpoint,
             &self.headers,
-            request,
-            timeout,
-            output_limit_bytes,
-            false,
+            HttpRequestSpec {
+                extra_headers: &extra_headers,
+                method: "POST",
+                accept: "application/json, text/event-stream",
+                body: request,
+                timeout,
+                output_limit_bytes,
+                allow_bodyless_accepted: false,
+            },
         )?;
-        decode_http_exchange_response(response, expected_id, output_limit_bytes)
+        let text = if initialize {
+            match self.remember_initialize(
+                &response,
+                expected_id,
+                output_limit_bytes,
+                &requested_protocol,
+            ) {
+                Ok(text) => text,
+                Err(error) => {
+                    let cleanup = self.shutdown_session(timeout, output_limit_bytes);
+                    return Err(match cleanup {
+                        Ok(()) => error,
+                        Err(cleanup_error) => error
+                            .with_context("mcp_session_cleanup", "failed")
+                            .with_context(
+                                "mcp_session_cleanup_code",
+                                cleanup_error
+                                    .provider_code()
+                                    .map(|code| code.as_str())
+                                    .unwrap_or_else(|| cleanup_error.kind().as_str()),
+                            ),
+                    });
+                }
+            }
+        } else {
+            self.reject_unknown_session(&response)?;
+            self.validate_response_session(&response)?;
+            decode_http_exchange_response(response, expected_id, output_limit_bytes)?
+        };
+        self.exchange_count = self.exchange_count.saturating_add(1);
+        Ok(text)
     }
 
     /// 执行 `notify` 对应的处理逻辑。
@@ -813,17 +1231,59 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
         timeout: Duration,
         output_limit_bytes: usize,
     ) -> Result<(), EvaError> {
-        self.notification_count = self.notification_count.saturating_add(1);
-        let response = send_http_json_rpc_request(
+        if output_limit_bytes == 0 {
+            return Err(EvaError::invalid_argument(
+                "MCP HTTP response output limit must be greater than zero",
+            ));
+        }
+        self.ensure_not_closed()?;
+        let method = json_string_field(notification, "method")?.ok_or_else(|| {
+            protocol_error("MCP HTTP JSON-RPC notification is missing a top-level method")
+        })?;
+        if self.exchange_count == 0 {
+            return Err(EvaError::conflict(
+                "MCP initialized notification requires a successful initialize exchange",
+            )
+            .with_provider_code("mcp_http_session_not_initialized"));
+        }
+        let initialized = method == "notifications/initialized";
+        if !self.initialized_notification_sent && !initialized {
+            return Err(EvaError::conflict(
+                "MCP HTTP session requires notifications/initialized as its first notification",
+            )
+            .with_provider_code("mcp_http_initialized_notification_required"));
+        }
+        if self.initialized_notification_sent && initialized {
+            return Err(EvaError::conflict(
+                "MCP HTTP notifications/initialized was already accepted",
+            )
+            .with_provider_code("mcp_http_initialized_notification_duplicate"));
+        }
+        let extra_headers = self.session_headers()?;
+        let response = send_http_request(
             &self.connector,
             &self.endpoint,
             &self.headers,
-            notification,
-            timeout,
-            output_limit_bytes,
-            true,
+            HttpRequestSpec {
+                extra_headers: &extra_headers,
+                method: "POST",
+                accept: "application/json, text/event-stream",
+                body: notification,
+                timeout,
+                output_limit_bytes,
+                allow_bodyless_accepted: true,
+            },
         )?;
-        validate_http_notification_response(response, output_limit_bytes)
+        self.reject_unknown_session(&response)?;
+        self.validate_response_session(&response)?;
+        validate_http_notification_response(response, output_limit_bytes)?;
+        self.notification_count = self.notification_count.saturating_add(1);
+        if initialized {
+            self.initialized_notification_sent = true;
+            self.audit
+                .push("mcp.http:initialized_notification_accepted".to_owned());
+        }
+        Ok(())
     }
 
     /// 执行 `audit` 对应的处理逻辑。
@@ -834,6 +1294,16 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
             "mcp.http.notification_count:{}",
             self.notification_count
         ));
+        audit.push(format!(
+            "mcp.http.session_present:{}",
+            self.session_id().is_some()
+        ));
+        audit.push(format!(
+            "mcp.http.protocol_version_present:{}",
+            self.negotiated_protocol_version().is_some()
+        ));
+        audit.push(format!("mcp.http.session_ready:{}", self.is_ready()));
+        audit.push(format!("mcp.http.session_closed:{}", self.is_closed()));
         audit
     }
 }
@@ -913,6 +1383,8 @@ struct HttpJsonRpcResponse {
     body: Vec<u8>,
     /// 记录 `body_truncated` 字段对应的值。
     body_truncated: bool,
+    /// Opaque MCP application-session identifier selected by the server.
+    session_id: Option<String>,
 }
 
 /// HTTP response body framing selected from the response status and headers.
@@ -938,6 +1410,7 @@ struct HttpResponseHead {
     content_type: Option<String>,
     connection_close: bool,
     connection_keep_alive: bool,
+    session_id: Option<String>,
 }
 
 /// 表示 `ParsedHttpUrl` 数据结构。
@@ -1049,16 +1522,33 @@ fn parse_http_port(value: &str) -> Result<u16, EvaError> {
     Ok(port)
 }
 
-/// 执行 `send_http_json_rpc_request` 对应的处理逻辑。
-fn send_http_json_rpc_request(
-    connector: &McpHttpConnector,
-    endpoint: &str,
-    headers: &BTreeMap<String, String>,
-    body: &str,
+/// Parameters for one bounded HTTP request.
+struct HttpRequestSpec<'a> {
+    extra_headers: &'a [(String, String)],
+    method: &'a str,
+    accept: &'a str,
+    body: &'a str,
     timeout: Duration,
     output_limit_bytes: usize,
     allow_bodyless_accepted: bool,
+}
+
+/// Send one bounded HTTP request with transport-controlled method and headers.
+fn send_http_request(
+    connector: &McpHttpConnector,
+    endpoint: &str,
+    headers: &BTreeMap<String, String>,
+    spec: HttpRequestSpec<'_>,
 ) -> Result<HttpJsonRpcResponse, EvaError> {
+    let HttpRequestSpec {
+        extra_headers,
+        method,
+        accept,
+        body,
+        timeout,
+        output_limit_bytes,
+        allow_bodyless_accepted,
+    } = spec;
     let parsed = ParsedHttpUrl::parse(endpoint)?;
     let mut stream = connector.connect(
         &parsed.scheme,
@@ -1068,14 +1558,55 @@ fn send_http_json_rpc_request(
         timeout,
     )?;
 
+    if method.is_empty()
+        || !method
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(EvaError::internal("MCP HTTP method is invalid")
+            .with_provider_code("mcp_http_method_invalid"));
+    }
+    if accept.is_empty() || accept.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(EvaError::internal("MCP HTTP accept value is invalid")
+            .with_provider_code("mcp_http_accept_invalid"));
+    }
+
+    let mut header_names = BTreeSet::from([
+        "host".to_owned(),
+        "connection".to_owned(),
+        "accept".to_owned(),
+    ]);
     let mut request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n",
-        parsed.path,
-        parsed.authority,
-        body.len()
+        "{method} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept: {accept}\r\n",
+        parsed.path, parsed.authority
     );
+    if !body.is_empty() {
+        header_names.insert("content-type".to_owned());
+        header_names.insert("content-length".to_owned());
+        request.push_str("Content-Type: application/json\r\n");
+        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
     for (name, value) in headers {
         validate_http_header(name, value)?;
+        if !header_names.insert(name.to_ascii_lowercase()) {
+            return Err(EvaError::invalid_argument(
+                "MCP HTTP request header collides with a transport header",
+            )
+            .with_context("header", name));
+        }
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    for (name, value) in extra_headers {
+        validate_internal_http_header(name, value)?;
+        if !header_names.insert(name.to_ascii_lowercase()) {
+            return Err(EvaError::internal(
+                "MCP HTTP internal header collides with a transport header",
+            )
+            .with_provider_code("mcp_http_internal_header_collision"));
+        }
         request.push_str(name);
         request.push_str(": ");
         request.push_str(value);
@@ -1170,6 +1701,7 @@ fn read_http_json_rpc_response_with_options(
         content_type: head.content_type,
         body,
         body_truncated,
+        session_id: head.session_id,
     })
 }
 
@@ -1229,6 +1761,7 @@ fn read_http_response_head(
         content_type: None,
         connection_close: false,
         connection_keep_alive: false,
+        session_id: None,
     };
 
     loop {
@@ -1262,6 +1795,12 @@ fn read_http_response_head(
                     return Err(http_framing_error(origin, "duplicate content-type"));
                 }
                 head.content_type = Some(parse_http_media_type(&value, origin)?);
+            }
+            "mcp-session-id" => {
+                if head.session_id.is_some() {
+                    return Err(http_framing_error(origin, "duplicate MCP session id"));
+                }
+                head.session_id = Some(parse_mcp_session_id(&value, origin)?);
             }
             "connection" => {
                 for token in value.split(',').map(str::trim) {
@@ -1377,6 +1916,17 @@ fn parse_http_media_type(value: &str, origin: &str) -> Result<String, EvaError> 
         return Err(http_framing_error(origin, "invalid content-type"));
     }
     Ok(media_type.to_ascii_lowercase())
+}
+
+/// Parse the bounded opaque value carried by `Mcp-Session-Id`.
+fn parse_mcp_session_id(value: &str, origin: &str) -> Result<String, EvaError> {
+    if value.is_empty()
+        || value.len() > MCP_SESSION_ID_LIMIT_BYTES
+        || value.bytes().any(|byte| !(0x21..=0x7e).contains(&byte))
+    {
+        return Err(http_framing_error(origin, "invalid MCP session id"));
+    }
+    Ok(value.to_owned())
 }
 
 /// Select a body framing mode from a parsed response head.
@@ -1587,17 +2137,47 @@ fn decode_http_exchange_response(
     Ok(text)
 }
 
-/// Validate a notification response, which may legitimately be bodyless.
+/// Validate the bounded control-path response used to open an SSE stream.
+/// Incremental event decoding replaces this buffered body in W4-L05.
+fn decode_http_event_stream_response(
+    response: HttpJsonRpcResponse,
+    output_limit_bytes: usize,
+) -> Result<Vec<u8>, EvaError> {
+    if response.status_code == 405 {
+        return Err(EvaError::unsupported(
+            "MCP HTTP server does not provide a server event stream",
+        )
+        .with_provider_code("mcp_http_sse_unsupported"));
+    }
+    if response.status_code != 200 {
+        return Err(
+            EvaError::unavailable("MCP HTTP GET did not return an event stream")
+                .with_provider_code("mcp_http_status")
+                .with_context("status_code", response.status_code.to_string()),
+        );
+    }
+    if response.body_truncated {
+        return Err(
+            EvaError::conflict("MCP HTTP GET response exceeded output limit")
+                .with_provider_code("mcp_response_too_large")
+                .with_context("output_limit_bytes", output_limit_bytes.to_string()),
+        );
+    }
+    require_event_stream_content_type(response.content_type.as_deref())?;
+    Ok(response.body)
+}
+
+/// Validate the bodyless `202 Accepted` required for a notification POST.
 fn validate_http_notification_response(
     response: HttpJsonRpcResponse,
     output_limit_bytes: usize,
 ) -> Result<(), EvaError> {
-    if !(200..300).contains(&response.status_code) {
-        return Err(
-            EvaError::unavailable("MCP HTTP notification returned non-success status")
-                .with_provider_code("mcp_http_status")
-                .with_context("status_code", response.status_code.to_string()),
-        );
+    if response.status_code != 202 {
+        return Err(EvaError::unavailable(
+            "MCP HTTP notification was not accepted with status 202",
+        )
+        .with_provider_code("mcp_http_status")
+        .with_context("status_code", response.status_code.to_string()));
     }
     if response.body_truncated {
         return Err(
@@ -1607,7 +2187,10 @@ fn validate_http_notification_response(
         );
     }
     if !response.body.is_empty() {
-        require_json_content_type(response.content_type.as_deref())?;
+        return Err(
+            protocol_error("MCP HTTP notification response must not contain a body")
+                .with_provider_code("mcp_http_notification_body_unexpected"),
+        );
     }
     Ok(())
 }
@@ -1622,6 +2205,21 @@ fn require_json_content_type(content_type: Option<&str>) -> Result<(), EvaError>
         ),
         None => Err(
             EvaError::unavailable("MCP HTTP response content type is missing")
+                .with_provider_code("mcp_http_content_type_missing"),
+        ),
+    }
+}
+
+/// Require the media type used by the Streamable HTTP server event stream.
+fn require_event_stream_content_type(content_type: Option<&str>) -> Result<(), EvaError> {
+    match content_type {
+        Some("text/event-stream") => Ok(()),
+        Some(_) => Err(
+            EvaError::unsupported("MCP HTTP GET response is not an event stream")
+                .with_provider_code("mcp_http_content_type_unsupported"),
+        ),
+        None => Err(
+            EvaError::unavailable("MCP HTTP GET response content type is missing")
                 .with_provider_code("mcp_http_content_type_missing"),
         ),
     }
@@ -1695,6 +2293,8 @@ fn validate_http_header(name: &str, value: &str) -> Result<(), EvaError> {
             | "trailer"
             | "upgrade"
             | "proxy-connection"
+            | "mcp-session-id"
+            | "mcp-protocol-version"
     ) {
         return Err(
             EvaError::permission_denied("MCP HTTP header is controlled by the transport")
@@ -1713,13 +2313,45 @@ fn validate_http_header(name: &str, value: &str) -> Result<(), EvaError> {
     Ok(())
 }
 
+/// Validate headers generated by the session state machine itself. These are
+/// deliberately kept separate from user-supplied headers, which cannot spoof
+/// the two MCP control fields.
+fn validate_internal_http_header(name: &str, value: &str) -> Result<(), EvaError> {
+    if name.trim().is_empty() || !name.bytes().all(is_http_token_byte) {
+        return Err(
+            EvaError::internal("MCP HTTP internal header name is invalid")
+                .with_provider_code("mcp_http_internal_header_invalid"),
+        );
+    }
+    if value.is_empty()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte >= 0x80)
+    {
+        return Err(
+            EvaError::internal("MCP HTTP internal header value is invalid")
+                .with_provider_code("mcp_http_internal_header_invalid"),
+        );
+    }
+    Ok(())
+}
+
+fn validate_mcp_protocol_version(value: &str) -> Result<(), EvaError> {
+    if value.is_empty()
+        || value.len() > MCP_PROTOCOL_VERSION_LIMIT_BYTES
+        || value.bytes().any(|byte| !(0x21..=0x7e).contains(&byte))
+    {
+        return Err(EvaError::invalid_argument(
+            "MCP protocol version must be bounded visible ASCII",
+        )
+        .with_provider_code("mcp_protocol_version_invalid"));
+    }
+    Ok(())
+}
+
 /// 校验 `validate_client_config` 对应的约束，不满足时返回明确错误。
 fn validate_client_config(config: &McpJsonRpcClientConfig) -> Result<(), EvaError> {
-    if config.protocol_version.trim().is_empty() {
-        return Err(EvaError::invalid_argument(
-            "MCP protocol version must be non-empty",
-        ));
-    }
+    validate_mcp_protocol_version(&config.protocol_version)?;
     if config.client_name.trim().is_empty() {
         return Err(EvaError::invalid_argument(
             "MCP client name must be non-empty",
@@ -1840,10 +2472,10 @@ fn parse_json_rpc_response(response: &str, expected_id: u64) -> Result<JsonRpcRe
                 .with_context("expected_id", expected_id.to_string()));
         }
     }
-    if let Some(error) = json_field_value(response, "error") {
+    if let Some(error) = json_field_value(response, "error")? {
         return Err(map_json_rpc_error(error, expected_id));
     }
-    let result = json_field_value(response, "result")
+    let result = json_field_value(response, "result")?
         .ok_or_else(|| {
             protocol_error("MCP JSON-RPC response is missing result")
                 .with_context("json_rpc_id", expected_id.to_string())
@@ -1854,7 +2486,7 @@ fn parse_json_rpc_response(response: &str, expected_id: u64) -> Result<JsonRpcRe
 
 /// 读取或解析 `parse_tools_list` 所需的数据，失败时保留错误语义。
 fn parse_tools_list(response: &JsonRpcResponse) -> Result<Vec<McpJsonRpcTool>, EvaError> {
-    let tools = json_field_value(&response.result, "tools").ok_or_else(|| {
+    let tools = json_field_value(&response.result, "tools")?.ok_or_else(|| {
         protocol_error("MCP tools/list response is missing tools")
             .with_provider_code("mcp_tools_list_missing_tools")
     })?;
@@ -1862,7 +2494,7 @@ fn parse_tools_list(response: &JsonRpcResponse) -> Result<Vec<McpJsonRpcTool>, E
     let mut offset = 0;
     while let Some(position) = tools[offset..].find("\"name\"") {
         let start = offset + position;
-        let Some(value) = json_field_value(&tools[start..], "name") else {
+        let Some(value) = find_json_field_value(&tools[start..], "name") else {
             break;
         };
         let name = parse_json_string(value)?;
@@ -1917,102 +2549,309 @@ fn truncate_context(value: &str) -> String {
     value.chars().take(MAX_CONTEXT_CHARS).collect()
 }
 
-/// 执行 `json_field_value` 对应的处理逻辑。
-fn json_field_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+/// Return one direct field from a complete JSON object.
+fn json_field_value<'a>(text: &'a str, key: &str) -> Result<Option<&'a str>, EvaError> {
+    Ok(parse_json_object_fields(text)?.get(key).copied())
+}
+
+/// Parse only the direct members of one complete JSON object. Nested values
+/// remain borrowed slices and are parsed explicitly by their caller.
+fn parse_json_object_fields(text: &str) -> Result<BTreeMap<String, &str>, EvaError> {
+    let bytes = text.as_bytes();
+    let mut offset = 0usize;
+    skip_json_whitespace(bytes, &mut offset);
+    if bytes.get(offset).copied() != Some(b'{') {
+        return Err(protocol_error("MCP JSON-RPC value must be an object"));
+    }
+    offset += 1;
+    let mut fields = BTreeMap::new();
+    loop {
+        skip_json_whitespace(bytes, &mut offset);
+        if bytes.get(offset).copied() == Some(b'}') {
+            offset += 1;
+            skip_json_whitespace(bytes, &mut offset);
+            if offset != bytes.len() {
+                return Err(protocol_error(
+                    "MCP JSON-RPC object has trailing non-whitespace data",
+                ));
+            }
+            return Ok(fields);
+        }
+        if bytes.get(offset).copied() != Some(b'"') {
+            return Err(protocol_error("MCP JSON-RPC object key is invalid"));
+        }
+        let key_end = json_string_token_end(text, offset)?;
+        let key = parse_json_string(&text[offset..key_end])?;
+        offset = key_end;
+        skip_json_whitespace(bytes, &mut offset);
+        if bytes.get(offset).copied() != Some(b':') {
+            return Err(protocol_error("MCP JSON-RPC object key is missing a colon"));
+        }
+        offset += 1;
+        skip_json_whitespace(bytes, &mut offset);
+        let value_start = offset;
+        let value_end = json_value_token_end(text, value_start)?;
+        if fields.insert(key, &text[value_start..value_end]).is_some() {
+            return Err(protocol_error(
+                "MCP JSON-RPC object contains a duplicate field",
+            ));
+        }
+        offset = value_end;
+        skip_json_whitespace(bytes, &mut offset);
+        match bytes.get(offset).copied() {
+            Some(b',') => {
+                offset += 1;
+                skip_json_whitespace(bytes, &mut offset);
+                if bytes.get(offset).copied() == Some(b'}') {
+                    return Err(protocol_error(
+                        "MCP JSON-RPC object contains a trailing comma",
+                    ));
+                }
+            }
+            Some(b'}') => {
+                offset += 1;
+                skip_json_whitespace(bytes, &mut offset);
+                if offset != bytes.len() {
+                    return Err(protocol_error(
+                        "MCP JSON-RPC object has trailing non-whitespace data",
+                    ));
+                }
+                return Ok(fields);
+            }
+            _ => {
+                return Err(protocol_error(
+                    "MCP JSON-RPC object fields are not comma-separated",
+                ));
+            }
+        }
+    }
+}
+
+fn skip_json_whitespace(bytes: &[u8], offset: &mut usize) {
+    while bytes
+        .get(*offset)
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        *offset += 1;
+    }
+}
+
+fn json_value_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
+    let bytes = text.as_bytes();
+    match bytes.get(start).copied() {
+        Some(b'"') => json_string_token_end(text, start),
+        Some(b'{') => json_object_token_end(text, start),
+        Some(b'[') => json_array_token_end(text, start),
+        Some(_) => {
+            let mut end = start;
+            while bytes.get(end).is_some_and(|byte| {
+                !matches!(*byte, b' ' | b'\t' | b'\r' | b'\n' | b',' | b'}' | b']')
+            }) {
+                end += 1;
+            }
+            let token = &text[start..end];
+            if !matches!(token, "true" | "false" | "null") && !is_json_number(token) {
+                return Err(protocol_error("MCP JSON-RPC primitive value is invalid"));
+            }
+            Ok(end)
+        }
+        None => Err(protocol_error("MCP JSON-RPC object value is missing")),
+    }
+}
+
+fn json_string_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
+    let bytes = text.as_bytes();
+    if bytes.get(start).copied() != Some(b'"') {
+        return Err(protocol_error("MCP JSON-RPC string field is invalid"));
+    }
+    let mut offset = start + 1;
+    while let Some(byte) = bytes.get(offset).copied() {
+        match byte {
+            b'"' => return Ok(offset + 1),
+            b'\\' => {
+                let escaped = bytes
+                    .get(offset + 1)
+                    .copied()
+                    .ok_or_else(|| protocol_error("MCP JSON-RPC string escape is incomplete"))?;
+                match escaped {
+                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
+                        offset += 2;
+                    }
+                    b'u' => {
+                        let hex_end = offset.saturating_add(6);
+                        let hex = bytes.get(offset + 2..hex_end).ok_or_else(|| {
+                            protocol_error("MCP JSON-RPC unicode escape is incomplete")
+                        })?;
+                        if !hex.iter().all(u8::is_ascii_hexdigit) {
+                            return Err(protocol_error("MCP JSON-RPC unicode escape is invalid"));
+                        }
+                        offset = hex_end;
+                    }
+                    _ => {
+                        return Err(protocol_error("MCP JSON-RPC string escape is unsupported"));
+                    }
+                }
+            }
+            0x00..=0x1f => {
+                return Err(protocol_error(
+                    "MCP JSON-RPC string contains an unescaped control character",
+                ));
+            }
+            _ => offset += 1,
+        }
+    }
+    Err(protocol_error("MCP JSON-RPC string field is unterminated"))
+}
+
+fn json_object_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
+    let bytes = text.as_bytes();
+    if bytes.get(start).copied() != Some(b'{') {
+        return Err(protocol_error("MCP JSON-RPC object value is invalid"));
+    }
+    let mut offset = start + 1;
+    skip_json_whitespace(bytes, &mut offset);
+    if bytes.get(offset).copied() == Some(b'}') {
+        return Ok(offset + 1);
+    }
+    loop {
+        if bytes.get(offset).copied() != Some(b'"') {
+            return Err(protocol_error("MCP JSON-RPC nested object key is invalid"));
+        }
+        offset = json_string_token_end(text, offset)?;
+        skip_json_whitespace(bytes, &mut offset);
+        if bytes.get(offset).copied() != Some(b':') {
+            return Err(protocol_error(
+                "MCP JSON-RPC nested object key is missing a colon",
+            ));
+        }
+        offset += 1;
+        skip_json_whitespace(bytes, &mut offset);
+        offset = json_value_token_end(text, offset)?;
+        skip_json_whitespace(bytes, &mut offset);
+        match bytes.get(offset).copied() {
+            Some(b',') => {
+                offset += 1;
+                skip_json_whitespace(bytes, &mut offset);
+                if bytes.get(offset).copied() == Some(b'}') {
+                    return Err(protocol_error(
+                        "MCP JSON-RPC nested object contains a trailing comma",
+                    ));
+                }
+            }
+            Some(b'}') => return Ok(offset + 1),
+            _ => {
+                return Err(protocol_error(
+                    "MCP JSON-RPC nested object fields are not comma-separated",
+                ));
+            }
+        }
+    }
+}
+
+fn json_array_token_end(text: &str, start: usize) -> Result<usize, EvaError> {
+    let bytes = text.as_bytes();
+    if bytes.get(start).copied() != Some(b'[') {
+        return Err(protocol_error("MCP JSON-RPC array value is invalid"));
+    }
+    let mut offset = start + 1;
+    skip_json_whitespace(bytes, &mut offset);
+    if bytes.get(offset).copied() == Some(b']') {
+        return Ok(offset + 1);
+    }
+    loop {
+        offset = json_value_token_end(text, offset)?;
+        skip_json_whitespace(bytes, &mut offset);
+        match bytes.get(offset).copied() {
+            Some(b',') => {
+                offset += 1;
+                skip_json_whitespace(bytes, &mut offset);
+                if bytes.get(offset).copied() == Some(b']') {
+                    return Err(protocol_error(
+                        "MCP JSON-RPC array contains a trailing comma",
+                    ));
+                }
+            }
+            Some(b']') => return Ok(offset + 1),
+            _ => {
+                return Err(protocol_error(
+                    "MCP JSON-RPC array values are not comma-separated",
+                ));
+            }
+        }
+    }
+}
+
+fn is_json_number(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    let mut offset = 0usize;
+    if bytes.get(offset).copied() == Some(b'-') {
+        offset += 1;
+    }
+    match bytes.get(offset).copied() {
+        Some(b'0') => offset += 1,
+        Some(b'1'..=b'9') => {
+            offset += 1;
+            while bytes.get(offset).is_some_and(u8::is_ascii_digit) {
+                offset += 1;
+            }
+        }
+        _ => return false,
+    }
+    if bytes.get(offset).copied() == Some(b'.') {
+        offset += 1;
+        let fraction_start = offset;
+        while bytes.get(offset).is_some_and(u8::is_ascii_digit) {
+            offset += 1;
+        }
+        if offset == fraction_start {
+            return false;
+        }
+    }
+    if matches!(bytes.get(offset).copied(), Some(b'e' | b'E')) {
+        offset += 1;
+        if matches!(bytes.get(offset).copied(), Some(b'+' | b'-')) {
+            offset += 1;
+        }
+        let exponent_start = offset;
+        while bytes.get(offset).is_some_and(u8::is_ascii_digit) {
+            offset += 1;
+        }
+        if offset == exponent_start {
+            return false;
+        }
+    }
+    offset == bytes.len()
+}
+
+/// Find a nested field in the already isolated tools array. This legacy
+/// helper is intentionally not used for protocol envelope or phase fields.
+fn find_json_field_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     let pattern = format!("\"{key}\"");
     let position = text.find(&pattern)?;
     let after_key = position + pattern.len();
     let colon = text[after_key..].find(':')?;
     let mut value_start = after_key + colon + 1;
-    value_start += text[value_start..]
-        .chars()
-        .take_while(|character| character.is_whitespace())
-        .map(char::len_utf8)
-        .sum::<usize>();
-    let value_end = json_value_end(text, value_start)?;
+    while text
+        .as_bytes()
+        .get(value_start)
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        value_start += 1;
+    }
+    let value_end = json_value_token_end(text, value_start).ok()?;
     Some(&text[value_start..value_end])
-}
-
-/// 执行 `json_value_end` 对应的处理逻辑。
-fn json_value_end(text: &str, start: usize) -> Option<usize> {
-    match text[start..].chars().next()? {
-        '"' => json_string_end(text, start),
-        '{' => balanced_json_end(text, start, '{', '}'),
-        '[' => balanced_json_end(text, start, '[', ']'),
-        _ => {
-            let mut end = text.len();
-            for (offset, character) in text[start..].char_indices() {
-                if character == ','
-                    || character == '}'
-                    || character == ']'
-                    || character.is_whitespace()
-                {
-                    end = start + offset;
-                    break;
-                }
-            }
-            Some(end)
-        }
-    }
-}
-
-/// 执行 `json_string_end` 对应的处理逻辑。
-fn json_string_end(text: &str, start: usize) -> Option<usize> {
-    let mut escaped = false;
-    for (offset, character) in text[start + 1..].char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match character {
-            '\\' => escaped = true,
-            '"' => return Some(start + 1 + offset + character.len_utf8()),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// 执行 `balanced_json_end` 对应的处理逻辑。
-fn balanced_json_end(text: &str, start: usize, open: char, close: char) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (offset, character) in text[start..].char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        if character == '"' {
-            in_string = true;
-        } else if character == open {
-            depth += 1;
-        } else if character == close {
-            depth = depth.checked_sub(1)?;
-            if depth == 0 {
-                return Some(start + offset + character.len_utf8());
-            }
-        }
-    }
-    None
 }
 
 /// 执行 `json_string_field` 对应的处理逻辑。
 fn json_string_field(text: &str, key: &str) -> Result<Option<String>, EvaError> {
-    json_field_value(text, key)
+    json_field_value(text, key)?
         .map(parse_json_string)
         .transpose()
 }
 
 /// 执行 `json_u64_field` 对应的处理逻辑。
 fn json_u64_field(text: &str, key: &str) -> Result<Option<u64>, EvaError> {
-    json_field_value(text, key)
+    json_field_value(text, key)?
         .map(|value| {
             value.trim().parse::<u64>().map_err(|error| {
                 protocol_error("MCP JSON-RPC numeric field is invalid")
@@ -2025,7 +2864,7 @@ fn json_u64_field(text: &str, key: &str) -> Result<Option<u64>, EvaError> {
 
 /// 执行 `json_i64_field` 对应的处理逻辑。
 fn json_i64_field(text: &str, key: &str) -> Result<Option<i64>, EvaError> {
-    json_field_value(text, key)
+    json_field_value(text, key)?
         .map(|value| {
             value.trim().parse::<i64>().map_err(|error| {
                 protocol_error("MCP JSON-RPC numeric field is invalid")
@@ -2070,8 +2909,41 @@ fn parse_json_string(value: &str) -> Result<String, EvaError> {
                             protocol_error("MCP JSON-RPC unicode escape is invalid")
                                 .with_context("parse_error", error.to_string())
                         })?;
-                        if let Some(character) = char::from_u32(code as u32) {
+                        let scalar = if (0xd800..=0xdbff).contains(&code) {
+                            if chars.next() != Some('\\') || chars.next() != Some('u') {
+                                return Err(protocol_error(
+                                    "MCP JSON-RPC unicode surrogate pair is incomplete",
+                                ));
+                            }
+                            let mut low_hex = String::new();
+                            for _ in 0..4 {
+                                low_hex.push(chars.next().ok_or_else(|| {
+                                    protocol_error(
+                                        "MCP JSON-RPC unicode surrogate pair is incomplete",
+                                    )
+                                })?);
+                            }
+                            let low = u16::from_str_radix(&low_hex, 16).map_err(|error| {
+                                protocol_error("MCP JSON-RPC unicode escape is invalid")
+                                    .with_context("parse_error", error.to_string())
+                            })?;
+                            if !(0xdc00..=0xdfff).contains(&low) {
+                                return Err(protocol_error(
+                                    "MCP JSON-RPC unicode surrogate pair is invalid",
+                                ));
+                            }
+                            0x1_0000 + (((code as u32) - 0xd800) << 10) + ((low as u32) - 0xdc00)
+                        } else if (0xdc00..=0xdfff).contains(&code) {
+                            return Err(protocol_error(
+                                "MCP JSON-RPC unicode surrogate pair is invalid",
+                            ));
+                        } else {
+                            code as u32
+                        };
+                        if let Some(character) = char::from_u32(scalar) {
                             output.push(character);
+                        } else {
+                            return Err(protocol_error("MCP JSON-RPC unicode scalar is invalid"));
                         }
                     }
                     _ => {
@@ -2333,6 +3205,661 @@ mod tests {
         assert!(requests
             .iter()
             .any(|request| request.contains("\"method\":\"tools/call\"")));
+        assert!(!requests[0].contains("MCP-Protocol-Version:"));
+        assert!(requests[1..]
+            .iter()
+            .all(|request| request.contains("MCP-Protocol-Version: 2025-11-25\r\n")));
+        assert!(requests
+            .iter()
+            .all(|request| !request.contains("Mcp-Session-Id:")));
+    }
+
+    #[test]
+    fn streamable_http_session_propagates_headers_and_deletes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let (sender, receiver) = channel();
+        let server = thread::spawn(move || {
+            for request_index in 0..5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_test_http_request(&mut stream);
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                let response = match request_index {
+                    0 => http_response_with_session(
+                        200,
+                        &response(1, "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"session-fake\",\"version\":\"1\"}}"),
+                        "session-opaque-1",
+                    ),
+                    1 if body.contains("notifications/initialized") => {
+                        http_response_with_session(202, "", "session-opaque-1")
+                    }
+                    2 if body.contains("\"method\":\"tools/list\"") => http_response_with_session(
+                        200,
+                        &response(2, "{\"tools\":[{\"name\":\"list_issues\",\"inputSchema\":{\"type\":\"object\"}}]}"),
+                        "session-opaque-1",
+                    ),
+                    3 if body.contains("\"method\":\"tools/call\"") => http_response_with_session(
+                        200,
+                        &response(3, "{\"content\":[{\"type\":\"text\",\"text\":\"session-ok\"}],\"isError\":false}"),
+                        "session-opaque-1",
+                    ),
+                    4 if request.starts_with("DELETE /mcp HTTP/1.1\r\n") => {
+                        "HTTP/1.1 204 No Content\r\nMcp-Session-Id: session-opaque-1\r\nConnection: close\r\n\r\n".to_owned()
+                    }
+                    _ => http_response(400, ""),
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+                sender.send(request).unwrap();
+            }
+        });
+
+        let report = client(["list_issues"])
+            .call_http(
+                &endpoint,
+                BTreeMap::new(),
+                RequestId::parse("req-mcp-session").unwrap(),
+                "list_issues",
+                "{}",
+            )
+            .unwrap();
+
+        let requests = (0..5)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(1)).unwrap())
+            .collect::<Vec<_>>();
+        server.join().unwrap();
+        assert!(requests[0].starts_with("POST /mcp HTTP/1.1\r\n"));
+        assert!(!requests[0].contains("Mcp-Session-Id:"));
+        assert!(!requests[0].contains("MCP-Protocol-Version:"));
+        for request in &requests[1..] {
+            assert!(request.contains("Mcp-Session-Id: session-opaque-1\r\n"));
+            assert!(request.contains("MCP-Protocol-Version: 2025-11-25\r\n"));
+        }
+        assert!(requests[4].starts_with("DELETE /mcp HTTP/1.1\r\n"));
+        assert!(!requests[4].contains("Content-Type:"));
+        assert!(!requests[4].contains("Content-Length:"));
+        assert!(report
+            .audit
+            .contains(&"mcp.http:session_deleted".to_owned()));
+        assert!(!format!("{report:?}").contains("session-opaque-1"));
+        assert!(!report
+            .audit
+            .iter()
+            .any(|entry| entry.contains("session-opaque-1")));
+    }
+
+    #[test]
+    fn streamable_http_protocol_error_still_deletes_original_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let (sender, receiver) = channel();
+        let server = thread::spawn(move || {
+            for request_index in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_test_http_request(&mut stream);
+                let response = match request_index {
+                    0 => http_response_with_session(
+                        200,
+                        &response(1, "{\"protocolVersion\":\"2025-11-25\"}"),
+                        "original-session",
+                    ),
+                    1 => http_response_with_session(202, "", "rotated-session"),
+                    2 => {
+                        "HTTP/1.1 204 No Content\r\nMcp-Session-Id: original-session\r\nConnection: close\r\n\r\n".to_owned()
+                    }
+                    _ => unreachable!(),
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+                sender.send(request).unwrap();
+            }
+        });
+
+        let error = client(["list_issues"])
+            .call_http(
+                &endpoint,
+                BTreeMap::new(),
+                RequestId::parse("req-mcp-session-error").unwrap(),
+                "list_issues",
+                "{}",
+            )
+            .unwrap_err();
+
+        assert_provider_code(&error, "mcp_http_session_id_mismatch");
+        let requests = (0..3)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(1)).unwrap())
+            .collect::<Vec<_>>();
+        server.join().unwrap();
+        assert!(requests[2].starts_with("DELETE /mcp HTTP/1.1\r\n"));
+        assert!(requests[2].contains("Mcp-Session-Id: original-session\r\n"));
+        assert!(!requests[2].contains("rotated-session"));
+    }
+
+    #[test]
+    fn streamable_http_get_uses_negotiated_session_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let (sender, receiver) = channel();
+        let server = thread::spawn(move || {
+            for request_index in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_test_http_request(&mut stream);
+                let response = match request_index {
+                    0 => http_response_with_session(
+                        200,
+                        &response(1, "{\"protocolVersion\":\"2025-11-25\"}"),
+                        "get-session",
+                    ),
+                    1 => http_response_with_session(202, "", "get-session"),
+                    2 => "HTTP/1.1 200 OK\r\nMcp-Session-Id: get-session\r\nContent-Type: text/event-stream; charset=utf-8\r\nContent-Length: 8\r\nConnection: close\r\n\r\n: ping\n\n".to_owned(),
+                    _ => unreachable!(),
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+                sender.send(request).unwrap();
+            }
+        });
+        let mut transport = McpHttpJsonRpcTransport::new(&endpoint, BTreeMap::new()).unwrap();
+        let config = McpJsonRpcClientConfig::new();
+        transport
+            .exchange(
+                1,
+                &initialize_request(1, &config),
+                Duration::from_secs(1),
+                1024,
+            )
+            .unwrap();
+        transport
+            .notify(&initialized_notification(), Duration::from_secs(1), 1024)
+            .unwrap();
+        assert_eq!(
+            transport.get(Duration::from_secs(1), 1024).unwrap(),
+            b": ping\n\n"
+        );
+
+        let initialize = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        let initialized = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        let get = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        server.join().unwrap();
+        assert!(!initialize.contains("Mcp-Session-Id:"));
+        assert!(initialized.contains("notifications/initialized"));
+        assert!(get.starts_with("GET /mcp HTTP/1.1\r\n"));
+        assert!(get.contains("Accept: text/event-stream\r\n"));
+        assert!(get.contains("Mcp-Session-Id: get-session\r\n"));
+        assert!(get.contains("MCP-Protocol-Version: 2025-11-25\r\n"));
+        assert!(!get.contains("Content-Type:"));
+        assert!(!get.contains("Content-Length:"));
+    }
+
+    #[test]
+    fn streamable_http_protocol_and_session_changes_fail_closed() {
+        for (result, expected_code) in [
+            ("{}", "mcp_protocol_version_missing"),
+            (
+                "{\"protocolVersion\":\"2024-11-05\"}",
+                "mcp_protocol_version_mismatch",
+            ),
+            (
+                "{\"protocolVersion\":\"bad version\"}",
+                "mcp_protocol_version_invalid",
+            ),
+        ] {
+            let response = HttpJsonRpcResponse {
+                status_code: 200,
+                content_type: Some("application/json".to_owned()),
+                body: response(1, result).into_bytes(),
+                body_truncated: false,
+                session_id: Some("must-not-be-retained".to_owned()),
+            };
+            let mut transport =
+                McpHttpJsonRpcTransport::new("http://127.0.0.1/mcp", BTreeMap::new()).unwrap();
+            let error = transport
+                .remember_initialize(&response, 1, 1024, DEFAULT_PROTOCOL_VERSION)
+                .unwrap_err();
+            assert_provider_code(&error, expected_code);
+            assert!(transport.session_id().is_none());
+            assert!(transport.negotiated_protocol_version().is_none());
+            assert!(transport.is_closed());
+            assert_eq!(
+                transport.session_id.as_deref(),
+                Some("must-not-be-retained")
+            );
+        }
+
+        let mut transport =
+            McpHttpJsonRpcTransport::new("http://127.0.0.1/mcp", BTreeMap::new()).unwrap();
+        transport.exchange_count = 1;
+        transport.protocol_version = Some(DEFAULT_PROTOCOL_VERSION.to_owned());
+        transport.session_id = Some("expected-session".to_owned());
+        let rotated = HttpJsonRpcResponse {
+            status_code: 202,
+            content_type: None,
+            body: Vec::new(),
+            body_truncated: false,
+            session_id: Some("rotated-session".to_owned()),
+        };
+        let error = transport.validate_response_session(&rotated).unwrap_err();
+        assert_provider_code(&error, "mcp_http_session_id_mismatch");
+        assert!(transport.is_closed());
+        assert_eq!(transport.session_id.as_deref(), Some("expected-session"));
+        let debug = format!("{transport:?}");
+        assert!(!debug.contains("expected-session"));
+        assert!(!debug.contains("rotated-session"));
+    }
+
+    #[test]
+    fn streamable_http_session_bound_404_invalidates_post_and_notification() {
+        for (request_kind, response_session) in [
+            ("post", None),
+            ("post", Some("different-session")),
+            ("notification", None),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_test_http_request(&mut stream);
+                let session_header = response_session
+                    .map(|value| format!("Mcp-Session-Id: {value}\r\n"))
+                    .unwrap_or_default();
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\n{session_header}Content-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                request
+            });
+            let mut transport = ready_http_transport(&endpoint, Some("known-session"));
+            let error = if request_kind == "post" {
+                transport
+                    .exchange(
+                        2,
+                        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}",
+                        Duration::from_secs(1),
+                        1024,
+                    )
+                    .unwrap_err()
+            } else {
+                transport
+                    .notify(
+                        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}",
+                        Duration::from_secs(1),
+                        1024,
+                    )
+                    .unwrap_err()
+            };
+
+            assert_provider_code(&error, "mcp_http_session_not_found");
+            assert!(transport.is_closed());
+            assert!(transport.session_id.is_none());
+            assert!(transport.protocol_version.is_none());
+            let request = server.join().unwrap();
+            assert!(request.contains("Mcp-Session-Id: known-session\r\n"));
+        }
+    }
+
+    #[test]
+    fn streamable_http_session_mismatch_blocks_followup_before_network_io() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let mut transport = ready_http_transport(&endpoint, Some("trusted-session"));
+        let mismatch = HttpJsonRpcResponse {
+            status_code: 202,
+            content_type: None,
+            body: Vec::new(),
+            body_truncated: false,
+            session_id: Some("rotated-session".to_owned()),
+        };
+        assert_provider_code(
+            &transport.validate_response_session(&mismatch).unwrap_err(),
+            "mcp_http_session_id_mismatch",
+        );
+
+        let followup = transport
+            .exchange(
+                2,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}",
+                Duration::from_secs(1),
+                1024,
+            )
+            .unwrap_err();
+        assert_provider_code(&followup, "mcp_http_session_closed");
+        assert_eq!(transport.session_id.as_deref(), Some("trusted-session"));
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn streamable_http_initialize_fields_must_be_direct_object_members() {
+        let mut missing_method =
+            McpHttpJsonRpcTransport::new("http://127.0.0.1:1/mcp", BTreeMap::new()).unwrap();
+        let error = missing_method
+            .exchange(
+                1,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"params\":{\"method\":\"initialize\",\"protocolVersion\":\"2025-11-25\"}}",
+                Duration::from_secs(1),
+                1024,
+            )
+            .unwrap_err();
+        assert_provider_code(&error, "mcp_protocol_error");
+
+        let mut nested_version =
+            McpHttpJsonRpcTransport::new("http://127.0.0.1:1/mcp", BTreeMap::new()).unwrap();
+        let error = nested_version
+            .exchange(
+                1,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"nested\":{\"protocolVersion\":\"2025-11-25\"}}}",
+                Duration::from_secs(1),
+                1024,
+            )
+            .unwrap_err();
+        assert_provider_code(&error, "mcp_protocol_version_missing");
+
+        let nested_result = HttpJsonRpcResponse {
+            status_code: 200,
+            content_type: Some("application/json".to_owned()),
+            body: response(1, "{\"serverInfo\":{\"protocolVersion\":\"2025-11-25\"}}").into_bytes(),
+            body_truncated: false,
+            session_id: None,
+        };
+        let mut transport =
+            McpHttpJsonRpcTransport::new("http://127.0.0.1:1/mcp", BTreeMap::new()).unwrap();
+        assert_provider_code(
+            &transport
+                .remember_initialize(&nested_result, 1, 1024, DEFAULT_PROTOCOL_VERSION)
+                .unwrap_err(),
+            "mcp_protocol_version_missing",
+        );
+
+        for malformed in [
+            "{\"result\":{\"jsonrpc\":\"2.0\",\"id\":1,\"protocolVersion\":\"2025-11-25\"}}",
+            "{\"jsonrpc\":\"2.0\",\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}",
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{},\"unknown\":{\"missing_colon\" 1}}",
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{},\"unknown\":[1,]}",
+        ] {
+            assert_provider_code(
+                &parse_json_rpc_response(malformed, 1).unwrap_err(),
+                "mcp_protocol_error",
+            );
+        }
+        assert!(parse_json_string("\"\\uD800\"").is_err());
+        assert_eq!(
+            parse_json_string("\"\\uD83D\\uDE00\"").unwrap(),
+            "\u{1f600}"
+        );
+    }
+
+    #[test]
+    fn streamable_http_response_shapes_are_protocol_exact() {
+        for status in [200, 204] {
+            let response = HttpJsonRpcResponse {
+                status_code: status,
+                content_type: None,
+                body: Vec::new(),
+                body_truncated: false,
+                session_id: None,
+            };
+            assert_provider_code(
+                &validate_http_notification_response(response, 1024).unwrap_err(),
+                "mcp_http_status",
+            );
+        }
+        let notification_body = HttpJsonRpcResponse {
+            status_code: 202,
+            content_type: Some("application/json".to_owned()),
+            body: b"{}".to_vec(),
+            body_truncated: false,
+            session_id: None,
+        };
+        assert_provider_code(
+            &validate_http_notification_response(notification_body, 1024).unwrap_err(),
+            "mcp_http_notification_body_unexpected",
+        );
+
+        for (status, content_type, expected_code) in [
+            (204, Some("text/event-stream"), "mcp_http_status"),
+            (
+                200,
+                Some("application/json"),
+                "mcp_http_content_type_unsupported",
+            ),
+            (200, None, "mcp_http_content_type_missing"),
+            (405, None, "mcp_http_sse_unsupported"),
+        ] {
+            let response = HttpJsonRpcResponse {
+                status_code: status,
+                content_type: content_type.map(str::to_owned),
+                body: Vec::new(),
+                body_truncated: false,
+                session_id: None,
+            };
+            assert_provider_code(
+                &decode_http_event_stream_response(response, 1024).unwrap_err(),
+                expected_code,
+            );
+        }
+        let event_stream = HttpJsonRpcResponse {
+            status_code: 200,
+            content_type: Some("text/event-stream".to_owned()),
+            body: b": ping\n\n".to_vec(),
+            body_truncated: false,
+            session_id: None,
+        };
+        assert_eq!(
+            decode_http_event_stream_response(event_stream, 1024).unwrap(),
+            b": ping\n\n"
+        );
+    }
+
+    #[test]
+    fn streamable_http_wrapper_enforces_phase_and_closes_stateless_session() {
+        use crate::streamable_http::McpStreamableHttpSession;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for request_index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_test_http_request(&mut stream);
+                let response = if request_index == 0 {
+                    http_response(200, &response(1, "{\"protocolVersion\":\"2025-11-25\"}"))
+                } else {
+                    http_response(202, "")
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+        let config = McpStreamableHttpConfig::legacy_http(endpoint).unwrap();
+        let mut session =
+            McpStreamableHttpSession::new(config, BTreeMap::new(), Duration::from_secs(1), 1024)
+                .unwrap();
+        let normal_request =
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
+        assert_provider_code(
+            &session.post(2, normal_request).unwrap_err(),
+            "mcp_http_session_not_initialized",
+        );
+        session
+            .initialize(1, &initialize_request(1, &McpJsonRpcClientConfig::new()))
+            .unwrap();
+        assert!(!session.is_ready());
+        assert_provider_code(
+            &session.post(2, normal_request).unwrap_err(),
+            "mcp_http_session_not_ready",
+        );
+        assert_provider_code(&session.get().unwrap_err(), "mcp_http_session_not_ready");
+        assert_provider_code(
+            &session
+                .initialize(2, &initialize_request(2, &McpJsonRpcClientConfig::new()))
+                .unwrap_err(),
+            "mcp_http_session_already_initialized",
+        );
+        assert_provider_code(
+            &session
+                .notify("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}")
+                .unwrap_err(),
+            "mcp_http_initialized_notification_required",
+        );
+        session.notify(&initialized_notification()).unwrap();
+        assert!(session.is_ready());
+        assert_provider_code(
+            &session.notify(&initialized_notification()).unwrap_err(),
+            "mcp_http_initialized_notification_duplicate",
+        );
+        assert_provider_code(
+            &session
+                .post(2, &initialize_request(2, &McpJsonRpcClientConfig::new()))
+                .unwrap_err(),
+            "mcp_http_session_already_initialized",
+        );
+        session.shutdown().unwrap();
+        assert!(session.is_closed());
+        assert!(!session.is_ready());
+        assert!(session.negotiated_protocol_version().is_none());
+        assert_provider_code(
+            &session.post(2, normal_request).unwrap_err(),
+            "mcp_http_session_closed",
+        );
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("\"method\":\"initialize\""));
+        assert!(requests[1].contains("notifications/initialized"));
+        assert!(requests
+            .iter()
+            .all(|request| !request.starts_with("DELETE ")));
+    }
+
+    #[test]
+    fn streamable_http_invalid_initialize_deletes_provisional_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for request_index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_test_http_request(&mut stream);
+                let response = if request_index == 0 {
+                    http_response_with_session(
+                        200,
+                        &response(1, "{\"serverInfo\":{\"protocolVersion\":\"2025-11-25\"}}"),
+                        "provisional-session",
+                    )
+                } else {
+                    "HTTP/1.1 204 No Content\r\nMcp-Session-Id: provisional-session\r\nConnection: close\r\n\r\n".to_owned()
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+        let mut transport = McpHttpJsonRpcTransport::new(&endpoint, BTreeMap::new()).unwrap();
+        let error = transport
+            .exchange(
+                1,
+                &initialize_request(1, &McpJsonRpcClientConfig::new()),
+                Duration::from_secs(1),
+                1024,
+            )
+            .unwrap_err();
+        assert_provider_code(&error, "mcp_protocol_version_missing");
+        assert!(transport.is_closed());
+        assert!(transport.session_id.is_none());
+        assert!(transport.protocol_version.is_none());
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].starts_with("DELETE /mcp HTTP/1.1\r\n"));
+        assert!(requests[1].contains("Mcp-Session-Id: provisional-session\r\n"));
+        assert!(requests[1].contains("MCP-Protocol-Version: 2025-11-25\r\n"));
+    }
+
+    #[test]
+    fn streamable_http_session_header_is_bounded_visible_ascii() {
+        let valid = b"HTTP/1.1 204 No Content\r\nMcp-Session-Id: opaque.123_-~\r\nConnection: keep-alive\r\n\r\n";
+        let mut valid_reader = SegmentedReader::fragmented(valid);
+        let response =
+            read_http_json_rpc_response(&mut valid_reader, "http://session-header.test", 1024)
+                .unwrap();
+        assert_eq!(response.session_id.as_deref(), Some("opaque.123_-~"));
+
+        let oversized = "x".repeat(MCP_SESSION_ID_LIMIT_BYTES + 1);
+        for raw in [
+            "HTTP/1.1 204 No Content\r\nMcp-Session-Id:\r\n\r\n".to_owned(),
+            "HTTP/1.1 204 No Content\r\nMcp-Session-Id: has space\r\n\r\n".to_owned(),
+            "HTTP/1.1 204 No Content\r\nMcp-Session-Id: first\r\nMcp-Session-Id: second\r\n\r\n"
+                .to_owned(),
+            format!("HTTP/1.1 204 No Content\r\nMcp-Session-Id: {oversized}\r\n\r\n"),
+        ] {
+            let mut reader = SegmentedReader::new([raw.into_bytes()]);
+            let error =
+                read_http_json_rpc_response(&mut reader, "http://session-header.test", 1024)
+                    .unwrap_err();
+            assert_provider_code(&error, "mcp_http_framing_invalid");
+        }
+    }
+
+    #[test]
+    fn streamable_http_delete_handles_bodyless_and_terminal_statuses() {
+        for (status, expected_error) in [
+            (202, None),
+            (204, None),
+            (405, None),
+            (404, Some("mcp_http_session_not_found")),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                for request_index in 0..2 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let request = read_test_http_request(&mut stream);
+                    let response = if request_index == 0 {
+                        http_response_with_session(
+                            200,
+                            &response(1, "{\"protocolVersion\":\"2025-11-25\"}"),
+                            "delete-session",
+                        )
+                    } else if status == 202 {
+                        "HTTP/1.1 202 Accepted\r\nMcp-Session-Id: delete-session\r\nConnection: keep-alive\r\n\r\n".to_owned()
+                    } else {
+                        format!(
+                            "HTTP/1.1 {status} Status\r\nMcp-Session-Id: delete-session\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n"
+                        )
+                    };
+                    stream.write_all(response.as_bytes()).unwrap();
+                    if request_index == 1 {
+                        assert!(request.starts_with("DELETE /mcp HTTP/1.1\r\n"));
+                        assert!(request.contains("Mcp-Session-Id: delete-session\r\n"));
+                    }
+                }
+            });
+            let mut transport = McpHttpJsonRpcTransport::new(&endpoint, BTreeMap::new()).unwrap();
+            let config = McpJsonRpcClientConfig::new();
+            transport
+                .exchange(
+                    1,
+                    &initialize_request(1, &config),
+                    Duration::from_secs(1),
+                    1024,
+                )
+                .unwrap();
+            let shutdown = transport.shutdown_session(Duration::from_secs(1), 1024);
+            match expected_error {
+                Some(code) => assert_provider_code(&shutdown.unwrap_err(), code),
+                None => shutdown.unwrap(),
+            }
+            assert!(transport.session_id().is_none());
+            assert!(transport.negotiated_protocol_version().is_none());
+            transport
+                .shutdown_session(Duration::from_secs(1), 1024)
+                .unwrap();
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -2532,7 +4059,7 @@ mod tests {
     }
 
     #[test]
-    fn http_framing_handles_bodyless_202_and_204_without_waiting_for_eof() {
+    fn http_framing_handles_bodyless_statuses_without_waiting_for_eof() {
         for (status, raw) in [
             (
                 202,
@@ -2549,7 +4076,14 @@ mod tests {
                 read_http_json_rpc_response(&mut reader, "http://framing.test", 1024).unwrap();
             assert_eq!(response.status_code, status);
             assert!(response.body.is_empty());
-            validate_http_notification_response(response.clone(), 1024).unwrap();
+            if status == 202 {
+                validate_http_notification_response(response.clone(), 1024).unwrap();
+            } else {
+                assert_provider_code(
+                    &validate_http_notification_response(response.clone(), 1024).unwrap_err(),
+                    "mcp_http_status",
+                );
+            }
             let error = decode_http_exchange_response(response, 7, 1024).unwrap_err();
             assert_provider_code(&error, "mcp_http_body_missing");
             assert_eq!(reader.terminal_reads, 0);
@@ -2663,6 +4197,7 @@ mod tests {
             content_type: Some("application/json".to_owned()),
             body: br#"{"jsonrpc":"2.0","id":1,"result":{}}"#.to_vec(),
             body_truncated: false,
+            session_id: None,
         };
         assert!(decode_http_exchange_response(valid.clone(), 1, 1024).is_ok());
 
@@ -2689,6 +4224,7 @@ mod tests {
             content_type: None,
             body: Vec::new(),
             body_truncated: true,
+            session_id: None,
         };
         assert_provider_code(
             &validate_http_notification_response(truncated_notification, 8).unwrap_err(),
@@ -2705,6 +4241,8 @@ mod tests {
             "Connection",
             "Content-Type",
             "Accept",
+            "Mcp-Session-Id",
+            "MCP-Protocol-Version",
         ] {
             assert!(
                 validate_http_header(header, "controlled").is_err(),
@@ -2894,6 +4432,22 @@ mod tests {
             "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
+    }
+
+    fn http_response_with_session(status: u16, body: &str, session_id: &str) -> String {
+        format!(
+            "HTTP/1.1 {status} OK\r\nMcp-Session-Id: {session_id}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn ready_http_transport(endpoint: &str, session_id: Option<&str>) -> McpHttpJsonRpcTransport {
+        let mut transport = McpHttpJsonRpcTransport::new(endpoint, BTreeMap::new()).unwrap();
+        transport.exchange_count = 1;
+        transport.protocol_version = Some(DEFAULT_PROTOCOL_VERSION.to_owned());
+        transport.session_id = session_id.map(str::to_owned);
+        transport.initialized_notification_sent = true;
+        transport
     }
 
     fn keep_alive_http_response(status: u16, body: &str) -> String {

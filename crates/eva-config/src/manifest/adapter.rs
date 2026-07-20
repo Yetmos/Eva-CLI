@@ -1088,6 +1088,8 @@ fn is_transport_controlled_header(name: &str) -> bool {
             | "trailer"
             | "upgrade"
             | "proxy-connection"
+            | "mcp-session-id"
+            | "mcp-protocol-version"
     )
 }
 
@@ -3235,6 +3237,8 @@ routing: {}
             "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    X-Token: \"bad\\0value\"\n",
             "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    X-Token: \"bad\\x7fvalue\"\n",
             "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    Host: example.test\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    Mcp-Session-Id: attacker-session\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    MCP-Protocol-Version: 2025-11-25\n",
             "headers:\n  Authorization: env:API_TOKEN\nmcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    authorization: env:SECOND_TOKEN\n",
             "mcp:\n  server_transport: stdio\n  command: provider\n  http:\n    trust_roots: [system]\n",
             "mcp:\n  server_transport: stdio\n  command: provider\n  endpoint: http://example.test/mcp\n",
