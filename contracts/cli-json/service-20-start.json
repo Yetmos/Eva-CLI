@@ -1,0 +1,24 @@
+{
+  "id": "service-start",
+  "description": "An installed development service can start in a later CLI process.",
+  "command": ["service", "start", "--dev", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "service.start",
+    "exit_code": 0,
+    "data": {
+      "operation": "start",
+      "state": "running",
+      "mutation_executed": true,
+      "production_adapter": false,
+      "audit": [
+        "mutation.policy:service.start:allow",
+        "service_manager.mutation_executed:true"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.service.start"
+    }
+  }
+}

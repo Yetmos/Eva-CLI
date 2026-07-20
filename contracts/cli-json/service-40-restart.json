@@ -1,0 +1,24 @@
+{
+  "id": "service-restart",
+  "description": "A stopped development service can restart and become running.",
+  "command": ["service", "restart", "--dev", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "service.restart",
+    "exit_code": 0,
+    "data": {
+      "operation": "restart",
+      "state": "running",
+      "mutation_executed": true,
+      "production_adapter": false,
+      "audit": [
+        "mutation.policy:service.restart:allow",
+        "service_manager.mutation_executed:true"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.service.restart"
+    }
+  }
+}

@@ -38,7 +38,7 @@
     <rect x="445" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="445" y="158" width="310" height="8" rx="4" fill="#dc2626"/>
     <text x="469" y="203" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#172033">Production code gaps</text>
-    <text x="469" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Service CLI, daemon entrypoint, boot recovery</text>
+    <text x="469" y="244" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">daemon entrypoint, boot recovery</text>
     <text x="469" y="271" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Run-as, vault, daemon-owned supervisor</text>
     <text x="469" y="298" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">MCP TLS, streaming, external compatibility</text>
     <text x="469" y="325" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" fill="#172033">Real backup, KMS, service handoff</text>

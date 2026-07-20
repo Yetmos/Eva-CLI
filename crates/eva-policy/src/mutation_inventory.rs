@@ -17,6 +17,7 @@ pub enum MutationOperation {
     ServiceStart,
     ServiceStop,
     ServiceRestart,
+    ServiceUninstall,
     MemoryMaintenance,
 }
 
@@ -107,6 +108,11 @@ pub const MUTATION_INVENTORY: &[MutationInventoryEntry] = &[
         MutationGate::ServiceManager,
     ),
     entry(
+        MutationOperation::ServiceUninstall,
+        "service.uninstall",
+        MutationGate::ServiceManager,
+    ),
+    entry(
         MutationOperation::MemoryMaintenance,
         "memory.maintenance",
         MutationGate::MemoryPolicy,
@@ -148,6 +154,38 @@ impl MutationDecision {
                 "daemon mutation requires authenticated active lease ownership"
             }
             .into(),
+            audit: vec![format!(
+                "mutation.policy:{}:{}",
+                stable_name(operation),
+                if allowed { "allow" } else { "deny" }
+            )],
+        }
+    }
+
+    /// Evaluates a service-manager mutation after the caller has validated the
+    /// host adapter (or explicitly selected the development fake adapter).
+    pub fn service_manager(
+        operation: MutationOperation,
+        configured: bool,
+        adapter_allowed: bool,
+    ) -> Self {
+        let registered = MUTATION_INVENTORY.iter().any(|entry| {
+            entry.operation == operation && entry.gate == MutationGate::ServiceManager
+        });
+        let allowed = registered && configured && adapter_allowed;
+        let reason = if !registered {
+            "service mutation is not registered in the mutation inventory"
+        } else if !configured {
+            "service manager configuration is disabled"
+        } else if !adapter_allowed {
+            "service manager adapter is not allowed for this host or mode"
+        } else {
+            "service manager mutation gate allowed"
+        };
+        Self {
+            operation,
+            allowed,
+            reason: reason.to_owned(),
             audit: vec![format!(
                 "mutation.policy:{}:{}",
                 stable_name(operation),
@@ -207,6 +245,7 @@ mod tests {
             MutationOperation::ServiceStart,
             MutationOperation::ServiceStop,
             MutationOperation::ServiceRestart,
+            MutationOperation::ServiceUninstall,
             MutationOperation::MemoryMaintenance,
         ] {
             assert!(operations.contains(&op));
@@ -219,5 +258,22 @@ mod tests {
                 .ensure_allowed()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn service_manager_decision_requires_inventory_config_and_adapter_gate() {
+        assert!(
+            MutationDecision::service_manager(MutationOperation::ServiceInstall, true, true)
+                .ensure_allowed()
+                .is_ok()
+        );
+        for decision in [
+            MutationDecision::service_manager(MutationOperation::ServiceInstall, false, true),
+            MutationDecision::service_manager(MutationOperation::ServiceInstall, true, false),
+            MutationDecision::service_manager(MutationOperation::DaemonShutdown, true, true),
+        ] {
+            assert!(!decision.allowed);
+            assert!(decision.ensure_allowed().is_err());
+        }
     }
 }

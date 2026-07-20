@@ -38,7 +38,7 @@
     <rect x="445" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="445" y="158" width="310" height="8" rx="4" fill="#dc2626"/>
     <text x="469" y="203" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">生产代码缺口</text>
-    <text x="469" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Service CLI、daemon entrypoint 与 boot recovery</text>
+    <text x="469" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">daemon entrypoint 与 boot recovery</text>
     <text x="469" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">run-as、vault 与 daemon-owned supervisor</text>
     <text x="469" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">MCP TLS、streaming 与外部兼容</text>
     <text x="469" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">真实 backup、KMS 与 service handoff</text>

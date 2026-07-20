@@ -1,0 +1,24 @@
+{
+  "id": "service-stop-idempotent",
+  "description": "Repeated development stop reports no mutation while already stopped.",
+  "command": ["service", "stop", "--dev", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "service.stop",
+    "exit_code": 0,
+    "data": {
+      "operation": "stop",
+      "state": "stopped",
+      "mutation_executed": false,
+      "production_adapter": false,
+      "audit": [
+        "mutation.policy:service.stop:allow",
+        "service_manager.mutation_executed:false"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.service.stop"
+    }
+  }
+}

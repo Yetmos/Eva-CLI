@@ -1,0 +1,29 @@
+{
+  "id": "service-status-initial",
+  "description": "A fresh development service reports the typed not-installed state.",
+  "command": ["service", "status", "--dev", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "service.status",
+    "exit_code": 0,
+    "data": {
+      "kind": "fake",
+      "service_name": "eva-dev",
+      "configured": true,
+      "production_adapter": false,
+      "state": "not_installed",
+      "mutation_executed": false,
+      "active_generation": null,
+      "active_release": null,
+      "candidate_generation": null,
+      "audit": [
+        "service_manager.fake:inspect",
+        "service_manager.service:eva-dev"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.service.status"
+    }
+  }
+}

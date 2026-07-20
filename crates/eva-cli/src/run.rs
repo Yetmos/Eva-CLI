@@ -45,6 +45,8 @@ mod task_cmd;
 mod upgrade_cmd;
 // 版本与发布契约输出实现。
 mod version_cmd;
+// Service-manager lifecycle command implementation.
+mod service_cmd;
 
 use adapter_cmd::AdapterCommand;
 use agent_cmd::AgentCommand;
@@ -64,6 +66,7 @@ use observability_cmd::ObservabilityCommand;
 use release_cmd::ReleaseCommand;
 use restore_cmd::RestoreCommand;
 use run_cmd::RunOptions;
+use service_cmd::ServiceCommand;
 use skill_cmd::SkillCommand;
 use snapshot_cmd::SnapshotCommand;
 use std::env;
@@ -134,6 +137,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "cli command module split",
     "emit",
     "daemon start/status/stop/shutdown/submit/cancel/drain/reload",
+    "service install/status/start/stop/restart/uninstall",
     "agent status/drain/reload",
     "capability list/probe/call",
 ];
@@ -230,6 +234,7 @@ where
         Command::Restore(command) => restore_cmd::execute_restore(command, stdout, stderr),
         Command::Upgrade(command) => upgrade_cmd::execute_upgrade(command, stdout, stderr),
         Command::Release(command) => release_cmd::execute_release(command, stdout, stderr),
+        Command::Service(command) => service_cmd::execute_service(command, stdout, stderr),
     }
 }
 
@@ -348,6 +353,11 @@ enum Command {
         /// 已解析的发布检查、安全评审、性能或迁移子命令。
         ReleaseCommand,
     ),
+    /// 管理宿主服务生命周期。
+    Service(
+        /// 已解析的服务管理器安装、状态、启动、停止、重启或卸载子命令。
+        ServiceCommand,
+    ),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -455,6 +465,9 @@ where
             &args[1..],
         )?)),
         "release" => Ok(Command::Release(release_cmd::parse_release_command(
+            &args[1..],
+        )?)),
+        "service" => Ok(Command::Service(service_cmd::parse_service_command(
             &args[1..],
         )?)),
         unknown => Err(EvaError::unsupported("unknown command").with_context("command", unknown)),
@@ -883,6 +896,7 @@ fn help_text() -> &'static str {
         "  eva daemon submit [--task <id>] [--kind <task.kind> --agent <id> (--input <text> | --artifact-ref <key> --artifact-digest <sha256>) [--idempotency-key <key>] [--max-attempts <n>] [--retry-backoff-ms <ms>] [--attempt-timeout-ms <ms>]] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva daemon cancel --task <id> [--reason <text>] [--durable-backend <path>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva daemon drain|reload [--plan <id>] [--generation <id>] [--state-dir <path>] [--lock-dir <path>] [--pid-dir <path>] [--request-id <id>] [--control-timeout-ms <ms>] [--project <path>] [--output text|json]\n",
+        "  eva service install|status|start|stop|restart|uninstall [--dev] [--project <path>] [--output text|json]\n",
         "  eva agent status [--agent <id>] [--project <path>] [--output text|json]\n",
         "  eva agent drain --agent <id> [--generation <id>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
         "  eva agent reload --agent <id> [--from-generation <id>] [--to-generation <id>] [--from-release <ref>] [--to-release <ref>] [--inflight <n>] [--timeout-ms <ms>] [--project <path>] [--output text|json]\n",
@@ -924,6 +938,7 @@ fn help_text() -> &'static str {
         "  run              Execute the V1.0-compatible in-memory basic event loop and persist the latest task report under .eva/tasks or a durable backend task store.\n",
         "  emit             Publish a typed Event to the in-memory or durable EventBus boundary.\n",
         "  daemon           Verify V1.12.1 local daemon config, lock, state, pid, durable backend, policy, observability, and shutdown boundaries.\n",
+        "  service          Install, inspect, start, stop, restart, or uninstall the configured service manager.\n",
         "  agent            Report Agent lifecycle status, drain plans, and daemon-backed reload/drain mutation when available.\n",
         "  capability       List, probe, and dry-run or confirmed-call capability provider routes.\n",
         "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
@@ -957,6 +972,7 @@ mod tests {
     use std::net::TcpListener;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     /// 返回仓库根目录，供 CLI 集成测试读取真实示例配置和 schema。
@@ -974,6 +990,79 @@ mod tests {
             String::from_utf8(stdout).unwrap(),
             String::from_utf8(stderr).unwrap(),
         )
+    }
+
+    /// Serializes the two service CLI tests and clears only their dev-state key.
+    /// Other CLI tests remain free to run in parallel, while a prior assertion
+    /// failure cannot make the next service test inherit a running fake.
+    fn service_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let guard = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = fs::canonicalize(workspace_root()).expect("workspace root should canonicalize");
+        let state_root = root.join(".eva").join("service-manager");
+        let (state, lock) = service_cmd::dev_state_paths(&root, "eva-dev", &state_root);
+        let _ = fs::remove_file(state);
+        let _ = fs::remove_file(lock);
+        guard
+    }
+
+    #[test]
+    fn service_status_requires_dev_for_fake_and_reports_typed_state() {
+        let _guard = service_test_guard();
+        let root = workspace_root();
+        let root = root.to_str().expect("workspace path should be UTF-8");
+
+        let (denied_exit, denied_stdout, denied_stderr) =
+            run_cli(&["service", "status", "--project", root, "--output", "json"]);
+        assert_eq!(denied_exit, EXIT_POLICY);
+        assert!(denied_stdout.is_empty());
+        assert!(denied_stderr.contains("fake service manager requires explicit --dev"));
+        assert!(denied_stderr.contains("\"command\":\"service.status\""));
+
+        let (status_exit, status_stdout, status_stderr) = run_cli(&[
+            "service",
+            "status",
+            "--dev",
+            "--project",
+            root,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(status_exit, EXIT_OK);
+        assert!(status_stderr.is_empty());
+        assert!(status_stdout.contains("\"command\":\"service.status\""));
+        assert!(status_stdout.contains("\"kind\":\"fake\""));
+        assert!(status_stdout.contains("\"state\":\"not_installed\""));
+        assert!(status_stdout.contains("\"mutation_executed\":false"));
+        assert!(status_stdout.contains("\"production_adapter\":false"));
+    }
+
+    #[test]
+    fn service_fake_install_reports_non_production_mutation_evidence() {
+        let _guard = service_test_guard();
+        let root = workspace_root();
+        let root = root.to_str().expect("workspace path should be UTF-8");
+        let (exit, stdout, stderr) = run_cli(&[
+            "service",
+            "install",
+            "--dev",
+            "--project",
+            root,
+            "--output",
+            "json",
+        ]);
+
+        assert_eq!(exit, EXIT_OK);
+        assert!(stderr.is_empty());
+        assert!(stdout.contains("\"command\":\"service.install\""));
+        assert!(stdout.contains("\"operation\":\"install\""));
+        assert!(stdout.contains("\"state\":\"stopped\""));
+        assert!(stdout.contains("\"mutation_executed\":true"));
+        assert!(stdout.contains("\"production_adapter\":false"));
+        assert!(stdout.contains("mutation.policy:service.install:allow"));
     }
 
     /// 为并行测试创建包含进程和时间后缀的独立临时目录。

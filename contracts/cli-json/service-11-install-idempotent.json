@@ -1,0 +1,24 @@
+{
+  "id": "service-install-idempotent",
+  "description": "Repeated development install is a no-op and retains the stopped state.",
+  "command": ["service", "install", "--dev", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "service.install",
+    "exit_code": 0,
+    "data": {
+      "operation": "install",
+      "state": "stopped",
+      "mutation_executed": false,
+      "production_adapter": false,
+      "audit": [
+        "mutation.policy:service.install:allow",
+        "service_manager.mutation_executed:false"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.service.install"
+    }
+  }
+}

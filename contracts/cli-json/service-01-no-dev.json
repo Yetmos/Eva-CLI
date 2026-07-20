@@ -1,0 +1,26 @@
+{
+  "id": "service-no-dev",
+  "description": "The development Fake cannot be selected implicitly.",
+  "command": ["service", "status", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 3,
+  "json_stream": "stderr",
+  "expected": {
+    "ok": false,
+    "command": "service.status",
+    "exit_code": 3,
+    "error": {
+      "kind": "permission_denied",
+      "message": "fake service manager requires explicit --dev",
+      "retryable": false,
+      "context": [
+        {
+          "key": "kind",
+          "value": "fake"
+        }
+      ]
+    },
+    "trace": {
+      "span_id": "cli.service.status"
+    }
+  }
+}

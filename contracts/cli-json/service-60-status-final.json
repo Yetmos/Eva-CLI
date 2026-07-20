@@ -1,0 +1,21 @@
+{
+  "id": "service-status-final",
+  "description": "The final development service status remains not installed after cleanup.",
+  "command": ["service", "status", "--dev", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "service.status",
+    "exit_code": 0,
+    "data": {
+      "kind": "fake",
+      "service_name": "eva-dev",
+      "state": "not_installed",
+      "mutation_executed": false,
+      "production_adapter": false
+    },
+    "trace": {
+      "span_id": "cli.service.status"
+    }
+  }
+}

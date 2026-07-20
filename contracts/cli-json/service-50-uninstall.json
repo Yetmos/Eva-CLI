@@ -1,0 +1,24 @@
+{
+  "id": "service-uninstall",
+  "description": "Development uninstall returns a not-installed final state and cleans the lifecycle.",
+  "command": ["service", "uninstall", "--dev", "--project", "<repo>", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "service.uninstall",
+    "exit_code": 0,
+    "data": {
+      "operation": "uninstall",
+      "state": "not_installed",
+      "mutation_executed": true,
+      "production_adapter": false,
+      "audit": [
+        "mutation.policy:service.uninstall:allow",
+        "service_manager.mutation_executed:true"
+      ]
+    },
+    "trace": {
+      "span_id": "cli.service.uninstall"
+    }
+  }
+}

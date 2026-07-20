@@ -6,11 +6,11 @@
 >
 > Translation: [Simplified Chinese](../../zh-CN/operations/进程级停机升级架构方案.md)
 
-Updated: 2026-07-14
+Updated: 2026-07-20
 
 ## Scope
 
-Eva-CLI currently provides a local foreground daemon boundary, durable task/recovery diagnostics, generation/drain primitives, and a policy-gated local handoff state machine. It does not yet provide an OS-managed production Supervisor, boot recovery, two live Runtime processes, or traffic switching.
+Eva-CLI currently provides a local foreground daemon boundary, durable task/recovery diagnostics, generation/drain primitives, a policy-gated local handoff state machine, and host-bound service lifecycle commands. It does not yet provide a service-manager daemon entrypoint, verified boot recovery, two live Runtime processes, or traffic switching.
 
 This document separates those implemented local contracts from the intended production boundary.
 
@@ -26,7 +26,7 @@ This document separates those implemented local contracts from the intended prod
 | lifecycle library | Models in-memory generation promotion, drain, rollback, apply locks, and handoff evidence | Supervise OS child processes or switch real ingress traffic |
 | `upgrade check` | Builds an in-memory readiness, migration, drain, and rollback report | Start a candidate Runtime or write an apply plan file |
 | `upgrade apply` | Acquires a filesystem lock and can write local handoff/pointer state after gates | Perform platform service-manager activation or a real blue-green deployment |
-| service-manager API | Defines a trait and a fake development Adapter | Implement Windows Service, systemd, or launchd |
+| `service install/status/start/stop/restart/uninstall` | Loads typed project configuration and calls the host-bound Windows Service, systemd, or launchd Adapter; Fake requires explicit `--dev` | Start the daemon through a service entrypoint or replace production host evidence |
 
 ## Foreground Daemon
 
@@ -58,7 +58,7 @@ cargo run -q -- daemon submit --task req-upgrade-doc --output json
 cargo run -q -- daemon shutdown --output json
 ```
 
-`provider_processes_started` remains `false`. Status requires a running state, a versioned PID/process-token/generation projection, a fresh active lease, and a live OS lock on the fixed anchor. The daemon renews heartbeat on the foreground loop; a live owner is never stolen even after expiry, a dead-but-unexpired owner waits for its TTL, and a dead expired owner is reclaimed with a higher durable writer generation. Corrupt/legacy ownership metadata fails closed. Background spawn, service installation, task-worker liveness, and machine-reboot recovery remain unimplemented.
+`provider_processes_started` remains `false`. Status requires a running state, a versioned PID/process-token/generation projection, a fresh active lease, and a live OS lock on the fixed anchor. The daemon renews heartbeat on the foreground loop; a live owner is never stolen even after expiry, a dead-but-unexpired owner waits for its TTL, and a dead expired owner is reclaimed with a higher durable writer generation. Corrupt/legacy ownership metadata fails closed. A service-manager daemon entrypoint, task-worker liveness, and verified machine-reboot recovery remain unimplemented.
 
 At startup, the daemon scans durable task/provider snapshots, marks interrupted work, and writes local evidence. When kept in the persistent mailbox loop with `--no-shutdown-after-smoke`, it also runs due scheduler retry dispatch. Its durable event records are filesystem records rather than a production WAL with fsync, segmentation, or compaction guarantees. The basic example still uses `InMemoryEventBus` unless a command explicitly selects a durable path.
 
@@ -117,7 +117,7 @@ If binary probing or health fails after policy approval, prepared handoff and ro
 
 The current code does not provide:
 
-- Windows Service, systemd, launchd, or boot/login registration;
+- a daemon service entrypoint with matching service/PID identity and verified boot/login recovery;
 - a persistent Supervisor process or `SupervisorRecoveryGuard`;
 - task/worker heartbeat, control epoch, PID reattachment, or automatic child restart;
 - two live Runtime processes, canary traffic, Ingress Gate, or session routing;
@@ -125,7 +125,7 @@ The current code does not provide:
 - production provider process supervision;
 - exactly-once side effects, cross-machine failover, or a production event WAL.
 
-`service_manager.kind: fake` and the fake Adapter tests are contract evidence only. They must not be presented as platform integration.
+`service_manager.kind: fake` creates a fresh in-memory Adapter for each CLI invocation and rehydrates it from a project/service-scoped `.eva/service-manager` development state file under an exclusive lock with atomic writes. This supports a repeatable development lifecycle smoke, but it is not production evidence or platform integration. The production Adapters and CLI are implemented, while real platform transcripts remain separate evidence.
 
 ## Operator Rules
 
@@ -134,7 +134,7 @@ The current code does not provide:
 - Use a disposable state/lock root when testing local handoff behavior.
 - Inspect prepared/committed files and release pointer before retrying.
 - Do not delete a lock merely to force progress without determining which operation created it.
-- Keep a real platform rollback procedure outside Eva-CLI until service-manager integration exists.
+- Keep a real platform rollback procedure outside Eva-CLI until the daemon service entrypoint and production evidence gate are complete.
 
 ## Related References
 
