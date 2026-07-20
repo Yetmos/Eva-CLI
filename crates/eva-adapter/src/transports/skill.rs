@@ -2254,7 +2254,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(fs::read(&target).unwrap(), b"original-input");
     }
 
