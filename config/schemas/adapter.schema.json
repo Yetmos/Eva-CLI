@@ -68,16 +68,86 @@
       "$comment": "MCP server launch or HTTP endpoint settings. / MCP server 启动或 HTTP endpoint 设置。",
       "type": "object",
       "properties": {
-        "server_transport": { "type": "string", "enum": ["stdio", "http"] },
+        "server_transport": { "$comment": "Use streamable_http for new HTTP manifests; http is a legacy alias. / 新 HTTP manifest 使用 streamable_http；http 为兼容别名。", "type": "string", "enum": ["stdio", "http", "streamable_http"] },
         "command": { "type": "string" },
         "args": { "type": "array", "items": { "type": "string" } },
         "endpoint": { "type": "string" },
         "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "http": {
+          "$comment": "Streamable HTTP trust, client-auth, redirect, and origin policy. / Streamable HTTP 信任、客户端认证、重定向与 origin 策略。",
+          "type": "object",
+          "properties": {
+            "trust_roots": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "client_auth": {
+              "oneOf": [
+                { "type": "string", "enum": ["none"] },
+                {
+                  "type": "object",
+                  "required": ["cert_ref", "key_ref"],
+                  "properties": {
+                    "cert_ref": { "type": "string" },
+                    "key_ref": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "redirect": {
+              "oneOf": [
+                { "type": "string", "enum": ["deny", "same_origin"] },
+                {
+                  "type": "object",
+                  "required": ["mode"],
+                  "properties": {
+                    "mode": { "type": "string", "enum": ["deny", "same_origin"] },
+                    "max_hops": { "type": "integer", "minimum": 0, "maximum": 10 }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "allowed_origins": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+          },
+          "additionalProperties": false
+        },
         "tool_allowlist": { "type": "array", "items": { "type": "string" } },
         "resource_allowlist": { "type": "array", "items": { "type": "string" } },
         "prompt_allowlist": { "type": "array", "items": { "type": "string" } }
       },
-      "additionalProperties": true
+      "allOf": [
+        {
+          "if": {
+            "properties": { "server_transport": { "const": "stdio" } }
+          },
+          "then": {
+            "required": ["command"],
+            "not": {
+              "anyOf": [
+                { "required": ["endpoint"] },
+                { "required": ["headers"] },
+                { "required": ["http"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["server_transport"],
+            "properties": {
+              "server_transport": { "enum": ["http", "streamable_http"] }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["command"] },
+                { "required": ["args"] }
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
     },
     "limits": { "$comment": "Runtime limits for this adapter. / 此 Adapter 的运行限制。", "type": "object" },
     "routing": { "$comment": "Routing preferences for capability selection. / 能力选择时的路由偏好。", "type": "object" }

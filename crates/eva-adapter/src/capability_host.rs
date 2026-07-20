@@ -629,6 +629,8 @@ mod tests {
             mcp_command: None,
             mcp_args: Vec::new(),
             mcp_tools: Vec::new(),
+            mcp_http_config: None,
+            mcp_http_config_invalid: false,
             skill_id: None,
             skill_kind: None,
             skill_runtime_gate: None,

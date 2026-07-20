@@ -1,11 +1,14 @@
 //! 本模块提供 `manifest` 相关实现。
 //! Adapter runtime handle representation.
 
-use eva_config::manifest::adapter::AdapterManifest;
+use eva_config::manifest::adapter::{AdapterManifest, McpHttpManifestConfig};
 use eva_config::manifest::capability::CapabilityManifest;
 use eva_config::{AdapterTransport, CapabilityKind, ProviderConfig};
 use eva_core::{AdapterId, CapabilityId, CapabilityName, EvaError};
-use eva_mcp::{McpProcessSpec, McpServerTransport, McpSessionConfig};
+use eva_mcp::{
+    McpClientAuthConfig, McpProcessSpec, McpRedirectPolicy, McpServerTransport, McpSessionConfig,
+    McpStreamableHttpConfig, McpTransportConfig,
+};
 use std::collections::BTreeMap;
 
 /// 说明本模块承担的架构职责。
@@ -128,6 +131,10 @@ pub struct AdapterHandle {
     pub mcp_args: Vec<String>,
     /// 记录 `mcp_tools` 字段对应的值。
     pub mcp_tools: Vec<String>,
+    /// 已验证的 MCP Streamable HTTP 配置；stdio 时为 `None`。
+    pub mcp_http_config: Option<McpStreamableHttpConfig>,
+    /// MCP HTTP 配置是否在无损投影时失败；失败后禁止回退到 legacy policy。
+    pub mcp_http_config_invalid: bool,
     /// 记录 `skill_id` 字段对应的值。
     pub skill_id: Option<String>,
     /// 记录 `skill_kind` 字段对应的值。
@@ -172,6 +179,14 @@ impl AdapterHandle {
     /// 根据输入构造当前类型，作为 `from_manifest` 的标准入口。
     pub fn from_manifest(manifest: &AdapterManifest) -> Self {
         let hardware_config = manifest.hardware_config().ok().flatten();
+        let (mcp_http_config, mcp_http_config_invalid) = match manifest.mcp_http_manifest_config() {
+            Ok(Some(config)) => match mcp_http_config_from_manifest(&config) {
+                Ok(config) => (Some(config), false),
+                Err(_) => (None, true),
+            },
+            Ok(None) => (None, false),
+            Err(_) => (None, true),
+        };
         Self {
             id: manifest.id.clone(),
             name: manifest.name.clone(),
@@ -213,6 +228,8 @@ impl AdapterHandle {
                 .map(str::to_owned),
             mcp_args: manifest.nested_extra_string_list("mcp", "args"),
             mcp_tools: manifest.nested_extra_string_list("mcp", "tool_allowlist"),
+            mcp_http_config,
+            mcp_http_config_invalid,
             skill_id: manifest
                 .nested_extra_string("skill", "id")
                 .map(str::to_owned),
@@ -319,20 +336,91 @@ impl AdapterHandle {
 
     /// 执行 `mcp_session_config` 对应的处理逻辑。
     pub fn mcp_session_config(&self) -> Result<McpSessionConfig, EvaError> {
+        let server_transport =
+            McpServerTransport::parse(self.mcp_server_transport.as_deref().unwrap_or("stdio"))?;
+        if server_transport.is_http() {
+            return Err(EvaError::unsupported(
+                "MCP HTTP transport does not create a process session",
+            )
+            .with_context("adapter_id", self.id.as_str())
+            .with_context("server_transport", server_transport.as_str()));
+        }
         let command = self.mcp_command.as_deref().ok_or_else(|| {
             EvaError::invalid_argument("MCP adapter is missing a process command")
                 .with_context("adapter_id", self.id.as_str())
         })?;
-        let server_transport =
-            McpServerTransport::parse(self.mcp_server_transport.as_deref().unwrap_or("stdio"))?;
         let process = McpProcessSpec::new(command.to_owned()).with_args(self.mcp_args.clone());
         McpSessionConfig::new(self.id.clone(), server_transport, process)
+    }
+
+    /// 返回已验证的 MCP transport 联合配置。
+    pub fn mcp_transport_config(&self) -> Result<McpTransportConfig, EvaError> {
+        let server_transport =
+            McpServerTransport::parse(self.mcp_server_transport.as_deref().unwrap_or("stdio"))?;
+        if server_transport.is_http() {
+            if self.mcp_http_config_invalid {
+                return Err(EvaError::invalid_argument(
+                    "MCP Streamable HTTP policy failed canonical projection",
+                )
+                .with_context("adapter_id", self.id.as_str()));
+            }
+            let config = match self.mcp_http_config.clone() {
+                Some(config) => config,
+                None => {
+                    let endpoint = self.endpoint.as_deref().ok_or_else(|| {
+                        EvaError::invalid_argument(
+                            "MCP Streamable HTTP adapter is missing endpoint policy",
+                        )
+                        .with_context("adapter_id", self.id.as_str())
+                    })?;
+                    McpStreamableHttpConfig::legacy_http(endpoint)?
+                }
+            };
+            config.validate_for_environment("dev")?;
+            return Ok(McpTransportConfig::StreamableHttp(config));
+        }
+        let command = self.mcp_command.as_deref().ok_or_else(|| {
+            EvaError::invalid_argument("MCP adapter is missing a process command")
+                .with_context("adapter_id", self.id.as_str())
+        })?;
+        Ok(McpTransportConfig::Stdio(
+            McpProcessSpec::new(command.to_owned()).with_args(self.mcp_args.clone()),
+        ))
     }
 
     /// 执行 `skill_name` 对应的处理逻辑。
     pub fn skill_name(&self) -> Option<&str> {
         self.skill_id.as_deref()
     }
+}
+
+/// 将 eva-config 的中立 MCP manifest 字段投影为 eva-mcp 的强类型配置。
+fn mcp_http_config_from_manifest(
+    manifest: &McpHttpManifestConfig,
+) -> Result<McpStreamableHttpConfig, EvaError> {
+    let client_auth = match (
+        manifest.client_certificate_ref.as_deref(),
+        manifest.client_private_key_ref.as_deref(),
+    ) {
+        (None, None) => None,
+        (Some(certificate), Some(private_key)) => {
+            Some(McpClientAuthConfig::new(certificate, private_key)?)
+        }
+        _ => {
+            return Err(EvaError::invalid_argument(
+                "MCP client auth requires both certificate and private-key references",
+            ))
+        }
+    };
+    let redirect_policy =
+        McpRedirectPolicy::parse(&manifest.redirect_mode, manifest.redirect_max_hops)?;
+    McpStreamableHttpConfig::from_parts(
+        manifest.endpoint.clone(),
+        manifest.trust_roots.clone(),
+        client_auth,
+        redirect_policy,
+        manifest.allowed_origins.clone(),
+    )
 }
 
 impl AdapterRateLimit {
@@ -507,6 +595,66 @@ routing: {}
         );
         assert_eq!(handle.mcp_tools, vec!["list_issues".to_owned()]);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn handle_projects_streamable_http_policy_without_process_fallback() {
+        let root = temp_root("mcp-streamable-http");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("mcp-streamable-http.yaml");
+        std::fs::write(
+            &path,
+            r#"
+id: typed-mcp-http
+name: Typed MCP HTTP Adapter
+version: 1.0.0
+enabled: true
+transport: mcp
+mcp:
+  server_transport: streamable_http
+  endpoint: HTTPS://Example.TEST:443/mcp
+  http:
+    trust_roots: [system]
+    client_auth:
+      cert_ref: env:CLIENT_CERT
+      key_ref: vault://providers/mcp/client-key#value
+    redirect:
+      mode: same_origin
+      max_hops: 2
+    allowed_origins: [https://example.test]
+  tool_allowlist: [list_issues]
+permissions:
+  env: [CLIENT_CERT]
+credentials:
+  vault:
+    - env: CLIENT_CERT
+      ref: vault://providers/mcp/client-key#value
+capabilities: [github.issue.list]
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+
+        let manifest = load_adapter_manifest(&path).unwrap();
+        let handle = AdapterHandle::from_manifest(&manifest);
+        let transport = handle.mcp_transport_config().unwrap();
+        let McpTransportConfig::StreamableHttp(config) = transport else {
+            panic!("expected Streamable HTTP config");
+        };
+        assert_eq!(config.endpoint, "https://example.test/mcp");
+        assert_eq!(config.endpoint_origin().unwrap(), "https://example.test");
+        assert_eq!(
+            config.redirect_policy,
+            McpRedirectPolicy::SameOrigin { max_hops: 2 }
+        );
+        assert!(config.trust_roots.contains("system"));
+        assert!(handle.mcp_session_config().is_err());
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("CLIENT_CERT"));
+        assert!(!debug.contains("vault://"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// 验证 `handle_reads_hardware_identity_extensions` 场景下的预期行为。

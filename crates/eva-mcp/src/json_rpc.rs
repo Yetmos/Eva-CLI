@@ -6,9 +6,9 @@
 //! MCP JSON-RPC client transport.
 
 use crate::policy::McpAllowlist;
-use crate::session::{McpServerTransport, McpSessionConfig};
+use crate::session::{McpEndpoint, McpServerTransport, McpSessionConfig, McpStreamableHttpConfig};
 use eva_core::{AdapterId, EvaError, InvokeOutput, RequestId};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -198,6 +198,8 @@ pub struct McpHttpJsonRpcTransport {
     endpoint: String,
     /// 记录 `headers` 字段对应的值。
     headers: BTreeMap<String, String>,
+    /// 已验证的 Streamable HTTP 连接合同；TLS/framing 仍由后续 W4 逻辑消费。
+    config: McpStreamableHttpConfig,
     /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
     /// 记录 `exchange_count` 字段对应的值。
@@ -339,11 +341,11 @@ impl McpJsonRpcClient {
                 report.audit.extend(shutdown_audit);
                 Ok(report)
             }
-            McpServerTransport::Http => Err(EvaError::unsupported(
-                "use MCP HTTP JSON-RPC transport for HTTP server_transport",
-            )
-            .with_context("adapter_id", session_config.adapter_id.as_str())
-            .with_context("server_transport", session_config.server_transport.as_str())),
+            McpServerTransport::Http | McpServerTransport::StreamableHttp => Err(
+                EvaError::unsupported("use MCP HTTP JSON-RPC transport for HTTP server_transport")
+                    .with_context("adapter_id", session_config.adapter_id.as_str())
+                    .with_context("server_transport", session_config.server_transport.as_str()),
+            ),
         }
     }
 
@@ -388,6 +390,20 @@ impl McpJsonRpcClient {
     ) -> Result<McpJsonRpcCallReport, EvaError> {
         self.allowlist.require_tool(tool)?;
         let mut transport = McpHttpJsonRpcTransport::new(endpoint, headers)?;
+        self.call_tool_with_transport(&mut transport, request_id, tool, input)
+    }
+
+    /// 使用已验证的 Streamable HTTP 配置执行一次 MCP 调用。
+    pub fn call_http_with_config(
+        &self,
+        config: &McpStreamableHttpConfig,
+        headers: BTreeMap<String, String>,
+        request_id: RequestId,
+        tool: &str,
+        input: &str,
+    ) -> Result<McpJsonRpcCallReport, EvaError> {
+        self.allowlist.require_tool(tool)?;
+        let mut transport = McpHttpJsonRpcTransport::new_with_config(config.clone(), headers)?;
         self.call_tool_with_transport(&mut transport, request_id, tool, input)
     }
 
@@ -678,16 +694,34 @@ impl McpHttpJsonRpcTransport {
         headers: BTreeMap<String, String>,
     ) -> Result<Self, EvaError> {
         let endpoint = endpoint.into();
+        let config = McpStreamableHttpConfig::legacy_http(endpoint)?;
+        Self::new_with_config(config, headers)
+    }
+
+    /// 使用已解析并校验的配置创建 HTTP transport。
+    pub fn new_with_config(
+        config: McpStreamableHttpConfig,
+        headers: BTreeMap<String, String>,
+    ) -> Result<Self, EvaError> {
+        config.validate_for_environment("dev")?;
+        let endpoint = config.endpoint.clone();
         let parsed = ParsedHttpUrl::parse(&endpoint)?;
         if parsed.scheme != "http" {
             return Err(EvaError::unsupported(
                 "MCP HTTP transport requires an http:// endpoint in this runtime",
             )
-            .with_context("endpoint", &endpoint)
+            .with_context("origin", parsed.origin.clone())
             .with_context("scheme", parsed.scheme));
         }
+        let mut normalized_headers = BTreeSet::new();
         for (name, value) in &headers {
             validate_http_header(name, value)?;
+            if !normalized_headers.insert(name.to_ascii_lowercase()) {
+                return Err(EvaError::invalid_argument(
+                    "MCP HTTP header names must be unique ignoring ASCII case",
+                )
+                .with_context("header", name));
+            }
         }
         let mut audit = vec![
             "mcp.http:client".to_owned(),
@@ -700,6 +734,7 @@ impl McpHttpJsonRpcTransport {
         Ok(Self {
             endpoint,
             headers,
+            config,
             audit,
             exchange_count: 0,
             notification_count: 0,
@@ -886,15 +921,10 @@ struct ParsedHttpUrl {
 impl ParsedHttpUrl {
     /// 读取或解析 `parse` 所需的数据，失败时保留错误语义。
     fn parse(url: &str) -> Result<Self, EvaError> {
-        let (scheme, rest) = url
+        let canonical = McpEndpoint::canonicalize(url)?;
+        let (scheme, rest) = canonical
             .split_once("://")
             .ok_or_else(|| EvaError::invalid_argument("MCP HTTP URL must include a scheme"))?;
-        if !matches!(scheme, "http" | "https") {
-            return Err(
-                EvaError::invalid_argument("MCP HTTP URL scheme is unsupported")
-                    .with_context("url", url),
-            );
-        }
         let authority = rest
             .split(['/', '?', '#'])
             .next()
@@ -932,17 +962,52 @@ impl ParsedHttpUrl {
 /// 读取或解析 `parse_http_authority` 所需的数据，失败时保留错误语义。
 fn parse_http_authority(scheme: &str, authority: &str) -> Result<(String, u16), EvaError> {
     let default_port = if scheme == "https" { 443 } else { 80 };
-    if let Some((host, port)) = authority.rsplit_once(':') {
-        if !host.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) {
-            let port = port.parse::<u16>().map_err(|error| {
-                EvaError::invalid_argument("MCP HTTP URL port is invalid")
-                    .with_context("port", port)
-                    .with_context("parse_error", error.to_string())
+    if authority.starts_with('[') {
+        let end = authority.find(']').ok_or_else(|| {
+            EvaError::invalid_argument("MCP HTTP URL IPv6 authority is malformed")
+        })?;
+        let host = authority[1..end]
+            .parse::<std::net::Ipv6Addr>()
+            .map_err(|_| EvaError::invalid_argument("MCP HTTP URL IPv6 address is malformed"))?;
+        let suffix = &authority[end + 1..];
+        let port = if suffix.is_empty() {
+            default_port
+        } else {
+            let value = suffix.strip_prefix(':').ok_or_else(|| {
+                EvaError::invalid_argument("MCP HTTP URL IPv6 authority is malformed")
             })?;
-            return Ok((host.to_owned(), port));
+            parse_http_port(value)?
+        };
+        return Ok((host.to_string(), port));
+    }
+    if authority.bytes().filter(|byte| *byte == b':').count() > 1 {
+        return Err(EvaError::invalid_argument(
+            "MCP HTTP URL IPv6 addresses must use brackets",
+        ));
+    }
+    if let Some((host, port)) = authority.rsplit_once(':') {
+        if host.is_empty() || port.is_empty() {
+            return Err(EvaError::invalid_argument(
+                "MCP HTTP URL authority is malformed",
+            ));
         }
+        return Ok((host.to_owned(), parse_http_port(port)?));
     }
     Ok((authority.to_owned(), default_port))
+}
+
+fn parse_http_port(value: &str) -> Result<u16, EvaError> {
+    let port = value.parse::<u16>().map_err(|error| {
+        EvaError::invalid_argument("MCP HTTP URL port is invalid")
+            .with_context("port", value)
+            .with_context("parse_error", error.to_string())
+    })?;
+    if port == 0 {
+        return Err(EvaError::invalid_argument(
+            "MCP HTTP URL port must be non-zero",
+        ));
+    }
+    Ok(port)
 }
 
 /// 执行 `send_http_json_rpc_request` 对应的处理逻辑。
@@ -958,7 +1023,7 @@ fn send_http_json_rpc_request(
         return Err(EvaError::unsupported(
             "MCP HTTP JSON-RPC execution requires a TLS client for https endpoints",
         )
-        .with_context("endpoint", endpoint)
+        .with_context("origin", parsed.origin.clone())
         .with_context("scheme", parsed.scheme));
     }
     let mut addrs = (parsed.host.as_str(), parsed.port)
@@ -1142,11 +1207,32 @@ fn validate_http_header(name: &str, value: &str) -> Result<(), EvaError> {
                 .with_context("header", name),
         );
     }
-    if value.contains('\r') || value.contains('\n') {
+    if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "host"
+            | "connection"
+            | "content-type"
+            | "accept"
+            | "content-length"
+            | "transfer-encoding"
+            | "te"
+            | "trailer"
+            | "upgrade"
+            | "proxy-connection"
+    ) {
         return Err(
-            EvaError::invalid_argument("MCP HTTP header value must not contain newlines")
+            EvaError::permission_denied("MCP HTTP header is controlled by the transport")
                 .with_context("header", name),
         );
+    }
+    if value
+        .chars()
+        .any(|character| character != '\t' && character.is_control())
+    {
+        return Err(EvaError::invalid_argument(
+            "MCP HTTP header value contains a control character",
+        )
+        .with_context("header", name));
     }
     Ok(())
 }
@@ -1715,6 +1801,34 @@ mod tests {
         assert!(requests
             .iter()
             .any(|request| request.contains("\"method\":\"tools/call\"")));
+    }
+
+    #[test]
+    fn http_transport_rejects_reserved_and_injected_headers() {
+        for header in [
+            "Host",
+            "content-length",
+            "Transfer-Encoding",
+            "Connection",
+            "Content-Type",
+            "Accept",
+        ] {
+            assert!(
+                validate_http_header(header, "controlled").is_err(),
+                "{header}"
+            );
+        }
+        assert!(validate_http_header("X-Custom", "ok").is_ok());
+        assert!(validate_http_header("X-Custom", "one\ttwo").is_ok());
+        assert!(validate_http_header("X-Custom", "ok\r\nInjected: true").is_err());
+        assert!(validate_http_header("X-Custom", "bad\0value").is_err());
+        assert!(validate_http_header("X-Custom", "bad\u{7f}value").is_err());
+
+        let mut duplicate_headers = BTreeMap::new();
+        duplicate_headers.insert("X-Token".to_owned(), "first".to_owned());
+        duplicate_headers.insert("x-token".to_owned(), "second".to_owned());
+        let config = McpStreamableHttpConfig::legacy_http("http://127.0.0.1/mcp").unwrap();
+        assert!(McpHttpJsonRpcTransport::new_with_config(config, duplicate_headers).is_err());
     }
 
     /// 验证 `blocked_tool_does_not_send_rpc` 场景下的预期行为。

@@ -40,9 +40,9 @@ pub use layering::{
 pub use manifest::adapter::{
     AdapterTransport, HardwareAdapterConfig, HardwareBusKind, HardwareClaimMode,
     HardwareDriverConfig, HardwareDriverKind, HardwareHotplugConfig, HardwareIdentityConfig,
-    HardwareMatchConfig, HardwareProtocolConfig, HardwareProtocolKind, ProviderConfig,
-    ProviderRestartConfig, ProviderRestartMode, ProviderRunAsIdentity, ProviderVaultSecretRef,
-    RawAdapterTransport,
+    HardwareMatchConfig, HardwareProtocolConfig, HardwareProtocolKind, McpHttpManifestConfig,
+    ProviderConfig, ProviderRestartConfig, ProviderRestartMode, ProviderRunAsIdentity,
+    ProviderVaultSecretRef, RawAdapterTransport,
 };
 pub use manifest::agent::AgentManifestPermissions;
 pub use manifest::capability::{CapabilityKind, RawCapabilityKind};

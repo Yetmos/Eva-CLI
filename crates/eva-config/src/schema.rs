@@ -598,6 +598,46 @@ mod tests {
     }
 
     #[test]
+    fn adapter_schema_accepts_canonical_streamable_http_policy() {
+        let root = workspace_root();
+        let schema = root.join("config/schemas/adapter.schema.json");
+        let data: Value = serde_yaml::from_str(
+            r#"
+id: schema-mcp-http
+name: Schema MCP HTTP
+version: 1.0.0
+enabled: true
+transport: mcp
+mcp:
+  server_transport: streamable_http
+  endpoint: https://example.test/mcp
+  http:
+    trust_roots: [system]
+    client_auth:
+      cert_ref: env:CLIENT_CERT
+      key_ref: env:CLIENT_KEY
+    redirect:
+      mode: same_origin
+      max_hops: 3
+    allowed_origins: [https://example.test]
+capabilities: [github.issue.list]
+permissions: {}
+limits: {}
+routing: {}
+"#,
+        )
+        .unwrap();
+
+        validate_yaml_value_with_schema(
+            &data,
+            Path::new("schema-mcp-http.yaml"),
+            &schema,
+            "Adapter manifest",
+        )
+        .unwrap();
+    }
+
+    #[test]
     /// 验证缺失必填字段报告稳定字段位置和建议。
     fn validator_reports_required_field_with_stable_location() {
         let root = test_temp_dir("schema-required");

@@ -1682,7 +1682,7 @@ fn command_with_args(command: Option<&str>, args: &[String]) -> String {
 /// 执行 `manifest_digest` 对应的处理逻辑。
 fn manifest_digest(handle: &AdapterHandle) -> String {
     let mut material = Vec::new();
-    push_digest_field(&mut material, "format", "eva.adapter.manifest.v3");
+    push_digest_field(&mut material, "format", "eva.adapter.manifest.v4");
     push_digest_field(&mut material, "id", handle.id.as_str());
     push_digest_field(&mut material, "version", &handle.version);
     push_digest_field(&mut material, "transport", handle.transport.as_str());
@@ -1698,6 +1698,97 @@ fn manifest_digest(handle: &AdapterHandle) -> String {
         "endpoint",
         handle.endpoint.as_deref().unwrap_or(""),
     );
+    let mcp_transport = handle
+        .mcp_server_transport
+        .as_deref()
+        .and_then(|transport| eva_mcp::McpServerTransport::parse(transport).ok())
+        .map(eva_mcp::McpServerTransport::canonical_str)
+        .unwrap_or("");
+    push_digest_field(&mut material, "mcp_server_transport", mcp_transport);
+    push_digest_field(
+        &mut material,
+        "mcp_http_config_invalid",
+        if handle.mcp_http_config_invalid {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    if let Some(config) = &handle.mcp_http_config {
+        push_digest_field(
+            &mut material,
+            "mcp_endpoint_digest",
+            &format!("fnv64:{:016x}", fnv1a64(config.endpoint.as_bytes())),
+        );
+        push_digest_field(
+            &mut material,
+            "mcp_endpoint_origin",
+            &config.endpoint_origin().unwrap_or_default(),
+        );
+        push_digest_collection(
+            &mut material,
+            "mcp_allowed_origin",
+            config.allowed_origins.iter().map(String::as_str),
+        );
+        let trust_root_digests = config
+            .trust_roots
+            .iter()
+            .map(|root| format!("fnv64:{:016x}", fnv1a64(root.as_bytes())))
+            .collect::<Vec<_>>();
+        push_digest_collection(
+            &mut material,
+            "mcp_trust_root_digest",
+            trust_root_digests.iter().map(String::as_str),
+        );
+        match config.redirect_policy {
+            eva_mcp::McpRedirectPolicy::Deny => {
+                push_digest_field(&mut material, "mcp_redirect_mode", "deny");
+                push_digest_field(&mut material, "mcp_redirect_max_hops", "0");
+            }
+            eva_mcp::McpRedirectPolicy::SameOrigin { max_hops } => {
+                push_digest_field(&mut material, "mcp_redirect_mode", "same_origin");
+                push_digest_field(
+                    &mut material,
+                    "mcp_redirect_max_hops",
+                    &max_hops.to_string(),
+                );
+            }
+        }
+        push_digest_field(
+            &mut material,
+            "mcp_client_auth",
+            if config.client_auth.is_some() {
+                "configured"
+            } else {
+                "none"
+            },
+        );
+        if let Some(auth) = &config.client_auth {
+            push_digest_field(
+                &mut material,
+                "mcp_client_cert_ref_digest",
+                &format!("fnv64:{:016x}", fnv1a64(auth.certificate_ref.as_bytes())),
+            );
+            push_digest_field(
+                &mut material,
+                "mcp_client_key_ref_digest",
+                &format!("fnv64:{:016x}", fnv1a64(auth.private_key_ref.as_bytes())),
+            );
+        }
+    }
+    push_digest_field(
+        &mut material,
+        "mcp_header_count",
+        &handle.headers.len().to_string(),
+    );
+    for (name, value) in &handle.headers {
+        push_digest_field(&mut material, "mcp_header_name", name);
+        push_digest_field(
+            &mut material,
+            "mcp_header_value_digest",
+            &format!("fnv64:{:016x}", fnv1a64(value.as_bytes())),
+        );
+    }
     push_digest_field(
         &mut material,
         "mcp_command",
@@ -1896,6 +1987,8 @@ mod tests {
             mcp_command: None,
             mcp_args: Vec::new(),
             mcp_tools: Vec::new(),
+            mcp_http_config: None,
+            mcp_http_config_invalid: false,
             skill_id: None,
             skill_kind: None,
             skill_runtime_gate: None,
@@ -2509,6 +2602,80 @@ mod tests {
         )
         .manifest_digest;
         assert_ne!(baseline_digest, vault_digest);
+    }
+
+    #[test]
+    fn manifest_digest_binds_mcp_http_policy_without_exposing_references() {
+        let digest = |handle: &AdapterHandle| {
+            ProviderExecutionRequest::from_handle(handle, &invocation("req-mcp-policy-digest"))
+                .manifest_digest
+        };
+        let mut baseline = handle();
+        baseline.transport = AdapterTransport::Mcp;
+        baseline.mcp_server_transport = Some("streamable_http".to_owned());
+        baseline.endpoint = Some("https://example.test/mcp".to_owned());
+        baseline.mcp_http_config = Some(
+            eva_mcp::McpStreamableHttpConfig::from_parts(
+                "https://example.test/mcp",
+                ["system"],
+                Some(
+                    eva_mcp::McpClientAuthConfig::new(
+                        "env:CLIENT_CERT",
+                        "vault://providers/mcp/client-key#value",
+                    )
+                    .unwrap(),
+                ),
+                eva_mcp::McpRedirectPolicy::Deny,
+                ["https://example.test"],
+            )
+            .unwrap(),
+        );
+        baseline
+            .headers
+            .insert("Authorization".to_owned(), "env:MCP_TOKEN".to_owned());
+        let baseline_digest = digest(&baseline);
+
+        let mut endpoint_changed = baseline.clone();
+        endpoint_changed.endpoint = Some("https://example.test/other".to_owned());
+        endpoint_changed.mcp_http_config.as_mut().unwrap().endpoint =
+            "https://example.test/other".to_owned();
+        assert_ne!(baseline_digest, digest(&endpoint_changed));
+
+        let mut trust_changed = baseline.clone();
+        trust_changed
+            .mcp_http_config
+            .as_mut()
+            .unwrap()
+            .trust_roots
+            .insert("pem:sha256:other-root".to_owned());
+        assert_ne!(baseline_digest, digest(&trust_changed));
+
+        let mut redirect_changed = baseline.clone();
+        redirect_changed
+            .mcp_http_config
+            .as_mut()
+            .unwrap()
+            .redirect_policy = eva_mcp::McpRedirectPolicy::SameOrigin { max_hops: 2 };
+        assert_ne!(baseline_digest, digest(&redirect_changed));
+
+        let mut auth_changed = baseline.clone();
+        auth_changed
+            .mcp_http_config
+            .as_mut()
+            .unwrap()
+            .client_auth
+            .as_mut()
+            .unwrap()
+            .private_key_ref = "vault://providers/mcp/rotated-key#value".to_owned();
+        assert_ne!(baseline_digest, digest(&auth_changed));
+
+        let mut header_changed = baseline.clone();
+        header_changed
+            .headers
+            .insert("Authorization".to_owned(), "env:ROTATED_TOKEN".to_owned());
+        assert_ne!(baseline_digest, digest(&header_changed));
+        assert!(!baseline_digest.contains("CLIENT_CERT"));
+        assert!(!baseline_digest.contains("vault://"));
     }
 
     #[test]

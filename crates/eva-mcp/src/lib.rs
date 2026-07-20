@@ -38,8 +38,10 @@ pub use lifecycle::{
 pub use policy::McpAllowlist;
 pub use server::{EvaMcpServerSurface, McpServerTool, McpServerToolGateReport};
 pub use session::{
-    McpProcessHandle, McpProcessShutdownRequest, McpProcessSpec, McpProcessStartRequest,
+    McpClientAuthConfig, McpEndpoint, McpHttpTransportConfig, McpProcessHandle,
+    McpProcessShutdownRequest, McpProcessSpec, McpProcessStartRequest, McpRedirectPolicy,
     McpServerTransport, McpSession, McpSessionConfig, McpSessionManager, McpSessionShutdownReport,
-    McpSessionStartReport, McpSessionStatus, McpSessionSupervisor,
+    McpSessionStartReport, McpSessionStatus, McpSessionSupervisor, McpStreamableHttpConfig,
+    McpTransportConfig,
 };
 pub use tool_mapping::{McpToolMapping, McpToolRegistry};

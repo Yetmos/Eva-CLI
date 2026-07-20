@@ -20,6 +20,7 @@ use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::EvaError;
 use eva_mcp::{
     McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig, McpServerTransport, McpStdioProcess,
+    McpTransportConfig,
 };
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -87,6 +88,19 @@ pub fn invoke_with_spawner_and_vault(
     validate_input_size(handle, &invocation.input)?;
     let server_transport =
         McpServerTransport::parse(handle.mcp_server_transport.as_deref().unwrap_or("stdio"))?;
+    let http_config = if server_transport.is_http() {
+        match handle.mcp_transport_config()? {
+            McpTransportConfig::StreamableHttp(config) => Some(config),
+            McpTransportConfig::Stdio(_) => {
+                return Err(EvaError::internal(
+                    "MCP HTTP transport resolved to stdio configuration",
+                )
+                .with_context("adapter_id", handle.id.as_str()))
+            }
+        }
+    } else {
+        None
+    };
     if server_transport == McpServerTransport::Stdio
         && handle
             .headers
@@ -99,8 +113,11 @@ pub fn invoke_with_spawner_and_vault(
         .with_context("adapter_id", handle.id.as_str()));
     }
     match (server_transport, &handle.provider.run_as) {
-        (McpServerTransport::Http, eva_config::ProviderRunAsIdentity::Current) => {}
-        (McpServerTransport::Http, run_as) => {
+        (
+            McpServerTransport::Http | McpServerTransport::StreamableHttp,
+            eva_config::ProviderRunAsIdentity::Current,
+        ) => {}
+        (McpServerTransport::Http | McpServerTransport::StreamableHttp, run_as) => {
             return Err(EvaError::permission_denied(
                 "process-free MCP HTTP transport cannot apply a run-as identity",
             )
@@ -117,7 +134,7 @@ pub fn invoke_with_spawner_and_vault(
         &handle.id,
         &invocation.request_id,
         &invocation.capability,
-        server_transport == McpServerTransport::Http
+        server_transport.is_http()
             || !handle.credential_env.is_empty()
             || !handle.provider.vault_secrets.is_empty()
             || handle
@@ -162,7 +179,7 @@ pub fn invoke_with_spawner_and_vault(
     }
     let mut transport_audit = vec![format!(
         "mcp.server_transport:{}",
-        server_transport.as_str()
+        server_transport.canonical_str()
     )];
     let call_result = match server_transport {
         McpServerTransport::Stdio => {
@@ -193,9 +210,9 @@ pub fn invoke_with_spawner_and_vault(
                 &invocation.input,
             )
         }
-        McpServerTransport::Http => {
-            let endpoint = handle.endpoint.as_deref().ok_or_else(|| {
-                EvaError::invalid_argument("MCP HTTP adapter is missing endpoint")
+        McpServerTransport::Http | McpServerTransport::StreamableHttp => {
+            let config = http_config.as_ref().ok_or_else(|| {
+                EvaError::internal("MCP HTTP configuration was not retained")
                     .with_context("adapter_id", handle.id.as_str())
             })?;
             let mut header_plan = mcp_http_headers(handle, &mut credential_lease)?;
@@ -203,10 +220,10 @@ pub fn invoke_with_spawner_and_vault(
                 scope.apply_headers(&mut header_plan.headers);
             }
             sensitive_values.extend(header_plan.sensitive_values.clone());
-            transport_audit.push(format!("mcp.endpoint:{}", endpoint));
+            transport_audit.push(format!("mcp.endpoint_origin:{}", config.endpoint_origin()?));
             transport_audit.extend(header_plan.audit);
-            client.call_http(
-                endpoint,
+            client.call_http_with_config(
+                config,
                 header_plan.headers,
                 invocation.request_id,
                 tool,
@@ -464,6 +481,8 @@ mod tests {
             mcp_command: None,
             mcp_args: Vec::new(),
             mcp_tools: vec!["list_issues".to_owned()],
+            mcp_http_config: None,
+            mcp_http_config_invalid: false,
             skill_id: None,
             skill_kind: None,
             skill_runtime_gate: None,

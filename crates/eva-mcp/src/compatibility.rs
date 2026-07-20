@@ -185,14 +185,14 @@ impl McpCompatibilityMatrix {
         if !self
             .transports
             .iter()
-            .any(|entry| entry.transport == McpServerTransport::Http && entry.json_rpc)
+            .any(|entry| entry.transport.is_http() && entry.json_rpc)
         {
             failures.push("transport:http_json_rpc_missing".to_owned());
         }
         if !self
             .transports
             .iter()
-            .any(|entry| entry.transport == McpServerTransport::Http && entry.auth_headers)
+            .any(|entry| entry.transport.is_http() && entry.auth_headers)
         {
             failures.push("transport:http_auth_headers_missing".to_owned());
         }

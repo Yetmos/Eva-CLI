@@ -2366,6 +2366,8 @@ mod tests {
             mcp_command: None,
             mcp_args: Vec::new(),
             mcp_tools: Vec::new(),
+            mcp_http_config: None,
+            mcp_http_config_invalid: false,
             skill_id: Some("code-review".to_owned()),
             skill_kind: Some("workflow_skill".to_owned()),
             skill_runtime_gate: Some("normal".to_owned()),

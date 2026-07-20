@@ -6,6 +6,7 @@ use eva_core::{AdapterId, CapabilityName};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::Ipv6Addr;
 use std::path::{Path, PathBuf};
 
 /// 本模块的架构职责：加载 Adapter 清单并把传输、能力及硬件扩展规范化为强类型。
@@ -108,6 +109,43 @@ pub struct ProviderVaultSecretRef {
     pub env: String,
     /// Opaque vault location; this is a reference, never secret bytes.
     pub secret_ref: String,
+}
+
+/// MCP Streamable HTTP manifest fields normalized without exposing YAML values
+/// to runtime crates.
+#[derive(Clone, PartialEq, Eq)]
+pub struct McpHttpManifestConfig {
+    /// Absolute HTTP(S) endpoint.
+    pub endpoint: String,
+    /// Trust-root references (never certificate bytes).
+    pub trust_roots: Vec<String>,
+    /// Optional client certificate reference.
+    pub client_certificate_ref: Option<String>,
+    /// Optional client private-key reference.
+    pub client_private_key_ref: Option<String>,
+    /// Redirect mode spelling.
+    pub redirect_mode: String,
+    /// Redirect hop limit, when declared.
+    pub redirect_max_hops: Option<u64>,
+    /// Explicit allowed origins.
+    pub allowed_origins: Vec<String>,
+}
+
+impl std::fmt::Debug for McpHttpManifestConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpHttpManifestConfig")
+            .field("endpoint_present", &!self.endpoint.is_empty())
+            .field("trust_root_count", &self.trust_roots.len())
+            .field(
+                "client_auth_configured",
+                &(self.client_certificate_ref.is_some() || self.client_private_key_ref.is_some()),
+            )
+            .field("redirect_mode", &self.redirect_mode)
+            .field("redirect_max_hops", &self.redirect_max_hops)
+            .field("allowed_origin_count", &self.allowed_origins.len())
+            .finish()
+    }
 }
 
 impl ProviderRestartMode {
@@ -362,7 +400,7 @@ impl AdapterManifest {
             &raw.extra,
         )?;
 
-        Ok(Self {
+        let manifest = Self {
             path,
             id,
             name,
@@ -372,7 +410,11 @@ impl AdapterManifest {
             capabilities,
             provider,
             extra: raw.extra,
-        })
+        };
+        // MCP transport contracts are validated even when callers load a single
+        // manifest directly instead of going through ProjectConfig/schema loading.
+        manifest.mcp_http_manifest_config()?;
+        Ok(manifest)
     }
 
     /// 读取扩展映射中的顶层字符串字段。
@@ -500,6 +542,251 @@ impl AdapterManifest {
             .unwrap_or_default()
     }
 
+    /// 沿任意深度扩展路径读取映射，供拥有该扩展的下游 crate 做强类型投影。
+    /// Returns a nested mapping without silently coercing malformed values.
+    pub fn deep_extra_mapping(&self, path: &[&str]) -> Option<&Mapping> {
+        self.deep_extra_value(path).and_then(Value::as_mapping)
+    }
+
+    /// 读取并类型检查 MCP Streamable HTTP 扩展字段。
+    ///
+    /// 该方法只负责 YAML 形状和引用字段的规范化；endpoint/origin 的协议级
+    /// canonical 校验由 eva-mcp 的配置合同执行，production 环境门禁在
+    /// `validate_for_environment` 中完成。
+    pub fn mcp_http_manifest_config(&self) -> Result<Option<McpHttpManifestConfig>, EvaError> {
+        if self.transport != AdapterTransport::Mcp {
+            return Ok(None);
+        }
+        let mcp_value = self.extra.get(Value::String("mcp".to_owned()));
+        let mcp = match mcp_value {
+            None => None,
+            Some(Value::Mapping(mapping)) => Some(mapping),
+            Some(_) => {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    "mcp",
+                    "MCP configuration must be a mapping",
+                ))
+            }
+        };
+        if let Some(mcp) = mcp {
+            reject_unknown_mcp_fields(mcp, &self.path)?;
+            for (key, field) in [
+                ("tool_allowlist", "mcp.tool_allowlist"),
+                ("resource_allowlist", "mcp.resource_allowlist"),
+                ("prompt_allowlist", "mcp.prompt_allowlist"),
+            ] {
+                mapping_string_list(mcp, key, &self.path, field)?;
+            }
+        }
+        let server_transport = match mcp
+            .and_then(|mapping| mapping.get(Value::String("server_transport".to_owned())))
+        {
+            None => "stdio",
+            Some(Value::String(value)) => value.as_str(),
+            Some(_) => {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    "mcp.server_transport",
+                    "server_transport must be a string",
+                ))
+            }
+        };
+        if !matches!(server_transport, "http" | "streamable_http") {
+            if server_transport != "stdio" {
+                return Err(EvaError::unsupported("unsupported MCP server transport")
+                    .with_context("server_transport", server_transport));
+            }
+            for (field, value) in [
+                (
+                    "command",
+                    self.extra.get(Value::String("command".to_owned())),
+                ),
+                ("args", self.extra.get(Value::String("args".to_owned()))),
+                (
+                    "mcp.endpoint",
+                    mcp.and_then(|mapping| mapping.get(Value::String("endpoint".to_owned()))),
+                ),
+                (
+                    "mcp.headers",
+                    mcp.and_then(|mapping| mapping.get(Value::String("headers".to_owned()))),
+                ),
+                (
+                    "mcp.http",
+                    mcp.and_then(|mapping| mapping.get(Value::String("http".to_owned()))),
+                ),
+                (
+                    "endpoint",
+                    self.extra.get(Value::String("endpoint".to_owned())),
+                ),
+                (
+                    "headers",
+                    self.extra.get(Value::String("headers".to_owned())),
+                ),
+                ("http", self.extra.get(Value::String("http".to_owned()))),
+            ] {
+                if value.is_none() {
+                    continue;
+                }
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    field,
+                    "field is not valid in the MCP stdio configuration union",
+                ));
+            }
+            let command = mcp
+                .and_then(|mapping| mapping.get(Value::String("command".to_owned())))
+                .ok_or_else(|| {
+                    invalid_config(
+                        CONFIG_TYPE,
+                        &self.path,
+                        "mcp.command",
+                        "MCP stdio transport requires command",
+                    )
+                })?;
+            let command = command.as_str().ok_or_else(|| {
+                invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    "mcp.command",
+                    "MCP stdio command must be a string",
+                )
+            })?;
+            if command.trim().is_empty() || command != command.trim() {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    "mcp.command",
+                    "MCP stdio command must be non-empty and trimmed",
+                ));
+            }
+            if let Some(mcp) = mcp {
+                mapping_argv(mcp, "args", &self.path, "mcp.args")?;
+            }
+            return Ok(None);
+        }
+        for (field, value) in [
+            (
+                "mcp.command",
+                mcp.and_then(|mapping| mapping.get(Value::String("command".to_owned()))),
+            ),
+            (
+                "mcp.args",
+                mcp.and_then(|mapping| mapping.get(Value::String("args".to_owned()))),
+            ),
+            (
+                "command",
+                self.extra.get(Value::String("command".to_owned())),
+            ),
+            ("args", self.extra.get(Value::String("args".to_owned()))),
+        ] {
+            if value.is_some() {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    field,
+                    "MCP process fields are only valid for stdio transport",
+                ));
+            }
+        }
+        validate_mcp_http_headers(&self.path, &self.extra, mcp)?;
+        let nested_endpoint =
+            mcp.and_then(|mapping| mapping.get(Value::String("endpoint".to_owned())));
+        let nested_endpoint = match nested_endpoint {
+            None => None,
+            Some(Value::String(value)) => Some(value.as_str()),
+            Some(_) => {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    "mcp.endpoint",
+                    "MCP endpoint must be a string",
+                ))
+            }
+        };
+        let top_level_endpoint = match self.extra.get(Value::String("endpoint".to_owned())) {
+            None => None,
+            Some(Value::String(value)) => Some(value.as_str()),
+            Some(_) => {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    "endpoint",
+                    "top-level MCP endpoint must be a string",
+                ))
+            }
+        };
+        if let (Some(nested), Some(top_level)) = (nested_endpoint, top_level_endpoint) {
+            if nested != top_level {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    "mcp.endpoint",
+                    "nested and top-level MCP endpoints must not conflict",
+                ));
+            }
+        }
+        let endpoint = nested_endpoint
+            .or(top_level_endpoint)
+            .ok_or_else(|| {
+                invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    "mcp.endpoint",
+                    "Streamable HTTP transport requires endpoint",
+                )
+            })?
+            .to_owned();
+        let Some(http) = self.deep_extra_mapping(&["mcp", "http"]) else {
+            if self.deep_extra_value(&["mcp", "http"]).is_some() {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    &self.path,
+                    "mcp.http",
+                    "MCP HTTP policy must be a mapping",
+                ));
+            }
+            let config = McpHttpManifestConfig {
+                endpoint,
+                trust_roots: Vec::new(),
+                client_certificate_ref: None,
+                client_private_key_ref: None,
+                redirect_mode: "deny".to_owned(),
+                redirect_max_hops: None,
+                allowed_origins: Vec::new(),
+            };
+            validate_mcp_http_manifest_config(&self.path, &config, false)?;
+            return Ok(Some(config));
+        };
+
+        reject_unknown_mcp_http_fields(http, &self.path)?;
+        let trust_roots =
+            mapping_string_list(http, "trust_roots", &self.path, "mcp.http.trust_roots")?;
+        let allowed_origins = mapping_string_list(
+            http,
+            "allowed_origins",
+            &self.path,
+            "mcp.http.allowed_origins",
+        )?;
+        let (client_certificate_ref, client_private_key_ref) =
+            parse_mcp_client_auth_mapping(http, &self.path)?;
+        let (redirect_mode, redirect_max_hops) = parse_mcp_redirect_mapping(http, &self.path)?;
+        let config = McpHttpManifestConfig {
+            endpoint,
+            trust_roots,
+            client_certificate_ref,
+            client_private_key_ref,
+            redirect_mode,
+            redirect_max_hops,
+            allowed_origins,
+        };
+        validate_mcp_http_manifest_config(&self.path, &config, false)?;
+        Ok(Some(config))
+    }
+
     /// 解析工作流 Skill 清单使用的对象 Schema 子集。
     ///
     /// 只提取 type、required 及属性的 type/enum；未知或类型不符的 Schema 字段被跳过，
@@ -578,10 +865,46 @@ impl AdapterManifest {
 
     /// Rejects plaintext credential-bearing fields for production environments.
     pub fn validate_for_environment(&self, environment: &str) -> Result<(), EvaError> {
-        if matches!(
+        let production = matches!(
             environment.to_ascii_lowercase().as_str(),
             "prod" | "production"
-        ) {
+        );
+        if let Some(config) = self.mcp_http_manifest_config()? {
+            validate_mcp_http_manifest_config(&self.path, &config, production)?;
+            if production {
+                for (field, reference) in [
+                    (
+                        "mcp.http.client_auth.cert_ref",
+                        config.client_certificate_ref.as_deref(),
+                    ),
+                    (
+                        "mcp.http.client_auth.key_ref",
+                        config.client_private_key_ref.as_deref(),
+                    ),
+                ] {
+                    let Some(reference) = reference else {
+                        continue;
+                    };
+                    if reference.starts_with("env:") {
+                        validate_env_credential_reference(self, field, reference)?;
+                    } else if reference.starts_with("vault://")
+                        && !self
+                            .provider
+                            .vault_secrets
+                            .iter()
+                            .any(|secret| secret.secret_ref == reference)
+                    {
+                        return Err(invalid_config(
+                            CONFIG_TYPE,
+                            &self.path,
+                            field,
+                            "client auth vault reference is not declared by credentials.vault",
+                        ));
+                    }
+                }
+            }
+        }
+        if production {
             validate_production_manifest_secrets(self, &self.extra, "")?;
         }
         Ok(())
@@ -595,6 +918,753 @@ impl AdapterManifest {
         }
         HardwareAdapterConfig::from_manifest(self).map(Some)
     }
+}
+
+fn mapping_string_list(
+    mapping: &Mapping,
+    key: &str,
+    path: &Path,
+    field: &str,
+) -> Result<Vec<String>, EvaError> {
+    let Some(value) = mapping.get(Value::String(key.to_owned())) else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_sequence().ok_or_else(|| {
+        invalid_config(CONFIG_TYPE, path, field, "MCP field must be a string list")
+    })?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let value = value.as_str().ok_or_else(|| {
+                invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    format!("{field}[{index}]"),
+                    "MCP list entry must be a string",
+                )
+            })?;
+            if value.trim().is_empty() || value != value.trim() {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    format!("{field}[{index}]"),
+                    "MCP list entry must be non-empty and trimmed",
+                ));
+            }
+            Ok(value.to_owned())
+        })
+        .collect()
+}
+
+fn mapping_argv(
+    mapping: &Mapping,
+    key: &str,
+    path: &Path,
+    field: &str,
+) -> Result<Vec<String>, EvaError> {
+    let Some(value) = mapping.get(Value::String(key.to_owned())) else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_sequence().ok_or_else(|| {
+        invalid_config(CONFIG_TYPE, path, field, "MCP argv must be a string list")
+    })?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let value = value.as_str().ok_or_else(|| {
+                invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    format!("{field}[{index}]"),
+                    "MCP argv entry must be a string",
+                )
+            })?;
+            if value.contains('\0') {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    format!("{field}[{index}]"),
+                    "MCP argv entry must not contain NUL",
+                ));
+            }
+            Ok(value.to_owned())
+        })
+        .collect()
+}
+
+fn validate_mcp_http_headers(
+    path: &Path,
+    extra: &Mapping,
+    mcp: Option<&Mapping>,
+) -> Result<(), EvaError> {
+    let key = |name: &str| Value::String(name.to_owned());
+    let top_level = extra.get(key("headers"));
+    let legacy_http = extra
+        .get(key("http"))
+        .and_then(Value::as_mapping)
+        .and_then(|mapping| mapping.get(key("headers")));
+    let nested = mcp.and_then(|mapping| mapping.get(key("headers")));
+    let mut seen = BTreeSet::new();
+    for (field, value) in [
+        ("headers", top_level),
+        ("http.headers", legacy_http),
+        ("mcp.headers", nested),
+    ] {
+        let Some(value) = value else {
+            continue;
+        };
+        let headers = value.as_mapping().ok_or_else(|| {
+            invalid_config(CONFIG_TYPE, path, field, "MCP headers must be a mapping")
+        })?;
+        for (name, value) in headers {
+            let name = name.as_str().ok_or_else(|| {
+                invalid_config(CONFIG_TYPE, path, field, "MCP header names must be strings")
+            })?;
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    format!("{field}.{name}"),
+                    "MCP header name is invalid",
+                ));
+            }
+            let normalized = name.to_ascii_lowercase();
+            if is_transport_controlled_header(&normalized) {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    format!("{field}.{name}"),
+                    "MCP header is controlled by the HTTP transport",
+                ));
+            }
+            if !seen.insert(normalized) {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    format!("{field}.{name}"),
+                    "MCP header names must be unique ignoring ASCII case",
+                ));
+            }
+            let value = value.as_str().ok_or_else(|| {
+                invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    format!("{field}.{name}"),
+                    "MCP header values must be strings",
+                )
+            })?;
+            if value
+                .chars()
+                .any(|character| character != '\t' && character.is_control())
+            {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    format!("{field}.{name}"),
+                    "MCP header values must not contain control characters other than HTAB",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_transport_controlled_header(name: &str) -> bool {
+    matches!(
+        name,
+        "host"
+            | "connection"
+            | "content-type"
+            | "accept"
+            | "content-length"
+            | "transfer-encoding"
+            | "te"
+            | "trailer"
+            | "upgrade"
+            | "proxy-connection"
+    )
+}
+
+fn reject_unknown_mcp_fields(mapping: &Mapping, path: &Path) -> Result<(), EvaError> {
+    for key in mapping.keys() {
+        let key = key.as_str().ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp",
+                "MCP configuration keys must be strings",
+            )
+        })?;
+        if !matches!(
+            key,
+            "server_transport"
+                | "command"
+                | "args"
+                | "endpoint"
+                | "headers"
+                | "http"
+                | "tool_allowlist"
+                | "resource_allowlist"
+                | "prompt_allowlist"
+        ) {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                format!("mcp.{key}"),
+                "unsupported MCP configuration field",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn reject_unknown_mcp_http_fields(mapping: &Mapping, path: &Path) -> Result<(), EvaError> {
+    for key in mapping.keys() {
+        let key = key.as_str().ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http",
+                "MCP HTTP policy keys must be strings",
+            )
+        })?;
+        if !matches!(
+            key,
+            "trust_roots" | "client_auth" | "redirect" | "allowed_origins"
+        ) {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                format!("mcp.http.{key}"),
+                "unsupported MCP HTTP policy field",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parse_mcp_client_auth_mapping(
+    mapping: &Mapping,
+    path: &Path,
+) -> Result<(Option<String>, Option<String>), EvaError> {
+    let Some(value) = mapping.get(Value::String("client_auth".to_owned())) else {
+        return Ok((None, None));
+    };
+    if value.as_str() == Some("none") {
+        return Ok((None, None));
+    }
+    let auth = value.as_mapping().ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.client_auth",
+            "client_auth must be none or a mapping",
+        )
+    })?;
+    for key in auth.keys() {
+        let key = key.as_str().ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.client_auth",
+                "client_auth keys must be strings",
+            )
+        })?;
+        if !matches!(key, "cert_ref" | "key_ref") {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                format!("mcp.http.client_auth.{key}"),
+                "unsupported client_auth field",
+            ));
+        }
+    }
+    let certificate_value = auth
+        .get(Value::String("cert_ref".to_owned()))
+        .ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.client_auth.cert_ref",
+                "client certificate reference is required",
+            )
+        })?;
+    let certificate_ref = certificate_value.as_str().ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.client_auth.cert_ref",
+            "client certificate reference must be a string",
+        )
+    })?;
+    let private_key_value = auth
+        .get(Value::String("key_ref".to_owned()))
+        .ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.client_auth.key_ref",
+                "client private-key reference is required",
+            )
+        })?;
+    let private_key_ref = private_key_value.as_str().ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.client_auth.key_ref",
+            "client private-key reference must be a string",
+        )
+    })?;
+    if certificate_ref.trim().is_empty()
+        || private_key_ref.trim().is_empty()
+        || certificate_ref != certificate_ref.trim()
+        || private_key_ref != private_key_ref.trim()
+    {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.client_auth",
+            "client auth references must be non-empty and trimmed",
+        ));
+    }
+    Ok((
+        Some(certificate_ref.to_owned()),
+        Some(private_key_ref.to_owned()),
+    ))
+}
+
+fn parse_mcp_redirect_mapping(
+    mapping: &Mapping,
+    path: &Path,
+) -> Result<(String, Option<u64>), EvaError> {
+    let Some(value) = mapping.get(Value::String("redirect".to_owned())) else {
+        return Ok(("deny".to_owned(), None));
+    };
+    if let Some(mode) = value.as_str() {
+        if !matches!(mode, "deny" | "same_origin") {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.redirect",
+                "unsupported redirect policy",
+            ));
+        }
+        return Ok((mode.to_owned(), None));
+    }
+    let redirect = value.as_mapping().ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.redirect",
+            "redirect must be a mode string or mapping",
+        )
+    })?;
+    for key in redirect.keys() {
+        let key = key.as_str().ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.redirect",
+                "redirect keys must be strings",
+            )
+        })?;
+        if !matches!(key, "mode" | "max_hops") {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                format!("mcp.http.redirect.{key}"),
+                "unsupported redirect field",
+            ));
+        }
+    }
+    let mode_value = redirect
+        .get(Value::String("mode".to_owned()))
+        .ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.redirect.mode",
+                "redirect mapping requires mode",
+            )
+        })?;
+    let mode = mode_value.as_str().ok_or_else(|| {
+        invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.redirect.mode",
+            "redirect mode must be a string",
+        )
+    })?;
+    if !matches!(mode, "deny" | "same_origin") {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.redirect.mode",
+            "unsupported redirect policy",
+        ));
+    }
+    let max_hops = match redirect.get(Value::String("max_hops".to_owned())) {
+        None => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.redirect.max_hops",
+                "max_hops must be an integer",
+            )
+        })?),
+    };
+    Ok((mode.to_owned(), max_hops))
+}
+
+fn validate_mcp_http_manifest_config(
+    path: &Path,
+    config: &McpHttpManifestConfig,
+    production: bool,
+) -> Result<(), EvaError> {
+    let endpoint_origin = canonical_mcp_origin(&config.endpoint, false)?;
+    let endpoint_scheme = config
+        .endpoint
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut roots = BTreeSet::new();
+    for root in &config.trust_roots {
+        validate_mcp_trust_root(path, "mcp.http.trust_roots", root)?;
+        if !roots.insert(root) {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.trust_roots",
+                "duplicate trust root reference",
+            ));
+        }
+    }
+    for (field, value) in [
+        (
+            "mcp.http.client_auth.cert_ref",
+            config.client_certificate_ref.as_deref(),
+        ),
+        (
+            "mcp.http.client_auth.key_ref",
+            config.client_private_key_ref.as_deref(),
+        ),
+    ] {
+        if let Some(value) = value {
+            validate_mcp_credential_ref(path, field, value)?;
+        }
+    }
+    if endpoint_scheme == "http" && !roots.is_empty() {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.trust_roots",
+            "trust roots require an HTTPS endpoint",
+        ));
+    }
+    if endpoint_scheme == "http"
+        && (config.client_certificate_ref.is_some() || config.client_private_key_ref.is_some())
+    {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.client_auth",
+            "client certificate authentication requires an HTTPS endpoint",
+        ));
+    }
+    match config.redirect_mode.as_str() {
+        "deny" => {
+            if config.redirect_max_hops.is_some_and(|value| value != 0) {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    "mcp.http.redirect.max_hops",
+                    "deny redirect policy requires max_hops=0",
+                ));
+            }
+        }
+        "same_origin" => {
+            let hops = config.redirect_max_hops.unwrap_or(3);
+            if !(1..=10).contains(&hops) {
+                return Err(invalid_config(
+                    CONFIG_TYPE,
+                    path,
+                    "mcp.http.redirect.max_hops",
+                    "same_origin max_hops must be between 1 and 10",
+                ));
+            }
+        }
+        _ => {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.redirect.mode",
+                "unsupported redirect policy",
+            ))
+        }
+    }
+    let mut origins = BTreeSet::new();
+    for origin in &config.allowed_origins {
+        if origin.contains('*') {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.allowed_origins",
+                "wildcard origins are not allowed",
+            ));
+        }
+        let canonical = canonical_mcp_origin(origin, true)?;
+        if canonical != *origin {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.allowed_origins",
+                "origin must use canonical spelling",
+            ));
+        }
+        if !origins.insert(origin) {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                "mcp.http.allowed_origins",
+                "duplicate origin policy entry",
+            ));
+        }
+    }
+    if !origins.is_empty() && !origins.contains(&endpoint_origin) {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.allowed_origins",
+            "origin policy must include the endpoint origin",
+        ));
+    }
+    if production && endpoint_scheme == "https" && roots.is_empty() {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.trust_roots",
+            "production HTTPS requires an explicit trust policy",
+        ));
+    }
+    if production && endpoint_scheme == "https" && origins.is_empty() {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            "mcp.http.allowed_origins",
+            "production HTTPS requires an explicit origin policy",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mcp_credential_ref(path: &Path, field: &str, value: &str) -> Result<(), EvaError> {
+    if value.is_empty() || value != value.trim() {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            field,
+            "credential reference must be non-empty and trimmed",
+        ));
+    }
+    if let Some(name) = value.strip_prefix("env:") {
+        let mut bytes = name.bytes();
+        let valid = name.len() <= 128
+            && bytes
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+        if !valid {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                field,
+                "env credential reference has an invalid name",
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(body) = value.strip_prefix("vault://") {
+        let mut parts = body.split('#');
+        let secret_path = parts.next().unwrap_or_default();
+        let key = parts.next();
+        let path_valid = !secret_path.is_empty()
+            && secret_path.len() <= 384
+            && secret_path.split('/').all(is_valid_vault_segment);
+        let key_valid = key.is_none_or(is_valid_vault_key);
+        if value.len() <= 512 && path_valid && key_valid && parts.next().is_none() {
+            return Ok(());
+        }
+    }
+    Err(invalid_config(
+        CONFIG_TYPE,
+        path,
+        field,
+        "credential reference must use env: or vault://",
+    ))
+}
+
+fn validate_mcp_trust_root(path: &Path, field: &str, root: &str) -> Result<(), EvaError> {
+    if root.is_empty()
+        || root != root.trim()
+        || root
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err(invalid_config(
+            CONFIG_TYPE,
+            path,
+            field,
+            "trust root references must be non-empty and trimmed",
+        ));
+    }
+    if root == "system" {
+        return Ok(());
+    }
+    if let Some(file) = root.strip_prefix("file:") {
+        let invalid = file.is_empty()
+            || file.starts_with(['/', '\\'])
+            || file
+                .split(['/', '\\'])
+                .any(|segment| segment.is_empty() || segment == "..")
+            || file
+                .split(['/', '\\'])
+                .next()
+                .is_some_and(|segment| segment.contains(':'));
+        if invalid {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                field,
+                "file trust root must stay within the project-relative root",
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(reference) = root.strip_prefix("pem:") {
+        if reference.is_empty() || reference.starts_with('-') || reference.contains("BEGIN ") {
+            return Err(invalid_config(
+                CONFIG_TYPE,
+                path,
+                field,
+                "inline PEM bytes are not allowed; use a reference or digest",
+            ));
+        }
+        return Ok(());
+    }
+    Err(invalid_config(
+        CONFIG_TYPE,
+        path,
+        field,
+        "trust root must use system, file:, or pem: reference",
+    ))
+}
+
+fn canonical_mcp_origin(value: &str, origin_only: bool) -> Result<String, EvaError> {
+    let (scheme, rest) = value.split_once("://").ok_or_else(|| {
+        EvaError::invalid_argument("MCP endpoint must include an http or https scheme")
+    })?;
+    let scheme = scheme.to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https") {
+        return Err(EvaError::unsupported("MCP endpoint scheme is unsupported")
+            .with_context("scheme", scheme));
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err(EvaError::invalid_argument(
+            "MCP endpoint contains whitespace",
+        ));
+    }
+    if rest.contains('#') {
+        return Err(EvaError::invalid_argument(
+            "MCP endpoint must not contain a fragment",
+        ));
+    }
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let raw_authority = &rest[..authority_end];
+    if raw_authority.is_empty() || raw_authority.contains('@') || raw_authority.contains('*') {
+        return Err(EvaError::invalid_argument(
+            "MCP endpoint authority is malformed",
+        ));
+    }
+    let authority = canonical_mcp_authority(&scheme, raw_authority)?;
+    if origin_only && rest != authority {
+        // The comparison above is intentionally strict; default-port spellings
+        // are rejected rather than silently changing the manifest digest.
+        return Err(EvaError::invalid_argument(
+            "MCP origin policy entry must contain only canonical authority",
+        ));
+    }
+    Ok(format!("{scheme}://{authority}"))
+}
+
+fn canonical_mcp_authority(scheme: &str, authority: &str) -> Result<String, EvaError> {
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    if authority.starts_with('[') {
+        let end = authority
+            .find(']')
+            .ok_or_else(|| EvaError::invalid_argument("MCP IPv6 authority is malformed"))?;
+        let host = &authority[1..end];
+        let host = host
+            .parse::<Ipv6Addr>()
+            .map_err(|_| EvaError::invalid_argument("MCP IPv6 address is malformed"))?;
+        let suffix = &authority[end + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            let value = suffix
+                .strip_prefix(':')
+                .ok_or_else(|| EvaError::invalid_argument("MCP IPv6 authority is malformed"))?;
+            Some(parse_mcp_port(value)?)
+        };
+        let host = format!("[{host}]");
+        return Ok(match port {
+            Some(port) if port != default_port => format!("{host}:{port}"),
+            _ => host,
+        });
+    }
+    if authority.bytes().filter(|byte| *byte == b':').count() > 1 {
+        return Err(EvaError::invalid_argument(
+            "MCP IPv6 addresses must use brackets",
+        ));
+    }
+    let (host, port) = authority
+        .rsplit_once(':')
+        .map(|(host, port)| (host, Some(parse_mcp_port(port))))
+        .unwrap_or((authority, None));
+    let port = port.transpose()?;
+    if host.is_empty()
+        || host
+            .bytes()
+            .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')))
+    {
+        return Err(EvaError::invalid_argument("MCP endpoint host is malformed"));
+    }
+    let host = host.to_ascii_lowercase();
+    Ok(match port {
+        Some(port) if port != default_port => format!("{host}:{port}"),
+        _ => host,
+    })
+}
+
+fn parse_mcp_port(value: &str) -> Result<u16, EvaError> {
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| EvaError::invalid_argument("MCP endpoint port is invalid"))?;
+    if port == 0 {
+        return Err(EvaError::invalid_argument(
+            "MCP endpoint port must be non-zero",
+        ));
+    }
+    Ok(port)
 }
 
 fn parse_provider_config(
@@ -1226,8 +2296,9 @@ fn is_secret_field_name(value: &str) -> bool {
 }
 
 fn is_sensitive_header(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase().replace('_', "-");
     matches!(
-        value.to_ascii_lowercase().as_str(),
+        normalized.as_str(),
         "authorization"
             | "proxy-authorization"
             | "x-api-key"
@@ -1235,7 +2306,14 @@ fn is_sensitive_header(value: &str) -> bool {
             | "x-auth-token"
             | "x-access-token"
             | "cookie"
-    )
+    ) || normalized.contains("api-key")
+        || normalized.contains("access-token")
+        || normalized.contains("auth-token")
+        || normalized.contains("client-key")
+        || normalized.contains("private-key")
+        || normalized
+            .split('-')
+            .any(|part| matches!(part, "token" | "secret" | "password" | "credential"))
 }
 
 fn production_plaintext_error(manifest: &AdapterManifest, field: &str) -> EvaError {
@@ -1930,6 +3008,20 @@ routing: {}
         .map(|value| value.as_str().unwrap())
         .collect::<Vec<_>>();
         assert_eq!(run_as_kinds, vec!["current", "unix", "windows"]);
+
+        let mcp_transports = schema_value(&[
+            "properties",
+            "mcp",
+            "properties",
+            "server_transport",
+            "enum",
+        ])
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+        assert_eq!(mcp_transports, vec!["stdio", "http", "streamable_http"]);
     }
 
     #[test]
@@ -2100,6 +3192,116 @@ routing: {}
     }
 
     #[test]
+    fn mcp_streamable_http_manifest_projects_canonical_policy() {
+        let manifest = parse_test_manifest(&provider_manifest_yaml(
+            "mcp",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: HTTPS://Example.TEST:443/mcp\n  http:\n    trust_roots: [system, 'file:certs/root.pem', 'pem:sha256:root-ca']\n    client_auth:\n      cert_ref: env:API_TOKEN\n      key_ref: env:SECOND_TOKEN\n    redirect:\n      mode: same_origin\n      max_hops: 3\n    allowed_origins: [https://example.test]\n",
+        ))
+        .unwrap();
+
+        let config = manifest.mcp_http_manifest_config().unwrap().unwrap();
+        assert_eq!(config.endpoint, "HTTPS://Example.TEST:443/mcp");
+        assert_eq!(config.redirect_mode, "same_origin");
+        assert_eq!(config.redirect_max_hops, Some(3));
+        assert_eq!(config.allowed_origins, vec!["https://example.test"]);
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("API_TOKEN"));
+        assert!(!debug.contains("SECOND_TOKEN"));
+        assert!(!debug.contains("Example.TEST"));
+        assert!(manifest.validate_for_environment("production").is_ok());
+    }
+
+    #[test]
+    fn mcp_http_manifest_rejects_ambiguous_or_malformed_policy() {
+        let invalid = [
+            "endpoint: http://fallback.test/mcp\nmcp:\n  server_transport: streamable_http\n  endpoint: 42\n",
+            "endpoint: 42\nmcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: ftp://example.test/mcp\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://user@example.test/mcp\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test:0/mcp\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp#fragment\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    unknown: true\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    client_auth: plaintext\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    client_auth:\n      certificate_ref: env:API_TOKEN\n      key_ref: env:SECOND_TOKEN\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    client_auth:\n      cert_ref: 42\n      key_ref: env:SECOND_TOKEN\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    redirect:\n      max_hops: 0\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    redirect:\n      mode: 42\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    redirect:\n      mode: same_origin\n      max_hops: 0\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    trust_roots: ['file:/outside.pem']\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    trust_roots: ['pem:-----BEGIN CERTIFICATE-----']\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    trust_roots: [system]\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    client_auth:\n      cert_ref: env:API_TOKEN\n      key_ref: env:SECOND_TOKEN\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    allowed_origins: ['*']\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    Authorization: 42\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    X-Token: \"bad\\0value\"\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    X-Token: \"bad\\x7fvalue\"\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    Host: example.test\n",
+            "headers:\n  Authorization: env:API_TOKEN\nmcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  headers:\n    authorization: env:SECOND_TOKEN\n",
+            "mcp:\n  server_transport: stdio\n  command: provider\n  http:\n    trust_roots: [system]\n",
+            "mcp:\n  server_transport: stdio\n  command: provider\n  endpoint: http://example.test/mcp\n",
+            "mcp:\n  server_transport: stdio\n  command: provider\n  headers:\n    X-Token: ignored\n",
+            "mcp:\n  server_transport: streamable_http\n  command: ignored\n  endpoint: http://example.test/mcp\n",
+            "mcp:\n  server_transport: streamable_http\n  args: [ignored]\n  endpoint: http://example.test/mcp\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  typo: ignored\n",
+            "mcp:\n  server_transport: stdio\n  command: 42\n",
+            "mcp:\n  server_transport: stdio\n  command: provider\n  args: [valid, 42]\n",
+            "mcp:\n  server_transport: stdio\n  command: provider\n  args: [\"bad\\0arg\"]\n",
+            "mcp:\n  server_transport: stdio\n  command: provider\n  tool_allowlist: [valid, 42]\n",
+            "endpoint: http://example.test/mcp\nmcp:\n  server_transport: stdio\n  command: provider\n",
+            "headers:\n  X-Token: ignored\nmcp:\n  server_transport: stdio\n  command: provider\n",
+            "command: ignored\nmcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n",
+            "args: [ignored]\nmcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n",
+        ];
+        for policy in invalid {
+            let error = parse_test_manifest(&provider_manifest_yaml("mcp", policy)).unwrap_err();
+            assert!(
+                matches!(
+                    error.kind(),
+                    ErrorKind::InvalidArgument | ErrorKind::Unsupported
+                ),
+                "{policy}"
+            );
+        }
+
+        let conflict = parse_test_manifest(&provider_manifest_yaml(
+            "mcp",
+            "endpoint: http://top.test/mcp\nmcp:\n  server_transport: streamable_http\n  endpoint: http://nested.test/mcp\n",
+        ));
+        assert!(conflict.is_err());
+    }
+
+    #[test]
+    fn mcp_stdio_manifest_preserves_native_argv_boundaries() {
+        let manifest = parse_test_manifest(&provider_manifest_yaml(
+            "mcp",
+            "mcp:\n  server_transport: stdio\n  command: provider\n  args: ['', ' value ']\n",
+        ))
+        .unwrap();
+
+        assert_eq!(
+            manifest.nested_extra_string_list("mcp", "args"),
+            vec!["".to_owned(), " value ".to_owned()]
+        );
+    }
+
+    #[test]
+    fn production_mcp_https_requires_explicit_trust_and_origin_policy() {
+        let missing = parse_test_manifest(&provider_manifest_yaml(
+            "mcp",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: https://example.test/mcp\n",
+        ))
+        .unwrap();
+        assert!(missing.validate_for_environment("production").is_err());
+
+        let trust_only = parse_test_manifest(&provider_manifest_yaml(
+            "mcp",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: https://example.test/mcp\n  http:\n    trust_roots: [system]\n",
+        ))
+        .unwrap();
+        assert!(trust_only.validate_for_environment("production").is_err());
+    }
+
+    #[test]
     fn builtin_skill_rejects_process_only_supervision() {
         let builtin = provider_manifest_yaml(
             "skill",
@@ -2202,6 +3404,17 @@ routing: {}
             .validate_for_environment("production")
             .is_err());
         assert!(literal_header.validate_for_environment("dev").is_ok());
+
+        for header in ["X-Custom-Secret", "X-Client-Key", "X-Access-Credential"] {
+            let yaml = format!(
+                "id: production-custom-header\nname: Production Custom Header\nversion: 1.0.0\nenabled: true\ntransport: http\nendpoint: https://example.test/api\nheaders:\n  {header}: plaintext-token\npermissions:\n  env: [API_TOKEN]\ncapabilities: [chat.reply]\nlimits: {{}}\nrouting: {{}}\n"
+            );
+            let manifest = parse_test_manifest(&yaml).unwrap();
+            assert!(
+                manifest.validate_for_environment("production").is_err(),
+                "{header}"
+            );
+        }
 
         let allowlisted_env = parse_test_manifest(
             r#"
