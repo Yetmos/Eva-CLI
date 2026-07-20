@@ -5,13 +5,15 @@
 //! 协议错配都会关闭子进程并映射为稳定错误，避免遗留失控会话。
 //! MCP JSON-RPC client transport.
 
+use crate::http_transport::{
+    map_http_read_error, map_http_write_error, McpHttpConnector, McpTlsMaterial,
+};
 use crate::policy::McpAllowlist;
 use crate::session::{McpEndpoint, McpServerTransport, McpSessionConfig, McpStreamableHttpConfig};
 use eva_core::{AdapterId, EvaError, InvokeOutput, RequestId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -192,14 +194,13 @@ impl Debug for McpStdioJsonRpcTransport {
 }
 
 /// 表示 `McpHttpJsonRpcTransport` 数据结构。
-#[derive(Clone, PartialEq, Eq)]
 pub struct McpHttpJsonRpcTransport {
     /// 记录 `endpoint` 字段对应的值。
     endpoint: String,
     /// 记录 `headers` 字段对应的值。
     headers: BTreeMap<String, String>,
-    /// 已验证的 Streamable HTTP 连接合同；TLS/framing 仍由后续 W4 逻辑消费。
-    config: McpStreamableHttpConfig,
+    /// Validated plaintext or TLS connector.
+    connector: McpHttpConnector,
     /// 记录 `audit` 字段对应的值。
     audit: Vec<String>,
     /// 记录 `exchange_count` 字段对应的值。
@@ -402,8 +403,33 @@ impl McpJsonRpcClient {
         tool: &str,
         input: &str,
     ) -> Result<McpJsonRpcCallReport, EvaError> {
+        self.call_http_with_config_and_tls(
+            config,
+            headers,
+            McpTlsMaterial::new(),
+            request_id,
+            tool,
+            input,
+        )
+    }
+
+    /// Execute an MCP HTTP call with per-invocation TLS material.
+    pub fn call_http_with_config_and_tls(
+        &self,
+        config: &McpStreamableHttpConfig,
+        headers: BTreeMap<String, String>,
+        tls_material: McpTlsMaterial,
+        request_id: RequestId,
+        tool: &str,
+        input: &str,
+    ) -> Result<McpJsonRpcCallReport, EvaError> {
+        validate_client_config(&self.config)?;
         self.allowlist.require_tool(tool)?;
-        let mut transport = McpHttpJsonRpcTransport::new_with_config(config.clone(), headers)?;
+        let mut transport = McpHttpJsonRpcTransport::new_with_config_and_tls(
+            config.clone(),
+            headers,
+            tls_material,
+        )?;
         self.call_tool_with_transport(&mut transport, request_id, tool, input)
     }
 
@@ -703,16 +729,18 @@ impl McpHttpJsonRpcTransport {
         config: McpStreamableHttpConfig,
         headers: BTreeMap<String, String>,
     ) -> Result<Self, EvaError> {
+        Self::new_with_config_and_tls(config, headers, McpTlsMaterial::new())
+    }
+
+    /// Create an HTTP transport with explicit per-invocation TLS material.
+    pub fn new_with_config_and_tls(
+        config: McpStreamableHttpConfig,
+        headers: BTreeMap<String, String>,
+        tls_material: McpTlsMaterial,
+    ) -> Result<Self, EvaError> {
         config.validate_for_environment("dev")?;
         let endpoint = config.endpoint.clone();
         let parsed = ParsedHttpUrl::parse(&endpoint)?;
-        if parsed.scheme != "http" {
-            return Err(EvaError::unsupported(
-                "MCP HTTP transport requires an http:// endpoint in this runtime",
-            )
-            .with_context("origin", parsed.origin.clone())
-            .with_context("scheme", parsed.scheme));
-        }
         let mut normalized_headers = BTreeSet::new();
         for (name, value) in &headers {
             validate_http_header(name, value)?;
@@ -723,18 +751,27 @@ impl McpHttpJsonRpcTransport {
                 .with_context("header", name));
             }
         }
+        let connector = McpHttpConnector::from_config(&config, tls_material)?;
         let mut audit = vec![
             "mcp.http:client".to_owned(),
             format!("mcp.http.origin:{}", parsed.origin),
             "mcp.http.method:POST".to_owned(),
         ];
+        if parsed.scheme == "https" {
+            audit.push("mcp.tls:certificate_verification_enabled".to_owned());
+            audit.push("mcp.tls:sni_enabled".to_owned());
+            audit.push(format!(
+                "mcp.tls:client_auth_configured:{}",
+                config.client_auth.is_some()
+            ));
+        }
         for name in headers.keys() {
             audit.push(format!("mcp.http.header:{name}:redacted"));
         }
         Ok(Self {
             endpoint,
             headers,
-            config,
+            connector,
             audit,
             exchange_count: 0,
             notification_count: 0,
@@ -758,6 +795,7 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
         }
         self.exchange_count = self.exchange_count.saturating_add(1);
         let response = send_http_json_rpc_request(
+            &self.connector,
             &self.endpoint,
             &self.headers,
             request,
@@ -798,6 +836,7 @@ impl McpJsonRpcTransport for McpHttpJsonRpcTransport {
     ) -> Result<(), EvaError> {
         self.notification_count = self.notification_count.saturating_add(1);
         let response = send_http_json_rpc_request(
+            &self.connector,
             &self.endpoint,
             &self.headers,
             notification,
@@ -1012,6 +1051,7 @@ fn parse_http_port(value: &str) -> Result<u16, EvaError> {
 
 /// 执行 `send_http_json_rpc_request` 对应的处理逻辑。
 fn send_http_json_rpc_request(
+    connector: &McpHttpConnector,
     endpoint: &str,
     headers: &BTreeMap<String, String>,
     body: &str,
@@ -1019,39 +1059,13 @@ fn send_http_json_rpc_request(
     output_limit_bytes: usize,
 ) -> Result<HttpJsonRpcResponse, EvaError> {
     let parsed = ParsedHttpUrl::parse(endpoint)?;
-    if parsed.scheme != "http" {
-        return Err(EvaError::unsupported(
-            "MCP HTTP JSON-RPC execution requires a TLS client for https endpoints",
-        )
-        .with_context("origin", parsed.origin.clone())
-        .with_context("scheme", parsed.scheme));
-    }
-    let mut addrs = (parsed.host.as_str(), parsed.port)
-        .to_socket_addrs()
-        .map_err(|error| {
-            EvaError::unavailable("failed to resolve MCP HTTP server")
-                .with_context("host", &parsed.host)
-                .with_context("io_error", error.to_string())
-        })?;
-    let addr = addrs.next().ok_or_else(|| {
-        EvaError::unavailable("MCP HTTP server host did not resolve")
-            .with_context("host", &parsed.host)
-    })?;
-    let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|error| {
-        EvaError::unavailable("failed to connect MCP HTTP server")
-            .with_context("origin", &parsed.origin)
-            .with_context("io_error", error.to_string())
-    })?;
-    if !timeout.is_zero() {
-        stream
-            .set_read_timeout(Some(timeout))
-            .and_then(|_| stream.set_write_timeout(Some(timeout)))
-            .map_err(|error| {
-                EvaError::unavailable("failed to configure MCP HTTP timeout")
-                    .with_context("origin", &parsed.origin)
-                    .with_context("io_error", error.to_string())
-            })?;
-    }
+    let mut stream = connector.connect(
+        &parsed.scheme,
+        &parsed.host,
+        parsed.port,
+        &parsed.origin,
+        timeout,
+    )?;
 
     let mut request = format!(
         "POST {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n",
@@ -1067,16 +1081,11 @@ fn send_http_json_rpc_request(
         request.push_str("\r\n");
     }
     request.push_str("\r\n");
-    stream.write_all(request.as_bytes()).map_err(|error| {
-        EvaError::unavailable("failed to write MCP HTTP request")
-            .with_context("origin", &parsed.origin)
-            .with_context("io_error", error.to_string())
-    })?;
-    stream.write_all(body.as_bytes()).map_err(|error| {
-        EvaError::unavailable("failed to write MCP HTTP body")
-            .with_context("origin", &parsed.origin)
-            .with_context("io_error", error.to_string())
-    })?;
+    stream
+        .write_all(request.as_bytes())
+        .and_then(|_| stream.write_all(body.as_bytes()))
+        .and_then(|_| stream.flush())
+        .map_err(|error| map_http_write_error(error, &parsed.origin))?;
 
     read_http_json_rpc_response(&mut stream, &parsed.origin, output_limit_bytes)
 }
@@ -1086,7 +1095,7 @@ const HTTP_HEADER_LIMIT_BYTES: usize = 64 * 1024;
 
 /// 读取或解析 `read_http_json_rpc_response` 所需的数据，失败时保留错误语义。
 fn read_http_json_rpc_response(
-    stream: &mut TcpStream,
+    stream: &mut impl Read,
     origin: &str,
     output_limit_bytes: usize,
 ) -> Result<HttpJsonRpcResponse, EvaError> {
@@ -1102,11 +1111,9 @@ fn read_http_json_rpc_response(
     let mut buffer = [0_u8; 8192];
 
     loop {
-        let read = stream.read(&mut buffer).map_err(|error| {
-            EvaError::unavailable("failed to read MCP HTTP response")
-                .with_context("origin", origin)
-                .with_context("io_error", error.to_string())
-        })?;
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| map_http_read_error(error, origin))?;
         if read == 0 {
             break;
         }
@@ -1634,11 +1641,18 @@ fn escape_json(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::McpRedirectPolicy;
     use eva_core::ErrorKind;
+    use rustls::{ServerConfig, ServerConnection, StreamOwned};
     use std::collections::VecDeque;
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc::channel;
+    use std::sync::Arc;
     use std::thread;
+
+    const TEST_CA_PEM: &[u8] = include_bytes!("../testdata/tls/ca.pem");
+    const TEST_SERVER_PEM: &[u8] = include_bytes!("../testdata/tls/server.pem");
+    const TEST_SERVER_KEY: &[u8] = include_bytes!("../testdata/tls/server.key");
 
     /// 表示 `FakeTransport` 数据结构。
     #[derive(Debug, Default)]
@@ -1804,6 +1818,89 @@ mod tests {
     }
 
     #[test]
+    fn json_rpc_client_calls_fake_https_mcp_server_through_tls_stream() {
+        let listener = TcpListener::bind(("localhost", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let endpoint = format!("https://localhost:{port}/mcp");
+        let origin = format!("https://localhost:{port}");
+        let server_config = test_https_server_config();
+        let server = thread::spawn(move || {
+            for _ in 0..4 {
+                let (socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let connection = ServerConnection::new(server_config.clone()).unwrap();
+                let mut stream = StreamOwned::new(connection, socket);
+                let request = read_test_http_request_from(&mut stream);
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                let response = if body.contains("\"method\":\"initialize\"") {
+                    http_response(
+                        200,
+                        &response(1, "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake-https\",\"version\":\"1\"}}"),
+                    )
+                } else if body.contains("notifications/initialized") {
+                    http_response(202, "")
+                } else if body.contains("\"method\":\"tools/list\"") {
+                    http_response(
+                        200,
+                        &response(2, "{\"tools\":[{\"name\":\"list_issues\",\"inputSchema\":{\"type\":\"object\"}}]}"),
+                    )
+                } else if body.contains("\"method\":\"tools/call\"") {
+                    http_response(
+                        200,
+                        &response(
+                            3,
+                            "{\"content\":[{\"type\":\"text\",\"text\":\"tls-ok\"}],\"isError\":false}",
+                        ),
+                    )
+                } else {
+                    http_response(400, "")
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.conn.send_close_notify();
+                stream.flush().unwrap();
+            }
+        });
+        let config = McpStreamableHttpConfig::from_parts(
+            endpoint,
+            ["pem:test-ca"],
+            None,
+            McpRedirectPolicy::Deny,
+            [origin],
+        )
+        .unwrap();
+        let material = McpTlsMaterial::new()
+            .with_indirect_trust_root("pem:test-ca", TEST_CA_PEM.to_vec())
+            .unwrap();
+
+        let report = client(["list_issues"])
+            .call_http_with_config_and_tls(
+                &config,
+                BTreeMap::new(),
+                material,
+                RequestId::parse("req-mcp-https").unwrap(),
+                "list_issues",
+                "{\"owner\":\"eva\"}",
+            )
+            .unwrap();
+
+        server.join().unwrap();
+        assert!(report
+            .audit
+            .contains(&"mcp.tls:certificate_verification_enabled".to_owned()));
+        assert!(report.audit.contains(&"mcp.tls:sni_enabled".to_owned()));
+        assert_eq!(report.tool, "list_issues");
+        assert!(report.output.as_text().unwrap().contains("tls-ok"));
+    }
+
+    #[test]
     fn http_transport_rejects_reserved_and_injected_headers() {
         for header in [
             "Host",
@@ -1829,6 +1926,46 @@ mod tests {
         duplicate_headers.insert("x-token".to_owned(), "second".to_owned());
         let config = McpStreamableHttpConfig::legacy_http("http://127.0.0.1/mcp").unwrap();
         assert!(McpHttpJsonRpcTransport::new_with_config(config, duplicate_headers).is_err());
+
+        let config = McpStreamableHttpConfig::from_parts(
+            "https://example.test/mcp",
+            ["file:certs/root.pem"],
+            None,
+            McpRedirectPolicy::Deny,
+            ["https://example.test"],
+        )
+        .unwrap();
+        let error = McpHttpJsonRpcTransport::new_with_config_and_tls(
+            config.clone(),
+            BTreeMap::from([("Host".to_owned(), "attacker.test".to_owned())]),
+            McpTlsMaterial::new(),
+        )
+        .unwrap_err();
+        assert!(error.message().contains("controlled by the transport"));
+        assert_ne!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("mcp_tls_project_root_required")
+        );
+
+        let client = client(["list_issues"])
+            .with_config(McpJsonRpcClientConfig::new().with_request_timeout_ms(0));
+        let error = client
+            .call_http_with_config_and_tls(
+                &config,
+                BTreeMap::new(),
+                McpTlsMaterial::new(),
+                RequestId::parse("req-mcp-invalid-client-preflight").unwrap(),
+                "list_issues",
+                "{}",
+            )
+            .unwrap_err();
+        assert!(error
+            .message()
+            .contains("timeout must be greater than zero"));
+        assert_ne!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("mcp_tls_project_root_required")
+        );
     }
 
     /// 验证 `blocked_tool_does_not_send_rpc` 场景下的预期行为。
@@ -1968,6 +2105,10 @@ mod tests {
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
+        read_test_http_request_from(stream)
+    }
+
+    fn read_test_http_request_from(stream: &mut impl Read) -> String {
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 512];
         loop {
@@ -1999,5 +2140,23 @@ mod tests {
             }
         }
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn test_https_server_config() -> Arc<ServerConfig> {
+        let certificates = rustls_pemfile::certs(&mut BufReader::new(TEST_SERVER_PEM))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let private_key = rustls_pemfile::private_key(&mut BufReader::new(TEST_SERVER_KEY))
+            .unwrap()
+            .unwrap();
+        let provider = rustls::crypto::ring::default_provider();
+        Arc::new(
+            ServerConfig::builder_with_provider(Arc::new(provider))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(certificates, private_key)
+                .unwrap(),
+        )
     }
 }

@@ -423,6 +423,43 @@ impl CredentialSessionLease {
         Ok(secret.expose().to_owned())
     }
 
+    /// Resolve an MCP client-auth reference through this invocation's
+    /// allowlisted environment projection. Vault references must map to one
+    /// and only one declared provider secret; the opaque reference is never
+    /// copied into an error or audit record.
+    pub(crate) fn resolve_reference(
+        &mut self,
+        reference: &str,
+        vault_refs: &[ProviderVaultSecretRef],
+    ) -> Result<String, EvaError> {
+        if let Some(name) = reference.strip_prefix("env:") {
+            return self.resolve_env(name);
+        }
+        if reference.starts_with("vault://") {
+            let mut matches = vault_refs
+                .iter()
+                .filter(|candidate| candidate.secret_ref == reference);
+            let Some(candidate) = matches.next() else {
+                return Err(EvaError::permission_denied(
+                    "MCP client-auth vault reference is not declared",
+                )
+                .with_provider_code("credential_ref_not_declared"));
+            };
+            if matches.next().is_some() {
+                return Err(
+                    EvaError::conflict("MCP client-auth vault reference is ambiguous")
+                        .with_provider_code("credential_ref_ambiguous"),
+                );
+            }
+            let env = candidate.env.clone();
+            return self.resolve_env(&env);
+        }
+        Err(
+            EvaError::permission_denied("unsupported MCP client-auth credential reference")
+                .with_provider_code("credential_ref_unsupported"),
+        )
+    }
+
     /// Values that must be removed from stream previews, artifacts, and errors.
     pub(crate) fn redaction_values(&self) -> Vec<String> {
         if self.released {
@@ -616,6 +653,44 @@ mod tests {
             error.provider_code().unwrap().as_str(),
             "credential_env_not_allowlisted"
         );
+        lease.release().unwrap();
+    }
+
+    #[test]
+    fn client_auth_reference_requires_one_declared_mapping() {
+        let secret_ref = "vault://tests/client-cert";
+        let vault = MemoryCredentialVault::new().with_secret(secret_ref, "client-cert-pem");
+        let refs = vec![ProviderVaultSecretRef {
+            env: "CLIENT_CERT".to_owned(),
+            secret_ref: secret_ref.to_owned(),
+        }];
+        let mut lease = CredentialSessionLease::open(&vault, Some(&scope()), &refs, &[]).unwrap();
+
+        assert_eq!(
+            lease.resolve_reference(secret_ref, &refs).unwrap(),
+            "client-cert-pem"
+        );
+        let missing = lease
+            .resolve_reference("vault://tests/not-declared", &refs)
+            .unwrap_err();
+        assert_eq!(
+            missing.provider_code().map(|code| code.as_str()),
+            Some("credential_ref_not_declared")
+        );
+
+        let duplicate = vec![
+            refs[0].clone(),
+            ProviderVaultSecretRef {
+                env: "SECOND_CERT".to_owned(),
+                secret_ref: secret_ref.to_owned(),
+            },
+        ];
+        let ambiguous = lease.resolve_reference(secret_ref, &duplicate).unwrap_err();
+        assert_eq!(
+            ambiguous.provider_code().map(|code| code.as_str()),
+            Some("credential_ref_ambiguous")
+        );
+        assert!(!format!("{missing:?}{ambiguous:?}").contains(secret_ref));
         lease.release().unwrap();
     }
 

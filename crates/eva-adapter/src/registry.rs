@@ -30,7 +30,10 @@ impl AdapterRegistry {
     pub fn from_project(project: &ProjectConfig) -> Result<Self, EvaError> {
         let mut registry = Self::new();
         for manifest in &project.adapters {
-            registry.register(AdapterHandle::from_manifest(manifest))?;
+            registry.register(AdapterHandle::from_manifest_in_project(
+                manifest,
+                &project.project_root,
+            ))?;
         }
         for capability in &project.capabilities {
             if !capability.enabled {
@@ -114,5 +117,9 @@ mod tests {
             .providers_for_capability(&capability)
             .iter()
             .any(|handle| handle.id.as_str() == "github-mcp"));
+        assert!(registry
+            .list()
+            .iter()
+            .all(|handle| handle.project_root.as_deref() == Some(project.project_root.as_path())));
     }
 }

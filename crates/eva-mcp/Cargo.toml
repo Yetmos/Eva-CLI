@@ -8,3 +8,7 @@ publish.workspace = true
 eva-core = { path = "../eva-core" }
 eva-observability = { path = "../eva-observability" }
 eva-policy = { path = "../eva-policy" }
+rustls = { version = "0.23.34", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8.4"
+rustls-pemfile = "2.2.0"
+zeroize = "1.9.0"

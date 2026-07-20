@@ -715,10 +715,7 @@ fn validate_trust_root(root: &str) -> Result<(), EvaError> {
             || path
                 .split(['/', '\\'])
                 .any(|segment| segment.is_empty() || segment == "..")
-            || path
-                .split(['/', '\\'])
-                .next()
-                .is_some_and(|segment| segment.contains(':'))
+            || path.split(['/', '\\']).any(|segment| segment.contains(':'))
         {
             return Err(EvaError::permission_denied(
                 "MCP trust root file reference escapes its configured root",
@@ -1295,6 +1292,17 @@ mod tests {
         let mut mutated = config.clone();
         mutated.trust_roots.insert("file:/outside.pem".to_owned());
         assert!(mutated.validate_for_environment("dev").is_err());
+
+        for root in ["file:certs/root.pem:stream", "file:certs/root.pem::$DATA"] {
+            assert!(McpStreamableHttpConfig::from_parts(
+                "https://example.com/mcp",
+                [root],
+                None,
+                McpRedirectPolicy::Deny,
+                ["https://example.com"],
+            )
+            .is_err());
+        }
 
         let mut mutated = config.clone();
         mutated.client_auth.as_mut().unwrap().certificate_ref = "plaintext".to_owned();

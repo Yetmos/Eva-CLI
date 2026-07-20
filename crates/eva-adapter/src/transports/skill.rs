@@ -2349,6 +2349,7 @@ mod tests {
             transport: AdapterTransport::Skill,
             capabilities: vec![CapabilityName::parse("workflow.code_review").unwrap()],
             source_path: "test".to_owned(),
+            project_root: None,
             command: None,
             args: Vec::new(),
             endpoint: None,

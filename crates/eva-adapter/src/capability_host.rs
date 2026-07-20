@@ -612,6 +612,7 @@ mod tests {
             transport: AdapterTransport::Builtin,
             capabilities: vec![capability("repo.summary")],
             source_path: "test".to_owned(),
+            project_root: None,
             command: None,
             args: Vec::new(),
             endpoint: None,

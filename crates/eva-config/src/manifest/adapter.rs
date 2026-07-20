@@ -1533,10 +1533,7 @@ fn validate_mcp_trust_root(path: &Path, field: &str, root: &str) -> Result<(), E
             || file
                 .split(['/', '\\'])
                 .any(|segment| segment.is_empty() || segment == "..")
-            || file
-                .split(['/', '\\'])
-                .next()
-                .is_some_and(|segment| segment.contains(':'));
+            || file.split(['/', '\\']).any(|segment| segment.contains(':'));
         if invalid {
             return Err(invalid_config(
                 CONFIG_TYPE,
@@ -3228,6 +3225,8 @@ routing: {}
             "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    redirect:\n      mode: 42\n",
             "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    redirect:\n      mode: same_origin\n      max_hops: 0\n",
             "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    trust_roots: ['file:/outside.pem']\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: https://example.test/mcp\n  http:\n    trust_roots: ['file:certs/root.pem:stream']\n",
+            "mcp:\n  server_transport: streamable_http\n  endpoint: https://example.test/mcp\n  http:\n    trust_roots: ['file:certs/root.pem::$DATA']\n",
             "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    trust_roots: ['pem:-----BEGIN CERTIFICATE-----']\n",
             "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    trust_roots: [system]\n",
             "mcp:\n  server_transport: streamable_http\n  endpoint: http://example.test/mcp\n  http:\n    client_auth:\n      cert_ref: env:API_TOKEN\n      key_ref: env:SECOND_TOKEN\n",

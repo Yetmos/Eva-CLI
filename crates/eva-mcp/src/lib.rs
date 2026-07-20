@@ -5,6 +5,8 @@
 pub mod client;
 /// 声明 `compatibility` 子模块。
 pub mod compatibility;
+/// Synchronous HTTP/TLS connection boundary.
+pub mod http_transport;
 /// 声明 `json_rpc` 子模块。
 pub mod json_rpc;
 /// 声明 `lifecycle` 子模块。
@@ -26,6 +28,7 @@ pub use compatibility::{
     McpServerSurfaceCompatibility, McpStreamLifecycleCompatibility, McpToolSchemaCompatibility,
     McpTransportCompatibility,
 };
+pub use http_transport::McpTlsMaterial;
 pub use json_rpc::{
     McpHttpJsonRpcTransport, McpJsonRpcCallReport, McpJsonRpcClient, McpJsonRpcClientConfig,
     McpJsonRpcTool, McpJsonRpcTransport, McpStdioJsonRpcTransport, McpStdioProcess,

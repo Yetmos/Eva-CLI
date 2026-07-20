@@ -10,6 +10,7 @@ use eva_mcp::{
     McpStreamableHttpConfig, McpTransportConfig,
 };
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 /// 说明本模块承担的架构职责。
 /// Architectural responsibility for this module.
@@ -97,6 +98,9 @@ pub struct AdapterHandle {
     pub capabilities: Vec<CapabilityName>,
     /// 记录 `source_path` 字段对应的值。
     pub source_path: String,
+    /// Canonical project root used for project-relative runtime material.
+    /// Direct manifest projections intentionally leave this unset.
+    pub project_root: Option<PathBuf>,
     /// 记录 `command` 字段对应的值。
     pub command: Option<String>,
     /// 记录 `args` 字段对应的值。
@@ -178,6 +182,18 @@ impl AdapterHealth {
 impl AdapterHandle {
     /// 根据输入构造当前类型，作为 `from_manifest` 的标准入口。
     pub fn from_manifest(manifest: &AdapterManifest) -> Self {
+        Self::from_manifest_with_project_root(manifest, None)
+    }
+
+    /// Project-aware projection used by the authorized registry.
+    pub fn from_manifest_in_project(manifest: &AdapterManifest, project_root: &Path) -> Self {
+        Self::from_manifest_with_project_root(manifest, Some(project_root.to_path_buf()))
+    }
+
+    fn from_manifest_with_project_root(
+        manifest: &AdapterManifest,
+        project_root: Option<PathBuf>,
+    ) -> Self {
         let hardware_config = manifest.hardware_config().ok().flatten();
         let (mcp_http_config, mcp_http_config_invalid) = match manifest.mcp_http_manifest_config() {
             Ok(Some(config)) => match mcp_http_config_from_manifest(&config) {
@@ -195,6 +211,7 @@ impl AdapterHandle {
             transport: manifest.transport,
             capabilities: manifest.capabilities.clone(),
             source_path: manifest.path.display().to_string(),
+            project_root,
             command: manifest.extra_string("command").map(str::to_owned),
             args: manifest.extra_string_list("args"),
             endpoint: manifest

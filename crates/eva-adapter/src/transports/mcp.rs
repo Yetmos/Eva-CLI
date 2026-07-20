@@ -20,7 +20,7 @@ use crate::supervisor::validate_credential_scope_for_provider;
 use eva_core::EvaError;
 use eva_mcp::{
     McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig, McpServerTransport, McpStdioProcess,
-    McpTransportConfig,
+    McpStreamableHttpConfig, McpTlsMaterial, McpTransportConfig,
 };
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -101,6 +101,17 @@ pub fn invoke_with_spawner_and_vault(
     } else {
         None
     };
+    if http_config.as_ref().is_some_and(|config| {
+        config
+            .trust_roots
+            .iter()
+            .any(|reference| reference.starts_with("pem:"))
+    }) {
+        return Err(EvaError::permission_denied(
+            "MCP indirect trust root material resolver is unavailable",
+        )
+        .with_provider_code("mcp_tls_indirect_material_unavailable"));
+    }
     if server_transport == McpServerTransport::Stdio
         && handle
             .headers
@@ -143,12 +154,25 @@ pub fn invoke_with_spawner_and_vault(
                 .any(|value| value.strip_prefix("env:").is_some()),
     )?
     .cloned();
-    let lazy_credential_env = handle
+    let mut lazy_credential_env = handle
         .headers
         .values()
         .filter_map(|value| value.strip_prefix("env:"))
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    if let Some(client_auth) = http_config
+        .as_ref()
+        .and_then(|config| config.client_auth.as_ref())
+    {
+        lazy_credential_env.extend(
+            [&client_auth.certificate_ref, &client_auth.private_key_ref]
+                .into_iter()
+                .filter_map(|reference| reference.strip_prefix("env:"))
+                .map(str::to_owned),
+        );
+    }
+    lazy_credential_env.sort();
+    lazy_credential_env.dedup();
     let mut credential_lease = CredentialSessionLease::open_with_lazy_env(
         vault,
         credential_scope.as_ref(),
@@ -157,9 +181,11 @@ pub fn invoke_with_spawner_and_vault(
         &lazy_credential_env,
     )?;
     let mut child_env = BTreeMap::new();
-    credential_lease.inject_env(&mut child_env);
-    if let Some(scope) = &credential_scope {
-        scope.apply_env(&mut child_env);
+    if server_transport == McpServerTransport::Stdio {
+        credential_lease.inject_env(&mut child_env);
+        if let Some(scope) = &credential_scope {
+            scope.apply_env(&mut child_env);
+        }
     }
     let request_id = invocation.request_id.clone();
     let capability = invocation.capability.clone();
@@ -210,7 +236,7 @@ pub fn invoke_with_spawner_and_vault(
                 &invocation.input,
             )
         }
-        McpServerTransport::Http | McpServerTransport::StreamableHttp => {
+        McpServerTransport::Http | McpServerTransport::StreamableHttp => (|| {
             let config = http_config.as_ref().ok_or_else(|| {
                 EvaError::internal("MCP HTTP configuration was not retained")
                     .with_context("adapter_id", handle.id.as_str())
@@ -222,14 +248,16 @@ pub fn invoke_with_spawner_and_vault(
             sensitive_values.extend(header_plan.sensitive_values.clone());
             transport_audit.push(format!("mcp.endpoint_origin:{}", config.endpoint_origin()?));
             transport_audit.extend(header_plan.audit);
-            client.call_http_with_config(
+            let tls_material = mcp_tls_material(handle, config, &mut credential_lease)?;
+            client.call_http_with_config_and_tls(
                 config,
                 header_plan.headers,
+                tls_material,
                 invocation.request_id,
                 tool,
                 &invocation.input,
             )
-        }
+        })(),
     };
     sensitive_values.extend(credential_lease.redaction_values());
     let error_redactions = sensitive_values.clone();
@@ -366,6 +394,25 @@ fn mcp_http_headers(
     })
 }
 
+fn mcp_tls_material(
+    handle: &AdapterHandle,
+    config: &McpStreamableHttpConfig,
+    credentials: &mut CredentialSessionLease,
+) -> Result<McpTlsMaterial, EvaError> {
+    let mut material = McpTlsMaterial::new();
+    if let Some(project_root) = &handle.project_root {
+        material = material.with_project_root(project_root);
+    }
+    if let Some(client_auth) = &config.client_auth {
+        let certificate = credentials
+            .resolve_reference(&client_auth.certificate_ref, &handle.provider.vault_secrets)?;
+        let private_key = credentials
+            .resolve_reference(&client_auth.private_key_ref, &handle.provider.vault_secrets)?;
+        material = material.with_client_auth(certificate.into_bytes(), private_key.into_bytes())?;
+    }
+    Ok(material)
+}
+
 /// 执行 `timeout_ms` 对应的处理逻辑。
 fn timeout_ms(handle: &AdapterHandle) -> u64 {
     handle.timeout_ms.unwrap_or(30_000)
@@ -400,9 +447,20 @@ fn json_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_vault::{CredentialSession, SecretValue};
     use crate::supervisor::ProviderCredentialScope;
-    use eva_config::AdapterTransport;
+    use eva_config::{AdapterTransport, ProviderVaultSecretRef};
     use eva_core::{CapabilityName, ErrorKind, RequestId};
+    use eva_mcp::{McpClientAuthConfig, McpRedirectPolicy};
+    use std::fmt;
+    use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    const TEST_CA_PEM: &str = include_str!("../../../eva-mcp/testdata/tls/ca.pem");
+    const TEST_CLIENT_PEM: &str = include_str!("../../../eva-mcp/testdata/tls/client.pem");
+    const TEST_CLIENT_KEY: &str = include_str!("../../../eva-mcp/testdata/tls/client.key");
 
     /// 验证 `http_mcp_requires_provider_credential_scope_before_rpc` 场景下的预期行为。
     #[test]
@@ -454,6 +512,205 @@ mod tests {
         );
     }
 
+    #[test]
+    fn http_mtls_resolves_env_and_vault_material_per_call() {
+        let project_root = tls_project_root("material");
+        for (name, certificate_ref, private_key_ref, vault_refs, values) in [
+            (
+                "env",
+                "env:MCP_CLIENT_CERT",
+                "env:MCP_CLIENT_KEY",
+                Vec::new(),
+                BTreeMap::from([
+                    ("MCP_CLIENT_CERT".to_owned(), TEST_CLIENT_PEM.to_owned()),
+                    ("MCP_CLIENT_KEY".to_owned(), TEST_CLIENT_KEY.to_owned()),
+                ]),
+            ),
+            (
+                "vault",
+                "vault://tests/mcp/client-cert",
+                "vault://tests/mcp/client-key",
+                vec![
+                    ProviderVaultSecretRef {
+                        env: "MCP_CLIENT_CERT".to_owned(),
+                        secret_ref: "vault://tests/mcp/client-cert".to_owned(),
+                    },
+                    ProviderVaultSecretRef {
+                        env: "MCP_CLIENT_KEY".to_owned(),
+                        secret_ref: "vault://tests/mcp/client-key".to_owned(),
+                    },
+                ],
+                BTreeMap::from([
+                    (
+                        "vault://tests/mcp/client-cert".to_owned(),
+                        TEST_CLIENT_PEM.to_owned(),
+                    ),
+                    (
+                        "vault://tests/mcp/client-key".to_owned(),
+                        TEST_CLIENT_KEY.to_owned(),
+                    ),
+                ]),
+            ),
+        ] {
+            let port = unused_local_port();
+            let mut handle = tls_mcp_handle(
+                project_root.clone(),
+                port,
+                certificate_ref,
+                private_key_ref,
+                ["file:certs/ca.pem"],
+            );
+            handle.provider.vault_secrets = vault_refs;
+            let opens = Arc::new(AtomicUsize::new(0));
+            let releases = Arc::new(AtomicUsize::new(0));
+            let vault = TestCredentialVault {
+                values,
+                opens: opens.clone(),
+                releases: releases.clone(),
+            };
+            let request_id = RequestId::parse(&format!("req-mcp-mtls-{name}")).unwrap();
+            let capability = CapabilityName::parse("github.issue.list").unwrap();
+            let scope = ProviderCredentialScope::new_for_session(
+                format!("session-mcp-mtls-{name}"),
+                handle.id.clone(),
+                request_id.clone(),
+                capability.clone(),
+            );
+
+            let error = invoke_with_spawner_and_vault(
+                &handle,
+                AdapterInvocation::new(request_id, capability).with_credential_scope(scope),
+                None,
+                &vault,
+            )
+            .unwrap_err();
+
+            assert!(
+                matches!(
+                    error.provider_code().map(|code| code.as_str()),
+                    Some("mcp_http_connect_failed" | "mcp_http_connect_timeout")
+                ),
+                "{name}: {error:?}"
+            );
+            let debug = format!("{error:?}");
+            assert!(!debug.contains("-----BEGIN CERTIFICATE-----"));
+            assert!(!debug.contains("-----BEGIN PRIVATE KEY-----"));
+            assert_eq!(opens.load(Ordering::SeqCst), 1, "{name}");
+            assert_eq!(releases.load(Ordering::SeqCst), 1, "{name}");
+        }
+        std::fs::remove_dir_all(project_root).unwrap();
+    }
+
+    #[test]
+    fn http_mtls_missing_and_ambiguous_references_fail_closed_and_release() {
+        let project_root = tls_project_root("references");
+
+        let handle = tls_mcp_handle(
+            project_root.clone(),
+            unused_local_port(),
+            "env:MCP_CLIENT_CERT",
+            "env:MCP_CLIENT_KEY",
+            ["file:certs/ca.pem"],
+        );
+        let opens = Arc::new(AtomicUsize::new(0));
+        let releases = Arc::new(AtomicUsize::new(0));
+        let vault = TestCredentialVault {
+            values: BTreeMap::new(),
+            opens: opens.clone(),
+            releases: releases.clone(),
+        };
+        let error = invoke_tls_for_test(&handle, "missing", &vault).unwrap_err();
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("missing_credential")
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
+
+        let certificate_ref = "vault://tests/mcp/shared-cert";
+        let private_key_ref = "vault://tests/mcp/client-key";
+        let mut handle = tls_mcp_handle(
+            project_root.clone(),
+            unused_local_port(),
+            certificate_ref,
+            private_key_ref,
+            ["file:certs/ca.pem"],
+        );
+        handle.provider.vault_secrets = vec![
+            ProviderVaultSecretRef {
+                env: "MCP_CLIENT_CERT_A".to_owned(),
+                secret_ref: certificate_ref.to_owned(),
+            },
+            ProviderVaultSecretRef {
+                env: "MCP_CLIENT_CERT_B".to_owned(),
+                secret_ref: certificate_ref.to_owned(),
+            },
+            ProviderVaultSecretRef {
+                env: "MCP_CLIENT_KEY".to_owned(),
+                secret_ref: private_key_ref.to_owned(),
+            },
+        ];
+        let opens = Arc::new(AtomicUsize::new(0));
+        let releases = Arc::new(AtomicUsize::new(0));
+        let vault = TestCredentialVault {
+            values: BTreeMap::from([
+                (certificate_ref.to_owned(), TEST_CLIENT_PEM.to_owned()),
+                (private_key_ref.to_owned(), TEST_CLIENT_KEY.to_owned()),
+            ]),
+            opens: opens.clone(),
+            releases: releases.clone(),
+        };
+        let error = invoke_tls_for_test(&handle, "ambiguous", &vault).unwrap_err();
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("credential_ref_ambiguous")
+        );
+        let debug = format!("{error:?}");
+        assert!(!debug.contains(certificate_ref));
+        assert!(!debug.contains("-----BEGIN CERTIFICATE-----"));
+        assert!(!debug.contains("-----BEGIN PRIVATE KEY-----"));
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
+
+        std::fs::remove_dir_all(project_root).unwrap();
+    }
+
+    #[test]
+    fn http_indirect_root_without_runtime_authority_fails_before_vault_open() {
+        let project_root = tls_project_root("indirect");
+        let handle = tls_mcp_handle(
+            project_root.clone(),
+            unused_local_port(),
+            "env:MCP_CLIENT_CERT",
+            "env:MCP_CLIENT_KEY",
+            ["pem:sha256:test-root"],
+        );
+        let opens = Arc::new(AtomicUsize::new(0));
+        let vault = TestCredentialVault {
+            values: BTreeMap::new(),
+            opens: opens.clone(),
+            releases: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let error = invoke_with_spawner_and_vault(
+            &handle,
+            AdapterInvocation::new(
+                RequestId::parse("req-mcp-indirect-root").unwrap(),
+                CapabilityName::parse("github.issue.list").unwrap(),
+            ),
+            None,
+            &vault,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("mcp_tls_indirect_material_unavailable")
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+        std::fs::remove_dir_all(project_root).unwrap();
+    }
+
     /// 执行 `http_mcp_handle` 对应的处理逻辑。
     fn http_mcp_handle(headers: BTreeMap<String, String>) -> AdapterHandle {
         AdapterHandle {
@@ -464,6 +721,7 @@ mod tests {
             transport: AdapterTransport::Mcp,
             capabilities: vec![CapabilityName::parse("github.issue.list").unwrap()],
             source_path: "test".to_owned(),
+            project_root: None,
             command: None,
             args: Vec::new(),
             endpoint: Some("http://127.0.0.1:1/mcp".to_owned()),
@@ -497,6 +755,144 @@ mod tests {
             hardware_driver_id: None,
             hardware_driver_kind: None,
             bindings: Vec::new(),
+        }
+    }
+
+    fn tls_mcp_handle(
+        project_root: PathBuf,
+        port: u16,
+        certificate_ref: &str,
+        private_key_ref: &str,
+        trust_roots: impl IntoIterator<Item = &'static str>,
+    ) -> AdapterHandle {
+        let endpoint = format!("https://127.0.0.1:{port}/mcp");
+        let origin = format!("https://127.0.0.1:{port}");
+        let config = McpStreamableHttpConfig::from_parts(
+            endpoint.clone(),
+            trust_roots,
+            Some(McpClientAuthConfig::new(certificate_ref, private_key_ref).unwrap()),
+            McpRedirectPolicy::Deny,
+            [origin],
+        )
+        .unwrap();
+        let mut handle = http_mcp_handle(BTreeMap::new());
+        handle.project_root = Some(project_root);
+        handle.endpoint = Some(endpoint);
+        handle.mcp_server_transport = Some("streamable_http".to_owned());
+        handle.mcp_http_config = Some(config);
+        handle
+    }
+
+    fn invoke_tls_for_test(
+        handle: &AdapterHandle,
+        name: &str,
+        vault: &dyn CredentialVault,
+    ) -> Result<AdapterInvokeReport, EvaError> {
+        let request_id = RequestId::parse(&format!("req-mcp-mtls-{name}")).unwrap();
+        let capability = CapabilityName::parse("github.issue.list").unwrap();
+        let scope = ProviderCredentialScope::new_for_session(
+            format!("session-mcp-mtls-{name}"),
+            handle.id.clone(),
+            request_id.clone(),
+            capability.clone(),
+        );
+        invoke_with_spawner_and_vault(
+            handle,
+            AdapterInvocation::new(request_id, capability).with_credential_scope(scope),
+            None,
+            vault,
+        )
+    }
+
+    fn tls_project_root(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "eva-adapter-mcp-tls-{name}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("certs")).unwrap();
+        std::fs::write(root.join("certs/ca.pem"), TEST_CA_PEM).unwrap();
+        std::fs::canonicalize(root).unwrap()
+    }
+
+    fn unused_local_port() -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    struct TestCredentialVault {
+        values: BTreeMap<String, String>,
+        opens: Arc<AtomicUsize>,
+        releases: Arc<AtomicUsize>,
+    }
+
+    impl fmt::Debug for TestCredentialVault {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("TestCredentialVault")
+                .field("secret_count", &self.values.len())
+                .finish()
+        }
+    }
+
+    impl CredentialVault for TestCredentialVault {
+        fn open_session(
+            &self,
+            _scope: &ProviderCredentialScope,
+        ) -> Result<Box<dyn CredentialSession>, EvaError> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(TestCredentialSession {
+                values: self.values.clone(),
+                releases: self.releases.clone(),
+                released: false,
+            }))
+        }
+    }
+
+    struct TestCredentialSession {
+        values: BTreeMap<String, String>,
+        releases: Arc<AtomicUsize>,
+        released: bool,
+    }
+
+    impl fmt::Debug for TestCredentialSession {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("TestCredentialSession")
+                .field("secret_count", &self.values.len())
+                .field("released", &self.released)
+                .finish()
+        }
+    }
+
+    impl CredentialSession for TestCredentialSession {
+        fn fetch(&mut self, secret_ref: &str) -> Result<SecretValue, EvaError> {
+            if self.released {
+                return Err(EvaError::conflict("test credential session was released"));
+            }
+            self.values
+                .get(secret_ref)
+                .cloned()
+                .map(SecretValue::new)
+                .ok_or_else(|| {
+                    EvaError::not_found("test credential material is unavailable")
+                        .with_context("secret_ref", secret_ref)
+                })
+        }
+
+        fn release(&mut self) -> Result<(), EvaError> {
+            if !self.released {
+                self.released = true;
+                self.releases.fetch_add(1, Ordering::SeqCst);
+                for value in self.values.values_mut() {
+                    value.clear();
+                }
+                self.values.clear();
+            }
+            Ok(())
         }
     }
 }

@@ -1970,6 +1970,7 @@ mod tests {
             transport: AdapterTransport::Stdio,
             capabilities: vec![CapabilityName::parse("repo.analyze").unwrap()],
             source_path: "test".to_owned(),
+            project_root: None,
             command: Some("stdio-runner".to_owned()),
             args: vec!["--once".to_owned()],
             endpoint: None,
