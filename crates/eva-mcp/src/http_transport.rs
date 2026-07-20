@@ -10,18 +10,23 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{CertificateError, ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pemfile::Item;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufReader, Read, Write};
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::{Duration, Instant};
 use zeroize::{Zeroize, Zeroizing};
 
 const MAX_TLS_MATERIAL_BYTES: usize = 1024 * 1024;
+const MAX_DNS_RESOLVER_THREADS: usize = 16;
+const MAX_DNS_ADDRESSES: usize = 64;
+static ACTIVE_DNS_RESOLVER_THREADS: AtomicUsize = AtomicUsize::new(0);
 
 /// Per-call TLS material supplied by the runtime authority.
 ///
@@ -157,9 +162,15 @@ pub(crate) enum McpHttpStream {
 /// The exact TCP socket shared by the blocking reader and abort control
 /// plane. Using the same socket object matters on Windows, where a duplicated
 /// socket handle does not reliably wake a rustls read on another handle.
-#[derive(Clone)]
 pub(crate) struct McpSharedTcpStream {
     socket: Arc<TcpStream>,
+    timeout: McpSocketTimeout,
+}
+
+#[derive(Clone, Copy)]
+enum McpSocketTimeout {
+    Deadline(Instant),
+    Idle(Duration),
 }
 
 /// Cloneable control plane for interrupting a blocking HTTP body read.
@@ -195,26 +206,75 @@ impl Deref for McpSharedTcpStream {
 
 impl Read for McpSharedTcpStream {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.socket.as_ref().read(buffer)
+        self.socket
+            .set_read_timeout(Some(self.remaining_timeout()?))?;
+        self.finish_io(self.socket.as_ref().read(buffer))
     }
 }
 
 impl Write for McpSharedTcpStream {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.socket.as_ref().write(buffer)
+        self.socket
+            .set_write_timeout(Some(self.remaining_timeout()?))?;
+        self.finish_io(self.socket.as_ref().write(buffer))
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.socket.as_ref().flush()
+        self.socket
+            .set_write_timeout(Some(self.remaining_timeout()?))?;
+        self.finish_io(self.socket.as_ref().flush())
     }
 }
 
 impl McpSharedTcpStream {
-    fn new(socket: TcpStream) -> Self {
-        Self {
+    fn new(socket: TcpStream, deadline: Instant) -> io::Result<Self> {
+        let stream = Self {
             socket: Arc::new(socket),
+            timeout: McpSocketTimeout::Deadline(deadline),
+        };
+        let remaining = stream.remaining_timeout()?;
+        stream.socket.set_read_timeout(Some(remaining))?;
+        stream.socket.set_write_timeout(Some(remaining))?;
+        Ok(stream)
+    }
+
+    fn use_idle_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        if timeout.is_zero() {
+            return Err(deadline_io_error());
+        }
+        self.timeout = McpSocketTimeout::Idle(timeout);
+        self.socket.set_read_timeout(Some(timeout))?;
+        self.socket.set_write_timeout(Some(timeout))?;
+        Ok(())
+    }
+
+    fn ensure_deadline(&self) -> io::Result<()> {
+        self.remaining_timeout().map(|_| ())
+    }
+
+    fn remaining_timeout(&self) -> io::Result<Duration> {
+        match self.timeout {
+            McpSocketTimeout::Deadline(deadline) => deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(deadline_io_error),
+            McpSocketTimeout::Idle(timeout) if !timeout.is_zero() => Ok(timeout),
+            McpSocketTimeout::Idle(_) => Err(deadline_io_error()),
         }
     }
+
+    fn finish_io<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        if matches!(self.timeout, McpSocketTimeout::Deadline(deadline) if Instant::now() >= deadline)
+        {
+            Err(deadline_io_error())
+        } else {
+            result
+        }
+    }
+}
+
+fn deadline_io_error() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "MCP HTTP request deadline elapsed")
 }
 
 impl fmt::Debug for McpHttpAbortHandle {
@@ -278,6 +338,20 @@ impl McpHttpStream {
             }),
         })
     }
+
+    pub(crate) fn use_idle_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        match self {
+            Self::Plaintext(stream) => stream.use_idle_timeout(timeout),
+            Self::Tls(stream) => stream.sock.use_idle_timeout(timeout),
+        }
+    }
+
+    pub(crate) fn ensure_deadline(&self) -> io::Result<()> {
+        match self {
+            Self::Plaintext(stream) => stream.ensure_deadline(),
+            Self::Tls(stream) => stream.sock.ensure_deadline(),
+        }
+    }
 }
 
 impl McpHttpAbortHandle {
@@ -321,21 +395,21 @@ impl McpHttpConnector {
     }
 
     /// Establish a socket and complete TLS before HTTP bytes are written.
-    pub(crate) fn connect(
+    pub(crate) fn connect_until(
         &self,
         scheme: &str,
         host: &str,
         port: u16,
         origin: &str,
-        timeout: Duration,
+        deadline: Instant,
     ) -> Result<McpHttpStream, EvaError> {
         match (self, scheme) {
             (Self::Plaintext, "http") => {
-                let stream = connect_tcp(host, port, origin, timeout)?;
-                Ok(McpHttpStream::Plaintext(McpSharedTcpStream::new(stream)))
+                let stream = connect_tcp(host, port, origin, deadline)?;
+                Ok(McpHttpStream::Plaintext(stream))
             }
             (Self::Tls(config), "https") => {
-                let mut stream = connect_tcp(host, port, origin, timeout)?;
+                let mut stream = connect_tcp(host, port, origin, deadline)?;
                 let server_name = ServerName::try_from(host.to_owned()).map_err(|_| {
                     EvaError::invalid_argument("MCP TLS server name is invalid")
                         .with_provider_code("mcp_tls_server_name_invalid")
@@ -350,9 +424,11 @@ impl McpHttpConnector {
                 connection
                     .complete_io(&mut stream)
                     .map_err(|error| map_tls_handshake_error(error, origin))?;
+                stream
+                    .ensure_deadline()
+                    .map_err(|error| map_tls_handshake_error(error, origin))?;
                 Ok(McpHttpStream::Tls(Box::new(StreamOwned::new(
-                    connection,
-                    McpSharedTcpStream::new(stream),
+                    connection, stream,
                 ))))
             }
             _ => Err(
@@ -361,6 +437,23 @@ impl McpHttpConnector {
                     .with_context("origin", origin),
             ),
         }
+    }
+
+    #[cfg(test)]
+    fn connect(
+        &self,
+        scheme: &str,
+        host: &str,
+        port: u16,
+        origin: &str,
+        timeout: Duration,
+    ) -> Result<McpHttpStream, EvaError> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            EvaError::invalid_argument("MCP HTTP request timeout is out of range")
+                .with_provider_code("mcp_http_timeout_invalid")
+                .with_context("origin", origin)
+        })?;
+        self.connect_until(scheme, host, port, origin, deadline)
     }
 }
 
@@ -568,6 +661,17 @@ fn read_controlled_trust_file(
     project_root: &Path,
     relative_path: &str,
 ) -> Result<Vec<u8>, EvaError> {
+    read_controlled_trust_file_with_hook(project_root, relative_path, |_| {})
+}
+
+fn read_controlled_trust_file_with_hook<F>(
+    project_root: &Path,
+    relative_path: &str,
+    mut ancestor_opened: F,
+) -> Result<Vec<u8>, EvaError>
+where
+    F: FnMut(usize),
+{
     if !project_root.is_absolute() {
         return Err(
             EvaError::permission_denied("MCP TLS project root must be an absolute path")
@@ -621,24 +725,22 @@ fn read_controlled_trust_file(
         .with_provider_code("mcp_tls_project_root_invalid"));
     }
 
-    let path = canonical_root.join(relative);
     validate_trust_path_components(&canonical_root, relative)?;
-    let canonical_path = fs::canonicalize(&path).map_err(|_| {
-        EvaError::not_found("MCP TLS trust root file is unavailable")
-            .with_provider_code("mcp_tls_trust_root_unavailable")
-    })?;
-    if !canonical_path.starts_with(&canonical_root) {
-        return Err(EvaError::permission_denied(
-            "MCP TLS trust root path escapes its controlled project root",
-        )
-        .with_provider_code("mcp_tls_trust_root_escape"));
-    }
-
-    let mut file = open_file_no_follow(&path).map_err(|_| {
+    let components = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(component) => Ok(component.to_os_string()),
+            _ => Err(EvaError::permission_denied(
+                "MCP TLS trust root path escapes its controlled project root",
+            )
+            .with_provider_code("mcp_tls_trust_root_escape")),
+        })
+        .collect::<Result<Vec<OsString>, EvaError>>()?;
+    let mut file = open_controlled_trust_file(&canonical_root, &components, &mut ancestor_opened)
+        .map_err(|_| {
         EvaError::permission_denied("MCP TLS trust root file could not be opened safely")
             .with_provider_code("mcp_tls_trust_root_open_denied")
     })?;
-    validate_trust_path_components(&canonical_root, relative)?;
     let metadata = file.metadata().map_err(|_| {
         EvaError::unavailable("MCP TLS trust root metadata is unavailable")
             .with_provider_code("mcp_tls_trust_root_unavailable")
@@ -699,25 +801,430 @@ fn validate_trust_path_components(root: &Path, relative: &Path) -> Result<(), Ev
     Ok(())
 }
 
-fn open_file_no_follow(path: &Path) -> io::Result<fs::File> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+const UNIX_O_CLOEXEC: i32 = 0x0008_0000;
+#[cfg(target_os = "linux")]
+const UNIX_O_DIRECTORY: i32 = 0x0001_0000;
+#[cfg(target_os = "linux")]
+const UNIX_O_NOFOLLOW: i32 = 0x0002_0000;
+#[cfg(target_os = "linux")]
+const UNIX_O_NONBLOCK: i32 = 0x0000_0800;
+
+#[cfg(target_os = "macos")]
+const UNIX_O_CLOEXEC: i32 = 0x0100_0000;
+#[cfg(target_os = "macos")]
+const UNIX_O_DIRECTORY: i32 = 0x0010_0000;
+#[cfg(target_os = "macos")]
+const UNIX_O_NOFOLLOW: i32 = 0x0000_0100;
+#[cfg(target_os = "macos")]
+const UNIX_O_NONBLOCK: i32 = 0x0000_0004;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn open_controlled_trust_file<F>(
+    root: &Path,
+    components: &[OsString],
+    ancestor_opened: &mut F,
+) -> io::Result<fs::File>
+where
+    F: FnMut(usize),
+{
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let expected_root = fs::metadata(root)?;
+    let mut root_options = OpenOptions::new();
+    root_options
+        .read(true)
+        .custom_flags(UNIX_O_CLOEXEC | UNIX_O_DIRECTORY | UNIX_O_NOFOLLOW);
+    let mut current = root_options.open(root)?;
+    let opened_root = current.metadata()?;
+    if !opened_root.is_dir()
+        || opened_root.dev() != expected_root.dev()
+        || opened_root.ino() != expected_root.ino()
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(0x0002_0000 | 0x0000_0800); // O_NOFOLLOW | O_NONBLOCK
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "controlled root identity changed while opening",
+        ));
     }
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+
+    for (index, component) in components.iter().enumerate() {
+        let name = CString::new(component.as_os_str().as_bytes()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "controlled path component contains NUL",
+            )
+        })?;
+        let final_component = index + 1 == components.len();
+        let flags = if final_component {
+            UNIX_O_CLOEXEC | UNIX_O_NOFOLLOW | UNIX_O_NONBLOCK
+        } else {
+            UNIX_O_CLOEXEC | UNIX_O_DIRECTORY | UNIX_O_NOFOLLOW
+        };
+        let descriptor = loop {
+            let descriptor = unsafe { openat(current.as_raw_fd(), name.as_ptr(), flags) };
+            if descriptor >= 0 {
+                break descriptor;
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        };
+        let next = unsafe { fs::File::from_raw_fd(descriptor) };
+        let metadata = next.metadata()?;
+        if (final_component && !metadata.is_file()) || (!final_component && !metadata.is_dir()) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "controlled path component has an invalid type",
+            ));
+        }
+        if final_component {
+            return Ok(next);
+        }
+        ancestor_opened(index);
+        current = next;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "controlled path has no final component",
+    ))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+unsafe extern "C" {
+    fn openat(directory: i32, path: *const std::ffi::c_char, flags: i32, ...) -> i32;
+}
+
+#[cfg(windows)]
+fn open_controlled_trust_file<F>(
+    root: &Path,
+    components: &[OsString],
+    ancestor_opened: &mut F,
+) -> io::Result<fs::File>
+where
+    F: FnMut(usize),
+{
+    windows_trust_path::open(root, components, ancestor_opened)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn open_controlled_trust_file<F>(
+    root: &Path,
+    components: &[OsString],
+    ancestor_opened: &mut F,
+) -> io::Result<fs::File>
+where
+    F: FnMut(usize),
+{
+    let mut path = root.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        path.push(component);
+        if index + 1 < components.len() {
+            ancestor_opened(index);
+        }
+    }
+    OpenOptions::new().read(true).open(path)
+}
+
+#[cfg(windows)]
+mod windows_trust_path {
+    use super::*;
+    use std::ffi::{c_void, OsStr};
+    use std::mem::size_of;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
+    use std::ptr::{null_mut, NonNull};
+
+    type Handle = *mut c_void;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+    const FILE_READ_DATA: u32 = 0x0000_0001;
+    const FILE_LIST_DIRECTORY: u32 = 0x0000_0001;
+    const FILE_TRAVERSE: u32 = 0x0000_0020;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
+
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        maximum_length: u16,
+        buffer: *mut u16,
+    }
+
+    #[repr(C)]
+    struct ObjectAttributes {
+        length: u32,
+        root_directory: Handle,
+        object_name: *mut UnicodeString,
+        attributes: u32,
+        security_descriptor: *mut c_void,
+        security_quality_of_service: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct IoStatusBlock {
+        status_or_pointer: usize,
+        information: usize,
+    }
+
+    pub(super) fn open<F>(
+        root: &Path,
+        components: &[OsString],
+        ancestor_opened: &mut F,
+    ) -> io::Result<fs::File>
+    where
+        F: FnMut(usize),
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(0x0000_0100 | 0x0000_0004); // O_NOFOLLOW | O_NONBLOCK
+        let mut root_options = OpenOptions::new();
+        root_options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        let root_handle = root_options.open(root)?;
+        validate_handle_type(&root_handle, false)?;
+        let opened_root = final_path(&root_handle)?;
+        if !paths_equal(&opened_root, root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "controlled root final path changed while opening",
+            ));
+        }
+        let mut current = root_handle.try_clone()?;
+
+        for (index, component) in components.iter().enumerate() {
+            let final_component = index + 1 == components.len();
+            let next = open_relative(&current, component, final_component)?;
+            validate_handle_type(&next, final_component)?;
+            if final_component {
+                let current_root = final_path(&root_handle)?;
+                if !paths_equal(&opened_root, &current_root) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "controlled root handle moved while traversing",
+                    ));
+                }
+                let opened_file = final_path(&next)?;
+                if !path_is_below(&opened_root, &opened_file) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "controlled file final path escaped its root handle",
+                    ));
+                }
+                return Ok(next);
+            }
+            ancestor_opened(index);
+            current = next;
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "controlled path has no final component",
+        ))
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+
+    fn open_relative(
+        parent: &fs::File,
+        component: &OsStr,
+        final_component: bool,
+    ) -> io::Result<fs::File> {
+        let mut wide = component.encode_wide().collect::<Vec<_>>();
+        if wide.is_empty()
+            || wide.contains(&0)
+            || wide.len() > usize::from(u16::MAX) / size_of::<u16>()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "controlled path component is invalid",
+            ));
+        }
+        let byte_length = u16::try_from(wide.len() * size_of::<u16>()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "controlled path component is too long",
+            )
+        })?;
+        let mut name = UnicodeString {
+            length: byte_length,
+            maximum_length: byte_length,
+            buffer: wide.as_mut_ptr(),
+        };
+        let mut attributes = ObjectAttributes {
+            length: size_of::<ObjectAttributes>() as u32,
+            root_directory: parent.as_raw_handle() as Handle,
+            object_name: &mut name,
+            attributes: OBJ_CASE_INSENSITIVE,
+            security_descriptor: null_mut(),
+            security_quality_of_service: null_mut(),
+        };
+        let mut io_status = IoStatusBlock {
+            status_or_pointer: 0,
+            information: 0,
+        };
+        let mut handle: Handle = null_mut();
+        let desired_access = FILE_READ_ATTRIBUTES
+            | SYNCHRONIZE
+            | if final_component {
+                FILE_READ_DATA
+            } else {
+                FILE_LIST_DIRECTORY | FILE_TRAVERSE
+            };
+        let create_options = FILE_OPEN_REPARSE_POINT
+            | FILE_SYNCHRONOUS_IO_NONALERT
+            | if final_component {
+                FILE_NON_DIRECTORY_FILE
+            } else {
+                FILE_DIRECTORY_FILE
+            };
+        let status = unsafe {
+            NtCreateFile(
+                &mut handle,
+                desired_access,
+                &mut attributes,
+                &mut io_status,
+                null_mut(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                create_options,
+                null_mut(),
+                0,
+            )
+        };
+        if status < 0 {
+            return Err(ntstatus_error(status));
+        }
+        let handle = NonNull::new(handle)
+            .ok_or_else(|| io::Error::other("NtCreateFile returned a null handle"))?;
+        Ok(unsafe { fs::File::from_raw_handle(handle.as_ptr() as RawHandle) })
     }
-    options.open(path)
+
+    fn validate_handle_type(file: &fs::File, final_component: bool) -> io::Result<()> {
+        use std::os::windows::fs::MetadataExt;
+
+        let metadata = file.metadata()?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || (final_component && !metadata.is_file())
+            || (!final_component && !metadata.is_dir())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "controlled path handle is a reparse point or has an invalid type",
+            ));
+        }
+        Ok(())
+    }
+
+    fn final_path(file: &fs::File) -> io::Result<PathBuf> {
+        let handle = file.as_raw_handle() as Handle;
+        let required = unsafe { GetFinalPathNameByHandleW(handle, null_mut(), 0, 0) };
+        if required == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut buffer = vec![0_u16; required as usize + 1];
+        let written = unsafe {
+            GetFinalPathNameByHandleW(handle, buffer.as_mut_ptr(), buffer.len() as u32, 0)
+        };
+        if written == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if written as usize >= buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "controlled handle final path changed while reading",
+            ));
+        }
+        buffer.truncate(written as usize);
+        Ok(PathBuf::from(OsString::from_wide(&buffer)))
+    }
+
+    fn paths_equal(left: &Path, right: &Path) -> bool {
+        let left = left.components().collect::<Vec<_>>();
+        let right = right.components().collect::<Vec<_>>();
+        left.len() == right.len()
+            && left.iter().zip(right).all(|(left, right)| {
+                os_string_eq_ignore_ascii_case(left.as_os_str(), right.as_os_str())
+            })
+    }
+
+    fn path_is_below(root: &Path, candidate: &Path) -> bool {
+        let root = root.components().collect::<Vec<_>>();
+        let candidate = candidate.components().collect::<Vec<_>>();
+        candidate.len() > root.len()
+            && root.iter().zip(candidate.iter()).all(|(root, candidate)| {
+                os_string_eq_ignore_ascii_case(root.as_os_str(), candidate.as_os_str())
+            })
+    }
+
+    fn os_string_eq_ignore_ascii_case(left: &OsStr, right: &OsStr) -> bool {
+        let left = left.encode_wide().collect::<Vec<_>>();
+        let right = right.encode_wide().collect::<Vec<_>>();
+        left.len() == right.len()
+            && left.into_iter().zip(right).all(|(left, right)| {
+                let left = if left <= u16::from(u8::MAX) {
+                    u16::from((left as u8).to_ascii_lowercase())
+                } else {
+                    left
+                };
+                let right = if right <= u16::from(u8::MAX) {
+                    u16::from((right as u8).to_ascii_lowercase())
+                } else {
+                    right
+                };
+                left == right
+            })
+    }
+
+    fn ntstatus_error(status: i32) -> io::Error {
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        if code == 0 {
+            io::Error::other("NtCreateFile failed")
+        } else {
+            io::Error::from_raw_os_error(code as i32)
+        }
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut Handle,
+            desired_access: u32,
+            object_attributes: *mut ObjectAttributes,
+            io_status_block: *mut IoStatusBlock,
+            allocation_size: *mut i64,
+            file_attributes: u32,
+            share_access: u32,
+            create_disposition: u32,
+            create_options: u32,
+            ea_buffer: *mut c_void,
+            ea_length: u32,
+        ) -> i32;
+
+        fn RtlNtStatusToDosError(status: i32) -> u32;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFinalPathNameByHandleW(
+            file: Handle,
+            file_path: *mut u16,
+            file_path_length: u32,
+            flags: u32,
+        ) -> u32;
+    }
 }
 
 #[cfg(windows)]
@@ -737,19 +1244,14 @@ fn connect_tcp(
     host: &str,
     port: u16,
     origin: &str,
-    timeout: Duration,
-) -> Result<TcpStream, EvaError> {
-    if timeout.is_zero() {
+    deadline: Instant,
+) -> Result<McpSharedTcpStream, EvaError> {
+    if Instant::now() >= deadline {
         return Err(EvaError::timeout("MCP HTTP connection timed out")
             .with_provider_code("mcp_http_connect_timeout")
             .with_context("origin", origin));
     }
-    let addresses = (host, port).to_socket_addrs().map_err(|_| {
-        EvaError::unavailable("failed to resolve MCP HTTP server")
-            .with_provider_code("mcp_http_dns_failed")
-            .with_context("origin", origin)
-    })?;
-    let addresses = addresses.collect::<Vec<_>>();
+    let addresses = resolve_addresses(host, port, origin, deadline)?;
     if addresses.is_empty() {
         return Err(
             EvaError::unavailable("MCP HTTP server host did not resolve")
@@ -758,11 +1260,6 @@ fn connect_tcp(
         );
     }
 
-    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-        EvaError::invalid_argument("MCP HTTP connection timeout is out of range")
-            .with_provider_code("mcp_http_timeout_invalid")
-            .with_context("origin", origin)
-    })?;
     let mut last_error = None;
     for address in addresses {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -771,15 +1268,17 @@ fn connect_tcp(
         }
         match TcpStream::connect_timeout(&address, remaining) {
             Ok(stream) => {
-                stream
-                    .set_read_timeout(Some(timeout))
-                    .and_then(|_| stream.set_write_timeout(Some(timeout)))
-                    .map_err(|_| {
+                return McpSharedTcpStream::new(stream, deadline).map_err(|error| {
+                    if is_timeout_error(&error) {
+                        EvaError::timeout("MCP HTTP connection timed out")
+                            .with_provider_code("mcp_http_connect_timeout")
+                            .with_context("origin", origin)
+                    } else {
                         EvaError::unavailable("failed to configure MCP HTTP socket timeouts")
                             .with_provider_code("mcp_http_timeout_config_failed")
                             .with_context("origin", origin)
-                    })?;
-                return Ok(stream);
+                    }
+                });
             }
             Err(error) => last_error = Some(error),
         }
@@ -794,6 +1293,133 @@ fn connect_tcp(
             .with_provider_code("mcp_http_connect_failed")
             .with_context("origin", origin))
     }
+}
+
+fn resolve_addresses(
+    host: &str,
+    port: u16,
+    origin: &str,
+    deadline: Instant,
+) -> Result<Vec<SocketAddr>, EvaError> {
+    if let Ok(address) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(address, port)]);
+    }
+    let host = host.to_owned();
+    resolve_addresses_with(
+        move || {
+            (host.as_str(), port)
+                .to_socket_addrs()
+                .map(|addresses| addresses.take(MAX_DNS_ADDRESSES + 1).collect())
+        },
+        origin,
+        deadline,
+    )
+}
+
+fn resolve_addresses_with<F>(
+    resolver: F,
+    origin: &str,
+    deadline: Instant,
+) -> Result<Vec<SocketAddr>, EvaError>
+where
+    F: FnOnce() -> io::Result<Vec<SocketAddr>> + Send + 'static,
+{
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| dns_timeout_error(origin))?;
+    let slot = DnsResolverSlot::acquire(origin)?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("eva-mcp-dns".to_owned())
+        .spawn(move || {
+            let _slot = slot;
+            let _ = sender.send(resolver());
+        })
+        .map_err(|_| {
+            EvaError::unavailable("failed to start MCP HTTP DNS resolver")
+                .with_provider_code("mcp_http_dns_worker_unavailable")
+                .with_context("origin", origin)
+        })?;
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| dns_timeout_error(origin))?;
+    let resolved = match receiver.recv_timeout(remaining) {
+        Ok(resolved) => resolved,
+        Err(mpsc::RecvTimeoutError::Timeout) => return Err(dns_timeout_error(origin)),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(
+                EvaError::unavailable("MCP HTTP DNS resolver stopped unexpectedly")
+                    .with_provider_code("mcp_http_dns_failed")
+                    .with_context("origin", origin),
+            );
+        }
+    };
+    if Instant::now() >= deadline {
+        return Err(dns_timeout_error(origin));
+    }
+    let addresses = resolved.map_err(|_| {
+        EvaError::unavailable("failed to resolve MCP HTTP server")
+            .with_provider_code("mcp_http_dns_failed")
+            .with_context("origin", origin)
+    })?;
+    if addresses.len() > MAX_DNS_ADDRESSES {
+        return Err(
+            EvaError::conflict("MCP HTTP server resolved to too many addresses")
+                .with_provider_code("mcp_http_dns_address_limit")
+                .with_context("origin", origin)
+                .with_context("address_limit", MAX_DNS_ADDRESSES.to_string()),
+        );
+    }
+    Ok(addresses)
+}
+
+#[derive(Debug)]
+struct DnsResolverSlot {
+    active: &'static AtomicUsize,
+}
+
+impl DnsResolverSlot {
+    fn acquire(origin: &str) -> Result<Self, EvaError> {
+        Self::acquire_from(
+            &ACTIVE_DNS_RESOLVER_THREADS,
+            MAX_DNS_RESOLVER_THREADS,
+            origin,
+        )
+    }
+
+    fn acquire_from(
+        active_threads: &'static AtomicUsize,
+        limit: usize,
+        origin: &str,
+    ) -> Result<Self, EvaError> {
+        active_threads
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < limit).then_some(active + 1)
+            })
+            .map_err(|_| {
+                EvaError::unavailable("MCP HTTP DNS resolver capacity is exhausted")
+                    .with_provider_code("mcp_http_dns_capacity_exhausted")
+                    .with_retryable(true)
+                    .with_context("origin", origin)
+            })?;
+        Ok(Self {
+            active: active_threads,
+        })
+    }
+}
+
+impl Drop for DnsResolverSlot {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn dns_timeout_error(origin: &str) -> EvaError {
+    EvaError::timeout("MCP HTTP DNS resolution timed out")
+        .with_provider_code("mcp_http_dns_timeout")
+        .with_context("origin", origin)
 }
 
 fn map_tls_handshake_error(error: io::Error, origin: &str) -> EvaError {
@@ -1248,6 +1874,66 @@ mod tests {
     }
 
     #[test]
+    fn handle_traversal_stays_bound_when_an_ancestor_name_is_replaced() {
+        let temp = TestDir::new("ancestor-replacement");
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(project_root.join("certs")).unwrap();
+        fs::write(project_root.join("certs/ca.pem"), TEST_CA_PEM).unwrap();
+        let project_root = fs::canonicalize(project_root).unwrap();
+        let hook_root = project_root.clone();
+        let mut replacement_completed = false;
+
+        let bytes = read_controlled_trust_file_with_hook(
+            &project_root,
+            "certs/ca.pem",
+            |component_index| {
+                assert_eq!(component_index, 0);
+                assert!(!replacement_completed);
+                fs::rename(hook_root.join("certs"), hook_root.join("certs-original")).unwrap();
+                fs::create_dir(hook_root.join("certs")).unwrap();
+                fs::write(hook_root.join("certs/ca.pem"), TEST_UNKNOWN_CA_PEM).unwrap();
+                replacement_completed = true;
+            },
+        )
+        .unwrap();
+
+        assert!(replacement_completed);
+        assert_eq!(bytes, TEST_CA_PEM);
+        assert_eq!(
+            fs::read(project_root.join("certs/ca.pem")).unwrap(),
+            TEST_UNKNOWN_CA_PEM
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn handle_traversal_rejects_an_open_ancestor_moved_outside_the_project_root() {
+        let temp = TestDir::new("ancestor-moved-out");
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(project_root.join("certs")).unwrap();
+        fs::write(project_root.join("certs/ca.pem"), TEST_CA_PEM).unwrap();
+        let project_root = fs::canonicalize(project_root).unwrap();
+        let hook_root = project_root.clone();
+        let moved_ancestor = temp.path().join("moved-certs");
+
+        let error = read_controlled_trust_file_with_hook(
+            &project_root,
+            "certs/ca.pem",
+            |component_index| {
+                assert_eq!(component_index, 0);
+                fs::rename(hook_root.join("certs"), &moved_ancestor).unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert_provider_code(&error, "mcp_tls_trust_root_open_denied");
+        assert_eq!(
+            fs::read(moved_ancestor.join("ca.pem")).unwrap(),
+            TEST_CA_PEM
+        );
+    }
+
+    #[test]
     fn noncanonical_or_missing_project_root_fails_closed() {
         let config = file_tls_config("file:certs/ca.pem");
         let missing = McpHttpConnector::from_config(&config, McpTlsMaterial::new()).unwrap_err();
@@ -1336,6 +2022,89 @@ mod tests {
         );
         assert_provider_code(&write, "mcp_http_write_timeout");
         assert!(!write.to_string().contains("secret write detail"));
+    }
+
+    #[test]
+    fn dns_resolution_obeys_the_caller_deadline_and_address_bound() {
+        let resolver_baseline = ACTIVE_DNS_RESOLVER_THREADS.load(Ordering::Acquire);
+        let (release_sender, release_receiver) = mpsc::channel();
+        let started = Instant::now();
+        let error = resolve_addresses_with(
+            move || {
+                release_receiver.recv().unwrap();
+                Ok(vec!["127.0.0.1:9".parse().unwrap()])
+            },
+            "http://dns-timeout.invalid",
+            started + Duration::from_millis(40),
+        )
+        .unwrap_err();
+        assert_provider_code(&error, "mcp_http_dns_timeout");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        release_sender.send(()).unwrap();
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while ACTIVE_DNS_RESOLVER_THREADS.load(Ordering::Acquire) > resolver_baseline
+            && Instant::now() < cleanup_deadline
+        {
+            thread::yield_now();
+        }
+        assert!(ACTIVE_DNS_RESOLVER_THREADS.load(Ordering::Acquire) <= resolver_baseline);
+
+        let error = resolve_addresses_with(
+            || Ok(vec!["127.0.0.1:9".parse().unwrap(); MAX_DNS_ADDRESSES + 1]),
+            "http://dns-limit.invalid",
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_provider_code(&error, "mcp_http_dns_address_limit");
+
+        static LOCAL_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        let slot =
+            DnsResolverSlot::acquire_from(&LOCAL_ACTIVE, 1, "http://dns-busy.invalid").unwrap();
+        let error =
+            DnsResolverSlot::acquire_from(&LOCAL_ACTIVE, 1, "http://dns-busy.invalid").unwrap_err();
+        assert_provider_code(&error, "mcp_http_dns_capacity_exhausted");
+        assert!(error.is_retryable());
+        drop(slot);
+        assert_eq!(LOCAL_ACTIVE.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn real_blocked_socket_write_cannot_outlive_the_request_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_sender, accepted_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (_socket, _) = listener.accept().unwrap();
+            accepted_sender.send(()).unwrap();
+            release_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        });
+        let socket = TcpStream::connect(address).unwrap();
+        accepted_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let started = Instant::now();
+        let mut stream =
+            McpSharedTcpStream::new(socket, started + Duration::from_millis(100)).unwrap();
+        let block = [0_u8; 64 * 1024];
+        let mut written = 0_usize;
+        let error = loop {
+            match stream.write(&block) {
+                Ok(0) => panic!("blocked TCP write returned zero bytes"),
+                Ok(count) => {
+                    written = written.saturating_add(count);
+                    assert!(written <= 128 * 1024 * 1024, "socket never blocked");
+                }
+                Err(error) => break error,
+            }
+        };
+        let error = map_http_write_error(error, "http://blocked-write.test");
+        assert_provider_code(&error, "mcp_http_write_timeout");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        release_sender.send(()).unwrap();
+        server.join().unwrap();
     }
 
     fn tls_config(port: u16, host: &str, client_auth: bool) -> McpStreamableHttpConfig {

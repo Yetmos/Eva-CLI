@@ -1048,7 +1048,7 @@ impl McpHttpJsonRpcTransport {
         self.reject_unknown_session(&metadata)?;
         self.validate_response_session(&metadata)?;
         validate_http_event_stream_metadata(&metadata)?;
-        let stream = response.into_event_stream(output_limit_bytes)?;
+        let stream = response.into_persistent_event_stream(output_limit_bytes)?;
         self.audit.push("mcp.http:session_stream_opened".to_owned());
         Ok(stream)
     }
@@ -1110,7 +1110,7 @@ impl McpHttpJsonRpcTransport {
             );
         }
         require_event_stream_content_type(metadata.content_type.as_deref())?;
-        let stream = response.into_event_stream(output_limit_bytes)?;
+        let stream = response.into_persistent_event_stream(output_limit_bytes)?;
         self.exchange_count = self.exchange_count.saturating_add(1);
         self.audit
             .push("mcp.http:session_post_stream_opened".to_owned());
@@ -1633,6 +1633,8 @@ struct HttpOpenResponse {
     framing: HttpBodyFraming,
     reader: BufReader<McpHttpStream>,
     origin: String,
+    deadline: Instant,
+    idle_timeout: Duration,
 }
 
 impl HttpOpenResponse {
@@ -1647,12 +1649,14 @@ impl HttpOpenResponse {
     }
 
     fn into_buffered(mut self, output_limit_bytes: usize) -> Result<HttpJsonRpcResponse, EvaError> {
+        self.ensure_deadline()?;
         let (body, body_truncated) = read_http_body(
             &mut self.reader,
             self.framing,
             output_limit_bytes,
             &self.origin,
         )?;
+        self.ensure_deadline()?;
         Ok(HttpJsonRpcResponse {
             status_code: self.head.status_code,
             content_type: self.head.content_type,
@@ -1663,12 +1667,50 @@ impl HttpOpenResponse {
     }
 
     fn into_event_stream(self, output_limit_bytes: usize) -> Result<McpSseEventStream, EvaError> {
+        let deadline = self.deadline;
+        self.into_event_stream_inner(output_limit_bytes, Some(deadline))
+    }
+
+    fn into_persistent_event_stream(
+        mut self,
+        output_limit_bytes: usize,
+    ) -> Result<McpSseEventStream, EvaError> {
+        self.ensure_deadline()?;
+        self.reader
+            .get_mut()
+            .use_idle_timeout(self.idle_timeout)
+            .map_err(|error| {
+                EvaError::unavailable("failed to configure MCP HTTP stream idle timeout")
+                    .with_provider_code("mcp_http_timeout_config_failed")
+                    .with_context("origin", self.origin.clone())
+                    .with_context("io_error_kind", format!("{:?}", error.kind()))
+            })?;
+        self.into_event_stream_inner(output_limit_bytes, None)
+    }
+
+    fn into_event_stream_inner(
+        self,
+        output_limit_bytes: usize,
+        deadline: Option<Instant>,
+    ) -> Result<McpSseEventStream, EvaError> {
         let abort = self.reader.get_ref().abort_handle()?;
         McpSseEventStream::from_abortable_source(
-            Box::new(HttpSseSource::new(self.reader, self.framing, self.origin)),
+            Box::new(HttpSseSource::new_with_deadline(
+                self.reader,
+                self.framing,
+                self.origin,
+                deadline,
+            )),
             McpSseAbortHandle::new(move || abort.abort()),
             output_limit_bytes,
         )
+    }
+
+    fn ensure_deadline(&self) -> Result<(), EvaError> {
+        self.reader
+            .get_ref()
+            .ensure_deadline()
+            .map_err(|error| map_http_read_error(error, &self.origin))
     }
 }
 
@@ -1705,15 +1747,27 @@ struct HttpSseSource<R> {
     framing: HttpBodyFraming,
     origin: String,
     chunk_state: HttpChunkReadState,
+    deadline: Option<Instant>,
 }
 
 impl<R> HttpSseSource<R> {
+    #[cfg(test)]
     fn new(reader: BufReader<R>, framing: HttpBodyFraming, origin: String) -> Self {
+        Self::new_with_deadline(reader, framing, origin, None)
+    }
+
+    fn new_with_deadline(
+        reader: BufReader<R>,
+        framing: HttpBodyFraming,
+        origin: String,
+        deadline: Option<Instant>,
+    ) -> Self {
         Self {
             reader,
             framing,
             origin,
             chunk_state: HttpChunkReadState::Size,
+            deadline,
         }
     }
 }
@@ -1723,7 +1777,8 @@ impl<R: Read + Send> McpSseSource for HttpSseSource<R> {
         if buffer.is_empty() {
             return Ok(0);
         }
-        match &mut self.framing {
+        ensure_http_read_deadline(self.deadline, &self.origin)?;
+        let result = match &mut self.framing {
             HttpBodyFraming::None => Ok(0),
             HttpBodyFraming::ContentLength(remaining) => {
                 if *remaining == 0 {
@@ -1748,7 +1803,19 @@ impl<R: Read + Send> McpSseSource for HttpSseSource<R> {
                 .reader
                 .read(buffer)
                 .map_err(|error| map_http_read_error(error, &self.origin)),
-        }
+        }?;
+        ensure_http_read_deadline(self.deadline, &self.origin)?;
+        Ok(result)
+    }
+}
+
+fn ensure_http_read_deadline(deadline: Option<Instant>, origin: &str) -> Result<(), EvaError> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Err(EvaError::timeout("MCP HTTP response read timed out")
+            .with_provider_code("mcp_http_read_timeout")
+            .with_context("origin", origin))
+    } else {
+        Ok(())
     }
 }
 
@@ -1995,19 +2062,18 @@ fn open_http_response(
         output_limit_bytes,
         allow_bodyless_accepted,
     } = spec;
+    let request_started = Instant::now();
     if output_limit_bytes == 0 {
         return Err(EvaError::invalid_argument(
             "MCP HTTP response output limit must be greater than zero",
         ));
     }
     let parsed = ParsedHttpUrl::parse(endpoint)?;
-    let mut stream = connector.connect(
-        &parsed.scheme,
-        &parsed.host,
-        parsed.port,
-        &parsed.origin,
-        timeout,
-    )?;
+    let deadline = request_started.checked_add(timeout).ok_or_else(|| {
+        EvaError::invalid_argument("MCP HTTP request timeout is out of range")
+            .with_provider_code("mcp_http_timeout_invalid")
+            .with_context("origin", parsed.origin.clone())
+    })?;
 
     if method.is_empty()
         || !method
@@ -2064,6 +2130,13 @@ fn open_http_response(
         request.push_str("\r\n");
     }
     request.push_str("\r\n");
+    let mut stream = connector.connect_until(
+        &parsed.scheme,
+        &parsed.host,
+        parsed.port,
+        &parsed.origin,
+        deadline,
+    )?;
     stream
         .write_all(request.as_bytes())
         .and_then(|_| stream.write_all(body.as_bytes()))
@@ -2072,11 +2145,17 @@ fn open_http_response(
     let mut reader = BufReader::new(stream);
     let (head, framing) =
         read_final_http_response_head(&mut reader, &parsed.origin, allow_bodyless_accepted)?;
+    reader
+        .get_ref()
+        .ensure_deadline()
+        .map_err(|error| map_http_read_error(error, &parsed.origin))?;
     Ok(HttpOpenResponse {
         head,
         framing,
         reader,
         origin: parsed.origin,
+        deadline,
+        idle_timeout: timeout,
     })
 }
 
@@ -4145,6 +4224,11 @@ mod tests {
                         let second = &payload[11..];
                         let head = "HTTP/1.1 200 OK\r\nMcp-Session-Id: stream-session-secret\r\nContent-Type: text/event-stream; charset=utf-8\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n";
                         stream.write_all(head.as_bytes()).unwrap();
+                        for _ in 0..4 {
+                            stream.write_all(b"8\r\n: ping\n\n\r\n").unwrap();
+                            stream.flush().unwrap();
+                            thread::sleep(Duration::from_millis(80));
+                        }
                         stream
                             .write_all(format!("{:x}\r\n{first}\r\n", first.len()).as_bytes())
                             .unwrap();
@@ -4179,7 +4263,7 @@ mod tests {
             .notify(&initialized_notification(), Duration::from_secs(1), 1024)
             .unwrap();
         let mut events = transport
-            .open_event_stream(Duration::from_secs(1), 1024)
+            .open_event_stream(Duration::from_millis(250), 1024)
             .unwrap();
         assert_eq!(
             events.next_response(7_u64).unwrap().request_id,
@@ -5320,6 +5404,48 @@ mod tests {
             error.provider_code().map(|code| code.as_str()),
             Some("mcp_response_too_large")
         );
+    }
+
+    #[test]
+    fn real_slow_drip_body_cannot_reset_the_request_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _request = read_test_http_request(&mut stream);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+            for byte in b"null" {
+                thread::sleep(Duration::from_millis(35));
+                if stream.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                let _ = stream.flush();
+            }
+        });
+        let started = Instant::now();
+        let error = send_http_request(
+            &McpHttpConnector::Plaintext,
+            &endpoint,
+            &BTreeMap::new(),
+            HttpRequestSpec {
+                extra_headers: &[],
+                method: "GET",
+                accept: "application/json",
+                body: "",
+                timeout: Duration::from_millis(80),
+                output_limit_bytes: 1024,
+                allow_bodyless_accepted: false,
+            },
+        )
+        .unwrap_err();
+        assert_provider_code(&error, "mcp_http_read_timeout");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        server.join().unwrap();
     }
 
     /// 验证 `transport_timeout_is_preserved` 场景下的预期行为。

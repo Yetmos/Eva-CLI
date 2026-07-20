@@ -54,7 +54,8 @@
 | --- | --- | --- | --- |
 | `src/lib.rs` | 模块导出 | 已完成 V1.8.2 | re-export client、JSON-RPC transport、server、mapping、policy、schema。 |
 | `src/client.rs` | in-memory MCP client | 已完成 V1.1 | 保留 CLI probe 和无副作用 envelope 测试。 |
-| `src/json_rpc.rs` | MCP JSON-RPC client transport | 已完成 V1.13.6 | 保留 stdio/HTTP JSON-RPC、auth header、allowlist、timeout 和 output-limit 测试；后续接 HTTPS/TLS 和生产 streaming 数据面。 |
+| `src/json_rpc.rs` | MCP JSON-RPC client transport | W4-L02 验证中、W4-L06 已完成 | 保持 stdio/HTTP(S)、session、SSE、abort、单调总 deadline 和 output-limit 边界；等待 W4-L02 三平台原生 CI。 |
+| `src/http_transport.rs` | HTTPS/TLS connector 与受控 trust path | W4-L02 验证中 | rustls、DNS/connect/handshake/write/read 单调总 deadline、Linux/macOS `openat` 与 Windows handle traversal 已接线；等待三平台原生 CI 后关闭。 |
 | `src/lifecycle.rs` | MCP session registry 和 streaming 边界 | 已完成 V1.8.3 | 保留 stream abort/orphan cleanup 边界；后续接真实 OS process supervisor。 |
 | `src/compatibility.rs` | MCP compatibility matrix | 已完成 V1.13.7 | 维护 stdio/HTTP transport、tool schema、stream lifecycle 和 explicit-tool server gate fixture/report。 |
 | `src/server.rs` | 受控 MCP server surface | 已完成 W4-L08 | 维护显式只读工具、可执行 inputSchema、handler envelope 和脱敏 gate。 |
@@ -62,7 +63,7 @@
 | `src/tool_mapping.rs` | tool-to-capability mapping registry | 已完成 V1.1 | 保持确定性查找和重复 mapping 拒绝。 |
 | `src/policy.rs` | MCP allowlist policy helper | 已完成 V1.1 | 在 transport 写入前校验 tool/resource/prompt allowlist。 |
 | `src/schema.rs` | MCP schema family 边界 | 已完成基础枚举 | 与 compatibility matrix 一起维护稳定 envelope family。 |
-| 单元测试 | mapping/policy/schema/JSON-RPC/lifecycle/server transport/compatibility | 已完成 W4-L08 | 真实 loopback TCP client、session DELETE、hidden-tool pre-handler denial、slow-drip、smuggling 与 limit 回归已覆盖；仍需 W4-L09/L10 compatibility evidence。 |
+| 单元测试 | mapping/policy/schema/JSON-RPC/lifecycle/server transport/compatibility | W4-L02 验证中、W4-L08 已完成 | 113 项 MCP 回归覆盖 DNS deadline/capacity、blocked write、slow-drip、祖先替换、真实 loopback lifecycle 与 server gate；仍需 W4-L02 原生 CI 和 W4-L09/L10 compatibility evidence。 |
 
 ## 验证计划
 
@@ -73,6 +74,7 @@
 | V1.8.2 | `cargo test -p eva-mcp -p eva-adapter` | JSON-RPC fake server、blocked tool、timeout、协议错误和 output limit 可测。 |
 | V1.8.3 | `cargo test -p eva-mcp -p eva-observability` | session stop 后 registry 无悬挂 session、streaming 可中止、orphan cleanup 和非法代理请求拒绝有稳定 audit。 |
 | V1.13.7 | `cargo test -p eva-mcp compatibility -- --nocapture` | compatibility matrix fixture 通过，缺失 cleanup/transport stream lifecycle/无限代理会阻断。 |
+| W4-L02 | `cargo test -p eva-mcp --all-targets` | HTTPS/mTLS、全请求 deadline、DNS worker 上限和 Linux/macOS/Windows handle-based trust-path 回归通过。 |
 | W4-L08 | `cargo test -p eva-mcp --all-targets` | 外部 TCP client 可调用显式工具，隐藏工具/非法参数不进入 handler，停机后 session 为零。 |
 
 ## English
@@ -92,7 +94,9 @@ V1.1 implements the MCP safety layer needed by Adapter V1.1 without depending on
 V1.8.2 adds a controlled JSON-RPC stdio client transport. It sends `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` requests with generated request ids, blocks non-allowlisted tools before writing RPC, and maps timeout, protocol, JSON-RPC error object, and oversized-response failures into stable `EvaError`s. V1.8.3 and V1.13.6 subsequently added session lifecycle, stream-abort boundaries, HTTP transport, and configured authentication headers.
 V1.8.3 adds a session lifecycle registry around the existing supervisor contract. It records started sessions, reports health, removes sessions on shutdown, aborts controlled streams, cleans up missing-process orphans, and rejects non-explicit server tools such as unlimited Topic/event/state proxies with stable audit entries.
 V1.13.6 adds an MCP JSON-RPC HTTP client boundary for manifest-selected `http://` MCP endpoints. The client posts `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` over bounded HTTP requests, preserves timeout/output-limit/error-object mapping, sends configured auth headers, and still rejects non-allowlisted tools before any RPC is sent.
-V1.13.7 adds `McpCompatibilityMatrix`, a repo-local fixture/report for stdio/HTTP transport, tool schema, stream lifecycle start/abort/cleanup, dangling sessions, and explicit-tool server-surface evidence. It feeds `REL-MCP-COMPAT-001` in `eva-release`. HTTPS/TLS client support, a production streaming data plane, and real external MCP server compatibility certification remain follow-up work.
+V1.13.7 adds `McpCompatibilityMatrix`, a repo-local fixture/report for stdio/HTTP transport, tool schema, stream lifecycle start/abort/cleanup, dangling sessions, and explicit-tool server-surface evidence. It feeds `REL-MCP-COMPAT-001` in `eva-release`. Real external MCP server compatibility certification remains follow-up work.
+
+W4-L02 wires the rustls HTTPS/mTLS client and gives DNS, connect, handshake, request write, response head, and bounded response bodies one monotonic request deadline. DNS late workers and address results are capped. Controlled `file:` trust material is opened component-by-component with Linux/macOS `openat` directory handles or Windows root-relative handles and final-path verification, so ancestor replacement cannot redirect the read. Local Windows tests and the Windows GNU workspace cross-check pass; native Linux/macOS/Windows CI is the remaining completion evidence.
 
 W4-L08 adds a caller-owned loopback Streamable HTTP server transport. It gates Host/path/Origin/media type before body reads, bounds HTTP/JSON framing and nesting, uses one capped socket-I/O deadline, preserves high-entropy sessions across initialize/initialized/ready/delete phases, validates executable input schemas, and denies hidden tools before the handler. Shutdown actively aborts the current socket and clears sessions. The synchronous handler remains a caller-trusted execution boundary; this transport does not claim forced handler cancellation, remote authentication, inbound TLS, or daemon ownership.
 
