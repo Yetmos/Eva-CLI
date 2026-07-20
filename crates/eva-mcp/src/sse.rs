@@ -10,6 +10,7 @@ use eva_core::EvaError;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{self, Read};
+use std::sync::Arc;
 
 /// Architectural responsibility for this module.
 pub const RESPONSIBILITY: &str =
@@ -293,6 +294,33 @@ pub(crate) trait McpSseSource: Send {
     fn read_sse(&mut self, buffer: &mut [u8]) -> Result<usize, EvaError>;
 }
 
+/// Cloneable, redacted control handle for an abortable SSE source.
+#[derive(Clone)]
+pub(crate) struct McpSseAbortHandle {
+    abort: Arc<dyn Fn() -> Result<(), EvaError> + Send + Sync>,
+}
+
+impl fmt::Debug for McpSseAbortHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpSseAbortHandle")
+            .field("abort_capable", &true)
+            .finish_non_exhaustive()
+    }
+}
+
+impl McpSseAbortHandle {
+    pub(crate) fn new(abort: impl Fn() -> Result<(), EvaError> + Send + Sync + 'static) -> Self {
+        Self {
+            abort: Arc::new(abort),
+        }
+    }
+
+    pub(crate) fn abort(&self) -> Result<(), EvaError> {
+        (self.abort)()
+    }
+}
+
 struct ReaderSseSource<R> {
     reader: R,
 }
@@ -306,6 +334,7 @@ impl<R: Read + Send> McpSseSource for ReaderSseSource<R> {
 /// Blocking incremental SSE reader with bounded interleaved-message routing.
 pub struct McpSseEventStream {
     source: Box<dyn McpSseSource>,
+    abort: Option<McpSseAbortHandle>,
     parser: McpSseParser,
     ready: VecDeque<McpSseItem>,
     pending_responses: BTreeMap<McpJsonRpcMessageId, VecDeque<McpSseMessage>>,
@@ -321,6 +350,7 @@ impl fmt::Debug for McpSseEventStream {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("McpSseEventStream")
+            .field("abort_capable", &self.abort.is_some())
             .field("parser", &self.parser)
             .field("ready_count", &self.ready.len())
             .field("pending_response_ids", &self.pending_responses.len())
@@ -351,8 +381,25 @@ impl McpSseEventStream {
         source: Box<dyn McpSseSource>,
         output_limit_bytes: usize,
     ) -> Result<Self, EvaError> {
+        Self::from_source_with_abort(source, None, output_limit_bytes)
+    }
+
+    pub(crate) fn from_abortable_source(
+        source: Box<dyn McpSseSource>,
+        abort: McpSseAbortHandle,
+        output_limit_bytes: usize,
+    ) -> Result<Self, EvaError> {
+        Self::from_source_with_abort(source, Some(abort), output_limit_bytes)
+    }
+
+    fn from_source_with_abort(
+        source: Box<dyn McpSseSource>,
+        abort: Option<McpSseAbortHandle>,
+        output_limit_bytes: usize,
+    ) -> Result<Self, EvaError> {
         Ok(Self {
             source,
+            abort,
             parser: McpSseParser::new(output_limit_bytes)?,
             ready: VecDeque::new(),
             pending_responses: BTreeMap::new(),
@@ -363,6 +410,23 @@ impl McpSseEventStream {
             ping_count: 0,
             disconnected: false,
         })
+    }
+
+    /// Interrupt a production HTTP-backed reader. Generic readers do not
+    /// promise cross-thread cancellation and fail closed here.
+    pub fn abort(&self) -> Result<(), EvaError> {
+        self.abort_handle()?.abort()
+    }
+
+    pub(crate) fn abort_handle(&self) -> Result<McpSseAbortHandle, EvaError> {
+        self.abort.clone().ok_or_else(|| {
+            EvaError::unsupported("MCP SSE source does not support real I/O abort")
+                .with_provider_code("mcp_sse_abort_unavailable")
+        })
+    }
+
+    pub(crate) const fn output_limit_bytes(&self) -> usize {
+        self.output_limit_bytes
     }
 
     /// Read the next item in wire order. Messages buffered by
@@ -537,6 +601,13 @@ fn retained_message_bytes(message: &McpSseMessage) -> usize {
             Some(McpJsonRpcMessageId::String(value)) => value.len(),
             None => 0,
         })
+}
+
+pub(crate) fn retained_item_bytes(item: &McpSseItem) -> usize {
+    match item {
+        McpSseItem::Ping => 0,
+        McpSseItem::Message(message) => retained_message_bytes(message),
+    }
 }
 
 fn map_sse_reader_error(error: io::Error) -> EvaError {

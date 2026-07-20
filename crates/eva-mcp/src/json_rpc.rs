@@ -10,7 +10,7 @@ use crate::http_transport::{
 };
 use crate::policy::McpAllowlist;
 use crate::session::{McpEndpoint, McpServerTransport, McpSessionConfig, McpStreamableHttpConfig};
-use crate::sse::{McpSseEventStream, McpSseSource};
+use crate::sse::{McpSseAbortHandle, McpSseEventStream, McpSseSource};
 use eva_core::{AdapterId, EvaError, InvokeOutput, RequestId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug};
@@ -1661,8 +1661,10 @@ impl HttpOpenResponse {
     }
 
     fn into_event_stream(self, output_limit_bytes: usize) -> Result<McpSseEventStream, EvaError> {
-        McpSseEventStream::from_source(
+        let abort = self.reader.get_ref().abort_handle()?;
+        McpSseEventStream::from_abortable_source(
             Box::new(HttpSseSource::new(self.reader, self.framing, self.origin)),
+            McpSseAbortHandle::new(move || abort.abort()),
             output_limit_bytes,
         )
     }

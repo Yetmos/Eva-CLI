@@ -13,8 +13,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zeroize::{Zeroize, Zeroizing};
@@ -148,8 +150,83 @@ impl fmt::Debug for McpHttpConnector {
 
 /// A common I/O boundary for plaintext and rustls-backed sockets.
 pub(crate) enum McpHttpStream {
-    Plaintext(TcpStream),
-    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
+    Plaintext(McpSharedTcpStream),
+    Tls(Box<StreamOwned<ClientConnection, McpSharedTcpStream>>),
+}
+
+/// The exact TCP socket shared by the blocking reader and abort control
+/// plane. Using the same socket object matters on Windows, where a duplicated
+/// socket handle does not reliably wake a rustls read on another handle.
+#[derive(Clone)]
+pub(crate) struct McpSharedTcpStream {
+    socket: Arc<TcpStream>,
+}
+
+/// Cloneable control plane for interrupting a blocking HTTP body read.
+///
+/// The handle shares only the TCP socket control reference. For TLS streams
+/// it never touches rustls state from the aborting thread; shutting down the
+/// underlying socket wakes the thread that exclusively owns rustls.
+#[derive(Clone)]
+pub(crate) struct McpHttpAbortHandle {
+    inner: Arc<McpHttpAbortHandleInner>,
+}
+
+struct McpHttpAbortHandleInner {
+    socket: Arc<TcpStream>,
+    shutdown_requested: AtomicBool,
+}
+
+impl fmt::Debug for McpSharedTcpStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpSharedTcpStream")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Deref for McpSharedTcpStream {
+    type Target = TcpStream;
+
+    fn deref(&self) -> &Self::Target {
+        &self.socket
+    }
+}
+
+impl Read for McpSharedTcpStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.socket.as_ref().read(buffer)
+    }
+}
+
+impl Write for McpSharedTcpStream {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.socket.as_ref().write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.socket.as_ref().flush()
+    }
+}
+
+impl McpSharedTcpStream {
+    fn new(socket: TcpStream) -> Self {
+        Self {
+            socket: Arc::new(socket),
+        }
+    }
+}
+
+impl fmt::Debug for McpHttpAbortHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpHttpAbortHandle")
+            .field(
+                "shutdown_requested",
+                &self.inner.shutdown_requested.load(Ordering::Acquire),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl fmt::Debug for McpHttpStream {
@@ -186,6 +263,44 @@ impl Write for McpHttpStream {
     }
 }
 
+impl McpHttpStream {
+    /// Clone the control reference to the exact TCP socket before the stream
+    /// is transferred to a blocking reader thread.
+    pub(crate) fn abort_handle(&self) -> Result<McpHttpAbortHandle, EvaError> {
+        let socket = match self {
+            Self::Plaintext(stream) => stream.socket.clone(),
+            Self::Tls(stream) => stream.sock.socket.clone(),
+        };
+        Ok(McpHttpAbortHandle {
+            inner: Arc::new(McpHttpAbortHandleInner {
+                socket,
+                shutdown_requested: AtomicBool::new(false),
+            }),
+        })
+    }
+}
+
+impl McpHttpAbortHandle {
+    /// Interrupt both directions of the shared socket. Concurrent and
+    /// repeated requests are idempotent; a failed first attempt remains
+    /// retryable instead of being mistaken for a completed shutdown.
+    pub(crate) fn abort(&self) -> Result<(), EvaError> {
+        match self.inner.socket.shutdown(Shutdown::Both) {
+            Ok(()) => {
+                self.inner.shutdown_requested.store(true, Ordering::Release);
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotConnected => {
+                self.inner.shutdown_requested.store(true, Ordering::Release);
+                Ok(())
+            }
+            Err(error) => Err(EvaError::unavailable("failed to abort MCP HTTP socket")
+                .with_provider_code("mcp_http_abort_failed")
+                .with_context("io_error_kind", format!("{:?}", error.kind()))),
+        }
+    }
+}
+
 impl McpHttpConnector {
     /// Build a connector while consuming all supplied secret material.
     pub(crate) fn from_config(
@@ -217,7 +332,7 @@ impl McpHttpConnector {
         match (self, scheme) {
             (Self::Plaintext, "http") => {
                 let stream = connect_tcp(host, port, origin, timeout)?;
-                Ok(McpHttpStream::Plaintext(stream))
+                Ok(McpHttpStream::Plaintext(McpSharedTcpStream::new(stream)))
             }
             (Self::Tls(config), "https") => {
                 let mut stream = connect_tcp(host, port, origin, timeout)?;
@@ -236,7 +351,8 @@ impl McpHttpConnector {
                     .complete_io(&mut stream)
                     .map_err(|error| map_tls_handshake_error(error, origin))?;
                 Ok(McpHttpStream::Tls(Box::new(StreamOwned::new(
-                    connection, stream,
+                    connection,
+                    McpSharedTcpStream::new(stream),
                 ))))
             }
             _ => Err(
@@ -778,7 +894,7 @@ mod tests {
     use super::*;
     use crate::session::{McpClientAuthConfig, McpRedirectPolicy};
     use rustls::server::WebPkiClientVerifier;
-    use rustls::{ServerConfig, ServerConnection};
+    use rustls::{ServerConfig, ServerConnection, StreamOwned};
     use std::net::TcpListener;
     use std::thread;
 
@@ -823,6 +939,109 @@ mod tests {
             classify_certificate_error(&CertificateError::NotValidForName).1,
             "mcp_tls_hostname_mismatch"
         );
+    }
+
+    #[test]
+    fn abort_handle_interrupts_plaintext_and_tls_reads_and_is_redacted() {
+        let plaintext_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let plaintext_port = plaintext_listener.local_addr().unwrap().port();
+        let plaintext_server = thread::spawn(move || {
+            let (mut socket, _) = plaintext_listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut byte = [0_u8; 1];
+            socket.read(&mut byte).map_err(|error| error.kind())
+        });
+        let plaintext = McpHttpConnector::Plaintext
+            .connect(
+                "http",
+                "127.0.0.1",
+                plaintext_port,
+                "http://127.0.0.1",
+                Duration::from_secs(1),
+            )
+            .unwrap();
+        let plaintext_abort = plaintext.abort_handle().unwrap();
+        assert!(!format!("{plaintext_abort:?}").contains("127.0.0.1"));
+        let (plaintext_ready_sender, plaintext_ready_receiver) = std::sync::mpsc::sync_channel(1);
+        let plaintext_reader = thread::spawn(move || {
+            let mut stream = plaintext;
+            let mut byte = [0_u8; 1];
+            plaintext_ready_sender.send(()).unwrap();
+            stream.read(&mut byte).map_err(|error| error.kind())
+        });
+        plaintext_ready_receiver.recv().unwrap();
+        plaintext_abort.abort().unwrap();
+        plaintext_abort.abort().unwrap();
+        assert_reader_was_interrupted(plaintext_reader.join().unwrap());
+        assert_eq!(plaintext_server.join().unwrap().unwrap(), 0);
+
+        let tls_listener = TcpListener::bind(("localhost", 0)).unwrap();
+        let tls_port = tls_listener.local_addr().unwrap().port();
+        let server_config = test_server_config(TEST_SERVER_PEM, false);
+        let tls_server = thread::spawn(move || {
+            let (socket, _) = tls_listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let connection = ServerConnection::new(server_config).unwrap();
+            let mut stream = StreamOwned::new(connection, socket);
+            let mut byte = [0_u8; 1];
+            stream.read(&mut byte).map_err(|error| error.kind())
+        });
+        let config = tls_config(tls_port, "localhost", false);
+        let material = McpTlsMaterial::new()
+            .with_indirect_trust_root("pem:test-ca", TEST_CA_PEM.to_vec())
+            .unwrap();
+        let connector = McpHttpConnector::from_config(&config, material).unwrap();
+        let tls = connector
+            .connect(
+                "https",
+                "localhost",
+                tls_port,
+                &format!("https://localhost:{tls_port}"),
+                Duration::from_secs(1),
+            )
+            .unwrap();
+        let tls_abort = tls.abort_handle().unwrap();
+        assert!(!format!("{tls_abort:?}").contains("localhost"));
+        let (tls_ready_sender, tls_ready_receiver) = std::sync::mpsc::sync_channel(1);
+        let tls_reader = thread::spawn(move || {
+            let mut stream = tls;
+            let mut byte = [0_u8; 1];
+            tls_ready_sender.send(()).unwrap();
+            stream.read(&mut byte).map_err(|error| error.kind())
+        });
+        tls_ready_receiver.recv().unwrap();
+        tls_abort.abort().unwrap();
+        tls_abort.abort().unwrap();
+        assert_reader_was_interrupted(tls_reader.join().unwrap());
+        match tls_server.join().unwrap() {
+            Ok(0) => {}
+            Err(
+                io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::NotConnected,
+            ) => {}
+            outcome => panic!("TLS reader was not interrupted by socket shutdown: {outcome:?}"),
+        }
+    }
+
+    fn assert_reader_was_interrupted(outcome: Result<usize, io::ErrorKind>) {
+        match outcome {
+            Ok(0) => {}
+            Err(
+                io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::NotConnected,
+            ) => {}
+            outcome => panic!("reader was not interrupted by socket shutdown: {outcome:?}"),
+        }
     }
 
     #[test]

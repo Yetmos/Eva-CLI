@@ -41,7 +41,7 @@ pub use json_rpc::{
 pub use lifecycle::{
     McpOrphanCleanupReport, McpProcessInspector, McpRegisteredSession, McpSessionHealthReport,
     McpSessionLifecycleReport, McpSessionLifecycleStatus, McpSessionRegistry, McpStreamReport,
-    McpStreamStatus,
+    McpStreamStatus, McpStreamableHttpSessionRegistry,
 };
 pub use policy::McpAllowlist;
 pub use server::{EvaMcpServerSurface, McpServerTool, McpServerToolGateReport};

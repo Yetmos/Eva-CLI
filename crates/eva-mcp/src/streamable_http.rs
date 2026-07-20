@@ -155,6 +155,12 @@ impl McpStreamableHttpSession {
         self.transport.is_closed()
     }
 
+    /// Return the same bound used for socket I/O so lifecycle owners can
+    /// bound reader completion after a real socket abort.
+    pub(crate) const fn lifecycle_timeout(&self) -> Duration {
+        self.timeout
+    }
+
     /// Return redacted lifecycle evidence.
     pub fn audit(&self) -> Vec<String> {
         self.transport.audit()
