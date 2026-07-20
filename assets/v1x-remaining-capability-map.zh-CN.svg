@@ -22,12 +22,12 @@
     <rect x="60" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="60" y="158" width="310" height="8" rx="4" fill="#2563eb"/>
     <text x="84" y="203" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">受控 Alpha 边界</text>
-    <text x="84" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">前台 mailbox daemon</text>
-    <text x="84" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">受控 provider 与 MCP</text>
-    <text x="84" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">带门禁的本地 restore mutation</text>
-    <text x="84" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Simulator hardware evidence</text>
-    <text x="84" y="352" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">JSONL 与 OTLP smoke</text>
-    <text x="84" y="379" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">未签名 package 与 gate</text>
+    <text x="84" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">后台 daemon、worker 与 durable recovery</text>
+    <text x="84" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Provider process boundary 与 admission</text>
+    <text x="84" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">配置 generation、watcher 与持久 cache</text>
+    <text x="84" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Simulator hardware safety evidence</text>
+    <text x="84" y="352" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">JSONL、OTLP 与 retention policy smoke</text>
+    <text x="84" y="379" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">无签名 package 与 Alpha gate</text>
     <rect x="84" y="414" width="262" height="34" rx="6" fill="#dbeafe"/>
     <text x="107" y="436" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#1d4ed8">可调用 + Library + Fixture Evidence</text>
   </g>
@@ -38,12 +38,12 @@
     <rect x="445" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="445" y="158" width="310" height="8" rx="4" fill="#dc2626"/>
     <text x="469" y="203" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">生产代码缺口</text>
-    <text x="469" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">后台 worker 与 service</text>
-    <text x="469" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">真实 PID supervision 与 restart</text>
-    <text x="469" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">MCP TLS 与 streaming</text>
-    <text x="469" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">真实 backup、KMS 与 handoff</text>
-    <text x="469" y="352" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Driver 与 OS hotplug</text>
-    <text x="469" y="379" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">DB、scheduler 与 signing tool</text>
+    <text x="469" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Service CLI、daemon entrypoint 与 boot recovery</text>
+    <text x="469" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">run-as、vault 与 daemon-owned supervisor</text>
+    <text x="469" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">MCP TLS、streaming 与外部兼容</text>
+    <text x="469" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">真实 backup、KMS 与 service handoff</text>
+    <text x="469" y="352" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">真实 driver、I/O 与 hardware fixture</text>
+    <text x="469" y="379" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Registry、DB、retention 与 signing/publication</text>
     <rect x="469" y="414" width="262" height="34" rx="6" fill="#fee2e2"/>
     <text x="542" y="436" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#b91c1c">仍需实现</text>
   </g>
@@ -54,12 +54,12 @@
     <rect x="830" y="158" width="310" height="312" rx="8" fill="#ffffff" stroke="#b8c8dc"/>
     <rect x="830" y="158" width="310" height="8" rx="4" fill="#7c3aed"/>
     <text x="854" y="203" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#172033">外部前置条件</text>
-    <text x="854" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">平台 service host</text>
-    <text x="854" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Hardware 或 virtual fixture</text>
-    <text x="854" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">KMS、OIDC 与签名身份</text>
-    <text x="854" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Package repository 权限</text>
-    <text x="854" y="352" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">Database 与 backend 选型</text>
-    <text x="854" y="379" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">选定的外部 MCP server</text>
+    <text x="854" y="244" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">EXT-01 平台 service host</text>
+    <text x="854" y="271" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">EXT-04 hardware/virtual fixture</text>
+    <text x="854" y="298" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">EXT-02 KMS 与 plan trust</text>
+    <text x="854" y="325" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">EXT-03 外部 MCP server</text>
+    <text x="854" y="352" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">EXT-05/09 DB、collector 与 source</text>
+    <text x="854" y="379" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="14" fill="#172033">EXT-06/07 签名与仓库权限</text>
     <rect x="854" y="414" width="262" height="34" rx="6" fill="#f3e8ff"/>
     <text x="918" y="436" font-family="Microsoft YaHei, Noto Sans CJK SC, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#6d28d9">需要环境实测证据</text>
   </g>
