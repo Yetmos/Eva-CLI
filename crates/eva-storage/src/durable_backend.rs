@@ -220,6 +220,17 @@ struct DurableWriterGuardInner {
     process_lock: Mutex<()>,
 }
 
+#[cfg(unix)]
+impl Drop for DurableWriterGuardInner {
+    fn drop(&mut self) {
+        // flock is tied to the open-file description, which a forked child or
+        // duplicated descriptor can keep alive after this File is closed.
+        // Drop cannot report an unlock error, so release best-effort before
+        // the File field performs its normal close.
+        let _ = self._lock_file.unlock();
+    }
+}
+
 #[derive(Debug)]
 /// migration lock 的 RAII 所有者，File Drop 时由 OS 自动释放。
 struct MigrationLockGuard {
@@ -2109,6 +2120,27 @@ mod tests {
         assert!(second_backend.layout().writer_generation_path.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn runtime_writer_drop_unlocks_an_inherited_duplicate() {
+        let root = test_root("writer-inherited-fd");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let writer = backend.acquire_runtime_writer().unwrap();
+        let inherited_lock = writer.inner._lock_file.try_clone().unwrap();
+        let started = root.path().join("inherited-fd-started");
+        let release = root.path().join("inherited-fd-release");
+        let mut child = spawn_inherited_writer_fd_child(inherited_lock, &started, &release);
+        wait_for_path(&started, Duration::from_secs(10));
+
+        drop(writer);
+        let successor = backend.acquire_runtime_writer().unwrap();
+        assert_eq!(successor.generation(), WriterGeneration(2));
+
+        fs::write(&release, b"release").unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
     #[test]
     /// 验证固定 migration anchor 的 OS lock 活性探测不依赖文件是否存在。
     fn migration_lock_probe_observes_guard_lifetime() {
@@ -2348,6 +2380,17 @@ mod tests {
                 fs::write(&outcome, format!("writer-error:{}", error.kind().as_str())).unwrap();
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_writer_fd_process_child() {
+        let Ok(started) = std::env::var("EVA_STORAGE_INHERITED_FD_STARTED") else {
+            return;
+        };
+        let release = PathBuf::from(std::env::var("EVA_STORAGE_INHERITED_FD_RELEASE").unwrap());
+        fs::write(started, b"started").unwrap();
+        wait_for_path(&release, Duration::from_secs(10));
     }
 
     #[test]
@@ -3012,6 +3055,28 @@ mod tests {
             .env("EVA_STORAGE_WRITER_CHILD_RELEASE", release)
             .env("EVA_STORAGE_WRITER_CHILD_OUTCOME", outcome)
             .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn spawn_inherited_writer_fd_child(
+        inherited_lock: File,
+        started: &Path,
+        release: &Path,
+    ) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "durable_backend::tests::inherited_writer_fd_process_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("EVA_STORAGE_INHERITED_FD_STARTED", started)
+            .env("EVA_STORAGE_INHERITED_FD_RELEASE", release)
+            .stdin(Stdio::from(inherited_lock))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

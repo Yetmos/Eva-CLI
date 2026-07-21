@@ -451,6 +451,45 @@ fn concurrent_launchers_publish_exactly_one_background_owner() {
 }
 
 #[test]
+fn exited_child_failed_frame_wins_over_generic_early_exit() {
+    let fixture = DaemonFixture::new("failed-frame-after-poll");
+    let owner = fixture.capture_start(10_000, &[]);
+    assert!(owner.status.success(), "{}", owner.stderr);
+
+    let failed = fixture.capture_start(
+        10_000,
+        &[
+            ("EVA_DAEMON_TEST_BACKGROUND_CHILD_START_DELAY_MS", "100"),
+            ("EVA_DAEMON_TEST_TERMINAL_POLL_DELAY_MS", "2000"),
+        ],
+    );
+    assert!(!failed.status.success(), "{}", failed.stdout);
+    assert!(failed.stdout.is_empty());
+    assert!(
+        failed.stderr.contains("\"kind\":\"conflict\""),
+        "{}",
+        failed.stderr
+    );
+    assert!(
+        failed
+            .stderr
+            .contains("background daemon reported startup failure"),
+        "{}",
+        failed.stderr
+    );
+    assert!(
+        !failed
+            .stderr
+            .contains("background daemon exited before ready handshake"),
+        "{}",
+        failed.stderr
+    );
+
+    assert!(fixture.run_control("status").status.success());
+    assert!(fixture.run_control("shutdown").status.success());
+}
+
+#[test]
 fn changed_ready_frame_is_rejected_and_exact_child_is_cleaned() {
     let fixture = DaemonFixture::new("frame-change");
     let child = fixture.spawn_start(

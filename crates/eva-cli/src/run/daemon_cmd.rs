@@ -37,6 +37,10 @@ const STARTUP_HANDSHAKE_PROTOCOL: &str = "eva.daemon-startup.v1";
 const BACKGROUND_REPORT_DELAY_ENV: &str = "EVA_DAEMON_TEST_REPORT_DELAY_MS";
 #[cfg(debug_assertions)]
 const BACKGROUND_READY_VALIDATION_DELAY_ENV: &str = "EVA_DAEMON_TEST_READY_VALIDATION_DELAY_MS";
+#[cfg(debug_assertions)]
+const BACKGROUND_CHILD_START_DELAY_ENV: &str = "EVA_DAEMON_TEST_BACKGROUND_CHILD_START_DELAY_MS";
+#[cfg(debug_assertions)]
+const BACKGROUND_TERMINAL_POLL_DELAY_ENV: &str = "EVA_DAEMON_TEST_TERMINAL_POLL_DELAY_MS";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Daemon 顶层命令；控制类操作共享同一传输与输出路径。
@@ -350,6 +354,7 @@ where
             }
         }
         DaemonCommand::BackgroundChild { options, handshake } => {
+            delay_background_child_start_for_test()?;
             let trace = trace_for("cli.daemon.background_child")
                 .with_request_id(RequestId::parse("req-daemon-background-child")?);
             load_project_config(&options.common.project_root).and_then(|project| {
@@ -990,75 +995,77 @@ fn start_daemon_background(
     let mut child = spawn_background_child(project, options, &handshake)?;
     let expected_pid = child.id();
     loop {
-        let failed =
-            match read_daemon_startup_frame(options, &handshake, DaemonStartupPhase::Failed) {
-                Ok(frame) => frame,
-                Err(error) => {
-                    return Err(abort_background_start(
-                        options,
-                        &handshake,
-                        &mut child,
-                        EvaError::conflict("background daemon failure frame is invalid")
-                            .with_context("frame_error", error.to_string()),
-                    ));
-                }
-            };
-        let ready = match read_daemon_startup_frame(options, &handshake, DaemonStartupPhase::Ready)
-        {
-            Ok(frame) => frame,
+        let terminal = match read_background_terminal_frame(options, &handshake) {
+            Ok(terminal) => terminal,
             Err(error) => {
                 return Err(abort_background_start(
-                    options,
-                    &handshake,
-                    &mut child,
-                    EvaError::conflict("background daemon ready frame is invalid")
-                        .with_context("frame_error", error.to_string()),
+                    options, &handshake, &mut child, error,
                 ));
             }
         };
-        if failed.is_some() && ready.is_some() {
-            return Err(abort_background_start(
-                options,
-                &handshake,
-                &mut child,
-                EvaError::conflict(
-                    "background daemon published both ready and failed startup frames",
-                ),
-            ));
-        }
-        if let Some(frame) = failed {
-            let error = daemon_startup_failure(&frame);
-            return Err(abort_background_start(
-                options, &handshake, &mut child, error,
-            ));
-        }
-        if let Some(frame) = ready {
-            match complete_background_ready(
-                options,
-                &handshake,
-                &mut child,
-                frame,
-                startup_timeout_ms,
-                started.elapsed().as_millis(),
-            ) {
-                Ok(report) => return Ok(report),
-                Err(error) => {
-                    return Err(abort_background_start(
-                        options, &handshake, &mut child, error,
-                    ));
+        match terminal {
+            BackgroundTerminalFrame::Pending => {}
+            BackgroundTerminalFrame::Failed(frame) => {
+                let error = daemon_startup_failure(&frame);
+                return Err(abort_background_start(
+                    options, &handshake, &mut child, error,
+                ));
+            }
+            BackgroundTerminalFrame::Ready(frame) => {
+                match complete_background_ready(
+                    options,
+                    &handshake,
+                    &mut child,
+                    frame,
+                    startup_timeout_ms,
+                    started.elapsed().as_millis(),
+                ) {
+                    Ok(report) => return Ok(report),
+                    Err(error) => {
+                        return Err(abort_background_start(
+                            options, &handshake, &mut child, error,
+                        ));
+                    }
                 }
             }
         }
 
+        if let Err(error) = delay_terminal_poll_for_test() {
+            return Err(abort_background_start(
+                options, &handshake, &mut child, error,
+            ));
+        }
         if let Some(exit) = child.try_wait().map_err(|error| {
             EvaError::internal("failed to inspect background daemon child")
                 .with_context("io_error", error.to_string())
         })? {
+            let failure = match read_background_terminal_frame(options, &handshake) {
+                Ok(BackgroundTerminalFrame::Failed(frame)) => daemon_startup_failure(&frame),
+                Ok(BackgroundTerminalFrame::Ready(frame)) => {
+                    match complete_background_ready(
+                        options,
+                        &handshake,
+                        &mut child,
+                        frame,
+                        startup_timeout_ms,
+                        started.elapsed().as_millis(),
+                    ) {
+                        Ok(_) => EvaError::conflict(
+                            "background daemon exited after publishing its ready frame",
+                        ),
+                        Err(error) => error,
+                    }
+                }
+                Ok(BackgroundTerminalFrame::Pending) => {
+                    EvaError::internal("background daemon exited before ready handshake")
+                }
+                Err(error) => error,
+            };
             return Err(finish_failed_background_start(
                 options,
                 &handshake,
                 expected_pid,
-                EvaError::internal("background daemon exited before ready handshake"),
+                failure,
                 exit,
             ));
         }
@@ -1072,6 +1079,37 @@ fn start_daemon_background(
             ));
         }
         std::thread::sleep(BACKGROUND_POLL_INTERVAL);
+    }
+}
+
+enum BackgroundTerminalFrame {
+    Pending,
+    Failed(DaemonStartupFrame),
+    Ready(DaemonStartupFrame),
+}
+
+fn read_background_terminal_frame(
+    options: &DaemonStartOptions,
+    handshake: &DaemonStartupHandshake,
+) -> Result<BackgroundTerminalFrame, EvaError> {
+    let failed = read_daemon_startup_frame(options, handshake, DaemonStartupPhase::Failed)
+        .map_err(|error| {
+            EvaError::conflict("background daemon failure frame is invalid")
+                .with_context("frame_error", error.to_string())
+        })?;
+    let ready = read_daemon_startup_frame(options, handshake, DaemonStartupPhase::Ready).map_err(
+        |error| {
+            EvaError::conflict("background daemon ready frame is invalid")
+                .with_context("frame_error", error.to_string())
+        },
+    )?;
+    match (failed, ready) {
+        (Some(_), Some(_)) => Err(EvaError::conflict(
+            "background daemon published both ready and failed startup frames",
+        )),
+        (Some(frame), None) => Ok(BackgroundTerminalFrame::Failed(frame)),
+        (None, Some(frame)) => Ok(BackgroundTerminalFrame::Ready(frame)),
+        (None, None) => Ok(BackgroundTerminalFrame::Pending),
     }
 }
 
@@ -1518,6 +1556,36 @@ fn delay_ready_validation_for_test() -> Result<(), EvaError> {
     Ok(())
 }
 
+#[cfg(debug_assertions)]
+fn delay_background_child_start_for_test() -> Result<(), EvaError> {
+    delay_from_env_for_test(
+        BACKGROUND_CHILD_START_DELAY_ENV,
+        "daemon test background child start delay",
+    )
+}
+
+#[cfg(debug_assertions)]
+fn delay_terminal_poll_for_test() -> Result<(), EvaError> {
+    delay_from_env_for_test(
+        BACKGROUND_TERMINAL_POLL_DELAY_ENV,
+        "daemon test terminal poll delay",
+    )
+}
+
+#[cfg(debug_assertions)]
+fn delay_from_env_for_test(name: &str, label: &str) -> Result<(), EvaError> {
+    let Some(value) = env::var_os(name) else {
+        return Ok(());
+    };
+    let delay_ms = value
+        .to_str()
+        .ok_or_else(|| EvaError::invalid_argument(format!("{label} is not utf-8")))?
+        .parse::<u64>()
+        .map_err(|_| EvaError::invalid_argument(format!("{label} is invalid")))?;
+    std::thread::sleep(Duration::from_millis(delay_ms));
+    Ok(())
+}
+
 #[cfg(not(debug_assertions))]
 fn delay_background_report_for_test() -> Result<(), EvaError> {
     Ok(())
@@ -1525,6 +1593,16 @@ fn delay_background_report_for_test() -> Result<(), EvaError> {
 
 #[cfg(not(debug_assertions))]
 fn delay_ready_validation_for_test() -> Result<(), EvaError> {
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn delay_background_child_start_for_test() -> Result<(), EvaError> {
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn delay_terminal_poll_for_test() -> Result<(), EvaError> {
     Ok(())
 }
 
