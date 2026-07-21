@@ -12,9 +12,9 @@ use crate::registry::AdapterRegistry;
 use crate::restart::{decide_restart, due_at_ms, RestartDecision, RestartOutcome};
 use crate::router::{AdapterRouteRequest, AdapterRouter};
 use crate::supervisor::{
-    InMemoryProviderSupervisor, ProviderAdmissionLease, ProviderCredentialScope,
-    ProviderDrainOptions, ProviderDrainReport, ProviderExecutionOutcome, ProviderExecutionRequest,
-    ProviderExecutionSlot, ProviderSupervisor,
+    InMemoryProviderSupervisor, McpHttpLifecycleHandle, ProviderAdmissionLease,
+    ProviderCredentialScope, ProviderDrainOptions, ProviderDrainReport, ProviderExecutionOutcome,
+    ProviderExecutionRequest, ProviderExecutionSlot, ProviderSupervisor,
 };
 use crate::transports;
 use eva_config::{AdapterTransport, ProjectConfig, ProviderRunAsIdentity};
@@ -519,10 +519,12 @@ impl AdapterRuntime {
                 run_as: run_as.clone(),
             };
             let renewal = AdmissionRenewal::start(self.supervisor.borrow().admission_lease(&slot)?);
+            let mcp_http_lifecycle = self.supervisor.borrow().mcp_http_lifecycle();
             let mut result = dispatch_transport_with_spawner_and_vault(
                 &handle,
                 invocation.clone(),
                 Some(&process_spawner),
+                Some(&mcp_http_lifecycle),
                 self.credential_vault.as_ref(),
             );
             if let Some(renewal) = renewal {
@@ -789,7 +791,7 @@ fn dispatch_transport_with_vault(
     invocation: AdapterInvocation,
     vault: &dyn CredentialVault,
 ) -> Result<AdapterInvokeReport, EvaError> {
-    dispatch_transport_with_spawner_and_vault(handle, invocation, None, vault)
+    dispatch_transport_with_spawner_and_vault(handle, invocation, None, None, vault)
 }
 
 /// Dispatch a transport while supplying the central process registrar and
@@ -798,13 +800,15 @@ fn dispatch_transport_with_spawner_and_vault(
     handle: &crate::manifest::AdapterHandle,
     invocation: AdapterInvocation,
     process_spawner: Option<&dyn ProviderProcessSpawner>,
+    mcp_http_lifecycle: Option<&McpHttpLifecycleHandle>,
     vault: &dyn CredentialVault,
 ) -> Result<AdapterInvokeReport, EvaError> {
     match handle.transport {
-        AdapterTransport::Mcp => transports::mcp::invoke_with_spawner_and_vault(
+        AdapterTransport::Mcp => transports::mcp::invoke_with_supervisor_and_vault(
             handle,
             invocation,
             process_spawner,
+            mcp_http_lifecycle,
             vault,
         ),
         AdapterTransport::Skill => transports::skill::invoke_with_spawner_and_vault(
@@ -915,7 +919,7 @@ fn thread_sleep_restart(delay_ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_vault::MemoryCredentialVault;
+    use crate::credential_vault::{CredentialSession, MemoryCredentialVault, SecretValue};
     use crate::manifest::{AdapterCircuitBreaker, AdapterHandle};
     use crate::registry::AdapterRegistry;
     use crate::supervisor::{
@@ -924,7 +928,73 @@ mod tests {
     };
     use eva_config::load_project_config;
     use eva_config::AdapterTransport;
-    use std::sync::{Mutex, OnceLock};
+    use std::fmt;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    #[derive(Clone)]
+    struct RevokingCredentialVault {
+        secret: String,
+        released: Arc<AtomicBool>,
+        release_count: Arc<AtomicUsize>,
+    }
+
+    impl fmt::Debug for RevokingCredentialVault {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("RevokingCredentialVault([REDACTED])")
+        }
+    }
+
+    impl CredentialVault for RevokingCredentialVault {
+        fn open_session(
+            &self,
+            _scope: &ProviderCredentialScope,
+        ) -> Result<Box<dyn CredentialSession>, EvaError> {
+            Ok(Box::new(RevokingCredentialSession {
+                secret: self.secret.clone(),
+                released: Arc::clone(&self.released),
+                release_count: Arc::clone(&self.release_count),
+                session_released: false,
+            }))
+        }
+    }
+
+    struct RevokingCredentialSession {
+        secret: String,
+        released: Arc<AtomicBool>,
+        release_count: Arc<AtomicUsize>,
+        session_released: bool,
+    }
+
+    impl fmt::Debug for RevokingCredentialSession {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("RevokingCredentialSession")
+                .field("released", &self.session_released)
+                .finish()
+        }
+    }
+
+    impl CredentialSession for RevokingCredentialSession {
+        fn fetch(&mut self, _secret_ref: &str) -> Result<SecretValue, EvaError> {
+            if self.session_released {
+                return Err(EvaError::conflict(
+                    "revoking credential session has been released",
+                ));
+            }
+            Ok(SecretValue::new(self.secret.clone()))
+        }
+
+        fn release(&mut self) -> Result<(), EvaError> {
+            if self.session_released {
+                return Ok(());
+            }
+            self.session_released = true;
+            self.released.store(true, Ordering::SeqCst);
+            self.release_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
 
     fn process_env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1697,6 +1767,225 @@ mod tests {
         assert!(report
             .audit
             .contains(&"mcp.http.exchange_count:3".to_owned()));
+        assert!(report
+            .audit
+            .contains(&"mcp.http_registry:supervisor_owned_call".to_owned()));
+        let drain = runtime.drain_providers(Duration::from_secs(1)).unwrap();
+        assert_eq!(drain.mcp_http_sessions_before, 0);
+        assert_eq!(drain.mcp_http_readers_before, 0);
+        assert_eq!(drain.mcp_http_sessions_after, 0);
+        assert_eq!(drain.mcp_http_readers_after, 0);
+        assert_eq!(drain.mcp_http_cleanup_pending_after, 0);
+    }
+
+    #[test]
+    fn failed_mcp_delete_retains_credentials_until_supervisor_drain_retries() {
+        let env_name = "EVA_TEST_MCP_REVOKABLE_SECRET";
+        let secret = "mcp-revocable-cleanup-secret";
+        let released = Arc::new(AtomicBool::new(false));
+        let release_count = Arc::new(AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server_released = Arc::clone(&released);
+        let server = thread::spawn(move || {
+            let mut delete_count = 0usize;
+            for _ in 0..6 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_http_request(&mut stream);
+                assert!(request.contains("Authorization: mcp-revocable-cleanup-secret"));
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                let (status, response_body, session_header) = if body
+                    .contains("\"method\":\"initialize\"")
+                {
+                    (
+                            200,
+                            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"credential-fixture\",\"version\":\"1\"}}}".to_owned(),
+                            "Mcp-Session-Id: revocable-session\r\n",
+                        )
+                } else if body.contains("notifications/initialized") {
+                    (202, String::new(), "")
+                } else if body.contains("\"method\":\"tools/list\"") {
+                    (
+                            200,
+                            "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"list_issues\",\"inputSchema\":{\"type\":\"object\"}}]}}".to_owned(),
+                            "",
+                        )
+                } else if body.contains("\"method\":\"tools/call\"") {
+                    (
+                            200,
+                            "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"isError\":false}}".to_owned(),
+                            "",
+                        )
+                } else {
+                    assert!(request.starts_with("DELETE /mcp HTTP/1.1\r\n"));
+                    assert!(request.contains("Mcp-Session-Id: revocable-session\r\n"));
+                    assert!(
+                        !server_released.load(Ordering::SeqCst),
+                        "DELETE cleanup ran after credential revocation"
+                    );
+                    delete_count += 1;
+                    (if delete_count == 1 { 500 } else { 204 }, String::new(), "")
+                };
+                let content_type = if response_body.is_empty() {
+                    ""
+                } else {
+                    "Content-Type: application/json\r\n"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} Status\r\n{content_type}{session_header}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
+            delete_count
+        });
+        let vault = RevokingCredentialVault {
+            secret: secret.to_owned(),
+            released: Arc::clone(&released),
+            release_count: Arc::clone(&release_count),
+        };
+        let runtime = runtime_with_handle_and_vault(
+            mcp_http_handle(
+                endpoint,
+                BTreeMap::from([("Authorization".to_owned(), format!("env:{env_name}"))]),
+            ),
+            vault,
+        );
+
+        let invoke_error = runtime
+            .invoke(
+                AdapterInvocation::new(
+                    RequestId::parse("req-mcp-revocable-cleanup").unwrap(),
+                    CapabilityName::parse("github.issue.list").unwrap(),
+                )
+                .with_provider(AdapterId::parse("mcp-http-test").unwrap())
+                .with_input("{}"),
+            )
+            .unwrap_err();
+        assert_eq!(
+            invoke_error.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_session_delete_failed")
+        );
+        assert!(!released.load(Ordering::SeqCst));
+        assert_eq!(release_count.load(Ordering::SeqCst), 0);
+
+        let drain = runtime.drain_providers(Duration::from_secs(1)).unwrap();
+        assert_eq!(drain.mcp_http_sessions_before, 1);
+        assert_eq!(drain.mcp_http_sessions_after, 0);
+        assert_eq!(drain.mcp_http_readers_after, 0);
+        assert_eq!(drain.mcp_http_cleanup_pending_after, 0);
+        assert!(released.load(Ordering::SeqCst));
+        assert_eq!(release_count.load(Ordering::SeqCst), 1);
+        assert_eq!(server.join().unwrap(), 2);
+    }
+
+    #[test]
+    fn restarted_runtime_reinitializes_mcp_http_without_stale_session_header() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut initialize_requests = Vec::new();
+            for request_index in 0..10 {
+                let generation = request_index / 5;
+                let session_id = if generation == 0 {
+                    "runtime-session-one"
+                } else {
+                    "runtime-session-two"
+                };
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_http_request(&mut stream);
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default();
+                let initialize = body.contains("\"method\":\"initialize\"");
+                if initialize {
+                    assert!(http_header_value(&request, "Mcp-Session-Id").is_none());
+                    initialize_requests.push(request.clone());
+                } else {
+                    assert_eq!(
+                        http_header_value(&request, "Mcp-Session-Id").as_deref(),
+                        Some(session_id)
+                    );
+                }
+
+                let (status, response_body) = if initialize {
+                    (
+                        200,
+                        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"restart-fixture\",\"version\":\"1\"}}}"
+                            .to_owned(),
+                    )
+                } else if body.contains("notifications/initialized") {
+                    (202, String::new())
+                } else if body.contains("\"method\":\"tools/list\"") {
+                    (
+                        200,
+                        "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"list_issues\",\"inputSchema\":{\"type\":\"object\"}}]}}"
+                            .to_owned(),
+                    )
+                } else if body.contains("\"method\":\"tools/call\"") {
+                    (
+                        200,
+                        "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"isError\":false}}"
+                            .to_owned(),
+                    )
+                } else {
+                    assert!(request.starts_with("DELETE /mcp HTTP/1.1\r\n"));
+                    (204, String::new())
+                };
+                let content_type = if response_body.is_empty() {
+                    String::new()
+                } else {
+                    "Content-Type: application/json\r\n".to_owned()
+                };
+                let session_header = if initialize {
+                    format!("Mcp-Session-Id: {session_id}\r\n")
+                } else {
+                    String::new()
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} OK\r\n{content_type}{session_header}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
+            initialize_requests
+        });
+
+        for generation in ["one", "two"] {
+            let runtime = runtime_with_handle(mcp_http_handle(endpoint.clone(), BTreeMap::new()));
+            let report = runtime
+                .invoke(
+                    AdapterInvocation::new(
+                        RequestId::parse(&format!("req-mcp-runtime-{generation}")).unwrap(),
+                        CapabilityName::parse("github.issue.list").unwrap(),
+                    )
+                    .with_provider(AdapterId::parse("mcp-http-test").unwrap())
+                    .with_input("{}"),
+                )
+                .unwrap();
+            assert!(report
+                .audit
+                .contains(&"mcp.http_registry:supervisor_owned_call".to_owned()));
+            let drain = runtime.drain_providers(Duration::from_secs(1)).unwrap();
+            assert_eq!(drain.mcp_http_sessions_after, 0);
+            assert_eq!(drain.mcp_http_readers_after, 0);
+        }
+
+        let initialize_requests = server.join().unwrap();
+        assert_eq!(initialize_requests.len(), 2);
+        assert!(initialize_requests.iter().all(|request| http_header_value(
+            request,
+            "Mcp-Session-Id"
+        )
+        .is_none()));
     }
 
     /// 执行 `runtime_with_handle` 对应的受控流程。
@@ -1706,7 +1995,7 @@ mod tests {
 
     fn runtime_with_handle_and_vault(
         handle: AdapterHandle,
-        vault: MemoryCredentialVault,
+        vault: impl CredentialVault + 'static,
     ) -> AdapterRuntime {
         runtime_with_handle(handle).with_credential_vault(vault)
     }

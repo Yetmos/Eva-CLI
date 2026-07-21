@@ -4,17 +4,18 @@
 //! 标记为中止。孤儿清理只删除已停止或外部检查确认进程不存在的登记项，不负责终止进程。
 //! MCP session registry and lifecycle supervisor boundary.
 
+use crate::json_rpc::{McpJsonRpcCallReport, McpJsonRpcClient};
 use crate::session::{
     McpServerTransport, McpSession, McpSessionConfig, McpSessionManager, McpSessionSupervisor,
 };
 use crate::sse::{retained_item_bytes, McpSseAbortHandle, McpSseEventStream, McpSseItem};
 use crate::streamable_http::McpStreamableHttpSession;
-use eva_core::{AdapterId, EvaError};
+use eva_core::{AdapterId, EvaError, RequestId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError, TrySendError};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -117,6 +118,25 @@ pub struct McpOrphanCleanupReport {
     pub audit: Vec<String>,
 }
 
+/// Bounded, redacted result of one registry-wide Streamable HTTP drain.
+///
+/// The report intentionally contains counts only. In particular, it never
+/// exposes registry control IDs or server-issued `Mcp-Session-Id` values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpHttpDrainReport {
+    pub sessions_before: usize,
+    pub readers_before: usize,
+    pub cleanup_pending_before: usize,
+    pub sessions_after: usize,
+    pub readers_after: usize,
+    pub cleanup_pending_after: usize,
+    pub attempted_sessions: usize,
+    pub drained_sessions: usize,
+    pub failed_sessions: usize,
+    pub admission_closed: bool,
+    pub complete: bool,
+}
+
 /// 约定 `McpProcessInspector` 实现需要满足的接口。
 pub trait McpProcessInspector {
     /// 执行 `process_is_running` 对应的处理逻辑。
@@ -147,12 +167,13 @@ struct RegisteredSession {
 
 /// Registry-owned Streamable HTTP sessions and their real reader threads.
 ///
-/// This registry is deliberately separate from the stdio process registry:
-/// W4-L06 owns deterministic socket/session cleanup, while W4-L07 will decide
-/// which daemon supervisor owns this registry for the long term.
+/// This registry is deliberately separate from the stdio process registry and
+/// exposes one close-admission/drain authority for its caller-owned supervisor.
 pub struct McpStreamableHttpSessionRegistry {
     sessions: BTreeMap<String, RegisteredHttpSession>,
     next_session_id: u64,
+    admission_closed: bool,
+    draining: bool,
 }
 
 struct RegisteredHttpSession {
@@ -172,6 +193,18 @@ struct RegisteredHttpStream {
     join: Option<JoinHandle<()>>,
     last_exit: Option<ManagedReaderExit>,
 }
+
+struct DeferredReaderJoin {
+    join: JoinHandle<()>,
+    acknowledgement: Option<mpsc::SyncSender<bool>>,
+}
+
+struct ReaderJoinReaper {
+    sender: mpsc::Sender<DeferredReaderJoin>,
+    worker: JoinHandle<()>,
+}
+
+static READER_JOIN_REAPER: OnceLock<ReaderJoinReaper> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManagedHttpStreamState {
@@ -208,6 +241,8 @@ impl Default for McpStreamableHttpSessionRegistry {
         Self {
             sessions: BTreeMap::new(),
             next_session_id: 1,
+            admission_closed: false,
+            draining: false,
         }
     }
 }
@@ -218,6 +253,8 @@ impl fmt::Debug for McpStreamableHttpSessionRegistry {
             .debug_struct("McpStreamableHttpSessionRegistry")
             .field("session_count", &self.sessions.len())
             .field("dangling_reader_count", &self.dangling_reader_count())
+            .field("admission_closed", &self.admission_closed)
+            .field("draining", &self.draining)
             .finish_non_exhaustive()
     }
 }
@@ -247,6 +284,102 @@ impl fmt::Debug for RegisteredHttpStream {
             )
             .field("last_exit", &self.last_exit)
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for RegisteredHttpStream {
+    fn drop(&mut self) {
+        let Some(join) = self.join.take() else {
+            return;
+        };
+        self.cancellation.store(true, Ordering::Release);
+        let _ = self.abort.abort();
+        defer_reader_join(join, None);
+    }
+}
+
+fn reader_join_reaper() -> Result<&'static ReaderJoinReaper, EvaError> {
+    if let Some(reaper) = READER_JOIN_REAPER.get() {
+        return Ok(reaper);
+    }
+
+    let (sender, receiver) = mpsc::channel();
+    let worker = thread::Builder::new()
+        .name("eva-mcp-reader-reaper".to_owned())
+        .spawn(move || run_reader_join_reaper(receiver))
+        .map_err(|error| {
+            EvaError::unavailable("failed to start MCP reader join reaper")
+                .with_provider_code("mcp_reader_join_reaper_spawn_failed")
+                .with_context("io_error_kind", format!("{:?}", error.kind()))
+        })?;
+    let candidate = ReaderJoinReaper { sender, worker };
+    if let Err(candidate) = READER_JOIN_REAPER.set(candidate) {
+        drop(candidate.sender);
+        let _ = candidate.worker.join();
+    }
+    READER_JOIN_REAPER.get().ok_or_else(|| {
+        EvaError::internal("MCP reader join reaper initialization was lost")
+            .with_provider_code("mcp_reader_join_reaper_missing")
+    })
+}
+
+fn run_reader_join_reaper(receiver: Receiver<DeferredReaderJoin>) {
+    let mut pending = Vec::new();
+    let mut disconnected = false;
+    while !disconnected || !pending.is_empty() {
+        if !disconnected {
+            match receiver.recv_timeout(Duration::from_millis(10)) {
+                Ok(task) => pending.push(task),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => disconnected = true,
+            }
+            loop {
+                match receiver.try_recv() {
+                    Ok(task) => pending.push(task),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        } else {
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let mut index = 0;
+        while index < pending.len() {
+            if pending[index].join.is_finished() {
+                let task = pending.swap_remove(index);
+                let joined = task.join.join().is_ok();
+                if let Some(acknowledgement) = task.acknowledgement {
+                    let _ = acknowledgement.send(joined);
+                }
+            } else {
+                index += 1;
+            }
+        }
+    }
+}
+
+fn defer_reader_join(join: JoinHandle<()>, acknowledgement: Option<mpsc::SyncSender<bool>>) {
+    let task = DeferredReaderJoin {
+        join,
+        acknowledgement,
+    };
+    let Some(reaper) = reader_join_reaper().ok() else {
+        let joined = task.join.join().is_ok();
+        if let Some(acknowledgement) = task.acknowledgement {
+            let _ = acknowledgement.send(joined);
+        }
+        return;
+    };
+    if let Err(error) = reaper.sender.send(task) {
+        let task = error.0;
+        let joined = task.join.join().is_ok();
+        if let Some(acknowledgement) = task.acknowledgement {
+            let _ = acknowledgement.send(joined);
+        }
     }
 }
 
@@ -510,6 +643,37 @@ impl McpStreamableHttpSessionRegistry {
         Self::default()
     }
 
+    /// Close admission for new sessions. This operation is one-way for the
+    /// lifetime of the registry so a supervisor can safely call it more than
+    /// once while coordinating shutdown.
+    pub fn close_admission(&mut self) {
+        self.admission_closed = true;
+    }
+
+    /// Return whether one local registry control ID still owns a session.
+    /// This never exposes the server-issued `Mcp-Session-Id` value.
+    pub fn contains_session(&self, session_id: &str) -> bool {
+        self.sessions.contains_key(session_id)
+    }
+
+    /// Transfer a pristine Streamable HTTP session to registry ownership
+    /// before the first network I/O. The caller may then ask [`Self::call_tool`]
+    /// to let the registry-owned session perform the complete JSON-RPC flow.
+    pub fn register_starting_session(
+        &mut self,
+        adapter_id: AdapterId,
+        session: McpStreamableHttpSession,
+    ) -> Result<McpSessionLifecycleReport, EvaError> {
+        self.ensure_admission_open()?;
+        if !session.is_pristine() {
+            return Err(EvaError::conflict(
+                "MCP Streamable HTTP starting session must be pristine",
+            )
+            .with_provider_code("mcp_http_registry_session_not_pristine"));
+        }
+        self.insert_http_session(adapter_id, session, ManagedHttpSessionState::Active)
+    }
+
     /// Transfer one Streamable HTTP session to the registry. A session that
     /// is not ready is retained in cleanup-only state instead of losing its
     /// opaque DELETE material on a best-effort cleanup failure.
@@ -518,7 +682,25 @@ impl McpStreamableHttpSessionRegistry {
         adapter_id: AdapterId,
         session: McpStreamableHttpSession,
     ) -> Result<McpSessionLifecycleReport, EvaError> {
+        self.ensure_admission_open()?;
         let ready = session.is_ready();
+        self.insert_http_session(
+            adapter_id,
+            session,
+            if ready {
+                ManagedHttpSessionState::Active
+            } else {
+                ManagedHttpSessionState::CleanupPending
+            },
+        )
+    }
+
+    fn insert_http_session(
+        &mut self,
+        adapter_id: AdapterId,
+        session: McpStreamableHttpSession,
+        state: ManagedHttpSessionState,
+    ) -> Result<McpSessionLifecycleReport, EvaError> {
         let next_session_id = self.next_session_id.checked_add(1).ok_or_else(|| {
             EvaError::conflict("MCP Streamable HTTP registry ID space is exhausted")
                 .with_provider_code("mcp_http_registry_id_exhausted")
@@ -530,11 +712,7 @@ impl McpStreamableHttpSessionRegistry {
             RegisteredHttpSession {
                 adapter_id: adapter_id.clone(),
                 session,
-                state: if ready {
-                    ManagedHttpSessionState::Active
-                } else {
-                    ManagedHttpSessionState::CleanupPending
-                },
+                state,
                 streams: BTreeMap::new(),
             },
         );
@@ -543,13 +721,13 @@ impl McpStreamableHttpSessionRegistry {
             "mcp.http_registry:session_registered".to_owned(),
             "mcp.http_registry:opaque_session_redacted".to_owned(),
         ];
-        if !ready {
+        if state == ManagedHttpSessionState::CleanupPending {
             audit.push("mcp.http_registry:session_requires_cleanup".to_owned());
         }
         Ok(McpSessionLifecycleReport {
             adapter_id,
             session_id: registry_session_id,
-            status: if ready {
+            status: if state == ManagedHttpSessionState::Active {
                 McpSessionLifecycleStatus::Running
             } else {
                 McpSessionLifecycleStatus::Orphaned
@@ -557,6 +735,41 @@ impl McpStreamableHttpSessionRegistry {
             process_id: None,
             audit,
         })
+    }
+
+    /// Let the registry-owned client drive initialize, initialized,
+    /// tools/list, and tools/call without exposing the underlying transport.
+    pub fn call_tool(
+        &mut self,
+        session_id: &str,
+        client: &McpJsonRpcClient,
+        request_id: RequestId,
+        tool: &str,
+        input: &str,
+    ) -> Result<McpJsonRpcCallReport, EvaError> {
+        if self.draining {
+            return Err(
+                EvaError::conflict("MCP Streamable HTTP registry is draining")
+                    .with_provider_code("mcp_http_registry_draining"),
+            );
+        }
+        let result = {
+            let entry = self.http_session_mut(session_id)?;
+            ensure_http_session_active(entry)?;
+            client.call_tool_with_transport(&mut entry.session, request_id, tool, input)
+        };
+        if result.is_err() {
+            if let Some(entry) = self.sessions.get_mut(session_id) {
+                // Any failed network attempt may have produced a provisional
+                // DELETE handle or poisoned local state. Fence it until the
+                // supervisor performs explicit cleanup; never reuse stale
+                // application-session material after an error.
+                if !entry.session.is_pristine() {
+                    entry.state = ManagedHttpSessionState::CleanupPending;
+                }
+            }
+        }
+        result
     }
 
     /// Open a GET event stream and transfer its real reader to a bounded
@@ -775,10 +988,129 @@ impl McpStreamableHttpSessionRegistry {
         &mut self,
         session_id: &str,
     ) -> Result<McpSessionLifecycleReport, EvaError> {
-        let (adapter_id, timeout, stream_ids, controls) = {
+        let timeout = self
+            .http_session_mut(session_id)?
+            .session
+            .lifecycle_timeout();
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            EvaError::invalid_argument("MCP Streamable HTTP shutdown timeout is out of range")
+                .with_provider_code("mcp_http_registry_deadline_invalid")
+        })?;
+        self.shutdown_session_until(session_id, deadline)
+    }
+
+    /// Close admission and drain every owned session against one absolute
+    /// deadline. A failed session remains fenced in this registry so a later
+    /// supervisor pass can retry cleanup without reconstructing opaque state.
+    pub fn drain_all(&mut self, timeout: Duration) -> Result<McpHttpDrainReport, EvaError> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            EvaError::invalid_argument("MCP Streamable HTTP drain timeout is out of range")
+                .with_provider_code("mcp_http_registry_deadline_invalid")
+        })?;
+        self.drain_all_until(deadline)
+    }
+
+    /// Close admission and drain every owned session against a caller-owned
+    /// absolute deadline shared with surrounding provider cleanup phases.
+    pub fn drain_all_until(&mut self, deadline: Instant) -> Result<McpHttpDrainReport, EvaError> {
+        self.close_admission();
+        self.draining = true;
+
+        let sessions_before = self.dangling_session_count();
+        let readers_before = self.dangling_reader_count();
+        let cleanup_pending_before = self.cleanup_pending_session_count();
+        for entry in self.sessions.values_mut() {
+            entry.state = ManagedHttpSessionState::CleanupPending;
+        }
+
+        let session_ids = self.sessions.keys().cloned().collect::<Vec<_>>();
+        let mut attempted_sessions = 0;
+        let mut first_error = None;
+
+        for session_id in session_ids {
+            if Instant::now() >= deadline {
+                if first_error.is_none() {
+                    first_error = Some(
+                        EvaError::timeout("MCP Streamable HTTP registry drain deadline elapsed")
+                            .with_provider_code("mcp_http_registry_drain_timeout"),
+                    );
+                }
+                break;
+            }
+            attempted_sessions += 1;
+            if let Err(error) = self.shutdown_session_until(&session_id, deadline) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+
+        let sessions_after = self.dangling_session_count();
+        let readers_after = self.dangling_reader_count();
+        let cleanup_pending_after = self.cleanup_pending_session_count();
+        let complete = sessions_after == 0 && readers_after == 0 && cleanup_pending_after == 0;
+        let report = McpHttpDrainReport {
+            sessions_before,
+            readers_before,
+            cleanup_pending_before,
+            sessions_after,
+            readers_after,
+            cleanup_pending_after,
+            attempted_sessions,
+            drained_sessions: sessions_before.saturating_sub(sessions_after),
+            failed_sessions: sessions_after,
+            admission_closed: self.admission_closed,
+            complete,
+        };
+
+        if report.complete && Instant::now() >= deadline {
+            return Err(
+                EvaError::timeout("MCP Streamable HTTP registry drain deadline elapsed")
+                    .with_provider_code("mcp_http_registry_drain_timeout")
+                    .with_context("sessions_after", report.sessions_after.to_string())
+                    .with_context("readers_after", report.readers_after.to_string())
+                    .with_context(
+                        "cleanup_pending_after",
+                        report.cleanup_pending_after.to_string(),
+                    )
+                    .with_context("complete", report.complete.to_string()),
+            );
+        }
+        if report.complete {
+            return Ok(report);
+        }
+
+        let error = first_error.unwrap_or_else(|| {
+            EvaError::unavailable("MCP Streamable HTTP registry drain is incomplete")
+                .with_provider_code("mcp_http_registry_drain_incomplete")
+        });
+        Err(error
+            .with_context("sessions_before", report.sessions_before.to_string())
+            .with_context("readers_before", report.readers_before.to_string())
+            .with_context(
+                "cleanup_pending_before",
+                report.cleanup_pending_before.to_string(),
+            )
+            .with_context("sessions_after", report.sessions_after.to_string())
+            .with_context("readers_after", report.readers_after.to_string())
+            .with_context(
+                "cleanup_pending_after",
+                report.cleanup_pending_after.to_string(),
+            )
+            .with_context("attempted_sessions", report.attempted_sessions.to_string())
+            .with_context("failed_sessions", report.failed_sessions.to_string())
+            .with_context("admission_closed", report.admission_closed.to_string())
+            .with_context("complete", report.complete.to_string()))
+    }
+
+    fn shutdown_session_until(
+        &mut self,
+        session_id: &str,
+        deadline: Instant,
+    ) -> Result<McpSessionLifecycleReport, EvaError> {
+        let (adapter_id, stream_ids, controls) = {
             let entry = self.http_session_mut(session_id)?;
             entry.state = ManagedHttpSessionState::CleanupPending;
-            let timeout = entry.session.lifecycle_timeout();
             let stream_ids = entry.streams.keys().cloned().collect::<Vec<_>>();
             let controls = entry
                 .streams
@@ -789,7 +1121,7 @@ impl McpStreamableHttpSessionRegistry {
                     stream.abort.clone()
                 })
                 .collect::<Vec<_>>();
-            (entry.adapter_id.clone(), timeout, stream_ids, controls)
+            (entry.adapter_id.clone(), stream_ids, controls)
         };
 
         let mut failure = None;
@@ -810,7 +1142,25 @@ impl McpStreamableHttpSessionRegistry {
                 .with_context("readers_joined", "false")
                 .with_context("cleanup_pending", "true"));
         }
-        let delete_error = self.http_session_mut(session_id)?.session.shutdown().err();
+        let delete_error = {
+            let entry = self.http_session_mut(session_id)?;
+            if entry.session.requires_remote_delete() {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Some(
+                        EvaError::timeout(
+                            "MCP Streamable HTTP drain deadline elapsed before session DELETE",
+                        )
+                        .with_provider_code("mcp_http_registry_drain_timeout"),
+                    )
+                } else {
+                    entry.session.shutdown_with_timeout(remaining).err()
+                }
+            } else {
+                // Stateless or never-started sessions require no network I/O.
+                entry.session.shutdown_with_timeout(Duration::ZERO).err()
+            }
+        };
         let session_deleted = delete_error.is_none();
         if failure.is_none() {
             failure = delete_error;
@@ -824,7 +1174,7 @@ impl McpStreamableHttpSessionRegistry {
                     EvaError::internal("MCP Streamable HTTP stream disappeared during shutdown")
                         .with_provider_code("mcp_http_registry_stream_lost")
                 })?;
-                wait_and_join_reader(stream, timeout)
+                wait_and_join_reader_until(stream, deadline)
             };
             if let Err(error) = result {
                 readers_joined = false;
@@ -880,6 +1230,30 @@ impl McpStreamableHttpSessionRegistry {
             .sum()
     }
 
+    /// Number of sessions fenced for cleanup and unavailable to application
+    /// calls or new streams.
+    pub fn cleanup_pending_session_count(&self) -> usize {
+        self.sessions
+            .values()
+            .filter(|entry| entry.state == ManagedHttpSessionState::CleanupPending)
+            .count()
+    }
+
+    /// Whether this registry permanently stopped accepting new sessions.
+    pub const fn admission_is_closed(&self) -> bool {
+        self.admission_closed
+    }
+
+    fn ensure_admission_open(&self) -> Result<(), EvaError> {
+        if self.admission_closed {
+            return Err(
+                EvaError::conflict("MCP Streamable HTTP registry admission is closed")
+                    .with_provider_code("mcp_http_registry_admission_closed"),
+            );
+        }
+        Ok(())
+    }
+
     fn http_session_mut(
         &mut self,
         session_id: &str,
@@ -893,8 +1267,21 @@ impl McpStreamableHttpSessionRegistry {
 
 impl Drop for McpStreamableHttpSessionRegistry {
     fn drop(&mut self) {
-        for entry in self.sessions.values_mut() {
-            let timeout = entry.session.lifecycle_timeout();
+        let drop_started = Instant::now();
+        let registry_timeout = self
+            .sessions
+            .values()
+            .map(|entry| entry.session.lifecycle_timeout())
+            .max()
+            .unwrap_or_default();
+        let registry_deadline = drop_started
+            .checked_add(registry_timeout)
+            .unwrap_or(drop_started);
+        let mut socket_results = BTreeMap::new();
+
+        // Abort every socket before any one session can consume the shared
+        // fallback budget waiting for its reader to exit.
+        for (session_id, entry) in &mut self.sessions {
             let mut sockets_closed = true;
             for stream in entry.streams.values_mut() {
                 stream.cancellation.store(true, Ordering::Release);
@@ -902,24 +1289,42 @@ impl Drop for McpStreamableHttpSessionRegistry {
                     sockets_closed = false;
                 }
             }
-            if sockets_closed {
-                let _ = entry.session.shutdown();
+            socket_results.insert(session_id.clone(), sockets_closed);
+        }
+
+        for (session_id, entry) in &mut self.sessions {
+            let deadline = drop_started
+                .checked_add(entry.session.lifecycle_timeout())
+                .map(|deadline| deadline.min(registry_deadline))
+                .unwrap_or(drop_started);
+            let mut sockets_closed = socket_results.remove(session_id).unwrap_or(false);
+            if sockets_closed && Instant::now() < deadline {
+                let _ = entry
+                    .session
+                    .shutdown_with_timeout(deadline.saturating_duration_since(Instant::now()));
             }
             for stream in entry.streams.values_mut() {
-                let _ = wait_and_join_reader(stream, timeout);
+                let _ = wait_and_join_reader_until(stream, deadline);
             }
-            if !sockets_closed {
+            if !sockets_closed && Instant::now() < deadline {
                 sockets_closed = true;
                 for stream in entry.streams.values() {
                     if stream.abort.abort().is_err() {
                         sockets_closed = false;
                     }
                 }
-                if sockets_closed {
-                    let _ = entry.session.shutdown();
+                if sockets_closed && Instant::now() < deadline {
+                    let _ = entry
+                        .session
+                        .shutdown_with_timeout(deadline.saturating_duration_since(Instant::now()));
                     for stream in entry.streams.values_mut() {
-                        let _ = wait_and_join_reader(stream, timeout);
+                        let _ = wait_and_join_reader_until(stream, deadline);
                     }
+                }
+            }
+            for stream in entry.streams.values_mut() {
+                if let Some(join) = stream.join.take() {
+                    defer_reader_join(join, None);
                 }
             }
         }
@@ -953,6 +1358,7 @@ fn ensure_http_session_active(entry: &RegisteredHttpSession) -> Result<(), EvaEr
 }
 
 fn spawn_managed_http_reader(stream: McpSseEventStream) -> Result<RegisteredHttpStream, EvaError> {
+    reader_join_reaper()?;
     let abort = stream.abort_handle()?;
     let output_limit_bytes = stream.output_limit_bytes();
     let cancellation = Arc::new(AtomicBool::new(false));
@@ -1085,19 +1491,35 @@ fn wait_and_join_reader(
     stream: &mut RegisteredHttpStream,
     timeout: Duration,
 ) -> Result<&'static str, EvaError> {
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        EvaError::invalid_argument("MCP SSE reader join timeout is out of range")
+            .with_provider_code("mcp_stream_reader_timeout_invalid")
+    })?;
+    wait_and_join_reader_until(stream, deadline)
+}
+
+fn wait_and_join_reader_until(
+    stream: &mut RegisteredHttpStream,
+    deadline: Instant,
+) -> Result<&'static str, EvaError> {
     let Some(join) = stream.join.as_ref() else {
         return Ok(stream
             .last_exit
             .as_ref()
             .map_or("already_joined", ManagedReaderExit::as_str));
     };
-    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-        EvaError::invalid_argument("MCP SSE reader join timeout is out of range")
-            .with_provider_code("mcp_stream_reader_timeout_invalid")
-    })?;
-    let exit = loop {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(
+                EvaError::timeout("MCP SSE reader did not exit after socket abort")
+                    .with_provider_code("mcp_stream_reader_join_timeout"),
+            );
+        }
         if join.is_finished() {
-            break stream.done.try_recv().ok();
+            if stream.last_exit.is_none() {
+                stream.last_exit = stream.done.try_recv().ok();
+            }
+            break;
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -1108,20 +1530,23 @@ fn wait_and_join_reader(
         }
         let wait = remaining.min(Duration::from_millis(50));
         match stream.done.recv_timeout(wait) {
-            Ok(exit) => break Some(exit),
-            Err(RecvTimeoutError::Disconnected) => break None,
+            Ok(exit) => stream.last_exit = Some(exit),
+            Err(RecvTimeoutError::Disconnected) => {}
             Err(RecvTimeoutError::Timeout) => stream.abort.abort()?,
         }
-    };
+    }
+    if Instant::now() >= deadline {
+        return Err(
+            EvaError::timeout("MCP SSE reader did not exit after socket abort")
+                .with_provider_code("mcp_stream_reader_join_timeout"),
+        );
+    }
     let join = stream
         .join
         .take()
         .expect("reader join handle was checked above");
     let joined = join.join();
     stream.state = ManagedHttpStreamState::Joined;
-    if let Some(exit) = exit {
-        stream.last_exit = Some(exit);
-    }
     joined.map_err(|_| {
         EvaError::internal("MCP SSE reader thread panicked")
             .with_provider_code("mcp_stream_reader_panicked")
@@ -1199,6 +1624,7 @@ fn validate_stream_id(stream_id: String) -> Result<String, EvaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::McpAllowlist;
     use crate::session::{
         McpProcessHandle, McpProcessShutdownRequest, McpProcessSpec, McpProcessStartRequest,
         McpStreamableHttpConfig,
@@ -1354,6 +1780,138 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn reader_done_signal_does_not_bypass_the_join_deadline() {
+        let (_event_sender, events) = mpsc::sync_channel(1);
+        let (done_sender, done) = mpsc::sync_channel(1);
+        let join = thread::spawn(move || {
+            done_sender.send(ManagedReaderExit::Cancelled).unwrap();
+            thread::sleep(Duration::from_millis(200));
+        });
+        let mut stream = RegisteredHttpStream {
+            state: ManagedHttpStreamState::Cancelling,
+            cancellation: Arc::new(AtomicBool::new(true)),
+            abort: McpSseAbortHandle::new(|| Ok(())),
+            events,
+            queued_bytes: Arc::new(AtomicUsize::new(0)),
+            done,
+            join: Some(join),
+            last_exit: None,
+        };
+
+        let started = Instant::now();
+        let error =
+            wait_and_join_reader_until(&mut stream, Instant::now() + Duration::from_millis(20))
+                .unwrap_err();
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("mcp_stream_reader_join_timeout")
+        );
+        assert!(started.elapsed() < Duration::from_millis(150));
+        assert!(stream.join.is_some());
+        assert_eq!(stream.last_exit, Some(ManagedReaderExit::Cancelled));
+
+        assert_eq!(
+            wait_and_join_reader_until(&mut stream, Instant::now() + Duration::from_secs(1),)
+                .unwrap(),
+            "cancelled"
+        );
+        assert!(stream.join.is_none());
+    }
+
+    #[test]
+    fn reader_join_reaper_does_not_block_fast_jobs_behind_a_slow_reader() {
+        reader_join_reaper().unwrap();
+        let (release_sender, release) = mpsc::sync_channel(1);
+        let blocked = thread::spawn(move || release.recv().unwrap());
+        let (blocked_ack_sender, blocked_ack) = mpsc::sync_channel(1);
+        defer_reader_join(blocked, Some(blocked_ack_sender));
+
+        let fast = thread::spawn(|| {});
+        let (fast_ack_sender, fast_ack) = mpsc::sync_channel(1);
+        defer_reader_join(fast, Some(fast_ack_sender));
+        assert!(fast_ack.recv_timeout(Duration::from_secs(1)).unwrap());
+
+        release_sender.send(()).unwrap();
+        assert!(blocked_ack.recv_timeout(Duration::from_secs(1)).unwrap());
+    }
+
+    #[test]
+    fn reader_join_reaper_continues_after_a_panicking_reader() {
+        reader_join_reaper().unwrap();
+        let panicking_reader = thread::spawn(|| panic!("MCP reader test panic"));
+        let (panic_ack_sender, panic_ack) = mpsc::sync_channel(1);
+        defer_reader_join(panicking_reader, Some(panic_ack_sender));
+        assert!(!panic_ack.recv_timeout(Duration::from_secs(1)).unwrap());
+
+        let healthy_reader = thread::spawn(|| {});
+        let (healthy_ack_sender, healthy_ack) = mpsc::sync_channel(1);
+        defer_reader_join(healthy_reader, Some(healthy_ack_sender));
+        assert!(healthy_ack.recv_timeout(Duration::from_secs(1)).unwrap());
+    }
+
+    #[test]
+    fn registry_drop_shares_one_deadline_across_all_reader_owners() {
+        reader_join_reaper().unwrap();
+        let mut registry = McpStreamableHttpSessionRegistry::new();
+        let mut release_senders = Vec::new();
+        let mut exit_receivers = Vec::new();
+
+        for index in 0..2 {
+            let session = McpStreamableHttpSession::new(
+                McpStreamableHttpConfig::legacy_http("http://127.0.0.1:9/mcp").unwrap(),
+                BTreeMap::new(),
+                Duration::from_millis(300),
+                1024,
+            )
+            .unwrap();
+            let (_event_sender, events) = mpsc::sync_channel(1);
+            let (_done_sender, done) = mpsc::sync_channel(1);
+            let (release_sender, release) = mpsc::sync_channel(1);
+            let (exit_sender, exited) = mpsc::sync_channel(1);
+            let join = thread::spawn(move || {
+                release.recv().unwrap();
+                exit_sender.send(()).unwrap();
+            });
+            let stream = RegisteredHttpStream {
+                state: ManagedHttpStreamState::Running,
+                cancellation: Arc::new(AtomicBool::new(false)),
+                abort: McpSseAbortHandle::new(|| Ok(())),
+                events,
+                queued_bytes: Arc::new(AtomicUsize::new(0)),
+                done,
+                join: Some(join),
+                last_exit: None,
+            };
+            registry.sessions.insert(
+                format!("drop-budget-session-{index}"),
+                RegisteredHttpSession {
+                    adapter_id: AdapterId::parse("drop-budget-adapter").unwrap(),
+                    session,
+                    state: ManagedHttpSessionState::Active,
+                    streams: BTreeMap::from([("events".to_owned(), stream)]),
+                },
+            );
+            release_senders.push(release_sender);
+            exit_receivers.push(exited);
+        }
+
+        let started = Instant::now();
+        drop(registry);
+        assert!(
+            started.elapsed() < Duration::from_millis(450),
+            "registry drop reset its timeout for each session: {:?}",
+            started.elapsed()
+        );
+
+        for release in release_senders {
+            release.send(()).unwrap();
+        }
+        for exited in exit_receivers {
+            exited.recv_timeout(Duration::from_secs(1)).unwrap();
+        }
     }
 
     #[test]
@@ -1531,6 +2089,216 @@ mod tests {
         assert_eq!(registry.dangling_session_count(), 0);
     }
 
+    #[test]
+    fn starting_session_is_owned_before_io_and_admission_is_one_way() {
+        let config = McpStreamableHttpConfig::legacy_http("http://127.0.0.1:9/mcp").unwrap();
+        let session = McpStreamableHttpSession::new(
+            config.clone(),
+            BTreeMap::new(),
+            Duration::from_secs(1),
+            1024,
+        )
+        .unwrap();
+        let mut registry = McpStreamableHttpSessionRegistry::new();
+        let registered = registry
+            .register_starting_session(AdapterId::parse("starting-mcp").unwrap(), session)
+            .unwrap();
+        assert_eq!(registry.dangling_session_count(), 1);
+        assert_eq!(registered.status, McpSessionLifecycleStatus::Running);
+
+        registry.close_admission();
+        assert!(registry.admission_is_closed());
+        let rejected = registry
+            .register_starting_session(
+                AdapterId::parse("rejected-mcp").unwrap(),
+                McpStreamableHttpSession::new(
+                    config,
+                    BTreeMap::new(),
+                    Duration::from_secs(1),
+                    1024,
+                )
+                .unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            rejected.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_registry_admission_closed")
+        );
+    }
+
+    #[test]
+    fn drain_is_idempotent_and_reports_zero_after_repeat() {
+        let config = McpStreamableHttpConfig::legacy_http("http://127.0.0.1:9/mcp").unwrap();
+        let session =
+            McpStreamableHttpSession::new(config, BTreeMap::new(), Duration::from_secs(1), 1024)
+                .unwrap();
+        let mut registry = McpStreamableHttpSessionRegistry::new();
+        registry
+            .register_starting_session(AdapterId::parse("drain-mcp").unwrap(), session)
+            .unwrap();
+
+        let first = registry.drain_all(Duration::from_secs(1)).unwrap();
+        assert_eq!(first.sessions_before, 1);
+        assert_eq!(first.sessions_after, 0);
+        assert_eq!(first.cleanup_pending_after, 0);
+        assert!(first.complete);
+
+        let second = registry.drain_all(Duration::from_secs(1)).unwrap();
+        assert_eq!(second.sessions_before, 0);
+        assert_eq!(second.readers_before, 0);
+        assert_eq!(second.cleanup_pending_before, 0);
+        assert_eq!(second.sessions_after, 0);
+        assert_eq!(second.readers_after, 0);
+        assert!(second.complete);
+        assert!(second.admission_closed);
+    }
+
+    #[test]
+    fn empty_registry_drain_never_succeeds_after_the_absolute_deadline() {
+        let mut registry = McpStreamableHttpSessionRegistry::new();
+        let error = registry.drain_all_until(Instant::now()).unwrap_err();
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_registry_drain_timeout")
+        );
+        assert_eq!(registry.dangling_session_count(), 0);
+        assert!(registry.admission_is_closed());
+    }
+
+    #[test]
+    fn failed_drain_retains_cleanup_owner_for_retry() {
+        let (endpoint, server) = spawn_managed_http_fixture(vec![500, 204], None);
+        let session = ready_http_session(&endpoint);
+        let mut registry = McpStreamableHttpSessionRegistry::new();
+        let registered = registry
+            .register_session(AdapterId::parse("drain-retry-mcp").unwrap(), session)
+            .unwrap();
+        registry
+            .open_event_stream(&registered.session_id, "events")
+            .unwrap();
+
+        let first = registry.drain_all(Duration::from_secs(1)).unwrap_err();
+        assert_eq!(
+            first.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_session_delete_failed")
+        );
+        assert_eq!(registry.dangling_session_count(), 1);
+        assert_eq!(registry.dangling_reader_count(), 0);
+        assert_eq!(registry.cleanup_pending_session_count(), 1);
+
+        let second = registry.drain_all(Duration::from_secs(1)).unwrap();
+        assert_eq!(second.sessions_before, 1);
+        assert_eq!(second.sessions_after, 0);
+        assert_eq!(second.readers_after, 0);
+        assert!(second.complete);
+        let (requests, stream_closed_before_delete) = server.join().unwrap();
+        assert!(stream_closed_before_delete);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("DELETE "))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn closed_provisional_session_retries_delete_with_remaining_drain_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for request_index in 0..3 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let request = read_fixture_http_request(&mut socket);
+                let response = match request_index {
+                    0 => fixture_http_response(
+                        200,
+                        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}",
+                        true,
+                    ),
+                    1 => fixture_http_response(500, "", false),
+                    _ => fixture_http_response(204, "", false),
+                };
+                socket.write_all(response.as_bytes()).unwrap();
+                socket.flush().unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+        let config = McpStreamableHttpConfig::legacy_http(&endpoint).unwrap();
+        let mut session =
+            McpStreamableHttpSession::new(config, BTreeMap::new(), Duration::from_secs(1), 4096)
+                .unwrap();
+        let initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\"}}";
+        let initialize_error = session.initialize(1, initialize).unwrap_err();
+        assert_eq!(
+            initialize_error.provider_code().map(|code| code.as_str()),
+            Some("mcp_protocol_version_missing")
+        );
+        assert!(session.is_closed());
+        assert!(session.session_id().is_none());
+        assert!(session.requires_remote_delete());
+
+        let mut registry = McpStreamableHttpSessionRegistry::new();
+        registry
+            .register_session(AdapterId::parse("provisional-retry-mcp").unwrap(), session)
+            .unwrap();
+        let drained = registry.drain_all(Duration::from_secs(1)).unwrap();
+        assert_eq!(drained.sessions_after, 0);
+        assert_eq!(drained.readers_after, 0);
+        assert_eq!(drained.cleanup_pending_after, 0);
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("DELETE "))
+                .count(),
+            2
+        );
+        assert!(requests[2].contains("Mcp-Session-Id: opaque-session-secret\r\n"));
+    }
+
+    #[test]
+    fn registry_owned_session_drives_complete_json_rpc_client_flow() {
+        let (endpoint, server) = spawn_registry_call_fixture();
+        let config = McpStreamableHttpConfig::legacy_http(&endpoint).unwrap();
+        let session =
+            McpStreamableHttpSession::new(config, BTreeMap::new(), Duration::from_secs(1), 4096)
+                .unwrap();
+        let mut registry = McpStreamableHttpSessionRegistry::new();
+        let registered = registry
+            .register_starting_session(AdapterId::parse("owned-mcp").unwrap(), session)
+            .unwrap();
+        let client = McpJsonRpcClient::new(
+            AdapterId::parse("owned-mcp").unwrap(),
+            McpAllowlist::from_tools(["echo"]).unwrap(),
+        );
+
+        // Registration itself must not perform network I/O. The first request
+        // is sent only by the registry-owned client call below.
+        let report = registry
+            .call_tool(
+                &registered.session_id,
+                &client,
+                RequestId::parse("req-owned-mcp").unwrap(),
+                "echo",
+                "{\"value\":\"ok\"}",
+            )
+            .unwrap();
+        assert_eq!(report.tool, "echo");
+        assert_eq!(registry.dangling_session_count(), 1);
+        registry.shutdown_session(&registered.session_id).unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 5);
+        assert!(requests[0].contains("\"method\":\"initialize\""));
+        assert!(requests[1].contains("notifications/initialized"));
+        assert!(requests[2].contains("\"method\":\"tools/list\""));
+        assert!(requests[3].contains("\"method\":\"tools/call\""));
+        assert!(requests[4].starts_with("DELETE /mcp HTTP/1.1\r\n"));
+    }
+
     fn ready_http_session(endpoint: &str) -> McpStreamableHttpSession {
         let config = McpStreamableHttpConfig::legacy_http(endpoint).unwrap();
         let mut session =
@@ -1625,6 +2393,43 @@ mod tests {
             }
             event_monitor.join().unwrap();
             (requests, stream_closed_before_delete)
+        });
+        (endpoint, server)
+    }
+
+    fn spawn_registry_call_fixture() -> (String, JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..5 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let request = read_fixture_http_request(&mut socket);
+                let body = if request.contains("\"method\":\"initialize\"") {
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\"}}"
+                } else if request.contains("notifications/initialized") {
+                    ""
+                } else if request.contains("\"method\":\"tools/list\"") {
+                    "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\"}]}}"
+                } else if request.contains("\"method\":\"tools/call\"") {
+                    "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[]}}"
+                } else {
+                    ""
+                };
+                let status = if request.starts_with("DELETE ") {
+                    204
+                } else if request.contains("notifications/initialized") {
+                    202
+                } else {
+                    200
+                };
+                let include_session = !request.starts_with("DELETE ");
+                let response = fixture_http_response(status, body, include_session);
+                socket.write_all(response.as_bytes()).unwrap();
+                socket.flush().unwrap();
+                requests.push(request);
+            }
+            requests
         });
         (endpoint, server)
     }

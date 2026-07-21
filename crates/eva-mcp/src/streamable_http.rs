@@ -135,9 +135,20 @@ impl McpStreamableHttpSession {
             .shutdown_session(self.timeout, self.output_limit_bytes)
     }
 
+    /// Close with a lifecycle-owner-supplied remaining budget.
+    pub(crate) fn shutdown_with_timeout(&mut self, timeout: Duration) -> Result<(), EvaError> {
+        self.transport
+            .shutdown_session(timeout, self.output_limit_bytes)
+    }
+
     /// Return the opaque server session ID while the session is active.
     pub fn session_id(&self) -> Option<&str> {
         self.transport.session_id()
+    }
+
+    /// Return whether lifecycle cleanup must still attempt remote DELETE.
+    pub(crate) fn requires_remote_delete(&self) -> bool {
+        self.transport.requires_remote_delete()
     }
 
     /// Return the protocol version accepted during initialize.
@@ -155,6 +166,11 @@ impl McpStreamableHttpSession {
         self.transport.is_closed()
     }
 
+    /// Return whether no network exchange has started.
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.transport.is_pristine()
+    }
+
     /// Return the same bound used for socket I/O so lifecycle owners can
     /// bound reader completion after a real socket abort.
     pub(crate) const fn lifecycle_timeout(&self) -> Duration {
@@ -163,6 +179,40 @@ impl McpStreamableHttpSession {
 
     /// Return redacted lifecycle evidence.
     pub fn audit(&self) -> Vec<String> {
+        self.transport.audit()
+    }
+}
+
+impl McpJsonRpcTransport for McpStreamableHttpSession {
+    fn exchange(
+        &mut self,
+        expected_id: u64,
+        request: &str,
+        timeout: Duration,
+        output_limit_bytes: usize,
+    ) -> Result<String, EvaError> {
+        self.transport.exchange(
+            expected_id,
+            request,
+            timeout.min(self.timeout),
+            output_limit_bytes.min(self.output_limit_bytes),
+        )
+    }
+
+    fn notify(
+        &mut self,
+        notification: &str,
+        timeout: Duration,
+        output_limit_bytes: usize,
+    ) -> Result<(), EvaError> {
+        self.transport.notify(
+            notification,
+            timeout.min(self.timeout),
+            output_limit_bytes.min(self.output_limit_bytes),
+        )
+    }
+
+    fn audit(&self) -> Vec<String> {
         self.transport.audit()
     }
 }

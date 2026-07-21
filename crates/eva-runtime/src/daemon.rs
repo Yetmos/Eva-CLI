@@ -76,7 +76,7 @@ const PID_PROJECTION_FORMAT: &str = "eva.daemon-pid.v1";
 const STATE_FILE: &str = "daemon.state";
 /// Durable proof that one exact lease generation completed worker drain and residual scanning.
 const SHUTDOWN_DRAIN_EVIDENCE_FILE: &str = "daemon.shutdown-drain";
-const SHUTDOWN_DRAIN_EVIDENCE_FORMAT: &str = "eva.daemon-shutdown-drain.v1";
+const SHUTDOWN_DRAIN_EVIDENCE_FORMAT: &str = "eva.daemon-shutdown-drain.v2";
 
 /// Best-effort startup guard for the daemon-owned provider runtime. Any error
 /// after provider construction must close admission before the durable lease
@@ -94,10 +94,12 @@ impl<'a> ProviderDrainGuard<'a> {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<eva_adapter::ProviderDrainReport>, EvaError> {
-        let Some(worker) = self.worker.take() else {
+        let Some(worker) = self.worker else {
             return Ok(None);
         };
-        worker.drain_providers(timeout).map(Some)
+        let report = worker.drain_providers(timeout)?;
+        self.worker = None;
+        Ok(Some(report))
     }
 
     fn disarm(&mut self) {
@@ -275,6 +277,9 @@ struct DaemonShutdownDrainEvidence {
     inflight_tasks: usize,
     cancellation_requests: usize,
     forced_terminal_tasks: usize,
+    mcp_http_sessions: usize,
+    mcp_http_readers: usize,
+    mcp_http_cleanup_pending: usize,
     phase: String,
 }
 
@@ -283,10 +288,31 @@ impl DaemonShutdownDrainEvidence {
         request_id: RequestId,
         lease: &DurableRuntimeLeaseRecord,
         drain: &TaskWorkerDrainReport,
+        provider_drain: Option<&eva_adapter::ProviderDrainReport>,
     ) -> Result<Self, EvaError> {
-        if drain.already_drained || drain.phase != "drained" {
+        if drain.phase != "drained" {
             return Err(EvaError::conflict(
-                "daemon shutdown drain report is not a first successful completion",
+                "daemon shutdown task drain report is not complete",
+            ));
+        }
+        let (mcp_http_sessions, mcp_http_readers, mcp_http_cleanup_pending) = provider_drain
+            .map(|report| {
+                (
+                    report.mcp_http_sessions_after,
+                    report.mcp_http_readers_after,
+                    report.mcp_http_cleanup_pending_after,
+                )
+            })
+            .unwrap_or((0, 0, 0));
+        if mcp_http_sessions != 0 || mcp_http_readers != 0 || mcp_http_cleanup_pending != 0 {
+            return Err(EvaError::conflict(
+                "daemon provider drain left MCP Streamable HTTP lifecycle resources",
+            )
+            .with_context("mcp_http_sessions", mcp_http_sessions.to_string())
+            .with_context("mcp_http_readers", mcp_http_readers.to_string())
+            .with_context(
+                "mcp_http_cleanup_pending",
+                mcp_http_cleanup_pending.to_string(),
             ));
         }
         Ok(Self {
@@ -298,6 +324,9 @@ impl DaemonShutdownDrainEvidence {
             inflight_tasks: drain.inflight_tasks,
             cancellation_requests: drain.cancellation_requests,
             forced_terminal_tasks: drain.forced_terminal_tasks,
+            mcp_http_sessions,
+            mcp_http_readers,
+            mcp_http_cleanup_pending,
             phase: drain.phase.clone(),
         })
     }
@@ -316,11 +345,14 @@ impl DaemonShutdownDrainEvidence {
                     && lease.generation == self.generation
             })
             && self.phase == "drained"
+            && self.mcp_http_sessions == 0
+            && self.mcp_http_readers == 0
+            && self.mcp_http_cleanup_pending == 0
     }
 
     fn to_storage(&self) -> String {
         format!(
-            "format={SHUTDOWN_DRAIN_EVIDENCE_FORMAT}\npid={}\nprocess_start_token={}\ngeneration={}\nrequest_id={}\ncompleted_at_ms={}\ninflight_tasks={}\ncancellation_requests={}\nforced_terminal_tasks={}\nphase={}\n",
+            "format={SHUTDOWN_DRAIN_EVIDENCE_FORMAT}\npid={}\nprocess_start_token={}\ngeneration={}\nrequest_id={}\ncompleted_at_ms={}\ninflight_tasks={}\ncancellation_requests={}\nforced_terminal_tasks={}\nmcp_http_sessions={}\nmcp_http_readers={}\nmcp_http_cleanup_pending={}\nphase={}\n",
             self.pid,
             encode_field(&self.process_start_token),
             self.generation,
@@ -329,6 +361,9 @@ impl DaemonShutdownDrainEvidence {
             self.inflight_tasks,
             self.cancellation_requests,
             self.forced_terminal_tasks,
+            self.mcp_http_sessions,
+            self.mcp_http_readers,
+            self.mcp_http_cleanup_pending,
             self.phase,
         )
     }
@@ -343,6 +378,9 @@ impl DaemonShutdownDrainEvidence {
         let mut inflight_tasks = None;
         let mut cancellation_requests = None;
         let mut forced_terminal_tasks = None;
+        let mut mcp_http_sessions = None;
+        let mut mcp_http_readers = None;
+        let mut mcp_http_cleanup_pending = None;
         let mut phase = None;
 
         for line in data.lines().filter(|line| !line.trim().is_empty()) {
@@ -393,6 +431,27 @@ impl DaemonShutdownDrainEvidence {
                         )
                     })?)
                 }
+                "mcp_http_sessions" => {
+                    mcp_http_sessions = Some(value.parse::<usize>().map_err(|_| {
+                        EvaError::conflict(
+                            "daemon shutdown drain evidence MCP HTTP session count is invalid",
+                        )
+                    })?)
+                }
+                "mcp_http_readers" => {
+                    mcp_http_readers = Some(value.parse::<usize>().map_err(|_| {
+                        EvaError::conflict(
+                            "daemon shutdown drain evidence MCP HTTP reader count is invalid",
+                        )
+                    })?)
+                }
+                "mcp_http_cleanup_pending" => {
+                    mcp_http_cleanup_pending = Some(value.parse::<usize>().map_err(|_| {
+                        EvaError::conflict(
+                            "daemon shutdown drain evidence MCP HTTP cleanup count is invalid",
+                        )
+                    })?)
+                }
                 "phase" => phase = Some(value.to_owned()),
                 _ => {
                     return Err(EvaError::conflict(
@@ -435,6 +494,21 @@ impl DaemonShutdownDrainEvidence {
                     "daemon shutdown drain evidence is missing forced-terminal count",
                 )
             })?,
+            mcp_http_sessions: mcp_http_sessions.ok_or_else(|| {
+                EvaError::conflict(
+                    "daemon shutdown drain evidence is missing MCP HTTP session count",
+                )
+            })?,
+            mcp_http_readers: mcp_http_readers.ok_or_else(|| {
+                EvaError::conflict(
+                    "daemon shutdown drain evidence is missing MCP HTTP reader count",
+                )
+            })?,
+            mcp_http_cleanup_pending: mcp_http_cleanup_pending.ok_or_else(|| {
+                EvaError::conflict(
+                    "daemon shutdown drain evidence is missing MCP HTTP cleanup count",
+                )
+            })?,
             phase: phase.ok_or_else(|| {
                 EvaError::conflict("daemon shutdown drain evidence is missing phase")
             })?,
@@ -444,6 +518,9 @@ impl DaemonShutdownDrainEvidence {
             || evidence.generation == 0
             || evidence.completed_at_ms == 0
             || evidence.phase != "drained"
+            || evidence.mcp_http_sessions != 0
+            || evidence.mcp_http_readers != 0
+            || evidence.mcp_http_cleanup_pending != 0
         {
             return Err(EvaError::conflict(
                 "daemon shutdown drain evidence violates its completion contract",
@@ -4301,10 +4378,11 @@ fn handle_control_request(
                 .retrieval_worker
                 .map(|worker| worker.drain_providers(provider_budget))
                 .transpose();
-            let (provider_drain, provider_drain_error) = match provider_drain_result {
+            let (mut provider_drain, mut provider_drain_error) = match provider_drain_result {
                 Ok(report) => (report, None),
                 Err(error) => (None, Some(error)),
             };
+            let mut provider_drain_retried = false;
             let remaining_task_budget = shutdown_deadline.saturating_duration_since(Instant::now());
             let task_drain_options = TaskWorkerDrainOptions::for_total_period(
                 remaining_task_budget,
@@ -4326,8 +4404,29 @@ fn handle_control_request(
                         error
                     }
                 })?;
-            if let Some(provider_error) = provider_drain_error {
-                return Err(provider_error.with_context("task_drain_completed", "true"));
+            if let Some(initial_provider_error) = provider_drain_error.take() {
+                let retry_budget = shutdown_deadline.saturating_duration_since(Instant::now());
+                if retry_budget.is_zero() {
+                    return Err(initial_provider_error
+                        .with_context("task_drain_completed", "true")
+                        .with_context("provider_cleanup_retry", "deadline_elapsed"));
+                }
+                provider_drain_retried = true;
+                match context
+                    .retrieval_worker
+                    .map(|worker| worker.drain_providers(retry_budget))
+                    .transpose()
+                {
+                    Ok(report) => provider_drain = report,
+                    Err(retry_error) => {
+                        return Err(retry_error
+                            .with_context("task_drain_completed", "true")
+                            .with_context(
+                                "initial_provider_drain_error",
+                                initial_provider_error.to_string(),
+                            ));
+                    }
+                }
             }
             context.lease.renew_at(now_ms())?;
             let shutdown_report = context.runtime.shutdown();
@@ -4335,6 +4434,7 @@ fn handle_control_request(
                 request.request_id.clone(),
                 context.lease.record(),
                 &drain,
+                provider_drain.as_ref(),
             )?;
             write_shutdown_drain_evidence(context.options, &drain_evidence)?;
             state = state.stopped();
@@ -4350,20 +4450,27 @@ fn handle_control_request(
                 drain.inflight_tasks, drain.cancellation_requests, drain.forced_terminal_tasks
             ));
             audit.push("daemon:w1-l11:stable_task_state_flushed".to_owned());
+            if provider_drain_retried {
+                audit.push("daemon:w4-l07:provider_cleanup_retried".to_owned());
+            }
             if let Some(provider_drain) = provider_drain {
                 audit.push(format!(
-                    "daemon:w3-l10:provider_drain:phase={}:active_provider_count={}:terminated={}:forced={}:missing_identity={}",
+                    "daemon:w3-l10:provider_drain:phase={}:active_provider_count={}:terminated={}:forced={}:missing_identity={}:mcp_http_sessions_before={}:mcp_http_readers_before={}:mcp_http_sessions_after={}:mcp_http_readers_after={}:mcp_http_cleanup_pending_after={}",
                     provider_drain.phase,
                     provider_drain.active_provider_count,
                     provider_drain.terminated_provider_count,
                     provider_drain.forced_provider_count,
                     provider_drain.missing_identity_count,
+                    provider_drain.mcp_http_sessions_before,
+                    provider_drain.mcp_http_readers_before,
+                    provider_drain.mcp_http_sessions_after,
+                    provider_drain.mcp_http_readers_after,
+                    provider_drain.mcp_http_cleanup_pending_after,
                 ));
                 audit.extend(provider_drain.audit);
             } else {
                 audit.push(
-                    "daemon:w3-l10:provider_drain:phase=disabled:active_provider_count=0"
-                        .to_owned(),
+                    "daemon:w3-l10:provider_drain:phase=disabled:active_provider_count=0:mcp_http_sessions_before=0:mcp_http_readers_before=0:mcp_http_sessions_after=0:mcp_http_readers_after=0:mcp_http_cleanup_pending_after=0".to_owned(),
                 );
             }
             shutdown = Some(shutdown_report);
@@ -6224,6 +6331,37 @@ mod tests {
     }
 
     #[test]
+    fn provider_drain_guard_retries_after_initial_failure() {
+        let mut project = load_project_config(workspace_root()).unwrap();
+        project.eva.runtime.retrieval_worker = Some(eva_config::KnowledgeRetrievalWorkerConfig {
+            agent: "root-agent".to_owned(),
+            capability: "repo.analyze".to_owned(),
+            provider: "codex-cli".to_owned(),
+            query: "guard retry".to_owned(),
+            interval_ms: 1_000,
+        });
+        let adapter_runtime = AdapterRuntime::from_project(&project).unwrap();
+        let worker = DaemonRetrievalWorker::from_project(&project, adapter_runtime)
+            .unwrap()
+            .unwrap();
+        let mut guard = ProviderDrainGuard::new(Some(&worker));
+
+        let first_error = guard.drain_now(Duration::ZERO).unwrap_err();
+        assert_eq!(
+            first_error.kind(),
+            eva_core::ErrorKind::InvalidArgument,
+            "the first drain must exercise a real provider timeout validation failure"
+        );
+
+        let retry = guard
+            .drain_now(Duration::from_secs(1))
+            .unwrap()
+            .expect("failed drain must retain the worker for a retry");
+        assert_eq!(retry.phase, "drained");
+        assert!(guard.drain_now(Duration::from_secs(1)).unwrap().is_none());
+    }
+
+    #[test]
     fn rejected_config_preflight_audit_contains_digest_field_and_remediation() {
         let report = crate::ConfigReloadPreflight {
             old_digest: "sha256:old".to_owned(),
@@ -6795,6 +6933,9 @@ mod tests {
             .starts_with("req-service-stop-g"));
         assert_eq!(evidence.pid, expected_pid);
         assert_eq!(evidence.generation, report.lease.generation);
+        assert_eq!(evidence.mcp_http_sessions, 0);
+        assert_eq!(evidence.mcp_http_readers, 0);
+        assert_eq!(evidence.mcp_http_cleanup_pending, 0);
         assert!(!control_request_file(&options, &evidence.request_id).exists());
         assert!(control_response_file(&options, &evidence.request_id).is_file());
 
@@ -7520,6 +7661,9 @@ mod tests {
         let evidence = read_shutdown_drain_evidence(&options).unwrap().unwrap();
         assert_eq!(evidence.generation, report.lease.generation);
         assert_eq!(evidence.phase, "drained");
+        assert_eq!(evidence.mcp_http_sessions, 0);
+        assert_eq!(evidence.mcp_http_readers, 0);
+        assert_eq!(evidence.mcp_http_cleanup_pending, 0);
 
         fs::remove_dir_all(root).ok();
     }
@@ -7580,6 +7724,9 @@ mod tests {
             inflight_tasks: 1,
             cancellation_requests: 1,
             forced_terminal_tasks: 1,
+            mcp_http_sessions: 0,
+            mcp_http_readers: 0,
+            mcp_http_cleanup_pending: 0,
             phase: "drained".to_owned(),
         };
         write_shutdown_drain_evidence(&options, &evidence).unwrap();
@@ -7609,6 +7756,80 @@ mod tests {
         assert!(!repeated.mutation_executed);
         assert!(repeated.shutdown.unwrap().already_shutdown);
 
+        evidence.mcp_http_sessions = 1;
+        write_shutdown_drain_evidence(&options, &evidence).unwrap();
+        let tampered_error = repeated_shutdown_response(&options, &request, &status).unwrap_err();
+        assert_eq!(tampered_error.kind(), eva_core::ErrorKind::Conflict);
+        assert!(tampered_error
+            .to_string()
+            .contains("violates its completion contract"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn shutdown_evidence_accepts_cached_task_drain_after_provider_cleanup_retry() {
+        let root = temp_root("shutdown-provider-retry-evidence");
+        let options = daemon_options(&root, false);
+        fs::create_dir_all(&options.lock_dir).unwrap();
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let mut lease = DurableRuntimeLeaseGuard::acquire(
+            &backend,
+            lock_file(&options),
+            lease_file(&options),
+            now_ms(),
+            DEFAULT_RUNTIME_LEASE_TTL_MS,
+        )
+        .unwrap();
+        let cached_task_drain = TaskWorkerDrainReport {
+            already_drained: true,
+            inflight_tasks: 1,
+            cancellation_requests: 1,
+            forced_terminal_tasks: 0,
+            phase: "drained".to_owned(),
+        };
+        let provider_drain = eva_adapter::ProviderDrainReport {
+            already_drained: false,
+            phase: "drained".to_owned(),
+            active_provider_count: 0,
+            terminated_provider_count: 0,
+            forced_provider_count: 0,
+            missing_identity_count: 0,
+            mcp_http_sessions_before: 1,
+            mcp_http_readers_before: 0,
+            mcp_http_sessions_after: 0,
+            mcp_http_readers_after: 0,
+            mcp_http_cleanup_pending_after: 0,
+            audit: Vec::new(),
+        };
+
+        let evidence = DaemonShutdownDrainEvidence::completed(
+            RequestId::parse("req-provider-cleanup-retry-evidence").unwrap(),
+            lease.record(),
+            &cached_task_drain,
+            Some(&provider_drain),
+        )
+        .unwrap();
+        assert_eq!(evidence.mcp_http_sessions, 0);
+        assert_eq!(evidence.mcp_http_readers, 0);
+        assert_eq!(evidence.mcp_http_cleanup_pending, 0);
+
+        let mut residual = provider_drain;
+        residual.mcp_http_cleanup_pending_after = 1;
+        let error = DaemonShutdownDrainEvidence::completed(
+            RequestId::parse("req-provider-cleanup-residual-evidence").unwrap(),
+            lease.record(),
+            &cached_task_drain,
+            Some(&residual),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), eva_core::ErrorKind::Conflict);
+
+        lease.release_at(now_ms()).unwrap();
+        drop(lease);
         fs::remove_dir_all(root).ok();
     }
 

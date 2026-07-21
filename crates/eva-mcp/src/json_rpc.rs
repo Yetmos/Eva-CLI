@@ -962,6 +962,12 @@ impl McpHttpJsonRpcTransport {
             .flatten()
     }
 
+    /// Return whether cleanup still owns a server-issued session without
+    /// exposing the opaque value after application I/O has been fenced.
+    pub(crate) fn requires_remote_delete(&self) -> bool {
+        self.session_id.is_some()
+    }
+
     /// Return the protocol version selected during initialization.
     pub fn negotiated_protocol_version(&self) -> Option<&str> {
         (!self.session_closed && self.exchange_count > 0)
@@ -973,6 +979,16 @@ impl McpHttpJsonRpcTransport {
     /// enter the operating phase.
     pub fn is_ready(&self) -> bool {
         !self.session_closed && self.initialized_notification_sent
+    }
+
+    /// Return whether construction completed but no HTTP exchange has begun.
+    /// Lifecycle owners use this to acquire the transport before network I/O.
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.exchange_count == 0
+            && self.session_id.is_none()
+            && self.protocol_version.is_none()
+            && !self.session_closed
+            && !self.initialized_notification_sent
     }
 
     /// Return whether this local session can no longer issue application I/O.

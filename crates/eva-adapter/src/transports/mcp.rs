@@ -16,11 +16,14 @@ use crate::stream::{
     capture_provider_bytes, default_provider_artifact_root, provider_stream_audit,
     provider_stream_key, provider_stream_summary_json, ProviderStreamConfig,
 };
-use crate::supervisor::validate_credential_scope_for_provider;
+use crate::supervisor::{
+    validate_credential_scope_for_provider, McpHttpLifecycleHandle, McpHttpOperationPermit,
+};
 use eva_core::EvaError;
 use eva_mcp::{
-    McpAllowlist, McpJsonRpcClient, McpJsonRpcClientConfig, McpServerTransport, McpStdioProcess,
-    McpStreamableHttpConfig, McpTlsMaterial, McpTransportConfig,
+    McpAllowlist, McpJsonRpcCallReport, McpJsonRpcClient, McpJsonRpcClientConfig,
+    McpServerTransport, McpStdioProcess, McpStreamableHttpConfig, McpStreamableHttpSession,
+    McpTlsMaterial, McpTransportConfig,
 };
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -80,6 +83,19 @@ pub fn invoke_with_spawner_and_vault(
     process_spawner: Option<&dyn ProviderProcessSpawner>,
     vault: &dyn CredentialVault,
 ) -> Result<AdapterInvokeReport, EvaError> {
+    invoke_with_supervisor_and_vault(handle, invocation, process_spawner, None, vault)
+}
+
+/// Invoke MCP with the daemon supervisor's shared Streamable HTTP lifecycle
+/// authority. Streamable HTTP fails closed without that authority because a
+/// call-local registry cannot retain failed remote cleanup for later drain.
+pub(crate) fn invoke_with_supervisor_and_vault(
+    handle: &AdapterHandle,
+    invocation: AdapterInvocation,
+    process_spawner: Option<&dyn ProviderProcessSpawner>,
+    mcp_http_lifecycle: Option<&McpHttpLifecycleHandle>,
+    vault: &dyn CredentialVault,
+) -> Result<AdapterInvokeReport, EvaError> {
     let tool = handle.mcp_tool_for(&invocation.capability).ok_or_else(|| {
         EvaError::unsupported("MCP adapter has no allowlisted tool for capability")
             .with_context("adapter_id", handle.id.as_str())
@@ -101,6 +117,12 @@ pub fn invoke_with_spawner_and_vault(
     } else {
         None
     };
+    if server_transport.is_http() && mcp_http_lifecycle.is_none() {
+        return Err(EvaError::unsupported(
+            "MCP HTTP transport requires a supervisor-owned lifecycle authority",
+        )
+        .with_provider_code("mcp_http_lifecycle_authority_required"));
+    }
     if http_config.as_ref().is_some_and(|config| {
         config
             .trust_roots
@@ -173,20 +195,17 @@ pub fn invoke_with_spawner_and_vault(
     }
     lazy_credential_env.sort();
     lazy_credential_env.dedup();
-    let mut credential_lease = CredentialSessionLease::open_with_lazy_env(
-        vault,
-        credential_scope.as_ref(),
-        &handle.provider.vault_secrets,
-        &handle.credential_env,
-        &lazy_credential_env,
-    )?;
-    let mut child_env = BTreeMap::new();
-    if server_transport == McpServerTransport::Stdio {
-        credential_lease.inject_env(&mut child_env);
-        if let Some(scope) = &credential_scope {
-            scope.apply_env(&mut child_env);
-        }
-    }
+    let http_lifecycle = if server_transport.is_http() {
+        Some(
+            mcp_http_lifecycle
+                .expect("HTTP transport lifecycle authority was checked before vault access"),
+        )
+    } else {
+        None
+    };
+    let http_operation = http_lifecycle
+        .map(McpHttpLifecycleHandle::begin_operation)
+        .transpose()?;
     let request_id = invocation.request_id.clone();
     let capability = invocation.capability.clone();
     let trace = invocation.trace_for_adapter(&handle.id);
@@ -199,6 +218,50 @@ pub fn invoke_with_spawner_and_vault(
             .with_request_timeout_ms(timeout_ms(handle))
             .with_output_limit_bytes(output_limit_bytes(handle)),
     );
+    let credential_lease = CredentialSessionLease::open_with_lazy_env_retaining_owner(
+        vault,
+        credential_scope.as_ref(),
+        &handle.provider.vault_secrets,
+        &handle.credential_env,
+        &lazy_credential_env,
+    );
+    let mut credential_lease = match credential_lease {
+        Ok(credentials) => Some(credentials),
+        Err(failure) => {
+            let (mut error, credentials) = failure.into_parts();
+            if let Some(credentials) = credentials {
+                let release = if server_transport.is_http() {
+                    http_lifecycle
+                        .expect("HTTP transport has a lifecycle authority")
+                        .release_detached_credentials(
+                            http_operation
+                                .as_ref()
+                                .expect("HTTP transport holds an operation permit"),
+                            credentials,
+                        )
+                        .map(|_| ())
+                } else {
+                    let mut credentials = credentials;
+                    credentials.release()
+                };
+                if let Err(release_error) = release {
+                    error =
+                        error.with_context("credential_release_error", release_error.to_string());
+                }
+            }
+            return Err(error);
+        }
+    };
+    let mut child_env = BTreeMap::new();
+    if server_transport == McpServerTransport::Stdio {
+        credential_lease
+            .as_mut()
+            .expect("credential lease is caller-owned before transport dispatch")
+            .inject_env(&mut child_env);
+        if let Some(scope) = &credential_scope {
+            scope.apply_env(&mut child_env);
+        }
+    }
     let mut sensitive_values = Vec::new();
     if let Some(scope) = &credential_scope {
         sensitive_values.extend(scope.redaction_values());
@@ -241,35 +304,81 @@ pub fn invoke_with_spawner_and_vault(
                 EvaError::internal("MCP HTTP configuration was not retained")
                     .with_context("adapter_id", handle.id.as_str())
             })?;
-            let mut header_plan = mcp_http_headers(handle, &mut credential_lease)?;
+            let credentials = credential_lease
+                .as_mut()
+                .expect("credential lease is caller-owned before HTTP registration");
+            let mut header_plan = mcp_http_headers(handle, credentials)?;
             if let Some(scope) = &credential_scope {
                 scope.apply_headers(&mut header_plan.headers);
             }
             sensitive_values.extend(header_plan.sensitive_values.clone());
             transport_audit.push(format!("mcp.endpoint_origin:{}", config.endpoint_origin()?));
             transport_audit.extend(header_plan.audit);
-            let tls_material = mcp_tls_material(handle, config, &mut credential_lease)?;
-            client.call_http_with_config_and_tls(
+            let tls_material = mcp_tls_material(handle, config, credentials)?;
+            sensitive_values.extend(credentials.redaction_values());
+            let credentials = credential_lease
+                .take()
+                .expect("credential lease transfers exactly once to HTTP lifecycle ownership");
+            let lifecycle = http_lifecycle.expect("HTTP transport has a lifecycle authority");
+            let operation = http_operation
+                .as_ref()
+                .expect("HTTP transport holds an operation permit");
+            call_http_with_lifecycle(
+                handle,
+                &client,
+                lifecycle,
+                operation,
                 config,
-                header_plan.headers,
-                tls_material,
-                invocation.request_id,
-                tool,
-                &invocation.input,
+                McpHttpCall {
+                    request_id: invocation.request_id,
+                    tool,
+                    input: &invocation.input,
+                    headers: header_plan.headers,
+                    tls_material,
+                    credentials,
+                },
             )
         })(),
     };
-    sensitive_values.extend(credential_lease.redaction_values());
+    if let Some(credentials) = credential_lease.as_ref() {
+        sensitive_values.extend(credentials.redaction_values());
+    }
     let error_redactions = sensitive_values.clone();
     child_env.clear();
-    let call = match (call_result, credential_lease.release()) {
-        (Err(error), _) => return Err(sanitize_error_with_values(error, &error_redactions)),
-        (Ok(_), Err(error)) => {
-            return Err(sanitize_error_with_values(error, &error_redactions));
+    let (call, credential_audit) = if let Some(credentials) = credential_lease {
+        let release = if server_transport.is_http() {
+            http_lifecycle
+                .expect("HTTP transport has a lifecycle authority")
+                .release_detached_credentials(
+                    http_operation
+                        .as_ref()
+                        .expect("HTTP transport holds an operation permit"),
+                    credentials,
+                )
+        } else {
+            let mut credentials = credentials;
+            credentials.release().map(|()| credentials.audit_entries())
+        };
+        match (call_result, release) {
+            (Err(error), Ok(_)) => {
+                return Err(sanitize_error_with_values(error, &error_redactions));
+            }
+            (Err(error), Err(release_error)) => {
+                return Err(sanitize_error_with_values(
+                    error.with_context("credential_release_error", release_error.to_string()),
+                    &error_redactions,
+                ));
+            }
+            (Ok(_), Err(error)) => {
+                return Err(sanitize_error_with_values(error, &error_redactions));
+            }
+            (Ok(call), Ok(audit)) => (call, audit),
         }
-        (Ok(call), Ok(())) => call,
+    } else {
+        let call =
+            call_result.map_err(|error| sanitize_error_with_values(error, &error_redactions))?;
+        (call, Vec::new())
     };
-    let credential_audit = credential_lease.audit_entries();
     let output = call.output.as_text().unwrap_or_default().to_owned();
     let output_stream = capture_provider_bytes(
         ProviderStreamConfig::new("result", output_limit_bytes(handle)).with_artifact(
@@ -312,6 +421,88 @@ pub fn invoke_with_spawner_and_vault(
         audit,
         trace,
     })
+}
+
+struct McpHttpCall<'a> {
+    request_id: eva_core::RequestId,
+    tool: &'a str,
+    input: &'a str,
+    headers: BTreeMap<String, String>,
+    tls_material: McpTlsMaterial,
+    credentials: CredentialSessionLease,
+}
+
+fn call_http_with_lifecycle(
+    handle: &AdapterHandle,
+    client: &McpJsonRpcClient,
+    lifecycle: &McpHttpLifecycleHandle,
+    operation: &McpHttpOperationPermit,
+    config: &McpStreamableHttpConfig,
+    call: McpHttpCall<'_>,
+) -> Result<McpJsonRpcCallReport, EvaError> {
+    let McpHttpCall {
+        request_id,
+        tool,
+        input,
+        headers,
+        tls_material,
+        credentials,
+    } = call;
+    let session = McpStreamableHttpSession::new_with_tls(
+        config.clone(),
+        headers,
+        tls_material,
+        Duration::from_millis(timeout_ms(handle)),
+        output_limit_bytes(handle),
+    );
+    let session = match session {
+        Ok(session) => session,
+        Err(error) => {
+            let release = lifecycle.release_detached_credentials(operation, credentials);
+            return Err(match release {
+                Ok(_) => error,
+                Err(release_error) => {
+                    error.with_context("credential_release_error", release_error.to_string())
+                }
+            });
+        }
+    };
+    let registered =
+        lifecycle.register_starting_session(operation, handle.id.clone(), session, credentials)?;
+    let registry_session_id = registered.session_id.clone();
+    let call = lifecycle.call_tool(
+        operation,
+        &registry_session_id,
+        client,
+        request_id,
+        tool,
+        input,
+    );
+    let shutdown = lifecycle.shutdown_session(operation, &registry_session_id);
+    match (call, shutdown) {
+        (Ok(mut report), Ok((shutdown, credential_audit))) => {
+            report.audit.extend(registered.audit);
+            report.audit.extend(shutdown.audit);
+            report.audit.extend(credential_audit);
+            report
+                .audit
+                .push("mcp.http_registry:supervisor_owned_call".to_owned());
+            Ok(report)
+        }
+        (Err(error), Ok(_)) => Err(error),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error
+            .with_context("mcp_call_completed", "true")
+            .with_context("mcp_session_cleanup", "failed")),
+        (Err(error), Err(cleanup_error)) => Err(error
+            .with_context("mcp_session_cleanup", "failed")
+            .with_context(
+                "mcp_session_cleanup_code",
+                cleanup_error
+                    .provider_code()
+                    .map(|code| code.as_str())
+                    .unwrap_or_else(|| cleanup_error.kind().as_str()),
+            )),
+    }
 }
 
 /// Preserve the historical MCP startup message while retaining the backend's
@@ -457,6 +648,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Instant;
 
     const TEST_CA_PEM: &str = include_str!("../../../eva-mcp/testdata/tls/ca.pem");
     const TEST_CLIENT_PEM: &str = include_str!("../../../eva-mcp/testdata/tls/client.pem");
@@ -466,17 +658,47 @@ mod tests {
     #[test]
     fn http_mcp_requires_provider_credential_scope_before_rpc() {
         let handle = http_mcp_handle(BTreeMap::new());
-        let error = invoke(
+        let vault = crate::credential_vault::MemoryCredentialVault::new();
+        let error = invoke_http_for_test(
             &handle,
             AdapterInvocation::new(
                 RequestId::parse("req-mcp-missing-scope").unwrap(),
                 CapabilityName::parse("github.issue.list").unwrap(),
             ),
+            &vault,
         )
         .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::PermissionDenied);
         assert!(error.message().contains("credential session"));
+    }
+
+    #[test]
+    fn direct_http_invocation_requires_lifecycle_authority_before_vault_open() {
+        let handle = http_mcp_handle(BTreeMap::new());
+        let opens = Arc::new(AtomicUsize::new(0));
+        let vault = TestCredentialVault {
+            values: BTreeMap::new(),
+            opens: Arc::clone(&opens),
+            releases: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let error = invoke_with_spawner_and_vault(
+            &handle,
+            AdapterInvocation::new(
+                RequestId::parse("req-mcp-missing-lifecycle").unwrap(),
+                CapabilityName::parse("github.issue.list").unwrap(),
+            ),
+            None,
+            &vault,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_lifecycle_authority_required")
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
     }
 
     /// 验证 `http_mcp_missing_auth_env_returns_policy_error` 场景下的预期行为。
@@ -497,10 +719,9 @@ mod tests {
         );
 
         let vault = crate::credential_vault::MemoryCredentialVault::new();
-        let error = invoke_with_spawner_and_vault(
+        let error = invoke_http_for_test(
             &handle,
             AdapterInvocation::new(request_id, capability).with_credential_scope(scope),
-            None,
             &vault,
         )
         .unwrap_err();
@@ -510,6 +731,90 @@ mod tests {
             error.provider_code().map(|code| code.as_str()),
             Some("missing_credential")
         );
+    }
+
+    #[test]
+    fn drained_http_lifecycle_rejects_before_opening_the_vault() {
+        let lifecycle = McpHttpLifecycleHandle::new();
+        lifecycle
+            .drain_all_until(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        let handle = http_mcp_handle(BTreeMap::from([(
+            "Authorization".to_owned(),
+            "env:EVA_TEST_DRAINED_MCP_TOKEN".to_owned(),
+        )]));
+        let request_id = RequestId::parse("req-mcp-drained-before-vault").unwrap();
+        let capability = CapabilityName::parse("github.issue.list").unwrap();
+        let scope = ProviderCredentialScope::new_for_session(
+            "session-mcp-drained-before-vault",
+            handle.id.clone(),
+            request_id.clone(),
+            capability.clone(),
+        );
+        let opens = Arc::new(AtomicUsize::new(0));
+        let vault = TestCredentialVault {
+            values: BTreeMap::from([(
+                "EVA_TEST_DRAINED_MCP_TOKEN".to_owned(),
+                "must-not-be-opened".to_owned(),
+            )]),
+            opens: Arc::clone(&opens),
+            releases: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let error = invoke_with_supervisor_and_vault(
+            &handle,
+            AdapterInvocation::new(request_id, capability).with_credential_scope(scope),
+            None,
+            Some(&lifecycle),
+            &vault,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_registry_admission_closed")
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn partial_vault_open_failure_remains_owned_until_drain() {
+        let lifecycle = McpHttpLifecycleHandle::new();
+        let mut handle = http_mcp_handle(BTreeMap::new());
+        handle.credential_env = vec!["EVA_TEST_FAILING_FETCH".to_owned()];
+        let request_id = RequestId::parse("req-mcp-partial-vault-open").unwrap();
+        let capability = CapabilityName::parse("github.issue.list").unwrap();
+        let scope = ProviderCredentialScope::new_for_session(
+            "session-mcp-partial-vault-open",
+            handle.id.clone(),
+            request_id.clone(),
+            capability.clone(),
+        );
+        let release_attempts = Arc::new(AtomicUsize::new(0));
+        let vault = FailingFetchCredentialVault {
+            release_attempts: Arc::clone(&release_attempts),
+            release_failures_remaining: Arc::new(AtomicUsize::new(1)),
+        };
+
+        let error = invoke_with_supervisor_and_vault(
+            &handle,
+            AdapterInvocation::new(request_id, capability).with_credential_scope(scope),
+            None,
+            Some(&lifecycle),
+            &vault,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("missing_credential")
+        );
+        assert_eq!(release_attempts.load(Ordering::SeqCst), 1);
+        let report = lifecycle
+            .drain_all_until(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert!(report.complete);
+        assert_eq!(release_attempts.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -577,10 +882,9 @@ mod tests {
                 capability.clone(),
             );
 
-            let error = invoke_with_spawner_and_vault(
+            let error = invoke_http_for_test(
                 &handle,
                 AdapterInvocation::new(request_id, capability).with_credential_scope(scope),
-                None,
                 &vault,
             )
             .unwrap_err();
@@ -692,13 +996,12 @@ mod tests {
             releases: Arc::new(AtomicUsize::new(0)),
         };
 
-        let error = invoke_with_spawner_and_vault(
+        let error = invoke_http_for_test(
             &handle,
             AdapterInvocation::new(
                 RequestId::parse("req-mcp-indirect-root").unwrap(),
                 CapabilityName::parse("github.issue.list").unwrap(),
             ),
-            None,
             &vault,
         )
         .unwrap_err();
@@ -796,12 +1099,20 @@ mod tests {
             request_id.clone(),
             capability.clone(),
         );
-        invoke_with_spawner_and_vault(
+        invoke_http_for_test(
             handle,
             AdapterInvocation::new(request_id, capability).with_credential_scope(scope),
-            None,
             vault,
         )
+    }
+
+    fn invoke_http_for_test(
+        handle: &AdapterHandle,
+        invocation: AdapterInvocation,
+        vault: &dyn CredentialVault,
+    ) -> Result<AdapterInvokeReport, EvaError> {
+        let lifecycle = McpHttpLifecycleHandle::new();
+        invoke_with_supervisor_and_vault(handle, invocation, None, Some(&lifecycle), vault)
     }
 
     fn tls_project_root(name: &str) -> PathBuf {
@@ -821,6 +1132,69 @@ mod tests {
     fn unused_local_port() -> u16 {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.local_addr().unwrap().port()
+    }
+
+    struct FailingFetchCredentialVault {
+        release_attempts: Arc<AtomicUsize>,
+        release_failures_remaining: Arc<AtomicUsize>,
+    }
+
+    impl fmt::Debug for FailingFetchCredentialVault {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("FailingFetchCredentialVault([REDACTED])")
+        }
+    }
+
+    impl CredentialVault for FailingFetchCredentialVault {
+        fn open_session(
+            &self,
+            _scope: &ProviderCredentialScope,
+        ) -> Result<Box<dyn CredentialSession>, EvaError> {
+            Ok(Box::new(FailingFetchCredentialSession {
+                release_attempts: Arc::clone(&self.release_attempts),
+                release_failures_remaining: Arc::clone(&self.release_failures_remaining),
+                released: false,
+            }))
+        }
+    }
+
+    struct FailingFetchCredentialSession {
+        release_attempts: Arc<AtomicUsize>,
+        release_failures_remaining: Arc<AtomicUsize>,
+        released: bool,
+    }
+
+    impl fmt::Debug for FailingFetchCredentialSession {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("FailingFetchCredentialSession")
+                .field("released", &self.released)
+                .finish()
+        }
+    }
+
+    impl CredentialSession for FailingFetchCredentialSession {
+        fn fetch(&mut self, _secret_ref: &str) -> Result<SecretValue, EvaError> {
+            Err(EvaError::not_found("test credential fetch failed"))
+        }
+
+        fn release(&mut self) -> Result<(), EvaError> {
+            if self.released {
+                return Ok(());
+            }
+            self.release_attempts.fetch_add(1, Ordering::SeqCst);
+            if self
+                .release_failures_remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(EvaError::unavailable("test credential release failed"));
+            }
+            self.released = true;
+            Ok(())
+        }
     }
 
     struct TestCredentialVault {

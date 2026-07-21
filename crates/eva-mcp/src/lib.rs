@@ -41,9 +41,9 @@ pub use json_rpc::{
     McpStdioJsonRpcTransport, McpStdioProcess,
 };
 pub use lifecycle::{
-    McpOrphanCleanupReport, McpProcessInspector, McpRegisteredSession, McpSessionHealthReport,
-    McpSessionLifecycleReport, McpSessionLifecycleStatus, McpSessionRegistry, McpStreamReport,
-    McpStreamStatus, McpStreamableHttpSessionRegistry,
+    McpHttpDrainReport, McpOrphanCleanupReport, McpProcessInspector, McpRegisteredSession,
+    McpSessionHealthReport, McpSessionLifecycleReport, McpSessionLifecycleStatus,
+    McpSessionRegistry, McpStreamReport, McpStreamStatus, McpStreamableHttpSessionRegistry,
 };
 pub use policy::McpAllowlist;
 pub use server::{

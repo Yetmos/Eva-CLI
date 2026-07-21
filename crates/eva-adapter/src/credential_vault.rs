@@ -9,10 +9,14 @@
 use crate::supervisor::{redact_provider_session_tokens, ProviderCredentialScope};
 use eva_config::ProviderVaultSecretRef;
 use eva_core::EvaError;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
+use std::thread;
+use std::time::Duration;
 
 /// A vault implementation opens one session for one admitted provider scope.
 pub trait CredentialVault: fmt::Debug + Send + Sync {
@@ -240,6 +244,522 @@ pub struct CredentialSessionLease {
     redactions: Vec<String>,
     audit: Vec<String>,
     released: bool,
+    finalizer_scope: u64,
+}
+
+struct DeferredCredentialSession {
+    session: Box<dyn CredentialSession>,
+    scope: u64,
+}
+
+struct PendingCredentialRelease {
+    owner: DeferredCredentialSession,
+    last_attempt_epoch: Option<u64>,
+}
+
+struct RunningCredentialRelease {
+    worker: thread::JoinHandle<CredentialReleaseOutcome>,
+    attempt_epoch: u64,
+    scope: u64,
+}
+
+enum CredentialReleaseOutcome {
+    Released,
+    Failed(DeferredCredentialSession),
+}
+
+enum CredentialFinalizerCommand {
+    Enqueue(DeferredCredentialSession),
+    Retry {
+        scope: u64,
+        deadline: std::time::Instant,
+        acknowledgement: mpsc::SyncSender<()>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CredentialFinalizerProgress {
+    outstanding: usize,
+    pending: usize,
+    running: usize,
+    quarantined: usize,
+}
+
+struct CredentialFinalizerShared {
+    progress: Mutex<BTreeMap<u64, CredentialFinalizerProgress>>,
+    changed: Condvar,
+}
+
+struct CredentialReleaseFinalizer {
+    sender: mpsc::Sender<CredentialFinalizerCommand>,
+    shared: Arc<CredentialFinalizerShared>,
+    _worker: thread::JoinHandle<()>,
+}
+
+pub(crate) struct CredentialFinalizerRunningGuard {
+    shared: Arc<CredentialFinalizerShared>,
+    scope: u64,
+}
+
+static CREDENTIAL_RELEASE_FINALIZER: OnceLock<CredentialReleaseFinalizer> = OnceLock::new();
+const CREDENTIAL_RELEASE_FINALIZER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CREDENTIAL_RELEASE_FINALIZER_MAX_WORKERS: usize = 4;
+
+#[cfg(test)]
+thread_local! {
+    static CREDENTIAL_FINALIZER_TEST_SCOPE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+static NEXT_CREDENTIAL_FINALIZER_TEST_SCOPE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(test)]
+pub(crate) struct CredentialFinalizerTestGuard {
+    previous_scope: u64,
+}
+
+fn credential_release_finalizer() -> Result<&'static CredentialReleaseFinalizer, EvaError> {
+    if let Some(finalizer) = CREDENTIAL_RELEASE_FINALIZER.get() {
+        return Ok(finalizer);
+    }
+
+    let (sender, receiver) = mpsc::channel();
+    let shared = Arc::new(CredentialFinalizerShared {
+        progress: Mutex::new(BTreeMap::new()),
+        changed: Condvar::new(),
+    });
+    let worker_shared = Arc::clone(&shared);
+    let worker = thread::Builder::new()
+        .name("eva-credential-finalizer".to_owned())
+        .spawn(move || run_credential_release_finalizer(receiver, worker_shared))
+        .map_err(|error| {
+            EvaError::unavailable("provider credential finalizer could not start")
+                .with_provider_code("credential_finalizer_spawn_failed")
+                .with_context("os_error_kind", format!("{:?}", error.kind()))
+        })?;
+    let candidate = CredentialReleaseFinalizer {
+        sender,
+        shared,
+        _worker: worker,
+    };
+    if let Err(candidate) = CREDENTIAL_RELEASE_FINALIZER.set(candidate) {
+        drop(candidate.sender);
+        let _ = candidate._worker.join();
+    }
+    CREDENTIAL_RELEASE_FINALIZER.get().ok_or_else(|| {
+        EvaError::internal("provider credential finalizer initialization was lost")
+            .with_provider_code("credential_finalizer_missing")
+    })
+}
+
+fn run_credential_release_finalizer(
+    receiver: Receiver<CredentialFinalizerCommand>,
+    shared: Arc<CredentialFinalizerShared>,
+) {
+    let mut pending = VecDeque::new();
+    let mut workers = Vec::new();
+    let mut disconnected = false;
+    let mut retry_authorizations = BTreeMap::new();
+
+    while !disconnected || !pending.is_empty() || !workers.is_empty() {
+        let mut acknowledgements = Vec::new();
+        if !disconnected {
+            match receiver.recv_timeout(CREDENTIAL_RELEASE_FINALIZER_POLL_INTERVAL) {
+                Ok(command) => apply_credential_finalizer_command(
+                    command,
+                    &mut pending,
+                    &mut retry_authorizations,
+                    &mut acknowledgements,
+                ),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => disconnected = true,
+            }
+            loop {
+                match receiver.try_recv() {
+                    Ok(command) => apply_credential_finalizer_command(
+                        command,
+                        &mut pending,
+                        &mut retry_authorizations,
+                        &mut acknowledgements,
+                    ),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        } else if !pending.is_empty() || !workers.is_empty() {
+            thread::sleep(CREDENTIAL_RELEASE_FINALIZER_POLL_INTERVAL);
+        }
+
+        reap_credential_release_workers(&mut workers, &mut pending, &shared);
+
+        let pending_count = pending.len();
+        for _ in 0..pending_count {
+            let mut task = pending
+                .pop_front()
+                .expect("credential finalizer pending count remains stable");
+            let (retry_epoch, retry_deadline) = retry_authorizations
+                .get(&task.owner.scope)
+                .copied()
+                .unwrap_or((0, None));
+            let retry_is_authorized = task.last_attempt_epoch.is_none_or(|attempted| {
+                attempted < retry_epoch
+                    && retry_deadline.is_some_and(|deadline| std::time::Instant::now() < deadline)
+            });
+            if workers.len() >= CREDENTIAL_RELEASE_FINALIZER_MAX_WORKERS || !retry_is_authorized {
+                pending.push_back(task);
+                continue;
+            }
+            let attempt_epoch = retry_epoch;
+            let callback_deadline = task.last_attempt_epoch.and(retry_deadline);
+            let scope = task.owner.scope;
+            match spawn_deferred_credential_release(task.owner, callback_deadline) {
+                Ok(worker) => {
+                    update_credential_finalizer_progress(&shared, scope, |progress| {
+                        progress.pending = progress.pending.saturating_sub(1);
+                        progress.running = progress.running.saturating_add(1);
+                    });
+                    workers.push(RunningCredentialRelease {
+                        worker,
+                        attempt_epoch,
+                        scope,
+                    });
+                }
+                Err(owner) => {
+                    task = PendingCredentialRelease {
+                        owner,
+                        last_attempt_epoch: Some(attempt_epoch),
+                    };
+                    pending.push_back(task);
+                }
+            }
+        }
+
+        for acknowledgement in acknowledgements {
+            let _ = acknowledgement.send(());
+        }
+    }
+}
+
+fn apply_credential_finalizer_command(
+    command: CredentialFinalizerCommand,
+    pending: &mut VecDeque<PendingCredentialRelease>,
+    retry_authorizations: &mut BTreeMap<u64, (u64, Option<std::time::Instant>)>,
+    acknowledgements: &mut Vec<mpsc::SyncSender<()>>,
+) {
+    match command {
+        CredentialFinalizerCommand::Enqueue(owner) => {
+            pending.push_back(PendingCredentialRelease {
+                owner,
+                last_attempt_epoch: None,
+            });
+        }
+        CredentialFinalizerCommand::Retry {
+            scope,
+            deadline,
+            acknowledgement,
+        } => {
+            let authorization = retry_authorizations.entry(scope).or_insert((0, None));
+            authorization.0 = authorization.0.saturating_add(1);
+            authorization.1 = Some(deadline);
+            acknowledgements.push(acknowledgement);
+        }
+    }
+}
+
+fn reap_credential_release_workers(
+    workers: &mut Vec<RunningCredentialRelease>,
+    pending: &mut VecDeque<PendingCredentialRelease>,
+    shared: &CredentialFinalizerShared,
+) {
+    let mut index = 0;
+    while index < workers.len() {
+        if !workers[index].worker.is_finished() {
+            index += 1;
+            continue;
+        }
+        let task = workers.swap_remove(index);
+        match task.worker.join() {
+            Ok(CredentialReleaseOutcome::Released) => {
+                update_credential_finalizer_progress(shared, task.scope, |progress| {
+                    progress.running = progress.running.saturating_sub(1);
+                    progress.outstanding = progress.outstanding.saturating_sub(1);
+                });
+            }
+            Ok(CredentialReleaseOutcome::Failed(owner)) => {
+                pending.push_back(PendingCredentialRelease {
+                    owner,
+                    last_attempt_epoch: Some(task.attempt_epoch),
+                });
+                update_credential_finalizer_progress(shared, task.scope, |progress| {
+                    progress.running = progress.running.saturating_sub(1);
+                    progress.pending = progress.pending.saturating_add(1);
+                });
+            }
+            Err(_) => {
+                update_credential_finalizer_progress(shared, task.scope, |progress| {
+                    progress.running = progress.running.saturating_sub(1);
+                    progress.quarantined = progress.quarantined.saturating_add(1);
+                });
+            }
+        }
+    }
+}
+
+fn update_credential_finalizer_progress(
+    shared: &CredentialFinalizerShared,
+    scope: u64,
+    update: impl FnOnce(&mut CredentialFinalizerProgress),
+) {
+    let mut progress_by_scope = shared
+        .progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    update(progress_by_scope.entry(scope).or_default());
+    drop(progress_by_scope);
+    shared.changed.notify_all();
+}
+
+fn spawn_deferred_credential_release(
+    owner: DeferredCredentialSession,
+    callback_deadline: Option<std::time::Instant>,
+) -> Result<thread::JoinHandle<CredentialReleaseOutcome>, DeferredCredentialSession> {
+    let owner = Arc::new(Mutex::new(Some(owner)));
+    let worker_owner = Arc::clone(&owner);
+    let worker = thread::Builder::new()
+        .name("eva-credential-finalizer-release".to_owned())
+        .spawn(move || {
+            let mut owner = worker_owner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .expect("credential finalizer worker owns one session");
+            if callback_deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                return CredentialReleaseOutcome::Failed(owner);
+            }
+            let released = catch_unwind(AssertUnwindSafe(|| owner.session.release()));
+            if matches!(released, Ok(Ok(()))) {
+                let _ = catch_unwind(AssertUnwindSafe(|| drop(owner)));
+                CredentialReleaseOutcome::Released
+            } else {
+                CredentialReleaseOutcome::Failed(owner)
+            }
+        });
+
+    match worker {
+        Ok(worker) => Ok(worker),
+        Err(_) => Err(owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .expect("failed credential worker spawn preserves its session")),
+    }
+}
+
+fn defer_credential_release(session: Box<dyn CredentialSession>, scope: u64) {
+    let owner = DeferredCredentialSession { session, scope };
+    let Ok(finalizer) = credential_release_finalizer() else {
+        let _ = Box::leak(Box::new(owner));
+        return;
+    };
+    update_credential_finalizer_progress(&finalizer.shared, scope, |progress| {
+        progress.outstanding = progress.outstanding.saturating_add(1);
+        progress.pending = progress.pending.saturating_add(1);
+    });
+    if let Err(error) = finalizer
+        .sender
+        .send(CredentialFinalizerCommand::Enqueue(owner))
+    {
+        if let CredentialFinalizerCommand::Enqueue(owner) = error.0 {
+            let _ = Box::leak(Box::new(owner));
+        }
+    }
+}
+
+pub(crate) fn track_running_credential_finalizer_owner(
+    scope: u64,
+) -> Option<CredentialFinalizerRunningGuard> {
+    let finalizer = CREDENTIAL_RELEASE_FINALIZER.get()?;
+    update_credential_finalizer_progress(&finalizer.shared, scope, |progress| {
+        progress.outstanding = progress.outstanding.saturating_add(1);
+        progress.running = progress.running.saturating_add(1);
+    });
+    Some(CredentialFinalizerRunningGuard {
+        shared: Arc::clone(&finalizer.shared),
+        scope,
+    })
+}
+
+impl Drop for CredentialFinalizerRunningGuard {
+    fn drop(&mut self) {
+        update_credential_finalizer_progress(&self.shared, self.scope, |progress| {
+            progress.running = progress.running.saturating_sub(1);
+            progress.outstanding = progress.outstanding.saturating_sub(1);
+        });
+    }
+}
+
+pub(crate) fn drain_deferred_credential_releases_until(
+    deadline: std::time::Instant,
+) -> Result<(), EvaError> {
+    drain_deferred_credential_releases_until_inner(deadline, credential_finalizer_scope())
+}
+
+fn drain_deferred_credential_releases_until_inner(
+    deadline: std::time::Instant,
+    scope: u64,
+) -> Result<(), EvaError> {
+    let Some(finalizer) = CREDENTIAL_RELEASE_FINALIZER.get() else {
+        return Ok(());
+    };
+    {
+        let progress_by_scope = finalizer
+            .shared
+            .progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let progress = progress_by_scope.get(&scope).copied().unwrap_or_default();
+        if progress.outstanding == 0 {
+            return if std::time::Instant::now() < deadline {
+                Ok(())
+            } else {
+                Err(credential_finalizer_timeout(progress))
+            };
+        }
+    }
+
+    let (acknowledgement, acknowledged) = mpsc::sync_channel(1);
+    finalizer
+        .sender
+        .send(CredentialFinalizerCommand::Retry {
+            scope,
+            deadline,
+            acknowledgement,
+        })
+        .map_err(|_| credential_finalizer_unavailable(finalizer, scope))?;
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() || acknowledged.recv_timeout(remaining).is_err() {
+        return Err(credential_finalizer_timeout_snapshot(finalizer, scope));
+    }
+
+    let mut progress_by_scope = finalizer
+        .shared
+        .progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    loop {
+        let progress = progress_by_scope.get(&scope).copied().unwrap_or_default();
+        if std::time::Instant::now() >= deadline {
+            return Err(credential_finalizer_timeout(progress));
+        }
+        if progress.outstanding == 0 {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let (next, _) = finalizer
+            .shared
+            .changed
+            .wait_timeout(progress_by_scope, remaining)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        progress_by_scope = next;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn credential_finalizer_test_guard() -> CredentialFinalizerTestGuard {
+    let scope =
+        NEXT_CREDENTIAL_FINALIZER_TEST_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let previous_scope = CREDENTIAL_FINALIZER_TEST_SCOPE.with(|current| current.replace(scope));
+    CredentialFinalizerTestGuard { previous_scope }
+}
+
+#[cfg(test)]
+impl Drop for CredentialFinalizerTestGuard {
+    fn drop(&mut self) {
+        CREDENTIAL_FINALIZER_TEST_SCOPE.with(|current| current.set(self.previous_scope));
+    }
+}
+
+#[cfg(test)]
+fn credential_finalizer_scope() -> u64 {
+    CREDENTIAL_FINALIZER_TEST_SCOPE.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+const fn credential_finalizer_scope() -> u64 {
+    0
+}
+
+#[cfg(test)]
+pub(crate) fn drain_credential_finalizer_while_test_guarded(
+    deadline: std::time::Instant,
+) -> Result<(), EvaError> {
+    drain_deferred_credential_releases_until_inner(deadline, credential_finalizer_scope())
+}
+
+fn credential_finalizer_timeout_snapshot(
+    finalizer: &CredentialReleaseFinalizer,
+    scope: u64,
+) -> EvaError {
+    let progress_by_scope = finalizer
+        .shared
+        .progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    credential_finalizer_timeout(progress_by_scope.get(&scope).copied().unwrap_or_default())
+}
+
+fn credential_finalizer_timeout(progress: CredentialFinalizerProgress) -> EvaError {
+    EvaError::timeout("provider credential finalizer exceeded the drain deadline")
+        .with_provider_code("credential_finalizer_drain_timeout")
+        .with_retryable(true)
+        .with_context(
+            "credential_finalizer_outstanding",
+            progress.outstanding.to_string(),
+        )
+        .with_context("credential_finalizer_pending", progress.pending.to_string())
+        .with_context("credential_finalizer_running", progress.running.to_string())
+        .with_context(
+            "credential_finalizer_quarantined",
+            progress.quarantined.to_string(),
+        )
+        .with_context("cleanup_blocked", (progress.outstanding != 0).to_string())
+}
+
+fn credential_finalizer_unavailable(
+    finalizer: &CredentialReleaseFinalizer,
+    scope: u64,
+) -> EvaError {
+    let progress_by_scope = finalizer
+        .shared
+        .progress
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let progress = progress_by_scope.get(&scope).copied().unwrap_or_default();
+    EvaError::unavailable("provider credential finalizer is unavailable")
+        .with_provider_code("credential_finalizer_unavailable")
+        .with_retryable(true)
+        .with_context(
+            "credential_finalizer_outstanding",
+            progress.outstanding.to_string(),
+        )
+        .with_context("credential_finalizer_pending", progress.pending.to_string())
+        .with_context("credential_finalizer_running", progress.running.to_string())
+        .with_context("cleanup_blocked", (progress.outstanding != 0).to_string())
+}
+
+pub(crate) struct CredentialSessionLeaseOpenFailure {
+    error: EvaError,
+    lease: Option<Box<CredentialSessionLease>>,
+}
+
+impl CredentialSessionLeaseOpenFailure {
+    pub(crate) fn into_parts(self) -> (EvaError, Option<CredentialSessionLease>) {
+        (self.error, self.lease.map(|lease| *lease))
+    }
 }
 
 impl fmt::Debug for CredentialSessionLease {
@@ -277,6 +797,30 @@ impl CredentialSessionLease {
         legacy_env: &[String],
         lazy_env: &[String],
     ) -> Result<Self, EvaError> {
+        match Self::open_with_lazy_env_retaining_owner(
+            vault, scope, vault_refs, legacy_env, lazy_env,
+        ) {
+            Ok(lease) => Ok(lease),
+            Err(failure) => {
+                let (mut error, lease) = failure.into_parts();
+                if let Some(mut lease) = lease {
+                    if let Err(release_error) = lease.release() {
+                        error = error
+                            .with_context("credential_release_error", release_error.to_string());
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn open_with_lazy_env_retaining_owner(
+        vault: &dyn CredentialVault,
+        scope: Option<&ProviderCredentialScope>,
+        vault_refs: &[ProviderVaultSecretRef],
+        legacy_env: &[String],
+        lazy_env: &[String],
+    ) -> Result<Self, CredentialSessionLeaseOpenFailure> {
         if vault_refs.is_empty() && legacy_env.is_empty() && lazy_env.is_empty() {
             return Ok(Self {
                 session: None,
@@ -285,90 +829,121 @@ impl CredentialSessionLease {
                 redactions: Vec::new(),
                 audit: Vec::new(),
                 released: false,
+                finalizer_scope: credential_finalizer_scope(),
             });
         }
-        let scope = scope.ok_or_else(|| {
-            EvaError::permission_denied("provider credential session scope is required")
-                .with_provider_code("credential_scope_required")
+        let scope = scope.ok_or_else(|| CredentialSessionLeaseOpenFailure {
+            error: EvaError::permission_denied("provider credential session scope is required")
+                .with_provider_code("credential_scope_required"),
+            lease: None,
         })?;
-        let mut session = vault.open_session(scope).map_err(|error| {
-            sanitize_vault_error(
-                error,
-                "provider credential vault session unavailable",
-                "credential_vault_error",
-            )
-        })?;
-        let mut values = BTreeMap::new();
+        credential_release_finalizer()
+            .map_err(|error| CredentialSessionLeaseOpenFailure { error, lease: None })?;
+        let session =
+            vault
+                .open_session(scope)
+                .map_err(|error| CredentialSessionLeaseOpenFailure {
+                    error: sanitize_vault_error(
+                        error,
+                        "provider credential vault session unavailable",
+                        "credential_vault_error",
+                    ),
+                    lease: None,
+                })?;
         let mut allowed_envs = BTreeSet::new();
         allowed_envs.extend(vault_refs.iter().map(|reference| reference.env.clone()));
         allowed_envs.extend(legacy_env.iter().cloned());
         allowed_envs.extend(lazy_env.iter().cloned());
-        let mut redactions = Vec::new();
-        let mut audit = vec!["credential.vault_session:opened".to_owned()];
+        let mut lease = Self {
+            session: Some(session),
+            values: BTreeMap::new(),
+            allowed_envs,
+            redactions: Vec::new(),
+            audit: vec!["credential.vault_session:opened".to_owned()],
+            released: false,
+            finalizer_scope: credential_finalizer_scope(),
+        };
 
         for reference in vault_refs {
-            let secret = match session.fetch(&reference.secret_ref) {
+            let secret = match lease
+                .session
+                .as_mut()
+                .expect("new credential lease owns its vault session")
+                .fetch(&reference.secret_ref)
+            {
                 Ok(secret) => secret,
                 Err(error) => {
-                    let _ = session.release();
-                    return Err(sanitize_vault_error(
-                        error,
-                        "provider credential reference is unavailable",
-                        "missing_credential",
-                    )
-                    .with_context("credential_env", &reference.env));
+                    return Err(CredentialSessionLeaseOpenFailure {
+                        error: sanitize_vault_error(
+                            error,
+                            "provider credential reference is unavailable",
+                            "missing_credential",
+                        )
+                        .with_context("credential_env", &reference.env),
+                        lease: Some(Box::new(lease)),
+                    });
                 }
             };
             if secret.expose().is_empty() {
-                let _ = session.release();
-                return Err(EvaError::unavailable(
-                    "provider credential reference resolved to an empty value",
-                )
-                .with_provider_code("empty_credential")
-                .with_context("credential_env", &reference.env));
+                return Err(CredentialSessionLeaseOpenFailure {
+                    error: EvaError::unavailable(
+                        "provider credential reference resolved to an empty value",
+                    )
+                    .with_provider_code("empty_credential")
+                    .with_context("credential_env", &reference.env),
+                    lease: Some(Box::new(lease)),
+                });
             }
-            values.insert(reference.env.clone(), secret.expose().to_owned());
-            redactions.push(secret.expose().to_owned());
-            audit.push(format!("credential_vault:{}:redacted", reference.env));
+            lease
+                .values
+                .insert(reference.env.clone(), secret.expose().to_owned());
+            lease.redactions.push(secret.expose().to_owned());
+            lease
+                .audit
+                .push(format!("credential_vault:{}:redacted", reference.env));
         }
 
         for name in legacy_env {
-            if values.contains_key(name) {
+            if lease.values.contains_key(name) {
                 continue;
             }
-            let secret = match session.fetch(name) {
+            let secret = match lease
+                .session
+                .as_mut()
+                .expect("new credential lease owns its vault session")
+                .fetch(name)
+            {
                 Ok(secret) => secret,
                 Err(error) => {
-                    let _ = session.release();
-                    return Err(sanitize_vault_error(
-                        error,
-                        "provider credential reference is unavailable",
-                        "missing_credential",
-                    )
-                    .with_context("credential_env", name));
+                    return Err(CredentialSessionLeaseOpenFailure {
+                        error: sanitize_vault_error(
+                            error,
+                            "provider credential reference is unavailable",
+                            "missing_credential",
+                        )
+                        .with_context("credential_env", name),
+                        lease: Some(Box::new(lease)),
+                    });
                 }
             };
             if secret.expose().is_empty() {
-                let _ = session.release();
-                return Err(EvaError::unavailable(
-                    "provider credential environment reference resolved to an empty value",
-                )
-                .with_provider_code("empty_credential")
-                .with_context("credential_env", name));
+                return Err(CredentialSessionLeaseOpenFailure {
+                    error: EvaError::unavailable(
+                        "provider credential environment reference resolved to an empty value",
+                    )
+                    .with_provider_code("empty_credential")
+                    .with_context("credential_env", name),
+                    lease: Some(Box::new(lease)),
+                });
             }
-            values.insert(name.clone(), secret.expose().to_owned());
-            redactions.push(secret.expose().to_owned());
-            audit.push(format!("credential_env:{name}:redacted"));
+            lease
+                .values
+                .insert(name.clone(), secret.expose().to_owned());
+            lease.redactions.push(secret.expose().to_owned());
+            lease.audit.push(format!("credential_env:{name}:redacted"));
         }
 
-        Ok(Self {
-            session: Some(session),
-            values,
-            allowed_envs,
-            redactions,
-            audit,
-            released: false,
-        })
+        Ok(lease)
     }
 
     /// Inject fetched values into an explicit child environment map.
@@ -474,34 +1049,39 @@ impl CredentialSessionLease {
         self.audit.clone()
     }
 
+    pub(crate) const fn release_finalizer_scope(&self) -> u64 {
+        self.finalizer_scope
+    }
+
     /// Explicitly close the provider session and clear the local projection.
     pub fn release(&mut self) -> Result<(), EvaError> {
         if self.released {
             return Ok(());
         }
+        if let Some(session) = self.session.as_mut() {
+            session.release().map_err(|error| {
+                sanitize_vault_error(
+                    error,
+                    "provider credential vault session release failed",
+                    "credential_vault_release_error",
+                )
+            })?;
+        }
         self.released = true;
-        let result = self
-            .session
-            .take()
-            .map(|mut session| {
-                session.release().map_err(|error| {
-                    sanitize_vault_error(
-                        error,
-                        "provider credential vault session release failed",
-                        "credential_vault_release_error",
-                    )
-                })
-            })
-            .unwrap_or(Ok(()));
+        self.session = None;
+        self.wipe_local_projection();
+        self.audit
+            .push("credential.vault_session:released".to_owned());
+        Ok(())
+    }
+
+    fn wipe_local_projection(&mut self) {
         wipe_map_values(&mut self.values);
         self.allowed_envs.clear();
         for value in &mut self.redactions {
             wipe_string(value);
         }
         self.redactions.clear();
-        self.audit
-            .push("credential.vault_session:released".to_owned());
-        result
     }
 }
 
@@ -561,7 +1141,16 @@ pub(crate) fn sanitize_error_with_values(error: EvaError, sensitive_values: &[St
 
 impl Drop for CredentialSessionLease {
     fn drop(&mut self) {
-        let _ = self.release();
+        if self.released {
+            return;
+        }
+        self.released = true;
+        let session = self.session.take();
+        self.wipe_local_projection();
+        self.audit.clear();
+        if let Some(session) = session {
+            defer_credential_release(session, self.finalizer_scope);
+        }
     }
 }
 
@@ -722,13 +1311,13 @@ mod tests {
     }
 
     #[test]
-    fn vault_errors_are_sanitized_and_release_runs_once() {
+    fn vault_errors_are_sanitized_and_failed_release_is_retried() {
         let releases = Arc::new(AtomicUsize::new(0));
         let vault = CountingVault {
             releases: releases.clone(),
             secret: "external-vault-secret".to_owned(),
             fail_fetch: true,
-            fail_release: false,
+            release_failures_remaining: 0,
         };
         let refs = vec![ProviderVaultSecretRef {
             env: "API_TOKEN".to_owned(),
@@ -744,7 +1333,7 @@ mod tests {
             releases: releases.clone(),
             secret: "external-vault-secret".to_owned(),
             fail_fetch: false,
-            fail_release: true,
+            release_failures_remaining: 1,
         };
         let mut lease =
             CredentialSessionLease::open(&vault, Some(&scope()), &[], &["API_TOKEN".to_owned()])
@@ -755,8 +1344,44 @@ mod tests {
             "credential_vault_release_error"
         );
         assert!(!format!("{error:?}").contains("external-vault-secret"));
+        assert_eq!(
+            lease.resolve_env("API_TOKEN").unwrap(),
+            "external-vault-secret"
+        );
+        assert!(lease.release().is_ok());
         assert!(lease.release().is_ok());
         drop(lease);
+        assert_eq!(releases.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn expired_retry_worker_preserves_owner_without_entering_release_callback() {
+        let releases = Arc::new(AtomicUsize::new(0));
+        let owner = DeferredCredentialSession {
+            session: Box::new(CountingSession {
+                releases: Arc::clone(&releases),
+                secret: "expired-retry-secret".to_owned(),
+                fail_fetch: false,
+                release_failures_remaining: 0,
+                released: false,
+            }),
+            scope: 0,
+        };
+
+        let worker = match spawn_deferred_credential_release(owner, Some(std::time::Instant::now()))
+        {
+            Ok(worker) => worker,
+            Err(_) => panic!("the retry worker should start"),
+        };
+        let mut owner = match worker.join().expect("the retry worker should not panic") {
+            CredentialReleaseOutcome::Failed(owner) => owner,
+            CredentialReleaseOutcome::Released => {
+                panic!("an expired retry entered the credential release callback")
+            }
+        };
+
+        assert_eq!(releases.load(Ordering::SeqCst), 0);
+        owner.session.release().unwrap();
         assert_eq!(releases.load(Ordering::SeqCst), 1);
     }
 
@@ -765,7 +1390,7 @@ mod tests {
         releases: Arc<AtomicUsize>,
         secret: String,
         fail_fetch: bool,
-        fail_release: bool,
+        release_failures_remaining: usize,
     }
 
     impl CredentialVault for CountingVault {
@@ -777,7 +1402,7 @@ mod tests {
                 releases: self.releases.clone(),
                 secret: self.secret.clone(),
                 fail_fetch: self.fail_fetch,
-                fail_release: self.fail_release,
+                release_failures_remaining: self.release_failures_remaining,
                 released: false,
             }))
         }
@@ -788,7 +1413,7 @@ mod tests {
         releases: Arc<AtomicUsize>,
         secret: String,
         fail_fetch: bool,
-        fail_release: bool,
+        release_failures_remaining: usize,
         released: bool,
     }
 
@@ -816,14 +1441,15 @@ mod tests {
             if self.released {
                 return Ok(());
             }
-            self.released = true;
             self.releases.fetch_add(1, Ordering::SeqCst);
-            if self.fail_release {
+            if self.release_failures_remaining > 0 {
+                self.release_failures_remaining -= 1;
                 return Err(EvaError::internal(format!(
                     "vault release failed for {}",
                     self.secret
                 )));
             }
+            self.released = true;
             Ok(())
         }
     }

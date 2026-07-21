@@ -5,16 +5,33 @@
 //! 环境变量或请求头，审计和输出路径必须使用摘要或脱敏值。
 //! Provider supervisor slots and process table integration.
 
+#[cfg(test)]
+use crate::credential_vault::{
+    credential_finalizer_test_guard, drain_credential_finalizer_while_test_guarded,
+};
+use crate::credential_vault::{
+    drain_deferred_credential_releases_until, track_running_credential_finalizer_owner,
+    CredentialFinalizerRunningGuard, CredentialSessionLease,
+};
 use crate::manifest::{AdapterCircuitBreaker, AdapterHandle, AdapterRateLimit};
 use crate::process_backend::{OsProcessBackend, ProcessIdentity, ProcessTerminationOutcome};
 use crate::runtime::AdapterInvocation;
 use eva_config::{AdapterTransport, ProviderConfig, ProviderRunAsIdentity};
 use eva_core::{AdapterId, CapabilityName, ErrorKind, EvaError, RequestId};
+use eva_mcp::{
+    McpHttpDrainReport, McpJsonRpcCallReport, McpJsonRpcClient, McpSessionLifecycleReport,
+    McpStreamableHttpSession, McpStreamableHttpSessionRegistry,
+};
 use eva_storage::{
     FileSystemProviderAdmissionTable, FileSystemProviderProcessTable, InMemoryProviderProcessTable,
     ProviderProcessSnapshot, ProviderProcessTable,
 };
 use std::collections::BTreeMap;
+use std::fmt;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -99,9 +116,1047 @@ pub struct ProviderDrainReport {
     pub forced_provider_count: usize,
     /// Number of legacy snapshots without an OS identity.
     pub missing_identity_count: usize,
+    /// Streamable HTTP application sessions owned when the drain began.
+    pub mcp_http_sessions_before: usize,
+    /// Streamable HTTP reader threads owned when the drain began.
+    pub mcp_http_readers_before: usize,
+    /// Streamable HTTP application sessions left after the drain.
+    pub mcp_http_sessions_after: usize,
+    /// Streamable HTTP reader threads left after the drain.
+    pub mcp_http_readers_after: usize,
+    /// Streamable HTTP sessions fenced for cleanup after the drain.
+    pub mcp_http_cleanup_pending_after: usize,
     /// Deterministic lifecycle evidence suitable for daemon audit output.
     pub audit: Vec<String>,
 }
+
+/// Shared pointer-identity handle for the daemon-owned Streamable HTTP
+/// registry. Cloned supervisors address the same lifecycle authority without
+/// comparing or formatting opaque server-issued session material.
+#[derive(Clone)]
+pub(crate) struct McpHttpLifecycleHandle(Arc<McpHttpLifecycleShared>);
+
+struct McpHttpLifecycleShared {
+    state: Mutex<McpHttpLifecycleState>,
+    admission_closed: AtomicBool,
+    operation_gate: Mutex<McpHttpOperationGate>,
+    operations_idle: Condvar,
+    drain_lock: Mutex<()>,
+}
+
+struct McpHttpOperationGate {
+    active_operations: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct McpHttpOperationPermit {
+    lifecycle: McpHttpLifecycleHandle,
+}
+
+pub(crate) struct McpHttpLifecycleState {
+    registry: McpStreamableHttpSessionRegistry,
+    credential_leases: BTreeMap<String, CredentialSessionLease>,
+    credential_releases: BTreeMap<String, CredentialReleaseTask>,
+    next_detached_credential_id: u64,
+}
+
+struct CredentialReleaseTask {
+    completion: Arc<CredentialReleaseCompletion>,
+    worker: Arc<CredentialReleaseWorker>,
+}
+
+struct CredentialReleaseWorker {
+    handle: Mutex<Option<thread::JoinHandle<()>>>,
+    start_gate: Arc<CredentialReleaseStartGate>,
+    finalizer_scope: u64,
+}
+
+struct CredentialReleaseStartGate {
+    attached: Mutex<bool>,
+    ready: Condvar,
+}
+
+struct DeferredCredentialJoin {
+    join: thread::JoinHandle<()>,
+    acknowledgement: Option<mpsc::SyncSender<bool>>,
+    _credential_residual: Option<CredentialFinalizerRunningGuard>,
+}
+
+struct CredentialJoinReaper {
+    sender: mpsc::Sender<DeferredCredentialJoin>,
+    worker: thread::JoinHandle<()>,
+}
+
+static CREDENTIAL_JOIN_REAPER: OnceLock<CredentialJoinReaper> = OnceLock::new();
+
+struct CredentialReleaseCompletion {
+    state: Mutex<CredentialReleaseCompletionState>,
+    ready: Condvar,
+}
+
+enum CredentialReleaseCompletionState {
+    Pending(CredentialSessionLease),
+    Running,
+    Finished {
+        credentials: CredentialSessionLease,
+        result: Result<Vec<String>, EvaError>,
+    },
+}
+
+struct PreparedCredentialRelease {
+    waiter: CredentialReleaseWaiter,
+}
+
+#[derive(Clone)]
+struct CredentialReleaseWaiter {
+    session_id: String,
+    completion: Arc<CredentialReleaseCompletion>,
+    worker: Arc<CredentialReleaseWorker>,
+}
+
+impl CredentialReleaseWaiter {
+    fn wait_until(
+        &self,
+        deadline: Option<Instant>,
+    ) -> Result<Result<Vec<String>, EvaError>, EvaError> {
+        let mut state = self.completion.state.lock().map_err(|_| {
+            EvaError::internal("credential release completion lock is poisoned")
+                .with_provider_code("credential_release_completion_lock_poisoned")
+        })?;
+        loop {
+            if let CredentialReleaseCompletionState::Finished { result, .. } = &*state {
+                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    return Err(credential_release_timeout());
+                }
+                return Ok(result.clone());
+            }
+            state = match deadline {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(credential_release_timeout());
+                    }
+                    let (next, wait) = self
+                        .completion
+                        .ready
+                        .wait_timeout(state, remaining)
+                        .map_err(|_| {
+                            EvaError::internal("credential release completion lock is poisoned")
+                                .with_provider_code("credential_release_completion_lock_poisoned")
+                        })?;
+                    if wait.timed_out()
+                        && !matches!(&*next, CredentialReleaseCompletionState::Finished { .. })
+                    {
+                        return Err(credential_release_timeout());
+                    }
+                    next
+                }
+                None => self.completion.ready.wait(state).map_err(|_| {
+                    EvaError::internal("credential release completion lock is poisoned")
+                        .with_provider_code("credential_release_completion_lock_poisoned")
+                })?,
+            };
+        }
+    }
+}
+
+fn credential_release_timeout() -> EvaError {
+    EvaError::timeout("provider credential release exceeded the drain deadline")
+        .with_provider_code("credential_release_timeout")
+        .with_context("cleanup_blocked", "true")
+}
+
+fn mcp_http_operation_drain_timeout(active_operations: usize) -> EvaError {
+    EvaError::timeout("MCP HTTP active operations exceeded the drain deadline")
+        .with_provider_code("mcp_http_operation_drain_timeout")
+        .with_context("active_operations", active_operations.to_string())
+        .with_context("cleanup_blocked", (active_operations != 0).to_string())
+}
+
+fn mcp_http_operation_gate_drain_timeout() -> EvaError {
+    EvaError::timeout("MCP HTTP operation gate exceeded the drain deadline")
+        .with_provider_code("mcp_http_operation_drain_timeout")
+        .with_context("active_operations", "unknown")
+        .with_context("operation_gate_busy", "true")
+        .with_context("cleanup_blocked", "true")
+}
+
+fn mcp_http_admission_closed() -> EvaError {
+    EvaError::conflict("MCP Streamable HTTP registry admission is closed")
+        .with_provider_code("mcp_http_registry_admission_closed")
+}
+
+impl Drop for CredentialReleaseWorker {
+    fn drop(&mut self) {
+        let Some(join) = self
+            .handle
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        else {
+            return;
+        };
+        if join.is_finished() {
+            let _ = join.join();
+        } else {
+            let residual = track_running_credential_finalizer_owner(self.finalizer_scope);
+            defer_credential_join(join, None, residual);
+        }
+    }
+}
+
+fn credential_join_reaper() -> Result<&'static CredentialJoinReaper, EvaError> {
+    if let Some(reaper) = CREDENTIAL_JOIN_REAPER.get() {
+        return Ok(reaper);
+    }
+
+    let (sender, receiver) = mpsc::channel();
+    let worker = thread::Builder::new()
+        .name("eva-credential-release-reaper".to_owned())
+        .spawn(move || run_credential_join_reaper(receiver))
+        .map_err(|error| {
+            EvaError::unavailable("failed to start credential release join reaper")
+                .with_provider_code("credential_release_reaper_spawn_failed")
+                .with_context("os_error_kind", format!("{:?}", error.kind()))
+        })?;
+    let candidate = CredentialJoinReaper { sender, worker };
+    if let Err(candidate) = CREDENTIAL_JOIN_REAPER.set(candidate) {
+        drop(candidate.sender);
+        let _ = candidate.worker.join();
+    }
+    CREDENTIAL_JOIN_REAPER.get().ok_or_else(|| {
+        EvaError::internal("credential release join reaper initialization was lost")
+            .with_provider_code("credential_release_reaper_missing")
+    })
+}
+
+fn run_credential_join_reaper(receiver: Receiver<DeferredCredentialJoin>) {
+    let mut pending = Vec::new();
+    let mut disconnected = false;
+    while !disconnected || !pending.is_empty() {
+        if !disconnected {
+            match receiver.recv_timeout(Duration::from_millis(10)) {
+                Ok(task) => pending.push(task),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => disconnected = true,
+            }
+            loop {
+                match receiver.try_recv() {
+                    Ok(task) => pending.push(task),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        } else {
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let mut index = 0;
+        while index < pending.len() {
+            if pending[index].join.is_finished() {
+                let task = pending.swap_remove(index);
+                let joined = task.join.join().is_ok();
+                if let Some(acknowledgement) = task.acknowledgement {
+                    let _ = acknowledgement.send(joined);
+                }
+            } else {
+                index += 1;
+            }
+        }
+    }
+}
+
+fn defer_credential_join(
+    join: thread::JoinHandle<()>,
+    acknowledgement: Option<mpsc::SyncSender<bool>>,
+    credential_residual: Option<CredentialFinalizerRunningGuard>,
+) {
+    let task = DeferredCredentialJoin {
+        join,
+        acknowledgement,
+        _credential_residual: credential_residual,
+    };
+    let Some(reaper) = credential_join_reaper().ok() else {
+        if let Some(acknowledgement) = &task.acknowledgement {
+            let _ = acknowledgement.send(false);
+        }
+        let _ = Box::leak(Box::new(task));
+        return;
+    };
+    if let Err(error) = reaper.sender.send(task) {
+        let task = error.0;
+        if let Some(acknowledgement) = &task.acknowledgement {
+            let _ = acknowledgement.send(false);
+        }
+        let _ = Box::leak(Box::new(task));
+    }
+}
+
+impl McpHttpLifecycleState {
+    fn register_starting_session(
+        &mut self,
+        adapter_id: AdapterId,
+        session: McpStreamableHttpSession,
+        credentials: CredentialSessionLease,
+    ) -> Result<McpSessionLifecycleReport, (EvaError, PreparedCredentialRelease)> {
+        let registered = match self.registry.register_starting_session(adapter_id, session) {
+            Ok(registered) => registered,
+            Err(error) => {
+                let release = self.prepare_detached_credential_release(credentials);
+                return Err((error, release));
+            }
+        };
+        if self.credential_leases.contains_key(&registered.session_id) {
+            let _ = self.registry.shutdown_session(&registered.session_id);
+            return Err((
+                EvaError::internal("MCP HTTP lifecycle credential owner ID collided")
+                    .with_provider_code("mcp_http_credential_owner_collision"),
+                self.prepare_detached_credential_release(credentials),
+            ));
+        }
+        self.credential_leases
+            .insert(registered.session_id.clone(), credentials);
+        Ok(registered)
+    }
+
+    fn call_tool(
+        &mut self,
+        session_id: &str,
+        client: &McpJsonRpcClient,
+        request_id: RequestId,
+        tool: &str,
+        input: &str,
+    ) -> Result<McpJsonRpcCallReport, EvaError> {
+        self.registry
+            .call_tool(session_id, client, request_id, tool, input)
+    }
+
+    fn shutdown_session(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(McpSessionLifecycleReport, PreparedCredentialRelease), EvaError> {
+        let report = self.registry.shutdown_session(session_id)?;
+        let release = self.prepare_credential_release(session_id)?;
+        Ok((report, release))
+    }
+
+    fn prepare_credential_release(
+        &mut self,
+        session_id: &str,
+    ) -> Result<PreparedCredentialRelease, EvaError> {
+        let credentials = self.credential_leases.remove(session_id).ok_or_else(|| {
+            EvaError::internal("MCP HTTP session lost its credential lifecycle owner")
+                .with_provider_code("mcp_http_credential_owner_missing")
+        })?;
+        Ok(self.prepare_credential_release_owner(session_id.to_owned(), credentials))
+    }
+
+    fn prepare_detached_credential_release(
+        &mut self,
+        credentials: CredentialSessionLease,
+    ) -> PreparedCredentialRelease {
+        loop {
+            self.next_detached_credential_id = self.next_detached_credential_id.wrapping_add(1);
+            let session_id = format!(
+                "mcp-http-detached-credential-{}",
+                self.next_detached_credential_id
+            );
+            if !self.credential_leases.contains_key(&session_id)
+                && !self.credential_releases.contains_key(&session_id)
+            {
+                return self.prepare_credential_release_owner(session_id, credentials);
+            }
+        }
+    }
+
+    fn prepare_credential_release_owner(
+        &mut self,
+        session_id: String,
+        credentials: CredentialSessionLease,
+    ) -> PreparedCredentialRelease {
+        let finalizer_scope = credentials.release_finalizer_scope();
+        let completion = Arc::new(CredentialReleaseCompletion {
+            state: Mutex::new(CredentialReleaseCompletionState::Pending(credentials)),
+            ready: Condvar::new(),
+        });
+        let start_gate = Arc::new(CredentialReleaseStartGate {
+            attached: Mutex::new(false),
+            ready: Condvar::new(),
+        });
+        let worker = Arc::new(CredentialReleaseWorker {
+            handle: Mutex::new(None),
+            start_gate,
+            finalizer_scope,
+        });
+        self.credential_releases.insert(
+            session_id.clone(),
+            CredentialReleaseTask {
+                completion: Arc::clone(&completion),
+                worker: Arc::clone(&worker),
+            },
+        );
+        PreparedCredentialRelease {
+            waiter: CredentialReleaseWaiter {
+                session_id,
+                completion,
+                worker,
+            },
+        }
+    }
+
+    fn prepare_completed_credential_releases(&mut self) {
+        let completed = self
+            .credential_leases
+            .keys()
+            .filter(|session_id| !self.registry.contains_session(session_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for session_id in completed {
+            let _ = self.prepare_credential_release(&session_id);
+        }
+    }
+
+    fn credential_release_work(
+        &self,
+    ) -> (Vec<PreparedCredentialRelease>, Vec<CredentialReleaseWaiter>) {
+        let mut pending = Vec::new();
+        let mut running = Vec::new();
+        for (session_id, task) in &self.credential_releases {
+            let waiter = CredentialReleaseWaiter {
+                session_id: session_id.clone(),
+                completion: Arc::clone(&task.completion),
+                worker: Arc::clone(&task.worker),
+            };
+            let launched = task
+                .worker
+                .handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some();
+            if launched {
+                running.push(waiter);
+            } else {
+                pending.push(PreparedCredentialRelease { waiter });
+            }
+        }
+        (pending, running)
+    }
+}
+
+impl fmt::Debug for McpHttpLifecycleState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpHttpLifecycleState")
+            .field("registry", &self.registry)
+            .field("credential_owner_count", &self.credential_leases.len())
+            .field(
+                "credential_release_task_count",
+                &self.credential_releases.len(),
+            )
+            .finish()
+    }
+}
+
+impl Drop for McpHttpOperationPermit {
+    fn drop(&mut self) {
+        let mut gate = self
+            .lifecycle
+            .0
+            .operation_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert!(gate.active_operations > 0);
+        gate.active_operations = gate.active_operations.saturating_sub(1);
+        if gate.active_operations == 0 {
+            self.lifecycle.0.operations_idle.notify_all();
+        }
+    }
+}
+
+impl McpHttpLifecycleHandle {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(McpHttpLifecycleShared {
+            state: Mutex::new(McpHttpLifecycleState {
+                registry: McpStreamableHttpSessionRegistry::new(),
+                credential_leases: BTreeMap::new(),
+                credential_releases: BTreeMap::new(),
+                next_detached_credential_id: 0,
+            }),
+            admission_closed: AtomicBool::new(false),
+            operation_gate: Mutex::new(McpHttpOperationGate {
+                active_operations: 0,
+            }),
+            operations_idle: Condvar::new(),
+            drain_lock: Mutex::new(()),
+        }))
+    }
+
+    pub(crate) fn begin_operation(&self) -> Result<McpHttpOperationPermit, EvaError> {
+        if self.0.admission_closed.load(Ordering::Acquire) {
+            return Err(mcp_http_admission_closed());
+        }
+        let mut gate = self.0.operation_gate.lock().map_err(|_| {
+            EvaError::internal("MCP HTTP operation gate lock is poisoned")
+                .with_provider_code("mcp_http_operation_gate_lock_poisoned")
+        })?;
+        if self.0.admission_closed.load(Ordering::Acquire) {
+            return Err(mcp_http_admission_closed());
+        }
+        gate.active_operations = gate.active_operations.checked_add(1).ok_or_else(|| {
+            EvaError::conflict("MCP HTTP active operation count is exhausted")
+                .with_provider_code("mcp_http_operation_count_exhausted")
+        })?;
+        Ok(McpHttpOperationPermit {
+            lifecycle: self.clone(),
+        })
+    }
+
+    pub(crate) fn register_starting_session(
+        &self,
+        operation: &McpHttpOperationPermit,
+        adapter_id: AdapterId,
+        session: McpStreamableHttpSession,
+        credentials: CredentialSessionLease,
+    ) -> Result<McpSessionLifecycleReport, EvaError> {
+        if let Err(error) = self.ensure_operation_owner(operation) {
+            let release = operation
+                .lifecycle
+                .release_detached_credentials_unchecked(credentials);
+            return Err(match release {
+                Ok(_) => error,
+                Err(release_error) => {
+                    error.with_context("credential_release_error", release_error.to_string())
+                }
+            });
+        }
+        let registration = match self.try_lock() {
+            Ok(mut lifecycle) => {
+                lifecycle.register_starting_session(adapter_id, session, credentials)
+            }
+            Err(error) => {
+                let release = self.release_detached_credentials(operation, credentials);
+                return Err(match release {
+                    Ok(_) => error,
+                    Err(release_error) => {
+                        error.with_context("credential_release_error", release_error.to_string())
+                    }
+                });
+            }
+        };
+        match registration {
+            Ok(report) => Ok(report),
+            Err((error, prepared)) => {
+                let release = self
+                    .launch_credential_release(prepared, None)
+                    .and_then(|waiter| self.complete_credential_release(&waiter, None));
+                Err(match release {
+                    Ok(_) => error,
+                    Err(release_error) => {
+                        error.with_context("credential_release_error", release_error.to_string())
+                    }
+                })
+            }
+        }
+    }
+
+    pub(crate) fn call_tool(
+        &self,
+        operation: &McpHttpOperationPermit,
+        session_id: &str,
+        client: &McpJsonRpcClient,
+        request_id: RequestId,
+        tool: &str,
+        input: &str,
+    ) -> Result<McpJsonRpcCallReport, EvaError> {
+        self.ensure_operation_owner(operation)?;
+        self.try_lock()?
+            .call_tool(session_id, client, request_id, tool, input)
+    }
+
+    pub(crate) fn shutdown_session(
+        &self,
+        operation: &McpHttpOperationPermit,
+        session_id: &str,
+    ) -> Result<(McpSessionLifecycleReport, Vec<String>), EvaError> {
+        self.ensure_operation_owner(operation)?;
+        let (report, prepared) = self.try_lock()?.shutdown_session(session_id)?;
+        let waiter = self.launch_credential_release(prepared, None)?;
+        let audit = self.complete_credential_release(&waiter, None)?;
+        Ok((report, audit))
+    }
+
+    pub(crate) fn release_detached_credentials(
+        &self,
+        operation: &McpHttpOperationPermit,
+        credentials: CredentialSessionLease,
+    ) -> Result<Vec<String>, EvaError> {
+        if let Err(error) = self.ensure_operation_owner(operation) {
+            let release = operation
+                .lifecycle
+                .release_detached_credentials_unchecked(credentials);
+            return Err(match release {
+                Ok(_) => error,
+                Err(release_error) => {
+                    error.with_context("credential_release_error", release_error.to_string())
+                }
+            });
+        }
+        self.release_detached_credentials_unchecked(credentials)
+    }
+
+    fn release_detached_credentials_unchecked(
+        &self,
+        credentials: CredentialSessionLease,
+    ) -> Result<Vec<String>, EvaError> {
+        let prepared = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .prepare_detached_credential_release(credentials);
+        let waiter = self.launch_credential_release(prepared, None)?;
+        self.complete_credential_release(&waiter, None)
+    }
+
+    fn ensure_operation_owner(&self, operation: &McpHttpOperationPermit) -> Result<(), EvaError> {
+        if Arc::ptr_eq(&self.0, &operation.lifecycle.0) {
+            return Ok(());
+        }
+        Err(
+            EvaError::conflict("MCP HTTP operation permit belongs to a different lifecycle")
+                .with_provider_code("mcp_http_operation_permit_mismatch"),
+        )
+    }
+
+    fn launch_credential_release(
+        &self,
+        prepared: PreparedCredentialRelease,
+        callback_deadline: Option<Instant>,
+    ) -> Result<CredentialReleaseWaiter, EvaError> {
+        let waiter = prepared.waiter;
+        credential_join_reaper()?;
+        let worker_completion = Arc::clone(&waiter.completion);
+        let start_gate = Arc::clone(&waiter.worker.start_gate);
+        let worker = thread::Builder::new()
+            .name("eva-credential-release".to_owned())
+            .spawn(move || {
+                let mut attached = start_gate
+                    .attached
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                while !*attached {
+                    attached = start_gate
+                        .ready
+                        .wait(attached)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                drop(attached);
+                let mut credentials = {
+                    let mut state = worker_completion
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    match std::mem::replace(&mut *state, CredentialReleaseCompletionState::Running)
+                    {
+                        CredentialReleaseCompletionState::Pending(credentials) => credentials,
+                        unexpected => {
+                            *state = unexpected;
+                            return;
+                        }
+                    }
+                };
+                let result = if callback_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    Err(credential_release_timeout())
+                } else {
+                    match catch_unwind(AssertUnwindSafe(|| credentials.release())) {
+                        Ok(Ok(())) => Ok(credentials.audit_entries()),
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Err(EvaError::internal(
+                            "provider credential release callback panicked",
+                        )
+                        .with_provider_code("credential_release_callback_panicked")),
+                    }
+                };
+                {
+                    let mut state = worker_completion
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *state = CredentialReleaseCompletionState::Finished {
+                        credentials,
+                        result,
+                    };
+                }
+                worker_completion.ready.notify_all();
+            });
+
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                return Err(EvaError::unavailable(
+                    "provider credential release worker could not start",
+                )
+                .with_provider_code("credential_release_worker_spawn_failed")
+                .with_context("os_error_kind", format!("{:?}", error.kind())));
+            }
+        };
+
+        let mut worker_slot = waiter
+            .worker
+            .handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert!(worker_slot.is_none());
+        *worker_slot = Some(worker);
+        drop(worker_slot);
+        let mut attached = waiter
+            .worker
+            .start_gate
+            .attached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *attached = true;
+        drop(attached);
+        waiter.worker.start_gate.ready.notify_all();
+        Ok(waiter)
+    }
+
+    fn complete_credential_release(
+        &self,
+        waiter: &CredentialReleaseWaiter,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<String>, EvaError> {
+        let observed = waiter.wait_until(deadline)?;
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(credential_release_timeout());
+        }
+        loop {
+            let mut lifecycle = match self.0.state.try_lock() {
+                Ok(lifecycle) => lifecycle,
+                Err(TryLockError::WouldBlock) => {
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        return Err(credential_release_timeout());
+                    }
+                    thread::yield_now();
+                    continue;
+                }
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(EvaError::internal(
+                        "MCP Streamable HTTP lifecycle registry lock is poisoned",
+                    )
+                    .with_provider_code("mcp_http_registry_lock_poisoned"));
+                }
+            };
+            let Some(task) = lifecycle.credential_releases.get(&waiter.session_id) else {
+                return observed;
+            };
+            if !Arc::ptr_eq(&task.completion, &waiter.completion) {
+                return Err(EvaError::internal(
+                    "credential release completion owner changed unexpectedly",
+                )
+                .with_provider_code("credential_release_owner_mismatch"));
+            }
+            let worker_finished = task
+                .worker
+                .handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished);
+            if !worker_finished {
+                drop(lifecycle);
+                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    return Err(credential_release_timeout());
+                }
+                thread::yield_now();
+                continue;
+            }
+
+            let task = lifecycle
+                .credential_releases
+                .remove(&waiter.session_id)
+                .expect("finished credential release task remains registered");
+            let worker = task
+                .worker
+                .handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .expect("finished credential release task owns its worker");
+            let join_result = worker.join();
+            let mut state = waiter.completion.state.lock().map_err(|_| {
+                EvaError::internal("credential release completion lock is poisoned")
+                    .with_provider_code("credential_release_completion_lock_poisoned")
+            })?;
+            let (credentials, mut result) =
+                match std::mem::replace(&mut *state, CredentialReleaseCompletionState::Running) {
+                    CredentialReleaseCompletionState::Finished {
+                        credentials,
+                        result,
+                    } => (credentials, result),
+                    unexpected => {
+                        *state = unexpected;
+                        return Err(EvaError::internal(
+                            "credential release worker finished without an outcome",
+                        )
+                        .with_provider_code("credential_release_outcome_missing"));
+                    }
+                };
+            if join_result.is_err() {
+                result = Err(
+                    EvaError::internal("provider credential release worker panicked")
+                        .with_provider_code("credential_release_worker_panicked"),
+                );
+            }
+            let deadline_elapsed = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+            return match result {
+                Ok(_) if deadline_elapsed => Err(credential_release_timeout()),
+                Ok(audit) => Ok(audit),
+                Err(error) => {
+                    lifecycle
+                        .credential_leases
+                        .insert(waiter.session_id.clone(), credentials);
+                    if deadline_elapsed {
+                        Err(credential_release_timeout())
+                    } else {
+                        Err(error)
+                    }
+                }
+            };
+        }
+    }
+
+    pub(crate) fn drain_all_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<McpHttpDrainReport, EvaError> {
+        let _drain_guard = self.drain_guard_until(deadline)?;
+        self.close_operation_admission_and_wait_until(deadline)?;
+
+        let (registry_drain, prepared, existing_waiters) = {
+            let mut lifecycle = self.lock_until(deadline)?;
+            let registry_drain = lifecycle.registry.drain_all_until(deadline);
+            lifecycle.prepare_completed_credential_releases();
+            let (prepared, existing_waiters) = lifecycle.credential_release_work();
+            (registry_drain, prepared, existing_waiters)
+        };
+
+        let mut release_error = None;
+        let mut waiters = existing_waiters;
+        let mut prepared = prepared.into_iter();
+        for next in prepared.by_ref() {
+            if Instant::now() >= deadline {
+                if release_error.is_none() {
+                    release_error = Some(credential_release_timeout());
+                }
+                break;
+            }
+            match self.launch_credential_release(next, Some(deadline)) {
+                Ok(waiter) => waiters.push(waiter),
+                Err(error) if release_error.is_none() => release_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        for waiter in waiters {
+            if Instant::now() >= deadline {
+                if release_error.is_none() {
+                    release_error = Some(credential_release_timeout());
+                }
+                break;
+            }
+            if let Err(error) = self.complete_credential_release(&waiter, Some(deadline)) {
+                if release_error.is_none() {
+                    release_error = Some(error);
+                }
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+
+        if let Err(error) = drain_deferred_credential_releases_until(deadline) {
+            if release_error.is_none() {
+                release_error = Some(error);
+            }
+        }
+
+        let residual = self.lifecycle_residual_until(deadline);
+        match residual {
+            Ok((0, 0, 0)) => {}
+            Ok((active, leases, releases)) if release_error.is_none() => {
+                release_error = Some(
+                    EvaError::unavailable("provider credential drain left lifecycle owners behind")
+                        .with_provider_code("credential_release_drain_incomplete")
+                        .with_context("active_operations_after", active.to_string())
+                        .with_context("credential_leases_after", leases.to_string())
+                        .with_context("credential_releases_after", releases.to_string()),
+                );
+            }
+            Ok(_) => {}
+            Err(error) if release_error.is_none() => release_error = Some(error),
+            Err(_) => {}
+        }
+
+        match (registry_drain, release_error) {
+            (Ok(_), None) if Instant::now() >= deadline => Err(credential_release_timeout()),
+            (Ok(report), None) => Ok(report),
+            (Err(error), None) => Err(error),
+            (Ok(_), Some(error)) => {
+                Err(error.with_context("provider_drain_phase", "credential_release"))
+            }
+            (Err(error), Some(release_error)) => {
+                Err(error.with_context("credential_release_error", release_error.to_string()))
+            }
+        }
+    }
+
+    fn drain_guard_until(&self, deadline: Instant) -> Result<MutexGuard<'_, ()>, EvaError> {
+        loop {
+            match self.0.drain_lock.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(mcp_http_operation_drain_timeout(0));
+                    }
+                    thread::yield_now();
+                }
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(EvaError::internal("MCP HTTP drain lock is poisoned")
+                        .with_provider_code("mcp_http_drain_lock_poisoned"));
+                }
+            }
+        }
+    }
+
+    fn close_operation_admission_and_wait_until(&self, deadline: Instant) -> Result<(), EvaError> {
+        self.0.admission_closed.store(true, Ordering::Release);
+        let mut gate = self.operation_gate_lock_until(deadline)?;
+        loop {
+            if gate.active_operations == 0 {
+                return if Instant::now() < deadline {
+                    Ok(())
+                } else {
+                    Err(mcp_http_operation_drain_timeout(0))
+                };
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(mcp_http_operation_drain_timeout(gate.active_operations));
+            }
+            let (next, wait) = self
+                .0
+                .operations_idle
+                .wait_timeout(gate, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            gate = next;
+            if wait.timed_out() && gate.active_operations != 0 {
+                return Err(mcp_http_operation_drain_timeout(gate.active_operations));
+            }
+        }
+    }
+
+    fn lifecycle_residual_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<(usize, usize, usize), EvaError> {
+        let gate = self.operation_gate_lock_until(deadline)?;
+        let active_operations = gate.active_operations;
+        drop(gate);
+        let lifecycle = self.lock_until(deadline)?;
+        Ok((
+            active_operations,
+            lifecycle.credential_leases.len(),
+            lifecycle.credential_releases.len(),
+        ))
+    }
+
+    fn operation_gate_lock_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<MutexGuard<'_, McpHttpOperationGate>, EvaError> {
+        loop {
+            if Instant::now() >= deadline {
+                return Err(mcp_http_operation_gate_drain_timeout());
+            }
+            match self.0.operation_gate.try_lock() {
+                Ok(gate) => {
+                    if Instant::now() >= deadline {
+                        drop(gate);
+                        return Err(mcp_http_operation_gate_drain_timeout());
+                    }
+                    return Ok(gate);
+                }
+                Err(TryLockError::WouldBlock) => thread::yield_now(),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(
+                        EvaError::internal("MCP HTTP operation gate lock is poisoned")
+                            .with_provider_code("mcp_http_operation_gate_lock_poisoned"),
+                    );
+                }
+            }
+        }
+    }
+
+    fn lock_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<MutexGuard<'_, McpHttpLifecycleState>, EvaError> {
+        loop {
+            if Instant::now() >= deadline {
+                return Err(mcp_http_operation_drain_timeout(0));
+            }
+            match self.0.state.try_lock() {
+                Ok(lifecycle) => {
+                    if Instant::now() >= deadline {
+                        drop(lifecycle);
+                        return Err(mcp_http_operation_drain_timeout(0));
+                    }
+                    return Ok(lifecycle);
+                }
+                Err(TryLockError::WouldBlock) => thread::yield_now(),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(EvaError::internal(
+                        "MCP Streamable HTTP lifecycle registry lock is poisoned",
+                    )
+                    .with_provider_code("mcp_http_registry_lock_poisoned"));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn try_lock(&self) -> Result<MutexGuard<'_, McpHttpLifecycleState>, EvaError> {
+        match self.0.state.try_lock() {
+            Ok(registry) => Ok(registry),
+            Err(TryLockError::WouldBlock) => Err(EvaError::unavailable(
+                "MCP Streamable HTTP lifecycle registry is busy",
+            )
+            .with_provider_code("mcp_http_registry_busy")
+            .with_retryable(true)),
+            Err(TryLockError::Poisoned(_)) => Err(EvaError::internal(
+                "MCP Streamable HTTP lifecycle registry lock is poisoned",
+            )
+            .with_provider_code("mcp_http_registry_lock_poisoned")),
+        }
+    }
+}
+
+impl fmt::Debug for McpHttpLifecycleHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("McpHttpLifecycleHandle([DAEMON_OWNED])")
+    }
+}
+
+impl PartialEq for McpHttpLifecycleHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for McpHttpLifecycleHandle {}
 
 /// 汇总一次提供者执行在准入阶段所需的不可变事实和清单限额。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,6 +1354,9 @@ pub struct InMemoryProviderSupervisor {
     rate_windows: BTreeMap<AdapterId, ProviderRateWindow>,
     /// 按适配器隔离的连续失败、开启时间和半开探测状态。
     circuit_states: BTreeMap<AdapterId, ProviderCircuitState>,
+    /// Shared lifecycle authority for every Streamable HTTP session admitted
+    /// by this supervisor generation.
+    mcp_http_lifecycle: McpHttpLifecycleHandle,
     /// One-way admission gate. Once set, no new provider execution may start.
     draining: bool,
     /// Cached successful report makes repeated shutdown requests idempotent.
@@ -538,6 +1596,7 @@ impl InMemoryProviderSupervisor {
             admission_table: None,
             rate_windows: BTreeMap::new(),
             circuit_states: BTreeMap::new(),
+            mcp_http_lifecycle: McpHttpLifecycleHandle::new(),
             draining: false,
             drain_report: None,
             drain_error: None,
@@ -554,6 +1613,7 @@ impl InMemoryProviderSupervisor {
             admission_table,
             rate_windows: BTreeMap::new(),
             circuit_states: BTreeMap::new(),
+            mcp_http_lifecycle: McpHttpLifecycleHandle::new(),
             draining: false,
             drain_report: None,
             drain_error: None,
@@ -598,6 +1658,10 @@ impl InMemoryProviderSupervisor {
         self.draining
     }
 
+    pub(crate) fn mcp_http_lifecycle(&self) -> McpHttpLifecycleHandle {
+        self.mcp_http_lifecycle.clone()
+    }
+
     /// Close admission, wait for in-flight providers, and force-clean any
     /// boundary that remains at the absolute deadline. The gate is one-way;
     /// a successful report is cached so repeated daemon shutdowns cannot
@@ -615,9 +1679,43 @@ impl InMemoryProviderSupervisor {
             return Err(previous.clone());
         }
         self.draining = true;
+        let deadline = Instant::now()
+            .checked_add(options.total_timeout())
+            .ok_or_else(|| {
+                EvaError::invalid_argument("provider drain deadline is outside the clock range")
+            })?;
+        if deadline.saturating_duration_since(Instant::now()).is_zero() {
+            return Err(
+                EvaError::timeout("provider drain deadline elapsed before MCP cleanup")
+                    .with_context("cleanup_blocked", "true"),
+            );
+        }
+        // MCP cleanup runs before process-slot retirement so a failed DELETE
+        // can be retried without confusing a released admission reservation
+        // with a complete daemon drain.
+        let mcp_drain = self
+            .mcp_http_lifecycle
+            .drain_all_until(deadline)
+            .map_err(|error| error.with_context("provider_drain_phase", "mcp_http_cleanup"))?;
+        if !mcp_drain.complete
+            || mcp_drain.sessions_after != 0
+            || mcp_drain.readers_after != 0
+            || mcp_drain.cleanup_pending_after != 0
+        {
+            return Err(EvaError::unavailable(
+                "MCP Streamable HTTP drain left owned lifecycle state behind",
+            )
+            .with_provider_code("mcp_http_registry_drain_incomplete")
+            .with_context("sessions_after", mcp_drain.sessions_after.to_string())
+            .with_context("readers_after", mcp_drain.readers_after.to_string())
+            .with_context(
+                "cleanup_pending_after",
+                mcp_drain.cleanup_pending_after.to_string(),
+            ));
+        }
         let result = self
             .reconcile_pending_admission_releases()
-            .and_then(|_| self.drain_once(options));
+            .and_then(|_| self.drain_once(options, deadline, &mcp_drain));
         match result {
             Ok(report) => {
                 self.drain_report = Some(report.clone());
@@ -633,12 +1731,9 @@ impl InMemoryProviderSupervisor {
     fn drain_once(
         &mut self,
         options: ProviderDrainOptions,
+        deadline: Instant,
+        mcp_drain: &eva_mcp::McpHttpDrainReport,
     ) -> Result<ProviderDrainReport, EvaError> {
-        let deadline = Instant::now()
-            .checked_add(options.total_timeout())
-            .ok_or_else(|| {
-                EvaError::invalid_argument("provider drain deadline is outside the clock range")
-            })?;
         let backend = OsProcessBackend::new();
         let mut terminated_provider_count = 0usize;
         let mut forced_provider_count = 0usize;
@@ -649,6 +1744,11 @@ impl InMemoryProviderSupervisor {
                 "provider.lifecycle:drain_timeout_ms:{}",
                 options.total_timeout().as_millis()
             ),
+            "mcp.http_registry:admission_closed".to_owned(),
+            format!(
+                "mcp.http_registry:drained:sessions_before={}:readers_before={}:sessions_after=0:readers_after=0",
+                mcp_drain.sessions_before, mcp_drain.readers_before
+            ),
         ];
 
         loop {
@@ -658,6 +1758,17 @@ impl InMemoryProviderSupervisor {
                 .filter(|snapshot| snapshot.active)
                 .collect::<Vec<_>>();
             if active.is_empty() {
+                if Instant::now() >= deadline {
+                    return Err(EvaError::timeout(
+                        "provider supervisor drain deadline elapsed before completion",
+                    )
+                    .with_context("active_provider_count", "0")
+                    .with_context(
+                        "terminated_provider_count",
+                        terminated_provider_count.to_string(),
+                    )
+                    .with_context("cleanup_blocked", "false"));
+                }
                 let report = ProviderDrainReport {
                     already_drained: false,
                     phase: "drained".to_owned(),
@@ -665,6 +1776,11 @@ impl InMemoryProviderSupervisor {
                     terminated_provider_count,
                     forced_provider_count,
                     missing_identity_count,
+                    mcp_http_sessions_before: mcp_drain.sessions_before,
+                    mcp_http_readers_before: mcp_drain.readers_before,
+                    mcp_http_sessions_after: mcp_drain.sessions_after,
+                    mcp_http_readers_after: mcp_drain.readers_after,
+                    mcp_http_cleanup_pending_after: mcp_drain.cleanup_pending_after,
                     audit: {
                         audit.push("provider.lifecycle:drained".to_owned());
                         audit
@@ -794,6 +1910,17 @@ impl InMemoryProviderSupervisor {
                 .filter(|snapshot| snapshot.active)
                 .count();
             if remaining == 0 {
+                if Instant::now() >= deadline {
+                    return Err(EvaError::timeout(
+                        "provider supervisor drain deadline elapsed before completion",
+                    )
+                    .with_context("active_provider_count", "0")
+                    .with_context(
+                        "terminated_provider_count",
+                        terminated_provider_count.to_string(),
+                    )
+                    .with_context("cleanup_blocked", "false"));
+                }
                 let report = ProviderDrainReport {
                     already_drained: false,
                     phase: "drained".to_owned(),
@@ -801,6 +1928,11 @@ impl InMemoryProviderSupervisor {
                     terminated_provider_count,
                     forced_provider_count,
                     missing_identity_count,
+                    mcp_http_sessions_before: mcp_drain.sessions_before,
+                    mcp_http_readers_before: mcp_drain.readers_before,
+                    mcp_http_sessions_after: mcp_drain.sessions_after,
+                    mcp_http_readers_after: mcp_drain.readers_after,
+                    mcp_http_cleanup_pending_after: mcp_drain.cleanup_pending_after,
                     audit: {
                         audit.push("provider.lifecycle:drained_after_graceful".to_owned());
                         audit
@@ -1957,8 +3089,10 @@ fn now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_vault::{CredentialSession, CredentialVault, SecretValue};
     use crate::manifest::AdapterHandle;
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// 执行 `handle` 对应的处理逻辑。
     fn handle() -> AdapterHandle {
@@ -2015,6 +3149,204 @@ mod tests {
         )
     }
 
+    #[derive(Clone)]
+    struct ReleaseTestVault {
+        attempts: Arc<AtomicUsize>,
+        failures_remaining: Arc<AtomicUsize>,
+        delay: Duration,
+        reentrant_lifecycle: Option<McpHttpLifecycleHandle>,
+        reentrant_lock_observed: Arc<AtomicBool>,
+    }
+
+    impl fmt::Debug for ReleaseTestVault {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("ReleaseTestVault([REDACTED])")
+        }
+    }
+
+    impl CredentialVault for ReleaseTestVault {
+        fn open_session(
+            &self,
+            _scope: &ProviderCredentialScope,
+        ) -> Result<Box<dyn CredentialSession>, EvaError> {
+            Ok(Box::new(ReleaseTestSession {
+                attempts: Arc::clone(&self.attempts),
+                failures_remaining: Arc::clone(&self.failures_remaining),
+                delay: self.delay,
+                reentrant_lifecycle: self.reentrant_lifecycle.clone(),
+                reentrant_lock_observed: Arc::clone(&self.reentrant_lock_observed),
+                released: false,
+            }))
+        }
+    }
+
+    struct ReleaseTestSession {
+        attempts: Arc<AtomicUsize>,
+        failures_remaining: Arc<AtomicUsize>,
+        delay: Duration,
+        reentrant_lifecycle: Option<McpHttpLifecycleHandle>,
+        reentrant_lock_observed: Arc<AtomicBool>,
+        released: bool,
+    }
+
+    impl fmt::Debug for ReleaseTestSession {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("ReleaseTestSession")
+                .field("released", &self.released)
+                .finish()
+        }
+    }
+
+    impl CredentialSession for ReleaseTestSession {
+        fn fetch(&mut self, _secret_ref: &str) -> Result<SecretValue, EvaError> {
+            if self.released {
+                return Err(EvaError::conflict(
+                    "release test credential session is closed",
+                ));
+            }
+            Ok(SecretValue::new("release-test-secret"))
+        }
+
+        fn release(&mut self) -> Result<(), EvaError> {
+            if self.released {
+                return Ok(());
+            }
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            if !self.delay.is_zero() {
+                thread::sleep(self.delay);
+            }
+            if let Some(lifecycle) = &self.reentrant_lifecycle {
+                for _ in 0..1_000 {
+                    if lifecycle.try_lock().is_ok() {
+                        self.reentrant_lock_observed.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    thread::yield_now();
+                }
+            }
+            let should_fail = self
+                .failures_remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok();
+            if should_fail {
+                return Err(EvaError::unavailable(
+                    "release test vault rejected credential revocation",
+                ));
+            }
+            self.released = true;
+            Ok(())
+        }
+    }
+
+    struct BlockingReleaseVault {
+        started: mpsc::SyncSender<()>,
+        unblock: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
+        finished: mpsc::SyncSender<()>,
+    }
+
+    impl fmt::Debug for BlockingReleaseVault {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("BlockingReleaseVault([REDACTED])")
+        }
+    }
+
+    impl CredentialVault for BlockingReleaseVault {
+        fn open_session(
+            &self,
+            _scope: &ProviderCredentialScope,
+        ) -> Result<Box<dyn CredentialSession>, EvaError> {
+            let unblock = self
+                .unblock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .expect("blocking release vault opens one test session");
+            Ok(Box::new(BlockingReleaseSession {
+                started: self.started.clone(),
+                unblock,
+                finished: self.finished.clone(),
+                released: false,
+            }))
+        }
+    }
+
+    struct BlockingReleaseSession {
+        started: mpsc::SyncSender<()>,
+        unblock: mpsc::Receiver<()>,
+        finished: mpsc::SyncSender<()>,
+        released: bool,
+    }
+
+    impl fmt::Debug for BlockingReleaseSession {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("BlockingReleaseSession")
+                .field("released", &self.released)
+                .finish()
+        }
+    }
+
+    impl CredentialSession for BlockingReleaseSession {
+        fn fetch(&mut self, _secret_ref: &str) -> Result<SecretValue, EvaError> {
+            Ok(SecretValue::new("blocking-release-test-secret"))
+        }
+
+        fn release(&mut self) -> Result<(), EvaError> {
+            if self.released {
+                return Ok(());
+            }
+            let _ = self.started.send(());
+            self.unblock
+                .recv()
+                .map_err(|_| EvaError::internal("blocking release test lost its unblock signal"))?;
+            self.released = true;
+            let _ = self.finished.send(());
+            Ok(())
+        }
+    }
+
+    fn release_test_lease(vault: &ReleaseTestVault) -> CredentialSessionLease {
+        let scope = ProviderCredentialScope::new_for_session(
+            "release-test-session",
+            AdapterId::parse("release-test-provider").unwrap(),
+            RequestId::parse("req-release-test").unwrap(),
+            CapabilityName::parse("vault.release").unwrap(),
+        );
+        CredentialSessionLease::open(vault, Some(&scope), &[], &["RELEASE_TEST_TOKEN".to_owned()])
+            .unwrap()
+    }
+
+    fn blocking_release_test_lease(vault: &BlockingReleaseVault) -> CredentialSessionLease {
+        let scope = ProviderCredentialScope::new_for_session(
+            "blocking-release-test-session",
+            AdapterId::parse("blocking-release-test-provider").unwrap(),
+            RequestId::parse("req-blocking-release-test").unwrap(),
+            CapabilityName::parse("vault.release").unwrap(),
+        );
+        CredentialSessionLease::open(
+            vault,
+            Some(&scope),
+            &[],
+            &["BLOCKING_RELEASE_TEST_TOKEN".to_owned()],
+        )
+        .unwrap()
+    }
+
+    fn add_completed_credential_owner(
+        lifecycle: &McpHttpLifecycleHandle,
+        session_id: &str,
+        credentials: CredentialSessionLease,
+    ) {
+        lifecycle
+            .try_lock()
+            .unwrap()
+            .credential_leases
+            .insert(session_id.to_owned(), credentials);
+    }
+
     /// 验证 `supervisor_records_acquire_and_release` 场景下的预期行为。
     #[test]
     fn supervisor_records_acquire_and_release() {
@@ -2060,11 +3392,20 @@ mod tests {
         assert_eq!(report.phase, "drained");
         assert_eq!(report.active_provider_count, 0);
         assert!(!report.already_drained);
+        assert_eq!(report.mcp_http_sessions_before, 0);
+        assert_eq!(report.mcp_http_readers_before, 0);
+        assert_eq!(report.mcp_http_sessions_after, 0);
+        assert_eq!(report.mcp_http_readers_after, 0);
+        assert_eq!(report.mcp_http_cleanup_pending_after, 0);
         assert!(supervisor.is_draining());
         assert!(report
             .audit
             .iter()
             .any(|entry| entry == "provider.lifecycle:admission_closed"));
+        assert!(report
+            .audit
+            .iter()
+            .any(|entry| entry == "mcp.http_registry:admission_closed"));
 
         let rejected = supervisor
             .acquire(ProviderExecutionRequest::from_handle(
@@ -2098,6 +3439,714 @@ mod tests {
         assert_eq!(
             registration_error.provider_code().map(|code| code.as_str()),
             Some("provider_draining")
+        );
+    }
+
+    #[test]
+    fn supervisor_drain_times_out_without_detaching_slow_credential_release() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        let lifecycle = supervisor.mcp_http_lifecycle();
+        let vault = ReleaseTestVault {
+            attempts: Arc::clone(&attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::from_millis(300),
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        add_completed_credential_owner(
+            &lifecycle,
+            "slow-release-session",
+            release_test_lease(&vault),
+        );
+
+        let started = Instant::now();
+        let error = supervisor
+            .drain(ProviderDrainOptions::new(Duration::from_millis(20)).unwrap())
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "credential release exceeded the bounded drain budget: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        {
+            let state = lifecycle.try_lock().unwrap();
+            assert_eq!(state.credential_leases.len(), 0);
+            assert_eq!(state.credential_releases.len(), 1);
+            assert!(state.credential_releases["slow-release-session"]
+                .worker
+                .handle
+                .lock()
+                .unwrap()
+                .is_some());
+        }
+
+        thread::sleep(Duration::from_millis(320));
+        let report = supervisor
+            .drain(ProviderDrainOptions::new(Duration::from_secs(1)).unwrap())
+            .unwrap();
+        assert_eq!(report.phase, "drained");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let state = lifecycle.try_lock().unwrap();
+        assert!(state.credential_leases.is_empty());
+        assert!(state.credential_releases.is_empty());
+    }
+
+    #[test]
+    fn dropping_lifecycle_defers_a_running_credential_worker_to_the_reaper() {
+        let _guard = credential_finalizer_test_guard();
+        credential_join_reaper().unwrap();
+        let (started_sender, started) = mpsc::sync_channel(1);
+        let (unblock, unblock_receiver) = mpsc::sync_channel(1);
+        let (finished_sender, finished) = mpsc::sync_channel(1);
+        let vault = BlockingReleaseVault {
+            started: started_sender,
+            unblock: Arc::new(Mutex::new(Some(unblock_receiver))),
+            finished: finished_sender,
+        };
+        let lifecycle = McpHttpLifecycleHandle::new();
+        add_completed_credential_owner(
+            &lifecycle,
+            "blocking-release-session",
+            blocking_release_test_lease(&vault),
+        );
+
+        let error = lifecycle
+            .drain_all_until(Instant::now() + Duration::from_millis(20))
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let drop_started = Instant::now();
+        drop(lifecycle);
+        assert!(
+            drop_started.elapsed() < Duration::from_millis(200),
+            "lifecycle drop waited for a running credential worker: {:?}",
+            drop_started.elapsed()
+        );
+
+        let residual = drain_credential_finalizer_while_test_guarded(
+            Instant::now() + Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert_eq!(
+            residual.provider_code().map(|code| code.as_str()),
+            Some("credential_finalizer_drain_timeout")
+        );
+
+        unblock.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(1)).unwrap();
+        drain_credential_finalizer_while_test_guarded(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn dropping_lifecycle_defers_pending_credential_owner_to_the_finalizer() {
+        let _guard = credential_finalizer_test_guard();
+        let (started_sender, started) = mpsc::sync_channel(1);
+        let (unblock, unblock_receiver) = mpsc::sync_channel(1);
+        let (finished_sender, finished) = mpsc::sync_channel(1);
+        let vault = BlockingReleaseVault {
+            started: started_sender,
+            unblock: Arc::new(Mutex::new(Some(unblock_receiver))),
+            finished: finished_sender,
+        };
+        let lifecycle = McpHttpLifecycleHandle::new();
+        let prepared = lifecycle
+            .try_lock()
+            .unwrap()
+            .prepare_detached_credential_release(blocking_release_test_lease(&vault));
+        drop(prepared);
+
+        let drop_started = Instant::now();
+        drop(lifecycle);
+        assert!(
+            drop_started.elapsed() < Duration::from_millis(200),
+            "lifecycle drop ran a pending credential release synchronously: {:?}",
+            drop_started.elapsed()
+        );
+
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let residual = drain_credential_finalizer_while_test_guarded(
+            Instant::now() + Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert_eq!(
+            residual.provider_code().map(|code| code.as_str()),
+            Some("credential_finalizer_drain_timeout")
+        );
+        unblock.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(1)).unwrap();
+        drain_credential_finalizer_while_test_guarded(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn dropping_lifecycle_retains_failed_owner_until_authorized_finalizer_retry() {
+        let _guard = credential_finalizer_test_guard();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let vault = ReleaseTestVault {
+            attempts: Arc::clone(&attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(2)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        let lifecycle = McpHttpLifecycleHandle::new();
+
+        let error = lifecycle
+            .release_detached_credentials_unchecked(release_test_lease(&vault))
+            .unwrap_err();
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("credential_vault_release_error")
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        {
+            let state = lifecycle.try_lock().unwrap();
+            assert_eq!(state.credential_leases.len(), 1);
+            assert!(state.credential_releases.is_empty());
+        }
+
+        drop(lifecycle);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while attempts.load(Ordering::SeqCst) < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "finalizer did not retry the failed credential owner"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "a failed finalizer owner must wait for an authorized drain retry"
+        );
+
+        drain_credential_finalizer_while_test_guarded(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn expired_finalizer_authorization_does_not_start_a_late_retry() {
+        let _guard = credential_finalizer_test_guard();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let vault = ReleaseTestVault {
+            attempts: Arc::clone(&attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(1)),
+            delay: Duration::from_millis(50),
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        let lifecycle = McpHttpLifecycleHandle::new();
+        add_completed_credential_owner(
+            &lifecycle,
+            "expired-finalizer-authorization",
+            release_test_lease(&vault),
+        );
+        drop(lifecycle);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while attempts.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+
+        let error = drain_credential_finalizer_while_test_guarded(
+            Instant::now() + Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("credential_finalizer_drain_timeout")
+        );
+        thread::sleep(Duration::from_millis(80));
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "an expired drain authorization started a late credential retry"
+        );
+
+        drain_credential_finalizer_while_test_guarded(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn credential_finalizer_does_not_block_fast_release_behind_slow_release() {
+        let _guard = credential_finalizer_test_guard();
+        let (slow_started_sender, slow_started) = mpsc::sync_channel(1);
+        let (slow_unblock, slow_unblock_receiver) = mpsc::sync_channel(1);
+        let (slow_finished_sender, slow_finished) = mpsc::sync_channel(1);
+        let slow_vault = BlockingReleaseVault {
+            started: slow_started_sender,
+            unblock: Arc::new(Mutex::new(Some(slow_unblock_receiver))),
+            finished: slow_finished_sender,
+        };
+        let slow_lifecycle = McpHttpLifecycleHandle::new();
+        add_completed_credential_owner(
+            &slow_lifecycle,
+            "slow-finalizer-release",
+            blocking_release_test_lease(&slow_vault),
+        );
+        drop(slow_lifecycle);
+        slow_started.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let fast_attempts = Arc::new(AtomicUsize::new(0));
+        let fast_vault = ReleaseTestVault {
+            attempts: Arc::clone(&fast_attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        let fast_lifecycle = McpHttpLifecycleHandle::new();
+        add_completed_credential_owner(
+            &fast_lifecycle,
+            "fast-finalizer-release",
+            release_test_lease(&fast_vault),
+        );
+        drop(fast_lifecycle);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while fast_attempts.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "fast credential release was blocked behind a slow finalizer task"
+            );
+            thread::yield_now();
+        }
+        assert!(matches!(slow_finished.try_recv(), Err(TryRecvError::Empty)));
+
+        slow_unblock.send(()).unwrap();
+        slow_finished.recv_timeout(Duration::from_secs(1)).unwrap();
+        drain_credential_finalizer_while_test_guarded(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn credential_join_reaper_does_not_block_fast_jobs_behind_a_slow_worker() {
+        credential_join_reaper().unwrap();
+        let (unblock, blocked) = mpsc::sync_channel(1);
+        let slow_worker = thread::spawn(move || blocked.recv().unwrap());
+        let (slow_ack_sender, slow_ack) = mpsc::sync_channel(1);
+        defer_credential_join(slow_worker, Some(slow_ack_sender), None);
+
+        let fast_worker = thread::spawn(|| {});
+        let (fast_ack_sender, fast_ack) = mpsc::sync_channel(1);
+        defer_credential_join(fast_worker, Some(fast_ack_sender), None);
+
+        assert!(fast_ack.recv_timeout(Duration::from_secs(1)).unwrap());
+        assert!(matches!(slow_ack.try_recv(), Err(TryRecvError::Empty)));
+        unblock.send(()).unwrap();
+        assert!(slow_ack.recv_timeout(Duration::from_secs(1)).unwrap());
+    }
+
+    #[test]
+    fn credential_join_reaper_continues_after_a_panicking_worker() {
+        credential_join_reaper().unwrap();
+        let panicking_worker = thread::spawn(|| panic!("credential worker test panic"));
+        let (panic_ack_sender, panic_ack) = mpsc::sync_channel(1);
+        defer_credential_join(panicking_worker, Some(panic_ack_sender), None);
+        assert!(!panic_ack.recv_timeout(Duration::from_secs(1)).unwrap());
+
+        let healthy_worker = thread::spawn(|| {});
+        let (healthy_ack_sender, healthy_ack) = mpsc::sync_channel(1);
+        defer_credential_join(healthy_worker, Some(healthy_ack_sender), None);
+        assert!(healthy_ack.recv_timeout(Duration::from_secs(1)).unwrap());
+    }
+
+    #[test]
+    fn completed_credential_release_joins_its_worker_synchronously() {
+        let lifecycle = McpHttpLifecycleHandle::new();
+        let vault = ReleaseTestVault {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            failures_remaining: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        let prepared = lifecycle
+            .try_lock()
+            .unwrap()
+            .prepare_detached_credential_release(release_test_lease(&vault));
+        let worker = Arc::clone(&prepared.waiter.worker);
+        let waiter = lifecycle.launch_credential_release(prepared, None).unwrap();
+
+        lifecycle
+            .complete_credential_release(&waiter, None)
+            .unwrap();
+        assert!(worker
+            .handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none());
+    }
+
+    #[test]
+    fn expired_credential_worker_deadline_preserves_owner_without_calling_release() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let lifecycle = McpHttpLifecycleHandle::new();
+        let vault = ReleaseTestVault {
+            attempts: Arc::clone(&attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        let prepared = lifecycle
+            .try_lock()
+            .unwrap()
+            .prepare_detached_credential_release(release_test_lease(&vault));
+        let waiter = lifecycle
+            .launch_credential_release(prepared, Some(Instant::now()))
+            .unwrap();
+
+        let error = lifecycle
+            .complete_credential_release(&waiter, None)
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("credential_release_timeout")
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        let state = lifecycle.try_lock().unwrap();
+        assert_eq!(state.credential_leases.len(), 1);
+        assert!(state.credential_releases.is_empty());
+    }
+
+    #[test]
+    fn supervisor_drain_retries_failed_credential_release_without_false_success() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        let lifecycle = supervisor.mcp_http_lifecycle();
+        let vault = ReleaseTestVault {
+            attempts: Arc::clone(&attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(1)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        add_completed_credential_owner(
+            &lifecycle,
+            "retry-release-session",
+            release_test_lease(&vault),
+        );
+
+        let first = supervisor
+            .drain(ProviderDrainOptions::new(Duration::from_secs(1)).unwrap())
+            .unwrap_err();
+        assert_eq!(
+            first.provider_code().map(|code| code.as_str()),
+            Some("credential_vault_release_error")
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        {
+            let state = lifecycle.try_lock().unwrap();
+            assert_eq!(state.credential_leases.len(), 1);
+            assert!(state.credential_releases.is_empty());
+        }
+
+        let report = supervisor
+            .drain(ProviderDrainOptions::new(Duration::from_secs(1)).unwrap())
+            .unwrap();
+        assert_eq!(report.phase, "drained");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let state = lifecycle.try_lock().unwrap();
+        assert!(state.credential_leases.is_empty());
+        assert!(state.credential_releases.is_empty());
+    }
+
+    #[test]
+    fn supervisor_drain_waits_for_http_operations_and_keeps_admission_closed() {
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        let lifecycle = supervisor.mcp_http_lifecycle();
+        let operation = lifecycle.begin_operation().unwrap();
+
+        let started = Instant::now();
+        let first = supervisor
+            .drain(ProviderDrainOptions::new(Duration::from_millis(20)).unwrap())
+            .unwrap_err();
+        assert_eq!(first.kind(), ErrorKind::Timeout);
+        assert_eq!(
+            first.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_operation_drain_timeout")
+        );
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert_eq!(
+            lifecycle
+                .begin_operation()
+                .unwrap_err()
+                .provider_code()
+                .map(|code| code.as_str()),
+            Some("mcp_http_registry_admission_closed")
+        );
+
+        drop(operation);
+        let report = supervisor
+            .drain(ProviderDrainOptions::new(Duration::from_secs(1)).unwrap())
+            .unwrap();
+        assert_eq!(report.phase, "drained");
+        assert_eq!(
+            lifecycle
+                .begin_operation()
+                .unwrap_err()
+                .provider_code()
+                .map(|code| code.as_str()),
+            Some("mcp_http_registry_admission_closed")
+        );
+    }
+
+    #[test]
+    fn http_drain_deadline_includes_operation_gate_acquisition() {
+        let lifecycle = McpHttpLifecycleHandle::new();
+        let gate = lifecycle.0.operation_gate.lock().unwrap();
+        let draining_lifecycle = lifecycle.clone();
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let started = Instant::now();
+        let drain = thread::spawn(move || draining_lifecycle.drain_all_until(deadline));
+
+        let error = drain.join().unwrap().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_operation_drain_timeout")
+        );
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "operation_gate_busy" && value == "true"));
+        assert!(started.elapsed() < Duration::from_millis(200));
+        drop(gate);
+        assert_eq!(
+            lifecycle
+                .begin_operation()
+                .unwrap_err()
+                .provider_code()
+                .map(|code| code.as_str()),
+            Some("mcp_http_registry_admission_closed")
+        );
+    }
+
+    #[test]
+    fn drain_rescans_credentials_created_by_an_admitted_http_operation() {
+        let lifecycle = McpHttpLifecycleHandle::new();
+        let operation = lifecycle.begin_operation().unwrap();
+        let draining_lifecycle = lifecycle.clone();
+        let drain = thread::spawn(move || {
+            draining_lifecycle.drain_all_until(Instant::now() + Duration::from_secs(2))
+        });
+
+        let admission_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let closed = lifecycle.0.admission_closed.load(Ordering::Acquire);
+            if closed {
+                break;
+            }
+            assert!(Instant::now() < admission_deadline);
+            thread::yield_now();
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let vault = ReleaseTestVault {
+            attempts: Arc::clone(&attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(1)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        let first_release = lifecycle
+            .release_detached_credentials(&operation, release_test_lease(&vault))
+            .unwrap_err();
+        assert_eq!(
+            first_release.provider_code().map(|code| code.as_str()),
+            Some("credential_vault_release_error")
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        drop(operation);
+        let report = drain.join().unwrap().unwrap();
+        assert!(report.complete);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let state = lifecycle.try_lock().unwrap();
+        assert!(state.credential_leases.is_empty());
+        assert!(state.credential_releases.is_empty());
+    }
+
+    #[test]
+    fn mismatched_permit_keeps_credentials_with_its_source_lifecycle() {
+        let source = McpHttpLifecycleHandle::new();
+        let target = McpHttpLifecycleHandle::new();
+        target
+            .drain_all_until(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        let operation = source.begin_operation().unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let vault = ReleaseTestVault {
+            attempts: Arc::clone(&attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(1)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+
+        let session = McpStreamableHttpSession::new(
+            eva_mcp::McpStreamableHttpConfig::legacy_http("http://127.0.0.1:9/mcp").unwrap(),
+            BTreeMap::new(),
+            Duration::from_secs(1),
+            1024,
+        )
+        .unwrap();
+        let mismatch = target
+            .register_starting_session(
+                &operation,
+                AdapterId::parse("mismatched-permit-provider").unwrap(),
+                session,
+                release_test_lease(&vault),
+            )
+            .unwrap_err();
+        assert_eq!(
+            mismatch.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_operation_permit_mismatch")
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        {
+            let state = target.try_lock().unwrap();
+            assert!(state.credential_leases.is_empty());
+            assert!(state.credential_releases.is_empty());
+        }
+
+        drop(operation);
+        source
+            .drain_all_until(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        target
+            .drain_all_until(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        let state = target.try_lock().unwrap();
+        assert!(state.credential_leases.is_empty());
+        assert!(state.credential_releases.is_empty());
+    }
+
+    #[test]
+    fn busy_registration_tracks_credentials_before_returning() {
+        let lifecycle = McpHttpLifecycleHandle::new();
+        let operation = lifecycle.begin_operation().unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let vault = ReleaseTestVault {
+            attempts: Arc::clone(&attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(1)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        let credentials = release_test_lease(&vault);
+        let session = McpStreamableHttpSession::new(
+            eva_mcp::McpStreamableHttpConfig::legacy_http("http://127.0.0.1:9/mcp").unwrap(),
+            BTreeMap::new(),
+            Duration::from_secs(1),
+            1024,
+        )
+        .unwrap();
+        let lifecycle_lock = lifecycle.try_lock().unwrap();
+        let registering_lifecycle = lifecycle.clone();
+        let (started_sender, started) = std::sync::mpsc::sync_channel(1);
+        let registration = thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            registering_lifecycle.register_starting_session(
+                &operation,
+                AdapterId::parse("busy-registration-provider").unwrap(),
+                session,
+                credentials,
+            )
+        });
+        started.recv().unwrap();
+        thread::sleep(Duration::from_millis(10));
+        assert!(!registration.is_finished());
+
+        drop(lifecycle_lock);
+        let error = registration.join().unwrap().unwrap_err();
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("mcp_http_registry_busy")
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        lifecycle
+            .drain_all_until(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn credential_release_callback_runs_without_the_lifecycle_lock() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let reentrant_lock_observed = Arc::new(AtomicBool::new(false));
+        let mut supervisor = InMemoryProviderSupervisor::new();
+        let lifecycle = supervisor.mcp_http_lifecycle();
+        let vault = ReleaseTestVault {
+            attempts: Arc::clone(&attempts),
+            failures_remaining: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: Some(lifecycle.clone()),
+            reentrant_lock_observed: Arc::clone(&reentrant_lock_observed),
+        };
+        add_completed_credential_owner(
+            &lifecycle,
+            "reentrant-release-session",
+            release_test_lease(&vault),
+        );
+
+        supervisor
+            .drain(ProviderDrainOptions::new(Duration::from_secs(1)).unwrap())
+            .unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(reentrant_lock_observed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn finished_credential_release_cannot_succeed_after_its_deadline() {
+        let vault = ReleaseTestVault {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            failures_remaining: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+            reentrant_lifecycle: None,
+            reentrant_lock_observed: Arc::new(AtomicBool::new(false)),
+        };
+        let mut credentials = release_test_lease(&vault);
+        credentials.release().unwrap();
+        let waiter = CredentialReleaseWaiter {
+            session_id: "finished-after-deadline".to_owned(),
+            completion: Arc::new(CredentialReleaseCompletion {
+                state: Mutex::new(CredentialReleaseCompletionState::Finished {
+                    credentials,
+                    result: Ok(Vec::new()),
+                }),
+                ready: Condvar::new(),
+            }),
+            worker: Arc::new(CredentialReleaseWorker {
+                handle: Mutex::new(None),
+                start_gate: Arc::new(CredentialReleaseStartGate {
+                    attached: Mutex::new(false),
+                    ready: Condvar::new(),
+                }),
+                finalizer_scope: 0,
+            }),
+        };
+
+        let error = waiter.wait_until(Some(Instant::now())).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+        assert_eq!(
+            error.provider_code().map(|code| code.as_str()),
+            Some("credential_release_timeout")
         );
     }
 
