@@ -539,8 +539,8 @@ if ([string]$decision.data.evidence_scope -cne "production" -or
     [string]$decision.data.version -cne $ExpectedReleaseTag.Substring(1) -or
     [string]$decision.data.target -cne "all" -or
     [string]$decision.data.evidence_manifest.source -cne "manifest" -or
-    [int]$decision.data.evidence_manifest.entry_count -ne 4 -or
-    [int]$decision.data.evidence_manifest.normalized_envelope_count -ne 4 -or
+    [int]$decision.data.evidence_manifest.entry_count -ne 5 -or
+    [int]$decision.data.evidence_manifest.normalized_envelope_count -ne 5 -or
     [string]$decision.data.evidence_manifest.integrity_status -cne "verified" -or
     [string]$decision.data.evidence_manifest.expected_commit_source -cne "external_option" -or
     [string]$decision.data.evidence_manifest.manifest_digest -cne $ExpectedManifestDigest -or
@@ -557,7 +557,8 @@ $gateExpectations = @(
   [pscustomobject]@{ Id = "REL-ARTIFACT-PROVENANCE-001"; Type = "artifact"; Executor = "release-artifact" },
   [pscustomobject]@{ Id = "REL-DISTRIBUTION-001"; Type = "distribution"; Executor = "release-distribution" },
   [pscustomobject]@{ Id = "REL-SECURITY-SCAN-001"; Type = "security_scan"; Executor = "release-security-scan" },
-  [pscustomobject]@{ Id = "REL-BENCHMARK-001"; Type = "benchmark"; Executor = "release-benchmark" }
+  [pscustomobject]@{ Id = "REL-BENCHMARK-001"; Type = "benchmark"; Executor = "release-benchmark" },
+  [pscustomobject]@{ Id = "REL-MCP-COMPAT-001"; Type = "mcp_compatibility"; Executor = "release-mcp-compatibility" }
 )
 foreach ($expectation in $gateExpectations) {
   $matching = @($decision.data.gates | Where-Object { [string]$_.id -ceq $expectation.Id })

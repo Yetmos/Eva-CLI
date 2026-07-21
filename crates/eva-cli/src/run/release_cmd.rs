@@ -15,9 +15,9 @@ use eva_release::{
     ProductionEvidenceBlocker, ProductionEvidencePolicy, ReleaseArtifactEvidence,
     ReleaseArtifactEvidenceCandidate, ReleaseBenchmarkEvidence, ReleaseDistributionEvidence,
     ReleaseDocumentEvidenceCandidate, ReleaseEvidenceManifest, ReleaseEvidenceScope,
-    ReleaseEvidenceType, ReleaseGate, ReleaseHardeningService, ReleaseReadinessReport,
-    ReleaseSecurityScanEvidence, SecurityFinding, SecurityReviewReport, StabilityScenario,
-    VerifiedReleaseEvidenceBundle,
+    ReleaseEvidenceType, ReleaseGate, ReleaseHardeningService, ReleaseMcpCompatibilityEvidence,
+    ReleaseReadinessReport, ReleaseSecurityScanEvidence, SecurityFinding, SecurityReviewReport,
+    StabilityScenario, VerifiedReleaseEvidenceBundle,
 };
 use std::fs;
 use std::io::{Read, Write};
@@ -193,6 +193,7 @@ struct LoadedReleaseEvidence {
     distribution: Option<LoadedDocumentEvidence<ReleaseDistributionEvidence>>,
     security_scan: Option<LoadedDocumentEvidence<ReleaseSecurityScanEvidence>>,
     benchmark: Option<LoadedDocumentEvidence<ReleaseBenchmarkEvidence>>,
+    mcp_compatibility: Option<LoadedDocumentEvidence<ReleaseMcpCompatibilityEvidence>>,
     summary: ReleaseEvidenceSummary,
 }
 
@@ -204,6 +205,7 @@ impl LoadedReleaseEvidence {
             distribution: None,
             security_scan: None,
             benchmark: None,
+            mcp_compatibility: None,
             summary: ReleaseEvidenceSummary::none(),
         }
     }
@@ -226,6 +228,10 @@ impl LoadedReleaseEvidence {
             (
                 ReleaseEvidenceType::Benchmark,
                 self.benchmark.as_ref().map(|item| &item.envelope),
+            ),
+            (
+                ReleaseEvidenceType::McpCompatibility,
+                self.mcp_compatibility.as_ref().map(|item| &item.envelope),
             ),
         ]
         .into_iter()
@@ -273,6 +279,12 @@ impl LoadedReleaseEvidence {
                         &benchmark.evidence.source_commit,
                     ),
             );
+        }
+        if let Some(mcp_compatibility) = &self.mcp_compatibility {
+            subjects.push(EvidenceSubject::new(
+                &mcp_compatibility.envelope,
+                &mcp_compatibility.subject_bytes,
+            ));
         }
 
         let report = verify_evidence_bundle(expected_source_commit, &subjects)?;
@@ -943,6 +955,15 @@ fn load_manifest_release_evidence(
                     subject_bytes,
                 });
             }
+            ReleaseEvidenceType::McpCompatibility => {
+                let evidence = ReleaseMcpCompatibilityEvidence::parse_manifest(&evidence_data)?;
+                let subject_bytes = evidence.to_manifest().into_bytes();
+                loaded.mcp_compatibility = Some(LoadedDocumentEvidence {
+                    evidence,
+                    envelope,
+                    subject_bytes,
+                });
+            }
         }
     }
     let entry_count = manifest.entries.len();
@@ -962,6 +983,9 @@ fn load_manifest_release_evidence(
         ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
     });
     let benchmark = loaded.benchmark.take().map(|candidate| {
+        ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
+    });
+    let mcp_compatibility = loaded.mcp_compatibility.take().map(|candidate| {
         ReleaseDocumentEvidenceCandidate::new(candidate.evidence, candidate.envelope)
     });
     let verified_bundle = if options.scope == ReleaseEvidenceScope::Production {
@@ -997,6 +1021,7 @@ fn load_manifest_release_evidence(
             distribution,
             security_scan,
             benchmark,
+            mcp_compatibility,
             &policy,
         )?
     } else {
@@ -1007,6 +1032,7 @@ fn load_manifest_release_evidence(
             distribution,
             security_scan,
             benchmark,
+            mcp_compatibility,
         )?
     };
     loaded.summary = ReleaseEvidenceSummary {
@@ -1698,6 +1724,7 @@ fn release_gate_provenance_json(gate_id: &str, summary: &ReleaseEvidenceSummary)
         "REL-DISTRIBUTION-001" => Some(ReleaseEvidenceType::Distribution),
         "REL-SECURITY-SCAN-001" => Some(ReleaseEvidenceType::SecurityScan),
         "REL-BENCHMARK-001" => Some(ReleaseEvidenceType::Benchmark),
+        "REL-MCP-COMPAT-001" => Some(ReleaseEvidenceType::McpCompatibility),
         _ => None,
     };
     let provenance = evidence_type.and_then(|evidence_type| {

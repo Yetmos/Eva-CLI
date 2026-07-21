@@ -30,9 +30,10 @@ pub mod tool_mapping;
 
 pub use client::{InMemoryMcpClient, McpCallReport, McpProbeReport};
 pub use compatibility::{
-    McpCompatibilityEvidenceKind, McpCompatibilityMatrix, McpCompatibilityReport,
-    McpServerSurfaceCompatibility, McpStreamLifecycleCompatibility, McpToolSchemaCompatibility,
-    McpTransportCompatibility,
+    McpCompatibilityAbortReceipt, McpCompatibilityDigestReceipt, McpCompatibilityEvidenceKind,
+    McpCompatibilityMatrix, McpCompatibilityMeasurement, McpCompatibilityObservationReceipt,
+    McpCompatibilityReport, McpCompatibilityTlsReceipt, McpServerSurfaceCompatibility,
+    McpStreamLifecycleCompatibility, McpToolSchemaCompatibility, McpTransportCompatibility,
 };
 pub use http_transport::McpTlsMaterial;
 pub use json_rpc::{
@@ -41,9 +42,10 @@ pub use json_rpc::{
     McpStdioJsonRpcTransport, McpStdioProcess,
 };
 pub use lifecycle::{
-    McpHttpDrainReport, McpOrphanCleanupReport, McpProcessInspector, McpRegisteredSession,
-    McpSessionHealthReport, McpSessionLifecycleReport, McpSessionLifecycleStatus,
-    McpSessionRegistry, McpStreamReport, McpStreamStatus, McpStreamableHttpSessionRegistry,
+    McpHttpAbortReceipt, McpHttpDrainReport, McpOrphanCleanupReport, McpProcessInspector,
+    McpRegisteredSession, McpSessionHealthReport, McpSessionLifecycleReport,
+    McpSessionLifecycleStatus, McpSessionRegistry, McpStreamReport, McpStreamStatus,
+    McpStreamableHttpSessionRegistry,
 };
 pub use policy::McpAllowlist;
 pub use server::{

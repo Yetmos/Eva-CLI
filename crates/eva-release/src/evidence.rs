@@ -111,15 +111,18 @@ pub enum ReleaseEvidenceType {
     SecurityScan,
     /// 生产基准测量。
     Benchmark,
+    /// 由真实 MCP server run 产生的兼容性测量。
+    McpCompatibility,
 }
 
 impl ReleaseEvidenceType {
     /// 当前统一 manifest 支持的全部 evidence 类型，顺序也是 canonical 排序顺序。
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Artifact,
         Self::Distribution,
         Self::SecurityScan,
         Self::Benchmark,
+        Self::McpCompatibility,
     ];
 
     /// 返回 manifest 使用的稳定类型标识。
@@ -129,6 +132,7 @@ impl ReleaseEvidenceType {
             Self::Distribution => "distribution",
             Self::SecurityScan => "security_scan",
             Self::Benchmark => "benchmark",
+            Self::McpCompatibility => "mcp_compatibility",
         }
     }
 
@@ -139,6 +143,7 @@ impl ReleaseEvidenceType {
             "distribution" => Ok(Self::Distribution),
             "security_scan" => Ok(Self::SecurityScan),
             "benchmark" => Ok(Self::Benchmark),
+            "mcp_compatibility" => Ok(Self::McpCompatibility),
             _ => Err(EvaError::invalid_argument(
                 "unsupported release evidence manifest entry type",
             )
@@ -379,6 +384,10 @@ impl ProductionEvidencePolicy {
                 ProductionEvidenceExecutorRule::prefix(
                     ReleaseEvidenceType::Benchmark,
                     "github-actions:release-benchmark/",
+                )?,
+                ProductionEvidenceExecutorRule::prefix(
+                    ReleaseEvidenceType::McpCompatibility,
+                    "github-actions:release-mcp-compatibility/",
                 )?,
             ],
         )
@@ -3164,6 +3173,10 @@ mod tests {
             ReleaseEvidenceType::Benchmark,
             "github-actions:release-benchmark/123/1/benchmark"
         ));
+        assert!(policy.trusts_executor(
+            ReleaseEvidenceType::McpCompatibility,
+            "github-actions:release-mcp-compatibility/123/1/mcp-compatibility"
+        ));
         assert!(!policy.trusts_executor(
             ReleaseEvidenceType::Benchmark,
             "github-actions:release-benchmark/"
@@ -3209,7 +3222,8 @@ mod tests {
             .message()
             .contains("must define executors for every evidence type"));
         assert!(incomplete.context().entries().iter().any(|(key, value)| {
-            key == "missing_entry_types" && value == "distribution,security_scan,benchmark"
+            key == "missing_entry_types"
+                && value == "distribution,security_scan,benchmark,mcp_compatibility"
         }));
 
         let invalid_prefix =

@@ -34,6 +34,39 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Capture W4 MCP compatibility evidence
+        shell: pwsh
+        run: |
+          $evidence = Join-Path (Get-Location) ".eva/w4-mcp-compatibility-evidence"
+          Remove-Item -LiteralPath $evidence -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $subject = Join-Path $evidence "release-mcp-compatibility.evidence"
+          ./scripts/capture-release-evidence.ps1 `
+            -Executable cargo `
+            -ArgumentList @(
+              "run", "--quiet", "--",
+              "mcp", "compatibility", "measure",
+              "--subject-output", $subject,
+              "--output", "json"
+            ) `
+            -ManifestPath (Join-Path $evidence "mcp-compatibility.capture.json") `
+            -StdoutPath (Join-Path $evidence "mcp-compatibility.stdout.json") `
+            -StderrPath (Join-Path $evidence "mcp-compatibility.stderr") `
+            -TimeoutMilliseconds 300000 `
+            -CaptureId mcp.compatibility.measure
+          if (-not (Test-Path -LiteralPath $subject -PathType Leaf)) {
+            throw "MCP compatibility measurement did not write its canonical subject."
+          }
+
+      - name: Upload W4 MCP compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w4-mcp-compatibility-${{ matrix.evidence_os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .eva/w4-mcp-compatibility-evidence
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Capture W1 runtime process evidence
         shell: pwsh
         env:
@@ -118,6 +151,10 @@ jobs:
       - name: Release evidence capture contract
         shell: pwsh
         run: ./scripts/test-capture-release-evidence.ps1
+
+      - name: MCP compatibility evidence contract
+        shell: pwsh
+        run: ./scripts/test-mcp-compatibility-evidence.ps1
 
       - name: Package manager metadata validator contract
         shell: pwsh
@@ -317,6 +354,38 @@ jobs:
         with:
           name: w1-runtime-process-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: .eva/w1-runtime-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  mcp-compatibility-evidence:
+    name: W4 MCP compatibility evidence readback
+    needs: rust
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download W4 platform evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: w4-mcp-compatibility-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .eva/w4-mcp-compatibility-evidence
+          merge-multiple: false
+
+      - name: Reverify exact three-platform W4 evidence
+        shell: pwsh
+        run: |
+          ./scripts/validate-mcp-compatibility-evidence.ps1 `
+            -EvidencePath .eva/w4-mcp-compatibility-evidence `
+            -ExpectedRunId '${{ github.run_id }}' `
+            -ExpectedRunAttempt '${{ github.run_attempt }}'
+
+      - name: Upload verified W4 three-platform bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: w4-mcp-compatibility-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .eva/w4-mcp-compatibility-evidence
           if-no-files-found: error
           retention-days: 30
 

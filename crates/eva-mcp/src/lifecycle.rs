@@ -137,6 +137,63 @@ pub struct McpHttpDrainReport {
     pub complete: bool,
 }
 
+/// Typed result of one real Streamable HTTP reader abort transaction.
+///
+/// This receipt has no public constructor. It is emitted only after the
+/// registry has shut down the reader socket, completed any final-session
+/// DELETE, joined the reader thread, and sampled its remaining owned state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpHttpAbortReceipt {
+    socket_closed: bool,
+    session_deleted: bool,
+    reader_joined: bool,
+    sessions_after: usize,
+    readers_after: usize,
+    cleanup_pending_after: usize,
+}
+
+impl McpHttpAbortReceipt {
+    /// Whether the registry's real socket abort completed successfully.
+    pub const fn socket_closed(&self) -> bool {
+        self.socket_closed
+    }
+
+    /// Whether aborting the final stream completed the remote session DELETE.
+    pub const fn session_deleted(&self) -> bool {
+        self.session_deleted
+    }
+
+    /// Whether the registry joined and reaped the real reader thread.
+    pub const fn reader_joined(&self) -> bool {
+        self.reader_joined
+    }
+
+    /// Application sessions still owned after the abort transaction.
+    pub const fn sessions_after(&self) -> usize {
+        self.sessions_after
+    }
+
+    /// Reader threads still owned after the abort transaction.
+    pub const fn readers_after(&self) -> usize {
+        self.readers_after
+    }
+
+    /// Sessions fenced for cleanup after the abort transaction.
+    pub const fn cleanup_pending_after(&self) -> usize {
+        self.cleanup_pending_after
+    }
+
+    /// Whether all cleanup steps completed and the registry has no residue.
+    pub const fn complete(&self) -> bool {
+        self.socket_closed
+            && self.session_deleted
+            && self.reader_joined
+            && self.sessions_after == 0
+            && self.readers_after == 0
+            && self.cleanup_pending_after == 0
+    }
+}
+
 /// 约定 `McpProcessInspector` 实现需要满足的接口。
 pub trait McpProcessInspector {
     /// 执行 `process_is_running` 对应的处理逻辑。
@@ -867,6 +924,16 @@ impl McpStreamableHttpSessionRegistry {
         session_id: &str,
         stream_id: &str,
     ) -> Result<McpStreamReport, EvaError> {
+        self.abort_stream_with_receipt(session_id, stream_id)
+            .map(|(report, _)| report)
+    }
+
+    /// Abort one real reader and return a non-forgeable typed cleanup receipt.
+    pub fn abort_stream_with_receipt(
+        &mut self,
+        session_id: &str,
+        stream_id: &str,
+    ) -> Result<(McpStreamReport, McpHttpAbortReceipt), EvaError> {
         let (adapter_id, final_stream, timeout, cancellation, abort) = {
             let entry = self.http_session_mut(session_id)?;
             if !entry.streams.contains_key(stream_id) {
@@ -973,13 +1040,22 @@ impl McpStreamableHttpSessionRegistry {
         } else {
             audit.push("mcp.http_registry:session_retained_for_other_streams".to_owned());
         }
-        Ok(http_stream_report(
+        let report = http_stream_report(
             &adapter_id,
             session_id,
             stream_id.to_owned(),
             McpStreamStatus::Aborted,
             audit,
-        ))
+        );
+        let receipt = McpHttpAbortReceipt {
+            socket_closed: true,
+            session_deleted: final_stream,
+            reader_joined: true,
+            sessions_after: self.dangling_session_count(),
+            readers_after: self.dangling_reader_count(),
+            cleanup_pending_after: self.cleanup_pending_session_count(),
+        };
+        Ok((report, receipt))
     }
 
     /// Cancel every reader, DELETE the application session, join all reader

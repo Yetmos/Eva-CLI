@@ -13,6 +13,8 @@ pub mod distribution;
 /// 统一发布证据分类、来源和主题身份信封。
 pub mod evidence;
 pub mod homebrew;
+/// Sealed MCP compatibility measurement projection for release verification.
+pub mod mcp_compatibility;
 /// 迁移指南和兼容性政策。
 pub mod migration;
 pub mod package_metadata;
@@ -55,6 +57,10 @@ pub use evidence::{
     RELEASE_PLATFORM_EVIDENCE_FORMAT, RELEASE_PLATFORM_INDEX_FORMAT,
 };
 pub use homebrew::generate_homebrew_formula;
+pub use mcp_compatibility::{
+    ReleaseMcpCompatibilityEvidence, ReleaseMcpCompatibilityVerificationReport,
+    MCP_COMPATIBILITY_EVIDENCE_FORMAT,
+};
 pub use migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 pub use package_metadata::{CanonicalPackageMetadata, PackageArtifactMetadata};
 pub use package_output::{write_package_manager_metadata, PackageMetadataOutput};

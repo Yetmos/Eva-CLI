@@ -15,7 +15,7 @@
 | Tool mapping | 已完成 V1.1 | `McpToolMapping` 和 `McpToolRegistry` 提供确定性 tool-to-capability 映射与重复检测。 |
 | Policy helper | 已完成 V1.1 | `McpAllowlist` 校验 tool/resource/prompt allowlist，并在 RPC 前拒绝未授权 tool。 |
 | Schema | 已完成基础边界 | `McpSchemaFamily` 固定 tool/resource/prompt/error envelope family，compatibility matrix 负责回归验证。 |
-| Compatibility matrix | 已完成 V1.13.7 | 提供 repo-local transport/schema/stream/server-surface fixture，供 release gate 验证。 |
+| Compatibility measurement | 已完成 W4-L09 | 静态 matrix 仅供 alpha 展示；sealed producer 真实执行 loopback server、rustls TLS、schema/output digest 与 registry-owned abort/DELETE/join，production 只接受 W0 trusted Measurement envelope。 |
 | Discovery 接入 | 已完成候选发现 | `eva-discovery` 从项目 manifest 发现 MCP 候选；发现结果不授予 handle，授权仍由 Adapter/MCP policy gate 决定。 |
 
 ## 模块边界
@@ -47,6 +47,7 @@
 | 7 | V1.8.2 | 实现 JSON-RPC client transport。 | V1.8.1 provider runner 边界 | fake MCP server tool call、blocked tool、timeout、协议错误和过大响应测试通过。 |
 | 8 | V1.8.3 | 增加 server lifecycle 和 session supervisor。 | JSON-RPC client transport | session stop 后无悬挂进程，streaming 可中止，非法代理请求拒绝并审计。 |
 | 9 | W4-L08 | 接入真实受控 Streamable HTTP server transport。 | W4-L04、W4-L06 | 外部 TCP client 完成 initialize/list/call/delete；隐藏工具和非法 schema 参数不进入 handler。 |
+| 10 | W4-L09 | 生成实跑 compatibility Measurement。 | W0-L01、W4-L02、W4-L06、W4-L08 | canonical subject 来自 sealed producer；手写 all-true fixture 被 production gate 拒绝。 |
 
 ## 详细开发进度表
 
@@ -57,7 +58,7 @@
 | `src/json_rpc.rs` | MCP JSON-RPC client transport | W4-L02 验证中、W4-L06 已完成 | 保持 stdio/HTTP(S)、session、SSE、abort、单调总 deadline 和 output-limit 边界；等待 W4-L02 三平台原生 CI。 |
 | `src/http_transport.rs` | HTTPS/TLS connector 与受控 trust path | W4-L02 验证中 | rustls、DNS/connect/handshake/write/read 单调总 deadline、Linux/macOS `openat` 与 Windows handle traversal 已接线；等待三平台原生 CI 后关闭。 |
 | `src/lifecycle.rs` | MCP session registry 和 streaming 边界 | 已完成 V1.8.3 | 保留 stream abort/orphan cleanup 边界；后续接真实 OS process supervisor。 |
-| `src/compatibility.rs` | MCP compatibility matrix | 已完成 V1.13.7 | 维护 stdio/HTTP transport、tool schema、stream lifecycle 和 explicit-tool server gate fixture/report。 |
+| `src/compatibility.rs` | MCP compatibility fixture 与 sealed Measurement | 已完成 W4-L09 | 保持真实 server/TLS/SSE lifecycle 收据、canonical subject 和 payload-free digest；外部 server matrix 归 W4-L10。 |
 | `src/server.rs` | 受控 MCP server surface | 已完成 W4-L08 | 维护显式只读工具、可执行 inputSchema、handler envelope 和脱敏 gate。 |
 | `src/server_transport.rs` | loopback Streamable HTTP server | 已完成 W4-L08 | 保持 Host/Origin/path、framing、deadline、session phase、response limit 与 shutdown cleanup fail closed；远程 TLS/auth 和 daemon ownership 不在本边界。 |
 | `src/tool_mapping.rs` | tool-to-capability mapping registry | 已完成 V1.1 | 保持确定性查找和重复 mapping 拒绝。 |
@@ -76,6 +77,7 @@
 | V1.13.7 | `cargo test -p eva-mcp compatibility -- --nocapture` | compatibility matrix fixture 通过，缺失 cleanup/transport stream lifecycle/无限代理会阻断。 |
 | W4-L02 | `cargo test -p eva-mcp --all-targets` | HTTPS/mTLS、全请求 deadline、DNS worker 上限和 Linux/macOS/Windows handle-based trust-path 回归通过。 |
 | W4-L08 | `cargo test -p eva-mcp --all-targets` | 外部 TCP client 可调用显式工具，隐藏工具/非法参数不进入 handler，停机后 session 为零。 |
+| W4-L09 | `cargo run -- mcp compatibility measure --subject-output <path> --output json` | 实跑生成名称/版本/transport/TLS/schema/output/abort 收据和 canonical Measurement subject。 |
 
 ## English
 
@@ -123,4 +125,5 @@ cargo test -p eva-mcp
 cargo run -- mcp list --output json
 cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
 cargo run -- mcp probe --adapter github-mcp --tool delete_repo --output json
+cargo run -- mcp compatibility measure --subject-output release-mcp-compatibility.evidence --output json
 ```

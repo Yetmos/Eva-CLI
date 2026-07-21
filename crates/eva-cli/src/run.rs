@@ -114,7 +114,7 @@ const RELEASE_CONTRACTS: &[&str] = &[
     "run --example basic",
     "task status/logs/cancel",
     "adapter list/probe",
-    "mcp list/probe",
+    "mcp list/probe/compatibility measure",
     "skill list/run",
     "discovery scan",
     "memory context",
@@ -910,6 +910,7 @@ fn help_text() -> &'static str {
         "  eva adapter probe [--adapter <id>|--capability <name>] [--provider <id>] [--project <path>] [--output text|json]\n",
         "  eva mcp list [--project <path>] [--output text|json]\n",
         "  eva mcp probe [--adapter <id>] [--tool <name>] [--project <path>] [--output text|json]\n",
+        "  eva mcp compatibility measure [--subject-output <path>] [--output text|json]\n",
         "  eva skill list [--project <path>] [--output text|json]\n",
         "  eva skill run [--skill <id>|--adapter <id>] [--capability <name>] [--input <json>] [--request-id <id>] [--project <path>] [--output text|json]\n",
         "  eva discovery scan [--project <path>] [--output text|json]\n",
@@ -943,7 +944,7 @@ fn help_text() -> &'static str {
         "  capability       List, probe, and dry-run or confirmed-call capability provider routes.\n",
         "  task             Inspect or cancel the latest persisted basic task report from .eva/tasks or a durable backend task store.\n",
         "  adapter          List and probe authorized Adapter handles derived from manifests.\n",
-        "  mcp              List and probe allowlisted MCP tools without starting external servers.\n",
+        "  mcp              List/probe allowlisted tools, or explicitly run the local compatibility measurement.\n",
         "  skill            List and run controlled workflow skill runners.\n",
         "  discovery        Scan trusted configuration sources and return candidates without granting runtime handles.\n",
         "  memory           Build request-scoped private/global memory plus knowledge context for one Agent.\n",
@@ -1494,7 +1495,7 @@ mod tests {
         (root, manifest_path, subject_path)
     }
 
-    /// 创建四类 evidence、逐类型可信执行器和新鲜时间戳的完整 production manifest。
+    /// 创建五类 evidence、逐类型可信执行器和新鲜时间戳的完整 production manifest。
     fn release_complete_production_manifest_fixture(
         name: &str,
     ) -> (PathBuf, PathBuf, PathBuf, PathBuf, String) {
@@ -1590,6 +1591,55 @@ mod tests {
         let benchmark_envelope_path = root.join("release-benchmark.envelope");
         fs::write(&benchmark_envelope_path, benchmark_envelope.to_manifest()).unwrap();
 
+        let mcp_subject = format!(
+            concat!(
+                "format=eva.mcp-compatibility.v1\n",
+                "evidence_kind=measurement\n",
+                "server_name=eva\n",
+                "server_version={}\n",
+                "protocol_version=2025-11-25\n",
+                "transport=streamable_http\n",
+                "tls_handshake_completed=true\n",
+                "tls_peer_name=127.0.0.1\n",
+                "tls_protocol=TLSv1_3\n",
+                "tls_handshake_count=6\n",
+                "tool_name=compat.echo\n",
+                "schema_sha256=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                "schema_bytes=128\n",
+                "output_sha256=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+                "output_bytes=64\n",
+                "initialize_server_info_observed=true\n",
+                "tools_list_schema_observed=true\n",
+                "tools_call_result_observed=true\n",
+                "abort_socket_closed=true\n",
+                "abort_session_deleted=true\n",
+                "abort_reader_joined=true\n",
+                "abort_sessions_after=0\n",
+                "abort_readers_after=0\n",
+                "abort_cleanup_pending_after=0\n"
+            ),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let mcp_evidence =
+            eva_release::ReleaseMcpCompatibilityEvidence::parse_manifest(&mcp_subject).unwrap();
+        let mcp_path = root.join("release-mcp-compatibility.evidence");
+        fs::write(&mcp_path, mcp_evidence.to_manifest()).unwrap();
+        let mcp_envelope = eva_release::EvidenceEnvelope::from_subject_bytes(
+            eva_release::EvidenceKind::Measurement,
+            "cli-test:release-mcp-compatibility",
+            commit,
+            "ubuntu-x86_64",
+            "github-actions:release-mcp-compatibility/123/1/mcp-compatibility",
+            timestamp,
+            mcp_subject.as_bytes(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("release-mcp-compatibility.envelope"),
+            mcp_envelope.to_manifest(),
+        )
+        .unwrap();
+
         let manifest = eva_release::ReleaseEvidenceManifest::new(
             eva_release::ReleaseEvidenceScope::Production,
             commit,
@@ -1619,6 +1669,13 @@ mod tests {
                     eva_release::ReleaseEvidenceType::Benchmark,
                     "release-benchmark.evidence",
                     "release-benchmark.envelope",
+                    None,
+                )
+                .unwrap(),
+                eva_release::ReleaseEvidenceManifestEntry::new(
+                    eva_release::ReleaseEvidenceType::McpCompatibility,
+                    "release-mcp-compatibility.evidence",
+                    "release-mcp-compatibility.envelope",
                     None,
                 )
                 .unwrap(),
@@ -3386,13 +3443,21 @@ mod tests {
                 "cli-test:release-benchmark",
                 "github-actions:release-benchmark/123/1/benchmark",
             ),
+            (
+                "mcp_compatibility",
+                "cli-test:release-mcp-compatibility",
+                "github-actions:release-mcp-compatibility/123/1/mcp-compatibility",
+            ),
         ] {
             assert!(stdout.contains(&format!(
                 "\"provenance\":{{\"evidence_type\":\"{evidence_type}\",\"source\":\"{source}\",\"source_commit\":\"{commit}\""
             )));
             assert!(stdout.contains(&format!("\"executor\":\"{executor}\"")));
         }
-        assert!(stdout.contains("evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"));
+        assert!(
+            stdout.contains("\"domain\":\"mcp_compatibility\",\"evidence_kind\":\"measurement\"")
+        );
+        assert!(!stdout.contains("evidence_kind_not_measured:REL-MCP-COMPAT-001"));
         assert!(!stdout.contains("REL-PRODUCTION-EVIDENCE-POLICY-001"));
         assert!(!stdout.contains(manifest_path.to_str().unwrap()));
         fs::remove_dir_all(evidence_root).unwrap();
@@ -3877,7 +3942,10 @@ mod tests {
         assert!(stdout.contains(
             "\"domain\":\"release_artifact_provenance\",\"evidence_kind\":\"measurement\""
         ));
-        assert!(stdout.contains("evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture"));
+        assert!(
+            stdout.contains("\"domain\":\"mcp_compatibility\",\"evidence_kind\":\"measurement\"")
+        );
+        assert!(!stdout.contains("evidence_kind_not_measured:REL-MCP-COMPAT-001"));
         assert!(!stdout.contains("REL-PRODUCTION-EVIDENCE-POLICY-001"));
 
         fs::write(&subject_path, b"tampered release artifact bytes").unwrap();

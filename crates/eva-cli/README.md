@@ -27,6 +27,7 @@ V1.15.8 的 CLI 变化是 runtime marker 公开 `memory_redaction_audit_v1.15.8`
 | `eva task cancel` | 对未终态 task 写入取消标记；对已终态 task 记录 cancel request 但不改变终态。 |
 | `eva adapter list/probe` | 列出和 probe 已授权 Adapter handle，不启动真实 provider。 |
 | `eva mcp list/probe` | 列出和 probe MCP allowlist tool，不启动真实 MCP server。 |
+| `eva mcp compatibility measure` | 显式启动受控 loopback server 与 TLS/SSE fixture，生成不可由静态 fixture 升级的 canonical Measurement subject；默认命令不触发该实跑。 |
 | `eva skill list/run` | 运行受控 workflow skill runner；先校验 schema/runtime gate 和 V1.9.2 policy runtime gate，再写 stdout/stderr/artifact evidence。 |
 | `eva discovery scan` | 返回 discovery candidate 和 source reports，明确 discovery 不授予 runtime handle。 |
 | `eva memory context` | 为单个 Agent 构造 request context，输出 private/global memory、knowledge、Lua snapshot 和 audit；可用 `--durable-backend` 走 V1.9.4 durable memory/knowledge round trip；V1.15.8 起写 `.eva/data/observability` memory JSONL evidence。 |
@@ -130,6 +131,7 @@ V1.1 增加外部能力生态命令，同时保留 V1.0 basic runtime 路径：
 - `eva adapter probe --capability <name> [--provider <id>]`：验证 AdapterRouter 选择，不调用外部 provider。
 - `eva mcp list`：列出 MCP transport adapters 和 tool allowlist。
 - `eva mcp probe --adapter <id> --tool <name>`：报告 tool 是否在 allowlist 中；blocked probe 也返回诊断 envelope，因为未调用 provider。
+- `eva mcp compatibility measure [--subject-output <path>]`：真实执行 initialize/list/call、rustls handshake 与 registry-owned abort/DELETE/join；可选路径只写 canonical digest subject，JSON 仅展示脱敏收据。
 - `eva skill list`：列出受控 workflow skill adapters 和 runtime gates。
 - `eva skill run --skill <id> --input <json>`：运行受控 Skill workflow；默认 `codex_skill` 使用内置受控 runner，manifest 显式 `skill.runner.command` 时才启动 allowlist process runner，并写入 artifact/audit evidence。
 - `eva discovery scan`：返回 trusted candidates 和 `source_reports`，用 `handle_granted=false` 证明 discovery 不是授权，并暴露 source timeout/cache key/status/reject reason。
@@ -324,6 +326,7 @@ cargo run -- task logs --output json
 cargo run -- adapter list --output json
 cargo run -- adapter probe --adapter github-mcp --output json
 cargo run -- mcp probe --adapter github-mcp --tool list_issues --output json
+cargo run -- mcp compatibility measure --subject-output release-mcp-compatibility.evidence --output json
 cargo run -- skill run --skill code-review --input '{"scope":"current_diff"}' --output json
 cargo run -- discovery scan --output json
 cargo run -- memory context --agent root-agent --query context --private-limit 1 --output json

@@ -78,10 +78,25 @@ function Copy-Bundle {
   Copy-Item -LiteralPath $Source -Destination $Destination -Recurse
 }
 
+function Rebind-McpCaptureSubject {
+  param([string]$EvidenceRoot)
+
+  $capturePath = Join-Path $EvidenceRoot "mcp-compatibility.capture.json"
+  $capture = [System.IO.File]::ReadAllText($capturePath, $Utf8NoBom) | ConvertFrom-Json
+  $argv = @($capture.argv)
+  $subjectIndex = [System.Array]::IndexOf($argv, "--subject-output") + 1
+  if ($subjectIndex -le 0 -or $subjectIndex -ge $argv.Count) {
+    throw "MCP compatibility capture fixture has no subject output argument."
+  }
+  $capture.argv[$subjectIndex] = Join-Path $EvidenceRoot "release-mcp-compatibility.evidence"
+  Write-Utf8LfFile $capturePath ($capture | ConvertTo-Json -Depth 8)
+}
+
 $repository = [System.IO.Path]::GetFullPath($RepositoryRoot)
+$captureScript = Join-Path $repository "scripts/capture-release-evidence.ps1"
 $prepareScript = Join-Path $repository "scripts/prepare-release-evidence-upload.ps1"
 $verifyScript = Join-Path $repository "scripts/verify-release-evidence-readback.ps1"
-foreach ($script in @($prepareScript, $verifyScript)) {
+foreach ($script in @($captureScript, $prepareScript, $verifyScript)) {
   if (-not [System.IO.File]::Exists($script)) {
     throw "Required release evidence script is missing: $script"
   }
@@ -175,6 +190,51 @@ try {
       "measurement.0.environment=github-actions-ubuntu-latest"
     ) -join "`n")
 
+  $mcpCompatibilityEvidence = Join-Path $sealedRoot "release-mcp-compatibility.evidence"
+  $mcpCompatibilityCapture = Join-Path $sealedRoot "mcp-compatibility.capture.json"
+  $runnerEnvironment = @{
+    GITHUB_ACTIONS = $env:GITHUB_ACTIONS
+    GITHUB_RUN_ID = $env:GITHUB_RUN_ID
+    GITHUB_RUN_ATTEMPT = $env:GITHUB_RUN_ATTEMPT
+    GITHUB_JOB = $env:GITHUB_JOB
+    RUNNER_NAME = $env:RUNNER_NAME
+    RUNNER_OS = $env:RUNNER_OS
+    RUNNER_ARCH = $env:RUNNER_ARCH
+  }
+  try {
+    $env:GITHUB_ACTIONS = "true"
+    $env:GITHUB_RUN_ID = $RunId
+    $env:GITHUB_RUN_ATTEMPT = $RunAttempt
+    $env:GITHUB_JOB = $ProducerJob
+    $env:RUNNER_NAME = "release-readback-contract"
+    $env:RUNNER_OS = "Linux"
+    $env:RUNNER_ARCH = "X64"
+    & $captureScript `
+      -Executable $eva `
+      -ArgumentList @(
+        "mcp", "compatibility", "measure",
+        "--subject-output", $mcpCompatibilityEvidence,
+        "--output", "json"
+      ) `
+      -ManifestPath $mcpCompatibilityCapture `
+      -StdoutPath (Join-Path $sealedRoot "mcp-compatibility.stdout.json") `
+      -StderrPath (Join-Path $sealedRoot "mcp-compatibility.stderr") `
+      -CaptureId "mcp.compatibility.measure" | Out-Null
+  } finally {
+    foreach ($entry in $runnerEnvironment.GetEnumerator()) {
+      [System.Environment]::SetEnvironmentVariable([string]$entry.Key, $entry.Value, "Process")
+    }
+  }
+  if (-not [System.IO.File]::Exists($mcpCompatibilityEvidence)) {
+    throw "MCP compatibility measurement did not write its canonical subject."
+  }
+  $mcpCompatibilityCaptureValue = [System.IO.File]::ReadAllText($mcpCompatibilityCapture, $Utf8NoBom) | ConvertFrom-Json
+  $mcpCompatibilityTimestamp = [System.DateTimeOffset]::Parse(
+    [string]$mcpCompatibilityCaptureValue.finished_at,
+    [System.Globalization.CultureInfo]::InvariantCulture,
+    [System.Globalization.DateTimeStyles]::RoundtripKind
+  ).ToUnixTimeMilliseconds()
+
   Write-Utf8LfFile (Join-Path $sealedRoot "producer-note.txt") "producer payload included in the sealed file set"
 
   & $prepareScript `
@@ -196,6 +256,7 @@ try {
     -DistributionTimestampMilliseconds $timestamp `
     -SecurityScanTimestampMilliseconds $timestamp `
     -BenchmarkTimestampMilliseconds $timestamp `
+    -McpCompatibilityTimestampMilliseconds $mcpCompatibilityTimestamp `
     -UploadArtifactName $uploadArtifactName `
     -MetadataPath $metadataPath | Out-Null
 
@@ -203,16 +264,87 @@ try {
   Assert-Equal "eva.release.evidence_upload_seal.v1" $metadata.schema "upload seal schema mismatch."
   Assert-Equal $uploadArtifactName $metadata.upload_artifact_name "upload artifact name mismatch."
 
+  function Assert-UntrustedMcpPrepareFails {
+    param(
+      [string]$Name,
+      [scriptblock]$Mutation,
+      [string]$ExpectedReason
+    )
+
+    $caseProducer = Join-Path $tempRoot "producer-untrusted-$Name"
+    $caseEvidence = Join-Path $caseProducer "release-evidence"
+    [System.IO.Directory]::CreateDirectory($caseEvidence) | Out-Null
+    foreach ($sourceName in @(
+        "release-distribution.evidence",
+        "release-security-scan.evidence",
+        "release-benchmark.evidence",
+        "release-mcp-compatibility.evidence",
+        "mcp-compatibility.capture.json",
+        "mcp-compatibility.stdout.json",
+        "mcp-compatibility.stderr"
+      )) {
+      [System.IO.File]::Copy((Join-Path $sealedRoot $sourceName), (Join-Path $caseEvidence $sourceName), $false)
+    }
+    Rebind-McpCaptureSubject $caseEvidence
+    & $Mutation $caseEvidence
+    $failure = $null
+    try {
+      & $prepareScript `
+        -EvidenceRoot $caseEvidence `
+        -ArtifactPath $artifactPath `
+        -ArtifactTarget "x86_64-unknown-linux-gnu" `
+        -ArtifactFormat "tar.gz" `
+        -ArtifactBinary "eva" `
+        -ArtifactBuilder "github-actions:native-linux" `
+        -ArtifactBuildCommand "cargo build --release --locked --bin eva" `
+        -ArtifactSbom "unavailable:W9-L10" `
+        -ArtifactScanStatus "passed" `
+        -ReleaseTag $releaseTag `
+        -SourceCommit $SourceCommit `
+        -RunId $RunId `
+        -RunAttempt $RunAttempt `
+        -Job $ProducerJob `
+        -ArtifactTimestampMilliseconds $timestamp `
+        -DistributionTimestampMilliseconds $timestamp `
+        -SecurityScanTimestampMilliseconds $timestamp `
+        -BenchmarkTimestampMilliseconds $timestamp `
+        -McpCompatibilityTimestampMilliseconds $mcpCompatibilityTimestamp `
+        -UploadArtifactName "$uploadArtifactName-untrusted-$Name" `
+        -MetadataPath (Join-Path $caseProducer "upload-seal.json") | Out-Null
+    } catch {
+      $failure = $_.Exception.Message
+    }
+    if ([string]::IsNullOrWhiteSpace($failure) -or -not $failure.Contains("reason=$ExpectedReason")) {
+      throw "Untrusted MCP fixture '$Name' was not rejected for '$ExpectedReason': $failure"
+    }
+  }
+
+  Assert-UntrustedMcpPrepareFails "missing-capture" {
+    param($root)
+    Remove-Item -LiteralPath (Join-Path $root "mcp-compatibility.capture.json") -Force
+  } "upload_mcp_capture_invalid"
+  Assert-UntrustedMcpPrepareFails "tampered-subject" {
+    param($root)
+    $path = Join-Path $root "release-mcp-compatibility.evidence"
+    $text = [System.IO.File]::ReadAllText($path, $Utf8NoBom)
+    Write-Utf8LfFile $path ($text.Replace("evidence_kind=measurement", "evidence_kind=fixture"))
+  } "upload_mcp_capture_receipt_invalid"
+
   $reservedProducer = Join-Path $tempRoot "producer-reserved-name"
   $reservedEvidence = Join-Path $reservedProducer "release-evidence"
   [System.IO.Directory]::CreateDirectory($reservedEvidence) | Out-Null
   foreach ($sourceName in @(
       "release-distribution.evidence",
       "release-security-scan.evidence",
-      "release-benchmark.evidence"
+      "release-benchmark.evidence",
+      "release-mcp-compatibility.evidence",
+      "mcp-compatibility.capture.json",
+      "mcp-compatibility.stdout.json",
+      "mcp-compatibility.stderr"
     )) {
     [System.IO.File]::Copy((Join-Path $sealedRoot $sourceName), (Join-Path $reservedEvidence $sourceName), $false)
   }
+  Rebind-McpCaptureSubject $reservedEvidence
   $reservedArtifact = Join-Path $reservedProducer "release-artifact.evidence"
   [System.IO.File]::WriteAllBytes($reservedArtifact, $Utf8NoBom.GetBytes("reserved artifact name`n"))
   $reservedFailure = $null
@@ -236,6 +368,7 @@ try {
       -DistributionTimestampMilliseconds $timestamp `
       -SecurityScanTimestampMilliseconds $timestamp `
       -BenchmarkTimestampMilliseconds $timestamp `
+      -McpCompatibilityTimestampMilliseconds $mcpCompatibilityTimestamp `
       -UploadArtifactName "$uploadArtifactName-reserved" `
       -MetadataPath (Join-Path $reservedProducer "upload-seal.json") | Out-Null
   } catch {
@@ -371,10 +504,15 @@ try {
         "release-distribution.evidence",
         "release-security-scan.evidence",
         "release-benchmark.evidence",
+        "release-mcp-compatibility.evidence",
+        "mcp-compatibility.capture.json",
+        "mcp-compatibility.stdout.json",
+        "mcp-compatibility.stderr",
         "producer-note.txt"
       )) {
       [System.IO.File]::Copy((Join-Path $sealedRoot $sourceName), (Join-Path $caseEvidence $sourceName), $false)
     }
+    Rebind-McpCaptureSubject $caseEvidence
     if (-not [string]::IsNullOrWhiteSpace($EvidenceName)) {
       $failurePath = Join-Path $caseEvidence $EvidenceName
       $failureText = [System.IO.File]::ReadAllText($failurePath, $Utf8NoBom)
@@ -405,6 +543,7 @@ try {
       -DistributionTimestampMilliseconds $timestamp `
       -SecurityScanTimestampMilliseconds $timestamp `
       -BenchmarkTimestampMilliseconds $timestamp `
+      -McpCompatibilityTimestampMilliseconds $mcpCompatibilityTimestamp `
       -UploadArtifactName $caseArtifactName `
       -MetadataPath $caseMetadataPath | Out-Null
     $caseMetadata = [System.IO.File]::ReadAllText($caseMetadataPath, $Utf8NoBom) | ConvertFrom-Json
@@ -452,6 +591,9 @@ try {
   $ciWorkflow = [System.IO.File]::ReadAllText((Join-Path $repository ".github/workflows/ci.yml"), $Utf8NoBom)
   $releaseWorkflow = [System.IO.File]::ReadAllText((Join-Path $repository ".github/workflows/release.yml"), $Utf8NoBom)
   Assert-Contains $ciWorkflow "./scripts/test-release-evidence-readback.ps1" "CI readback contract wiring mismatch."
+  Assert-Contains $ciWorkflow "./scripts/test-mcp-compatibility-evidence.ps1" "CI MCP evidence contract wiring mismatch."
+  Assert-Contains $ciWorkflow "./scripts/validate-mcp-compatibility-evidence.ps1" "CI MCP three-platform readback wiring mismatch."
+  Assert-Contains $ciWorkflow "w4-mcp-compatibility-verified-" "CI MCP verified bundle upload wiring mismatch."
   Assert-Contains $ciWorkflow "shell: powershell" "CI PowerShell 5.1 contract wiring mismatch."
   Assert-Contains $releaseWorkflow "  release_evidence:" "Release evidence producer job wiring mismatch."
   Assert-Contains $releaseWorkflow "needs: release_evidence" "Release evidence consumer dependency mismatch."
@@ -460,6 +602,8 @@ try {
   Assert-Contains $releaseWorkflow "-ExpectedManifestDigest `$env:EXPECTED_MANIFEST_DIGEST" "External manifest digest wiring mismatch."
   Assert-Contains $releaseWorkflow "Artifact ID download did not produce exactly the trusted artifact directory." "Downloaded artifact directory isolation mismatch."
   Assert-Contains $releaseWorkflow "./scripts/verify-release-evidence-readback.ps1" "Readback verifier workflow wiring mismatch."
+  Assert-Contains $releaseWorkflow '"mcp", "compatibility", "measure"' "Release MCP measurement command wiring mismatch."
+  Assert-Contains $releaseWorkflow '"release-evidence/release-mcp-compatibility.evidence"' "Release MCP subject wiring mismatch."
   Assert-NotContains $releaseWorkflow "Verify release evidence gates" "Legacy in-job release gate must be removed."
   Assert-NotContains $releaseWorkflow "release.verify-check" "Legacy in-job release gate capture must be removed."
   Assert-Equal 1 ([regex]::Matches($releaseWorkflow, '(?m)^\s+contents: write\s*$').Count) "Only the final publish job may write repository contents."

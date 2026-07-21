@@ -754,11 +754,14 @@ jobs:
           $durable = Join-Path (Get-Location) ".eva/release-evidence-durable"
           Remove-Item -LiteralPath $durable -Recurse -Force -ErrorAction SilentlyContinue
 
-          function Capture-CargoEvidence([string]$captureId, [string]$stdoutName, [string[]]$commandArgs) {
-            $manifestPath = Join-Path "release-evidence" "$captureId.capture.json"
+          function Capture-CargoEvidence([string]$captureId, [string]$stdoutName, [string[]]$commandArgs, [string]$fileStem = "") {
+            if ([string]::IsNullOrWhiteSpace($fileStem)) {
+              $fileStem = $captureId
+            }
+            $manifestPath = Join-Path "release-evidence" "$fileStem.capture.json"
             $stdoutPath = Join-Path "release-evidence" $stdoutName
-            $stderrPath = Join-Path "release-evidence" "$captureId.stderr"
-            $cargoArgs = @("run", "--") + $commandArgs
+            $stderrPath = Join-Path "release-evidence" "$fileStem.stderr"
+            $cargoArgs = @("run", "--quiet", "--") + $commandArgs
             ./scripts/capture-release-evidence.ps1 `
               -Executable "cargo" `
               -ArgumentList $cargoArgs `
@@ -780,6 +783,16 @@ jobs:
           Capture-CargoEvidence "release.security" "release-security.json" @("release", "security", "--output", "json")
           Capture-CargoEvidence "release.perf" "release-perf.json" @("release", "perf", "--output", "json")
           Capture-CargoEvidence "release.migration" "release-migration.json" @("release", "migration", "--output", "json")
+          $mcpCompatibilitySubject = Join-Path (Get-Location) "release-evidence/release-mcp-compatibility.evidence"
+          Capture-CargoEvidence `
+            -captureId "mcp.compatibility.measure" `
+            -stdoutName "mcp-compatibility.stdout.json" `
+            -commandArgs @(
+              "mcp", "compatibility", "measure",
+              "--subject-output", $mcpCompatibilitySubject,
+              "--output", "json"
+            ) `
+            -fileStem "mcp-compatibility"
 
       - name: Install external security scanner
         run: cargo install cargo-audit --locked
@@ -1224,6 +1237,7 @@ jobs:
 
           $platformTimestamp = Read-EnvelopeTimestamp "release-evidence/platform-bundle.envelope"
           $securityTimestamp = Read-CaptureTimestamp "release-evidence/cargo-audit.capture.json"
+          $mcpCompatibilityTimestamp = Read-CaptureTimestamp "release-evidence/mcp-compatibility.capture.json"
           $scanStatusLines = @([System.IO.File]::ReadAllLines("release-evidence/release-security-scan.evidence") | Where-Object { $_ -match '^scan_status=[0-9A-Za-z_.-]+$' })
           if ($scanStatusLines.Count -ne 1) {
             throw "Security evidence must contain exactly one canonical scan_status."
@@ -1262,6 +1276,7 @@ jobs:
             -DistributionTimestampMilliseconds $platformTimestamp `
             -SecurityScanTimestampMilliseconds $securityTimestamp `
             -BenchmarkTimestampMilliseconds $benchmarkTimestamp `
+            -McpCompatibilityTimestampMilliseconds $mcpCompatibilityTimestamp `
             -UploadArtifactName $artifactName `
             -MetadataPath $metadataPath | Out-Null
 

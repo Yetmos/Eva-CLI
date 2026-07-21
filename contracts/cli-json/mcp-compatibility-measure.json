@@ -1,0 +1,57 @@
+{
+  "id": "mcp-compatibility-measure",
+  "description": "Explicit MCP compatibility measurement exposes only sealed path-free receipts.",
+  "command": ["mcp", "compatibility", "measure", "--output", "json"],
+  "process_exit_code": 0,
+  "expected": {
+    "ok": true,
+    "command": "mcp.compatibility.measure",
+    "exit_code": 0,
+    "data": {
+      "evidence_kind": "measurement",
+      "server": {
+        "name": "eva",
+        "version": "1.11.5-alpha"
+      },
+      "protocol_version": "2025-11-25",
+      "transport": "streamable_http",
+      "tls": {
+        "handshake_completed": true,
+        "peer_name": "127.0.0.1"
+      },
+      "tool_name": "compat.echo",
+      "schema": {
+        "sha256": {
+          "__contains": "sha256:"
+        }
+      },
+      "output": {
+        "sha256": {
+          "__contains": "sha256:"
+        }
+      },
+      "observations": {
+        "initialize_server_info": true,
+        "tools_list_schema": true,
+        "tools_call_result": true
+      },
+      "abort": {
+        "socket_closed": true,
+        "session_deleted": true,
+        "reader_joined": true,
+        "sessions_after": 0,
+        "readers_after": 0,
+        "cleanup_pending_after": 0
+      },
+      "subject": {
+        "sha256": {
+          "__contains": "sha256:"
+        },
+        "written": false
+      }
+    },
+    "trace": {
+      "span_id": "cli.mcp.compatibility.measure"
+    }
+  }
+}

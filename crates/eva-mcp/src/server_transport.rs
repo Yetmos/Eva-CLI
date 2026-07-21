@@ -673,7 +673,10 @@ impl<H: McpServerToolHandler> McpStreamableHttpServer<H> {
         write_result: io::Result<ResponseWriteOutcome>,
     ) {
         match write_result {
-            Ok(ResponseWriteOutcome::Original) if !self.shutdown.is_shutdown_requested() => {
+            Ok(ResponseWriteOutcome::Original)
+                if matches!(&action, ServerAction::Delete { .. })
+                    || !self.shutdown.is_shutdown_requested() =>
+            {
                 self.apply_action(action);
             }
             Ok(ResponseWriteOutcome::Original) => {}
@@ -2248,7 +2251,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_response_write_never_commits_session_actions() {
+    fn response_actions_commit_only_after_successful_write() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let mut server = McpStreamableHttpServer::from_listener(
@@ -2307,11 +2310,16 @@ mod tests {
         assert!(server.sessions.contains_key(&session_id));
         assert_eq!(server.report.protocol_errors, 3);
 
+        // A fully written response is the action's linearization point. A shutdown
+        // request arriving after that write must not turn an observed 204 into a
+        // retained session.
+        server.shutdown.shutdown();
         server.commit_action_after_response(
             ServerAction::Delete { session_id },
             Ok(ResponseWriteOutcome::Original),
         );
         assert!(server.sessions.is_empty());
+        assert_eq!(server.report.sessions_deleted, 1);
     }
 
     #[test]

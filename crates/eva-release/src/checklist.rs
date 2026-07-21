@@ -11,6 +11,9 @@ use crate::evidence::{
     EvidenceVerificationReport, ProductionEvidenceBlocker, ProductionEvidencePolicy,
     ReleaseEvidenceManifest, ReleaseEvidenceScope, ReleaseEvidenceType,
 };
+use crate::mcp_compatibility::{
+    ReleaseMcpCompatibilityEvidence, ReleaseMcpCompatibilityVerificationReport,
+};
 use crate::migration::{CompatibilityPolicy, MigrationGuide, MigrationStep};
 use crate::performance::{PerformanceBaselineReport, PerformanceBudget};
 use crate::scanner::{ReleaseSecurityScanEvidence, ReleaseSecurityScanVerificationReport};
@@ -197,10 +200,12 @@ pub struct VerifiedReleaseEvidenceBundle {
     distribution_kind: Option<EvidenceKind>,
     security_scan_kind: Option<EvidenceKind>,
     benchmark_kind: Option<EvidenceKind>,
+    mcp_compatibility_kind: Option<EvidenceKind>,
     artifact: Option<ReleaseArtifactEvidence>,
     distribution: Option<ReleaseDistributionEvidence>,
     security_scan: Option<ReleaseSecurityScanEvidence>,
     benchmark: Option<ReleaseBenchmarkEvidence>,
+    mcp_compatibility: Option<ReleaseMcpCompatibilityEvidence>,
     verification: EvidenceVerificationReport,
 }
 
@@ -216,6 +221,9 @@ impl VerifiedReleaseEvidenceBundle {
         distribution: Option<ReleaseDocumentEvidenceCandidate<ReleaseDistributionEvidence>>,
         security_scan: Option<ReleaseDocumentEvidenceCandidate<ReleaseSecurityScanEvidence>>,
         benchmark: Option<ReleaseDocumentEvidenceCandidate<ReleaseBenchmarkEvidence>>,
+        mcp_compatibility: Option<
+            ReleaseDocumentEvidenceCandidate<ReleaseMcpCompatibilityEvidence>,
+        >,
     ) -> Result<Self, EvaError> {
         if manifest.scope == ReleaseEvidenceScope::Production {
             return Err(EvaError::conflict(
@@ -233,6 +241,7 @@ impl VerifiedReleaseEvidenceBundle {
             distribution,
             security_scan,
             benchmark,
+            mcp_compatibility,
             None,
         )
     }
@@ -246,6 +255,9 @@ impl VerifiedReleaseEvidenceBundle {
         distribution: Option<ReleaseDocumentEvidenceCandidate<ReleaseDistributionEvidence>>,
         security_scan: Option<ReleaseDocumentEvidenceCandidate<ReleaseSecurityScanEvidence>>,
         benchmark: Option<ReleaseDocumentEvidenceCandidate<ReleaseBenchmarkEvidence>>,
+        mcp_compatibility: Option<
+            ReleaseDocumentEvidenceCandidate<ReleaseMcpCompatibilityEvidence>,
+        >,
         policy: &ProductionEvidencePolicy,
     ) -> Result<Self, EvaError> {
         if manifest.scope != ReleaseEvidenceScope::Production {
@@ -261,6 +273,7 @@ impl VerifiedReleaseEvidenceBundle {
             distribution,
             security_scan,
             benchmark,
+            mcp_compatibility,
             Some(policy),
         )
     }
@@ -273,6 +286,9 @@ impl VerifiedReleaseEvidenceBundle {
         distribution: Option<ReleaseDocumentEvidenceCandidate<ReleaseDistributionEvidence>>,
         security_scan: Option<ReleaseDocumentEvidenceCandidate<ReleaseSecurityScanEvidence>>,
         benchmark: Option<ReleaseDocumentEvidenceCandidate<ReleaseBenchmarkEvidence>>,
+        mcp_compatibility: Option<
+            ReleaseDocumentEvidenceCandidate<ReleaseMcpCompatibilityEvidence>,
+        >,
         production_policy: Option<&ProductionEvidencePolicy>,
     ) -> Result<Self, EvaError> {
         if manifest.source_commit != expected_source_commit {
@@ -287,6 +303,7 @@ impl VerifiedReleaseEvidenceBundle {
             ReleaseEvidenceType::Distribution => distribution.is_some(),
             ReleaseEvidenceType::SecurityScan => security_scan.is_some(),
             ReleaseEvidenceType::Benchmark => benchmark.is_some(),
+            ReleaseEvidenceType::McpCompatibility => mcp_compatibility.is_some(),
         };
         for evidence_type in ReleaseEvidenceType::ALL {
             let manifest_present = manifest
@@ -313,6 +330,9 @@ impl VerifiedReleaseEvidenceBundle {
             .as_ref()
             .map(|candidate| candidate.evidence.to_manifest().into_bytes());
         let benchmark_subject = benchmark
+            .as_ref()
+            .map(|candidate| candidate.evidence.to_manifest().into_bytes());
+        let mcp_compatibility_subject = mcp_compatibility
             .as_ref()
             .map(|candidate| candidate.evidence.to_manifest().into_bytes());
         let mut subjects = Vec::with_capacity(manifest.entries.len());
@@ -346,6 +366,11 @@ impl VerifiedReleaseEvidenceBundle {
                     &candidate.evidence.source_commit,
                 ),
             );
+        }
+        if let (Some(candidate), Some(subject_bytes)) =
+            (&mcp_compatibility, &mcp_compatibility_subject)
+        {
+            subjects.push(EvidenceSubject::new(&candidate.envelope, subject_bytes));
         }
         let mut verification = verify_evidence_bundle(expected_source_commit, &subjects)?;
         if !verification.is_verified() {
@@ -385,6 +410,12 @@ impl VerifiedReleaseEvidenceBundle {
                 (
                     ReleaseEvidenceType::Benchmark,
                     benchmark.as_ref().map(|candidate| &candidate.envelope),
+                ),
+                (
+                    ReleaseEvidenceType::McpCompatibility,
+                    mcp_compatibility
+                        .as_ref()
+                        .map(|candidate| &candidate.envelope),
                 ),
             ];
             let release_identities = [
@@ -433,6 +464,9 @@ impl VerifiedReleaseEvidenceBundle {
             .as_ref()
             .map(|candidate| candidate.envelope.kind);
         let benchmark_kind = benchmark.as_ref().map(|candidate| candidate.envelope.kind);
+        let mcp_compatibility_kind = mcp_compatibility
+            .as_ref()
+            .map(|candidate| candidate.envelope.kind);
 
         Ok(Self {
             manifest,
@@ -440,10 +474,12 @@ impl VerifiedReleaseEvidenceBundle {
             distribution_kind,
             security_scan_kind,
             benchmark_kind,
+            mcp_compatibility_kind,
             artifact: artifact.map(|candidate| candidate.evidence),
             distribution: distribution.map(|candidate| candidate.evidence),
             security_scan: security_scan.map(|candidate| candidate.evidence),
             benchmark: benchmark.map(|candidate| candidate.evidence),
+            mcp_compatibility: mcp_compatibility.map(|candidate| candidate.evidence),
             verification,
         })
     }
@@ -742,7 +778,7 @@ impl ReleaseHardeningService {
 
     /// 只使用仓库内置基线生成指定平台范围的就绪度报告。
     pub fn readiness(&self, target: impl Into<String>) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), None, None, None, None)
+        self.readiness_inner(target.into(), None, None, None, None, None)
     }
 
     /// 在 alpha 兼容基线中加入签名工件和来源证明门禁。
@@ -751,7 +787,7 @@ impl ReleaseHardeningService {
         target: impl Into<String>,
         evidence: &ReleaseArtifactEvidence,
     ) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), Some(evidence), None, None, None)
+        self.readiness_inner(target.into(), Some(evidence), None, None, None, None)
     }
 
     /// 在 alpha 兼容基线中加入多平台分发门禁。
@@ -760,7 +796,7 @@ impl ReleaseHardeningService {
         target: impl Into<String>,
         evidence: &ReleaseDistributionEvidence,
     ) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), None, Some(evidence), None, None)
+        self.readiness_inner(target.into(), None, Some(evidence), None, None, None)
     }
 
     /// 在 alpha 兼容基线中加入外部安全扫描门禁。
@@ -769,7 +805,7 @@ impl ReleaseHardeningService {
         target: impl Into<String>,
         evidence: &ReleaseSecurityScanEvidence,
     ) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), None, None, Some(evidence), None)
+        self.readiness_inner(target.into(), None, None, Some(evidence), None, None)
     }
 
     /// 在 alpha 兼容基线中加入 benchmark typed evidence 门禁。
@@ -778,7 +814,7 @@ impl ReleaseHardeningService {
         target: impl Into<String>,
         evidence: &ReleaseBenchmarkEvidence,
     ) -> Result<ReleaseReadinessReport, EvaError> {
-        self.readiness_inner(target.into(), None, None, None, Some(evidence))
+        self.readiness_inner(target.into(), None, None, None, Some(evidence), None)
     }
 
     /// 一次性聚合任意组合的旧 typed evidence，报告 scope 始终为 alpha。
@@ -796,7 +832,17 @@ impl ReleaseHardeningService {
             distribution_evidence,
             security_scan_evidence,
             benchmark_evidence,
+            None,
         )
+    }
+
+    /// Aggregate a verified MCP compatibility subject without upgrading its evidence kind.
+    pub fn readiness_with_mcp_compatibility_evidence(
+        &self,
+        target: impl Into<String>,
+        evidence: &ReleaseMcpCompatibilityEvidence,
+    ) -> Result<ReleaseReadinessReport, EvaError> {
+        self.readiness_inner(target.into(), None, None, None, None, Some(evidence))
     }
 
     /// 只接受 verifier 构造的 bundle，并按其不可变 scope 聚合发布证据。
@@ -811,6 +857,7 @@ impl ReleaseHardeningService {
             bundle.distribution.as_ref(),
             bundle.security_scan.as_ref(),
             bundle.benchmark.as_ref(),
+            bundle.mcp_compatibility.as_ref(),
         )?;
         set_gate_evidence_kind(
             &mut report.gates,
@@ -831,6 +878,11 @@ impl ReleaseHardeningService {
             &mut report.gates,
             "REL-BENCHMARK-001",
             bundle.benchmark_kind,
+        )?;
+        set_gate_evidence_kind(
+            &mut report.gates,
+            "REL-MCP-COMPAT-001",
+            bundle.mcp_compatibility_kind,
         )?;
         if bundle.scope() == ReleaseEvidenceScope::Production {
             enforce_production_measurement_gates(&mut report);
@@ -853,6 +905,7 @@ impl ReleaseHardeningService {
         distribution_evidence: Option<&ReleaseDistributionEvidence>,
         security_scan_evidence: Option<&ReleaseSecurityScanEvidence>,
         benchmark_evidence: Option<&ReleaseBenchmarkEvidence>,
+        mcp_compatibility_evidence: Option<&ReleaseMcpCompatibilityEvidence>,
     ) -> Result<ReleaseReadinessReport, EvaError> {
         if target.trim().is_empty() {
             return Err(EvaError::invalid_argument(
@@ -890,10 +943,18 @@ impl ReleaseHardeningService {
         gates.push(supervisor_handoff_gate());
         gates.push(service_manager_abstraction_gate());
         gates.push(daemon_runtime_gate());
-        let mcp_compatibility_report = McpCompatibilityMatrix::v1137_fixture().verify()?;
-        gates.push(mcp_compatibility_matrix_gate(Some(
-            &mcp_compatibility_report,
-        )));
+        let mcp_fixture_report = if mcp_compatibility_evidence.is_none() {
+            Some(McpCompatibilityMatrix::v1137_fixture().verify()?)
+        } else {
+            None
+        };
+        let mcp_measurement_report =
+            mcp_compatibility_evidence.map(ReleaseMcpCompatibilityEvidence::verify);
+        if let Some(report) = mcp_measurement_report.as_ref() {
+            gates.push(release_mcp_compatibility_gate(report));
+        } else {
+            gates.push(mcp_compatibility_matrix_gate(mcp_fixture_report.as_ref()));
+        }
         gates.push(provider_supervision_gate());
         gates.push(hardware_safety_release_gate());
         gates.push(observability_policy_gate());
@@ -944,6 +1005,7 @@ impl ReleaseHardeningService {
                 distribution_report.as_ref(),
                 security_scan_report.as_ref(),
                 benchmark_report.as_ref(),
+                mcp_measurement_report.as_ref(),
             ),
         })
     }
@@ -1378,6 +1440,7 @@ fn release_audit(
     distribution_report: Option<&ReleaseDistributionVerificationReport>,
     security_scan_report: Option<&ReleaseSecurityScanVerificationReport>,
     benchmark_report: Option<&ReleaseBenchmarkVerificationReport>,
+    mcp_compatibility_report: Option<&ReleaseMcpCompatibilityVerificationReport>,
 ) -> Vec<String> {
     let mut audit = vec![
         "release:readiness:v1.11.5-alpha".to_owned(),
@@ -1433,6 +1496,14 @@ fn release_audit(
             audit.push("production_benchmark_verified".to_owned());
         } else {
             audit.push("production_benchmark_blocked".to_owned());
+        }
+        audit.extend(report.audit.iter().cloned());
+    }
+    if let Some(report) = mcp_compatibility_report {
+        if report.status == "verified" {
+            audit.push("mcp_compatibility_measurement_verified".to_owned());
+        } else {
+            audit.push("mcp_compatibility_measurement_blocked".to_owned());
         }
         audit.extend(report.audit.iter().cloned());
     }
@@ -2112,6 +2183,43 @@ fn mcp_compatibility_matrix_gate(report: Option<&McpCompatibilityReport>) -> Rel
     }
 }
 
+/// Convert a canonical MCP run subject into the existing compatibility release gate.
+///
+/// The kind intentionally starts as declaration. Only `VerifiedReleaseEvidenceBundle` may replace
+/// it with the independently verified envelope kind, so parsed booleans cannot self-promote to a
+/// production measurement.
+fn release_mcp_compatibility_gate(
+    report: &ReleaseMcpCompatibilityVerificationReport,
+) -> ReleaseGate {
+    let mut evidence = report.audit.clone();
+    evidence.extend(
+        report
+            .failures
+            .iter()
+            .map(|failure| format!("mcp.compat.failure:{failure}")),
+    );
+    let status = report.gate_status();
+    ReleaseGate {
+        id: "REL-MCP-COMPAT-001".to_owned(),
+        domain: "mcp_compatibility".to_owned(),
+        evidence_kind: EvidenceKind::Declaration,
+        status,
+        required: true,
+        summary: "A canonical MCP TLS, schema, call-result, and abort measurement is present"
+            .to_owned(),
+        evidence,
+        remediation: if status.is_blocking() {
+            vec![
+                "rerun the sealed MCP compatibility measurement producer".to_owned(),
+                "do not synthesize measurement evidence from fixture booleans or audit strings"
+                    .to_owned(),
+            ]
+        } else {
+            Vec::new()
+        },
+    }
+}
+
 /// 构造外部 Provider 启动、监控与退出隔离门禁。
 fn provider_supervision_gate() -> ReleaseGate {
     ReleaseGate {
@@ -2561,6 +2669,39 @@ mod tests {
         .unwrap()
     }
 
+    fn mcp_compatibility_evidence() -> ReleaseMcpCompatibilityEvidence {
+        let subject = format!(
+            concat!(
+                "format=eva.mcp-compatibility.v1\n",
+                "evidence_kind=measurement\n",
+                "server_name=eva\n",
+                "server_version={}\n",
+                "protocol_version=2025-11-25\n",
+                "transport=streamable_http\n",
+                "tls_handshake_completed=true\n",
+                "tls_peer_name=127.0.0.1\n",
+                "tls_protocol=TLSv1_3\n",
+                "tls_handshake_count=6\n",
+                "tool_name=compat.echo\n",
+                "schema_sha256=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                "schema_bytes=128\n",
+                "output_sha256=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+                "output_bytes=64\n",
+                "initialize_server_info_observed=true\n",
+                "tools_list_schema_observed=true\n",
+                "tools_call_result_observed=true\n",
+                "abort_socket_closed=true\n",
+                "abort_session_deleted=true\n",
+                "abort_reader_joined=true\n",
+                "abort_sessions_after=0\n",
+                "abort_readers_after=0\n",
+                "abort_cleanup_pending_after=0\n"
+            ),
+            env!("CARGO_PKG_VERSION"),
+        );
+        ReleaseMcpCompatibilityEvidence::parse_manifest(&subject).unwrap()
+    }
+
     const PRODUCTION_TRUSTED_NOW_MS: u128 = 1_784_073_600_000;
 
     struct ProductionBundleFixture {
@@ -2569,6 +2710,8 @@ mod tests {
         distribution: Option<ReleaseDocumentEvidenceCandidate<ReleaseDistributionEvidence>>,
         security_scan: Option<ReleaseDocumentEvidenceCandidate<ReleaseSecurityScanEvidence>>,
         benchmark: Option<ReleaseDocumentEvidenceCandidate<ReleaseBenchmarkEvidence>>,
+        mcp_compatibility:
+            Option<ReleaseDocumentEvidenceCandidate<ReleaseMcpCompatibilityEvidence>>,
     }
 
     impl ProductionBundleFixture {
@@ -2598,6 +2741,12 @@ mod tests {
                         .as_ref()
                         .map(|candidate| candidate.envelope.canonical_digest()),
                 ),
+                (
+                    ReleaseEvidenceType::McpCompatibility,
+                    self.mcp_compatibility
+                        .as_ref()
+                        .map(|candidate| candidate.envelope.canonical_digest()),
+                ),
             ];
             for entry in &mut self.manifest.entries {
                 entry.envelope_digest = digests
@@ -2618,6 +2767,7 @@ mod tests {
                 self.distribution,
                 self.security_scan,
                 self.benchmark,
+                self.mcp_compatibility,
                 policy,
             )
         }
@@ -2653,6 +2803,13 @@ mod tests {
                     ReleaseEvidenceType::Benchmark,
                     "benchmark.evidence",
                     "benchmark.envelope",
+                    None,
+                )
+                .unwrap(),
+                crate::evidence::ReleaseEvidenceManifestEntry::new(
+                    ReleaseEvidenceType::McpCompatibility,
+                    "mcp-compatibility.evidence",
+                    "mcp-compatibility.envelope",
                     None,
                 )
                 .unwrap(),
@@ -2705,6 +2862,18 @@ mod tests {
                 timestamp,
             )
             .unwrap();
+        let mcp_compatibility = mcp_compatibility_evidence();
+        let mcp_compatibility_subject = mcp_compatibility.to_manifest();
+        let mcp_compatibility_envelope = EvidenceEnvelope::from_subject_bytes(
+            EvidenceKind::Measurement,
+            "checklist:mcp-compatibility",
+            ARTIFACT_COMMIT,
+            "ubuntu-x86_64",
+            "github-actions:release-mcp-compatibility/123/1/mcp-compatibility",
+            timestamp,
+            mcp_compatibility_subject.as_bytes(),
+        )
+        .unwrap();
 
         let mut fixture = ProductionBundleFixture {
             manifest: production_manifest(),
@@ -2724,6 +2893,10 @@ mod tests {
             benchmark: Some(ReleaseDocumentEvidenceCandidate::new(
                 benchmark,
                 benchmark_envelope,
+            )),
+            mcp_compatibility: Some(ReleaseDocumentEvidenceCandidate::new(
+                mcp_compatibility,
+                mcp_compatibility_envelope,
             )),
         };
         fixture.bind_envelope_digests();
@@ -2754,6 +2927,7 @@ mod tests {
         let error = VerifiedReleaseEvidenceBundle::verify(
             evidence_manifest(ReleaseEvidenceScope::Alpha),
             ARTIFACT_COMMIT,
+            None,
             None,
             None,
             None,
@@ -2792,6 +2966,7 @@ mod tests {
             None,
             None,
             Some(ReleaseDocumentEvidenceCandidate::new(evidence, envelope)),
+            None,
         )
         .unwrap();
         let report = ReleaseHardeningService::v15()
@@ -2827,6 +3002,23 @@ mod tests {
     }
 
     #[test]
+    /// Parsed observations alone cannot self-promote the MCP gate to Measurement.
+    fn mcp_document_without_verified_envelope_remains_declaration() {
+        let evidence = mcp_compatibility_evidence();
+        let report = ReleaseHardeningService::v15()
+            .readiness_with_mcp_compatibility_evidence("all", &evidence)
+            .unwrap();
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.id == "REL-MCP-COMPAT-001")
+            .unwrap();
+
+        assert_eq!(gate.status, ReleaseGateStatus::Pass);
+        assert_eq!(gate.evidence_kind, EvidenceKind::Declaration);
+    }
+
+    #[test]
     /// 验证 production 不能绕过 consumer-owned policy 调用 alpha verifier。
     fn production_bundle_requires_explicit_consumer_policy() {
         let fixture = production_bundle_fixture();
@@ -2837,6 +3029,7 @@ mod tests {
             fixture.distribution,
             fixture.security_scan,
             fixture.benchmark,
+            fixture.mcp_compatibility,
         )
         .unwrap_err();
 
@@ -2931,7 +3124,8 @@ mod tests {
                             + 1;
                 }
                 Case::NonMeasurement => {
-                    fixture.benchmark.as_mut().unwrap().envelope.kind = EvidenceKind::Declaration;
+                    fixture.mcp_compatibility.as_mut().unwrap().envelope.kind =
+                        EvidenceKind::Fixture;
                 }
                 Case::Untrusted => {
                     fixture.benchmark.as_mut().unwrap().envelope.executor =
@@ -3162,12 +3356,12 @@ mod tests {
         assert_eq!(report.status, "blocked");
         assert_eq!(benchmark_gate.evidence_kind, EvidenceKind::Measurement);
         assert_eq!(benchmark_gate.status, ReleaseGateStatus::Pass);
-        assert_eq!(mcp_gate.evidence_kind, EvidenceKind::Fixture);
-        assert_eq!(mcp_gate.status, ReleaseGateStatus::Blocked);
-        assert!(mcp_gate
+        assert_eq!(mcp_gate.evidence_kind, EvidenceKind::Measurement);
+        assert_eq!(mcp_gate.status, ReleaseGateStatus::Pass);
+        assert!(!mcp_gate
             .remediation
             .iter()
-            .any(|item| { item == "evidence_kind_not_measured:REL-MCP-COMPAT-001:fixture" }));
+            .any(|item| item.starts_with("evidence_kind_not_measured:")));
     }
 
     #[test]

@@ -69,6 +69,9 @@ param(
   [long]$BenchmarkTimestampMilliseconds,
 
   [Parameter(Mandatory = $true)]
+  [long]$McpCompatibilityTimestampMilliseconds,
+
+  [Parameter(Mandatory = $true)]
   [ValidateNotNullOrEmpty()]
   [string]$UploadArtifactName,
 
@@ -194,6 +197,130 @@ function Get-Sha256 {
   }
 }
 
+function Read-StrictUtf8File {
+  param(
+    [string]$Path,
+    [string]$Reason
+  )
+
+  Assert-RegularFile $Path $Reason
+  try {
+    return $Utf8NoBom.GetString([System.IO.File]::ReadAllBytes($Path))
+  } catch {
+    Fail-UploadSeal "upload_evidence_utf8_invalid" $Path
+  }
+}
+
+function Assert-McpCaptureStream {
+  param(
+    $Claim,
+    [string]$Root,
+    [string]$ExpectedName,
+    [string]$Field
+  )
+
+  if ($null -eq $Claim -or [string]$Claim.path -cne $ExpectedName -or
+      [string]$Claim.sha256 -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+      [long]$Claim.byte_count -lt 0) {
+    Fail-UploadSeal "upload_mcp_capture_stream_invalid" $Field
+  }
+  $path = Join-Path $Root $ExpectedName
+  Assert-RegularFile $path "upload_mcp_capture_stream_missing"
+  $bytes = [System.IO.File]::ReadAllBytes($path)
+  if ($bytes.LongLength -ne [long]$Claim.byte_count -or (Get-Sha256 $bytes) -cne [string]$Claim.sha256) {
+    Fail-UploadSeal "upload_mcp_capture_stream_digest_mismatch" $Field
+  }
+  return $path
+}
+
+function Assert-McpCompatibilityCapture {
+  param(
+    [string]$Root,
+    [string]$SubjectPath,
+    [string]$ExpectedRunId,
+    [string]$ExpectedRunAttempt,
+    [string]$ExpectedJob,
+    [long]$ExpectedTimestampMilliseconds
+  )
+
+  $capturePath = Join-Path $Root "mcp-compatibility.capture.json"
+  try {
+    $capture = (Read-StrictUtf8File $capturePath "upload_mcp_capture_missing") | ConvertFrom-Json
+  } catch {
+    Fail-UploadSeal "upload_mcp_capture_invalid" $capturePath
+  }
+  if ([string]$capture.format -cne "eva.release.command_capture.v1" -or
+      [string]$capture.capture_id -cne "mcp.compatibility.measure" -or
+      [string]$capture.outcome -cne "success" -or [int]$capture.exit_code -ne 0 -or
+      $null -ne $capture.failure_reason) {
+    Fail-UploadSeal "upload_mcp_capture_outcome_invalid" $capturePath
+  }
+
+  $argv = @($capture.argv | ForEach-Object { [string]$_ })
+  $commandStart = 0
+  if ([string]$capture.executable -ceq "cargo") {
+    if ($argv.Count -ne 10 -or $argv[0] -cne "run" -or $argv[1] -cne "--quiet" -or $argv[2] -cne "--") {
+      Fail-UploadSeal "upload_mcp_capture_command_invalid" "cargo argv"
+    }
+    $commandStart = 3
+  } elseif ([System.IO.Path]::GetFileNameWithoutExtension([string]$capture.executable) -ceq "eva") {
+    if ($argv.Count -ne 7) {
+      Fail-UploadSeal "upload_mcp_capture_command_invalid" "eva argv"
+    }
+  } else {
+    Fail-UploadSeal "upload_mcp_capture_command_invalid" ([string]$capture.executable)
+  }
+  $expectedCommand = @("mcp", "compatibility", "measure", "--subject-output")
+  for ($index = 0; $index -lt $expectedCommand.Count; $index += 1) {
+    if ($argv[$commandStart + $index] -cne $expectedCommand[$index]) {
+      Fail-UploadSeal "upload_mcp_capture_command_invalid" ([string]$index)
+    }
+  }
+  $capturedSubject = Get-FullPath $argv[$commandStart + 4]
+  if (-not $capturedSubject.Equals($SubjectPath, (Get-PathComparison)) -or
+      $argv[$commandStart + 5] -cne "--output" -or $argv[$commandStart + 6] -cne "json") {
+    Fail-UploadSeal "upload_mcp_capture_command_invalid" "subject/output"
+  }
+
+  $runner = $capture.runner
+  if ($null -eq $runner -or [string]$runner.provider -cne "github-actions" -or
+      [string]$runner.run_id -cne $ExpectedRunId -or
+      [string]$runner.run_attempt -cne $ExpectedRunAttempt -or
+      [string]$runner.job -cne $ExpectedJob) {
+    Fail-UploadSeal "upload_mcp_capture_runner_invalid" "$ExpectedRunId/$ExpectedRunAttempt/$ExpectedJob"
+  }
+  try {
+    $finishedAt = [System.DateTimeOffset]::Parse(
+      [string]$capture.finished_at,
+      [System.Globalization.CultureInfo]::InvariantCulture,
+      [System.Globalization.DateTimeStyles]::RoundtripKind
+    )
+  } catch {
+    Fail-UploadSeal "upload_mcp_capture_timestamp_invalid" ([string]$capture.finished_at)
+  }
+  if ($finishedAt.ToUnixTimeMilliseconds() -ne $ExpectedTimestampMilliseconds) {
+    Fail-UploadSeal "upload_mcp_capture_timestamp_mismatch" ([string]$capture.finished_at)
+  }
+
+  $stdoutPath = Assert-McpCaptureStream $capture.stdout $Root "mcp-compatibility.stdout.json" "stdout"
+  $stderrPath = Assert-McpCaptureStream $capture.stderr $Root "mcp-compatibility.stderr" "stderr"
+  if ([System.IO.FileInfo]::new($stderrPath).Length -ne 0) {
+    Fail-UploadSeal "upload_mcp_capture_stderr_nonempty" $stderrPath
+  }
+  try {
+    $receipt = (Read-StrictUtf8File $stdoutPath "upload_mcp_capture_stdout_missing") | ConvertFrom-Json
+  } catch {
+    Fail-UploadSeal "upload_mcp_capture_stdout_invalid" $stdoutPath
+  }
+  $subjectDigest = Get-Sha256 ([System.IO.File]::ReadAllBytes($SubjectPath))
+  if ($receipt.ok -ne $true -or [string]$receipt.command -cne "mcp.compatibility.measure" -or
+      [int]$receipt.exit_code -ne 0 -or [string]$receipt.data.evidence_kind -cne "measurement" -or
+      [string]$receipt.data.subject.sha256 -cne $subjectDigest -or
+      $receipt.data.subject.written -ne $true) {
+    Fail-UploadSeal "upload_mcp_capture_receipt_invalid" $stdoutPath
+  }
+}
+
 function Write-Utf8LfFile {
   param(
     [string]$Path,
@@ -306,7 +433,8 @@ foreach ($timestamp in @(
     $ArtifactTimestampMilliseconds,
     $DistributionTimestampMilliseconds,
     $SecurityScanTimestampMilliseconds,
-    $BenchmarkTimestampMilliseconds
+    $BenchmarkTimestampMilliseconds,
+    $McpCompatibilityTimestampMilliseconds
   )) {
   if ($timestamp -le 0) {
     Fail-UploadSeal "upload_timestamp_invalid" ([string]$timestamp)
@@ -341,9 +469,18 @@ if ([System.IO.Directory]::Exists($productionRoot) -or [System.IO.File]::Exists(
 $distributionSource = Join-Path $root "release-distribution.evidence"
 $securitySource = Join-Path $root "release-security-scan.evidence"
 $benchmarkSource = Join-Path $root "release-benchmark.evidence"
+$mcpCompatibilitySource = Join-Path $root "release-mcp-compatibility.evidence"
 foreach ($source in @($distributionSource, $securitySource, $benchmarkSource)) {
   Assert-EvidenceIdentity $source
 }
+Assert-RegularFile $mcpCompatibilitySource "upload_evidence_missing"
+Assert-McpCompatibilityCapture `
+  -Root $root `
+  -SubjectPath $mcpCompatibilitySource `
+  -ExpectedRunId $RunId `
+  -ExpectedRunAttempt $RunAttempt `
+  -ExpectedJob $Job `
+  -ExpectedTimestampMilliseconds $McpCompatibilityTimestampMilliseconds
 
 $artifactName = [System.IO.Path]::GetFileName($artifact)
 Assert-StableFileName $artifactName "artifact_name"
@@ -352,10 +489,12 @@ $reservedProductionNames = @(
   "release-distribution.evidence",
   "release-security-scan.evidence",
   "release-benchmark.evidence",
+  "release-mcp-compatibility.evidence",
   "release-artifact.envelope",
   "release-distribution.envelope",
   "release-security-scan.envelope",
   "release-benchmark.envelope",
+  "release-mcp-compatibility.envelope",
   "release-evidence.manifest"
 )
 foreach ($reservedName in $reservedProductionNames) {
@@ -399,10 +538,16 @@ Write-Utf8LfFile $artifactEvidencePath $artifactEvidence
 $typedEvidence = @(
   [pscustomobject]@{ Type = "distribution"; Source = $distributionSource; Name = "release-distribution.evidence"; Executor = "release-distribution" },
   [pscustomobject]@{ Type = "security_scan"; Source = $securitySource; Name = "release-security-scan.evidence"; Executor = "release-security-scan" },
-  [pscustomobject]@{ Type = "benchmark"; Source = $benchmarkSource; Name = "release-benchmark.evidence"; Executor = "release-benchmark" }
+  [pscustomobject]@{ Type = "benchmark"; Source = $benchmarkSource; Name = "release-benchmark.evidence"; Executor = "release-benchmark" },
+  [pscustomobject]@{ Type = "mcp_compatibility"; Source = $mcpCompatibilitySource; Name = "release-mcp-compatibility.evidence"; Executor = "release-mcp-compatibility" }
 )
 foreach ($item in $typedEvidence) {
-  Copy-CanonicalManifest $item.Source (Join-Path $productionRoot $item.Name)
+  $destination = Join-Path $productionRoot $item.Name
+  if ($item.Type -ceq "mcp_compatibility") {
+    [System.IO.File]::Copy($item.Source, $destination, $false)
+  } else {
+    Copy-CanonicalManifest $item.Source $destination
+  }
 }
 
 $entries = New-Object System.Collections.Generic.List[object]
@@ -410,7 +555,8 @@ $entrySpecs = @(
   [pscustomobject]@{ Type = "artifact"; Evidence = "release-artifact.evidence"; Envelope = "release-artifact.envelope"; Subject = $artifactName; Executor = "release-artifact"; Timestamp = $ArtifactTimestampMilliseconds },
   [pscustomobject]@{ Type = "distribution"; Evidence = "release-distribution.evidence"; Envelope = "release-distribution.envelope"; Subject = $null; Executor = "release-distribution"; Timestamp = $DistributionTimestampMilliseconds },
   [pscustomobject]@{ Type = "security_scan"; Evidence = "release-security-scan.evidence"; Envelope = "release-security-scan.envelope"; Subject = $null; Executor = "release-security-scan"; Timestamp = $SecurityScanTimestampMilliseconds },
-  [pscustomobject]@{ Type = "benchmark"; Evidence = "release-benchmark.evidence"; Envelope = "release-benchmark.envelope"; Subject = $null; Executor = "release-benchmark"; Timestamp = $BenchmarkTimestampMilliseconds }
+  [pscustomobject]@{ Type = "benchmark"; Evidence = "release-benchmark.evidence"; Envelope = "release-benchmark.envelope"; Subject = $null; Executor = "release-benchmark"; Timestamp = $BenchmarkTimestampMilliseconds },
+  [pscustomobject]@{ Type = "mcp_compatibility"; Evidence = "release-mcp-compatibility.evidence"; Envelope = "release-mcp-compatibility.envelope"; Subject = $null; Executor = "release-mcp-compatibility"; Timestamp = $McpCompatibilityTimestampMilliseconds }
 )
 foreach ($spec in $entrySpecs) {
   $evidencePath = Join-Path $productionRoot $spec.Evidence
