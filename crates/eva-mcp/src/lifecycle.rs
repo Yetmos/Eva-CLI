@@ -1786,9 +1786,10 @@ mod tests {
     fn reader_done_signal_does_not_bypass_the_join_deadline() {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (done_sender, done) = mpsc::sync_channel(1);
+        let (release_sender, release) = mpsc::sync_channel(0);
         let join = thread::spawn(move || {
             done_sender.send(ManagedReaderExit::Cancelled).unwrap();
-            thread::sleep(Duration::from_millis(200));
+            release.recv().unwrap();
         });
         let mut stream = RegisteredHttpStream {
             state: ManagedHttpStreamState::Cancelling,
@@ -1801,7 +1802,6 @@ mod tests {
             last_exit: None,
         };
 
-        let started = Instant::now();
         let error =
             wait_and_join_reader_until(&mut stream, Instant::now() + Duration::from_millis(20))
                 .unwrap_err();
@@ -1809,10 +1809,11 @@ mod tests {
             error.provider_code().map(|code| code.as_str()),
             Some("mcp_stream_reader_join_timeout")
         );
-        assert!(started.elapsed() < Duration::from_millis(150));
         assert!(stream.join.is_some());
+        assert!(!stream.join.as_ref().unwrap().is_finished());
         assert_eq!(stream.last_exit, Some(ManagedReaderExit::Cancelled));
 
+        release_sender.send(()).unwrap();
         assert_eq!(
             wait_and_join_reader_until(&mut stream, Instant::now() + Duration::from_secs(1),)
                 .unwrap(),
