@@ -371,6 +371,33 @@ fn timeout_reclaims_killed_child_and_fixed_anchor_is_reusable() {
 }
 
 #[test]
+fn restart_reuses_schedule_lock_anchor_left_by_a_crashed_owner() {
+    let fixture = DaemonFixture::new("schedule-lock-crash");
+    let envs = [("EVA_DAEMON_TEST_LEASE_TTL_MS", "1000")];
+    let start = fixture.capture_start(10_000, &envs);
+    assert!(start.status.success(), "{}", start.stderr);
+    let child_pid = json_u64(&start.stdout, "child_pid") as u32;
+    let lease = parse_fields(&fs::read_to_string(fixture.locks().join("daemon.lease")).unwrap());
+    let old_generation = field_u64(&lease, "generation");
+    let old_expiry = field_u128(&lease, "expires_at_ms");
+
+    force_kill_process(child_pid);
+    wait_until_epoch_ms(old_expiry + 150, Duration::from_secs(5));
+    let schedule_lock = fixture
+        .state()
+        .join("schedules")
+        .join("memory-maintenance.schedule.lock");
+    fs::write(&schedule_lock, b"crashed owner residue").unwrap();
+
+    let restarted = fixture.capture_start(10_000, &envs);
+    assert!(restarted.status.success(), "{}", restarted.stderr);
+    let successor =
+        parse_fields(&fs::read_to_string(fixture.locks().join("daemon.lease")).unwrap());
+    assert!(field_u64(&successor, "generation") > old_generation);
+    assert!(fixture.run_control("shutdown").status.success());
+}
+
+#[test]
 fn kill_between_lease_and_claimed_frame_reclaims_probe_bound_identity() {
     let fixture = DaemonFixture::new("lease-claim-gap");
     let failed = fixture.capture_start(100, &[("EVA_DAEMON_TEST_LEASE_CLAIM_DELAY_MS", "5000")]);

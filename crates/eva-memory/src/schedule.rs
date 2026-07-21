@@ -1,10 +1,10 @@
 //! Restart-safe durable maintenance schedule state.
 use eva_core::EvaError;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, OpenOptions, TryLockError};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduleRecord {
@@ -128,22 +128,21 @@ impl FileSystemScheduleStore {
     }
     fn lock(&self, id: &str) -> Result<ScheduleLock, EvaError> {
         let path = self.root.join(format!("{id}.schedule.lock"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| {
+                EvaError::internal("open schedule lock anchor")
+                    .with_context("error", error.to_string())
+            })?;
         for _ in 0..200 {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => return Ok(ScheduleLock { file, path }),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if fs::metadata(&path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| SystemTime::now().duration_since(t).ok())
-                        .is_some_and(|age| age > Duration::from_secs(60))
-                    {
-                        let _ = fs::remove_file(&path);
-                    } else {
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                }
-                Err(error) => {
+            match file.try_lock() {
+                Ok(()) => return Ok(ScheduleLock { file }),
+                Err(TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(5)),
+                Err(TryLockError::Error(error)) => {
                     return Err(EvaError::internal("acquire schedule lock")
                         .with_context("error", error.to_string()))
                 }
@@ -175,12 +174,11 @@ impl FileSystemScheduleStore {
 #[derive(Debug)]
 struct ScheduleLock {
     file: std::fs::File,
-    path: PathBuf,
 }
 impl Drop for ScheduleLock {
     fn drop(&mut self) {
-        let _ = self.file.sync_all();
-        let _ = fs::remove_file(&self.path);
+        // Keep the anchor stable; the kernel releases ownership on crash.
+        let _ = self.file.unlock();
     }
 }
 fn validate_id(id: &str) -> Result<(), EvaError> {
@@ -249,6 +247,23 @@ mod tests {
         assert!(s.claim("memory-gc", "b", 15, 10).is_err());
         let b = s.claim("memory-gc", "b", 21, 10).unwrap();
         s.complete("memory-gc", "b", b.generation, 100).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preexisting_lock_anchor_is_reusable_after_owner_exit() {
+        let root =
+            std::env::temp_dir().join(format!("eva-schedule-crash-anchor-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store = FileSystemScheduleStore::new(&root).unwrap();
+        store.upsert("memory-gc", 1).unwrap();
+
+        let lock_path = root.join("memory-gc.schedule.lock");
+        fs::write(&lock_path, b"crashed owner residue").unwrap();
+
+        let claimed = store.claim("memory-gc", "successor", 1, 10).unwrap();
+        assert_eq!(claimed.lease_owner.as_deref(), Some("successor"));
+        assert!(lock_path.is_file());
         let _ = fs::remove_dir_all(root);
     }
 
