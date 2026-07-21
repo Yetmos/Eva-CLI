@@ -2433,7 +2433,13 @@ mod tests {
     /// 执行 `test_command` 对应的处理逻辑。
     #[cfg(windows)]
     fn test_command() -> &'static str {
-        "powershell"
+        static TEST_BINARY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        TEST_BINARY.get_or_init(|| {
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
     }
 
     /// 执行 `test_command` 对应的处理逻辑。
@@ -2444,14 +2450,8 @@ mod tests {
 
     /// 执行 `artifact_args` 对应的处理逻辑。
     #[cfg(windows)]
-    fn artifact_args(secret: &str) -> Vec<String> {
-        vec![
-            "-NoProfile".to_owned(),
-            "-Command".to_owned(),
-            format!(
-                "$null=[Console]::In.ReadToEnd(); $dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'result.txt') -Value ('artifact-' + '{secret}' + $env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Out.Write('{secret}'); [Console]::Out.Write($env:{PROVIDER_SESSION_TOKEN_ENV}); [Console]::Error.Write('stderr-ok'); [Console]::Error.Write($env:{PROVIDER_SESSION_TOKEN_ENV})"
-            ),
-        ]
+    fn artifact_args(_secret: &str) -> Vec<String> {
+        process_fixture_args("process_skill_artifact_helper")
     }
 
     /// 执行 `artifact_args` 对应的处理逻辑。
@@ -2468,11 +2468,7 @@ mod tests {
     /// 执行 `fail_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn fail_args() -> Vec<String> {
-        vec![
-            "-NoProfile".to_owned(),
-            "-Command".to_owned(),
-            "$null=[Console]::In.ReadToEnd(); [Console]::Error.Write('failure'); exit 7".to_owned(),
-        ]
+        process_fixture_args("process_skill_failure_helper")
     }
 
     /// 执行 `fail_args` 对应的处理逻辑。
@@ -2487,11 +2483,7 @@ mod tests {
     /// 执行 `sleep_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn sleep_args() -> Vec<String> {
-        vec![
-            "-NoProfile".to_owned(),
-            "-Command".to_owned(),
-            "$null=[Console]::In.ReadToEnd(); Start-Sleep -Milliseconds 200; [Console]::Out.Write('done')".to_owned(),
-        ]
+        process_fixture_args("process_skill_timeout_helper")
     }
 
     /// 执行 `sleep_args` 对应的处理逻辑。
@@ -2506,11 +2498,7 @@ mod tests {
     /// 执行 `bad_artifact_args` 对应的处理逻辑。
     #[cfg(windows)]
     fn bad_artifact_args() -> Vec<String> {
-        vec![
-            "-NoProfile".to_owned(),
-            "-Command".to_owned(),
-            "$null=[Console]::In.ReadToEnd(); $dir=$env:EVA_SKILL_ARTIFACT_DIR; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Set-Content -NoNewline -Path (Join-Path $dir 'bad name.txt') -Value 'bad'".to_owned(),
-        ]
+        process_fixture_args("process_skill_bad_artifact_helper")
     }
 
     /// 执行 `bad_artifact_args` 对应的处理逻辑。
@@ -2520,5 +2508,76 @@ mod tests {
             "-c".to_owned(),
             "cat >/dev/null; mkdir -p \"$EVA_SKILL_ARTIFACT_DIR\"; printf bad > \"$EVA_SKILL_ARTIFACT_DIR/bad name.txt\"".to_owned(),
         ]
+    }
+
+    #[cfg(windows)]
+    fn process_fixture_args(helper: &str) -> Vec<String> {
+        vec![
+            "--exact".to_owned(),
+            format!("transports::skill::tests::{helper}"),
+            "--ignored".to_owned(),
+            "--nocapture".to_owned(),
+        ]
+    }
+
+    #[cfg(windows)]
+    fn read_process_fixture_input() {
+        use std::io::Read as _;
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input).unwrap();
+        assert!(!input.is_empty());
+    }
+
+    #[cfg(windows)]
+    fn process_fixture_artifact_dir() -> PathBuf {
+        std::env::var_os("EVA_SKILL_ARTIFACT_DIR")
+            .map(PathBuf::from)
+            .expect("skill artifact directory")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawned by process_skill_runner_collects_artifacts_and_redacts_env"]
+    fn process_skill_artifact_helper() {
+        read_process_fixture_input();
+        let artifact_dir = process_fixture_artifact_dir();
+        fs::create_dir_all(&artifact_dir).unwrap();
+        let secret = std::env::var("EVA_TEST_SKILL_SECRET").unwrap();
+        let session_token = std::env::var(PROVIDER_SESSION_TOKEN_ENV).unwrap();
+        fs::write(
+            artifact_dir.join("result.txt"),
+            format!("artifact-{secret}{session_token}"),
+        )
+        .unwrap();
+        print!("{secret}{session_token}");
+        eprint!("stderr-ok{session_token}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawned by process_skill_runner_records_failure_evidence"]
+    fn process_skill_failure_helper() {
+        read_process_fixture_input();
+        eprint!("failure");
+        std::process::exit(7);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawned by process_skill_runner_reports_timeout"]
+    fn process_skill_timeout_helper() {
+        read_process_fixture_input();
+        thread::sleep(Duration::from_millis(200));
+        print!("done");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawned by artifact_collection_rejects_uncontrolled_relative_paths"]
+    fn process_skill_bad_artifact_helper() {
+        read_process_fixture_input();
+        let artifact_dir = process_fixture_artifact_dir();
+        fs::create_dir_all(&artifact_dir).unwrap();
+        fs::write(artifact_dir.join("bad name.txt"), b"bad").unwrap();
     }
 }
