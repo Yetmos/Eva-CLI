@@ -9,7 +9,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// 本模块的架构职责：定义持久化根布局，短暂保护迁移，并提供长期 fenced writer ownership。
 /// Architectural responsibility for this module.
@@ -28,6 +28,11 @@ const RUNTIME_OWNER_FORMAT: &str = "eva.runtime-owner.v1";
 const RUNTIME_LEASE_ANCHOR_FORMAT: &str = "eva.daemon-lock-anchor.v1";
 /// Versioned daemon lease record stored separately from the lock anchor.
 const RUNTIME_LEASE_FORMAT: &str = "eva.daemon-lease.v1";
+/// Conservative Windows-tested window for an observer or pre-lease owner to release the anchor.
+/// A 250 ms window still produced zero-winner concurrent launches under scheduler stalls.
+const RUNTIME_LEASE_ANCHOR_SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Poll interval for distinguishing a transient observer from a publishing lease owner.
+const RUNTIME_LEASE_ANCHOR_SETTLE_INTERVAL: Duration = Duration::from_millis(10);
 /// 同一进程内临时文件和 owner token 的冲突消除计数器。
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -206,6 +211,11 @@ pub struct DurableRuntimeLeaseGuard {
     ttl_ms: u128,
     writer: DurableWriterGuard,
     _anchor_file: File,
+}
+
+enum RuntimeLeaseAcquireMode<'a> {
+    Normal(Option<&'a str>),
+    FailedStart(&'a DurableRuntimeLeaseIdentity),
 }
 
 #[derive(Debug)]
@@ -987,8 +997,8 @@ impl DurableRuntimeLeaseGuard {
             lease_path.as_ref(),
             now_ms,
             ttl_ms,
-            None,
-            None,
+            RuntimeLeaseAcquireMode::Normal(None),
+            std::thread::sleep,
         )
     }
 
@@ -1011,8 +1021,8 @@ impl DurableRuntimeLeaseGuard {
             lease_path.as_ref(),
             now_ms,
             ttl_ms,
-            Some(process_start_token),
-            None,
+            RuntimeLeaseAcquireMode::Normal(Some(process_start_token)),
+            std::thread::sleep,
         )
     }
 
@@ -1035,8 +1045,8 @@ impl DurableRuntimeLeaseGuard {
             lease_path.as_ref(),
             now_ms,
             ttl_ms,
-            None,
-            Some(expected),
+            RuntimeLeaseAcquireMode::FailedStart(expected),
+            std::thread::sleep,
         )
     }
 
@@ -1046,9 +1056,13 @@ impl DurableRuntimeLeaseGuard {
         lease_path: &Path,
         now_ms: u128,
         ttl_ms: u128,
-        process_start_token: Option<&str>,
-        failed_start_identity: Option<&DurableRuntimeLeaseIdentity>,
+        mode: RuntimeLeaseAcquireMode<'_>,
+        wait: impl FnMut(Duration),
     ) -> Result<Self, EvaError> {
+        let (process_start_token, failed_start_identity) = match mode {
+            RuntimeLeaseAcquireMode::Normal(process_start_token) => (process_start_token, None),
+            RuntimeLeaseAcquireMode::FailedStart(expected) => (None, Some(expected)),
+        };
         let anchor_path = anchor_path.to_path_buf();
         let lease_path = lease_path.to_path_buf();
         validate_runtime_lease_paths(&anchor_path, &lease_path)?;
@@ -1072,7 +1086,13 @@ impl DurableRuntimeLeaseGuard {
 
         ensure_parent_directory(&anchor_path, "daemon lock anchor")?;
         ensure_parent_directory(&lease_path, "daemon lease record")?;
-        let (anchor_file, anchor_created) = acquire_runtime_lease_anchor(&anchor_path)?;
+        let (anchor_file, anchor_created) = acquire_runtime_lease_anchor_with_wait(
+            &anchor_path,
+            &lease_path,
+            now_ms,
+            failed_start_identity,
+            wait,
+        )?;
         if failed_start_identity.is_some() && anchor_created {
             return Err(EvaError::conflict(
                 "daemon lock anchor changed during failed-start reclaim",
@@ -1561,7 +1581,13 @@ fn path_exists(path: &Path, label: &'static str) -> Result<bool, EvaError> {
     })
 }
 
-fn acquire_runtime_lease_anchor(path: &Path) -> Result<(File, bool), EvaError> {
+fn acquire_runtime_lease_anchor_with_wait(
+    path: &Path,
+    lease_path: &Path,
+    observed_now_ms: u128,
+    failed_start_identity: Option<&DurableRuntimeLeaseIdentity>,
+    mut wait: impl FnMut(Duration),
+) -> Result<(File, bool), EvaError> {
     let (mut file, created) = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => (file, false),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -1585,13 +1611,39 @@ fn acquire_runtime_lease_anchor(path: &Path) -> Result<(File, bool), EvaError> {
         Err(_) => {}
     }
 
-    file.try_lock().map_err(|error| match error {
-        TryLockError::WouldBlock => EvaError::conflict("daemon lease is owned by a live process")
-            .with_context("anchor_path", path.display().to_string()),
-        TryLockError::Error(error) => {
-            runtime_lease_io_error(path, "failed to acquire daemon lock anchor", error)
+    let deadline = Instant::now() + RUNTIME_LEASE_ANCHOR_SETTLE_TIMEOUT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) => {
+                let record = read_runtime_lease_record(lease_path)?;
+                let may_settle = match (failed_start_identity, record.as_ref()) {
+                    (Some(expected), Some(record)) => {
+                        record.state == DurableRuntimeLeaseState::Active
+                            && record.identity() == *expected
+                    }
+                    (Some(_), None) => false,
+                    (None, Some(record)) => {
+                        record.state != DurableRuntimeLeaseState::Active
+                            || record.is_expired_at(observed_now_ms)
+                    }
+                    (None, None) => true,
+                };
+                if !may_settle || Instant::now() >= deadline {
+                    return Err(EvaError::conflict("daemon lease owner is still live")
+                        .with_context("anchor_path", path.display().to_string()));
+                }
+                wait(RUNTIME_LEASE_ANCHOR_SETTLE_INTERVAL);
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(runtime_lease_io_error(
+                    path,
+                    "failed to acquire daemon lock anchor",
+                    error,
+                ))
+            }
         }
-    })?;
+    }
     validate_runtime_lease_anchor(&mut file, path)?;
     Ok((file, created))
 }
@@ -2596,6 +2648,83 @@ mod tests {
     }
 
     #[test]
+    fn runtime_lease_acquire_waits_out_a_transient_anchor_observer() {
+        let root = test_root("daemon-anchor-observer");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        drop(
+            acquire_runtime_lease_anchor_with_wait(&anchor, &lease, 100, None, std::thread::sleep)
+                .unwrap()
+                .0,
+        );
+        let observer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&anchor)
+            .unwrap();
+        observer.try_lock().unwrap();
+        let mut observer = Some(observer);
+        let mut waits = 0;
+
+        let owner = DurableRuntimeLeaseGuard::acquire_inner(
+            &backend,
+            &anchor,
+            &lease,
+            200,
+            50,
+            RuntimeLeaseAcquireMode::Normal(None),
+            |_| {
+                waits += 1;
+                drop(observer.take());
+            },
+        )
+        .unwrap();
+
+        assert!(waits >= 1);
+        assert_eq!(owner.record().generation(), WriterGeneration(1));
+        drop(owner);
+    }
+
+    #[test]
+    fn failed_start_reclaim_waits_out_a_transient_anchor_observer() {
+        let root = test_root("failed-start-anchor-observer");
+        let backend =
+            FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
+        let anchor = root.path().join("daemon.lock");
+        let lease = root.path().join("daemon.lease");
+        let failed = seed_dead_runtime_lease(&backend, &anchor, &lease, 100, 1_000);
+        let expected = failed.identity();
+        let observer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&anchor)
+            .unwrap();
+        observer.try_lock().unwrap();
+        let mut observer = Some(observer);
+        let mut waits = 0;
+
+        let reclaimed = DurableRuntimeLeaseGuard::acquire_inner(
+            &backend,
+            &anchor,
+            &lease,
+            101,
+            1_000,
+            RuntimeLeaseAcquireMode::FailedStart(&expected),
+            |_| {
+                waits += 1;
+                drop(observer.take());
+            },
+        )
+        .unwrap();
+
+        assert!(waits >= 1);
+        assert_eq!(reclaimed.record().generation(), WriterGeneration(2));
+        drop(reclaimed);
+    }
+
+    #[test]
     fn live_expired_daemon_lease_cannot_be_stolen() {
         let root = test_root("live-expired-daemon-lease");
         let backend =
@@ -2720,7 +2849,11 @@ mod tests {
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
         let anchor = root.path().join("daemon.lock");
         let lease = root.path().join("daemon.lease");
-        drop(acquire_runtime_lease_anchor(&anchor).unwrap().0);
+        drop(
+            acquire_runtime_lease_anchor_with_wait(&anchor, &lease, 100, None, std::thread::sleep)
+                .unwrap()
+                .0,
+        );
         fs::write(&lease, b"format=legacy.daemon-lock.v0\npid=123\n").unwrap();
         let lease_bytes = fs::read(&lease).unwrap();
 
@@ -2957,7 +3090,11 @@ mod tests {
             FileSystemDurableBackend::open(DurableBackendOptions::read_write(root.path())).unwrap();
         let anchor = root.path().join("daemon.lock");
         let lease = root.path().join("daemon.lease");
-        drop(acquire_runtime_lease_anchor(&anchor).unwrap().0);
+        drop(
+            acquire_runtime_lease_anchor_with_wait(&anchor, &lease, 100, None, std::thread::sleep)
+                .unwrap()
+                .0,
+        );
         fs::write(&lease, b"format=legacy.daemon.v0\npid=1\n").unwrap();
         let expected = DurableRuntimeLeaseIdentity::new(1, "child", WriterGeneration(1)).unwrap();
         let corrupt_bytes = fs::read(&lease).unwrap();
@@ -3023,7 +3160,14 @@ mod tests {
         heartbeat_at_ms: u128,
         ttl_ms: u128,
     ) -> DurableRuntimeLeaseRecord {
-        let (anchor_file, _) = acquire_runtime_lease_anchor(anchor).unwrap();
+        let (anchor_file, _) = acquire_runtime_lease_anchor_with_wait(
+            anchor,
+            lease,
+            heartbeat_at_ms,
+            None,
+            std::thread::sleep,
+        )
+        .unwrap();
         let writer = backend.acquire_runtime_writer().unwrap();
         let record = DurableRuntimeLeaseRecord::active(
             &writer,

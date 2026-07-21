@@ -2723,30 +2723,6 @@ fn start_daemon_inner(
             .with_context("path", options.lock_dir.display().to_string())
             .with_context("io_error", error.to_string())
     })?;
-    let observed_probe = probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms())?;
-    if observed_probe.owner_live() {
-        return Err(EvaError::conflict(
-            "daemon start refused because the lease owner is still live",
-        )
-        .with_context("anchor_path", lock_file(&options).display().to_string())
-        .with_context(
-            "generation",
-            observed_probe
-                .record()
-                .map(|record| record.generation().0.to_string())
-                .unwrap_or_else(|| "unknown".to_owned()),
-        ));
-    }
-    if let Some(record) = observed_probe.record().filter(|record| {
-        record.state() == DurableRuntimeLeaseState::Active && !observed_probe.expired()
-    }) {
-        return Err(EvaError::conflict(
-            "daemon start refused until the dead owner's lease expires",
-        )
-        .with_context("pid", record.pid().to_string())
-        .with_context("generation", record.generation().0.to_string())
-        .with_context("expires_at_ms", record.expires_at_ms().to_string()));
-    }
     let durable_backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
         &options.durable_backend,
     ))?;
@@ -5466,7 +5442,6 @@ pub fn cleanup_failed_daemon_start(
 
     let anchor_path = lock_file(options);
     let lease_path = lease_file(options);
-    let probe = probe_runtime_lease(&anchor_path, &lease_path, now_ms())?;
     let identity_from_claimed = claimed
         .map(|frame| {
             DurableRuntimeLeaseIdentity::new(
@@ -5480,6 +5455,30 @@ pub fn cleanup_failed_daemon_start(
             )
         })
         .transpose()?;
+    if identity_from_claimed.is_none() {
+        if let Some(cleanup_complete) = daemon_startup_cleanup_without_lease(options)? {
+            if !cleanup_complete {
+                return Err(EvaError::conflict(
+                    "failed daemon startup has residue without a reclaimable lease identity",
+                ));
+            }
+            write_daemon_startup_failure_frame(
+                options,
+                handshake,
+                &DaemonStartupFrame::failed(handshake, expected_child_pid, None, failure, true),
+            )?;
+            return Ok(DaemonStartupCleanupReport {
+                child_pid: expected_child_pid,
+                identity_source: "no_lease".to_owned(),
+                pid_removed: false,
+                state_stopped: false,
+                lease: None,
+                cleanup_complete: true,
+            });
+        }
+    }
+
+    let probe = probe_runtime_lease(&anchor_path, &lease_path, now_ms())?;
     let (identity, identity_source) = match (identity_from_claimed, probe.record()) {
         (Some(identity), Some(record)) => {
             if record.identity() != identity {
@@ -5758,6 +5757,9 @@ fn ensure_startup_not_aborted(
 }
 
 fn daemon_startup_cleanup_complete(options: &DaemonStartOptions) -> Result<bool, EvaError> {
+    if let Some(cleanup_complete) = daemon_startup_cleanup_without_lease(options)? {
+        return Ok(cleanup_complete);
+    }
     let probe = probe_runtime_lease(lock_file(options), lease_file(options), now_ms())?;
     let lease_inactive = probe
         .record()
@@ -5770,6 +5772,41 @@ fn daemon_startup_cleanup_complete(options: &DaemonStartOptions) -> Result<bool,
         && lease_inactive
         && read_pid_projection(options)?.is_none()
         && state_inactive)
+}
+
+fn daemon_startup_cleanup_without_lease(
+    options: &DaemonStartOptions,
+) -> Result<Option<bool>, EvaError> {
+    daemon_startup_cleanup_without_lease_after_initial_observation(options, || {})
+}
+
+fn daemon_startup_cleanup_without_lease_after_initial_observation(
+    options: &DaemonStartOptions,
+    after_initial_observation: impl FnOnce(),
+) -> Result<Option<bool>, EvaError> {
+    let lease_path = lease_file(options);
+    let lease_exists = || {
+        lease_path.try_exists().map_err(|error| {
+            EvaError::internal("failed to inspect daemon lease during startup cleanup")
+                .with_context("path", lease_path.display().to_string())
+                .with_context("io_error", error.to_string())
+        })
+    };
+    if lease_exists()? {
+        return Ok(None);
+    }
+    after_initial_observation();
+    let state = read_state(options);
+    let pid = read_pid_projection(options);
+    // The lease is published before running state and PID projections. Recheck it after both
+    // reads so a concurrent successor is routed through identity-aware cleanup.
+    if lease_exists()? {
+        return Ok(None);
+    }
+    let state_inactive = state?
+        .map(|state| state.status != "running")
+        .unwrap_or(true);
+    Ok(Some(pid?.is_none() && state_inactive))
 }
 
 fn startup_dir(options: &DaemonStartOptions) -> PathBuf {
@@ -8916,6 +8953,92 @@ mod tests {
             successor_token
         );
         assert_eq!(probe.record().unwrap(), successor.record());
+        drop(successor);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn unclaimed_cleanup_does_not_probe_an_inflight_prelease_owner() {
+        let root = temp_root("startup-prelease-owner");
+        let options = daemon_options(&root, false);
+        fs::create_dir_all(&options.lock_dir).unwrap();
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let owner = DurableRuntimeLeaseGuard::acquire_with_process_start_token(
+            &backend,
+            lock_file(&options),
+            lease_file(&options),
+            "inflight-owner-token",
+            now_ms(),
+            DEFAULT_RUNTIME_LEASE_TTL_MS,
+        )
+        .unwrap();
+        fs::remove_file(lease_file(&options)).unwrap();
+        let handshake = DaemonStartupHandshake::new(
+            "failed-launcher-nonce",
+            std::process::id(),
+            "failed-child-token",
+        )
+        .unwrap();
+
+        assert!(daemon_startup_cleanup_complete(&options).unwrap());
+        let report = cleanup_failed_daemon_start(
+            &options,
+            &handshake,
+            std::process::id(),
+            None,
+            &EvaError::conflict("injected pre-lease loser"),
+        )
+        .unwrap();
+        assert_eq!(report.identity_source, "no_lease");
+        assert!(report.cleanup_complete);
+        let probe =
+            probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms()).unwrap();
+        assert!(probe.owner_live());
+        assert!(probe.record().is_none());
+
+        drop(owner);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn no_lease_cleanup_rechecks_after_a_successor_publishes() {
+        let root = temp_root("startup-successor-during-cleanup");
+        let options = daemon_options(&root, false);
+        fs::create_dir_all(&options.lock_dir).unwrap();
+        fs::create_dir_all(&options.state_dir).unwrap();
+        fs::write(state_file(&options), "invalid-state").unwrap();
+        let backend = FileSystemDurableBackend::open(DurableBackendOptions::read_write(
+            &options.durable_backend,
+        ))
+        .unwrap();
+        let mut successor = None;
+
+        let cleanup =
+            daemon_startup_cleanup_without_lease_after_initial_observation(&options, || {
+                successor = Some(
+                    DurableRuntimeLeaseGuard::acquire_with_process_start_token(
+                        &backend,
+                        lock_file(&options),
+                        lease_file(&options),
+                        "successor-during-cleanup-token",
+                        now_ms(),
+                        DEFAULT_RUNTIME_LEASE_TTL_MS,
+                    )
+                    .unwrap(),
+                );
+            })
+            .unwrap();
+
+        assert_eq!(cleanup, None);
+        let successor = successor.unwrap();
+        let probe =
+            probe_runtime_lease(lock_file(&options), lease_file(&options), now_ms()).unwrap();
+        assert!(probe.owner_live());
+        assert_eq!(probe.record(), Some(successor.record()));
+
         drop(successor);
         fs::remove_dir_all(root).ok();
     }
