@@ -232,12 +232,21 @@ impl Drop for DurableWriterGuardInner {
 }
 
 #[derive(Debug)]
-/// migration lock 的 RAII 所有者，File Drop 时由 OS 自动释放。
+/// migration lock 的 RAII 所有者；Unix 会先显式解锁，再关闭文件句柄。
 struct MigrationLockGuard {
-    /// 固定锁锚点；文件句柄 Drop 时由 OS 自动释放 advisory lock。
+    /// 固定锁锚点；guard Drop 时释放 advisory lock。
     _lock_file: File,
     /// 锁文件路径，仅用于诊断。
     _path: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for MigrationLockGuard {
+    fn drop(&mut self) {
+        // A forked child or duplicated descriptor can keep the shared open-file
+        // description alive, so explicitly release flock before closing this File.
+        let _ = self._lock_file.unlock();
+    }
 }
 
 /// 持有稳定 lock anchor 的进程级记录写锁。
@@ -2152,6 +2161,21 @@ mod tests {
         assert!(migration_lock_is_held(&layout).unwrap());
         drop(guard);
         assert!(!migration_lock_is_held(&layout).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migration_lock_drop_unlocks_a_duplicated_descriptor() {
+        let root = test_root("migration-duplicated-fd");
+        fs::create_dir_all(root.path()).unwrap();
+        let layout = DurableBackendLayout::current(root.path());
+        let guard = acquire_migration_lock(&layout).unwrap();
+        let duplicated_lock = guard._lock_file.try_clone().unwrap();
+
+        drop(guard);
+        assert!(!migration_lock_is_held(&layout).unwrap());
+
+        drop(duplicated_lock);
     }
 
     #[test]

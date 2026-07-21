@@ -4308,7 +4308,9 @@ mod tests {
 
         let report = supervisor
             .drain(
-                ProviderDrainOptions::new(Duration::from_millis(20))
+                // This success-path test performs several durable filesystem
+                // operations; keep its budget above CI scheduler jitter.
+                ProviderDrainOptions::new(Duration::from_secs(1))
                     .unwrap()
                     .with_poll_interval(Duration::from_millis(1))
                     .unwrap(),

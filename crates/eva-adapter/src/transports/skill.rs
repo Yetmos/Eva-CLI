@@ -2000,6 +2000,11 @@ mod tests {
     use eva_core::{CapabilityName, ErrorKind};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(windows)]
+    const PROCESS_TEST_TIMEOUT_MS: u64 = 30_000;
+    #[cfg(not(windows))]
+    const PROCESS_TEST_TIMEOUT_MS: u64 = 5_000;
+
     /// 验证 `skill_schema_requires_declared_fields` 场景下的预期行为。
     #[test]
     fn skill_schema_requires_declared_fields() {
@@ -2356,7 +2361,9 @@ mod tests {
             method: None,
             credential_env: Vec::new(),
             provider: eva_config::ProviderConfig::default(),
-            timeout_ms: Some(5_000),
+            // PowerShell startup can exceed five seconds on a loaded Windows
+            // CI runner; timeout behavior is covered by the explicit 1 ms test.
+            timeout_ms: Some(PROCESS_TEST_TIMEOUT_MS),
             max_concurrency: None,
             output_limit_bytes: Some(4096),
             max_prompt_bytes: Some(4096),

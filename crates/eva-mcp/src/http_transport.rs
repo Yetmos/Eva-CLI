@@ -1666,6 +1666,9 @@ mod tests {
                 | io::ErrorKind::BrokenPipe
                 | io::ErrorKind::NotConnected,
             ) => {}
+            // Darwin can surface EINVAL when socket shutdown wins the race
+            // with the timeout setsockopt immediately before the blocking read.
+            Err(io::ErrorKind::InvalidInput) if cfg!(target_os = "macos") => {}
             outcome => panic!("reader was not interrupted by socket shutdown: {outcome:?}"),
         }
     }
