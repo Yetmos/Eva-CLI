@@ -82,11 +82,16 @@ function Write-PlatformFixture {
   }
   Write-Text $stdoutPath (($response | ConvertTo-Json -Depth 6 -Compress) + "`n")
   Write-Text $stderrPath ""
+  $capturedSubjectPath = switch ($OperatingSystem) {
+    "Windows" { "D:\a\Eva-CLI\Eva-CLI\.eva\w4-mcp-compatibility-evidence\release-mcp-compatibility.evidence" }
+    "macOS" { "/Users/runner/work/Eva-CLI/Eva-CLI/.eva/w4-mcp-compatibility-evidence/release-mcp-compatibility.evidence" }
+    default { "/home/runner/work/Eva-CLI/Eva-CLI/.eva/w4-mcp-compatibility-evidence/release-mcp-compatibility.evidence" }
+  }
   $capture = [ordered]@{
     format = "eva.release.command_capture.v1"
     capture_id = "mcp.compatibility.measure"
     executable = "cargo"
-    argv = @("run", "--quiet", "--", "mcp", "compatibility", "measure", "--subject-output", $subjectPath, "--output", "json")
+    argv = @("run", "--quiet", "--", "mcp", "compatibility", "measure", "--subject-output", $capturedSubjectPath, "--output", "json")
     outcome = "success"
     started_at = "2026-01-01T00:00:00.0000000+00:00"
     finished_at = "2026-01-01T00:00:01.0000000+00:00"
@@ -131,6 +136,15 @@ try {
   if ($result.status -cne "verified" -or [int]$result.platform_count -ne 3) {
     throw "Verified MCP compatibility fixture returned an invalid receipt."
   }
+
+  $windowsCapturePath = Join-Path $tempRoot "windows/mcp-compatibility.capture.json"
+  $windowsCapture = [System.IO.File]::ReadAllText($windowsCapturePath, $Utf8NoBom) | ConvertFrom-Json
+  $windowsCapture.argv[7] = "D:\a\Eva-CLI\Eva-CLI\.eva\wrong-subject.evidence"
+  Write-Text $windowsCapturePath (($windowsCapture | ConvertTo-Json -Depth 8) + "`n")
+  Assert-Fails {
+    & $Validator -EvidencePath $tempRoot -ExpectedRunId $RunId -ExpectedRunAttempt $RunAttempt | Out-Null
+  } "capture_argv_invalid"
+  Write-PlatformFixture $tempRoot "Windows"
 
   Write-Text (Join-Path $tempRoot "linux/unverified.txt") "unverified`n"
   Assert-Fails {

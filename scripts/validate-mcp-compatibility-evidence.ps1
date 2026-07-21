@@ -116,6 +116,20 @@ function Assert-PositiveDecimal {
   }
 }
 
+function Get-PortableFileName {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path) -or $Path.Contains([char]0)) {
+    return ""
+  }
+  $normalized = $Path.Replace('\', '/')
+  $separator = $normalized.LastIndexOf('/')
+  if ($separator -lt 0) {
+    return $normalized
+  }
+  return $normalized.Substring($separator + 1)
+}
+
 function Read-CanonicalSubject {
   param([string]$Path)
 
@@ -226,7 +240,7 @@ function Assert-Capture {
       Fail-Evidence "capture_argv_invalid" "${ExpectedOs}:$index"
     }
   }
-  if ([System.IO.Path]::GetFileName($argv[7]) -cne $SubjectName -or
+  if ((Get-PortableFileName $argv[7]) -cne $SubjectName -or
       $argv[8] -cne "--output" -or $argv[9] -cne "json") {
     Fail-Evidence "capture_argv_invalid" $ExpectedOs
   }
