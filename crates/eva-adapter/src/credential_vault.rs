@@ -18,6 +18,9 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(target_os = "macos")]
+use std::process::Command;
+
 /// A vault implementation opens one session for one admitted provider scope.
 pub trait CredentialVault: fmt::Debug + Send + Sync {
     /// Open a short-lived session.  Implementations must not put secret bytes
@@ -124,6 +127,168 @@ impl CredentialVault for FailClosedCredentialVault {
                 .with_provider_code("credential_vault_unconfigured"),
         )
     }
+}
+
+/// Explicit macOS Keychain adapter for controlled development fixtures.
+///
+/// This vault is never selected by default. Callers must explicitly install it
+/// into an `AdapterRuntime`, and credentials remain subject to the lease's
+/// manifest-declared reference checks. Production key custody remains an
+/// external authority decision.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+pub struct MacosKeychainCredentialVault {
+    runner: Arc<dyn MacosKeychainRunner>,
+}
+
+#[cfg(target_os = "macos")]
+impl fmt::Debug for MacosKeychainCredentialVault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MacosKeychainCredentialVault([REDACTED_AUTHORITY])")
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl MacosKeychainCredentialVault {
+    /// Create an explicit vault backed by the current user's login Keychain.
+    pub fn new() -> Self {
+        Self {
+            runner: Arc::new(SystemMacosKeychainRunner),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_runner_for_test(runner: impl MacosKeychainRunner + 'static) -> Self {
+        Self {
+            runner: Arc::new(runner),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Default for MacosKeychainCredentialVault {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl CredentialVault for MacosKeychainCredentialVault {
+    fn open_session(
+        &self,
+        scope: &ProviderCredentialScope,
+    ) -> Result<Box<dyn CredentialSession>, EvaError> {
+        Ok(Box::new(MacosKeychainCredentialSession {
+            runner: Arc::clone(&self.runner),
+            scope_id: scope.session_id.clone(),
+            released: false,
+        }))
+    }
+}
+
+#[cfg(target_os = "macos")]
+trait MacosKeychainRunner: fmt::Debug + Send + Sync {
+    fn find_generic_password(&self, service: &str, account: &str) -> Result<String, EvaError>;
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct SystemMacosKeychainRunner;
+
+#[cfg(target_os = "macos")]
+impl MacosKeychainRunner for SystemMacosKeychainRunner {
+    fn find_generic_password(&self, service: &str, account: &str) -> Result<String, EvaError> {
+        let output = Command::new("/usr/bin/security")
+            .env_clear()
+            .args(["find-generic-password", "-s", service, "-a", account, "-w"])
+            .output()
+            .map_err(|error| {
+                EvaError::unavailable("macOS Keychain query could not start")
+                    .with_provider_code("keychain_query_unavailable")
+                    .with_context("os_error_kind", format!("{:?}", error.kind()))
+            })?;
+        if !output.status.success() {
+            return Err(
+                EvaError::unavailable("macOS Keychain credential is unavailable")
+                    .with_provider_code("keychain_credential_unavailable"),
+            );
+        }
+        let value = String::from_utf8(output.stdout).map_err(|_| {
+            EvaError::unavailable("macOS Keychain credential is not valid UTF-8")
+                .with_provider_code("keychain_credential_invalid")
+        })?;
+        Ok(value
+            .strip_suffix("\r\n")
+            .or_else(|| value.strip_suffix('\n'))
+            .unwrap_or(&value)
+            .to_owned())
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct MacosKeychainCredentialSession {
+    runner: Arc<dyn MacosKeychainRunner>,
+    scope_id: String,
+    released: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl fmt::Debug for MacosKeychainCredentialSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MacosKeychainCredentialSession")
+            .field("scope_id", &self.scope_id)
+            .field("released", &self.released)
+            .finish()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl CredentialSession for MacosKeychainCredentialSession {
+    fn fetch(&mut self, secret_ref: &str) -> Result<SecretValue, EvaError> {
+        if self.released {
+            return Err(EvaError::conflict(
+                "provider credential session has been released",
+            ));
+        }
+        let (service, account) = parse_macos_keychain_reference(secret_ref)?;
+        self.runner
+            .find_generic_password(service, account)
+            .map(SecretValue::new)
+    }
+
+    fn release(&mut self) -> Result<(), EvaError> {
+        self.released = true;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_keychain_reference(secret_ref: &str) -> Result<(&str, &str), EvaError> {
+    let Some(path) = secret_ref.strip_prefix("vault://keychain/") else {
+        return Err(EvaError::invalid_argument(
+            "macOS Keychain credential reference must use vault://keychain/<service>/<account>",
+        )
+        .with_provider_code("keychain_reference_invalid"));
+    };
+    let Some((service, account)) = path.split_once('/') else {
+        return Err(EvaError::invalid_argument(
+            "macOS Keychain credential reference is missing service or account",
+        )
+        .with_provider_code("keychain_reference_invalid"));
+    };
+    if service.is_empty()
+        || account.is_empty()
+        || account.contains('/')
+        || service.contains(['\r', '\n'])
+        || account.contains(['\r', '\n'])
+    {
+        return Err(EvaError::invalid_argument(
+            "macOS Keychain credential reference has invalid service or account",
+        )
+        .with_provider_code("keychain_reference_invalid"));
+    }
+    Ok((service, account))
 }
 
 /// In-memory vault intended for explicit tests and controlled local fixtures.
@@ -1202,6 +1367,79 @@ mod tests {
             error.provider_code().unwrap().as_str(),
             "credential_vault_unconfigured"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Debug)]
+    struct TestKeychainRunner {
+        value: Option<String>,
+        calls: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl MacosKeychainRunner for TestKeychainRunner {
+        fn find_generic_password(&self, service: &str, account: &str) -> Result<String, EvaError> {
+            self.calls
+                .lock()
+                .expect("keychain call log")
+                .push((service.to_owned(), account.to_owned()));
+            self.value.clone().ok_or_else(|| {
+                EvaError::unavailable("macOS Keychain credential is unavailable")
+                    .with_provider_code("keychain_credential_unavailable")
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_keychain_vault_uses_explicit_reference_without_leaking_value() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let vault = MacosKeychainCredentialVault::with_runner_for_test(TestKeychainRunner {
+            value: Some("top-secret".to_owned()),
+            calls: Arc::clone(&calls),
+        });
+        let mut session = vault.open_session(&scope()).expect("open keychain session");
+        let secret = session
+            .fetch("vault://keychain/eva-cli.test/provider-token")
+            .expect("fetch keychain secret");
+
+        assert_eq!(secret.expose(), "top-secret");
+        assert_eq!(format!("{secret:?}"), "[REDACTED]");
+        assert_eq!(
+            calls.lock().expect("keychain calls").as_slice(),
+            &[("eva-cli.test".to_owned(), "provider-token".to_owned())]
+        );
+        session.release().expect("release keychain session");
+        assert!(session
+            .fetch("vault://keychain/eva-cli.test/provider-token")
+            .is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_keychain_vault_rejects_ambiguous_or_unrelated_references_before_query() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let vault = MacosKeychainCredentialVault::with_runner_for_test(TestKeychainRunner {
+            value: Some("top-secret".to_owned()),
+            calls: Arc::clone(&calls),
+        });
+        let mut session = vault.open_session(&scope()).expect("open keychain session");
+
+        for reference in [
+            "vault://providers/a/token",
+            "vault://keychain/service",
+            "vault://keychain/service/account/extra",
+            "vault://keychain/service\n/account",
+        ] {
+            let error = session
+                .fetch(reference)
+                .expect_err("invalid keychain reference");
+            assert_eq!(
+                error.provider_code().unwrap().as_str(),
+                "keychain_reference_invalid"
+            );
+        }
+        assert!(calls.lock().expect("keychain calls").is_empty());
     }
 
     #[test]

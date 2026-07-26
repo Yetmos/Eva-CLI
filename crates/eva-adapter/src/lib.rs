@@ -29,6 +29,8 @@ pub mod transports;
 pub use capability_host::{
     is_retryable_provider_failure, response_from_report, AdapterBackedCapabilityHost,
 };
+#[cfg(target_os = "macos")]
+pub use credential_vault::MacosKeychainCredentialVault;
 pub use credential_vault::{
     CredentialSession, CredentialSessionLease, CredentialVault, CredentialVaultHandle,
     FailClosedCredentialVault, MemoryCredentialVault, SecretValue,
