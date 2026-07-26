@@ -1,5 +1,5 @@
 //! 面向开发闭环的 Doctor 自检；只读取项目状态，不启动真实运行时。
-//! Doctor checks for the V0.3 developer loop.
+//! Doctor checks for the controlled local runtime boundary.
 
 use crate::run::display_path;
 use eva_config::{load_project_config, schema_paths};
@@ -68,7 +68,7 @@ impl DoctorReport {
 ///
 /// 配置加载失败后立即返回，因为后续 schema、路径和 runtime builder 检查都依赖已验证配置；
 /// 这种短路可避免在同一根因上产生大量误导性错误。
-/// Runs V0.3 doctor checks without starting a real runtime.
+/// Runs doctor checks without starting a real runtime.
 pub fn doctor_project(project_root: &Path) -> DoctorReport {
     let mut report = DoctorReport {
         project_root: display_path(project_root),
@@ -196,23 +196,17 @@ pub fn doctor_project(project_root: &Path) -> DoctorReport {
         "restore crates/eva-lua-host before running V1.0 core Lua execution",
     );
 
-    let external_count = project
-        .adapters
-        .iter()
-        .filter(|adapter| {
-            matches!(
-                adapter.transport.as_str(),
-                "stdio" | "http" | "mcp" | "skill" | "hardware"
-            )
-        })
-        .count();
+    let external_count = project.adapters.len();
     report.checks.push(DoctorCheck::warning(
         "external.adapters",
         format!(
-            "{external_count} external adapter declarations found; V0.3 records placeholders but does not probe provider executables"
+            "{external_count} validated adapter declarations found; AdapterRuntime provides controlled list/probe boundaries, but doctor does not execute providers or verify production transport dependencies"
         ),
         None,
-        Some("use V1.1 adapter probe once AdapterRuntime is implemented".to_owned()),
+        Some(
+            "run `eva adapter list --output json` and `eva adapter probe --adapter <id> --output json`; verify credentials, executables, network endpoints, and hardware separately"
+                .to_owned(),
+        ),
     ));
 
     report
@@ -298,8 +292,8 @@ mod tests {
     }
 
     #[test]
-    /// 验证仓库示例项目没有阻塞错误，同时保留预期的版本阶段警告。
-    fn doctor_accepts_sample_project_with_only_v03_warnings() {
+    /// 验证仓库示例项目没有阻塞错误，并准确描述当前 AdapterRuntime 边界。
+    fn doctor_reports_current_controlled_adapter_boundary() {
         let report = doctor_project(&workspace_root());
 
         assert!(!report.has_errors());
@@ -307,9 +301,21 @@ mod tests {
             .checks
             .iter()
             .any(|check| check.name == "config.load"));
-        assert!(report
+        let external = report
             .checks
             .iter()
-            .any(|check| check.status == CheckStatus::Warning));
+            .find(|check| check.name == "external.adapters")
+            .expect("external adapter check");
+        assert_eq!(external.status, CheckStatus::Warning);
+        assert!(external.message.contains("validated adapter declarations"));
+        assert!(external.message.contains("AdapterRuntime"));
+        assert!(!external.message.contains("V0.3"));
+        assert!(!external.message.contains("placeholder"));
+        assert_eq!(
+            external.suggestion.as_deref(),
+            Some(
+                "run `eva adapter list --output json` and `eva adapter probe --adapter <id> --output json`; verify credentials, executables, network endpoints, and hardware separately"
+            )
+        );
     }
 }
