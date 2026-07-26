@@ -2265,6 +2265,22 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn skill_directory_rejects_group_writable_non_sticky_ancestor_before_create() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root("group-writable-ancestor");
+        fs::create_dir(&root.path).unwrap();
+        fs::set_permissions(&root.path, fs::Permissions::from_mode(0o775)).unwrap();
+        let child = root.path.join("provider-work");
+
+        let error = ensure_skill_directory_tree(&child, "test skill directory").unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(!child.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn skill_artifact_ancestor_symlink_is_rejected() {
         let root = test_root("artifact-ancestor-symlink");
         let artifact_dir = root.path.join("artifacts");
