@@ -1391,6 +1391,21 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[derive(Debug)]
+    struct LeakyKeychainRunner;
+
+    #[cfg(target_os = "macos")]
+    impl MacosKeychainRunner for LeakyKeychainRunner {
+        fn find_generic_password(
+            &self,
+            _service: &str,
+            _account: &str,
+        ) -> Result<String, EvaError> {
+            Err(EvaError::unavailable("Keychain returned top-secret"))
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_keychain_vault_uses_explicit_reference_without_leaking_value() {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -1440,6 +1455,26 @@ mod tests {
             );
         }
         assert!(calls.lock().expect("keychain calls").is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_keychain_vault_error_is_sanitized_by_credential_lease() {
+        let vault = MacosKeychainCredentialVault::with_runner_for_test(LeakyKeychainRunner);
+        let refs = vec![ProviderVaultSecretRef {
+            env: "API_TOKEN".to_owned(),
+            secret_ref: "vault://keychain/eva-cli.test/provider-token".to_owned(),
+        }];
+
+        let error = CredentialSessionLease::open(&vault, Some(&scope()), &refs, &[])
+            .expect_err("leaky keychain error must be sanitized");
+
+        assert_eq!(
+            error.provider_code().unwrap().as_str(),
+            "missing_credential"
+        );
+        assert!(!error.to_string().contains("top-secret"));
+        assert!(!format!("{error:?}").contains("top-secret"));
     }
 
     #[test]
