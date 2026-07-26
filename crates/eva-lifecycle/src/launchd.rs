@@ -1444,7 +1444,7 @@ fn parse_launchctl_print(
             Ok(LaunchdObservedState::Running)
         }
         "waiting" | "exited" | "stopped" | "not running" => Ok(LaunchdObservedState::LoadedStopped),
-        "spawn scheduled" | "starting" => Ok(LaunchdObservedState::Transitional),
+        "spawn scheduled" | "starting" | "xpcproxy" => Ok(LaunchdObservedState::Transitional),
         value => Err(EvaError::conflict("launchctl returned an unknown state")
             .with_context("launchd_state", value.to_owned())),
     }
@@ -3201,6 +3201,27 @@ mod tests {
     }
 
     #[test]
+    fn launchctl_print_parser_accepts_xpcproxy_as_transitional() {
+        let target = "gui/501/com.eva-cli.launchd-test";
+        let plist = "/Users/test/Library/LaunchAgents/com.eva-cli.launchd-test.plist";
+        let program = "/usr/bin/yes";
+        let output = format!(
+            "{target} = {{\n\tstate = xpcproxy\n\tpath = {plist}\n\tprogram = {program}\n}}\n"
+        );
+
+        assert_eq!(
+            parse_launchctl_print(
+                &report(0, output.as_bytes(), b""),
+                target,
+                plist,
+                Some(program),
+            )
+            .expect("xpcproxy is a valid launchd transition state"),
+            LaunchdObservedState::Transitional
+        );
+    }
+
+    #[test]
     fn permission_and_errno_mapping_precedes_missing_exit_codes() {
         let root = TempRoot::new();
         let domain = LaunchdDomain::System;
@@ -3508,6 +3529,10 @@ mod tests {
         };
         let mut adapter = LaunchdAdapter::native(&definition).expect("native launchd adapter");
         let remove_root_when_empty = selector == "gui" && !adapter.plist_root.exists();
+        eprintln!(
+            "launchd_probe begin_ns={nonce} selector={selector} uid={} label={label} program=/usr/bin/yes operations=install,status,restart,stop,uninstall",
+            unsafe { libc::geteuid() }
+        );
 
         let lifecycle = (|| -> Result<(), EvaError> {
             let install = adapter.install(mutation_request(&definition))?;
@@ -3541,6 +3566,14 @@ mod tests {
         adapter_cleanup.expect("adapter launchd cleanup");
         assert!(!adapter.plist_path().exists(), "launchd plist residue");
         lifecycle.expect("native launchd lifecycle");
+        let end_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        eprintln!(
+            "launchd_probe end_ns={end_ns} selector={selector} uid={} label={label} result=passed plist_residue=0 registration_residue=0",
+            unsafe { libc::geteuid() }
+        );
     }
 
     #[cfg(target_os = "macos")]
