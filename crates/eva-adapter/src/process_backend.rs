@@ -1528,6 +1528,29 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn macos_current_identity_spawns_with_daemon_identity() {
+        let marker = run_as_marker_path("macos-current");
+        let expected_uid = unsafe { libc::geteuid() };
+        let expected_gid = unsafe { libc::getegid() };
+        let mut handle = ProcessBackend::new()
+            .spawn_as(
+                run_as_marker_command(&marker),
+                &ProviderRunAsIdentity::Current,
+            )
+            .expect("current identity must be spawnable on macOS");
+
+        assert!(handle
+            .wait()
+            .expect("wait for current identity helper")
+            .success());
+        let evidence = fs::read_to_string(&marker).expect("current identity evidence");
+        assert!(evidence.contains(&format!("euid={expected_uid}")));
+        assert!(evidence.contains(&format!("egid={expected_gid}")));
+        let _ = fs::remove_file(marker);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn macos_explicit_unix_identity_fails_closed_before_spawn() {
         let marker = run_as_marker_path("macos-explicit-unix");
         let error = ProcessBackend::new()
