@@ -279,6 +279,11 @@ jobs:
         shell: powershell
         run: ./scripts/test-platform-service.ps1 -SelfTest
 
+      - name: Windows platform service evidence readback contract
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-platform-service-evidence.ps1
+
       - name: Daemon runtime smoke tests
         run: |
           cargo test -p eva-runtime daemon_control_status_and_shutdown_round_trip_has_trace_id
