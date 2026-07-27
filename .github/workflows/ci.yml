@@ -274,6 +274,11 @@ jobs:
         shell: pwsh
         run: ./scripts/test-runtime-process-evidence.ps1
 
+      - name: Windows platform service harness contract
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-platform-service.ps1 -SelfTest
+
       - name: Daemon runtime smoke tests
         run: |
           cargo test -p eva-runtime daemon_control_status_and_shutdown_round_trip_has_trace_id
