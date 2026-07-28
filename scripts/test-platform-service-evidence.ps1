@@ -172,17 +172,36 @@ function New-PlatformServiceFixture {
     [System.IO.Directory]::CreateDirectory($captureDirectory) | Out-Null
     $stdoutPath = Join-Path $captureDirectory "capture.stdout"
     $stderrPath = Join-Path $captureDirectory "capture.stderr"
-    $stdout = [ordered]@{
-      ok = $true
-      exit_code = 0
-      command = "service.$($plan.command)"
-      data = [ordered]@{
+    $data = if ([string]$plan.command -ceq "status") {
+      [ordered]@{
         kind = "windows_service"
         service_name = $serviceName
+        configured = $true
         production_adapter = $true
         state = $plan.state
         mutation_executed = [bool]$plan.mutation
+        active_generation = $null
+        active_release = $null
+        candidate_generation = $null
+        audit = @("platform-service-evidence-test:$($plan.step_id)")
       }
+    } else {
+      [ordered]@{
+        kind = "windows_service"
+        service_name = $serviceName
+        operation = [string]$plan.command
+        state = $plan.state
+        mutation_executed = [bool]$plan.mutation
+        production_adapter = $true
+        audit = @("platform-service-evidence-test:$($plan.step_id)")
+      }
+    }
+    $stdout = [ordered]@{
+      ok = $true
+      command = "service.$($plan.command)"
+      exit_code = 0
+      data = $data
+      trace = [ordered]@{ span_id = "cli.service.$($plan.command)" }
     }
     Write-Utf8LfFile -Path $stdoutPath -Text ($stdout | ConvertTo-Json -Depth 8 -Compress)
     [System.IO.File]::WriteAllText($stderrPath, "", $Utf8NoBom)
@@ -267,6 +286,161 @@ function New-PlatformServiceFixture {
   }
 }
 
+function New-PlatformServiceRebootFixture {
+  param(
+    [string]$Root,
+    [string]$Name
+  )
+
+  $fixtureRoot = Join-Path $Root $Name
+  $evidenceRoot = Join-Path $fixtureRoot "evidence"
+  $receiptPath = Join-Path (Join-Path $fixtureRoot "receipt") "receipt.json"
+  $projectRoot = Join-Path $fixtureRoot "project"
+  $serviceName = "eva-ext01-$RunId"
+  $evaExecutable = "C:\eva\eva.exe"
+  [System.IO.Directory]::CreateDirectory((Join-Path $evidenceRoot "captures")) | Out-Null
+
+  Write-Json -Path (Join-Path $evidenceRoot "platform-service-harness.owner.json") -Value ([ordered]@{
+      format = "eva.windows.platform_service_evidence.v1"
+      source_commit = $SourceCommit
+      run_id = $RunId
+      service_name = $serviceName
+      repository_root = [System.IO.Path]::GetFullPath($RepositoryRoot)
+      project_root = [System.IO.Path]::GetFullPath($projectRoot)
+      eva_executable_sha256 = $EvaDigest
+    })
+
+  function New-LocalStepCapture {
+    param([hashtable[]]$Plan)
+
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($plan in $Plan) {
+      $captureDirectory = Join-Path (Join-Path $evidenceRoot "captures") ("{0:D2}-{1}" -f [int]$plan.ordinal, [string]$plan.step_id)
+      [System.IO.Directory]::CreateDirectory($captureDirectory) | Out-Null
+      $stdoutPath = Join-Path $captureDirectory "capture.stdout"
+      $stderrPath = Join-Path $captureDirectory "capture.stderr"
+      $data = if ([string]$plan.command -ceq "status") {
+        [ordered]@{
+          kind = "windows_service"
+          service_name = $serviceName
+          configured = $true
+          production_adapter = $true
+          state = $plan.state
+          mutation_executed = [bool]$plan.mutation
+          active_generation = $null
+          active_release = $null
+          candidate_generation = $null
+          audit = @("platform-service-evidence-test:$($plan.step_id)")
+        }
+      } else {
+        [ordered]@{
+          kind = "windows_service"
+          service_name = $serviceName
+          operation = [string]$plan.command
+          state = $plan.state
+          mutation_executed = [bool]$plan.mutation
+          production_adapter = $true
+          audit = @("platform-service-evidence-test:$($plan.step_id)")
+        }
+      }
+      Write-Utf8LfFile -Path $stdoutPath -Text ([ordered]@{
+          ok = $true
+          command = "service.$($plan.command)"
+          exit_code = 0
+          data = $data
+          trace = [ordered]@{ span_id = "cli.service.$($plan.command)" }
+        } | ConvertTo-Json -Depth 8 -Compress)
+      [System.IO.File]::WriteAllText($stderrPath, "", $Utf8NoBom)
+      $capture = [ordered]@{
+        format = "eva.release.command_capture.v1"
+        capture_id = "platform-service.$($plan.step_id)"
+        executable = $evaExecutable
+        argv = @("service", [string]$plan.command, "--project", [System.IO.Path]::GetFullPath($projectRoot), "--output", "json")
+        outcome = "success"
+        started_at = "2026-07-27T00:00:00.0000000+00:00"
+        finished_at = "2026-07-27T00:00:01.0000000+00:00"
+        duration_ms = 1000
+        exit_code = 0
+        failure_reason = $null
+        runner = [ordered]@{
+          provider = $RunnerProvider
+          identity = $RunnerIdentity
+          name = $RunnerName
+          os = "Windows"
+          architecture = "X64"
+          run_id = $RunnerRunId
+          run_attempt = $RunnerRunAttempt
+          job = $RunnerJob
+        }
+        stdout = [ordered]@{ path = "capture.stdout"; byte_count = [System.IO.FileInfo]::new($stdoutPath).Length; sha256 = Get-Sha256File $stdoutPath }
+        stderr = [ordered]@{ path = "capture.stderr"; byte_count = [System.IO.FileInfo]::new($stderrPath).Length; sha256 = Get-Sha256File $stderrPath }
+      }
+      $capturePath = Join-Path $captureDirectory "capture.json"
+      Write-Json -Path $capturePath -Value $capture
+      $result.Add([ordered]@{
+          ordinal = [int]$plan.ordinal
+          step_id = [string]$plan.step_id
+          command = "service.$($plan.command)"
+          expected_state = [string]$plan.state
+          actual_state = [string]$plan.state
+          mutation_executed = [bool]$plan.mutation
+          capture_path = [System.IO.Path]::GetFullPath($capturePath)
+          stdout_path = [System.IO.Path]::GetFullPath($stdoutPath)
+        })
+    }
+    return [object[]]$result.ToArray()
+  }
+
+  $preparePlan = @((Get-LifecyclePlan)[0..5])
+  $resumePlan = @(
+    @{ ordinal = 0; step_id = "status-resume-preflight"; command = "status"; state = "running"; mutation = $false },
+    @{ ordinal = 1; step_id = "restart"; command = "restart"; state = "running"; mutation = $true },
+    @{ ordinal = 2; step_id = "status-post-restart"; command = "status"; state = "running"; mutation = $false },
+    @{ ordinal = 3; step_id = "stop"; command = "stop"; state = "stopped"; mutation = $true },
+    @{ ordinal = 4; step_id = "stop-idempotent"; command = "stop"; state = "stopped"; mutation = $false },
+    @{ ordinal = 5; step_id = "uninstall"; command = "uninstall"; state = "not_installed"; mutation = $true },
+    @{ ordinal = 6; step_id = "uninstall-idempotent"; command = "uninstall"; state = "not_installed"; mutation = $false },
+    @{ ordinal = 7; step_id = "status-final"; command = "status"; state = "not_installed"; mutation = $false }
+  )
+
+  $continuation = [ordered]@{
+    format = "eva.windows.platform_service_continuation.v1"
+    source_commit = $SourceCommit
+    run_id = $RunId
+    service_name = $serviceName
+    project_root = [System.IO.Path]::GetFullPath($projectRoot)
+    evidence_root = [System.IO.Path]::GetFullPath($evidenceRoot)
+    eva_executable = $evaExecutable
+    eva_executable_sha256 = $EvaDigest
+    prepared_boot_marker = "boot-a"
+    expected_boot_marker = "boot-b"
+    prepared_at = "2026-07-27T00:00:01.0000000+00:00"
+  }
+  $continuationPath = Join-Path $evidenceRoot "continuation.json"
+  Write-Json -Path $continuationPath -Value $continuation
+  Write-DigestSidecar -JsonPath $continuationPath
+  $continuationDigest = Get-Sha256File $continuationPath
+  $authority = [ordered]@{ allowed = $true; reasons = [object[]]@(); is_windows = $true; is_admin = $true; execute = $true; controlled_host = $true }
+  $prepareTranscript = [ordered]@{
+    format = "eva.windows.platform_service_harness.v1"; mode = "PrepareReboot"; status = "continuation_ready"; source_commit = $SourceCommit; run_id = $RunId; service_name = $serviceName
+    project_root = [System.IO.Path]::GetFullPath($projectRoot); evidence_root = [System.IO.Path]::GetFullPath($evidenceRoot); eva_executable = $evaExecutable; eva_executable_sha256 = $EvaDigest
+    authority = $authority; steps = (New-LocalStepCapture -Plan $preparePlan); continuation = [ordered]@{ manifest = $continuation; digest = $continuationDigest; path = [System.IO.Path]::GetFullPath($continuationPath); digest_path = [System.IO.Path]::GetFullPath((Join-Path $evidenceRoot "continuation.sha256")) }; warnings = [object[]]@(); written_at = "2026-07-27T00:00:02.0000000+00:00"
+  }
+  $preparePath = Join-Path $evidenceRoot "transcript.preparereboot.json"
+  Write-Json -Path $preparePath -Value $prepareTranscript
+  Write-DigestSidecar -JsonPath $preparePath
+  $resumeTranscript = [ordered]@{
+    format = "eva.windows.platform_service_harness.v1"; mode = "ResumeReboot"; status = "success"; source_commit = $SourceCommit; run_id = $RunId; service_name = $serviceName
+    project_root = [System.IO.Path]::GetFullPath($projectRoot); evidence_root = [System.IO.Path]::GetFullPath($evidenceRoot); eva_executable = $evaExecutable; eva_executable_sha256 = $EvaDigest
+    authority = $authority; steps = (New-LocalStepCapture -Plan $resumePlan); continuation = [ordered]@{ digest = $continuationDigest; current_boot_marker = "boot-b" }; warnings = [object[]]@(); written_at = "2026-07-27T00:00:03.0000000+00:00"
+  }
+  $resumePath = Join-Path $evidenceRoot "transcript.resumereboot.json"
+  Write-Json -Path $resumePath -Value $resumeTranscript
+  Write-DigestSidecar -JsonPath $resumePath
+
+  return [pscustomobject]@{ Root = $fixtureRoot; Evidence = $evidenceRoot; Receipt = $receiptPath }
+}
+
 function Invoke-Validator {
   param(
     [string]$EvidencePath,
@@ -274,21 +448,27 @@ function Invoke-Validator {
     [string]$ExpectedSource = $SourceCommit,
     [string]$ExpectedRun = $RunId,
     [string]$ExpectedIdentity = $RunnerIdentity,
-    [string]$ExpectedOsMode = "Lifecycle"
+    [string]$ExpectedOsMode = "Lifecycle",
+    [string]$ExpectedRepository = ([System.IO.Path]::GetFullPath($RepositoryRoot)),
+    [string]$ExpectedBoot = "boot-b"
   )
 
-  & $Validator `
-    -EvidencePath $EvidencePath `
-    -ExpectedSourceCommit $ExpectedSource `
-    -ExpectedRunId $ExpectedRun `
-    -ExpectedRunnerProvider $RunnerProvider `
-    -ExpectedRunnerIdentity $ExpectedIdentity `
-    -ExpectedRunnerRunId $RunnerRunId `
-    -ExpectedRunnerRunAttempt $RunnerRunAttempt `
-    -ExpectedRunnerJob $RunnerJob `
-    -ExpectedEvaExecutableSha256 $EvaDigest `
-    -Mode $ExpectedOsMode `
-    -ReceiptPath $ReceiptPath | Out-Null
+  $arguments = @{
+    EvidencePath = $EvidencePath
+    ExpectedSourceCommit = $ExpectedSource
+    ExpectedRepositoryRoot = $ExpectedRepository
+    ExpectedRunId = $ExpectedRun
+    ExpectedRunnerProvider = $RunnerProvider
+    ExpectedRunnerIdentity = $ExpectedIdentity
+    ExpectedRunnerRunId = $RunnerRunId
+    ExpectedRunnerRunAttempt = $RunnerRunAttempt
+    ExpectedRunnerJob = $RunnerJob
+    ExpectedEvaExecutableSha256 = $EvaDigest
+    Mode = $ExpectedOsMode
+    ReceiptPath = $ReceiptPath
+  }
+  if ($ExpectedOsMode -ceq "Reboot") { $arguments.ExpectedBootMarker = $ExpectedBoot }
+  & $Validator @arguments | Out-Null
 }
 
 function Get-CapturePath {
@@ -333,7 +513,7 @@ try {
   Invoke-Validator -EvidencePath $valid.Evidence -ReceiptPath $valid.Receipt
   Assert-True (Test-Path -LiteralPath $valid.Receipt -PathType Leaf) "Valid lifecycle must write receipt."
   $receipt = Read-Json $valid.Receipt
-  Assert-Equal ([string]$receipt.format) "eva.windows.platform_service_evidence_readback_receipt.v1" "Receipt format changed."
+  Assert-Equal ([string]$receipt.schema) "eva.windows.platform_service_evidence_readback_receipt.v1" "Receipt schema changed."
   Assert-Equal ([string]$receipt.status) "verified_local_readback" "Receipt status must stay local readback."
   Assert-Equal ([int]$receipt.capture_count) 13 "Receipt capture count changed."
 
@@ -391,6 +571,13 @@ try {
   Write-Json -Path $ownerPath -Value $owner
   Assert-FailsReason { Invoke-Validator -EvidencePath $ownerMismatch.Evidence -ReceiptPath $ownerMismatch.Receipt } "owner_invalid" $ownerMismatch.Receipt
 
+  $repositoryMismatch = New-PlatformServiceFixture -Root $testRoot -Name "repository-mismatch"
+  $repositoryOwnerPath = Join-Path $repositoryMismatch.Evidence "platform-service-harness.owner.json"
+  $repositoryOwner = Read-Json $repositoryOwnerPath
+  $repositoryOwner.repository_root = "C:\forged\repository"
+  Write-Json -Path $repositoryOwnerPath -Value $repositoryOwner
+  Assert-FailsReason { Invoke-Validator -EvidencePath $repositoryMismatch.Evidence -ReceiptPath $repositoryMismatch.Receipt } "owner_invalid" $repositoryMismatch.Receipt
+
   $digestTamper = New-PlatformServiceFixture -Root $testRoot -Name "digest-tamper"
   [System.IO.File]::AppendAllText((Join-Path $digestTamper.Evidence "transcript.lifecycle.json"), " ", $Utf8NoBom)
   Assert-FailsReason { Invoke-Validator -EvidencePath $digestTamper.Evidence -ReceiptPath $digestTamper.Receipt } "digest_mismatch" $digestTamper.Receipt
@@ -402,10 +589,42 @@ try {
   Write-Json -Path $captureTamperPath -Value $captureTamperJson
   Assert-FailsReason { Invoke-Validator -EvidencePath $captureTamper.Evidence -ReceiptPath $captureTamper.Receipt } "capture_invalid" $captureTamper.Receipt
 
+  $captureExtraField = New-PlatformServiceFixture -Root $testRoot -Name "capture-extra-field"
+  $captureExtraFieldPath = Get-CapturePath -Evidence $captureExtraField.Evidence -Ordinal 0 -StepId "status-preflight"
+  $captureExtraFieldJson = Read-Json $captureExtraFieldPath
+  $captureExtraFieldJson | Add-Member -NotePropertyName "forged_field" -NotePropertyValue "unexpected"
+  Write-Json -Path $captureExtraFieldPath -Value $captureExtraFieldJson
+  Assert-FailsReason { Invoke-Validator -EvidencePath $captureExtraField.Evidence -ReceiptPath $captureExtraField.Receipt } "capture_invalid" $captureExtraField.Receipt
+
+  $captureExecutable = New-PlatformServiceFixture -Root $testRoot -Name "capture-executable"
+  $captureExecutablePath = Get-CapturePath -Evidence $captureExecutable.Evidence -Ordinal 0 -StepId "status-preflight"
+  $captureExecutableJson = Read-Json $captureExecutablePath
+  $captureExecutableJson.executable = "C:\forged\eva.exe"
+  Write-Json -Path $captureExecutablePath -Value $captureExecutableJson
+  Assert-FailsReason { Invoke-Validator -EvidencePath $captureExecutable.Evidence -ReceiptPath $captureExecutable.Receipt } "capture_invalid" $captureExecutable.Receipt
+
   $stdoutTamper = New-PlatformServiceFixture -Root $testRoot -Name "stdout-tamper"
   $stdoutTamperCapture = Get-CapturePath -Evidence $stdoutTamper.Evidence -Ordinal 0 -StepId "status-preflight"
   [System.IO.File]::AppendAllText((Join-Path ([System.IO.Path]::GetDirectoryName($stdoutTamperCapture)) "capture.stdout"), "tamper", $Utf8NoBom)
   Assert-FailsReason { Invoke-Validator -EvidencePath $stdoutTamper.Evidence -ReceiptPath $stdoutTamper.Receipt } "capture_stream_size_mismatch" $stdoutTamper.Receipt
+
+  $stdoutStringBool = New-PlatformServiceFixture -Root $testRoot -Name "stdout-string-bool"
+  $stdoutStringBoolCapture = Get-CapturePath -Evidence $stdoutStringBool.Evidence -Ordinal 0 -StepId "status-preflight"
+  $stdoutStringBoolPath = Join-Path ([System.IO.Path]::GetDirectoryName($stdoutStringBoolCapture)) "capture.stdout"
+  $stdoutStringBoolJson = [System.IO.File]::ReadAllText($stdoutStringBoolPath, $Utf8NoBom) | ConvertFrom-Json
+  $stdoutStringBoolJson.ok = "true"
+  Write-Utf8LfFile -Path $stdoutStringBoolPath -Text ($stdoutStringBoolJson | ConvertTo-Json -Depth 8 -Compress)
+  Update-CaptureStreams -CapturePath $stdoutStringBoolCapture
+  Assert-FailsReason { Invoke-Validator -EvidencePath $stdoutStringBool.Evidence -ReceiptPath $stdoutStringBool.Receipt } "capture_stdout_contract_invalid" $stdoutStringBool.Receipt
+
+  $stdoutEmptyTrace = New-PlatformServiceFixture -Root $testRoot -Name "stdout-empty-trace"
+  $stdoutEmptyTraceCapture = Get-CapturePath -Evidence $stdoutEmptyTrace.Evidence -Ordinal 0 -StepId "status-preflight"
+  $stdoutEmptyTracePath = Join-Path ([System.IO.Path]::GetDirectoryName($stdoutEmptyTraceCapture)) "capture.stdout"
+  $stdoutEmptyTraceJson = [System.IO.File]::ReadAllText($stdoutEmptyTracePath, $Utf8NoBom) | ConvertFrom-Json
+  $stdoutEmptyTraceJson.trace = [pscustomobject]@{}
+  Write-Utf8LfFile -Path $stdoutEmptyTracePath -Text ($stdoutEmptyTraceJson | ConvertTo-Json -Depth 8 -Compress)
+  Update-CaptureStreams -CapturePath $stdoutEmptyTraceCapture
+  Assert-FailsReason { Invoke-Validator -EvidencePath $stdoutEmptyTrace.Evidence -ReceiptPath $stdoutEmptyTrace.Receipt } "capture_stdout_contract_invalid" $stdoutEmptyTrace.Receipt
 
   $stderrTamper = New-PlatformServiceFixture -Root $testRoot -Name "stderr-tamper"
   $stderrTamperCapture = Get-CapturePath -Evidence $stderrTamper.Evidence -Ordinal 0 -StepId "status-preflight"
@@ -452,10 +671,56 @@ try {
     }
   }
 
-  $reboot = New-PlatformServiceFixture -Root $testRoot -Name "reboot"
-  Assert-FailsReason { Invoke-Validator -EvidencePath $reboot.Evidence -ReceiptPath $reboot.Receipt -ExpectedOsMode "Reboot" } "mode_not_supported" $reboot.Receipt
+  $reboot = New-PlatformServiceRebootFixture -Root $testRoot -Name "reboot"
+  Invoke-Validator -EvidencePath $reboot.Evidence -ReceiptPath $reboot.Receipt -ExpectedOsMode "Reboot"
+  Assert-True (Test-Path -LiteralPath $reboot.Receipt -PathType Leaf) "Valid reboot must write receipt."
+  $rebootReceipt = Read-Json $reboot.Receipt
+  Assert-Equal ([int]$rebootReceipt.capture_count) 14 "Reboot receipt capture count changed."
 
-  Write-Host "Platform service evidence validator self-test passed: valid lifecycle receipt and strict negative readback contract."
+  $rebootTamper = New-PlatformServiceRebootFixture -Root $testRoot -Name "reboot-tamper"
+  [System.IO.File]::AppendAllText((Join-Path $rebootTamper.Evidence "continuation.json"), " ", $Utf8NoBom)
+  Assert-FailsReason { Invoke-Validator -EvidencePath $rebootTamper.Evidence -ReceiptPath $rebootTamper.Receipt -ExpectedOsMode "Reboot" } "digest_mismatch" $rebootTamper.Receipt
+
+  $rebootBlankExpected = New-PlatformServiceRebootFixture -Root $testRoot -Name "reboot-blank-expected"
+  $rebootBlankContinuationPath = Join-Path $rebootBlankExpected.Evidence "continuation.json"
+  $rebootBlankContinuation = Read-Json $rebootBlankContinuationPath
+  $rebootBlankContinuation.expected_boot_marker = ""
+  Write-Json -Path $rebootBlankContinuationPath -Value $rebootBlankContinuation
+  Write-DigestSidecar -JsonPath $rebootBlankContinuationPath
+  $rebootBlankDigest = Get-Sha256File $rebootBlankContinuationPath
+  $rebootBlankPreparePath = Join-Path $rebootBlankExpected.Evidence "transcript.preparereboot.json"
+  $rebootBlankPrepare = Read-Json $rebootBlankPreparePath
+  $rebootBlankPrepare.continuation.manifest = $rebootBlankContinuation
+  $rebootBlankPrepare.continuation.digest = $rebootBlankDigest
+  Write-Json -Path $rebootBlankPreparePath -Value $rebootBlankPrepare
+  Write-DigestSidecar -JsonPath $rebootBlankPreparePath
+  $rebootBlankResumePath = Join-Path $rebootBlankExpected.Evidence "transcript.resumereboot.json"
+  $rebootBlankResume = Read-Json $rebootBlankResumePath
+  $rebootBlankResume.continuation.digest = $rebootBlankDigest
+  Write-Json -Path $rebootBlankResumePath -Value $rebootBlankResume
+  Write-DigestSidecar -JsonPath $rebootBlankResumePath
+  Assert-FailsReason { Invoke-Validator -EvidencePath $rebootBlankExpected.Evidence -ReceiptPath $rebootBlankExpected.Receipt -ExpectedOsMode "Reboot" } "continuation_invalid" $rebootBlankExpected.Receipt
+
+  $rebootExpectedMismatch = New-PlatformServiceRebootFixture -Root $testRoot -Name "reboot-expected-mismatch"
+  Assert-FailsReason { Invoke-Validator -EvidencePath $rebootExpectedMismatch.Evidence -ReceiptPath $rebootExpectedMismatch.Receipt -ExpectedOsMode "Reboot" -ExpectedBoot "boot-c" } "continuation_invalid" $rebootExpectedMismatch.Receipt
+
+  $rebootResumeBinding = New-PlatformServiceRebootFixture -Root $testRoot -Name "reboot-resume-binding"
+  $rebootResumeBindingPath = Join-Path $rebootResumeBinding.Evidence "transcript.resumereboot.json"
+  $rebootResumeBindingTranscript = Read-Json $rebootResumeBindingPath
+  $rebootResumeBindingTranscript.evidence_root = "C:\forged\evidence"
+  Write-Json -Path $rebootResumeBindingPath -Value $rebootResumeBindingTranscript
+  Write-DigestSidecar -JsonPath $rebootResumeBindingPath
+  Assert-FailsReason { Invoke-Validator -EvidencePath $rebootResumeBinding.Evidence -ReceiptPath $rebootResumeBinding.Receipt -ExpectedOsMode "Reboot" } "continuation_invalid" $rebootResumeBinding.Receipt
+
+  $rebootUnchanged = New-PlatformServiceRebootFixture -Root $testRoot -Name "reboot-unchanged"
+  $rebootUnchangedPath = Join-Path $rebootUnchanged.Evidence "transcript.resumereboot.json"
+  $rebootUnchangedTranscript = Read-Json $rebootUnchangedPath
+  $rebootUnchangedTranscript.continuation.current_boot_marker = "boot-a"
+  Write-Json -Path $rebootUnchangedPath -Value $rebootUnchangedTranscript
+  Write-DigestSidecar -JsonPath $rebootUnchangedPath
+  Assert-FailsReason { Invoke-Validator -EvidencePath $rebootUnchanged.Evidence -ReceiptPath $rebootUnchanged.Receipt -ExpectedOsMode "Reboot" } "continuation_boot_marker_unchanged" $rebootUnchanged.Receipt
+
+  Write-Host "Platform service evidence validator self-test passed: valid lifecycle/reboot receipts and strict negative readback contract."
 } finally {
   if (Test-Path -LiteralPath $testRoot) {
     Remove-Item -LiteralPath $testRoot -Recurse -Force
