@@ -1438,6 +1438,14 @@ mod tests {
             )
             .unwrap();
 
+        assert!(handle.identity().pid > 0);
+        assert!(!handle.identity().process_start_token.is_empty());
+        assert_eq!(handle.identity().process_group_id, None);
+        assert!(handle
+            .identity()
+            .job_id
+            .as_deref()
+            .is_some_and(|job_id| job_id.starts_with("Local\\EvaProviderJob-")));
         assert!(handle.wait().unwrap().success());
         assert_eq!(fs::read_to_string(&marker).unwrap(), expected_sid);
         let _ = fs::remove_file(marker);
@@ -1456,6 +1464,20 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.message(),
+            "provider Windows identity does not match the daemon service token"
+        );
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "run_as_kind" && value == "windows"));
+        assert!(!error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, _)| key == "io_error"));
         assert!(!marker.exists());
     }
 
@@ -1476,6 +1498,20 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), eva_core::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.message(),
+            "provider Windows run-as account could not be resolved"
+        );
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "run_as_kind" && value == "windows"));
+        assert!(error
+            .context()
+            .entries()
+            .iter()
+            .any(|(key, value)| key == "io_error" && !value.is_empty()));
         assert!(!marker.exists());
     }
 
