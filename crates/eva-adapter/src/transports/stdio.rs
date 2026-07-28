@@ -761,6 +761,7 @@ fn escape_json(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_vault::credential_leak_test_canary;
     use eva_core::ErrorKind;
 
     /// 验证 `runner_denies_non_allowlisted_command` 场景下的预期行为。
@@ -815,17 +816,17 @@ mod tests {
     #[test]
     fn runner_redacts_injected_env_from_output_streams() {
         let config = StdioRunnerConfig::new([test_command()], 5_000, 4096);
-        let secret = "stdio-secret-redaction-test";
+        let secret = credential_leak_test_canary("stdio-secret-redaction-test");
         let invocation = StdioInvocation::new(test_command())
-            .with_args(output_args(secret))
+            .with_args(output_args(&secret))
             .with_env(BTreeMap::from([(
                 "EVA_STDIO_SECRET".to_owned(),
-                secret.to_owned(),
+                secret.clone(),
             )]));
 
         let report = StdioRunner.run(&config, invocation).unwrap();
 
-        assert!(!String::from_utf8_lossy(&report.stdout).contains(secret));
+        assert!(!String::from_utf8_lossy(&report.stdout).contains(&secret));
         assert!(String::from_utf8_lossy(&report.stdout).contains("[REDACTED]"));
     }
 

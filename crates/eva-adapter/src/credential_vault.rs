@@ -1345,6 +1345,28 @@ pub(crate) fn default_credential_vault() -> Box<dyn CredentialVault> {
 }
 
 #[cfg(test)]
+pub(crate) fn credential_leak_test_canary(default: &str) -> String {
+    const ENV_NAME: &str = "EVA_CREDENTIAL_LEAK_CANARY";
+    const PREFIX: &str = "eva-test-credential-canary-";
+    match env::var(ENV_NAME) {
+        Ok(value) => {
+            assert!(
+                value.starts_with(PREFIX)
+                    && value.len() > PREFIX.len()
+                    && value.len() <= 128
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
+                "{ENV_NAME} must contain only a synthetic {PREFIX}<alphanumeric-or-dash> value"
+            );
+            value
+        }
+        Err(env::VarError::NotPresent) => default.to_owned(),
+        Err(env::VarError::NotUnicode(_)) => panic!("{ENV_NAME} must be valid Unicode"),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use eva_core::{AdapterId, CapabilityName, ErrorKind, RequestId};
@@ -1479,7 +1501,8 @@ mod tests {
 
     #[test]
     fn memory_session_fetch_inject_release_and_debug_redact() {
-        let vault = MemoryCredentialVault::new().with_secret("vault://tests/token", "top-secret");
+        let secret = credential_leak_test_canary("top-secret");
+        let vault = MemoryCredentialVault::new().with_secret("vault://tests/token", secret.clone());
         let refs = vec![ProviderVaultSecretRef {
             env: "API_TOKEN".to_owned(),
             secret_ref: "vault://tests/token".to_owned(),
@@ -1489,9 +1512,9 @@ mod tests {
         lease.inject_env(&mut env_values);
         assert_eq!(
             env_values.get("API_TOKEN").map(String::as_str),
-            Some("top-secret")
+            Some(secret.as_str())
         );
-        assert!(!format!("{lease:?}").contains("top-secret"));
+        assert!(!format!("{lease:?}").contains(&secret));
         assert!(lease.release().is_ok());
         assert!(lease.resolve_env("API_TOKEN").is_err());
         assert!(lease.redaction_values().is_empty());

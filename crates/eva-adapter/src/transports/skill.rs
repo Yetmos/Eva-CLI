@@ -1994,6 +1994,7 @@ fn json_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_vault::credential_leak_test_canary;
     use crate::manifest::{SkillInputProperty, SkillInputSchema};
     use crate::supervisor::{ProviderCredentialScope, PROVIDER_SESSION_TOKEN_ENV};
     use eva_config::AdapterTransport;
@@ -2057,10 +2058,10 @@ mod tests {
     fn process_skill_runner_collects_artifacts_and_redacts_env() {
         let root = test_root("process");
         let env_name = "EVA_TEST_SKILL_SECRET";
-        let secret = "skill-secret-redaction";
+        let secret = credential_leak_test_canary("skill-secret-redaction");
         let handle = skill_handle(
             Some(test_command().to_owned()),
-            artifact_args(secret),
+            artifact_args(&secret),
             root.path.clone(),
         )
         .with_credential_env(env_name);
@@ -2073,8 +2074,8 @@ mod tests {
             capability.clone(),
         );
 
-        let vault =
-            crate::credential_vault::MemoryCredentialVault::new().with_secret(env_name, secret);
+        let vault = crate::credential_vault::MemoryCredentialVault::new()
+            .with_secret(env_name, secret.clone());
         let report = invoke_with_spawner_and_vault(
             &handle,
             AdapterInvocation::new(request_id, capability)
@@ -2086,7 +2087,7 @@ mod tests {
         let report = report.unwrap();
 
         assert_eq!(report.status, "completed");
-        assert!(!report.output.contains(secret));
+        assert!(!report.output.contains(&secret));
         assert!(!report.output.contains("eva-provider-session:"));
         assert!(report.output.contains("[REDACTED]"));
         assert!(report
@@ -2102,7 +2103,7 @@ mod tests {
             "objects/skill/code-review-skill/req-skill-process/artifacts/result.txt.artifact",
         ))
         .unwrap();
-        assert!(!artifact.contains(secret));
+        assert!(!artifact.contains(&secret));
         assert!(!artifact.contains("eva-provider-session:"));
         assert!(artifact.contains("[REDACTED]"));
     }

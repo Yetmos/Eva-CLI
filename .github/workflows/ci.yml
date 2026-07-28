@@ -284,6 +284,11 @@ jobs:
         shell: powershell
         run: ./scripts/test-platform-service-evidence.ps1
 
+      - name: Windows credential leak-scan contract
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-credential-leak-scan.ps1
+
       - name: Daemon runtime smoke tests
         run: |
           cargo test -p eva-runtime daemon_control_status_and_shutdown_round_trip_has_trace_id

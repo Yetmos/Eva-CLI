@@ -919,7 +919,9 @@ fn thread_sleep_restart(delay_ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_vault::{CredentialSession, MemoryCredentialVault, SecretValue};
+    use crate::credential_vault::{
+        credential_leak_test_canary, CredentialSession, MemoryCredentialVault, SecretValue,
+    };
     use crate::manifest::{AdapterCircuitBreaker, AdapterHandle};
     use crate::registry::AdapterRegistry;
     use crate::supervisor::{
@@ -1070,7 +1072,7 @@ mod tests {
     #[test]
     fn runtime_invokes_stdio_adapter_with_redacted_env() {
         let env_name = "EVA_TEST_STDIO_SECRET_RUNTIME";
-        let secret = "stdio-runtime-secret";
+        let secret = credential_leak_test_canary("stdio-runtime-secret");
         let runtime = runtime_with_handle_and_vault(
             stdio_handle(
                 true,
@@ -1078,7 +1080,7 @@ mod tests {
                 env_echo_args(env_name),
                 vec![env_name.to_owned()],
             ),
-            MemoryCredentialVault::new().with_secret(env_name, secret),
+            MemoryCredentialVault::new().with_secret(env_name, secret.clone()),
         );
 
         let report = runtime
@@ -1091,7 +1093,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(report.status, "completed");
-        assert!(!report.output.contains(secret));
+        assert!(!report.output.contains(&secret));
         assert!(!report.output.contains("eva-provider-session:"));
         assert!(report.output.contains("[REDACTED]"));
         assert!(report
@@ -1612,7 +1614,7 @@ mod tests {
     #[test]
     fn runtime_invokes_http_adapter_and_redacts_credential_header() {
         let env_name = "EVA_TEST_HTTP_SECRET_RUNTIME";
-        let secret = "http-runtime-secret";
+        let secret = credential_leak_test_canary("http-runtime-secret");
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/v1/provider", listener.local_addr().unwrap());
         let server_secret = secret.to_owned();
@@ -1640,7 +1642,7 @@ mod tests {
                 request_bytes.extend_from_slice(&buffer[..read]);
             }
             let request = String::from_utf8_lossy(&request_bytes);
-            assert!(request.contains("Authorization: http-runtime-secret"));
+            assert!(request.contains(&format!("Authorization: {server_secret}")));
             assert!(request.contains(PROVIDER_SESSION_ID_HEADER));
             assert!(request.contains(PROVIDER_SESSION_TOKEN_HEADER));
             assert!(request.contains("{\"message\":\"hello\"}"));
@@ -1661,7 +1663,7 @@ mod tests {
                 BTreeMap::from([("Authorization".to_owned(), format!("env:{env_name}"))]),
                 vec![env_name.to_owned()],
             ),
-            MemoryCredentialVault::new().with_secret(env_name, secret),
+            MemoryCredentialVault::new().with_secret(env_name, secret.clone()),
         );
 
         let report = runtime
@@ -1676,7 +1678,7 @@ mod tests {
             .unwrap();
         server.join().unwrap();
         assert_eq!(report.status, "completed");
-        assert!(!report.output.contains(secret));
+        assert!(!report.output.contains(&secret));
         assert!(!report.output.contains("eva-provider-session:"));
         assert!(report.output.contains("[REDACTED]"));
         assert!(report.audit.contains(&format!(
