@@ -1,3 +1,4 @@
+//! 配置代次标识与规范化来源摘要。
 //! Canonical configuration generation and provenance digest.
 use crate::{canonical_config_bytes, merge_config_layers, ConfigLayerKind, ProjectConfig};
 use eva_core::{sha256_digest, EvaError};
@@ -5,14 +6,21 @@ use serde_yaml::{Mapping, Value};
 use std::fs;
 use std::path::Path;
 
+/// 一次完整项目配置快照的稳定身份信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigGeneration {
+    /// 由调用方分配的单调递增正整数代次。
     pub generation: u64,
+    /// 对去敏后的规范化配置计算得到的 SHA-256 摘要。
     pub digest: String,
+    /// 生成快照时生效的运行环境名称。
     pub environment: String,
 }
 
 impl ConfigGeneration {
+    /// 从已校验的项目配置生成指定代次的稳定摘要。
+    ///
+    /// 摘要按固定键纳入主配置、拆分清单与路由，且不依赖文件系统遍历顺序。
     pub fn from_project(project: &ProjectConfig, generation: u64) -> Result<Self, EvaError> {
         if generation == 0 {
             return Err(EvaError::invalid_argument(
@@ -20,6 +28,7 @@ impl ConfigGeneration {
             ));
         }
         let environment = project.eva.runtime.env.clone();
+        // 将所有配置来源投影到统一映射，再交给规范化编码器排序和去敏。
         let mut canonical = Mapping::new();
         canonical.insert(
             Value::String("environment".to_owned()),
@@ -70,6 +79,7 @@ impl ConfigGeneration {
     }
 }
 
+/// 按与项目加载器一致的优先级重新合并主配置层。
 fn merged_main_config(project: &ProjectConfig) -> Result<Value, EvaError> {
     let config_dir = project.project_root.join("config");
     let environment = &project.eva.runtime.env;
@@ -78,6 +88,7 @@ fn merged_main_config(project: &ProjectConfig) -> Result<Value, EvaError> {
         project.eva_config_path.clone(),
         read_value(&project.eva_config_path)?,
     )];
+    // 仅纳入实际存在的覆盖文件，保持可选层语义。
     for (kind, path) in [
         (
             ConfigLayerKind::Profile,
@@ -100,6 +111,7 @@ fn merged_main_config(project: &ProjectConfig) -> Result<Value, EvaError> {
     Ok(merge_config_layers(layers)?.value)
 }
 
+/// 按相对项目路径排序并读取一类拆分配置源。
 fn source_values<'a>(
     project: &ProjectConfig,
     paths: impl Iterator<Item = &'a Path>,
@@ -117,6 +129,7 @@ fn source_values<'a>(
         .map(Value::Sequence)
 }
 
+/// 将单个 YAML 来源读取为未类型化值，并保留路径诊断上下文。
 fn read_value(path: &Path) -> Result<Value, EvaError> {
     let text = fs::read_to_string(path).map_err(|error| {
         EvaError::not_found("read canonical config source")

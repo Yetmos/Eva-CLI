@@ -132,6 +132,7 @@ pub struct McpHttpManifestConfig {
 }
 
 impl std::fmt::Debug for McpHttpManifestConfig {
+    /// 输出会主动隐藏端点及凭据引用的安全调试表示。
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("McpHttpManifestConfig")
@@ -920,6 +921,7 @@ impl AdapterManifest {
     }
 }
 
+/// 从映射字段读取严格的字符串列表，拒绝混合类型和非法控制字符。
 fn mapping_string_list(
     mapping: &Mapping,
     key: &str,
@@ -957,6 +959,7 @@ fn mapping_string_list(
         .collect()
 }
 
+/// 从映射字段读取进程参数列表，并原样保留合法参数边界。
 fn mapping_argv(
     mapping: &Mapping,
     key: &str,
@@ -994,6 +997,7 @@ fn mapping_argv(
         .collect()
 }
 
+/// 校验 MCP HTTP 请求头名称、值、重复项及传输层保留字段。
 fn validate_mcp_http_headers(
     path: &Path,
     extra: &Mapping,
@@ -1075,6 +1079,7 @@ fn validate_mcp_http_headers(
     Ok(())
 }
 
+/// 判断请求头是否由 MCP 传输层独占管理。
 fn is_transport_controlled_header(name: &str) -> bool {
     matches!(
         name,
@@ -1093,6 +1098,7 @@ fn is_transport_controlled_header(name: &str) -> bool {
     )
 }
 
+/// 拒绝 MCP 配置中无法识别的顶层字段，防止拼写错误被静默忽略。
 fn reject_unknown_mcp_fields(mapping: &Mapping, path: &Path) -> Result<(), EvaError> {
     for key in mapping.keys() {
         let key = key.as_str().ok_or_else(|| {
@@ -1126,6 +1132,7 @@ fn reject_unknown_mcp_fields(mapping: &Mapping, path: &Path) -> Result<(), EvaEr
     Ok(())
 }
 
+/// 拒绝 MCP HTTP 策略对象中的未知字段。
 fn reject_unknown_mcp_http_fields(mapping: &Mapping, path: &Path) -> Result<(), EvaError> {
     for key in mapping.keys() {
         let key = key.as_str().ok_or_else(|| {
@@ -1151,6 +1158,7 @@ fn reject_unknown_mcp_http_fields(mapping: &Mapping, path: &Path) -> Result<(), 
     Ok(())
 }
 
+/// 解析并校验 MCP HTTP 双向 TLS 客户端认证引用。
 fn parse_mcp_client_auth_mapping(
     mapping: &Mapping,
     path: &Path,
@@ -1241,6 +1249,7 @@ fn parse_mcp_client_auth_mapping(
     ))
 }
 
+/// 解析 MCP HTTP 重定向模式和最大跳转次数。
 fn parse_mcp_redirect_mapping(
     mapping: &Mapping,
     path: &Path,
@@ -1325,6 +1334,7 @@ fn parse_mcp_redirect_mapping(
     Ok((mode.to_owned(), max_hops))
 }
 
+/// 对规范化后的 MCP HTTP 配置执行协议、安全和环境无关约束校验。
 fn validate_mcp_http_manifest_config(
     path: &Path,
     config: &McpHttpManifestConfig,
@@ -1466,6 +1476,7 @@ fn validate_mcp_http_manifest_config(
     Ok(())
 }
 
+/// 校验 MCP 凭据引用仅使用允许的间接引用格式。
 fn validate_mcp_credential_ref(path: &Path, field: &str, value: &str) -> Result<(), EvaError> {
     if value.is_empty() || value != value.trim() {
         return Err(invalid_config(
@@ -1512,6 +1523,7 @@ fn validate_mcp_credential_ref(path: &Path, field: &str, value: &str) -> Result<
     ))
 }
 
+/// 校验 TLS 信任根标识，并限制文件引用逃逸项目边界。
 fn validate_mcp_trust_root(path: &Path, field: &str, root: &str) -> Result<(), EvaError> {
     if root.is_empty()
         || root != root.trim()
@@ -1565,6 +1577,7 @@ fn validate_mcp_trust_root(path: &Path, field: &str, root: &str) -> Result<(), E
     ))
 }
 
+/// 将 MCP HTTP URL 规范化为可稳定比较的源或完整端点。
 fn canonical_mcp_origin(value: &str, origin_only: bool) -> Result<String, EvaError> {
     let (scheme, rest) = value.split_once("://").ok_or_else(|| {
         EvaError::invalid_argument("MCP endpoint must include an http or https scheme")
@@ -1605,6 +1618,7 @@ fn canonical_mcp_origin(value: &str, origin_only: bool) -> Result<String, EvaErr
     Ok(format!("{scheme}://{authority}"))
 }
 
+/// 规范化 URL authority，并拒绝用户信息、非法主机和端口。
 fn canonical_mcp_authority(scheme: &str, authority: &str) -> Result<String, EvaError> {
     let default_port = if scheme == "https" { 443 } else { 80 };
     if authority.starts_with('[') {
@@ -1654,6 +1668,7 @@ fn canonical_mcp_authority(scheme: &str, authority: &str) -> Result<String, EvaE
     })
 }
 
+/// 解析非零 MCP 端口号。
 fn parse_mcp_port(value: &str) -> Result<u16, EvaError> {
     let port = value
         .parse::<u16>()
@@ -1666,6 +1681,7 @@ fn parse_mcp_port(value: &str) -> Result<u16, EvaError> {
     Ok(port)
 }
 
+/// 从 Adapter 扩展映射中解析统一的 Provider 监管配置。
 fn parse_provider_config(
     path: &Path,
     transport: AdapterTransport,
@@ -1687,6 +1703,7 @@ fn parse_provider_config(
     })
 }
 
+/// 解析并约束 Provider 重启策略。
 fn parse_provider_restart(
     path: &Path,
     raw: Option<RawProviderRestart>,
@@ -1752,6 +1769,7 @@ fn parse_provider_restart(
     })
 }
 
+/// 解析 Provider 的 Unix 或 Windows 降权运行身份。
 fn parse_provider_run_as(
     path: &Path,
     raw: Option<RawProviderRunAs>,
@@ -1844,6 +1862,7 @@ fn parse_provider_run_as(
     Ok(identity)
 }
 
+/// 解析、校验并稳定排序 Provider Vault secret 注入声明。
 fn parse_provider_vault_refs(
     path: &Path,
     raw: Vec<RawProviderVaultSecretRef>,
@@ -1898,6 +1917,7 @@ fn parse_provider_vault_refs(
     Ok(parsed)
 }
 
+/// 提取 Provider 可接收凭据的环境变量白名单。
 fn validated_credential_env(extra: &Mapping, path: &Path) -> Result<Vec<String>, EvaError> {
     let Some(permissions) = extra.get(Value::String("permissions".to_owned())) else {
         return Ok(Vec::new());
@@ -1947,6 +1967,7 @@ fn validated_credential_env(extra: &Mapping, path: &Path) -> Result<Vec<String>,
     Ok(names)
 }
 
+/// 校验跨平台兼容的环境变量名称。
 fn validate_env_name(path: &Path, field: &str, value: &str) -> Result<(), EvaError> {
     let mut bytes = value.bytes();
     let valid = value.len() <= 128
@@ -1990,6 +2011,7 @@ fn is_dangerous_credential_env(value: &str) -> bool {
         || upper.starts_with("EVA_PROVIDER_SESSION_")
 }
 
+/// 校验 Vault 引用的方案、路径段和可选键名。
 fn validate_vault_secret_ref(path: &Path, field: &str, value: &str) -> Result<(), EvaError> {
     let Some(body) = value.strip_prefix("vault://") else {
         return Err(invalid_config(
@@ -2019,6 +2041,7 @@ fn validate_vault_secret_ref(path: &Path, field: &str, value: &str) -> Result<()
     }
 }
 
+/// 判断 Vault 路径段是否仅包含安全字符且不是路径导航符。
 fn is_valid_vault_segment(value: &str) -> bool {
     !value.is_empty()
         && value != "."
@@ -2028,6 +2051,7 @@ fn is_valid_vault_segment(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+/// 判断 Vault secret 内部键名是否合法。
 fn is_valid_vault_key(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -2036,6 +2060,7 @@ fn is_valid_vault_key(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+/// 将必填 YAML 整数无损收窄为 `u32`。
 fn required_u32(path: &Path, field: &str, value: Option<u64>) -> Result<u32, EvaError> {
     value
         .and_then(|value| u32::try_from(value).ok())
@@ -2049,6 +2074,7 @@ fn required_u32(path: &Path, field: &str, value: Option<u64>) -> Result<u32, Eva
         })
 }
 
+/// 拒绝某配置对象保留下来的全部未知字段。
 fn reject_unknown_fields(path: &Path, prefix: &str, extra: &Mapping) -> Result<(), EvaError> {
     if let Some((key, _)) = extra.iter().next() {
         let key = key.as_str().unwrap_or("<non-string>");
@@ -2062,6 +2088,7 @@ fn reject_unknown_fields(path: &Path, prefix: &str, extra: &Mapping) -> Result<(
     Ok(())
 }
 
+/// 判断指定传输是否会启动本地进程并支持进程监管策略。
 fn provider_transport_supports_process(transport: AdapterTransport, extra: &Mapping) -> bool {
     match transport {
         AdapterTransport::Stdio => true,
@@ -2089,6 +2116,7 @@ fn provider_transport_supports_process(transport: AdapterTransport, extra: &Mapp
     }
 }
 
+/// 在生产环境中检查清单各入口，阻止明文或绕过白名单的 secret。
 fn validate_production_manifest_secrets(
     manifest: &AdapterManifest,
     mapping: &Mapping,
@@ -2146,6 +2174,7 @@ fn validate_production_manifest_secrets(
     Ok(())
 }
 
+/// 校验生产环境 HTTP 请求头中的凭据必须使用允许的环境变量引用。
 fn validate_production_headers(
     manifest: &AdapterManifest,
     value: &Value,
@@ -2179,6 +2208,7 @@ fn validate_production_headers(
     Ok(())
 }
 
+/// 校验 `env:` 凭据引用确实位于清单声明的环境变量白名单中。
 fn validate_env_credential_reference(
     manifest: &AdapterManifest,
     field: &str,
@@ -2203,6 +2233,7 @@ fn validate_env_credential_reference(
     Err(production_plaintext_error(manifest, field))
 }
 
+/// 检查自由文本字段中是否嵌入疑似生产凭据。
 fn validate_no_embedded_production_secret(
     manifest: &AdapterManifest,
     value: &Value,
@@ -2264,6 +2295,7 @@ fn validate_no_embedded_production_secret(
     Ok(())
 }
 
+/// 判断 URL authority 是否携带可能泄露凭据的 userinfo。
 fn contains_url_userinfo_secret(value: &str) -> bool {
     let Some((_, remainder)) = value.split_once("://") else {
         return false;
@@ -2274,6 +2306,7 @@ fn contains_url_userinfo_secret(value: &str) -> bool {
         .is_some_and(|(userinfo, _)| userinfo.contains(':'))
 }
 
+/// 根据字段名识别可能承载 secret 的配置项。
 fn is_secret_field_name(value: &str) -> bool {
     let normalized = value.to_ascii_lowercase().replace('-', "_");
     matches!(
@@ -2294,6 +2327,7 @@ fn is_secret_field_name(value: &str) -> bool {
     )
 }
 
+/// 判断 HTTP 请求头是否通常用于传递认证或敏感凭据。
 fn is_sensitive_header(value: &str) -> bool {
     let normalized = value.to_ascii_lowercase().replace('_', "-");
     matches!(
@@ -2315,6 +2349,7 @@ fn is_sensitive_header(value: &str) -> bool {
             .any(|part| matches!(part, "token" | "secret" | "password" | "credential"))
 }
 
+/// 构造生产环境发现明文凭据时的统一错误。
 fn production_plaintext_error(manifest: &AdapterManifest, field: &str) -> EvaError {
     invalid_config(
         CONFIG_TYPE,
@@ -2645,55 +2680,77 @@ struct RawAdapterManifest {
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// 尚未规范化的 Provider 监管配置。
 struct RawProviderSupervision {
+    /// 可选重启策略。
     #[serde(default)]
     restart: Option<RawProviderRestart>,
+    /// 可选降权运行身份。
     #[serde(default)]
     run_as: Option<RawProviderRunAs>,
+    /// 用于拒绝未知字段的剩余映射。
     #[serde(flatten)]
     extra: Mapping,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// 尚未校验取值范围的 Provider 重启配置。
 struct RawProviderRestart {
+    /// 可选重启模式拼写。
     #[serde(default)]
     mode: Option<String>,
+    /// 可选最大重试次数。
     #[serde(default)]
     max_attempts: Option<u64>,
+    /// 可选重试退避毫秒数。
     #[serde(default)]
     backoff_ms: Option<u64>,
+    /// 用于拒绝未知字段的剩余映射。
     #[serde(flatten)]
     extra: Mapping,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// 与 YAML 联合类型对应的 Provider 运行身份配置。
 struct RawProviderRunAs {
+    /// 身份类别判别字段。
     #[serde(default)]
     kind: Option<String>,
+    /// Unix 用户 ID。
     #[serde(default)]
     uid: Option<u64>,
+    /// Unix 组 ID。
     #[serde(default)]
     gid: Option<u64>,
+    /// Windows 服务账户名。
     #[serde(default)]
     account: Option<String>,
+    /// 用于拒绝未知字段的剩余映射。
     #[serde(flatten)]
     extra: Mapping,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// Provider 凭据注入对象的原始表示。
 struct RawProviderCredentials {
+    /// Vault secret 注入声明列表。
     #[serde(default)]
     vault: Vec<RawProviderVaultSecretRef>,
+    /// 用于拒绝未知字段的剩余映射。
     #[serde(flatten)]
     extra: Mapping,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// 单条尚未校验的 Vault secret 到环境变量映射。
 struct RawProviderVaultSecretRef {
+    /// 接收 secret 的环境变量名。
     #[serde(default)]
     env: Option<String>,
+    /// Vault 中的 secret 引用。
     #[serde(default, rename = "ref")]
     secret_ref: Option<String>,
+    /// 用于拒绝未知字段的剩余映射。
     #[serde(flatten)]
     extra: Mapping,
 }

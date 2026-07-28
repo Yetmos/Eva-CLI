@@ -1,3 +1,4 @@
+//! 可确定重现并显式记录来源的主配置分层合并。
 //! Deterministic, explicitly sourced main-configuration layering.
 
 use eva_core::EvaError;
@@ -5,33 +6,47 @@ use serde_yaml::{Mapping, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// 配置层类别；枚举顺序同时定义从低到高的覆盖优先级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConfigLayerKind {
+    /// 必须且仅能出现一次的基础配置。
     Base,
+    /// 与当前运行环境同名的配置档案。
     Profile,
+    /// 本机或用户级覆盖配置。
     User,
+    /// 具有最高优先级的环境覆盖配置。
     Environment,
 }
 
+/// 已参与合并的配置层来源描述。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigLayer {
+    /// 配置层类别和优先级。
     pub kind: ConfigLayerKind,
+    /// 该层的源文件路径。
     pub path: PathBuf,
 }
 
+/// 合并后的配置值、来源列表以及字段级来源索引。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayeredConfig {
+    /// 应用全部覆盖后的 YAML 值。
     pub value: Value,
+    /// 按实际应用顺序排列的配置层。
     pub layers: Vec<ConfigLayer>,
+    /// YAML 字段路径到最后写入该字段的配置层类别的映射。
     pub field_sources: BTreeMap<String, ConfigLayerKind>,
 }
 
+/// 将 YAML 值编码为跨平台稳定且会遮蔽敏感字段的字节序列。
 pub fn canonical_config_bytes(value: &Value) -> Result<Vec<u8>, EvaError> {
     let mut output = Vec::new();
     encode_value(value, None, &mut output)?;
     Ok(output)
 }
 
+/// 递归编码 YAML 节点，并根据父映射键判断是否需要遮蔽值。
 fn encode_value(value: &Value, field: Option<&str>, output: &mut Vec<u8>) -> Result<(), EvaError> {
     if field.is_some_and(is_sensitive_field) {
         encode_bytes(b'R', b"<redacted>", output);
@@ -50,6 +65,7 @@ fn encode_value(value: &Value, field: Option<&str>, output: &mut Vec<u8>) -> Res
             }
         }
         Value::Mapping(mapping) => {
+            // 按键的原始字节排序，以消除 YAML 映射遍历顺序造成的差异。
             let mut entries = mapping
                 .iter()
                 .map(|(key, value)| {
@@ -75,11 +91,13 @@ fn encode_value(value: &Value, field: Option<&str>, output: &mut Vec<u8>) -> Res
     Ok(())
 }
 
+/// 写入类型标签、八字节长度和载荷，避免不同节点组合产生边界歧义。
 fn encode_bytes(tag: u8, bytes: &[u8], output: &mut Vec<u8>) {
     output.push(tag);
     output.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
     output.extend_from_slice(bytes);
 }
+/// 判断字段名是否表示不应进入摘要明文的敏感信息。
 fn is_sensitive_field(field: &str) -> bool {
     let field = field.to_ascii_lowercase();
     ["token", "password", "secret", "authorization", "credential"]
@@ -87,10 +105,14 @@ fn is_sensitive_field(field: &str) -> bool {
         .any(|part| field.contains(part))
 }
 
+/// 按类别和路径的稳定顺序合并多个配置层。
+///
+/// 映射递归合并，标量和序列整体替换；输入必须恰好包含一个基础层。
 pub fn merge_config_layers(
     layers: impl IntoIterator<Item = (ConfigLayerKind, PathBuf, Value)>,
 ) -> Result<LayeredConfig, EvaError> {
     let mut layers = layers.into_iter().collect::<Vec<_>>();
+    // 同类别再按路径排序，使调用方给出的迭代顺序不会影响结果。
     layers.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
     if layers
         .iter()
@@ -123,6 +145,7 @@ pub fn merge_config_layers(
     })
 }
 
+/// 将单层值递归并入目标值，并同步更新叶子字段的来源信息。
 fn merge_value(
     target: &mut Value,
     incoming: Value,
@@ -133,6 +156,7 @@ fn merge_value(
 ) -> Result<(), EvaError> {
     match (target, incoming) {
         (Value::Mapping(target), Value::Mapping(incoming)) => {
+            // 新键直接落入目标；已有键则继续递归，以保留未覆盖的兄弟字段。
             for (key, value) in incoming {
                 let name = key.as_str().ok_or_else(|| {
                     layer_error(path, field, "configuration mapping keys must be strings")
@@ -172,6 +196,7 @@ fn merge_value(
     }
 }
 
+/// 为新插入的映射树递归登记所有叶子字段来源。
 fn record_leaf_sources(
     value: &Value,
     kind: ConfigLayerKind,
@@ -189,6 +214,7 @@ fn record_leaf_sources(
     }
 }
 
+/// 返回用于类型冲突诊断的稳定 YAML 节点类别名称。
 fn value_kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -200,6 +226,7 @@ fn value_kind(value: &Value) -> &'static str {
         Value::Tagged(_) => "tagged",
     }
 }
+/// 构造附带配置层路径和字段位置的参数错误。
 fn layer_error(path: &Path, field: &str, message: &str) -> EvaError {
     EvaError::invalid_argument(message)
         .with_context("path", path.display().to_string())

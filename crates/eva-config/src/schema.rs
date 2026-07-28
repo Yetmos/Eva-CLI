@@ -88,6 +88,7 @@ pub fn validate_yaml_file_with_schema(
     validate_schema_node(&data, &schema, &context, &FieldPath::root())
 }
 
+/// 使用指定 Schema 校验内存中的 YAML 值，并将错误关联到原始配置路径。
 pub(crate) fn validate_yaml_value_with_schema(
     data: &Value,
     data_path: &Path,

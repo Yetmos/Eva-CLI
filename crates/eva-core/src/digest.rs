@@ -1,8 +1,11 @@
 //! Dependency-free SHA-256 for stable cross-crate identity digests.
+//! 中文：无外部依赖的 SHA-256 实现，用于在各 crate 间生成稳定身份摘要。
 
+/// 中文：SHA-256 标准规定的八个初始哈希状态字。
 const INITIAL: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
+/// 中文：SHA-256 六十四轮压缩所使用的固定常量。
 const ROUND: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -14,15 +17,18 @@ const ROUND: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
+/// 中文：计算输入字节的 SHA-256，并返回带 `sha256:` 前缀的小写十六进制摘要。
 pub fn sha256_digest(bytes: &[u8]) -> String {
     let mut padded = bytes.to_vec();
     let bit_len = (bytes.len() as u64).wrapping_mul(8);
+    // 中文：按 SHA-256 规范追加单个 1 位，再补零至最后八字节可容纳原始位长度。
     padded.push(0x80);
     while padded.len() % 64 != 56 {
         padded.push(0);
     }
     padded.extend_from_slice(&bit_len.to_be_bytes());
     let mut state = INITIAL;
+    // 中文：每个 512 位分组依次更新同一哈希状态，保证摘要覆盖完整输入顺序。
     for chunk in padded.chunks_exact(64) {
         compress(&mut state, chunk);
     }
@@ -34,8 +40,10 @@ pub fn sha256_digest(bytes: &[u8]) -> String {
     output
 }
 
+/// 中文：把单个 512 位消息分组压缩进八字状态；调用方必须保证分组长度恰为 64 字节。
 fn compress(state: &mut [u32; 8], chunk: &[u8]) {
     let mut w = [0u32; 64];
+    // 中文：前十六个消息字直接按大端序读取，剩余消息字由标准调度函数扩展。
     for (index, bytes) in chunk.chunks_exact(4).enumerate() {
         w[index] = u32::from_be_bytes(bytes.try_into().unwrap());
     }
@@ -50,6 +58,7 @@ fn compress(state: &mut [u32; 8], chunk: &[u8]) {
             .wrapping_add(s1);
     }
     let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
+    // 中文：所有加法使用模 2^32 环绕语义，与 SHA-256 标准的无符号字运算一致。
     for index in 0..64 {
         let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
         let ch = (e & f) ^ (!e & g);
@@ -70,6 +79,7 @@ fn compress(state: &mut [u32; 8], chunk: &[u8]) {
         b = a;
         a = t1.wrapping_add(t2);
     }
+    // 中文：将本分组的工作变量累加回链式状态，供下一分组继续压缩。
     for (slot, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
         *slot = slot.wrapping_add(value);
     }

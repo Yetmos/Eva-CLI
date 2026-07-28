@@ -56,16 +56,23 @@ pub struct RuntimeConfig {
     pub adapter_dir: Option<PathBuf>,
     /// 是否允许配置热重载。
     pub hot_reload: bool,
+    /// 可选的、由守护进程托管的外部知识检索 Worker。
     /// Optional daemon-owned external knowledge retrieval worker.
     pub retrieval_worker: Option<KnowledgeRetrievalWorkerConfig>,
 }
 
+/// 由守护进程周期性调用的外部知识检索任务配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeRetrievalWorkerConfig {
+    /// 接收检索结果或发起检索的 Agent 标识。
     pub agent: String,
+    /// 检索任务调用的 Capability 名称。
     pub capability: String,
+    /// 提供检索 Capability 的 Adapter 标识。
     pub provider: String,
+    /// 每次周期任务发送给 Provider 的查询文本。
     pub query: String,
+    /// 两次检索之间的间隔毫秒数。
     pub interval_ms: u64,
 }
 
@@ -209,6 +216,7 @@ pub fn load_eva_config(path: impl AsRef<Path>) -> Result<EvaConfig, EvaError> {
     EvaConfig::try_from_raw(path.to_path_buf(), raw)
 }
 
+/// 将分层合并后的 YAML 值转换并规范化为强类型主配置。
 pub(crate) fn load_eva_config_value(path: &Path, value: Value) -> Result<EvaConfig, EvaError> {
     let raw: RawEvaConfig = serde_yaml::from_value(value).map_err(|error| {
         invalid_config(
@@ -270,6 +278,7 @@ impl RuntimeConfig {
 }
 
 impl KnowledgeRetrievalWorkerConfig {
+    /// 校验检索 Worker 的必填引用、查询文本和正数执行间隔。
     fn try_from_raw(
         path: &Path,
         raw: RawKnowledgeRetrievalWorkerConfig,
@@ -761,13 +770,20 @@ struct RawRuntimeConfig {
 }
 
 #[derive(Debug, Deserialize)]
+/// 与 YAML 形状一致、尚未执行语义校验的检索 Worker 配置。
 struct RawKnowledgeRetrievalWorkerConfig {
+    /// 是否启用周期检索任务。
     #[serde(default)]
     enabled: bool,
+    /// 可选 Agent 标识；启用后变为必填。
     agent: Option<String>,
+    /// 可选 Capability 名称；启用后变为必填。
     capability: Option<String>,
+    /// 可选 Provider 标识；启用后变为必填。
     provider: Option<String>,
+    /// 可选查询文本；启用后变为必填。
     query: Option<String>,
+    /// 可选执行间隔；启用后必须为正数。
     interval_ms: Option<u64>,
 }
 

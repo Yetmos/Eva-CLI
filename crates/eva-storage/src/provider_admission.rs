@@ -1,4 +1,5 @@
 //! Durable, cross-process provider admission reservations.
+//! 中文：基于文件系统的跨进程 Provider 准入租约，用于统一限制并发会话数量。
 
 use eva_core::{AdapterId, EvaError};
 use sha2::{Digest, Sha256};
@@ -8,29 +9,42 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
+/// 中文：未显式指定时使用的租约有效期，避免进程异常退出后永久占用并发名额。
 pub const DEFAULT_RESERVATION_TTL_MS: u128 = 120_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 中文：一次 Provider 并发名额的有时限占用凭证。
 pub struct ProviderAdmissionReservation {
+    /// 中文：唯一租约标识，续租和所有权校验必须同时匹配该值。
     pub reservation_id: String,
+    /// 中文：持有租约的运行时会话标识。
     pub session_id: String,
+    /// 中文：租约失效的绝对毫秒时间戳。
     pub expires_at_ms: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 中文：指定 Adapter 当前并发上限及全部有效租约的持久化快照。
 pub struct ProviderAdmissionSnapshot {
+    /// 中文：快照归属的 Adapter 标识。
     pub adapter_id: AdapterId,
+    /// 中文：该 Provider 当前允许的最大并发会话数。
     pub max_concurrency: usize,
+    /// 中文：尚未过期且仍占用并发名额的租约集合。
     pub reservations: Vec<ProviderAdmissionReservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 中文：通过独占锁文件协调多个进程的 Provider 准入表。
 pub struct FileSystemProviderAdmissionTable {
+    /// 中文：准入快照和锁文件的存储目录。
     root: PathBuf,
+    /// 中文：发现锁已被占用时两次重试之间的等待时间。
     lock_wait: Duration,
 }
 
 impl FileSystemProviderAdmissionTable {
+    /// 中文：创建准入表并确保其持久化目录存在。
     pub fn new(root: impl AsRef<Path>) -> Result<Self, EvaError> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root).map_err(|e| {
@@ -42,6 +56,7 @@ impl FileSystemProviderAdmissionTable {
         })
     }
 
+    /// 中文：原子清理过期租约并为会话申请名额；同一会话重复申请会返回原租约。
     pub fn reserve(
         &self,
         adapter_id: &AdapterId,
@@ -55,6 +70,7 @@ impl FileSystemProviderAdmissionTable {
                 "provider admission reservation is invalid",
             ));
         }
+        // 中文：读、判断和写必须处于同一跨进程锁内，否则两个进程可能同时越过并发上限。
         let _lock = self.lock(adapter_id)?;
         let mut state = self.read(adapter_id)?;
         state.max_concurrency = max_concurrency;
@@ -83,6 +99,7 @@ impl FileSystemProviderAdmissionTable {
         Ok(reservation)
     }
 
+    /// 中文：按会话释放其全部租约；会话不存在时保持幂等成功。
     pub fn release(&self, adapter_id: &AdapterId, session_id: &str) -> Result<(), EvaError> {
         let _lock = self.lock(adapter_id)?;
         let mut state = self.read(adapter_id)?;
@@ -90,6 +107,7 @@ impl FileSystemProviderAdmissionTable {
         self.write(adapter_id, &state)
     }
 
+    /// 中文：仅当租约标识和会话标识同时匹配时释放名额，防止其他会话误删租约。
     pub fn release_owned(
         &self,
         adapter_id: &AdapterId,
@@ -109,6 +127,7 @@ impl FileSystemProviderAdmissionTable {
         self.write(adapter_id, &state)
     }
 
+    /// 中文：在租约尚未过期且所有权匹配时延长有效期。
     pub fn renew(
         &self,
         adapter_id: &AdapterId,
@@ -135,6 +154,7 @@ impl FileSystemProviderAdmissionTable {
         Ok(renewed)
     }
 
+    /// 中文：清理过期项并返回指定 Adapter 的最新持久化准入快照。
     pub fn snapshot(
         &self,
         adapter_id: &AdapterId,
@@ -147,14 +167,17 @@ impl FileSystemProviderAdmissionTable {
         Ok(state)
     }
 
+    /// 中文：以 Adapter 标识摘要生成固定长度且不泄露原值的快照文件路径。
     fn path(&self, adapter_id: &AdapterId) -> PathBuf {
         self.root
             .join(format!("{}.admission", digest(adapter_id.as_str())))
     }
+    /// 中文：返回与指定 Adapter 准入状态一一对应的锁文件路径。
     fn lock_path(&self, adapter_id: &AdapterId) -> PathBuf {
         self.root
             .join(format!("{}.lock", digest(adapter_id.as_str())))
     }
+    /// 中文：通过原子创建锁文件获取跨进程互斥权，超过有限重试次数后返回超时。
     fn lock(&self, adapter_id: &AdapterId) -> Result<AdmissionLock, EvaError> {
         let path = self.lock_path(adapter_id);
         for _ in 0..200 {
@@ -173,6 +196,7 @@ impl FileSystemProviderAdmissionTable {
             "provider admission lock acquisition timed out",
         ))
     }
+    /// 中文：读取并解码准入快照；文件尚不存在时返回空状态。
     fn read(&self, adapter_id: &AdapterId) -> Result<ProviderAdmissionSnapshot, EvaError> {
         let path = self.path(adapter_id);
         if !path.exists() {
@@ -190,6 +214,7 @@ impl FileSystemProviderAdmissionTable {
             })?;
         decode(adapter_id, &text)
     }
+    /// 中文：先同步临时文件再原子替换正式快照，避免读到部分写入的数据。
     fn write(
         &self,
         adapter_id: &AdapterId,
@@ -212,22 +237,28 @@ impl FileSystemProviderAdmissionTable {
 }
 
 #[derive(Debug)]
+/// 中文：独占锁文件的 RAII 守卫，离开临界区时同步并删除锁文件。
 struct AdmissionLock {
+    /// 中文：保持打开状态的锁文件句柄。
     file: File,
+    /// 中文：守卫释放时需要删除的锁文件路径。
     path: PathBuf,
 }
 impl Drop for AdmissionLock {
+    /// 中文：尽力同步锁文件并释放跨进程互斥权；析构路径不传播清理错误。
     fn drop(&mut self) {
         let _ = self.file.sync_all();
         let _ = fs::remove_file(&self.path);
     }
 }
 
+/// 中文：计算 Adapter 标识的 SHA-256 十六进制摘要，用作安全文件名。
 fn digest(value: &str) -> String {
     let mut h = Sha256::new();
     h.update(value.as_bytes());
     format!("{:x}", h.finalize())
 }
+/// 中文：把准入快照编码为带版本头的稳定逐行格式。
 fn encode(s: &ProviderAdmissionSnapshot) -> String {
     let mut out = format!("version=1\nmax={}\n", s.max_concurrency);
     for r in &s.reservations {
@@ -238,6 +269,7 @@ fn encode(s: &ProviderAdmissionSnapshot) -> String {
     }
     out
 }
+/// 中文：解析逐行准入格式，并拒绝字段数量或数值类型不合法的租约。
 fn decode(adapter: &AdapterId, text: &str) -> Result<ProviderAdmissionSnapshot, EvaError> {
     let mut max = 0;
     let mut reservations = Vec::new();
@@ -273,6 +305,7 @@ mod tests {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 中文：为每个测试创建互不冲突的临时准入目录。
     fn root() -> PathBuf {
         std::env::temp_dir().join(format!(
             "eva-admission-{}",
@@ -283,6 +316,7 @@ mod tests {
         ))
     }
 
+    /// 中文：验证并发容量、显式释放和过期清理都会持久生效。
     #[test]
     fn capacity_release_and_expiry_are_durable() {
         let root = root();
@@ -300,6 +334,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// 中文：验证同一会话重复申请时复用原租约而不额外占用名额。
     #[test]
     fn same_session_reservation_is_idempotent() {
         let root = root();
@@ -311,6 +346,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// 中文：验证续租同时受租约标识、会话所有权和过期时间约束。
     #[test]
     fn renew_is_fenced_by_reservation_and_session_identity() {
         let root = root();
@@ -330,6 +366,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// 中文：验证旧租约持有者无法释放同一会话后来创建的继任租约。
     #[test]
     fn release_owned_cannot_remove_a_successor_reservation() {
         let root = root();
@@ -356,6 +393,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// 中文：验证两个独立进程竞争唯一名额时只有一个申请成功。
     #[test]
     fn two_processes_have_one_winner_for_capacity_one() {
         if let Ok(root) = std::env::var("EVA_ADMISSION_CHILD_ROOT") {
