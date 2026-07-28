@@ -289,6 +289,49 @@ jobs:
         shell: powershell
         run: ./scripts/test-credential-leak-scan.ps1
 
+      - name: Windows provider local evidence contract
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-windows-provider-local-evidence.ps1
+
+      - name: Capture and read back Windows provider local evidence
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $evidence = Join-Path (Get-Location) ".eva/w3-windows-provider-local-evidence"
+          $receipt = Join-Path (Get-Location) ".eva/w3-windows-provider-local-receipt.json"
+          Remove-Item -LiteralPath $evidence -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $receipt -Force -ErrorAction SilentlyContinue
+          ./scripts/capture-windows-provider-local-evidence.ps1 `
+            -EvidencePath $evidence `
+            -SourceCommit "${{ github.sha }}" `
+            -RunId "$env:GITHUB_RUN_ID" `
+            -RepositoryRoot (Get-Location)
+          ./scripts/validate-windows-provider-local-evidence.ps1 `
+            -EvidencePath $evidence `
+            -ExpectedSourceCommit "${{ github.sha }}" `
+            -ExpectedRunId "$env:GITHUB_RUN_ID" `
+            -ExpectedRepositoryRoot (Get-Location) `
+            -ExpectedRunnerProvider github-actions `
+            -ExpectedRunnerIdentity "$env:RUNNER_NAME/$env:GITHUB_RUN_ID/$env:GITHUB_RUN_ATTEMPT/$env:GITHUB_JOB" `
+            -ExpectedRunnerName "$env:RUNNER_NAME" `
+            -ExpectedRunnerArchitecture "$env:RUNNER_ARCH" `
+            -ExpectedRunnerRunId "$env:GITHUB_RUN_ID" `
+            -ExpectedRunnerRunAttempt "$env:GITHUB_RUN_ATTEMPT" `
+            -ExpectedRunnerJob "$env:GITHUB_JOB" `
+            -ReceiptPath $receipt
+
+      - name: Upload Windows provider local evidence
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: w3-windows-provider-local-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .eva/w3-windows-provider-local-evidence
+            .eva/w3-windows-provider-local-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Daemon runtime smoke tests
         run: |
           cargo test -p eva-runtime daemon_control_status_and_shutdown_round_trip_has_trace_id
