@@ -240,12 +240,15 @@ combined `website/`, `docs/`, and `assets/` content.
 
 ![Eva-CLI architecture overview](assets/eva-cli-architecture.svg)
 
-The diagram summarizes the implemented boundaries. The basic path composes a
-local EventBus, Scheduler mailboxes, AgentRuntime, and a restricted Lua 5.4
-host. External capability calls use separate policy, Adapter, provider, and
-transport gates. Daemon process modes, recovery, backup, restore, upgrade, and
-release commands compose their own filesystem-backed services and evidence;
-`RuntimeBuilder` is not a container that owns every concrete service.
+The diagram summarizes the implemented boundaries. Its three center lanes are
+alternative command-level compositions, not stages of one universal request:
+the basic path composes a local EventBus, Scheduler mailboxes, AgentRuntime,
+and a restricted Lua 5.4 host; daemon and direct service modes own leases,
+recovery, reload, and drain; adapter-backed capability, adapter, MCP, and Skill
+commands can enter `AdapterRuntime` directly. `mcp compatibility measure` is a
+local evidence path. Backup, restore, upgrade, and release commands compose
+their own filesystem-backed services and evidence; `RuntimeBuilder` is not a
+container that owns every concrete service.
 
 ## Documentation Entrances
 

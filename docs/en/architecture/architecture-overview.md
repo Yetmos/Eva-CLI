@@ -45,6 +45,43 @@ split manifests, policies, and routes into a redacted SHA-256 identity. A
 daemon watcher may preflight a changed tree, persist a candidate, and promote
 it atomically; a rejected candidate leaves the active generation untouched.
 
+### 2.1 Reading The Diagram
+
+The three execution lanes in the diagram are alternative command-level
+compositions, not consecutive stages of one request:
+
+- `run --example basic` uses the synchronous in-process EventBus, Scheduler,
+  Agent, Lua, and built-in capability path.
+- `daemon start` and the hidden direct service entry own filesystem leases,
+  recovery, task/replay workers, generation reload, and bounded shutdown.
+- `capability call`, scheduled retrieval, and other authorized Rust callers use
+  the external capability and Adapter provider path independently of the basic
+  EventBus/Lua path.
+
+The lanes share validated configuration, policy contracts, durable state
+families, and observability, but sharing a boundary does not make every service
+part of every command. Solid arrows show a direct call or state flow; dashed
+arrows show an optional or configuration-dependent branch. In particular,
+`RuntimeServices` contains `Ready`/`Planned`/`Disabled` summaries only, and does
+not prove that a concrete service or provider process is running.
+
+### 2.2 Code Traceability
+
+These path-level anchors keep the overview auditable without relying on line
+numbers that drift during refactoring. Cargo manifests remain authoritative for
+direct crate dependencies.
+
+| Boundary | Source anchors | Implemented fact |
+| --- | --- | --- |
+| Process entry and command dispatch | `src/main.rs`, `crates/eva-cli/src/lib.rs`, `crates/eva-cli/src/run.rs` | The root binary delegates to `eva_cli::run`; parsed `Command` variants dispatch to one command module and stable output/exit handling. |
+| Configuration and generations | `crates/eva-config/src/lib.rs`, `crates/eva-config/src/layering.rs`, `crates/eva-config/src/routes.rs`, `crates/eva-runtime/src/config_generation.rs`, `crates/eva-runtime/src/config_generation_store.rs`, `crates/eva-runtime/src/config_watcher.rs` | Layered files are loaded and cross-validated before a canonical generation is preflighted, persisted, promoted, or rejected. |
+| Basic in-memory execution | `crates/eva-cli/src/run/run_cmd.rs`, `crates/eva-runtime/src/builder.rs`, `crates/eva-runtime/src/runtime.rs`, `crates/eva-runtime/src/basic.rs` | `run --example basic` alone selects `RuntimeBuilder::in_memory_v10` and executes the synchronous basic report path. |
+| Routing, Agent, and Lua | `crates/eva-eventbus/src/in_memory.rs`, `crates/eva-scheduler/src/subscription.rs`, `crates/eva-scheduler/src/mailbox.rs`, `crates/eva-agent/src/runtime.rs`, `crates/eva-lua-host/src/vm.rs` | A typed Event is published, expanded into bounded deliveries, accepted by an Agent runtime, and handled inside the restricted Lua VM. |
+| Daemon, recovery, and replay | `crates/eva-runtime/src/daemon.rs`, `crates/eva-runtime/src/recovery.rs`, `crates/eva-runtime/src/task_worker.rs`, `crates/eva-runtime/src/scheduler_retry.rs` | The daemon owns leases, control polling, CAS task state, replay dispatch, generation reload, drain, and shutdown coordination. |
+| External capability and Adapter command surfaces | `crates/eva-capability/src/registry.rs`, `crates/eva-capability/src/gate.rs`, `crates/eva-adapter/src/capability_host.rs`, `crates/eva-adapter/src/runtime.rs`, `crates/eva-adapter/src/supervisor.rs`, `crates/eva-cli/src/run/capability_cmd.rs`, `crates/eva-cli/src/run/adapter_cmd.rs`, `crates/eva-cli/src/run/mcp_cmd.rs`, `crates/eva-cli/src/run/skill_cmd.rs` | `capability call` uses provider, permission, policy, and confirmation gates; adapter/mcp list/probe and skill paths can enter `AdapterRuntime` directly. `mcp compatibility measure` is a local evidence path, not provider supervision. |
+| Durable state ownership | `crates/eva-storage/src/durable_backend.rs`, `crates/eva-storage/src/event_log.rs`, `crates/eva-storage/src/task_state.rs`, `crates/eva-storage/src/effect_ledger.rs`, `crates/eva-storage/src/provider_process.rs` | Filesystem layouts and owning stores persist event, task, effect, provider, audit, and artifact evidence. |
+| Service lifecycle and guarded operations | `crates/eva-cli/src/run/service_cmd.rs`, `crates/eva-cli/src/run/daemon_cmd.rs`, `crates/eva-lifecycle/src/service_entry.rs`, `crates/eva-lifecycle/src/service_manager.rs`, `crates/eva-lifecycle/src/service_factory.rs`, `crates/eva-runtime/src/daemon.rs`, `crates/eva-backup/src/`, `crates/eva-release/src/` | Service identity/direct entry, cooperative stop, restore/upgrade gates, rollback, and release evidence are composed by their operator command paths. |
+
 ## 3. Architecture Decisions
 
 ### 3.1 Rust Owns Authority And Side Effects
@@ -93,6 +130,10 @@ a complete dependency-injection container.
 
 ## 4. Implemented Runtime Flows
 
+Sections 4.2 through 4.4 expand the three separate execution lanes in the
+diagram. They reuse shared contracts and stores, but no universal request path
+traverses all three lanes.
+
 ### 4.1 Configuration And CLI Control Flow
 
 ```text
@@ -109,15 +150,17 @@ eva binary
 The public command families are `version`, `doctor`, `config`, `inspect`,
 `run`, `emit`, `daemon`, `agent`, `capability`, `task`, `adapter`, `mcp`,
 `skill`, `discovery`, `memory`, `observability`, `hardware`, `backup`,
-`snapshot`, `restore`, `upgrade`, and `release`.
+`snapshot`, `restore`, `upgrade`, `release`, and `service`.
 
 ### 4.2 Basic In-Memory Agent Flow
 
 ```text
 run --example basic
   -> RuntimeBuilder::in_memory_v10
-  -> typed Event
-  -> InMemoryEventBus publish
+  -> Runtime summary + active generation snapshot
+  -> Runtime::run_basic (per-run composition)
+  -> constructs InMemoryEventBus / SubscriptionTable / AgentRuntime / LuaHost
+  -> typed Event -> InMemoryEventBus publish
   -> SubscriptionTable route and mailbox delivery
   -> AgentRuntime accept and controlled retry loop
   -> LuaHost on_event
@@ -135,12 +178,16 @@ Adapter provider chain.
 
 ```text
 daemon start --foreground --no-shutdown-after-smoke | --background
-  -> fenced daemon/writer lease and durable recovery scan
-  -> paused TaskWorkerRuntime + effect ledger + provider/retrieval boundaries
-  -> ready publication, then task claim/heartbeat/finish CAS
-  -> scheduler retry dispatch -> owned replay delivery -> handler -> ACK
-  -> config watcher debounce -> candidate generation preflight
-  -> prepare/promote/retire generation, or retain active on rejection
+  -> durable backend verification
+  -> claim daemon/writer lease
+  -> effect-aware task + provider-process recovery
+  -> policy/observability/hotplug/memory/retrieval startup checks
+  -> RuntimeBuilder::new -> runtime summary + active generation snapshot
+  -> start paused TaskWorkerRuntime and optional config watcher
+  -> publish state/PID/ready only after startup work succeeds
+  -> control loop: task claim/heartbeat/finish CAS
+  -> scheduler retry tick -> owned replay delivery -> handler -> ACK
+  -> config watcher debounce -> candidate preflight -> prepare/promote/retire
   -> bounded drain, worker join, shutdown evidence and lease release
 ```
 
@@ -151,9 +198,12 @@ an operator-visible interruption rather than an automatic duplicate invocation,
 while a `Committed` result can complete a stale task without rerunning it.
 The daemon does not eagerly launch provider processes (`provider_processes_started`
 remains `false`), but an explicitly configured retrieval schedule can invoke a
-provider through the normal Adapter gates.
+provider through the normal Adapter gates. Startup recovery classifies task,
+effect, and provider-process records; it does not redrive events. Due
+dead-letter replay happens later in the control loop through the scheduler retry
+tick.
 
-### 4.4 External Capability Flow
+### 4.4 External Capability And Adapter Flows
 
 ```text
 CLI capability call
@@ -173,6 +223,15 @@ The operator-confirmation step belongs to the CLI command path. Other Rust
 callers can enter `AdapterBackedCapabilityHost` only after satisfying their own
 authorization and execution gates.
 
+#### 4.4.1 Direct Adapter-Backed Command Surfaces
+
+`adapter list|probe`, `mcp list|probe`, and `skill list|run` load an
+`AdapterRuntime` directly. `skill run` applies the `SkillRun` policy gate for a
+selected Skill transport before invoking it; the read-only list/probe commands
+do not pretend to be capability-provider execution. `mcp compatibility measure`
+is a sealed local loopback evidence producer and does not enter
+`AdapterRuntime` or start a provider.
+
 Provider fallback is attempted only for failures classified as retryable. The
 supervisor records concurrency, rate, circuit, session, health, restart-policy,
 and durable process evidence; it is not an OS process manager.
@@ -180,26 +239,24 @@ and durable process evidence; it is not an OS process manager.
 ### 4.5 Daemon Modes And Recovery Flow
 
 ```text
-daemon start --foreground | --background
-  -> filesystem lock and PID/state files
-  -> durable backend verification
-  -> task, event and provider recovery scan
-  -> policy and observability checks
-  -> one hotplug reconciliation
-  -> memory TTL GC and knowledge rebuild checkpoint
-  -> smoke shutdown, or filesystem control-mailbox polling loop
-       -> durable dead-letter retry tick -> daemon-owned task worker
+daemon start --foreground | --background | direct service entry
+  -> durable backend verification and daemon lease
+  -> startup recovery: task/effect/provider-process records
+  -> policy, observability, hotplug, memory, and retrieval checks
+  -> publish state/PID only after startup completes
+  -> filesystem control-mailbox polling loop
        -> status / submit / cancel / drain / reload / shutdown request
+       -> due dead-letter retry tick -> daemon-owned task worker
 ```
 
 Foreground mode keeps the current process; background mode uses a separate
-parent/child startup handshake and publishes success only after the child owns
-the durable PID/lease identity. Neither mode eagerly starts provider processes.
-A retry tick redrives a due event through an owned task-worker delivery and only
-acknowledges the replay after the bound handler succeeds. The persistent loop
-also runs scheduled memory maintenance/retrieval and, when enabled, config
-watcher preflight. The direct OS service path below is a third mode and never
-uses the background child entrypoint.
+parent/child startup handshake. The direct service entry claims the daemon lease
+in the service process and never uses the background child entrypoint. All modes
+publish usable state only after startup work completes, do not eagerly start
+provider processes, and redrive due events only inside the control loop; replay
+is ACKed after the bound handler succeeds. The persistent loop also runs
+scheduled memory maintenance/retrieval and, when enabled, config watcher
+preflight.
 
 ### 4.6 Direct OS Service Entry Flow
 

@@ -1,70 +1,199 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1160" viewBox="0 0 1600 1160" role="img" aria-labelledby="title desc">
   <title id="title">Eva-CLI current architecture</title>
-  <desc id="desc">Current Eva-CLI architecture showing user-facing entry surfaces, the Rust-managed event and Agent execution path, capability and adapter boundaries, durable state, direct service entry, lifecycle, backup, release, and observability services.</desc>
+  <desc id="desc">Current Eva-CLI architecture with command-specific composition and three separate execution lanes for the basic in-memory run, the daemon and direct service runtime, and external capability providers.</desc>
   <defs>
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
     <marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#2563eb"/></marker>
     <style>
-      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033}
-      .title{font-size:32px;font-weight:700}.subtitle{font-size:16px;fill:#526174}.section{font-size:17px;font-weight:700}
-      .label{font-size:16px;font-weight:700}.small{font-size:13px;fill:#526174}.tiny{font-size:12px;fill:#64748b}.footer{font-size:14px;fill:#ffffff}
-      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}
-      .green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}.orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}
-      .purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}.cyan{fill:#ecfeff;stroke:#0891b2;stroke-width:1.5}
-      .rose{fill:#fff1f2;stroke:#e25572;stroke-width:1.5}.line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}
-      .control{fill:none;stroke:#2563eb;stroke-width:2;marker-end:url(#arrow-blue)}.dash{stroke-dasharray:7 6}
+      text{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;fill:#172033;letter-spacing:0}
+      .title{font-size:32px;font-weight:700}.subtitle{font-size:16px;fill:#526174}.section{font-size:18px;font-weight:700}
+      .lane-title{font-size:16px;font-weight:700}.label{font-size:15px;font-weight:700}.small{font-size:13px;fill:#526174}.tiny{font-size:12px;fill:#64748b}.footer{font-size:13px;fill:#ffffff}
+      .panel{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}.lane-basic{fill:#f8fbff;stroke:#bfdbfe;stroke-width:1.5}.lane-daemon{fill:#fffaf2;stroke:#fed7aa;stroke-width:1.5}.lane-provider{fill:#fff8fa;stroke:#fecdd3;stroke-width:1.5}
+      .blue{fill:#eff6ff;stroke:#3b82f6;stroke-width:1.5}.green{fill:#ecfdf5;stroke:#22a06b;stroke-width:1.5}.orange{fill:#fff7ed;stroke:#ea8a1f;stroke-width:1.5}
+      .purple{fill:#f5f3ff;stroke:#7c5ce7;stroke-width:1.5}.cyan{fill:#ecfeff;stroke:#0891b2;stroke-width:1.5}.rose{fill:#fff1f2;stroke:#e25572;stroke-width:1.5}
+      .line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}.control{fill:none;stroke:#2563eb;stroke-width:2;marker-end:url(#arrow-blue)}.dash{stroke-dasharray:7 6}
     </style>
   </defs>
-  <rect width="1600" height="1000" fill="#ffffff"/>
-  <text class="title" x="54" y="52">Eva-CLI Current Architecture</text>
-  <text class="subtitle" x="54" y="80">Rust owns execution, policy, durability, and recovery boundaries; Lua supplies isolated Agent behavior behind capability gates.</text>
 
-  <rect class="panel" x="42" y="104" width="1516" height="142" rx="8"/>
-  <text class="section" x="62" y="132">Entry and control surfaces</text>
-  <g>
-    <rect class="purple" x="72" y="154" width="190" height="62" rx="7"/><text class="label" x="167" y="181" text-anchor="middle">eva CLI</text><text class="small" x="167" y="202" text-anchor="middle">commands and JSON contracts</text>
-    <rect class="purple" x="292" y="154" width="190" height="62" rx="7"/><text class="label" x="387" y="181" text-anchor="middle">Daemon control</text><text class="small" x="387" y="202" text-anchor="middle">submit, cancel, shutdown</text>
-    <rect class="purple" x="512" y="154" width="190" height="62" rx="7"/><text class="label" x="607" y="181" text-anchor="middle">MCP client / probe</text><text class="small" x="607" y="202" text-anchor="middle">external tool discovery</text>
-    <rect class="green" x="742" y="154" width="210" height="62" rx="7"/><text class="label" x="847" y="181" text-anchor="middle">Config and schema</text><text class="small" x="847" y="202" text-anchor="middle">validated ProjectConfig</text>
-    <rect class="green" x="982" y="154" width="230" height="62" rx="7"/><text class="label" x="1097" y="181" text-anchor="middle">Discovery and policy</text><text class="small" x="1097" y="202" text-anchor="middle">candidates, permissions, sandbox</text>
-    <rect class="orange" x="1242" y="154" width="270" height="62" rx="7"/><text class="label" x="1377" y="181" text-anchor="middle">Lifecycle and service controls</text><text class="small" x="1377" y="202" text-anchor="middle">generation, service identity, artifacts</text>
-  </g>
+  <rect width="1600" height="1160" fill="#ffffff"/>
+  <text class="title" x="48" y="50">Eva-CLI Current Architecture</text>
+  <text class="subtitle" x="48" y="78">Rust owns execution and side effects; each CLI command composes only the concrete services it needs.</text>
 
-  <rect class="panel" x="42" y="268" width="1516" height="346" rx="8"/>
-  <text class="section" x="62" y="298">Rust-managed execution path</text>
-  <text class="tiny" x="1530" y="298" text-anchor="end">current in-memory core path; recoverable services use the durable stores below</text>
+  <rect class="panel" x="40" y="102" width="1520" height="150" rx="8"/>
+  <text class="section" x="62" y="132">Entry, validated control data, and composition</text>
   <g>
-    <rect class="blue" x="68" y="330" width="170" height="78" rx="7"/><text class="label" x="153" y="361" text-anchor="middle">Task / Event</text><text class="small" x="153" y="384" text-anchor="middle">typed request + trace</text>
-    <rect class="blue" x="278" y="330" width="170" height="78" rx="7"/><text class="label" x="363" y="361" text-anchor="middle">EventBus</text><text class="small" x="363" y="384" text-anchor="middle">publish, recover, replay</text>
-    <rect class="blue" x="488" y="330" width="170" height="78" rx="7"/><text class="label" x="573" y="361" text-anchor="middle">Scheduler</text><text class="small" x="573" y="384" text-anchor="middle">Topic + target + policy</text>
-    <rect class="blue" x="698" y="330" width="170" height="78" rx="7"/><text class="label" x="783" y="361" text-anchor="middle">Agent mailbox</text><text class="small" x="783" y="384" text-anchor="middle">bounded private queue</text>
-    <rect class="orange" x="908" y="330" width="170" height="78" rx="7"/><text class="label" x="993" y="361" text-anchor="middle">AgentRuntime</text><text class="small" x="993" y="384" text-anchor="middle">lifecycle and handler</text>
-    <rect class="orange" x="1118" y="330" width="170" height="78" rx="7"/><text class="label" x="1203" y="361" text-anchor="middle">LuaHost</text><text class="small" x="1203" y="384" text-anchor="middle">sandboxed on_event</text>
-    <path class="line" d="M238 369H278"/><path class="line" d="M448 369H488"/><path class="line" d="M658 369H698"/><path class="line" d="M868 369H908"/><path class="line" d="M1078 369H1118"/>
-  </g>
-  <g>
-    <rect class="cyan" x="1118" y="468" width="170" height="82" rx="7"/><text class="label" x="1203" y="497" text-anchor="middle">Built-in capability</text><text class="small" x="1203" y="519" text-anchor="middle">optional Lua result branch</text><text class="small" x="1203" y="538" text-anchor="middle">response joins run report</text>
-    <rect class="rose" x="1328" y="468" width="190" height="82" rx="7"/><text class="label" x="1423" y="497" text-anchor="middle">Adapter runtime</text><text class="small" x="1423" y="519" text-anchor="middle">registry + router</text><text class="small" x="1423" y="538" text-anchor="middle">transport execution</text>
-    <path class="line" d="M1203 408V468"/>
-    <rect class="panel" x="68" y="468" width="930" height="82" rx="7"/>
-    <text class="label" x="88" y="493">Controlled transports and services</text>
-    <text class="small" x="88" y="520">builtin · stdio · HTTP · MCP · EventBus · Skill · Lua capability · hardware</text>
-    <text class="small" x="88" y="541">LuaEventResult and any optional built-in capability response are collected in BasicRunReport; they are not republished.</text>
-    <path class="control dash" d="M607 216V252H1490V468"/><path class="line" d="M1328 509H998"/>
-    <text class="tiny" x="1210" y="584" text-anchor="middle">external provider commands use the adapter path independently of EventBus and Lua</text>
+    <rect class="purple" x="70" y="156" width="140" height="68" rx="7"/>
+    <text class="label" x="140" y="184" text-anchor="middle">eva binary</text>
+    <text class="small" x="140" y="205" text-anchor="middle">src/main.rs</text>
+
+    <rect class="purple" x="250" y="156" width="220" height="68" rx="7"/>
+    <text class="label" x="360" y="184" text-anchor="middle">eva-cli</text>
+    <text class="small" x="360" y="205" text-anchor="middle">parse · dispatch · output</text>
+
+    <rect class="blue" x="520" y="156" width="300" height="68" rx="7"/>
+    <text class="label" x="670" y="184" text-anchor="middle">Command-specific composition</text>
+    <text class="small" x="670" y="205" text-anchor="middle">one concrete object graph per command</text>
+
+    <rect class="green" x="900" y="156" width="280" height="68" rx="7"/>
+    <text class="label" x="1040" y="184" text-anchor="middle">Config and generation</text>
+    <text class="small" x="1040" y="205" text-anchor="middle">layers · validation · active/candidate</text>
+
+    <rect class="cyan" x="1220" y="156" width="300" height="68" rx="7"/>
+    <text class="label" x="1370" y="184" text-anchor="middle">Policy and discovery</text>
+    <text class="small" x="1370" y="205" text-anchor="middle">permission narrowing · preflight</text>
+
+    <path class="line" d="M210 190H250"/>
+    <path class="line" d="M470 190H520"/>
+    <path class="control" d="M900 180H850V190H820"/>
+    <path class="control dash" d="M1220 205H1200V238H670V224"/>
   </g>
 
-  <rect class="panel" x="42" y="638" width="1516" height="270" rx="8"/>
-  <text class="section" x="62" y="668">Durability, recovery, and operations</text>
+  <rect class="panel" x="40" y="274" width="1520" height="548" rx="8"/>
+  <text class="section" x="62" y="302">Implemented execution lanes</text>
+  <text class="tiny" x="1534" y="302" text-anchor="end">separate command paths, not stages of one universal request</text>
+
+  <path class="control" d="M670 224V284H200V377H220"/>
+  <path class="control" d="M670 284H200V565H220"/>
+  <path class="control" d="M670 284H200V737H220"/>
+
+  <rect class="lane-basic" x="56" y="314" width="1488" height="152" rx="7"/>
+  <text class="lane-title" x="76" y="339">1 · Basic in-memory run</text>
+  <text class="tiny" x="1522" y="339" text-anchor="end">run --example basic · synchronous · in-process</text>
   <g>
-    <rect class="blue" x="68" y="696" width="280" height="142" rx="7"/><text class="label" x="88" y="727">Durable backend</text><text class="small" x="88" y="753">EventLog · TaskStateStore</text><text class="small" x="88" y="776">ProviderProcessTable · StateStore</text><text class="small" x="88" y="799">ArtifactStore · AuditSink</text><text class="tiny" x="88" y="823">filesystem or in-memory implementations</text>
-    <rect class="green" x="378" y="696" width="250" height="142" rx="7"/><text class="label" x="398" y="727">Memory and context</text><text class="small" x="398" y="753">MemoryService</text><text class="small" x="398" y="776">KnowledgeService</text><text class="small" x="398" y="799">ContextBuilder + redaction</text>
-    <rect class="cyan" x="658" y="696" width="250" height="142" rx="7"/><text class="label" x="678" y="727">Observability</text><text class="small" x="678" y="753">audit events · trace fields</text><text class="small" x="678" y="776">metrics · retention</text><text class="small" x="678" y="799">structured operation evidence</text>
-    <rect class="orange" x="938" y="696" width="250" height="142" rx="7"/><text class="label" x="958" y="727">Lifecycle</text><text class="small" x="958" y="753">generation switch · drain</text><text class="small" x="958" y="776">handoff · platform adapters</text><text class="small" x="958" y="799">rollback · direct service entry</text><text class="tiny" x="958" y="820">host lifecycle evidence remains external</text>
-    <rect class="purple" x="1218" y="696" width="300" height="142" rx="7"/><text class="label" x="1238" y="727">Backup, restore, and release</text><text class="small" x="1238" y="753">backup · migration package · snapshot</text><text class="small" x="1238" y="776">staged restore + rollback evidence</text><text class="small" x="1238" y="799">release artifact and distribution checks</text>
+    <rect class="blue" x="220" y="350" width="165" height="70" rx="7"/>
+    <text class="label" x="302" y="378" text-anchor="middle">RuntimeBuilder</text>
+    <text class="small" x="302" y="399" text-anchor="middle">summary + generation</text>
+
+    <rect class="blue" x="405" y="350" width="165" height="70" rx="7"/>
+    <text class="label" x="487" y="378" text-anchor="middle">Runtime::run_basic</text>
+    <text class="small" x="487" y="399" text-anchor="middle">per-run composition</text>
+
+    <rect class="blue" x="590" y="350" width="165" height="70" rx="7"/>
+    <text class="label" x="672" y="378" text-anchor="middle">InMemoryEventBus</text>
+    <text class="small" x="672" y="399" text-anchor="middle">publish · ack · fail</text>
+
+    <rect class="blue" x="775" y="350" width="190" height="70" rx="7"/>
+    <text class="label" x="870" y="378" text-anchor="middle">SubscriptionTable</text>
+    <text class="small" x="870" y="399" text-anchor="middle">route + bounded mailboxes</text>
+
+    <rect class="orange" x="985" y="350" width="160" height="70" rx="7"/>
+    <text class="label" x="1065" y="378" text-anchor="middle">AgentRuntime</text>
+    <text class="small" x="1065" y="399" text-anchor="middle">accept + retry</text>
+
+    <rect class="orange" x="1165" y="350" width="160" height="70" rx="7"/>
+    <text class="label" x="1245" y="378" text-anchor="middle">LuaHost</text>
+    <text class="small" x="1245" y="399" text-anchor="middle">restricted on_event</text>
+
+    <rect class="green" x="1345" y="350" width="165" height="70" rx="7"/>
+    <text class="label" x="1427" y="378" text-anchor="middle">BasicRunReport</text>
+    <text class="small" x="1427" y="399" text-anchor="middle">task · Lua · audit</text>
+
+    <path class="line" d="M385 385H405"/><path class="line" d="M570 385H590"/><path class="line" d="M755 385H775"/><path class="line" d="M965 385H985"/><path class="line" d="M1145 385H1165"/><path class="line" d="M1325 385H1345"/>
+    <rect class="cyan" x="1165" y="429" width="160" height="26" rx="6"/>
+    <text class="tiny" x="1245" y="447" text-anchor="middle">optional built-in capability</text>
+    <path class="control dash" d="M1245 420V429"/>
+    <path class="control dash" d="M1325 442H1335V410H1345"/>
   </g>
-  <path class="control" d="M363 408V696"/><path class="control" d="M993 408C993 620 503 620 503 696"/><path class="control" d="M1097 216C1097 620 783 620 783 696"/><path class="control" d="M1377 216V696"/>
-  <text class="tiny" x="62" y="884">Boundary rule: Lua and Agents express intent; Rust-owned capability, adapter, storage, lifecycle, and audit services execute or record side effects.</text>
-  <rect x="42" y="932" width="1516" height="38" rx="6" fill="#172033"/>
-  <text class="footer" x="800" y="957" text-anchor="middle">Source of truth: the current Rust workspace and validated config; optional external systems are reached only through explicit adapters.</text>
+
+  <rect class="lane-daemon" x="56" y="482" width="1488" height="150" rx="7"/>
+  <text class="lane-title" x="76" y="507">2 · Daemon and direct service runtime</text>
+  <text class="tiny" x="1522" y="507" text-anchor="end">daemon start · __service-entry · filesystem-backed recovery</text>
+  <g>
+    <rect class="orange" x="220" y="530" width="210" height="72" rx="7"/>
+    <text class="label" x="325" y="558" text-anchor="middle">Daemon entry</text>
+    <text class="small" x="325" y="580" text-anchor="middle">foreground · background · service</text>
+
+    <rect class="orange" x="455" y="530" width="195" height="72" rx="7"/>
+    <text class="label" x="552" y="558" text-anchor="middle">Durable verify</text>
+    <text class="small" x="552" y="580" text-anchor="middle">backend first · then writer lease</text>
+
+    <rect class="orange" x="675" y="530" width="200" height="72" rx="7"/>
+    <text class="label" x="775" y="558" text-anchor="middle">Lease + recovery</text>
+    <text class="small" x="775" y="580" text-anchor="middle">task · effect · provider process</text>
+
+    <rect class="green" x="900" y="530" width="210" height="72" rx="7"/>
+    <text class="label" x="1005" y="558" text-anchor="middle">Publish state / PID</text>
+    <text class="small" x="1005" y="580" text-anchor="middle">only after startup succeeds</text>
+
+    <rect class="orange" x="1135" y="530" width="180" height="72" rx="7"/>
+    <text class="label" x="1225" y="558" text-anchor="middle">Control loop</text>
+    <text class="small" x="1225" y="580" text-anchor="middle">task · retry · replay · reload</text>
+
+    <rect class="purple" x="1340" y="530" width="170" height="72" rx="7"/>
+    <text class="label" x="1425" y="558" text-anchor="middle">Drain / shutdown</text>
+    <text class="small" x="1425" y="580" text-anchor="middle">join · cleanup · release</text>
+
+    <path class="line" d="M430 566H455"/><path class="line" d="M650 566H675"/><path class="line" d="M875 566H900"/><path class="line" d="M1110 566H1135"/><path class="line" d="M1315 566H1340"/>
+  </g>
+
+  <rect class="lane-provider" x="56" y="648" width="1488" height="158" rx="7"/>
+  <text class="lane-title" x="76" y="675">3 · Adapter-backed command surfaces</text>
+  <text class="tiny" x="1522" y="675" text-anchor="end">capability · adapter · mcp · skill · scheduled retrieval</text>
+  <g>
+    <rect class="rose" x="220" y="700" width="210" height="72" rx="7"/>
+    <text class="label" x="325" y="728" text-anchor="middle">Adapter-backed CLI</text>
+    <text class="small" x="325" y="750" text-anchor="middle">capability · adapter · mcp · skill</text>
+
+    <rect class="rose" x="455" y="700" width="195" height="72" rx="7"/>
+    <text class="label" x="552" y="728" text-anchor="middle">Command gate / plan</text>
+    <text class="small" x="552" y="750" text-anchor="middle">capability gate or command check</text>
+
+    <rect class="rose" x="675" y="700" width="200" height="72" rx="7"/>
+    <text class="label" x="775" y="728" text-anchor="middle">AdapterBacked host</text>
+    <text class="small" x="775" y="750" text-anchor="middle">capability call only</text>
+
+    <rect class="rose" x="900" y="700" width="210" height="72" rx="7"/>
+    <text class="label" x="1005" y="728" text-anchor="middle">AdapterRuntime</text>
+    <text class="small" x="1005" y="750" text-anchor="middle">direct list · probe · skill path</text>
+
+    <rect class="rose" x="1135" y="700" width="180" height="72" rx="7"/>
+    <text class="label" x="1225" y="728" text-anchor="middle">ProviderSupervisor</text>
+    <text class="small" x="1225" y="750" text-anchor="middle">admission · limits · session</text>
+
+    <rect class="cyan" x="1340" y="700" width="170" height="72" rx="7"/>
+    <text class="label" x="1425" y="728" text-anchor="middle">Transport</text>
+    <text class="small" x="1425" y="750" text-anchor="middle">stdio · HTTP · MCP · Skill</text>
+
+    <path class="line" d="M430 736H455"/><path class="control" d="M650 736H675"/><path class="line" d="M875 736H900"/><path class="line" d="M1110 736H1135"/><path class="line" d="M1315 736H1340"/>
+    <path class="control dash" d="M552 772V788H1005V772"/>
+    <text class="tiny" x="1100" y="798" text-anchor="middle">direct AdapterRuntime path; MCP compatibility measure remains local evidence</text>
+  </g>
+
+  <rect class="panel" x="40" y="844" width="1520" height="220" rx="8"/>
+  <text class="section" x="62" y="875">Shared state and operational boundaries</text>
+  <text class="tiny" x="1534" y="875" text-anchor="end">wired only when the selected command path needs them</text>
+  <g>
+    <rect class="blue" x="70" y="902" width="345" height="126" rx="7"/>
+    <text class="label" x="90" y="931">Durable state</text>
+    <text class="small" x="90" y="956">EventLog · TaskStateStore · EffectLedger</text>
+    <text class="small" x="90" y="979">ProviderProcessTable · artifacts · audit</text>
+    <text class="tiny" x="90" y="1004">filesystem or in-memory owners; SQLite is a placeholder</text>
+
+    <rect class="green" x="445" y="902" width="345" height="126" rx="7"/>
+    <text class="label" x="465" y="931">Domain services</text>
+    <text class="small" x="465" y="956">memory · knowledge · hardware leases</text>
+    <text class="small" x="465" y="979">discovery cache · scheduled retrieval</text>
+    <text class="tiny" x="465" y="1004">availability remains command- and configuration-dependent</text>
+
+    <rect class="cyan" x="820" y="902" width="345" height="126" rx="7"/>
+    <text class="label" x="840" y="931">Observability</text>
+    <text class="small" x="840" y="956">trace fields · audit · metrics · redaction</text>
+    <text class="small" x="840" y="979">JSONL sinks · retention · OTLP smoke path</text>
+    <text class="tiny" x="840" y="1004">cross-cutting evidence, not a business-routing layer</text>
+
+    <rect class="purple" x="1195" y="902" width="335" height="126" rx="7"/>
+    <text class="label" x="1215" y="931">Guarded operations</text>
+    <text class="small" x="1215" y="956">service lifecycle · backup · restore · upgrade</text>
+    <text class="small" x="1215" y="979">locks · rollback · health · release evidence</text>
+    <text class="tiny" x="1215" y="1004">real-host certification and release upload remain external</text>
+  </g>
+
+  <text class="tiny" x="48" y="1092">Solid arrow: direct call or state transition</text>
+  <line x1="279" y1="1088" x2="329" y2="1088" class="line"/>
+  <text class="tiny" x="360" y="1092">Dashed arrow: optional or configuration-dependent branch</text>
+  <line x1="715" y1="1088" x2="765" y2="1088" class="control dash"/>
+  <text class="tiny" x="800" y="1092">RuntimeServices is summary-only; provider processes are not started automatically.</text>
+
+  <rect x="40" y="1114" width="1520" height="34" rx="6" fill="#172033"/>
+  <text class="footer" x="800" y="1136" text-anchor="middle">Source of truth: current Rust code, Cargo manifests, and validated configuration. Lua and Agents express intent; Rust-owned boundaries execute side effects.</text>
 </svg>

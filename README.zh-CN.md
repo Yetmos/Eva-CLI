@@ -70,12 +70,14 @@ Eva-CLI/
 
 ![Eva-CLI 总体架构](assets/eva-cli-architecture.zh-CN.svg)
 
-这张图概括当前已实现边界：basic 路径组合本地 EventBus、Scheduler mailbox、
-AgentRuntime 与受限 Lua 5.4 host；外部 capability 调用使用独立的 policy、Adapter、
-provider 与 transport 门禁。daemon、恢复、service lifecycle、备份、restore、upgrade
-和 release 命令分别组合文件系统服务与证据。生产 service 定义会绑定规范化可执行文件、
-原生 argv、工作目录与 identity digest，并进入同进程隐藏 direct entrypoint；停止通知复用
-既有 drain/shutdown 事务。`RuntimeBuilder` 并不是持有全部 concrete service 的统一容器。
+这张图概括当前已实现边界。中间三条泳道是彼此独立的命令级组合，不是同一通用请求的连续
+阶段：basic 路径组合本地 EventBus、Scheduler mailbox、AgentRuntime 与受限 Lua 5.4 host；
+daemon 与 direct service 模式负责 lease、恢复、reload 和 drain；capability、adapter、MCP
+与 Skill 命令可以直接进入 `AdapterRuntime`。`mcp compatibility measure` 是本地 evidence
+路径。备份、restore、upgrade 和 release 命令分别组合文件系统服务与证据。生产 service
+定义会绑定规范化可执行文件、原生 argv、工作目录与 identity digest，并进入同进程隐藏
+direct entrypoint；停止通知复用既有 drain/shutdown 事务。`RuntimeBuilder` 并不是持有全部
+concrete service 的统一容器。
 
 ## 文档入口
 
