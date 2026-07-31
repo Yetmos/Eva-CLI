@@ -1,5 +1,4 @@
 //! 中文：Eva 模块间共享的强类型 identifier。
-//! English: Strongly typed identifiers shared across Eva modules.
 
 use crate::error::EvaError;
 use std::fmt;
@@ -9,11 +8,9 @@ use std::str::FromStr;
 const MAX_ID_LEN: usize = 128;
 
 // 中文：所有 ID 类型共享同一套校验规则，但保持不同 Rust 类型，防止把 AgentId/AdapterId 混用。
-// English: All ID types share validation rules while remaining distinct Rust types to prevent AgentId/AdapterId mixups.
 macro_rules! define_id {
     ($name:ident, $label:literal) => {
         #[doc = concat!("中文：稳定的 ", $label, " identifier。")]
-        #[doc = concat!("English: Stable ", $label, " identifier.")]
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(
             #[doc = concat!("中文：已通过统一规则校验的 ", $label, " identifier 原始值。")]
@@ -22,21 +19,18 @@ macro_rules! define_id {
 
         impl $name {
             #[doc = concat!("中文：解析并校验 ", $label, " identifier。")]
-            #[doc = concat!("English: Parses and validates a ", $label, " identifier.")]
             pub fn parse(value: &str) -> Result<Self, EvaError> {
                 validate_id($label, value)?;
                 Ok(Self(value.to_owned()))
             }
 
             #[doc = concat!("中文：从 owned 或 borrowed 字符串创建 ", $label, " identifier。")]
-            #[doc = concat!("English: Creates a ", $label, " identifier from an owned or borrowed string.")]
             pub fn new(value: impl Into<String>) -> Result<Self, EvaError> {
                 let value = value.into();
                 Self::parse(&value)
             }
 
             /// 中文：以字符串切片返回 identifier。
-            /// English: Returns the identifier as a string slice.
             pub fn as_str(&self) -> &str {
                 &self.0
             }
@@ -81,7 +75,6 @@ define_id!(GenerationId, "generation");
 /// 对所有强类型 ID 执行一致的边界校验，保证配置、路径和协议层使用同一字符集。
 fn validate_id(label: &str, value: &str) -> Result<(), EvaError> {
     // 中文：ID 会进入配置、日志、路径映射和外部协议字段，先排除空值与首尾空白。
-    // English: IDs appear in config, logs, path mapping, and external protocol fields, so reject empty values and edge whitespace first.
     if value.is_empty() {
         return Err(id_error(label, value, "identifier cannot be empty"));
     }
@@ -95,13 +88,11 @@ fn validate_id(label: &str, value: &str) -> Result<(), EvaError> {
     }
 
     // 中文：长度上限防止日志/状态文件被异常 identifier 放大。
-    // English: The length cap prevents abnormal identifiers from inflating logs or state files.
     if value.len() > MAX_ID_LEN {
         return Err(id_error(label, value, "identifier is too long"));
     }
 
     // 中文：禁止路径分隔符，避免 ID 被误用为相对路径片段。
-    // English: Path separators are forbidden so IDs cannot be mistaken for relative path fragments.
     if value.contains('/') || value.contains('\\') {
         return Err(id_error(
             label,
@@ -111,7 +102,6 @@ fn validate_id(label: &str, value: &str) -> Result<(), EvaError> {
     }
 
     // 中文：只允许跨平台稳定字符；需要展示名时应使用单独字段，不要放进 ID。
-    // English: Allow only cross-platform stable characters; human display names should live in separate fields.
     if !value.chars().all(is_stable_id_char) {
         return Err(id_error(
             label,
