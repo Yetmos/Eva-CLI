@@ -4,11 +4,12 @@
 
 # eva-core 契约模块
 
-更新日期：2026-07-13
+更新日期：2026-07-31
 
 `eva-core` 是 Eva-CLI Rust workspace 中零依赖的契约基础。它定义配置、EventBus、
 Scheduler、Agent、Lua、capability、Adapter、storage、runtime、release 和 CLI
-边界之间交换的值，不执行外部 I/O 或 runtime 组合。
+边界之间交换的值，并提供用于稳定身份摘要的无依赖 SHA-256 原语。不执行外部 I/O
+或 runtime 组合。
 
 ![eva-core 基础契约边界](../../assets/eva-core-contract-boundary.zh-CN.svg)
 
@@ -34,10 +35,15 @@ Scheduler、Agent、Lua、capability、Adapter、storage、runtime、release 和
 | `topic` | `Topic`、`TopicPattern`、`TopicPatternSegment` |
 | `event` | `Event`、`EventMetadata`、`EventPayload`、`EventTarget`、`TraceContext` |
 | `capability` | `CapabilityName`、`CapabilityRef`、`ProviderHint` |
+| `digest` | 用于生成稳定 `sha256:<64 hex>` 身份/内容摘要的 `sha256_digest` |
 | `invoke` | `InvokeInput`、`InvokeOutput`、`InvokeMetadata`、`InvokeRequest`、`InvokeResponse`、`InvokeStatus`、`InvokeTarget` |
 | `error` | `ErrorKind`、`ProviderCode`、`ErrorContext`、`EvaError` |
 
 这些高频类型从 `eva_core` 根重新导出，构成下游 crate 的稳定 import surface。
+
+`sha256_digest` 是一个刻意保持精简的标准库实现。它返回带 `sha256:` 前缀的小写摘要，
+用于 configuration generation、artifact、manifest、service identity 和 evidence subject。
+该函数只计算输入字节，不决定摘要认证什么、存储在哪里，或签名是否可信。
 
 ## 3. Identifier 契约
 
@@ -160,6 +166,7 @@ timeout、unavailable、internal 与 unsupported。可选 provider code 保留 p
 - Event 与 Invoke payload 保持 opaque；`eva-core` 不解释业务 JSON 或 provider schema。
 - correlation、generation、target、provider hint、timeout、caller 与 retryability metadata
   不会授予权限，也不证明执行发生。
+- digest 只是 identity/content claim，不是授权、签名，也不证明引用字节来自可信生产者。
 - provider-specific state 不应加入共享 enum，除非它已经成为稳定跨 crate 概念。
 
 ## 10. Runtime 交接
@@ -189,5 +196,6 @@ timeout、unavailable、internal 与 unsupported。可选 provider code 保留 p
 ## 12. 总结
 
 `eva-core` 是已实现、无副作用的公共词汇：六种 ID newtype、Topic matching、Event 与
-trace linkage、capability reference、Invoke lifecycle value 和结构化错误。其最重要
-的不变量是：metadata 只描述意图与关联，执行权威始终留在所属 runtime crate。
+trace linkage、capability reference、Invoke lifecycle value、结构化错误和稳定 SHA-256
+helper。其最重要的不变量是：metadata 与 digest 只描述意图、身份或关联，执行权威始终
+留在所属 runtime crate。

@@ -4,12 +4,13 @@
 
 # eva-core Contract Module
 
-Updated: 2026-07-13
+Updated: 2026-07-31
 
 `eva-core` is the dependency-free contract foundation of the Eva-CLI Rust
 workspace. It defines the values exchanged across configuration, EventBus,
 Scheduler, Agent, Lua, capability, Adapter, storage, runtime, release, and CLI
-boundaries. It performs no external I/O or runtime composition.
+boundaries, plus the dependency-free SHA-256 primitive used for stable identity
+digests. It performs no external I/O or runtime composition.
 
 ![eva-core contract boundary](../../assets/eva-core-contract-boundary.svg)
 
@@ -35,11 +36,18 @@ the Rust standard library and other `eva-core` modules.
 | `topic` | `Topic`, `TopicPattern`, `TopicPatternSegment` |
 | `event` | `Event`, `EventMetadata`, `EventPayload`, `EventTarget`, `TraceContext` |
 | `capability` | `CapabilityName`, `CapabilityRef`, `ProviderHint` |
+| `digest` | `sha256_digest` for stable `sha256:<64 hex>` identity/content digests |
 | `invoke` | `InvokeInput`, `InvokeOutput`, `InvokeMetadata`, `InvokeRequest`, `InvokeResponse`, `InvokeStatus`, `InvokeTarget` |
 | `error` | `ErrorKind`, `ProviderCode`, `ErrorContext`, `EvaError` |
 
 These high-use types are re-exported from `eva_core` and form the stable import
 surface for downstream crates.
+
+`sha256_digest` is intentionally a small standard-library implementation. It
+returns a lower-case digest with the `sha256:` prefix and is used by
+configuration generations, artifacts, manifests, service identities, and
+evidence subjects. The function computes bytes only; it does not decide what a
+digest authenticates, where it is stored, or whether a signature is trusted.
 
 ## 3. Identifier Contracts
 
@@ -175,6 +183,8 @@ audit output, redaction, and process exit mapping also stay outside this crate.
   JSON or provider protocol schemas.
 - Correlation, generation, target, provider hint, timeout, caller, and
   retryability metadata never grant permission or prove execution.
+- A digest is an identity/content claim, not an authorization, signature, or
+  proof that the referenced bytes came from a trusted producer.
 - Adding provider-specific state to a shared enum is avoided unless it becomes
   a stable cross-crate concept.
 
@@ -206,6 +216,6 @@ audit output, redaction, and process exit mapping also stay outside this crate.
 
 `eva-core` is an implemented, side-effect-free vocabulary: six ID newtypes,
 Topic matching, Event and trace linkage, capability references, Invoke
-lifecycle values, and structured errors. Its most important invariant is that
-metadata describes intent and correlation while execution authority remains in
-the owning runtime crate.
+lifecycle values, structured errors, and a stable SHA-256 helper. Its most
+important invariant is that metadata and digests describe intent, identity, or
+correlation while execution authority remains in the owning runtime crate.
