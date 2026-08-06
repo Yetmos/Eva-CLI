@@ -103,8 +103,7 @@ Planning stays focused on the current V1.x inventory and implementation work.
 Superseded roadmap and milestone history remains available through Git history,
 immutable release tags, and release notes.
 
-- [V1.x Incomplete Feature Inventory](planning/v1.x-incomplete-feature-inventory.md)
-- [V1.x Real Runtime Implementation Plan](planning/v1.x-real-runtime-implementation-plan.md)
+- [V1.x Production Blockers and Implementation Plan](planning/v1.x-real-runtime-implementation-plan.md)
 
 ### Tooling
 

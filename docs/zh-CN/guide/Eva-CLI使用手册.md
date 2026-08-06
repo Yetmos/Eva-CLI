@@ -359,4 +359,4 @@ cargo run -q -- release migration --output json
 - 真实硬件 driver/raw I/O 和发布 fixture；
 - 生产 observability database sink/retention scheduler，以及长驻 memory/retrieval 调度。
 
-完整状态见[V1.x 未完整实现功能清单](../planning/V1.x未完整实现功能清单.md)。
+完整状态见[V1.x 生产阻塞、能力缺口与实施总计划](../planning/V1.x阻塞项.md)。

@@ -324,13 +324,8 @@
       },
       {
         "id": "v1.x-incomplete-feature-inventory",
-        "title": "V1.x Incomplete Feature Inventory",
-        "description": "A code-backed snapshot of implemented boundaries, remaining production gaps, external blockers, and verification evidence."
-      },
-      {
-        "id": "v1.x-real-runtime-implementation-plan",
-        "title": "V1.x Real Runtime Implementation Plan",
-        "description": "Tracks 123 W0-W10 logic-level changes with stable IDs, prerequisites, owning boundaries, and testable evidence; the current snapshot is 49 Done, 6 In verification, and 68 Blocked."
+        "title": "V1.x Production Blockers and Implementation Plan",
+        "description": "A code-backed ledger of capability boundaries, platform evidence, production blockers, and 123 W0-W10 logical items: 58 Done, 11 In verification, and 54 Blocked."
       },
       {
         "id": "project-release-plan",

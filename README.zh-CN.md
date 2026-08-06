@@ -32,7 +32,7 @@ Eva-CLI 已经完成 V0.1 到 V1.17.6 可执行/可验证能力与 release closu
 11. `eva-observability` 已实现 V1.16.1 runtime/provider/task/restore JSONL best-effort audit sink wiring、V1.16.2 tracing subscriber bridge、V1.16.3 OpenTelemetry SDK exporter smoke 和 V1.16.4 retention/rotation/corrupt-record policy。
 12. V1.17 已完成 `run --example basic` 拆分、operator execution-state 字段、高风险 text summary、public JSON contract diff suite、V1.17.5 文档/i18n/release notes/网站同步闭环，以及 V1.17.6 V1.x closure release gate/report。
 
-当前使用方式见 [Eva-CLI 使用手册](docs/zh-CN/guide/Eva-CLI使用手册.md)，未完整实现边界见 [V1.x 未完整实现功能清单](docs/zh-CN/planning/V1.x未完整实现功能清单.md)。项目级发布流程见 [项目发布方案](docs/zh-CN/release/项目发布方案.md)，版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)，当前发版内容见 [V1.11.5 Alpha 发布说明](docs/zh-CN/release/V1.11.5-alpha发布说明.md)。
+当前使用方式见 [Eva-CLI 使用手册](docs/zh-CN/guide/Eva-CLI使用手册.md)，V1.x 能力边界与生产阻塞见 [V1.x 生产阻塞、能力缺口与实施总计划](docs/zh-CN/planning/V1.x阻塞项.md)。项目级发布流程见 [项目发布方案](docs/zh-CN/release/项目发布方案.md)，版本规则见 [版本管理方案](docs/zh-CN/release/版本管理方案.md)，当前发版内容见 [V1.11.5 Alpha 发布说明](docs/zh-CN/release/V1.11.5-alpha发布说明.md)。
 
 ## eva-core 模块边界
 
@@ -151,4 +151,4 @@ concrete service 的统一容器。
 - 生产 database observability sink、retention scheduler 和长驻 memory/retrieval 调度；
 - 生产 signing/attestation credential，以及 Homebrew/Winget/Apt 仓库凭据和发布。
 
-维护中的缺口清单见 [V1.x 未完整实现功能清单](docs/zh-CN/planning/V1.x未完整实现功能清单.md)，发布制品与 external blockers 见 [项目发布方案](docs/zh-CN/release/项目发布方案.md)。
+维护中的 V1.x 缺口、实施顺序与 external blockers 统一见 [V1.x 生产阻塞、能力缺口与实施总计划](docs/zh-CN/planning/V1.x阻塞项.md)，发布制品见 [项目发布方案](docs/zh-CN/release/项目发布方案.md)。

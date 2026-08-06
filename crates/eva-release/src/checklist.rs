@@ -1804,7 +1804,7 @@ fn durable_backend_gate() -> ReleaseGate {
         evidence: vec![
             "crates/eva-storage/src/durable_backend.rs".to_owned(),
             "cargo test -p eva-storage".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.1 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.6.1 Done".to_owned(),
             "docs/en/release/release-notes-v1.6.1.md".to_owned(),
         ],
         remediation: vec![
@@ -1827,7 +1827,7 @@ fn durable_eventbus_gate() -> ReleaseGate {
             "crates/eva-eventbus/src/durable.rs DurableEventBus".to_owned(),
             "cargo test -p eva-storage".to_owned(),
             "cargo test -p eva-eventbus".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.2 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.6.2 Done".to_owned(),
             "docs/en/release/release-notes-v1.6.2.md".to_owned(),
         ],
         remediation: vec![
@@ -1852,7 +1852,7 @@ fn durable_task_audit_artifact_gate() -> ReleaseGate {
             "cargo test -p eva-storage".to_owned(),
             "cargo test -p eva-cli task_commands_can_use_durable_backend_task_store".to_owned(),
             "cargo test -p eva-backup".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.3 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.6.3 Done".to_owned(),
             "docs/en/release/release-notes-v1.6.3.md".to_owned(),
         ],
         remediation: vec![
@@ -1877,7 +1877,7 @@ fn durable_runtime_recovery_gate() -> ReleaseGate {
             "cargo test -p eva-runtime recovery".to_owned(),
             "cargo test -p eva-eventbus durable".to_owned(),
             "cargo test -p eva-cli recovery".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.4 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.6.4 Done".to_owned(),
         ],
         remediation: vec![
             "do not enable provider process recovery without preserving ack skip, redrive policy, and durable audit tests".to_owned(),
@@ -1900,7 +1900,7 @@ fn durable_diagnostics_gate() -> ReleaseGate {
             "cargo test -p eva-runtime diagnostics".to_owned(),
             "cargo test -p eva-cli inspect_durable".to_owned(),
             "cargo run -- inspect durable --durable-backend .eva/ci-durable --output json".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.6.5 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.6.5 Done".to_owned(),
         ],
         remediation: vec![
             "do not remove inspect.durable from CI smoke while durable backend fields are part of the release surface".to_owned(),
@@ -1923,7 +1923,7 @@ fn lua_vm_execution_gate() -> ReleaseGate {
             "cargo test -p eva-lua-host".to_owned(),
             "cargo test -p eva-runtime basic_example_runs_event_to_lua_and_capability".to_owned(),
             "cargo test -p eva-cli run_basic_example_json_succeeds".to_owned(),
-            "docs/zh-CN/planning/V1.x real runtime implementation plan V1.7.1 Done"
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.7.1 Done"
                 .to_owned(),
         ],
         remediation: vec![
@@ -1948,7 +1948,7 @@ fn lua_host_bindings_gate() -> ReleaseGate {
             "cargo test -p eva-lua-host".to_owned(),
             "cargo test -p eva-runtime basic_example_runs_event_to_lua_and_capability".to_owned(),
             "cargo test -p eva-cli run_basic_example_json_succeeds".to_owned(),
-            "docs/zh-CN/planning/V1.x real runtime implementation plan V1.7.2 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.7.2 Done".to_owned(),
         ],
         remediation: vec![
             "do not expose raw provider, file, socket, process, memory service, knowledge service, or audit sink handles through Lua ctx".to_owned(),
@@ -1973,7 +1973,7 @@ fn lua_resource_limits_gate() -> ReleaseGate {
             "cargo test -p eva-lua-host".to_owned(),
             "cargo test -p eva-runtime timeout_basic_run_records_dead_letter_and_replay".to_owned(),
             "cargo test -p eva-runtime cancelled_basic_run_returns_task_record".to_owned(),
-            "docs/zh-CN/planning/V1.x real runtime implementation plan V1.7.3 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.7.3 Done".to_owned(),
         ],
         remediation: vec![
             "do not add Lua hot reload or generation swap without preserving timeout, instruction budget, cancellation, and memory limit hooks".to_owned(),
@@ -1999,7 +1999,7 @@ fn lua_hot_reload_lifecycle_gate() -> ReleaseGate {
             "cargo test -p eva-lua-host shadow_load".to_owned(),
             "cargo test -p eva-scheduler generation".to_owned(),
             "cargo test -p eva-lifecycle drain rollback".to_owned(),
-            "docs/zh-CN/planning/V1.x real runtime implementation plan V1.7.4 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.7.4 Done".to_owned(),
         ],
         remediation: vec![
             "do not promote a candidate generation unless shadow load is healthy".to_owned(),
@@ -2022,7 +2022,7 @@ fn signed_backup_archive_gate() -> ReleaseGate {
             "crates/eva-backup/src/restore_apply.rs PreRestoreBackupEvidence".to_owned(),
             "cargo test -p eva-backup backup_service_can_encrypt_archive_and_record_remote_target".to_owned(),
             "cargo test -p eva-cli restore_apply_dry_run_validates_durable_backup".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.10.3 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.10.3 Done".to_owned(),
         ],
         remediation: vec![
             "do not enable destructive restore unless signed archive verification and pre-restore evidence remain blocking gates".to_owned(),
@@ -2045,7 +2045,7 @@ fn restore_apply_gate() -> ReleaseGate {
             "cargo test -p eva-backup restore_apply".to_owned(),
             "cargo test -p eva-cli restore_apply".to_owned(),
             "cargo test -p eva-cli restore_rollback".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.14.4 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.14.4 Done".to_owned(),
         ],
         remediation: vec![
             "do not execute restore rollback apply unless confirmation, evidence, policy, rollback lock, health, staged plan, transaction log, and pre-restore archive entries still pass".to_owned(),
@@ -2068,7 +2068,7 @@ fn supervisor_handoff_gate() -> ReleaseGate {
             "crates/eva-cli/src/run.rs upgrade apply --state-store".to_owned(),
             "cargo test -p eva-lifecycle handoff".to_owned(),
             "cargo test -p eva-cli upgrade_apply".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.10.5 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.10.5 Done".to_owned(),
         ],
         remediation: vec![
             "do not write release pointer without supervisor.handoff and release.pointer_mutation policy approval".to_owned(),
@@ -2092,7 +2092,7 @@ fn service_manager_abstraction_gate() -> ReleaseGate {
             "crates/eva-config/src/eva_yaml.rs service_manager typed config".to_owned(),
             "cargo test -p eva-lifecycle service_manager".to_owned(),
             "cargo test -p eva-config service_manager".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.14.5 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.14.5 Done".to_owned(),
         ],
         remediation: vec![
             "keep fake adapter limited to local tests and explicit fake config".to_owned(),
@@ -2121,7 +2121,7 @@ fn daemon_runtime_gate() -> ReleaseGate {
             "cargo test -p eva-runtime daemon_reload_mutates_generation_route_state".to_owned(),
             "cargo test -p eva-cli daemon_control_status_and_shutdown_round_trip_via_cli".to_owned(),
             "cargo test -p eva-cli agent_drain_and_reload_use_daemon_mutation_when_available".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.12.6 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.12.6 Done".to_owned(),
         ],
         remediation: vec![
             "keep daemon readiness limited to local foreground/filesystem control until OS service-manager adapters exist".to_owned(),
@@ -2241,7 +2241,7 @@ fn provider_supervision_gate() -> ReleaseGate {
             "cargo test -p eva-adapter supervisor runtime::tests stream::tests".to_owned(),
             "cargo test -p eva-runtime recovery".to_owned(),
             "cargo test -p eva-storage provider_process".to_owned(),
-            "docs/zh-CN/planning/V1.x真实运行时能力补齐实施计划.md V1.13.8 Done".to_owned(),
+            "docs/zh-CN/planning/V1.x阻塞项.md V1.13.8 Done".to_owned(),
         ],
         remediation: Vec::new(),
     }

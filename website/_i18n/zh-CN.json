@@ -324,13 +324,8 @@
       },
       {
         "id": "v1.x-incomplete-feature-inventory",
-        "title": "V1.x 未完整实现功能清单",
-        "description": "基于当前代码汇总已落地边界、剩余生产缺口、外部阻塞与验证证据。"
-      },
-      {
-        "id": "v1.x-real-runtime-implementation-plan",
-        "title": "V1.x 真实运行时能力补齐实施计划",
-        "description": "以稳定 ID、前置项、owning 边界和可测试 evidence 跟踪 W0-W10 的 123 个逻辑修改；当前为 49 个已完成、6 个验证中、68 个已阻塞。"
+        "title": "V1.x 生产阻塞、能力缺口与实施总计划",
+        "description": "基于当前代码统一记录能力边界、平台证据、生产阻塞与 W0-W10 的 123 个逻辑项；当前为 58 个已完成、11 个验证中、54 个已阻塞。"
       },
       {
         "id": "project-release-plan",

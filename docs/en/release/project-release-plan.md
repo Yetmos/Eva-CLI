@@ -174,4 +174,4 @@ A release is complete only when evidence shows all of the following:
 - [Version management](version-management-plan.md)
 - [GitHub Packages publishing](github-packages-publishing.md)
 - [Install, upgrade, and uninstall](install-upgrade-uninstall.md)
-- [Remaining V1.x production gaps](../planning/v1.x-incomplete-feature-inventory.md)
+- [V1.x production blockers and implementation plan](../planning/v1.x-real-runtime-implementation-plan.md)

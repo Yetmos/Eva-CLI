@@ -112,7 +112,7 @@ cargo run -- task logs --task req-readme-basic --output json
 ```
 
 See the [User Manual](docs/en/guide/user-manual.md) for command details and the
-[V1.x Incomplete Feature Inventory](docs/en/planning/v1.x-incomplete-feature-inventory.md)
+[V1.x Production Blockers and Implementation Plan](docs/en/planning/v1.x-real-runtime-implementation-plan.md)
 for production boundaries.
 
 ## Controlled External Capability Execution
@@ -360,6 +360,6 @@ production work is limited to these boundaries:
 - production signing/attestation credentials and Homebrew/Winget/Apt repository
   credentials and publication.
 
-See the [V1.x Incomplete Feature Inventory](docs/en/planning/v1.x-incomplete-feature-inventory.md)
+See the [V1.x Production Blockers and Implementation Plan](docs/en/planning/v1.x-real-runtime-implementation-plan.md)
 for the maintained gap list and the [Project Release Plan](docs/en/release/project-release-plan.md)
 for release artifacts and external blockers.
